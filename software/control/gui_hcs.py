@@ -253,6 +253,7 @@ class OctopiGUI(QMainWindow):
                 self.priorstage = PriorStage(PRIOR_STAGE_SN, parent=self)
             except Exception:
                 log.error("Error initializing Prior Stage")
+                raise
 
         try:
             self.microcontroller = microcontroller.Microcontroller(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)

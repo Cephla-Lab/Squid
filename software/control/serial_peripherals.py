@@ -868,9 +868,9 @@ class Optospin:
                 return None
 
             except (serial.SerialTimeoutException, Exception) as e:
-                self.log(f"Attempt {attempt + 1} failed: {str(e)}")
+                self.log.error(f"Attempt {attempt + 1} failed: {str(e)}")
                 if attempt < self.max_retries - 1:
-                    self.log(f"Retrying in {self.retry_delay} seconds...")
+                    self.log.error(f"Retrying in {self.retry_delay} seconds...")
                     time.sleep(self.retry_delay)
                 else:
                     raise Exception(f"Command failed after {self.max_retries} attempts: {str(e)}")
