@@ -1,6 +1,7 @@
 # set QT_API environment variable
 import argparse
 import glob
+import logging
 import os
 os.environ["QT_API"] = "pyqt5"
 import sys
@@ -32,9 +33,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--simulation", help="Run the GUI with simulated hardware.", action='store_true')
     parser.add_argument("--performance", help="Run the GUI with minimal viewers.", action='store_true')
+    parser.add_argument("--verbose", help="Turn on verbose logging (DEBUG level)", action="store_true")
     args = parser.parse_args()
 
     log = squid.logging.get_logger("main_hcs")
+
+    if args.verbose:
+        log.info("Turning on debug logging.")
+        octopi.logging.set_log_level(logging.DEBUG)
 
     legacy_config = False
     cf_editor_parser = ConfigParser()

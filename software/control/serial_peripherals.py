@@ -4,6 +4,9 @@ import time
 from typing import Tuple, Optional
 import struct
 
+import octopi.logging
+log = octopi.logging.get_logger(__name__)
+
 class SerialDevice:
     """
     General wrapper for serial devices, with
@@ -82,12 +85,12 @@ class SerialDevice:
 
             response = self.serial.readline().decode().strip()
             if print_response:
-                print(response)
+                log.info(response)
 
             # flush the input buffer
             while self.serial.in_waiting:
                 if print_response:
-                    print(self.serial.readline().decode().strip())
+                    log.info(self.serial.readline().decode().strip())
                 else:
                     self.serial.readline().decode().strip()
 
@@ -95,8 +98,8 @@ class SerialDevice:
             if response == expected_response:
                 return response
             else:
-            	print(response)
-            
+                log.warning(response)
+
             # check prefix if the full response does not match
             if check_prefix:
                 if response.startswith(expected_response):
@@ -149,7 +152,7 @@ class XLight_Simulation:
 
     def get_dichroic(self):
         return self.dichroic_wheel_pos
-    
+
     def set_disk_position(self, position):
         self.spinning_disk_pos = position
         return position
@@ -188,6 +191,7 @@ class XLight_Simulation:
 # no flow control
 
 class XLight:
+
     """Wrapper for communicating with CrestOptics X-Light devices over serial"""
     def __init__(self, SN, sleep_time_for_wheel = 0.25):
         """
@@ -195,6 +199,8 @@ class XLight:
         cephla already has) for device-finding purposes. Otherwise, all
         XLight devices should use the same serial protocol
         """
+        self.log = octopi.logging.get_logger(self.__class__.__name__)
+
         self.has_spinning_disk_motor = False
         self.has_spinning_disk_slider = False
         self.has_dichroic_filters_wheel = False
@@ -231,17 +237,18 @@ class XLight:
         self.has_ttl_control = bool(config_value & 0x00001000)
 
     def print_config(self):
-        print("Machine Configuration:")
-        print(f"Spinning disk motor: {self.has_spinning_disk_motor}")
-        print(f"Spinning disk slider: {self.has_spinning_disk_slider}")
-        print(f"Dichroic filters wheel: {self.has_dichroic_filters_wheel}")
-        print(f"Emission filters wheel: {self.has_emission_filters_wheel}")
-        print(f"Excitation filters wheel: {self.has_excitation_filters_wheel}")
-        print(f"Illumination Iris diaphragm: {self.has_illumination_iris_diaphragm}")
-        print(f"Emission Iris diaphragm: {self.has_emission_iris_diaphragm}")
-        print(f"Dichroic filter slider: {self.has_dichroic_filter_slider}")
-        print(f"TTL control and combined commands subsystem: {self.has_ttl_control}")
-    
+        self.log.info((
+            "Machine Configuration:\n"
+            f"  Spinning disk motor: {self.has_spinning_disk_motor}\n",
+            f"  Spinning disk slider: {self.has_spinning_disk_slider}\n",
+            f"  Dichroic filters wheel: {self.has_dichroic_filters_wheel}\n",
+            f"  Emission filters wheel: {self.has_emission_filters_wheel}\n",
+            f"  Excitation filters wheel: {self.has_excitation_filters_wheel}\n",
+            f"  Illumination Iris diaphragm: {self.has_illumination_iris_diaphragm}\n",
+            f"  Emission Iris diaphragm: {self.has_emission_iris_diaphragm}\n",
+            f"  Dichroic filter slider: {self.has_dichroic_filter_slider}\n",
+            f"  TTL control and combined commands subsystem: {self.has_ttl_control}"))
+
     def set_emission_filter(self,position,extraction=False,validate=True):
         if str(position) not in ["1","2","3","4","5","6","7","8"]:
             raise ValueError("Invalid emission filter wheel position!")
@@ -349,14 +356,15 @@ class LDI:
         """
         Provide serial number
         """
+        self.log = octopi.logging.get_logger(self.__class__.__name__)
         self.serial_connection = SerialDevice(SN=SN,baudrate=9600,
                 bytesize=serial.EIGHTBITS,stopbits=serial.STOPBITS_ONE,
-                parity=serial.PARITY_NONE, 
+                parity=serial.PARITY_NONE,
                 xonxoff=False,rtscts=False,dsrdtr=False)
         self.serial_connection.open_ser()
         self.intensity_mode = 'PC'
         self.shutter_mode = 'PC'
-    
+
     def run(self):
         self.serial_connection.write_and_check("run!\r","ok")
 
@@ -373,10 +381,10 @@ class LDI:
     def set_intensity(self,channel,intensity):
         channel = str(channel)
         intensity = "{:.2f}".format(intensity)
-        print('set:'+channel+'='+intensity+'\r')
+        self.log.debug('set:'+channel+'='+intensity+'\r')
         self.serial_connection.write_and_check('set:'+channel+'='+intensity+'\r',"ok")
-        print('active channel: ' + str(self.active_channel))
-    
+        self.log.debug('active channel: ' + str(self.active_channel))
+
     def set_shutter(self,channel,state):
         channel = str(channel)
         state = str(state)
@@ -403,7 +411,7 @@ class SciMicroscopyLEDArray:
         """
         self.serial_connection = SerialDevice(SN=SN,baudrate=115200,
                 bytesize=serial.EIGHTBITS,stopbits=serial.STOPBITS_ONE,
-                parity=serial.PARITY_NONE, 
+                parity=serial.PARITY_NONE,
                 xonxoff=False,rtscts=False,dsrdtr=False)
         self.serial_connection.open_ser()
         self.check_about()
@@ -645,7 +653,7 @@ class FilterController:
                 self.serial.write(f"{cmd}\n".encode('utf-8'))
                 response = self.serial.readline().decode('utf-8').strip()
                 success, message = self._parse_response(response)
-                
+
                 if success:
                     return True, message
                 elif message.startswith('BUSY'):
@@ -656,9 +664,9 @@ class FilterController:
                     print(f"Command failed (attempt {attempt + 1}): {message}")
             except serial.SerialTimeoutException:
                 print(f"Command timed out (attempt {attempt + 1})")
-            
+
             time.sleep(0.5)  # Wait before retrying
-        
+
         raise FilterControllerError(f"Command '{cmd}' failed after {self.MAX_RETRIES} attempts")
 
     def _parse_response(self, response: str) -> Tuple[bool, str]:
@@ -673,7 +681,7 @@ class FilterController:
         """
         if not response:
             return False, "No response received"
-        
+
         parts = response.split()
         if len(parts) < 4:
             return False, f"Invalid response format: {response}"
@@ -735,13 +743,13 @@ class FilterController:
         """
         if index not in self.VALID_POSITIONS:
             raise ValueError(f"Invalid emission filter wheel position: {position}")
-        
+
         target_position = self.OFFSET_POSITION + (index - 1) * self.MICROSTEPS_PER_HOLE
         success, _ = self._send_command(f'/move abs {target_position}')
-        
+
         if not success:
             raise FilterControllerError("Failed to initiate filter movement")
-        
+
         if blocking:
             self._wait_for_position(target_position, index, timeout)
         else:
