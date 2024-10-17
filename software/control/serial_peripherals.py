@@ -395,12 +395,12 @@ class LDI:
 
     def set_active_channel(self,channel):
         self.active_channel = channel
-        print('[set active channel to ' + str(channel) + ']')
+        self.log.debug('[set active channel to ' + str(channel) + ']')
 
     def set_active_channel_shutter(self,state):
         channel = str(self.active_channel)
         state = str(state)
-        print('shutter:'+channel+'='+state+'\r')
+        self.log.debug('shutter:'+channel+'='+state+'\r')
         self.serial_connection.write_and_check('shutter:'+channel+'='+state+'\r',"ok")
 
 class SciMicroscopyLEDArray:
@@ -473,6 +473,9 @@ class SciMicroscopyLEDArray:
         self.clear()
 
 class CellX:
+
+    VALID_MODULATIONS = ['INT','EXT Digital','EXT Analog','EXT Mixed']
+
     """Wrapper for communicating with LDI over serial"""
     def __init__(self, SN=""):
         self.serial_connection = SerialDevice(SN=SN,baudrate=115200,
@@ -489,11 +492,9 @@ class CellX:
         self.serial_connection.write_and_check('SOUR'+str(channel)+':AM:STAT OFF\r','OK',read_delay=0.01,print_response=False)
 
     def set_laser_power(self, channel, power):
-        try:
-            assert power >= 1 and power <= 100
-        except AssertionError as e:
-            print(f"AssertionError: {e}")
-            return
+        if not (power >= 1 and power <= 100):
+            raise ValueError(f"Power={power} not in the range 1 to 100")
+
         if channel not in self.power.keys() or power != self.power[channel]:
             self.serial_connection.write_and_check('SOUR'+str(channel)+':POW:LEV:IMM:AMPL '+str(power/1000)+'\r','OK',read_delay=0.01,print_response=False)
             self.power[channel] = power
@@ -501,11 +502,8 @@ class CellX:
             pass # power is the same
 
     def set_modulation(self, channel, modulation):
-        try:
-            assert modulation in ['INT','EXT Digital','EXT Analog','EXT Mixed']
-        except AssertionError as e:
-            print(f"AssertionError: {e}")
-            return
+        if modulation not in CellX.VALID_MODULATIONS:
+            raise ValueError(f"Modulation '{modulation}' not in valid modulations: {CellX.VALID_MODULATIONS}")
         self.serial_connection.write_and_check('SOUR'+str(channel)+':AM:' + modulation +'\r','OK',read_delay=0.01,print_response=False)
 
     def close(self):
@@ -528,22 +526,17 @@ class CellX_Simulation:
         pass
 
     def set_laser_power(self, channel, power):
-        try:
-            assert power >= 1 and power <= 100
-        except AssertionError as e:
-            print(f"AssertionError: {e}")
-            return
+        if not (power >= 1 and power <= 100):
+            raise ValueError(f"Power={power} not in the range 1 to 100")
+
         if channel not in self.power.keys() or power != self.power[channel]:
             self.power[channel] = power
         else:
             pass # power is the same
 
     def set_modulation(self, channel, modulation):
-        try:
-            assert modulation in ['INT','EXT Digital','EXT Analog','EXT Mixed']
-        except AssertionError as e:
-            print(f"AssertionError: {e}")
-            return
+        if modulation not in CellX.VALID_MODULATIONS:
+            raise ValueError(f"modulation '{modulation}' not in valid choices: {CellX.VALID_MODULATIONS}")
         self.serial_connection.write_and_check('SOUR'+str(channel)+'AM:' + modulation +'\r','OK',read_delay=0.01,print_response=False)
 
     def close(self):
@@ -607,6 +600,7 @@ class FilterController:
     COMMAND_TIMEOUT = 1  # seconds
 
     def __init__(self, serial_number: str, baudrate: int, bytesize: int, parity: str, stopbits: int):
+        self.log = octopi.logging.get_logger(self.__class__.__name__)
         self.current_position = 0
         self.current_index = 1
         self.serial = self._initialize_serial(serial_number, baudrate, bytesize, parity, stopbits)
@@ -661,9 +655,9 @@ class FilterController:
                     continue
                 else:
                     # Log the error and retry
-                    print(f"Command failed (attempt {attempt + 1}): {message}")
+                    self.log.error(f"Command failed (attempt {attempt + 1}): {message}")
             except serial.SerialTimeoutException:
-                print(f"Command timed out (attempt {attempt + 1})")
+                self.log.error(f"Command timed out (attempt {attempt + 1})")
 
             time.sleep(0.5)  # Wait before retrying
 
@@ -742,7 +736,7 @@ class FilterController:
             TimeoutError: If the movement doesn't complete within the specified timeout (only in blocking mode).
         """
         if index not in self.VALID_POSITIONS:
-            raise ValueError(f"Invalid emission filter wheel position: {position}")
+            raise ValueError(f"Invalid emission filter wheel index position: {index}")
 
         target_position = self.OFFSET_POSITION + (index - 1) * self.MICROSTEPS_PER_HOLE
         success, _ = self._send_command(f'/move abs {target_position}')
@@ -840,6 +834,7 @@ class FilterController:
 
 class Optospin:
     def __init__(self, SN, baudrate=115200, timeout=1, max_retries=3, retry_delay=0.5):
+        self.log = octopi.logging.get_logger(self.__class__.__name__)
 
         optospin_port = [p.device for p in serial.tools.list_ports.comports() if SN == p.serial_number]
         self.ser = serial.Serial(optospin_port[0], baudrate=baudrate, timeout=timeout)
@@ -873,9 +868,9 @@ class Optospin:
                 return None
 
             except (serial.SerialTimeoutException, Exception) as e:
-                print(f"Attempt {attempt + 1} failed: {str(e)}")
+                self.log(f"Attempt {attempt + 1} failed: {str(e)}")
                 if attempt < self.max_retries - 1:
-                    print(f"Retrying in {self.retry_delay} seconds...")
+                    self.log(f"Retrying in {self.retry_delay} seconds...")
                     time.sleep(self.retry_delay)
                 else:
                     raise Exception(f"Command failed after {self.max_retries} attempts: {str(e)}")
