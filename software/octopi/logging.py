@@ -6,6 +6,7 @@ import sys
 
 _octopi_root_logger_name="octopi"
 
+
 # The idea for this CustomFormatter is cribbed from https://stackoverflow.com/a/56944256
 class _CustomFormatter(py_logging.Formatter):
     GRAY = "\x1b[38;20m"
@@ -13,7 +14,7 @@ class _CustomFormatter(py_logging.Formatter):
     RED = "\x1b[31;20m"
     BOLD_RED = "\x1b[31;1m"
     RESET = "\x1b[0m"
-    FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+    FORMAT = "%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
 
     FORMATS = {
         py_logging.DEBUG: GRAY + FORMAT + RESET,
@@ -23,13 +24,20 @@ class _CustomFormatter(py_logging.Formatter):
         py_logging.CRITICAL: BOLD_RED + FORMAT + RESET
     }
 
-    FORMATTERS = {level: py_logging.Formatter(fmt) for (level, fmt) in FORMATS.items()}
+    # NOTE(imo): The datetime hackery is so that we can have millisecond timestamps using a period instead
+    # of comma.  The default asctime + datefmt uses a comma.
+    FORMATTERS = {level: py_logging.Formatter(fmt, datefmt="%Y-%m-%d %H:%M:%S") for (level, fmt) in FORMATS.items()}
 
     def format(self, record):
         return self.FORMATTERS[record.levelno].format(record)
 
 _COLOR_STREAM_HANDLER = py_logging.StreamHandler()
 _COLOR_STREAM_HANDLER.setFormatter(_CustomFormatter())
+
+# Make sure the octopi root logger has all the handlers we want setup.  We could move this into a helper so it
+# isn't done at the module level, but not needing to remember to call some helper to setup formatting is nice.
+py_logging.getLogger(_octopi_root_logger_name).addHandler(_COLOR_STREAM_HANDLER)
+
 
 def get_logger(name: Optional[str] = None) -> py_logging.Logger:
     """
@@ -41,9 +49,8 @@ def get_logger(name: Optional[str] = None) -> py_logging.Logger:
     else:
         logger = py_logging.getLogger(_octopi_root_logger_name).getChild(name)
 
-    logger.addHandler(_COLOR_STREAM_HANDLER)
-
     return logger
+
 
 def set_log_level(level):
     """
@@ -60,10 +67,15 @@ def set_log_level(level):
     # for our root logger and then check all other loggers to see if they start with our root logger prefix
     # to find all the octopi specific logger.
     for (name, logger) in octopi_root_logger.manager.loggerDict.items():
-        if name.startswith(_octopi_root_logger_name):
+        # The logging module uses the PlaceHolder object for nodes in the hierarchy that
+        # have children, but no associated loggers.  EG if we create a logger at
+        # octopi.control.gui_hcs but not at octopi.control, then the logger for octopi.control
+        # exists but is a PlaceHolder (until someone explicitly requests it).
+        if name.startswith(_octopi_root_logger_name) and isinstance(logger, py_logging.Logger):
             logger.setLevel(level)
 
-def register_crash_handler(handler):
+
+def register_crash_handler(handler, call_existing_too=True):
     """
     We want to make sure any uncaught exceptions are logged, so we have this mechanism for putting a hook into
     the python system that does custom logging when an exception bubbles all the way to the top.
@@ -87,26 +99,43 @@ def register_crash_handler(handler):
             handler(exception_type, value, tb)
         except BaseException as e:
             logger.critical("Custom excepthook handler raised exception", e)
-        old_excepthook(exception_type, value, tb)
+        if call_existing_too:
+            old_excepthook(exception_type, value, tb)
 
-    def new_thread_excepthook(exception_type: Type[BaseException], value: BaseException, tb: TracebackType):
+    def new_thread_excepthook(hook_args: threading.ExceptHookArgs):
+        exception_type = hook_args.exc_type
+        value = hook_args.exc_type
+        tb = hook_args.exc_traceback
         try:
-            handler(exception_type, value, tb)
+            handler(exception_type, value, type(tb))
         except BaseException as e:
             logger.critical("Custom thread excepthook handler raised exception", e)
-        old_thread_excepthook(exception_type, value, tb)
+        if call_existing_too:
+            old_thread_excepthook(exception_type, value, type(tb))
 
     def new_unraisable_hook(info):
-        exception_type = info["exception_type"]
-        tb = info["exception_traceback"]
-        value = info["exception_value"]
+        exception_type = info.exc_type
+        tb = info.exc_traceback
+        value = info.exc_value
         try:
-            handler(exception_type, value, tb)
+            handler(exception_type, value, type(tb))
         except BaseException as e:
             logger.critical("Custom unraisable hook handler raised exception", e)
-        old_unraisable_hook(info)
+        if call_existing_too:
+            old_unraisable_hook(info)
 
     logger.info(f"Registering custom excepthook, threading excepthook, and unraisable hook using handler={handler.__name__}")
     sys.excepthook = new_excepthook
     threading.excepthook = new_thread_excepthook
     sys.unraisablehook = new_unraisable_hook
+
+
+def setup_uncaught_exception_logging():
+    """
+    This will make sure uncaught exceptions are sent to the root octopi logger as error messages.
+    """
+    logger = get_logger()
+    def uncaught_exception_logger(exception_type: Type[BaseException], value: BaseException, tb: TracebackType):
+        logger.exception("Uncaught Exception!", exc_info=value)
+
+    register_crash_handler(uncaught_exception_logger, call_existing_too=False)
