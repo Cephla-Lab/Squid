@@ -14,9 +14,9 @@ from control._def import *
 # app specific libraries
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
-import octopi.logging
+import squid.logging
 
-log = octopi.logging.get_logger(__name__)
+log = squid.logging.get_logger(__name__)
 
 if CAMERA_TYPE == "Toupcam":
     try:

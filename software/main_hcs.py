@@ -40,7 +40,7 @@ if __name__ == "__main__":
 
     if args.verbose:
         log.info("Turning on debug logging.")
-        octopi.logging.set_log_level(logging.DEBUG)
+        squid.logging.set_log_level(logging.DEBUG)
 
     legacy_config = False
     cf_editor_parser = ConfigParser()

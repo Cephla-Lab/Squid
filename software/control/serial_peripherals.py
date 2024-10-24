@@ -4,8 +4,8 @@ import time
 from typing import Tuple, Optional
 import struct
 
-import octopi.logging
-log = octopi.logging.get_logger(__name__)
+import squid.logging
+log = squid.logging.get_logger(__name__)
 
 class SerialDevice:
     """
@@ -199,7 +199,7 @@ class XLight:
         cephla already has) for device-finding purposes. Otherwise, all
         XLight devices should use the same serial protocol
         """
-        self.log = octopi.logging.get_logger(self.__class__.__name__)
+        self.log = squid.logging.get_logger(self.__class__.__name__)
 
         self.has_spinning_disk_motor = False
         self.has_spinning_disk_slider = False
@@ -356,7 +356,7 @@ class LDI:
         """
         Provide serial number
         """
-        self.log = octopi.logging.get_logger(self.__class__.__name__)
+        self.log = squid.logging.get_logger(self.__class__.__name__)
         self.serial_connection = SerialDevice(SN=SN,baudrate=9600,
                 bytesize=serial.EIGHTBITS,stopbits=serial.STOPBITS_ONE,
                 parity=serial.PARITY_NONE,
@@ -600,7 +600,7 @@ class FilterController:
     COMMAND_TIMEOUT = 1  # seconds
 
     def __init__(self, serial_number: str, baudrate: int, bytesize: int, parity: str, stopbits: int):
-        self.log = octopi.logging.get_logger(self.__class__.__name__)
+        self.log = squid.logging.get_logger(self.__class__.__name__)
         self.current_position = 0
         self.current_index = 1
         self.serial = self._initialize_serial(serial_number, baudrate, bytesize, parity, stopbits)
@@ -834,7 +834,7 @@ class FilterController:
 
 class Optospin:
     def __init__(self, SN, baudrate=115200, timeout=1, max_retries=3, retry_delay=0.5):
-        self.log = octopi.logging.get_logger(self.__class__.__name__)
+        self.log = squid.logging.get_logger(self.__class__.__name__)
 
         optospin_port = [p.device for p in serial.tools.list_ports.comports() if SN == p.serial_number]
         self.ser = serial.Serial(optospin_port[0], baudrate=baudrate, timeout=timeout)
