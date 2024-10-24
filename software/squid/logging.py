@@ -1,11 +1,13 @@
 import logging as py_logging
+import logging.handlers
+import os.path
 import threading
 from typing import Optional, Type
 from types import TracebackType
 import sys
+import platformdirs
 
-_squid_root_logger_name= "squid"
-
+_squid_root_logger_name = "squid"
 
 # The idea for this CustomFormatter is cribbed from https://stackoverflow.com/a/56944256
 class _CustomFormatter(py_logging.Formatter):
@@ -53,6 +55,7 @@ def get_logger(name: Optional[str] = None) -> py_logging.Logger:
 
     return logger
 
+log = get_logger(__name__)
 
 def set_log_level(level):
     """
@@ -141,3 +144,33 @@ def setup_uncaught_exception_logging():
         logger.exception("Uncaught Exception!", exc_info=value)
 
     register_crash_handler(uncaught_exception_logger, call_existing_too=False)
+
+def get_default_log_directory():
+    return platformdirs.user_log_path(_squid_root_logger_name, "cephla")
+
+def add_file_logging(log_filename, replace_existing=False):
+    root_logger = get_logger()
+    abs_path = os.path.abspath(log_filename)
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.handlers.BaseRotatingHandler):
+            if handler.baseFilename == abs_path:
+                if replace_existing:
+                    root_logger.removeHandler(handler)
+                else:
+                    log.error(f"RotatingFileHandler already exists for {abs_path}, and replace_existing==False!")
+                    return False
+
+    log_file_existed = False
+    if os.path.isfile(abs_path):
+        log_file_existed = True
+
+    # For now, don't worry about rollover after a certain size or time.  Just get a new file per call.
+    new_handler = logging.handlers.RotatingFileHandler(abs_path, maxBytes=0, backupCount=25)
+    new_handler.setLevel(py_logging.DEBUG)
+
+    log.info(f"Adding new file logger writing to file '{new_handler.baseFilename}")
+    root_logger.addHandler(new_handler)
+
+    # We want a new log file every time we start, so force one at startup if the log file already existed.
+    if log_file_existed:
+        new_handler.doRollover()
