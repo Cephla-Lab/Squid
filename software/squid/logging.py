@@ -8,6 +8,9 @@ import sys
 import platformdirs
 
 _squid_root_logger_name = "squid"
+_baseline_log_format = "%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+_baseline_log_dateformat = "%Y-%m-%d %H:%M:%S"
+
 
 # The idea for this CustomFormatter is cribbed from https://stackoverflow.com/a/56944256
 class _CustomFormatter(py_logging.Formatter):
@@ -16,7 +19,7 @@ class _CustomFormatter(py_logging.Formatter):
     RED = "\x1b[31;20m"
     BOLD_RED = "\x1b[31;1m"
     RESET = "\x1b[0m"
-    FORMAT = "%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+    FORMAT = _baseline_log_format
 
     FORMATS = {
         py_logging.DEBUG: GRAY + FORMAT + RESET,
@@ -28,7 +31,7 @@ class _CustomFormatter(py_logging.Formatter):
 
     # NOTE(imo): The datetime hackery is so that we can have millisecond timestamps using a period instead
     # of comma.  The default asctime + datefmt uses a comma.
-    FORMATTERS = {level: py_logging.Formatter(fmt, datefmt="%Y-%m-%d %H:%M:%S") for (level, fmt) in FORMATS.items()}
+    FORMATTERS = {level: py_logging.Formatter(fmt, datefmt=_baseline_log_dateformat) for (level, fmt) in FORMATS.items()}
 
     def format(self, record):
         return self.FORMATTERS[record.levelno].format(record)
@@ -164,9 +167,14 @@ def add_file_logging(log_filename, replace_existing=False):
     if os.path.isfile(abs_path):
         log_file_existed = True
 
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+
     # For now, don't worry about rollover after a certain size or time.  Just get a new file per call.
     new_handler = logging.handlers.RotatingFileHandler(abs_path, maxBytes=0, backupCount=25)
     new_handler.setLevel(py_logging.DEBUG)
+
+    formatter = py_logging.Formatter(fmt=_baseline_log_format, datefmt=_baseline_log_dateformat)
+    new_handler.setFormatter(formatter)
 
     log.info(f"Adding new file logger writing to file '{new_handler.baseFilename}")
     root_logger.addHandler(new_handler)
@@ -174,3 +182,5 @@ def add_file_logging(log_filename, replace_existing=False):
     # We want a new log file every time we start, so force one at startup if the log file already existed.
     if log_file_existed:
         new_handler.doRollover()
+
+    return True
