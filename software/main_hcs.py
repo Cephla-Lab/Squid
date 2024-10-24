@@ -4,6 +4,7 @@ import glob
 import logging
 import os
 os.environ["QT_API"] = "pyqt5"
+import signal
 import sys
 
 # qt libraries
@@ -52,6 +53,8 @@ if __name__ == "__main__":
         legacy_config = True
     app = QApplication([])
     app.setStyle('Fusion')
+    # This allows shutdown via ctrl+C even after the gui has popped up.
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     win = gui.OctopiGUI(is_simulation=args.simulation, performance_mode=args.performance)
 
