@@ -50,9 +50,9 @@ if __name__ == "__main__":
     app = QApplication([])
     app.setStyle('Fusion')
     if args.simulation:
-        win = gui.OctopiGUI(is_simulation = True)
+        win = gui.MalariaGUI(is_simulation = True)
     else:
-        win = gui.OctopiGUI()
+        win = gui.MalariaGUI()
        
     acq_config_action = QAction("Acquisition Settings", win)
     acq_config_action.triggered.connect(lambda : show_acq_config(win.configurationManager))
