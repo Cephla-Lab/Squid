@@ -64,7 +64,7 @@ log = get_logger(__name__)
 
 def set_stdout_log_level(level):
     """
-    All squid code should use this set_log_level method, and the corresponding squid.logging.get_logger,
+    All squid code should use this set_stdout_log_level method, and the corresponding squid.logging.get_logger,
     to control squid-only logging.
 
     This does not modify the log level of loggers outside the squid logger hierarchy! If global logging control
