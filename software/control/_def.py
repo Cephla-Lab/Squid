@@ -6,9 +6,9 @@ from configparser import ConfigParser
 import json
 import csv
 
-import octopi.logging
+import squid.logging
 
-log = octopi.logging.get_logger(__name__)
+log = squid.logging.get_logger(__name__)
 
 
 def conf_attribute_reader(string_value):

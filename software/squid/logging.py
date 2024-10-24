@@ -4,7 +4,7 @@ from typing import Optional, Type
 from types import TracebackType
 import sys
 
-_octopi_root_logger_name="octopi"
+_squid_root_logger_name= "squid"
 
 
 # The idea for this CustomFormatter is cribbed from https://stackoverflow.com/a/56944256
@@ -34,44 +34,44 @@ class _CustomFormatter(py_logging.Formatter):
 _COLOR_STREAM_HANDLER = py_logging.StreamHandler()
 _COLOR_STREAM_HANDLER.setFormatter(_CustomFormatter())
 
-# Make sure the octopi root logger has all the handlers we want setup.  We could move this into a helper so it
+# Make sure the squid root logger has all the handlers we want setup.  We could move this into a helper so it
 # isn't done at the module level, but not needing to remember to call some helper to setup formatting is nice.
-py_logging.getLogger(_octopi_root_logger_name).addHandler(_COLOR_STREAM_HANDLER)
+py_logging.getLogger(_squid_root_logger_name).addHandler(_COLOR_STREAM_HANDLER)
 
 
 def get_logger(name: Optional[str] = None) -> py_logging.Logger:
     """
-    Returns the top level octopi logger instance by default, or a logger in the octopi
+    Returns the top level squid logger instance by default, or a logger in the squid
     logging hierarchy if a non-None name is given.
     """
     if name is None:
-        logger = py_logging.getLogger(_octopi_root_logger_name)
+        logger = py_logging.getLogger(_squid_root_logger_name)
     else:
-        logger = py_logging.getLogger(_octopi_root_logger_name).getChild(name)
+        logger = py_logging.getLogger(_squid_root_logger_name).getChild(name)
 
     return logger
 
 
 def set_log_level(level):
     """
-    All octopi-research code should use this set_log_level method, and the corresponding octopi.logging.get_logger,
-    to control octopi-research-only logging.
+    All squid code should use this set_log_level method, and the corresponding squid.logging.get_logger,
+    to control squid-only logging.
 
-    This does not modify the log level of loggers outside the octopi logger hierarchy! If global logging control
+    This does not modify the log level of loggers outside the squid logger hierarchy! If global logging control
     is needed the normal logging package tools can be used instead.
     """
-    octopi_root_logger = get_logger()
-    octopi_root_logger.setLevel(level)
+    squid_root_logger = get_logger()
+    squid_root_logger.setLevel(level)
 
     # There's no `getAllChildren` method on the logger or its manager, so we just grab the manager
     # for our root logger and then check all other loggers to see if they start with our root logger prefix
-    # to find all the octopi specific logger.
-    for (name, logger) in octopi_root_logger.manager.loggerDict.items():
+    # to find all the squid specific logger.
+    for (name, logger) in squid_root_logger.manager.loggerDict.items():
         # The logging module uses the PlaceHolder object for nodes in the hierarchy that
         # have children, but no associated loggers.  EG if we create a logger at
-        # octopi.control.gui_hcs but not at octopi.control, then the logger for octopi.control
+        # squid.control.gui_hcs but not at squid.control, then the logger for squid.control
         # exists but is a PlaceHolder (until someone explicitly requests it).
-        if name.startswith(_octopi_root_logger_name) and isinstance(logger, py_logging.Logger):
+        if name.startswith(_squid_root_logger_name) and isinstance(logger, py_logging.Logger):
             logger.setLevel(level)
 
 
@@ -132,7 +132,7 @@ def register_crash_handler(handler, call_existing_too=True):
 
 def setup_uncaught_exception_logging():
     """
-    This will make sure uncaught exceptions are sent to the root octopi logger as error messages.
+    This will make sure uncaught exceptions are sent to the root squid logger as error messages.
     """
     logger = get_logger()
     def uncaught_exception_logger(exception_type: Type[BaseException], value: BaseException, tb: TracebackType):

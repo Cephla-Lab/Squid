@@ -9,8 +9,8 @@ import sys
 from qtpy.QtWidgets import *
 from qtpy.QtGui import *
 
-import octopi.logging
-octopi.logging.setup_uncaught_exception_logging()
+import squid.logging
+squid.logging.setup_uncaught_exception_logging()
 
 # app specific libraries
 import control.gui_hcs as gui
@@ -34,7 +34,7 @@ if __name__ == "__main__":
     parser.add_argument("--performance", help="Run the GUI with minimal viewers.", action='store_true')
     args = parser.parse_args()
 
-    log = octopi.logging.get_logger("main_hcs")
+    log = squid.logging.get_logger("main_hcs")
 
     legacy_config = False
     cf_editor_parser = ConfigParser()
