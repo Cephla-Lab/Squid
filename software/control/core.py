@@ -1,6 +1,9 @@
 # set QT_API environment variable
 import os
+from collections import deque
 import sys
+from dataclasses import dataclass
+from typing import Any
 
 # qt libraries
 os.environ["QT_API"] = "pyqt5"
@@ -1957,6 +1960,14 @@ class MultiPointWorker(QObject):
             self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
             fov_count = 0 # count fovs for progress
 
+            # IMO: Start camera streaming
+            streaming_camera_queue = deque()
+            output_queue = deque()
+            streaming_callback = self.get_image_processor_fn(streaming_camera_queue, output_queue)
+            self.camera.set_callback(streaming_callback)
+            self.camera.enable_callback()
+            self.camera.start_streaming()
+
             for i in range(self.NY):
                 self.af_fov_count = 0 # for AF, so that AF at the beginning of each new row
 
@@ -1964,7 +1975,9 @@ class MultiPointWorker(QObject):
                     sgn_i, sgn_j, real_i, real_j = self.calculate_grid_indices(i, j)
 
                     if not self.multiPointController.scanCoordinates or (real_i, real_j) not in self.multiPointController.scanCoordinates.grid_skip_positions:
-                        self.acquire_at_position(region_id, current_path, fov_count, i=real_i, j=real_j)
+                        # IMO: Move to position
+                        # IMO: Trigger and tell camera processor to expect an image.
+                        self.acquire_at_position(region_id, current_path, fov_count, streaming_camera_queue, i=real_i, j=real_j)
                         fov_count += 1
 
                     if self.multiPointController.abort_acqusition_requested:
@@ -1979,11 +1992,23 @@ class MultiPointWorker(QObject):
 
                 self.x_scan_direction = -self.x_scan_direction
 
+            # IMO: Stop camera streaming
+            # TODO: This is missed if we throw above
+            self.camera.stop_streaming()
+            self.camera.disable_callback()
+            self.camera.set_callback(None)
             self.finish_grid_scan(n_regions, region_id)
 
     def run_coordinate_acquisition(self, current_path):
         n_regions = len(self.scan_coordinates_mm)
 
+        # IMO: Start camera streaming
+        streaming_camera_queue = deque()
+        image_processing_output_queue = deque()
+        streaming_callback = self.get_image_processor_fn(streaming_camera_queue, image_processing_output_queue)
+        self.camera.set_callback(streaming_callback)
+        self.camera.enable_callback()
+        self.camera.start_streaming()
         for region_index, (region_id, coordinates) in enumerate(self.coordinate_dict.items()):
 
             self.signal_acquisition_progress.emit(region_index + 1, n_regions, self.time_point)
@@ -1994,13 +2019,53 @@ class MultiPointWorker(QObject):
             for fov_count, coordinate_mm in enumerate(coordinates):
 
                 self.move_to_coordinate(coordinate_mm)
-                self.acquire_at_position(region_id, current_path, fov_count)
+                self.acquire_at_position(region_id, current_path, fov_count, streaming_camera_queue)
 
                 if self.multiPointController.abort_acqusition_requested:
                     self.handle_acquisition_abort(current_path, region_id)
                     return
 
-    def acquire_at_position(self, region_id, current_path, fov, i=None, j=None):
+        # TODO: this is missed if we throw above
+        self.camera.stop_streaming()
+        self.camera.disable_callback()
+        self.camera.set_callback(None)
+
+    def get_image_processor_fn(self, expected_capture_queue: deque, image_processing_output_queue: deque):
+        log = squid.logging.get_logger("core.streaming_camera_cb")
+        def streaming_camera_cb(camera):
+            try:
+                next_expected = expected_capture_queue.popleft()
+            except IndexError:
+                log.debug("Not expecting captures, but got a frame.  Skipping.")
+                return
+
+            if next_expected.trigger_time >= camera.timestamp:
+                log.warning(f"trigger time={next_expected.trigger_time} is >= camera capture timestamp={camera.timestamp}, trigger is in the future! skipping frame.")
+                return
+
+            log.debug(
+                f"Received image frame for file={next_expected.current_path}, " +
+                f"file_id={next_expected.file_ID} and camera frame timestamp={camera.timestamp}")
+
+            image = camera.current_frame
+
+            image = utils.crop_image(image,self.crop_width,self.crop_height)
+            image = utils.rotate_and_flip_image(image,rotate_image_angle=self.camera.rotate_image_angle,flip_image=self.camera.flip_image)
+            image_to_display = utils.crop_image(image,round(self.crop_width*self.display_resolution_scaling), round(self.crop_height*self.display_resolution_scaling))
+            self.image_to_display.emit(image_to_display)
+            self.image_to_display_multi.emit(image_to_display,next_expected.config.illumination_source)
+
+            self.save_image(image, next_expected.file_ID, next_expected.config, next_expected.current_path)
+            self.update_napari(image, next_expected.config.name, next_expected.i, next_expected.j, next_expected.k)
+
+            QApplication.processEvents()
+
+            # Signal that we successfully processed this image.
+            image_processing_output_queue.append(next_expected)
+
+        return streaming_camera_cb
+
+    def acquire_at_position(self, region_id, current_path, fov, streaming_camera_queue, i=None, j=None):
 
         if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in globals():
             print('run custom multipoint')
@@ -2043,7 +2108,7 @@ class MultiPointWorker(QObject):
 
                 # acquire image
                 if 'USB Spectrometer' not in config.name and 'RGB' not in config.name:
-                    self.acquire_camera_image(config, file_ID, current_path, current_round_images, i, j, z_level)
+                    self.acquire_camera_image(config, file_ID, current_path, i, j, z_level, streaming_camera_queue)
                 elif 'RGB' in config.name:
                     self.acquire_rgb_image(config, file_ID, current_path, current_round_images, i, j, z_level)
                 else:
@@ -2053,31 +2118,6 @@ class MultiPointWorker(QObject):
 
                 current_image = (fov * self.NZ * len(self.selected_configurations) + z_level * len(self.selected_configurations) + config_idx + 1)
                 self.signal_region_progress.emit(current_image, self.total_scans)
-
-            '''
-            # tiled preview
-            if not USE_NAPARI_FOR_TILED_DISPLAY and SHOW_TILED_PREVIEW and 'BF LED matrix left half' in current_round_images:
-                # initialize the variable
-                if self.tiled_preview is None:
-                    size = current_round_images['BF LED matrix left half'].shape
-                    if len(size) == 2:
-                        self.tiled_preview = np.zeros((int(self.NY*size[0]/PRVIEW_DOWNSAMPLE_FACTOR),self.NX*int(size[1]/PRVIEW_DOWNSAMPLE_FACTOR)),dtype=current_round_images['BF LED matrix full'].dtype)
-                    else:
-                        self.tiled_preview = np.zeros((int(self.NY*size[0]/PRVIEW_DOWNSAMPLE_FACTOR),self.NX*int(size[1]/PRVIEW_DOWNSAMPLE_FACTOR),size[2]),dtype=current_round_images['BF LED matrix full'].dtype)
-                # downsample the image
-                I = current_round_images['BF LED matrix left half']
-                width = int(I.shape[1]/PRVIEW_DOWNSAMPLE_FACTOR)
-                height = int(I.shape[0]/PRVIEW_DOWNSAMPLE_FACTOR)
-                I = cv2.resize(I, (width,height), interpolation=cv2.INTER_AREA)
-                # populate the tiled_preview
-                self.tiled_preview[i*height:(i+1)*height, j*width:(j+1)*width, ] = I
-                # emit the result
-                self.image_to_display_tiled_preview.emit(self.tiled_preview)
-            '''
-
-            # real time processing
-            if self.multiPointController.do_fluorescence_rtp:
-                self.run_real_time_processing(current_round_images, i, j, z_level)
 
             # updates coordinates df
             if i is None or j is None:
@@ -2099,6 +2139,8 @@ class MultiPointWorker(QObject):
 
         if self.NZ > 1:
             self.move_z_back_after_stack()
+
+        QApplication.processEvents()
 
     def run_real_time_processing(self, current_round_images, i, j, z_level):
         acquired_image_configs = list(current_round_images.keys())
@@ -2200,50 +2242,23 @@ class MultiPointWorker(QObject):
                 self.wait_till_operation_is_completed()
                 time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
 
-    def acquire_camera_image(self, config, file_ID, current_path, current_round_images, i, j, k):
+    @dataclass
+    class ExpectedCameraImage:
+        config: Any
+        file_ID: Any
+        current_path: str
+        i: int
+        j: int
+        k: int
+        trigger_time: float
+
+    def acquire_camera_image(self, config, file_ID, current_path, i, j, k, streaming_camera_queue):
         # update the current configuration
         self.signal_current_configuration.emit(config)
         self.wait_till_operation_is_completed()
 
-        # trigger acquisition (including turning on the illumination) and read frame
-        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-            self.liveController.turn_on_illumination()
-            self.wait_till_operation_is_completed()
-            self.camera.send_trigger()
-            image = self.camera.read_frame()
-        elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-            if 'Fluorescence' in config.name and ENABLE_NL5 and NL5_USE_DOUT:
-                self.camera.image_is_ready = False # to remove
-                self.microscope.nl5.start_acquisition()
-                image = self.camera.read_frame(reset_image_ready_flag=False)
-            else:
-                self.microcontroller.send_hardware_trigger(control_illumination=True,illumination_on_time_us=self.camera.exposure_time*1000)
-                image = self.camera.read_frame()
-        else: # continuous acquisition
-            image = self.camera.read_frame()
-
-        if image is None:
-            print('self.camera.read_frame() returned None')
-            return
-
-        # turn off the illumination if using software trigger
-        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-            self.liveController.turn_off_illumination()
-
-        # process the image -  @@@ to move to camera
-        image = utils.crop_image(image,self.crop_width,self.crop_height)
-        image = utils.rotate_and_flip_image(image,rotate_image_angle=self.camera.rotate_image_angle,flip_image=self.camera.flip_image)
-        image_to_display = utils.crop_image(image,round(self.crop_width*self.display_resolution_scaling), round(self.crop_height*self.display_resolution_scaling))
-        self.image_to_display.emit(image_to_display)
-        self.image_to_display_multi.emit(image_to_display,config.illumination_source)
-
-        self.save_image(image, file_ID, config, current_path)
-        self.update_napari(image, config.name, i, j, k)
-
-        current_round_images[config.name] = np.copy(image)
-
-        self.handle_dpc_generation(current_round_images)
-        self.handle_rgb_generation(current_round_images, file_ID, current_path, i, j, k)
+        streaming_camera_queue.append(self.ExpectedCameraImage(config, file_ID, current_path, i, j, k, trigger_time=time.time()))
+        self.microcontroller.send_hardware_trigger(control_illumination=True, illumination_on_time_us=self.camera.exposure_time*1000)
 
         QApplication.processEvents()
 
