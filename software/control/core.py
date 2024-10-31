@@ -2009,6 +2009,7 @@ class MultiPointWorker(QObject):
         self.camera.set_callback(streaming_callback)
         self.camera.enable_callback()
         self.camera.start_streaming()
+        self.time_stats = {"coord_times": [], "move_times": [], "acquire_times": []}
         for region_index, (region_id, coordinates) in enumerate(self.coordinate_dict.items()):
 
             self.signal_acquisition_progress.emit(region_index + 1, n_regions, self.time_point)
@@ -2017,14 +2018,19 @@ class MultiPointWorker(QObject):
             self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
 
             for fov_count, coordinate_mm in enumerate(coordinates):
-
+                coord_start = time.time()
+                move_start = time.time()
                 self.move_to_coordinate(coordinate_mm)
+                self.time_stats["move_times"].append(time.time() - move_start)
+                acquire_start = time.time()
                 self.acquire_at_position(region_id, current_path, fov_count, streaming_camera_queue)
-
+                self.time_stats["acquire_times"].append(time.time() - acquire_start)
                 if self.multiPointController.abort_acqusition_requested:
                     self.handle_acquisition_abort(current_path, region_id)
                     return
+                self.time_stats["coord_times"].append(time.time() - coord_start)
 
+        print(self.time_stats)
         # TODO: this is missed if we throw above
         self.camera.stop_streaming()
         self.camera.disable_callback()
