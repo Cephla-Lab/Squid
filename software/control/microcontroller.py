@@ -20,6 +20,17 @@ from control._def import *
 # check if the microcontroller has finished executing the more recent command
 
 # to do (7/28/2021) - add functions for configuring the stepper motors
+class CommandAborted(RuntimeError):
+    """
+    If we send a command and it needs to abort for any reason (too many retries,
+    timeout waiting for the mcu to acknowledge, etc), the Microcontroller class will throw this
+    for wait and progress check operations until a new command is started.
+
+    This does mean that if you don't check for command completion, you may miss these errors!
+    """
+    def __init__(self, command_id, reason):
+        super().__init__(reason)
+        self.command_id = command_id
 
 
 class SimSerial:
