@@ -852,7 +852,9 @@ class NavigationController(QObject):
 
     def cache_current_position(self):
         with open("cache/last_coords.txt","w") as f:
-            f.write(",".join([str(self.x_pos_mm),str(self.y_pos_mm),str(self.z_pos_mm)]))
+            last_coords = [str(self.x_pos_mm),str(self.y_pos_mm),str(self.z_pos_mm)]
+            print(f"WRITING LAST COORDS: {last_coords}")
+            f.write(",".join(last_coords))
 
     def move_x(self,delta):
         self.microcontroller.move_x_usteps(int(delta/self.get_mm_per_ustep_X()))
