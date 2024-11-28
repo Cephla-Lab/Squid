@@ -724,9 +724,9 @@ class NavigationController(QObject):
     xPos = Signal(float)
     yPos = Signal(float)
     zPos = Signal(float)
-    new_zPos_mm = Signal(float)
     thetaPos = Signal(float)
     xyPos = Signal(float,float)
+    scanGridPos = Signal(float,float)
     signal_joystick_button_pressed = Signal()
 
     # x y z axis pid enable flag
@@ -760,7 +760,7 @@ class NavigationController(QObject):
         # self.timer_read_pos.timeout.connect(self.update_pos)
         # self.timer_read_pos.start()
 
-        # scan start position
+        # scan start position (obsolete? only for TiledDisplay)
         self.scan_begin_position_x = 0
         self.scan_begin_position_y = 0
     
@@ -778,6 +778,52 @@ class NavigationController(QObject):
 
     def get_flag_click_to_move(self):
         return self.click_to_move
+
+    def get_current_position(self):
+        x_pos, y_pos, z_pos, theta_pos = self.microcontroller.get_pos()
+        self.z_pos = z_pos
+        # calculate position in mm or rad
+        if USE_ENCODER_X:
+            self.x_pos_mm = x_pos*ENCODER_POS_SIGN_X*ENCODER_STEP_SIZE_X_MM
+        else:
+            self.x_pos_mm = x_pos*STAGE_POS_SIGN_X*self.get_mm_per_ustep_X()
+        if USE_ENCODER_Y:
+            self.y_pos_mm = y_pos*ENCODER_POS_SIGN_Y*ENCODER_STEP_SIZE_Y_MM
+        else:
+            self.y_pos_mm = y_pos*STAGE_POS_SIGN_Y*self.get_mm_per_ustep_Y()
+        if USE_ENCODER_Z:
+            self.z_pos_mm = z_pos*ENCODER_POS_SIGN_Z*ENCODER_STEP_SIZE_Z_MM
+        else:
+            self.z_pos_mm = z_pos*STAGE_POS_SIGN_Z*self.get_mm_per_ustep_Z()
+        if USE_ENCODER_THETA:
+            self.theta_pos_rad = theta_pos*ENCODER_POS_SIGN_THETA*ENCODER_STEP_SIZE_THETA
+        else:
+            self.theta_pos_rad = theta_pos*STAGE_POS_SIGN_THETA*(2*math.pi/(self.theta_microstepping*FULLSTEPS_PER_REV_THETA))
+
+    def update_pos(self, microcontroller):
+        previous_x = self.x_pos_mm
+        previous_y = self.y_pos_mm
+
+        # get position from the microcontroller
+        self.get_current_position()
+
+        # if position changed and command completed, emit scanGridPos
+        if (previous_x != self.x_pos_mm or previous_y != self.y_pos_mm) and not microcontroller.is_busy():
+            self.scanGridPos.emit(self.x_pos_mm, self.y_pos_mm)
+
+        # emit the updated position
+        self.xPos.emit(self.x_pos_mm)
+        self.yPos.emit(self.y_pos_mm)
+        self.zPos.emit(self.z_pos_mm*1000)
+        self.thetaPos.emit(self.theta_pos_rad*360/(2*math.pi))
+        self.xyPos.emit(self.x_pos_mm,self.y_pos_mm)
+
+        # handle joystick button
+        if microcontroller.signal_joystick_button_pressed_event:
+            if self.enable_joystick_button_action:
+                self.signal_joystick_button_pressed.emit()
+            print('joystick button pressed')
+            microcontroller.signal_joystick_button_pressed_event = False
 
     def scan_preview_move_from_click(self, click_x, click_y, image_width, image_height, Nx=1, Ny=1, dx_mm=0.9, dy_mm=0.9):
         """
@@ -801,9 +847,7 @@ class NavigationController(QObject):
         pixel_sign_y = -1 if INVERTED_OBJECTIVE else 1
 
         # move to selected fov
-        self.move_x_to(self.scan_begin_position_x+dx_mm*fov_col*pixel_sign_x)
-        self.microcontroller.wait_till_operation_is_completed()
-        self.move_y_to(self.scan_begin_position_y+dy_mm*fov_row*pixel_sign_y)
+        self.move_to(self.scan_begin_position_x+dx_mm*fov_col*pixel_sign_x, self.scan_begin_position_y+dy_mm*fov_row*pixel_sign_y)
         self.microcontroller.wait_till_operation_is_completed()
 
         # move to actual click, offset from center fov
@@ -860,9 +904,11 @@ class NavigationController(QObject):
 
     def move_x(self,delta):
         self.microcontroller.move_x_usteps(int(delta/self.get_mm_per_ustep_X()))
+        self.microcontroller.wait_till_operation_is_completed()
 
     def move_y(self,delta):
         self.microcontroller.move_y_usteps(int(delta/self.get_mm_per_ustep_Y()))
+        self.microcontroller.wait_till_operation_is_completed()
 
     def move_z(self,delta):
         self.microcontroller.move_z_usteps(int(delta/self.get_mm_per_ustep_Z()))
@@ -893,41 +939,6 @@ class NavigationController(QObject):
 
     def move_z_to_usteps(self,usteps):
         self.microcontroller.move_z_to_usteps(usteps)
-
-    def update_pos(self,microcontroller):
-        # get position from the microcontroller
-        x_pos, y_pos, z_pos, theta_pos = microcontroller.get_pos()
-        self.z_pos = z_pos
-        # calculate position in mm or rad
-        if USE_ENCODER_X:
-            self.x_pos_mm = x_pos*ENCODER_POS_SIGN_X*ENCODER_STEP_SIZE_X_MM
-        else:
-            self.x_pos_mm = x_pos*STAGE_POS_SIGN_X*self.get_mm_per_ustep_X()
-        if USE_ENCODER_Y:
-            self.y_pos_mm = y_pos*ENCODER_POS_SIGN_Y*ENCODER_STEP_SIZE_Y_MM
-        else:
-            self.y_pos_mm = y_pos*STAGE_POS_SIGN_Y*self.get_mm_per_ustep_Y()
-        if USE_ENCODER_Z:
-            self.z_pos_mm = z_pos*ENCODER_POS_SIGN_Z*ENCODER_STEP_SIZE_Z_MM
-        else:
-            self.z_pos_mm = z_pos*STAGE_POS_SIGN_Z*self.get_mm_per_ustep_Z()
-        if USE_ENCODER_THETA:
-            self.theta_pos_rad = theta_pos*ENCODER_POS_SIGN_THETA*ENCODER_STEP_SIZE_THETA
-        else:
-            self.theta_pos_rad = theta_pos*STAGE_POS_SIGN_THETA*(2*math.pi/(self.theta_microstepping*FULLSTEPS_PER_REV_THETA))
-
-        # emit the updated position
-        self.xPos.emit(self.x_pos_mm)
-        self.yPos.emit(self.y_pos_mm)
-        self.zPos.emit(self.z_pos_mm*1000)
-        self.thetaPos.emit(self.theta_pos_rad*360/(2*math.pi))
-        self.xyPos.emit(self.x_pos_mm,self.y_pos_mm)
-
-        if microcontroller.signal_joystick_button_pressed_event:
-            if self.enable_joystick_button_action:
-                self.signal_joystick_button_pressed.emit()
-            print('joystick button pressed')
-            microcontroller.signal_joystick_button_pressed_event = False
 
     def home_x(self):
         self.microcontroller.home_x()
@@ -1234,6 +1245,7 @@ class SlidePositionControlWorker(QObject):
 
         self.slidePositionController.slide_scanning_position_reached = True
         self.finished.emit()
+
 
 class SlidePositionController(QObject):
 
@@ -3738,9 +3750,12 @@ class NavigationViewer(QFrame):
         self.update_display_properties(sample)
         self.draw_current_fov(self.x_mm, self.y_mm)
 
-    def update_current_location(self, x_mm=None, y_mm=None):
+    def draw_fov_current_location(self, x_mm=None, y_mm=None):
         if x_mm is None and y_mm is None:
-            self.draw_current_fov(self.x_mm, self.y_mm)
+            if self.x_mm is None and self.y_mm is None:
+                return
+            else:
+                self.draw_current_fov(self.x_mm, self.y_mm)
 
         elif self.x_mm is not None and self.y_mm is not None:
             # update only when the displacement has exceeded certain value
@@ -3748,16 +3763,15 @@ class NavigationViewer(QFrame):
                 self.draw_current_fov(x_mm, y_mm)
                 self.x_mm = x_mm
                 self.y_mm = y_mm
-                # update_live_scan_grid
-                if 'glass slide'in self.sample and not self.acquisition_started:
-                    self.signal_update_live_scan_grid.emit(x_mm, y_mm)
+    
         else:
             self.draw_current_fov(x_mm, y_mm)
             self.x_mm = x_mm
             self.y_mm = y_mm
-            # update_live_scan_grid
-            if 'glass slide'in self.sample and not self.acquisition_started:
-                self.signal_update_live_scan_grid.emit(x_mm, y_mm)
+
+    def draw_scan_grid(self, x_mm, y_mm):
+        if 'glass slide'in self.sample and not self.acquisition_started:
+            self.signal_update_live_scan_grid.emit(x_mm, y_mm)
 
     def get_FOV_pixel_coordinates(self, x_mm, y_mm):
         if self.sample == 'glass slide':
@@ -4179,7 +4193,7 @@ class ScanCoordinates(object):
     def get_selected_wells(self):
         # get selected wells from the widget
         print("getting selected wells for acquisition")
-        if not self.well_selector or self.format == 0:
+        if not self.well_selector or self.format == 'glass slide':
             return False
         selected_wells = self.well_selector.get_selected_cells()
         selected_wells = np.array(selected_wells)

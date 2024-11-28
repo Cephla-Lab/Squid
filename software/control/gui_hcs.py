@@ -154,7 +154,7 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplay = core.ImageDisplay()
         if ENABLE_TRACKING:
             self.trackingController = core.TrackingController(self.camera, self.microcontroller, self.navigationController, self.configurationManager, self.liveController, self.autofocusController, self.imageDisplayWindow)
-        if WELLPLATE_FORMAT == 0:
+        if WELLPLATE_FORMAT == 'glass slide':
             self.navigationViewer = core.NavigationViewer(self.objectiveStore, sample='4 glass slide')
         else:
             self.navigationViewer = core.NavigationViewer(self.objectiveStore, sample=WELLPLATE_FORMAT)
@@ -668,7 +668,8 @@ class HighContentScreeningGui(QMainWindow):
         self.slidePositionController.signal_clear_slide.connect(self.navigationViewer.clear_slide)
         self.navigationViewer.signal_coordinates_clicked.connect(self.navigationController.move_from_click_mosaic)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.on_objective_changed)
-        self.navigationController.xyPos.connect(self.navigationViewer.update_current_location)
+        self.navigationController.xyPos.connect(self.navigationViewer.draw_fov_current_location)
+        self.navigationController.scanGridPos.connect(self.navigationViewer.draw_scan_grid)
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.set_microscope_mode)
         self.multipointController.signal_z_piezo_um.connect(self.piezoWidget.update_displacement_um_display)
@@ -709,7 +710,8 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_SCAN_GRID:
             self.wellSelectionWidget.signal_wellSelected.connect(self.multiPointWidgetGrid.set_well_coordinates)
             self.objectivesWidget.signal_objective_changed.connect(self.multiPointWidgetGrid.update_coordinates)
-            self.multiPointWidgetGrid.signal_update_navigation_viewer.connect(self.navigationViewer.update_current_location)
+
+            self.multiPointWidgetGrid.signal_update_navigation_viewer.connect(self.navigationViewer.draw_fov_current_location)
 
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveControlWidget_focus_camera.signal_newExposureTime.connect(self.cameraSettingWidget_focus_camera.set_exposure_time)
@@ -889,7 +891,7 @@ class HighContentScreeningGui(QMainWindow):
         acquisitionWidget = self.recordTabWidget.widget(index)
         is_multipoint = (index == self.recordTabWidget.indexOf(self.multiPointWidget))
         is_scan_grid = (index == self.recordTabWidget.indexOf(self.multiPointWidgetGrid)) if ENABLE_SCAN_GRID else False
-        self.toggleWellSelector((is_multipoint or is_scan_grid) and self.wellSelectionWidget.format != 0)
+        self.toggleWellSelector((is_multipoint or is_scan_grid) and self.wellSelectionWidget.format != 'glass slide')
         if is_scan_grid:
             self.wellSelectionWidget.onSelectionChanged()
         else:
