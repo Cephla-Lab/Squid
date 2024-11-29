@@ -3713,7 +3713,6 @@ class MultiPointWidgetGrid(QFrame):
         self.entry_maxZ.blockSignals(False)
 
     def set_live_scan_coordinates(self, x_mm, y_mm):
-        print("set live scan grid")
         parent = self.multipointController.parent
         is_current_widget = (parent is not None and hasattr(parent, 'recordTabWidget') and
                              parent.recordTabWidget.currentWidget() == self)

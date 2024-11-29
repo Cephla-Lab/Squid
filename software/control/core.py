@@ -803,13 +803,8 @@ class NavigationController(QObject):
     def update_pos(self, microcontroller):
         previous_x = self.x_pos_mm
         previous_y = self.y_pos_mm
-
         # get position from the microcontroller
         self.get_current_position()
-
-        # if position changed and command completed, emit scanGridPos
-        if (previous_x != self.x_pos_mm or previous_y != self.y_pos_mm) and not microcontroller.is_busy():
-            self.scanGridPos.emit(self.x_pos_mm, self.y_pos_mm)
 
         # emit the updated position
         self.xPos.emit(self.x_pos_mm)
@@ -817,6 +812,10 @@ class NavigationController(QObject):
         self.zPos.emit(self.z_pos_mm*1000)
         self.thetaPos.emit(self.theta_pos_rad*360/(2*math.pi))
         self.xyPos.emit(self.x_pos_mm,self.y_pos_mm)
+
+        # if position changed and command completed, emit scanGridPos
+        if (previous_x != self.x_pos_mm or previous_y != self.y_pos_mm) and not microcontroller.is_busy():
+            self.scanGridPos.emit(self.x_pos_mm, self.y_pos_mm)
 
         # handle joystick button
         if microcontroller.signal_joystick_button_pressed_event:
