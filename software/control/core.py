@@ -779,7 +779,10 @@ class NavigationController(QObject):
     def get_flag_click_to_move(self):
         return self.click_to_move
 
-    def get_current_position(self):
+    def update_pos(self, microcontroller):
+        previous_x = self.x_pos_mm
+        previous_y = self.y_pos_mm
+        # get position from the microcontroller
         x_pos, y_pos, z_pos, theta_pos = self.microcontroller.get_pos()
         self.z_pos = z_pos
         # calculate position in mm or rad
@@ -799,12 +802,6 @@ class NavigationController(QObject):
             self.theta_pos_rad = theta_pos*ENCODER_POS_SIGN_THETA*ENCODER_STEP_SIZE_THETA
         else:
             self.theta_pos_rad = theta_pos*STAGE_POS_SIGN_THETA*(2*math.pi/(self.theta_microstepping*FULLSTEPS_PER_REV_THETA))
-
-    def update_pos(self, microcontroller):
-        previous_x = self.x_pos_mm
-        previous_y = self.y_pos_mm
-        # get position from the microcontroller
-        self.get_current_position()
 
         # emit the updated position
         self.xPos.emit(self.x_pos_mm)
@@ -846,8 +843,9 @@ class NavigationController(QObject):
         pixel_sign_y = -1 if INVERTED_OBJECTIVE else 1
 
         # move to selected fov
-        self.move_to(self.scan_begin_position_x+dx_mm*fov_col*pixel_sign_x, self.scan_begin_position_y+dy_mm*fov_row*pixel_sign_y)
-        self.microcontroller.wait_till_operation_is_completed()
+        x_pos = self.scan_begin_position_x+dx_mm*fov_col*pixel_sign_x
+        y_pos = self.scan_begin_position_y+dy_mm*fov_row*pixel_sign_y
+        self.move_to(x_pos, y_pos)
 
         # move to actual click, offset from center fov
         tile_width = (image_width / Nx) * PRVIEW_DOWNSAMPLE_FACTOR
@@ -903,11 +901,9 @@ class NavigationController(QObject):
 
     def move_x(self,delta):
         self.microcontroller.move_x_usteps(int(delta/self.get_mm_per_ustep_X()))
-        self.microcontroller.wait_till_operation_is_completed()
 
     def move_y(self,delta):
         self.microcontroller.move_y_usteps(int(delta/self.get_mm_per_ustep_Y()))
-        self.microcontroller.wait_till_operation_is_completed()
 
     def move_z(self,delta):
         self.microcontroller.move_z_usteps(int(delta/self.get_mm_per_ustep_Z()))
