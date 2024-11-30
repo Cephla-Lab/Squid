@@ -709,8 +709,7 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_SCAN_GRID:
             self.wellSelectionWidget.signal_wellSelected.connect(self.multiPointWidgetGrid.set_well_coordinates)
             self.objectivesWidget.signal_objective_changed.connect(self.multiPointWidgetGrid.update_coordinates)
-
-            self.multiPointWidgetGrid.signal_update_navigation_viewer.connect(self.navigationViewer.draw_fov_current_location)
+            self.multiPointWidgetGrid.signal_update_navigation_viewer.connect(self.navigationViewer.update_current_location)
 
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveControlWidget_focus_camera.signal_newExposureTime.connect(self.cameraSettingWidget_focus_camera.set_exposure_time)
