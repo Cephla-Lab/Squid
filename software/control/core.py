@@ -893,30 +893,27 @@ class NavigationController(QObject):
     def move_z_to_usteps(self,usteps):
         self.microcontroller.move_z_to_usteps(usteps)
 
-    def update_pos(self, microcontroller):
-        previous_x = self.x_pos_mm
-        previous_y = self.y_pos_mm
+    def update_pos(self,microcontroller):
         # get position from the microcontroller
-        x_pos, y_pos, z_pos, theta_pos = self.microcontroller.get_pos()
+        x_pos, y_pos, z_pos, theta_pos = microcontroller.get_pos()
         self.z_pos = z_pos
         # calculate position in mm or rad
         if USE_ENCODER_X:
             self.x_pos_mm = x_pos*ENCODER_POS_SIGN_X*ENCODER_STEP_SIZE_X_MM
         else:
-            self.x_pos_mm = x_pos*STAGE_POS_SIGN_X*self.get_mm_per_ustep_X()
+            self.x_pos_mm = x_pos*STAGE_POS_SIGN_X*(SCREW_PITCH_X_MM/(self.x_microstepping*FULLSTEPS_PER_REV_X))
         if USE_ENCODER_Y:
             self.y_pos_mm = y_pos*ENCODER_POS_SIGN_Y*ENCODER_STEP_SIZE_Y_MM
         else:
-            self.y_pos_mm = y_pos*STAGE_POS_SIGN_Y*self.get_mm_per_ustep_Y()
+            self.y_pos_mm = y_pos*STAGE_POS_SIGN_Y*(SCREW_PITCH_Y_MM/(self.y_microstepping*FULLSTEPS_PER_REV_Y))
         if USE_ENCODER_Z:
             self.z_pos_mm = z_pos*ENCODER_POS_SIGN_Z*ENCODER_STEP_SIZE_Z_MM
         else:
-            self.z_pos_mm = z_pos*STAGE_POS_SIGN_Z*self.get_mm_per_ustep_Z()
+            self.z_pos_mm = z_pos*STAGE_POS_SIGN_Z*(SCREW_PITCH_Z_MM/(self.z_microstepping*FULLSTEPS_PER_REV_Z))
         if USE_ENCODER_THETA:
             self.theta_pos_rad = theta_pos*ENCODER_POS_SIGN_THETA*ENCODER_STEP_SIZE_THETA
         else:
             self.theta_pos_rad = theta_pos*STAGE_POS_SIGN_THETA*(2*math.pi/(self.theta_microstepping*FULLSTEPS_PER_REV_THETA))
-
         # emit the updated position
         self.xPos.emit(self.x_pos_mm)
         self.yPos.emit(self.y_pos_mm)
@@ -924,11 +921,6 @@ class NavigationController(QObject):
         self.thetaPos.emit(self.theta_pos_rad*360/(2*math.pi))
         self.xyPos.emit(self.x_pos_mm,self.y_pos_mm)
 
-        # if position changed and command completed, emit scanGridPos
-        if (previous_x != self.x_pos_mm or previous_y != self.y_pos_mm) and not microcontroller.is_busy():
-            self.scanGridPos.emit(self.x_pos_mm, self.y_pos_mm)
-
-        # handle joystick button
         if microcontroller.signal_joystick_button_pressed_event:
             if self.enable_joystick_button_action:
                 self.signal_joystick_button_pressed.emit()
