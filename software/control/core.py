@@ -726,7 +726,6 @@ class NavigationController(QObject):
     zPos = Signal(float)
     thetaPos = Signal(float)
     xyPos = Signal(float,float)
-    scanGridPos = Signal(float,float)
     signal_joystick_button_pressed = Signal()
 
     # x y z axis pid enable flag
@@ -3737,7 +3736,7 @@ class NavigationViewer(QFrame):
         self.update_display_properties(sample)
         self.draw_current_fov(self.x_mm, self.y_mm)
 
-    def draw_fov_current_location(self, x_mm=None, y_mm=None):
+    def update_current_location(self, x_mm=None, y_mm=None):
         if x_mm is None and y_mm is None:
             if self.x_mm is None and self.y_mm is None:
                 return
@@ -3750,15 +3749,16 @@ class NavigationViewer(QFrame):
                 self.draw_current_fov(x_mm, y_mm)
                 self.x_mm = x_mm
                 self.y_mm = y_mm
-    
+                # update_live_scan_grid
+                if 'glass slide' in self.sample and not self.acquisition_started:
+                    self.signal_update_live_scan_grid.emit(x_mm, y_mm)
         else:
             self.draw_current_fov(x_mm, y_mm)
             self.x_mm = x_mm
             self.y_mm = y_mm
-
-    def draw_scan_grid(self, x_mm, y_mm):
-        if 'glass slide'in self.sample and not self.acquisition_started:
-            self.signal_update_live_scan_grid.emit(x_mm, y_mm)
+            # update_live_scan_grid
+            if 'glass slide' in self.sample and not self.acquisition_started:
+                self.signal_update_live_scan_grid.emit(x_mm, y_mm)
 
     def get_FOV_pixel_coordinates(self, x_mm, y_mm):
         if self.sample == 'glass slide':
