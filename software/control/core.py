@@ -901,15 +901,15 @@ class NavigationController(QObject):
         if USE_ENCODER_X:
             self.x_pos_mm = x_pos*ENCODER_POS_SIGN_X*ENCODER_STEP_SIZE_X_MM
         else:
-            self.x_pos_mm = x_pos*STAGE_POS_SIGN_X*(SCREW_PITCH_X_MM/(self.x_microstepping*FULLSTEPS_PER_REV_X))
+            self.x_pos_mm = x_pos*STAGE_POS_SIGN_X*self.get_mm_per_ustep_X()
         if USE_ENCODER_Y:
             self.y_pos_mm = y_pos*ENCODER_POS_SIGN_Y*ENCODER_STEP_SIZE_Y_MM
         else:
-            self.y_pos_mm = y_pos*STAGE_POS_SIGN_Y*(SCREW_PITCH_Y_MM/(self.y_microstepping*FULLSTEPS_PER_REV_Y))
+            self.y_pos_mm = y_pos*STAGE_POS_SIGN_Y*self.get_mm_per_ustep_Y()
         if USE_ENCODER_Z:
             self.z_pos_mm = z_pos*ENCODER_POS_SIGN_Z*ENCODER_STEP_SIZE_Z_MM
         else:
-            self.z_pos_mm = z_pos*STAGE_POS_SIGN_Z*(SCREW_PITCH_Z_MM/(self.z_microstepping*FULLSTEPS_PER_REV_Z))
+            self.z_pos_mm = z_pos*STAGE_POS_SIGN_Z*self.get_mm_per_ustep_Z()
         if USE_ENCODER_THETA:
             self.theta_pos_rad = theta_pos*ENCODER_POS_SIGN_THETA*ENCODER_STEP_SIZE_THETA
         else:
