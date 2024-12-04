@@ -5004,7 +5004,7 @@ class NapariMosaicDisplayWidget(QWidget):
         super().__init__(parent)
         self.objectiveStore = objectiveStore
         self.contrastManager = contrastManager
-        self.downsample_factor = PRVIEW_DOWNSAMPLE_FACTOR
+        self.downsample_factor = PREVIEW_DOWNSAMPLE_FACTOR
         self.viewer = napari.Viewer(show=False)
         self.layout = QVBoxLayout()
         self.layout.addWidget(self.viewer.window._qt_window)

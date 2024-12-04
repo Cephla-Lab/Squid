@@ -760,10 +760,6 @@ class NavigationController(QObject):
         self.movement_timer.timeout.connect(self.check_movement_status)
         self.movement_timer.setSingleShot(True)  # Timer only fires once
         self.movement_threshold = 0.0001  # mm
-
-        # scan start position (obsolete? only for TiledDisplay)
-        self.scan_begin_position_x = 0
-        self.scan_begin_position_y = 0
     
     def get_mm_per_ustep_X(self):
         return SCREW_PITCH_X_MM/(self.x_microstepping*FULLSTEPS_PER_REV_X)
@@ -842,41 +838,6 @@ class NavigationController(QObject):
         if delta_x < self.movement_threshold and delta_y < self.movement_threshold and not self.microcontroller.is_busy():
             # emit pos to draw scan grid
             self.scanGridPos.emit(self.x_pos_mm, self.y_pos_mm)
-
-    def scan_preview_move_from_click(self, click_x, click_y, image_width, image_height, Nx=1, Ny=1, dx_mm=0.9, dy_mm=0.9): # obsolete (only for tiled display)
-        """
-        napariTiledDisplay uses the Nx, Ny, dx_mm, dy_mm fields to move to the correct fov first
-        imageArrayDisplayWindow assumes only a single fov (default values do not impact calculation but this is less correct)
-        """
-        # check if click to move enabled
-        if not self.click_to_move:
-            print("allow click to move")
-            return
-        # restore to raw coordicate
-        click_x = image_width / 2.0 + click_x
-        click_y = image_height / 2.0 - click_y
-        print("click - (x, y):", (click_x, click_y))
-        fov_col = click_x * Nx // image_width
-        fov_row = click_y * Ny // image_height
-        end_position_x = Ny % 2 # right side or left side
-        fov_col = Nx - (fov_col + 1) if end_position_x else fov_col
-        fov_row = fov_row
-        pixel_sign_x = (-1)**end_position_x # inverted
-        pixel_sign_y = -1 if INVERTED_OBJECTIVE else 1
-
-        # move to selected fov
-        x_pos = self.scan_begin_position_x+dx_mm*fov_col*pixel_sign_x
-        y_pos = self.scan_begin_position_y+dy_mm*fov_row*pixel_sign_y
-        self.move_to(x_pos, y_pos)
-
-        # move to actual click, offset from center fov
-        tile_width = (image_width / Nx) * PRVIEW_DOWNSAMPLE_FACTOR
-        tile_height = (image_height / Ny) * PRVIEW_DOWNSAMPLE_FACTOR
-        offset_x = (click_x * PRVIEW_DOWNSAMPLE_FACTOR) % tile_width
-        offset_y = (click_y * PRVIEW_DOWNSAMPLE_FACTOR) % tile_height
-        offset_x_centered = int(offset_x - tile_width / 2)
-        offset_y_centered = int(tile_height / 2 - offset_y)
-        self.move_from_click(offset_x_centered, offset_y_centered, tile_width, tile_height)
 
     def move_from_click(self, click_x, click_y, image_width, image_height):
         if self.click_to_move:
@@ -1660,7 +1621,6 @@ class MultiPointWorker(QObject):
     image_to_display = Signal(np.ndarray)
     spectrum_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray,int)
-    image_to_display_tiled_preview = Signal(np.ndarray)
     signal_current_configuration = Signal(Configuration)
     signal_register_current_fov = Signal(float,float)
     signal_detection_stats = Signal(object)
@@ -1739,10 +1699,9 @@ class MultiPointWorker(QObject):
         self.t_inf = []
         self.t_over = []
 
-        if USE_NAPARI_FOR_MULTIPOINT or USE_NAPARI_FOR_TILED_DISPLAY:
+        if USE_NAPARI_FOR_MULTIPOINT:
             self.init_napari_layers = False
 
-        self.tiled_preview = None
         self.count = 0
 
         self.merged_image = None
@@ -2019,27 +1978,6 @@ class MultiPointWorker(QObject):
 
                 current_image = (fov * self.NZ * len(self.selected_configurations) + z_level * len(self.selected_configurations) + config_idx + 1)
                 self.signal_region_progress.emit(current_image, self.total_scans)
-
-            '''
-            # tiled preview
-            if not USE_NAPARI_FOR_TILED_DISPLAY and SHOW_TILED_PREVIEW and 'BF LED matrix left half' in current_round_images:
-                # initialize the variable
-                if self.tiled_preview is None:
-                    size = current_round_images['BF LED matrix left half'].shape
-                    if len(size) == 2:
-                        self.tiled_preview = np.zeros((int(self.NY*size[0]/PRVIEW_DOWNSAMPLE_FACTOR),self.NX*int(size[1]/PRVIEW_DOWNSAMPLE_FACTOR)),dtype=current_round_images['BF LED matrix full'].dtype)
-                    else:
-                        self.tiled_preview = np.zeros((int(self.NY*size[0]/PRVIEW_DOWNSAMPLE_FACTOR),self.NX*int(size[1]/PRVIEW_DOWNSAMPLE_FACTOR),size[2]),dtype=current_round_images['BF LED matrix full'].dtype)
-                # downsample the image
-                I = current_round_images['BF LED matrix left half']
-                width = int(I.shape[1]/PRVIEW_DOWNSAMPLE_FACTOR)
-                height = int(I.shape[0]/PRVIEW_DOWNSAMPLE_FACTOR)
-                I = cv2.resize(I, (width,height), interpolation=cv2.INTER_AREA)
-                # populate the tiled_preview
-                self.tiled_preview[i*height:(i+1)*height, j*width:(j+1)*width, ] = I
-                # emit the result
-                self.image_to_display_tiled_preview.emit(self.tiled_preview)
-            '''
 
             # real time processing
             if self.multiPointController.do_fluorescence_rtp:
@@ -2336,7 +2274,7 @@ class MultiPointWorker(QObject):
             j = -1 if j is None else j
             print("update napari:", i, j, k, config_name)
 
-            if USE_NAPARI_FOR_MULTIPOINT or USE_NAPARI_FOR_TILED_DISPLAY:
+            if USE_NAPARI_FOR_MULTIPOINT:
                 if not self.init_napari_layers:
                     print("init napari layers")
                     self.init_napari_layers = True
@@ -2456,32 +2394,12 @@ class MultiPointWorker(QObject):
                     self.wait_till_operation_is_completed()
                 self.dz_usteps = self.dz_usteps - self.deltaZ_usteps*(self.NZ-1)
 
-    def update_tiled_preview(self, current_round_images, i, j, k):
-        if SHOW_TILED_PREVIEW and 'BF LED matrix full' in current_round_images:
-            # initialize the variable
-            if self.tiled_preview is None:
-                size = current_round_images['BF LED matrix full'].shape
-                if len(size) == 2:
-                    self.tiled_preview = np.zeros((int(self.NY*size[0]/PRVIEW_DOWNSAMPLE_FACTOR),self.NX*int(size[1]/PRVIEW_DOWNSAMPLE_FACTOR)),dtype=current_round_images['BF LED matrix full'].dtype)
-                else:
-                    self.tiled_preview = np.zeros((int(self.NY*size[0]/PRVIEW_DOWNSAMPLE_FACTOR),self.NX*int(size[1]/PRVIEW_DOWNSAMPLE_FACTOR),size[2]),dtype=current_round_images['BF LED matrix full'].dtype)
-            # downsample the image
-            I = current_round_images['BF LED matrix full']
-            width = int(I.shape[1]/PRVIEW_DOWNSAMPLE_FACTOR)
-            height = int(I.shape[0]/PRVIEW_DOWNSAMPLE_FACTOR)
-            I = cv2.resize(I, (width,height), interpolation=cv2.INTER_AREA)
-            # populate the tiled_preview
-            self.tiled_preview[i*height:(i+1)*height, j*width:(j+1)*width,] = I
-            # emit the result
-            self.image_to_display_tiled_preview.emit(self.tiled_preview)
-
 
 class MultiPointController(QObject):
 
     acquisitionFinished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray,int)
-    image_to_display_tiled_preview = Signal(np.ndarray)
     spectrum_to_display = Signal(np.ndarray)
     signal_current_configuration = Signal(Configuration)
     signal_register_current_fov = Signal(float,float)
@@ -2728,9 +2646,6 @@ class MultiPointController(QObject):
             elif USE_NAPARI_FOR_MOSAIC_DISPLAY and self.coordinate_dict is not None:
                 self.parent.imageDisplayTabs.setCurrentWidget(self.parent.napariMosaicDisplayWidget)
 
-            elif USE_NAPARI_FOR_TILED_DISPLAY and SHOW_TILED_PREVIEW:
-                self.parent.imageDisplayTabs.setCurrentWidget(self.parent.napariTiledDisplayWidget)
-
             elif USE_NAPARI_FOR_MULTIPOINT:
                 self.parent.imageDisplayTabs.setCurrentWidget(self.parent.napariMultiChannelWidget)
             else:
@@ -2738,9 +2653,6 @@ class MultiPointController(QObject):
 
         # run the acquisition
         self.timestamp_acquisition_started = time.time()
-
-        if SHOW_TILED_PREVIEW:
-            self.navigationController.keep_scan_begin_position(self.navigationController.x_pos_mm, self.navigationController.y_pos_mm)
 
         # create a QThread object
         if self.gen_focus_map and not self.do_reflection_af:
@@ -2796,7 +2708,6 @@ class MultiPointController(QObject):
             self.multiPointWorker.finished.connect(self.thread.quit)
         self.multiPointWorker.image_to_display.connect(self.slot_image_to_display)
         self.multiPointWorker.image_to_display_multi.connect(self.slot_image_to_display_multi)
-        self.multiPointWorker.image_to_display_tiled_preview.connect(self.slot_image_to_display_tiled_preview)
         self.multiPointWorker.spectrum_to_display.connect(self.slot_spectrum_to_display)
         self.multiPointWorker.signal_current_configuration.connect(self.slot_current_configuration,type=Qt.BlockingQueuedConnection)
         self.multiPointWorker.signal_register_current_fov.connect(self.slot_register_current_fov)
@@ -2858,9 +2769,6 @@ class MultiPointController(QObject):
 
     def slot_image_to_display(self,image):
         self.image_to_display.emit(image)
-
-    def slot_image_to_display_tiled_preview(self,image):
-        self.image_to_display_tiled_preview.emit(image)
 
     def slot_spectrum_to_display(self,data):
         self.spectrum_to_display.emit(data)

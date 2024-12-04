@@ -459,14 +459,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageArrayDisplayWindow = core.ImageArrayDisplayWindow()
                 self.imageDisplayTabs.addTab(self.imageArrayDisplayWindow.widget, "Multichannel Acquisition")
 
-            if SHOW_TILED_PREVIEW:
-                if USE_NAPARI_FOR_TILED_DISPLAY:
-                    self.napariTiledDisplayWidget = widgets.NapariTiledDisplayWidget(self.objectiveStore, self.contrastManager)
-                    self.imageDisplayTabs.addTab(self.napariTiledDisplayWidget, "Tiled Preview")
-                else:
-                    self.imageDisplayWindow_scan_preview = core.ImageDisplayWindow(draw_crosshairs=True)
-                    self.imageDisplayTabs.addTab(self.imageDisplayWindow_scan_preview.widget, "Tiled Preview")
-
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(self.objectiveStore, self.contrastManager)
                 self.imageDisplayTabs.addTab(self.napariMosaicDisplayWidget, "Mosaic View")
@@ -729,7 +721,6 @@ class HighContentScreeningGui(QMainWindow):
         self.napari_connections = {
             'napariLiveWidget': [],
             'napariMultiChannelWidget': [],
-            'napariTiledDisplayWidget': [],
             'napariMosaicDisplayWidget': []
         }
 
@@ -783,27 +774,6 @@ class HighContentScreeningGui(QMainWindow):
                     ])
             else:
                 self.multipointController.image_to_display_multi.connect(self.imageArrayDisplayWindow.display_image)
-
-            # Setup tiled display widget connections
-            if SHOW_TILED_PREVIEW and USE_NAPARI_FOR_TILED_DISPLAY:
-                self.napari_connections['napariTiledDisplayWidget'] = [
-                    (self.multipointController.napari_layers_init, self.napariTiledDisplayWidget.initLayers),
-                    (self.multipointController.napari_layers_update, self.napariTiledDisplayWidget.updateLayers),
-                    (self.napariTiledDisplayWidget.signal_coordinates_clicked,
-                     self.navigationController.scan_preview_move_from_click)
-                ]
-
-                if ENABLE_FLEXIBLE_MULTIPOINT:
-                    self.napari_connections['napariTiledDisplayWidget'].extend([
-                        (self.flexibleMultiPointWidget.signal_acquisition_channels, self.napariTiledDisplayWidget.initChannels),
-                        (self.flexibleMultiPointWidget.signal_acquisition_shape, self.napariTiledDisplayWidget.initLayersShape)
-                    ])
-
-                if ENABLE_WELLPLATE_MULTIPOINT:
-                    self.napari_connections['napariTiledDisplayWidget'].extend([
-                        (self.wellplateMultiPointWidget.signal_acquisition_channels, self.napariTiledDisplayWidget.initChannels),
-                        (self.wellplateMultiPointWidget.signal_acquisition_shape, self.napariTiledDisplayWidget.initLayersShape)
-                    ])
 
             # Setup mosaic display widget connections
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
