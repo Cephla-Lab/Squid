@@ -7,6 +7,7 @@ if [[ -n "$TRACE" ]]; then
 fi
 
 readonly SRC_ROOT="$HOME/Desktop"
+mkdir -p "$SRC_ROOT"
 readonly SQUID_REPO_HTTP="https://github.com/Cephla-Lab/Squid.git"
 readonly SQUID_REPO_NAME="Squid"
 readonly SQUID_SOFTWARE_ROOT="$SRC_ROOT/$SQUID_REPO_NAME/software"
