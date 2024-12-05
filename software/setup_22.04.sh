@@ -11,9 +11,9 @@ mkdir -p "$SRC_ROOT"
 readonly SQUID_REPO_HTTP="https://github.com/Cephla-Lab/Squid.git"
 readonly SQUID_REPO_NAME="Squid"
 readonly SQUID_SOFTWARE_ROOT="$SRC_ROOT/$SQUID_REPO_NAME/software"
-readonly DAHENG_CAMERA_DRIVER_ROOT="$SRC_ROOT/$SQUID_REPO_NAME/software/drivers\ and\ libraries/daheng\ camera/Galaxy_Linux-x86_Gige-U3_32bits-64bits_1.2.1911.9122/"
-readonly DAHENG_CAMERA_DRIVER_API_ROOT="$SRC_ROOT/$SQUID_REPO_NAME/software/drivers\ and\ libraries/daheng\ camera/Galaxy_Linux_Python_1.0.1905.9081/api"
-readonly TOUPCAM_UDEV_RULE_PATH="$SQUID_SOFTWARE_ROOT/drivers\ and\ libraries/toupcam/linux/udev/99-toupcam.rules"
+readonly DAHENG_CAMERA_DRIVER_ROOT="$SQUID_SOFTWARE_ROOT/drivers and libraries/daheng camera/Galaxy_Linux-x86_Gige-U3_32bits-64bits_1.2.1911.9122"
+readonly DAHENG_CAMERA_DRIVER_API_ROOT="$SQUID_SOFTWARE_ROOT/drivers and libraries/daheng camera/Galaxy_Linux_Python_1.0.1905.9081/api"
+readonly TOUPCAM_UDEV_RULE_PATH="$SQUID_SOFTWARE_ROOT/drivers and libraries/toupcam/linux/udev/99-toupcam.rules"
 # update
 sudo apt update
 
