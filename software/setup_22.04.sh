@@ -32,7 +32,7 @@ mkdir cache
 # install libraries 
 pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml numpy tifffile scipy napari
 pip3 install opencv-python-headless opencv-contrib-python-headless
-pip3 install napari[all] scikit-image dask_image ome_zarr aicsimageio basicpy
+pip3 install napari[all] scikit-image dask_image ome_zarr aicsimageio basicpy pytest
 
 # install camera drivers
 cd "$DAHENG_CAMERA_DRIVER_ROOT"
