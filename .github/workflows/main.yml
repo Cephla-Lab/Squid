@@ -2,6 +2,7 @@ name: Install Environment and Run Tests
 
 on:
   push:
+    branches: master
   pull_request:
 
 jobs:
