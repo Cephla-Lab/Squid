@@ -3410,6 +3410,7 @@ class WellplateMultiPointWidget(QFrame):
         self.acquisition_start_time = None
         self.manual_shape = None
         self.eta_seconds = 0
+        self.parent = self.multipointController.parent
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.set_default_scan_size()
@@ -3840,6 +3841,9 @@ class WellplateMultiPointWidget(QFrame):
             self.update_coordinates()
 
     def update_manual_shape(self, shapes_data_mm):
+        if self.parent.recordTabWidget.currentWidget() != self:
+            return
+
         self.clear_regions()
         if shapes_data_mm and len(shapes_data_mm) > 0:
             self.manual_shapes = shapes_data_mm
@@ -3920,12 +3924,10 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_maxZ.blockSignals(False)
 
     def set_live_scan_coordinates(self, x_mm, y_mm):
-        parent = self.multipointController.parent
-        is_current_widget = (parent is not None and hasattr(parent, 'recordTabWidget') and
-                             parent.recordTabWidget.currentWidget() == self)
+        if self.parent.recordTabWidget.currentWidget() != self
+            return
 
-        if self.combobox_shape.currentText() != 'Manual' and self.scanCoordinates.format == 'glass slide' and (parent is None or is_current_widget):
-
+        if self.combobox_shape.currentText() != 'Manual' and self.scanCoordinates.format == 'glass slide':
             if self.region_coordinates:
                 self.clear_regions()
 
@@ -3933,7 +3935,8 @@ class WellplateMultiPointWidget(QFrame):
 
     def set_well_coordinates(self, selected):
         self.well_selected = selected and bool(self.scanCoordinates.get_selected_wells())
-        if hasattr(self.multipointController.parent, 'recordTabWidget') and self.multipointController.parent.recordTabWidget.currentWidget() == self:
+
+        if self.parent.recordTabWidget.currentWidget() == self:
             if self.scanCoordinates.format == 'glass slide':
                 x = self.navigationController.x_pos_mm
                 y = self.navigationController.y_pos_mm
@@ -5518,8 +5521,16 @@ class NapariMosaicDisplayWidget(QWidget):
             self.shape_layer = self.viewer.layers['Manual ROI']
 
         if self.is_drawing_shape:
-            self.shape_layer.mode = 'add_polygon'
+            # if there are existing shapes, switch to vertex select mode
+            if len(self.shape_layer.data) > 0:
+                self.shape_layer.mode = 'select'
+                self.shape_layer.select_mode = 'vertex'
+            else:
+                # if no shapes exist, switch to add polygon mode
+                # start drawing a new polygon on click, add vertices with additional clicks, finish/close polygon with double-click
+                self.shape_layer.mode = 'add_polygon'
         else:
+            # if no shapes exist, switch to pan/zoom mode
             self.shape_layer.mode = 'pan_zoom'
 
         self.on_shape_change()
