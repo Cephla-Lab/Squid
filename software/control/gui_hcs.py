@@ -879,7 +879,7 @@ class HighContentScreeningGui(QMainWindow):
         is_flexible = (index == self.recordTabWidget.indexOf(self.flexibleMultiPointWidget))
         is_scan_grid = (index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget)) if ENABLE_WELLPLATE_MULTIPOINT else False
         self.toggleWellSelector(is_scan_grid and self.wellSelectionWidget.format != 'glass slide')
-        
+
         if is_scan_grid:
             self.navigationViewer.clear_overlay()
             self.wellSelectionWidget.onSelectionChanged()
@@ -983,7 +983,7 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.setTabEnabled(index, not acquisition_started or index == current_index)
         if acquisition_started:
             self.liveControlWidget.toggle_autolevel(not acquisition_started)
-        
+
         is_scan_grid = (current_index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget)) if ENABLE_WELLPLATE_MULTIPOINT else False
         if is_scan_grid and self.wellSelectionWidget.format != 'glass slide':
             self.toggleWellSelector(not acquisition_started)
