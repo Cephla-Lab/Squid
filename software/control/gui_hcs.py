@@ -630,6 +630,7 @@ class HighContentScreeningGui(QMainWindow):
 
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.flexibleMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+            # self.flexibleMultiPointWidget.signal_z_stacking.connect(self.multipointController.set_z_stacking_config)
             if ENABLE_STITCHER:
                 self.flexibleMultiPointWidget.signal_stitcher_widget.connect(self.toggleStitcherWidget)
                 self.flexibleMultiPointWidget.signal_acquisition_channels.connect(self.stitcherWidget.updateRegistrationChannels)
@@ -637,6 +638,7 @@ class HighContentScreeningGui(QMainWindow):
 
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellplateMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+            # self.wellplateMultiPointWidget.signal_z_stacking.connect(self.multipointController.set_z_stacking_config)
             if ENABLE_STITCHER:
                 self.wellplateMultiPointWidget.signal_stitcher_widget.connect(self.toggleStitcherWidget)
                 self.wellplateMultiPointWidget.signal_acquisition_channels.connect(self.stitcherWidget.updateRegistrationChannels)
@@ -661,7 +663,6 @@ class HighContentScreeningGui(QMainWindow):
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.set_microscope_mode)
         self.multipointController.signal_z_piezo_um.connect(self.piezoWidget.update_displacement_um_display)
-        self.wellplateMultiPointWidget.signal_z_stacking.connect(self.multipointController.set_z_stacking_config)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
@@ -697,9 +698,7 @@ class HighContentScreeningGui(QMainWindow):
         self.wellSelectionWidget.signal_wellSelectedPos.connect(self.navigationController.move_to)
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.set_well_coordinates)
-
             self.objectivesWidget.signal_objective_changed.connect(self.wellplateMultiPointWidget.update_coordinates)
-            self.wellplateMultiPointWidget.signal_update_navigation_viewer.connect(self.navigationViewer.draw_fov_current_location)
 
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveControlWidget_focus_camera.signal_newExposureTime.connect(self.cameraSettingWidget_focus_camera.set_exposure_time)
@@ -794,7 +793,7 @@ class HighContentScreeningGui(QMainWindow):
                     self.napari_connections['napariMosaicDisplayWidget'].extend([
                         (self.wellplateMultiPointWidget.signal_acquisition_channels, self.napariMosaicDisplayWidget.initChannels),
                         (self.wellplateMultiPointWidget.signal_acquisition_shape, self.napariMosaicDisplayWidget.initLayersShape),
-                        (self.wellplateMultiPointWidget.signal_draw_shape, self.napariMosaicDisplayWidget.enable_shape_drawing),
+                        (self.wellplateMultiPointWidget.signal_draw_manual_shape, self.napariMosaicDisplayWidget.enable_shape_drawing),
                         (self.napariMosaicDisplayWidget.signal_shape_drawn, self.wellplateMultiPointWidget.update_manual_shape)
                     ])
 
