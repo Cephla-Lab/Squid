@@ -4052,17 +4052,16 @@ class WellplateMultiPointWidget(QFrame):
         if not self.is_current_acquisition_widget:
             return  # Skip if this wasn't the widget that started acquisition
 
-        self.signal_acquisition_started.emit(False)  # Emit signal before clearing flag
+        self.signal_acquisition_started.emit(False)
+        self.is_current_acquisition_widget = False
         self.btn_startAcquisition.setChecked(False)
 
         if self.combobox_shape.currentText() == 'Manual':
             self.signal_draw_manual_shape.emit(True)
-            self.update_manual_shape(self.manual_shapes)
         else:
             self.set_well_coordinates(self.well_selected)
 
         self.setEnabled_all(True)
-        self.is_current_acquisition_widget = False  # Clear flag last
 
     def setEnabled_all(self, enabled):
         for widget in self.findChildren(QWidget):

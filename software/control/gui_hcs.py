@@ -853,8 +853,13 @@ class HighContentScreeningGui(QMainWindow):
         self.toggleWellSelector(is_scan_grid and self.wellSelectionWidget.format != 'glass slide')
         
         if is_scan_grid:
-            self.navigationViewer.clear_overlay()
-            self.wellSelectionWidget.onSelectionChanged()
+            if self.wellplateMultiPointWidget.combobox_shape.currentText() == 'Manual':
+                if self.wellplateMultiPointWidget.manual_shapes:
+                    # Preserve manual shapes by triggering manual shape update
+                    self.wellplateMultiPointWidget.update_manual_shape(self.wellplateMultiPointWidget.manual_shapes)
+            else:
+                self.navigationViewer.clear_overlay()
+                self.wellSelectionWidget.onSelectionChanged()
         else:
             self.wellplateMultiPointWidget.clear_regions()
 
@@ -864,7 +869,6 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_STITCHER:
             self.toggleStitcherWidget(acquisitionWidget.checkbox_stitchOutput.isChecked())
         acquisitionWidget.emit_selected_channels()
-
 
     def resizeCurrentTab(self, tabWidget):
         current_widget = tabWidget.currentWidget()
