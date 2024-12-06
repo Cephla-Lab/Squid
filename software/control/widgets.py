@@ -2004,6 +2004,7 @@ class FlexibleMultiPointWidget(QFrame):
     signal_acquisition_shape = Signal(int, float) # Nz, dz
     signal_stitcher_z_levels = Signal(int) # live Nz
     signal_stitcher_widget = Signal(bool) # signal start stitcher
+    # signal_z_stacking = Signal(int) # z-stacking config no longer in this widget
 
     def __init__(self, navigationController, navigationViewer, multipointController, objectiveStore, configurationManager = None, main=None, scanCoordinates=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -3070,12 +3071,12 @@ class WellplateMultiPointWidget(QFrame):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
-    signal_stitcher_z_levels = Signal(int)
-    signal_acquisition_shape = Signal(int, float)
-    signal_update_navigation_viewer = Signal()
-    signal_stitcher_widget = Signal(bool)
-    signal_z_stacking = Signal(int)
-    signal_draw_shape = Signal(bool)
+    signal_acquisition_shape = Signal(int, float) # acquisition Nz, dz
+    signal_stitcher_z_levels = Signal(int) # live Nz
+    signal_stitcher_widget = Signal(bool) # start stitching
+    signal_draw_manual_shape = Signal(bool) # draw manual shape on mosaic display
+    # signal_z_stacking = Signal(int)
+
 
     def __init__(self, navigationController, navigationViewer, multipointController, objectiveStore, configurationManager, scanCoordinates, napariMosaicWidget=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -3377,10 +3378,10 @@ class WellplateMultiPointWidget(QFrame):
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
         self.signal_acquisition_started.connect(self.display_progress_bar)
         self.eta_timer.timeout.connect(self.update_eta_display)
-        self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
         if not self.performance_mode:
             self.napariMosaicWidget.signal_layers_initialized.connect(self.enable_manual_ROI)
         self.entry_NZ.valueChanged.connect(self.signal_stitcher_z_levels.emit)
+        #self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
     def enable_manual_ROI(self, enable):
         self.combobox_shape.model().item(2).setEnabled(enable)
@@ -3534,9 +3535,9 @@ class WellplateMultiPointWidget(QFrame):
     def on_set_shape(self):
         shape = self.combobox_shape.currentText()
         if shape == 'Manual':
-            self.signal_draw_shape.emit(True)
+            self.signal_draw_manual_shape.emit(True)
         else:
-            self.signal_draw_shape.emit(False)
+            self.signal_draw_manual_shape.emit(False)
             self.update_coverage_from_scan_size()
             self.update_coordinates()
 
@@ -3655,7 +3656,6 @@ class WellplateMultiPointWidget(QFrame):
                     if well_id not in self.region_coordinates:
                         self.add_region(well_id, x, y)
 
-                self.signal_update_navigation_viewer.emit()
                 print(f"Updated region coordinates: {len(self.region_coordinates)} wells")
 
             else:
@@ -3793,7 +3793,6 @@ class WellplateMultiPointWidget(QFrame):
             scan_coordinates.append((center_x, center_y))
             self.navigationViewer.register_fov_to_image(center_x, center_y)
 
-        self.signal_update_navigation_viewer.emit()
         return scan_coordinates
 
     def _is_in_circle(self, x, y, center_x, center_y, radius_squared, fov_size_mm_half):
@@ -3910,7 +3909,6 @@ class WellplateMultiPointWidget(QFrame):
         for x, y in sorted_points:
             self.navigationViewer.register_fov_to_image(x, y)
 
-        self.signal_update_navigation_viewer.emit()
         return sorted_points.tolist()
 
     def point_inside_polygon(self, x, y, poly):
@@ -4044,7 +4042,7 @@ class WellplateMultiPointWidget(QFrame):
         self.btn_startAcquisition.setChecked(False)
         self.set_well_coordinates(self.well_selected)
         if self.combobox_shape.currentText() == 'Manual':
-            self.signal_draw_shape.emit(True)
+            self.signal_draw_manual_shape.emit(True)
         self.setEnabled_all(True)
 
     def setEnabled_all(self, enabled):
