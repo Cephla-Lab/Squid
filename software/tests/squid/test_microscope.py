@@ -1,4 +1,4 @@
-import squid.microscope
+import control.microscope
 
 def test_create_simulated_microscope():
-    sim_scope = squid.microscope.Microscope(is_simulation=True)
+    sim_scope = control.microscope.Microscope(is_simulation=True)
