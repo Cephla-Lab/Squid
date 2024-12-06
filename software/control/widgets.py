@@ -1518,12 +1518,12 @@ class NavigationWidget(QFrame):
             self.flag_click_to_move = self.navigationController.get_flag_click_to_move()
             self.setEnabled_all(False)
             self.checkbox_clickToMove.setChecked(False) # should set navigationController.click_to_move to False
-            self.navigationController.click_to_move = False
+            # self.navigationController.click_to_move = False
             print("set click to move off")
         else:
             self.setEnabled_all(True)
             self.checkbox_clickToMove.setChecked(self.flag_click_to_move)
-            self.navigationController.click_to_move = self.flag_click_to_move
+            # self.navigationController.click_to_move = self.flag_click_to_move
             print("restored click to move to", "on" if self.flag_click_to_move else "off")
 
     def setEnabled_all(self, enabled):
@@ -2024,7 +2024,8 @@ class FlexibleMultiPointWidget(QFrame):
         self.use_overlap = USE_OVERLAP_FOR_FLEXIBLE
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        self.acquisition_in_place=False
+        self.is_current_acquisition_widget = False
+        self.acquisition_in_place = False
 
     def add_components(self):
 
@@ -2687,6 +2688,7 @@ class FlexibleMultiPointWidget(QFrame):
         if pressed:
             # @@@ to do: add a widgetManger to enable and disable widget
             # @@@ to do: emit signal to widgetManager to disable other widgets
+            self.is_current_acquisition_widget = True # keep track of what widget started the acquisition
 
             # add the current location to the location list if the list is empty
             if len(self.location_list) == 0:
@@ -2723,6 +2725,7 @@ class FlexibleMultiPointWidget(QFrame):
             self.multipointController.run_acquisition(location_list=self.region_coordinates, coordinate_dict=self.region_fov_coordinates_dict)
         else:
             self.multipointController.request_abort_aquisition()
+            self.is_current_acquisition_widget = False
             self.setEnabled_all(True)
 
     def load_last_used_locations(self):
@@ -3027,15 +3030,20 @@ class FlexibleMultiPointWidget(QFrame):
             print(self.location_list)
 
     def acquisition_is_finished(self):
+        if not self.is_current_acquisition_widget:
+            return  # Skip if this wasn't the widget that started acquisition
+
         if not self.acquisition_in_place:
             self.last_used_locations = self.location_list.copy()
             self.last_used_location_ids = self.location_ids.copy()
         else:
             self.clear_only_location_list()
             self.acquisition_in_place = False
+
         self.signal_acquisition_started.emit(False)
         self.btn_startAcquisition.setChecked(False)
         self.setEnabled_all(True)
+        self.is_current_acquisition_widget = False
 
     def setEnabled_all(self,enabled,exclude_btn_startAcquisition=True):
         self.btn_setSavingDir.setEnabled(enabled)
@@ -3101,6 +3109,7 @@ class WellplateMultiPointWidget(QFrame):
         self.acquisition_start_time = None
         self.manual_shape = None
         self.eta_seconds = 0
+        self.is_current_acquisition_widget = False
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.set_default_scan_size()
@@ -3979,6 +3988,7 @@ class WellplateMultiPointWidget(QFrame):
 
         if pressed:
             self.setEnabled_all(False)
+            self.is_current_acquisition_widget = True
 
             scan_size_mm = self.entry_scan_size.value()
             overlap_percent = self.entry_overlap.value()
@@ -4035,15 +4045,24 @@ class WellplateMultiPointWidget(QFrame):
     
         else:
             self.multipointController.request_abort_aquisition()
+            self.is_current_acquisition_widget = False
             self.setEnabled_all(True)
 
     def acquisition_is_finished(self):
-        self.signal_acquisition_started.emit(False)
+        if not self.is_current_acquisition_widget:
+            return  # Skip if this wasn't the widget that started acquisition
+
+        self.signal_acquisition_started.emit(False)  # Emit signal before clearing flag
         self.btn_startAcquisition.setChecked(False)
-        self.set_well_coordinates(self.well_selected)
+
         if self.combobox_shape.currentText() == 'Manual':
             self.signal_draw_manual_shape.emit(True)
+            self.update_manual_shape(self.manual_shapes)
+        else:
+            self.set_well_coordinates(self.well_selected)
+
         self.setEnabled_all(True)
+        self.is_current_acquisition_widget = False  # Clear flag last
 
     def setEnabled_all(self, enabled):
         for widget in self.findChildren(QWidget):

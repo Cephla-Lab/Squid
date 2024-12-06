@@ -964,10 +964,12 @@ class HighContentScreeningGui(QMainWindow):
 
     def toggleAcquisitionStart(self, acquisition_started):
         if acquisition_started:
+            print("STARTING ACQUISITION")
             if self.is_live_scan_grid_on:
                 self.navigationController.scanGridPos.disconnect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
                 self.is_live_scan_grid_on = False
         else:
+            print("FINISHED ACQUISITION")
             if not self.is_live_scan_grid_on:
                 self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
                 self.is_live_scan_grid_on = True
