@@ -2,6 +2,8 @@
 import os
 import sys
 
+from squid.abc import AbstractStage
+
 # qt libraries
 os.environ["QT_API"] = "pyqt5"
 import qtpy
@@ -720,7 +722,6 @@ class LiveController(QObject):
 
 
 class NavigationController(QObject):
-
     xPos = Signal(float)
     yPos = Signal(float)
     zPos = Signal(float)
@@ -731,46 +732,24 @@ class NavigationController(QObject):
     # x y z axis pid enable flag
     pid_enable_flag = [False, False, False]
 
-
-    def __init__(self,microcontroller, objectivestore, parent=None):
+    def __init__(self, stage: AbstractStage, objectivestore, parent=None):
         # parent should be set to OctopiGUI instance to enable updates
         # to camera settings, e.g. binning, that would affect click-to-move
         QObject.__init__(self)
-        self.microcontroller = microcontroller
+        self.stage = stage
         self.parent = parent
         self.objectiveStore = objectivestore
-        self.x_pos_mm = 0
-        self.y_pos_mm = 0
-        self.z_pos_mm = 0
-        self.z_pos = 0
-        self.theta_pos_rad = 0
-        self.x_microstepping = MICROSTEPPING_DEFAULT_X
-        self.y_microstepping = MICROSTEPPING_DEFAULT_Y
-        self.z_microstepping = MICROSTEPPING_DEFAULT_Z
+
         self.click_to_move = ENABLE_CLICK_TO_MOVE_BY_DEFAULT # default on when acquisition not running
-        self.theta_microstepping = MICROSTEPPING_DEFAULT_THETA
         self.enable_joystick_button_action = True
 
         # to be moved to gui for transparency
+        # TODO(imo)
         self.microcontroller.set_callback(self.update_pos)
-
-        # self.timer_read_pos = QTimer()
-        # self.timer_read_pos.setInterval(PosUpdate.INTERVAL_MS)
-        # self.timer_read_pos.timeout.connect(self.update_pos)
-        # self.timer_read_pos.start()
 
         # scan start position (obsolete? only for TiledDisplay)
         self.scan_begin_position_x = 0
         self.scan_begin_position_y = 0
-    
-    def get_mm_per_ustep_X(self):
-        return SCREW_PITCH_X_MM/(self.x_microstepping*FULLSTEPS_PER_REV_X)
-
-    def get_mm_per_ustep_Y(self):
-        return SCREW_PITCH_Y_MM/(self.y_microstepping*FULLSTEPS_PER_REV_Y)
-
-    def get_mm_per_ustep_Z(self):
-        return SCREW_PITCH_Z_MM/(self.z_microstepping*FULLSTEPS_PER_REV_Z)
 
     def set_flag_click_to_move(self, flag):
         self.click_to_move = flag
@@ -823,10 +802,8 @@ class NavigationController(QObject):
             delta_x = pixel_sign_x * pixel_size_um * click_x / 1000.0
             delta_y = pixel_sign_y * pixel_size_um * click_y / 1000.0
 
-            self.move_x(delta_x)
-            self.microcontroller.wait_till_operation_is_completed()
-            self.move_y(delta_y)
-            self.microcontroller.wait_till_operation_is_completed()
+            self.stage.move_x(delta_x)
+            self.stage.move_y(delta_y)
 
     def move_from_click_mosaic(self, x_mm, y_mm):
         if self.click_to_move:
@@ -850,11 +827,12 @@ class NavigationController(QObject):
                 break
 
     def cache_current_position(self):
-        if (SOFTWARE_POS_LIMIT.X_NEGATIVE <= self.x_pos_mm <= SOFTWARE_POS_LIMIT.X_POSITIVE and
-            SOFTWARE_POS_LIMIT.Y_NEGATIVE <= self.y_pos_mm <= SOFTWARE_POS_LIMIT.Y_POSITIVE and
-            SOFTWARE_POS_LIMIT.Z_NEGATIVE <= self.z_pos_mm <= SOFTWARE_POS_LIMIT.Z_POSITIVE):
+        pos = self.stage.get_pos()
+        if (SOFTWARE_POS_LIMIT.X_NEGATIVE <= pos.x_pos_mm <= SOFTWARE_POS_LIMIT.X_POSITIVE and
+            SOFTWARE_POS_LIMIT.Y_NEGATIVE <= pos.y_pos_mm <= SOFTWARE_POS_LIMIT.Y_POSITIVE and
+            SOFTWARE_POS_LIMIT.Z_NEGATIVE <= pos.z_pos_mm <= SOFTWARE_POS_LIMIT.Z_POSITIVE):
             with open("cache/last_coords.txt","w") as f:
-                f.write(",".join([str(self.x_pos_mm),str(self.y_pos_mm),str(self.z_pos_mm)]))
+                f.write(",".join([str(pos.x_pos_mm),str(pos.y_pos_mm),str(pos.z_pos_mm)]))
 
     def move_x(self,delta):
         self.microcontroller.move_x_usteps(int(delta/self.get_mm_per_ustep_X()))
@@ -894,31 +872,16 @@ class NavigationController(QObject):
 
     def update_pos(self,microcontroller):
         # get position from the microcontroller
-        x_pos, y_pos, z_pos, theta_pos = microcontroller.get_pos()
-        self.z_pos = z_pos
-        # calculate position in mm or rad
-        if USE_ENCODER_X:
-            self.x_pos_mm = x_pos*ENCODER_POS_SIGN_X*ENCODER_STEP_SIZE_X_MM
-        else:
-            self.x_pos_mm = x_pos*STAGE_POS_SIGN_X*self.get_mm_per_ustep_X()
-        if USE_ENCODER_Y:
-            self.y_pos_mm = y_pos*ENCODER_POS_SIGN_Y*ENCODER_STEP_SIZE_Y_MM
-        else:
-            self.y_pos_mm = y_pos*STAGE_POS_SIGN_Y*self.get_mm_per_ustep_Y()
-        if USE_ENCODER_Z:
-            self.z_pos_mm = z_pos*ENCODER_POS_SIGN_Z*ENCODER_STEP_SIZE_Z_MM
-        else:
-            self.z_pos_mm = z_pos*STAGE_POS_SIGN_Z*self.get_mm_per_ustep_Z()
-        if USE_ENCODER_THETA:
-            self.theta_pos_rad = theta_pos*ENCODER_POS_SIGN_THETA*ENCODER_STEP_SIZE_THETA
-        else:
-            self.theta_pos_rad = theta_pos*STAGE_POS_SIGN_THETA*(2*math.pi/(self.theta_microstepping*FULLSTEPS_PER_REV_THETA))
+        pos = self.stage.get_pos()
+
         # emit the updated position
-        self.xPos.emit(self.x_pos_mm)
-        self.yPos.emit(self.y_pos_mm)
-        self.zPos.emit(self.z_pos_mm*1000)
-        self.thetaPos.emit(self.theta_pos_rad*360/(2*math.pi))
-        self.xyPos.emit(self.x_pos_mm,self.y_pos_mm)
+        self.xPos.emit(pos.x_mm)
+        self.yPos.emit(pos.y_mm)
+        # NOTE: The rest of the system expects um from here, so *1000
+        self.zPos.emit(1000 * pos.z_mm)
+        # NOTE: The emit is expected to be in degrees, so convert here.
+        self.thetaPos.emit(pos.theta_rad*360/(2*math.pi))
+        self.xyPos.emit(pos.x_mm, pos.y_mm)
 
         if microcontroller.signal_joystick_button_pressed_event:
             if self.enable_joystick_button_action:
@@ -994,9 +957,7 @@ class NavigationController(QObject):
 
     def move_to(self,x_mm,y_mm):
         self.move_x_to(x_mm)
-        self.microcontroller.wait_till_operation_is_completed()
         self.move_y_to(y_mm)
-        self.microcontroller.wait_till_operation_is_completed()
 
     def configure_encoder(self, axis, transitions_per_revolution,flip_direction):
         self.microcontroller.configure_stage_pid(axis, transitions_per_revolution=int(transitions_per_revolution), flip_direction=flip_direction)
@@ -1430,10 +1391,10 @@ class AutoFocusController(QObject):
     autofocusFinished = Signal()
     image_to_display = Signal(np.ndarray)
 
-    def __init__(self,camera,navigationController,liveController):
+    def __init__(self,camera, stage: AbstractStage, liveController):
         QObject.__init__(self)
         self.camera = camera
-        self.navigationController = navigationController
+        self.stage = stage
         self.liveController = liveController
         self.N = None
         self.deltaZ = None
@@ -1447,10 +1408,10 @@ class AutoFocusController(QObject):
     def set_N(self,N):
         self.N = N
 
-    def set_deltaZ(self,deltaZ_um):
-        mm_per_ustep_Z = self.navigationController.get_mm_per_ustep_Z()
-        self.deltaZ = deltaZ_um/1000
-        self.deltaZ_usteps = round((deltaZ_um/1000)/mm_per_ustep_Z)
+    def set_deltaZ(self, delta_z_um):
+        mm_per_ustep_Z = self.stage.get_config().Z_AXIS.convert_to_real_units(1)
+        self.deltaZ = delta_z_um / 1000
+        self.deltaZ_usteps = round((delta_z_um / 1000) / mm_per_ustep_Z)
 
     def set_crop(self,crop_width,crop_height):
         self.crop_width = crop_width
@@ -1459,15 +1420,14 @@ class AutoFocusController(QObject):
     def autofocus(self, focus_map_override=False):
         if self.use_focus_map and (not focus_map_override):
             self.autofocus_in_progress = True
+            # TODO(imo): elim micro use here
             self.navigationController.microcontroller.wait_till_operation_is_completed()
-            x = self.navigationController.x_pos_mm
-            y = self.navigationController.y_pos_mm
+            pos = self.stage.get_pos()
 
             # z here is in mm because that's how the navigation controller stores it
-            target_z = utils.interpolate_plane(*self.focus_map_coords[:3], (x,y))
+            target_z = utils.interpolate_plane(*self.focus_map_coords[:3], (pos.x_mm, pos.y_mm))
             print(f"Interpolated target z as {target_z} mm from focus map, moving there.")
-            self.navigationController.move_z_to(target_z)
-            self.navigationController.microcontroller.wait_till_operation_is_completed()
+            self.stage.move_z_to(target_z)
             self.autofocus_in_progress = False
             self.autofocusFinished.emit()
             return
@@ -1583,17 +1543,16 @@ class AutoFocusController(QObject):
 
         for coord in [coord1,coord2,coord3]:
             print(f"Navigating to coordinates ({coord[0]},{coord[1]}) to sample for focus map")
-            self.navigationController.move_to(coord[0],coord[1])
-            self.navigationController.microcontroller.wait_till_operation_is_completed()
+            self.stage.move_x_to(coord[0])
+            self.stage.move_y_to(coord[1])
+
             print("Autofocusing")
             self.autofocus(True)
             self.wait_till_autofocus_has_completed()
-            #self.navigationController.microcontroller.wait_till_operation_is_completed()
-            x = self.navigationController.x_pos_mm
-            y = self.navigationController.y_pos_mm
-            z = self.navigationController.z_pos_mm
-            print(f"Adding coordinates ({x},{y},{z}) to focus map")
-            self.focus_map_coords.append((x,y,z))
+            pos = self.stage.get_pos()
+
+            print(f"Adding coordinates ({pos.x},{pos.y},{pos.z}) to focus map")
+            self.focus_map_coords.append((pos.x, pos.y, pos.z))
 
         print("Generated focus map.")
 
@@ -3960,7 +3919,8 @@ class PlateReaderNavigationController(QObject):             # Not implemented fo
 
     def update_pos(self,microcontroller):
         # get position from the microcontroller
-        x_pos, y_pos, z_pos, theta_pos = microcontroller.get_pos()
+        pos = microcontroller.get_pos()
+        x_pos, y_pos, z_pos, theta_pos = pos.x_mm, pos.y_mm, pos.z_mm, pos.theta_rad
         self.z_pos = z_pos
         # calculate position in mm or rad
         if USE_ENCODER_X:
