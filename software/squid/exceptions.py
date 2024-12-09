@@ -1,0 +1,2 @@
+class SquidError(RuntimeError):
+    pass
