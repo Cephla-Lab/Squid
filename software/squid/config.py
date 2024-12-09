@@ -16,7 +16,7 @@ class AxisConfig(pydantic.BaseModel):
     # If this is a linear axis, this is the distance the axis must move to see 1 encoder step.  If this
     # is a rotary axis, this is the radians travelled by the axis to see 1 encoder step.
     ENCODER_STEP_SIZE: float
-    FULLSTEPS_PER_REV: float
+    FULL_STEPS_PER_REV: float
 
     # For linear axes, this is the mm traveled by the axis when 1 full step is taken by the motor.  For rotary
     # axes, this is the rad traveled by the axis when 1 full step is taken by the motor.
