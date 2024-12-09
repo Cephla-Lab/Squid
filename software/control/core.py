@@ -726,6 +726,7 @@ class NavigationController(QObject):
     zPos = Signal(float)
     thetaPos = Signal(float)
     xyPos = Signal(float,float)
+    scanGridPos = Signal(float,float)
     signal_joystick_button_pressed = Signal()
 
     # x y z axis pid enable flag
@@ -754,10 +755,11 @@ class NavigationController(QObject):
         # to be moved to gui for transparency
         self.microcontroller.set_callback(self.update_pos)
 
-        # self.timer_read_pos = QTimer()
-        # self.timer_read_pos.setInterval(PosUpdate.INTERVAL_MS)
-        # self.timer_read_pos.timeout.connect(self.update_pos)
-        # self.timer_read_pos.start()
+        self.movement_timer = QTimer(self)
+        self.movement_timer.setInterval(500)  # Single 500ms check
+        self.movement_timer.timeout.connect(self.check_movement_status)
+        self.movement_timer.setSingleShot(True)  # Timer only fires once
+        self.movement_threshold = 0.0001  # mm
 
         # scan start position (obsolete? only for TiledDisplay)
         self.scan_begin_position_x = 0
@@ -778,7 +780,7 @@ class NavigationController(QObject):
     def get_flag_click_to_move(self):
         return self.click_to_move
 
-    def scan_preview_move_from_click(self, click_x, click_y, image_width, image_height, Nx=1, Ny=1, dx_mm=0.9, dy_mm=0.9):
+    def scan_preview_move_from_click(self, click_x, click_y, image_width, image_height, Nx=1, Ny=1, dx_mm=0.9, dy_mm=0.9): # obsolete (only for tiled display)
         """
         napariTiledDisplay uses the Nx, Ny, dx_mm, dy_mm fields to move to the correct fov first
         imageArrayDisplayWindow assumes only a single fov (default values do not impact calculation but this is less correct)
@@ -894,6 +896,8 @@ class NavigationController(QObject):
 
     def update_pos(self,microcontroller):
         # get position from the microcontroller
+        last_x_pos = self.x_pos_mm
+        last_y_pos = self.y_pos_mm
         x_pos, y_pos, z_pos, theta_pos = microcontroller.get_pos()
         self.z_pos = z_pos
         # calculate position in mm or rad
@@ -913,6 +917,7 @@ class NavigationController(QObject):
             self.theta_pos_rad = theta_pos*ENCODER_POS_SIGN_THETA*ENCODER_STEP_SIZE_THETA
         else:
             self.theta_pos_rad = theta_pos*STAGE_POS_SIGN_THETA*(2*math.pi/(self.theta_microstepping*FULLSTEPS_PER_REV_THETA))
+
         # emit the updated position
         self.xPos.emit(self.x_pos_mm)
         self.yPos.emit(self.y_pos_mm)
@@ -925,6 +930,32 @@ class NavigationController(QObject):
                 self.signal_joystick_button_pressed.emit()
             print('joystick button pressed')
             microcontroller.signal_joystick_button_pressed_event = False
+
+        # Check if position has changed
+        if last_x_pos != self.x_pos_mm or last_y_pos != self.y_pos_mm:
+            # restart movement timer
+            QMetaObject.invokeMethod(self.movement_timer, "start", Qt.QueuedConnection)
+
+    def check_movement_status(self):
+        """Check if stage has stopped moving after timer delay"""
+        x_pos, y_pos, z_pos, theta_pos = self.microcontroller.get_pos()
+        # calculate position in mm or rad
+        if USE_ENCODER_X:
+            x_pos_mm = x_pos*ENCODER_POS_SIGN_X*ENCODER_STEP_SIZE_X_MM
+        else:
+            x_pos_mm = x_pos*STAGE_POS_SIGN_X*self.get_mm_per_ustep_X()
+        if USE_ENCODER_Y:
+            y_pos_mm = y_pos*ENCODER_POS_SIGN_Y*ENCODER_STEP_SIZE_Y_MM
+        else:
+            y_pos_mm = y_pos*STAGE_POS_SIGN_Y*self.get_mm_per_ustep_Y()
+
+        delta_x = abs(self.x_pos_mm - x_pos_mm)
+        delta_y = abs(self.y_pos_mm - y_pos_mm)
+
+        # check if movement less than thresshold (i.e. stopped moving)
+        if delta_x < self.movement_threshold and delta_y < self.movement_threshold and not self.microcontroller.is_busy():
+            # emit pos to draw scan grid
+            self.scanGridPos.emit(self.x_pos_mm, self.y_pos_mm)
 
     def home_x(self):
         self.microcontroller.home_x()
@@ -2523,7 +2554,7 @@ class MultiPointController(QObject):
         self.z_stacking_config = Z_STACKING_CONFIG
 
     def set_use_piezo(self, checked):
-        print("set use_piezo to", checked)
+        print("Use Piezo:", checked)
         self.use_piezo = checked
         if hasattr(self, 'multiPointWorker'):
             self.multiPointWorker.update_use_piezo(checked)
@@ -3439,8 +3470,6 @@ class ImageDisplayWindow(QMainWindow):
 class NavigationViewer(QFrame):
 
     signal_coordinates_clicked = Signal(float, float)  # Will emit x_mm, y_mm when clicked
-    signal_update_live_scan_grid = Signal(float, float)
-    signal_update_well_coordinates = Signal(bool)
 
     def __init__(self, objectivestore, sample = 'glass slide', invertX = False, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -3460,7 +3489,6 @@ class NavigationViewer(QFrame):
         self.acquisition_size = Acquisition.CROP_HEIGHT
         self.x_mm = None
         self.y_mm = None
-        self.acquisition_started = False
         self.image_paths = {
             'glass slide': 'images/slide carrier_828x662.png',
             '4 glass slide': 'images/4 slide carrier_1509x1010.png',
@@ -3486,7 +3514,7 @@ class NavigationViewer(QFrame):
         self.graphics_widget = pg.GraphicsLayoutWidget()
         self.graphics_widget.setBackground("w")
 
-        self.view = self.graphics_widget.addViewBox(invertX=invertX, invertY=True)
+        self.view = self.graphics_widget.addViewBox(invertX=not INVERTED_OBJECTIVE, invertY=True)
         self.view.setAspectLocked(True)
 
         self.grid = QVBoxLayout()
@@ -3524,6 +3552,10 @@ class NavigationViewer(QFrame):
         self.view.addItem(self.scan_overlay_item)
         self.view.addItem(self.fov_overlay_item)
 
+        self.background_item.setZValue(-1)  # Background layer at the bottom
+        self.scan_overlay_item.setZValue(0)  # Scan overlay in the middle
+        self.fov_overlay_item.setZValue(1)  # FOV overlay on top
+
     def update_display_properties(self, sample):
         if sample == 'glass slide':
             self.location_update_threshold_mm = 0.2
@@ -3535,15 +3567,11 @@ class NavigationViewer(QFrame):
             self.mm_per_pixel = 0.084665
             self.origin_x_pixel = 50
             self.origin_y_pixel = 0
-            self.view.invertX(False)
-            self.view.invertY(True)
         else:
             self.location_update_threshold_mm = 0.05
             self.mm_per_pixel = 0.084665
             self.origin_x_pixel = self.a1_x_pixel - (self.a1_x_mm)/self.mm_per_pixel
             self.origin_y_pixel = self.a1_y_pixel - (self.a1_y_mm)/self.mm_per_pixel
-            self.view.invertX(False)
-            self.view.invertY(True)
         self.update_fov_size()
 
     def update_fov_size(self):
@@ -3553,13 +3581,7 @@ class NavigationViewer(QFrame):
     def on_objective_changed(self):
         self.clear_overlay()
         self.update_fov_size()
-        if self.x_mm is not None and self.y_mm is not None:
-            if 'glass slide'in self.sample:
-                self.signal_update_live_scan_grid.emit(self.x_mm, self.y_mm)
-            self.draw_current_fov(self.x_mm, self.y_mm)
-
-    def on_acquisition_start(self, acquisition_started):
-        self.acquisition_started = acquisition_started
+        self.draw_current_fov(self.x_mm, self.y_mm)
 
     def update_wellplate_settings(self, sample_format, a1_x_mm, a1_y_mm, a1_x_pixel, a1_y_pixel, well_size_mm, well_spacing_mm, number_of_skip, rows, cols):
         if isinstance(sample_format, QVariant):
@@ -3601,29 +3623,15 @@ class NavigationViewer(QFrame):
         self.update_display_properties(sample)
         self.draw_current_fov(self.x_mm, self.y_mm)
 
-    def update_current_location(self, x_mm=None, y_mm=None):
+    def draw_fov_current_location(self, x_mm=None, y_mm=None):
         if x_mm is None and y_mm is None:
             if self.x_mm is None and self.y_mm is None:
                 return
-            else:
-                self.draw_current_fov(self.x_mm, self.y_mm)
-
-        elif self.x_mm is not None and self.y_mm is not None:
-            # update only when the displacement has exceeded certain value
-            if abs(x_mm - self.x_mm) > self.location_update_threshold_mm or abs(y_mm - self.y_mm) > self.location_update_threshold_mm:
-                self.draw_current_fov(x_mm, y_mm)
-                self.x_mm = x_mm
-                self.y_mm = y_mm
-                # update_live_scan_grid
-                if 'glass slide' in self.sample and not self.acquisition_started:
-                    self.signal_update_live_scan_grid.emit(x_mm, y_mm)
+            self.draw_current_fov(self.x_mm, self.y_mm)
         else:
             self.draw_current_fov(x_mm, y_mm)
             self.x_mm = x_mm
             self.y_mm = y_mm
-            # update_live_scan_grid
-            if 'glass slide' in self.sample and not self.acquisition_started:
-                self.signal_update_live_scan_grid.emit(x_mm, y_mm)
 
     def get_FOV_pixel_coordinates(self, x_mm, y_mm):
         if self.sample == 'glass slide':
@@ -3673,12 +3681,6 @@ class NavigationViewer(QFrame):
         self.background_image = self.background_image_copy.copy()
         self.background_item.setImage(self.background_image)
         self.draw_current_fov(self.x_mm, self.y_mm)
-
-    def update_slide(self):
-        self.background_image = self.background_image_copy.copy()
-        self.background_item.setImage(self.background_image)
-        self.draw_current_fov(self.x_mm, self.y_mm)
-        self.signal_update_well_coordinates.emit(True)
 
     def clear_overlay(self):
         self.scan_overlay.fill(0)
