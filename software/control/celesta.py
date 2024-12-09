@@ -44,7 +44,7 @@ class CELESTA(object):
         if self.live:
             [self.pmin, self.pmax] = self.getPowerRange()
             self.setExtControl(True)
-            for i in range(self.n_lasers:)
+            for i in range(self.n_lasers):
                 if (not self.getLaserOnOff(i)):
                     self.setLaserOnOff(i,False)
 
@@ -88,7 +88,7 @@ class CELESTA(object):
         """
         Return True/False the laser is on/off.
         """
-        self.message = lumencor_httpcommand(command = 'GET CH '+laser_id, ip=self.ip)
+        self.message = lumencor_httpcommand(command = 'GET CH '+str(laser_id), ip=self.ip)
         response = self.message['message']
         self.on = response[-1]=='1'
         return self.on
@@ -107,7 +107,8 @@ class CELESTA(object):
         """
         Return the current laser power.
         """
-        self.message = lumencor_httpcommand(command = 'GET CHINT '+laser_id, ip=self.ip)
+        self.message = lumencor_httpcommand(command = 'GET CHINT '+str(laser_id), ip=self.ip)
+        # print(command = 'GET CHINT '+str(laser_id), ip=self.ip)
         response = self.message['message']
         power = float(response.split(' ')[-1])
         return power
@@ -117,10 +118,10 @@ class CELESTA(object):
         Turn the laser on/off.
         """
         if on:
-            self.message = lumencor_httpcommand(command = 'SET CH '+laser_id+' 1', ip=self.ip)
+            self.message = lumencor_httpcommand(command = 'SET CH '+str(laser_id)+' 1', ip=self.ip)
             self.on = True
         else:
-            self.message = lumencor_httpcommand(command = 'SET CH '+laser_id+' 0', ip=self.ip)
+            self.message = lumencor_httpcommand(command = 'SET CH '+str(laser_id)+' 0', ip=self.ip)
             self.on = False
         print("Turning On/Off", self.on, self.message)
 
@@ -131,7 +132,7 @@ class CELESTA(object):
         print("Setting Power", power_in_mw, self.message)
         if power_in_mw > self.pmax:
             power_in_mw = self.pmax
-        self.message = lumencor_httpcommand(command ='SET CHINT '+laser_id+' '+ str(int(power_in_mw)), ip=self.ip)
+        self.message = lumencor_httpcommand(command ='SET CHINT '+str(laser_id)+' '+ str(int(power_in_mw)), ip=self.ip)
         if self.message['message'][0]=='A':
             return True
         return False
