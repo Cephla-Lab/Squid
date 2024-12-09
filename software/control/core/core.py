@@ -2,6 +2,9 @@
 import os
 import sys
 
+from control.microcontroller import Microcontroller
+from squid.abc import AbstractStage
+
 # qt libraries
 os.environ["QT_API"] = "pyqt5"
 import qtpy
@@ -360,10 +363,6 @@ class ImageSaver_Tracking(QObject):
         self.stop_signal_received = True
         self.thread.join()
 
-
-'''
-class ImageSaver_MultiPointAcquisition(QObject):
-'''
 
 class ImageDisplay(QObject):
 
@@ -739,50 +738,23 @@ class NavigationController(QObject):
     # x y z axis pid enable flag
     pid_enable_flag = [False, False, False]
 
-
-    def __init__(self,microcontroller, objectivestore, parent=None):
+    def __init__(self, stage: AbstractStage, objectivestore, parent=None):
         # parent should be set to OctopiGUI instance to enable updates
         # to camera settings, e.g. binning, that would affect click-to-move
         QObject.__init__(self)
-        self.microcontroller = microcontroller
+        self.stage = stage
         self.parent = parent
         self.objectiveStore = objectivestore
-        self.x_pos_mm = 0
-        self.y_pos_mm = 0
-        self.z_pos_mm = 0
-        self.z_pos = 0
-        self.theta_pos_rad = 0
-        self.x_microstepping = MICROSTEPPING_DEFAULT_X
-        self.y_microstepping = MICROSTEPPING_DEFAULT_Y
-        self.z_microstepping = MICROSTEPPING_DEFAULT_Z
-        self.w_microstepping = MICROSTEPPING_DEFAULT_W
-        self.click_to_move = ENABLE_CLICK_TO_MOVE_BY_DEFAULT # default on when acquisition not runnin
-        self.theta_microstepping = MICROSTEPPING_DEFAULT_THETA
+
+        self.click_to_move = ENABLE_CLICK_TO_MOVE_BY_DEFAULT # default on when acquisition not running
         self.enable_joystick_button_action = True
 
-        # to be moved to gui for transparency
-        self.microcontroller.set_callback(self.update_pos)
-
-        self.movement_timer = QTimer(self)
-        self.movement_timer.setInterval(500)  # Single 500ms check
-        self.movement_timer.timeout.connect(self.check_movement_status)
-        self.movement_timer.setSingleShot(True)  # Timer only fires once
-        self.movement_threshold = 0.0001  # mm
-
-    def get_mm_per_ustep_X(self):
-        return SCREW_PITCH_X_MM/(self.x_microstepping*FULLSTEPS_PER_REV_X)
-
-    def get_mm_per_ustep_Y(self):
-        return SCREW_PITCH_Y_MM/(self.y_microstepping*FULLSTEPS_PER_REV_Y)
-
-    def get_mm_per_ustep_Z(self):
-        return SCREW_PITCH_Z_MM/(self.z_microstepping*FULLSTEPS_PER_REV_Z)
+        # scan start position (obsolete? only for TiledDisplay)
+        self.scan_begin_position_x = 0
+        self.scan_begin_position_y = 0
 
     def set_flag_click_to_move(self, flag):
         self.click_to_move = flag
-
-    def wait_till_operation_is_completed(self, timeout_limit_s = 5):
-        self.microcontroller.wait_till_operation_is_completed(timeout_limit_s)
 
     def get_flag_click_to_move(self):
         return self.click_to_move
@@ -797,108 +769,26 @@ class NavigationController(QObject):
             delta_x = pixel_sign_x * pixel_size_um * click_x / 1000.0
             delta_y = pixel_sign_y * pixel_size_um * click_y / 1000.0
 
-            self.move_x(delta_x)
-            self.microcontroller.wait_till_operation_is_completed()
-            self.move_y(delta_y)
-            self.microcontroller.wait_till_operation_is_completed()
+            self.stage.move_x(delta_x)
+            self.stage.move_y(delta_y)
 
     def move_from_click_mosaic(self, x_mm, y_mm):
         if self.click_to_move:
             self.move_to(x_mm, y_mm)
 
-    def move_to_cached_position(self):
-        if not os.path.isfile("cache/last_coords.txt"):
-            return
-        with open("cache/last_coords.txt","r") as f:
-            for line in f:
-                try:
-                    x,y,z = line.strip("\n").strip().split(",")
-                    x = float(x)
-                    y = float(y)
-                    z = float(z)
-                    self.move_to(x,y)
-                    self.move_z_to(z)
-                    break
-                except:
-                    pass
-                break
-
-    def cache_current_position(self):
-        if (SOFTWARE_POS_LIMIT.X_NEGATIVE <= self.x_pos_mm <= SOFTWARE_POS_LIMIT.X_POSITIVE and
-            SOFTWARE_POS_LIMIT.Y_NEGATIVE <= self.y_pos_mm <= SOFTWARE_POS_LIMIT.Y_POSITIVE and
-            SOFTWARE_POS_LIMIT.Z_NEGATIVE <= self.z_pos_mm <= SOFTWARE_POS_LIMIT.Z_POSITIVE):
-            with open("cache/last_coords.txt","w") as f:
-                f.write(",".join([str(self.x_pos_mm),str(self.y_pos_mm),str(self.z_pos_mm)]))
-
-    def move_x(self,delta):
-        self.microcontroller.move_x_usteps(int(delta/self.get_mm_per_ustep_X()))
-
-    def move_y(self,delta):
-        self.microcontroller.move_y_usteps(int(delta/self.get_mm_per_ustep_Y()))
-
-    def move_z(self,delta):
-        self.microcontroller.move_z_usteps(int(delta/self.get_mm_per_ustep_Z()))
-
-    def move_w(self,delta):
-        self.microcontroller.move_w_usteps(int(delta/(SCREW_PITCH_W_MM/(self.w_microstepping*FULLSTEPS_PER_REV_W))))
-
-    def move_x_to(self,delta):
-        self.microcontroller.move_x_to_usteps(STAGE_MOVEMENT_SIGN_X*int(delta/self.get_mm_per_ustep_X()))
-
-    def move_y_to(self,delta):
-        self.microcontroller.move_y_to_usteps(STAGE_MOVEMENT_SIGN_Y*int(delta/self.get_mm_per_ustep_Y()))
-
-    def move_z_to(self,delta):
-        self.microcontroller.move_z_to_usteps(STAGE_MOVEMENT_SIGN_Z*int(delta/self.get_mm_per_ustep_Z()))
-
-    def move_x_usteps(self,usteps):
-        self.microcontroller.move_x_usteps(usteps)
-
-    def move_y_usteps(self,usteps):
-        self.microcontroller.move_y_usteps(usteps)
-
-    def move_z_usteps(self,usteps):
-        self.microcontroller.move_z_usteps(usteps)
-
-    def move_x_to_usteps(self,usteps):
-        self.microcontroller.move_x_to_usteps(usteps)
-
-    def move_y_to_usteps(self,usteps):
-        self.microcontroller.move_y_to_usteps(usteps)
-
-    def move_z_to_usteps(self,usteps):
-        self.microcontroller.move_z_to_usteps(usteps)
-
-    def update_pos(self,microcontroller):
+# TODO(imo): This needs to be called from a timer in the main gui.  It used to be done via micro callback.
+    def update_pos(self, microcontroller):
         # get position from the microcontroller
-        last_x_pos = self.x_pos_mm
-        last_y_pos = self.y_pos_mm
-        x_pos, y_pos, z_pos, theta_pos = microcontroller.get_pos()
-        self.z_pos = z_pos
-        # calculate position in mm or rad
-        if USE_ENCODER_X:
-            self.x_pos_mm = x_pos*ENCODER_POS_SIGN_X*ENCODER_STEP_SIZE_X_MM
-        else:
-            self.x_pos_mm = x_pos*STAGE_POS_SIGN_X*self.get_mm_per_ustep_X()
-        if USE_ENCODER_Y:
-            self.y_pos_mm = y_pos*ENCODER_POS_SIGN_Y*ENCODER_STEP_SIZE_Y_MM
-        else:
-            self.y_pos_mm = y_pos*STAGE_POS_SIGN_Y*self.get_mm_per_ustep_Y()
-        if USE_ENCODER_Z:
-            self.z_pos_mm = z_pos*ENCODER_POS_SIGN_Z*ENCODER_STEP_SIZE_Z_MM
-        else:
-            self.z_pos_mm = z_pos*STAGE_POS_SIGN_Z*self.get_mm_per_ustep_Z()
-        if USE_ENCODER_THETA:
-            self.theta_pos_rad = theta_pos*ENCODER_POS_SIGN_THETA*ENCODER_STEP_SIZE_THETA
-        else:
-            self.theta_pos_rad = theta_pos*STAGE_POS_SIGN_THETA*(2*math.pi/(self.theta_microstepping*FULLSTEPS_PER_REV_THETA))
+        pos = self.stage.get_pos()
 
         # emit the updated position
-        self.xPos.emit(self.x_pos_mm)
-        self.yPos.emit(self.y_pos_mm)
-        self.zPos.emit(self.z_pos_mm*1000)
-        self.thetaPos.emit(self.theta_pos_rad*360/(2*math.pi))
-        self.xyPos.emit(self.x_pos_mm,self.y_pos_mm)
+        self.xPos.emit(pos.x_mm)
+        self.yPos.emit(pos.y_mm)
+        # NOTE: The rest of the system expects um from here, so *1000
+        self.zPos.emit(1000 * pos.z_mm)
+        # NOTE: The emit is expected to be in degrees, so convert here.
+        self.thetaPos.emit(pos.theta_rad*360/(2*math.pi))
+        self.xyPos.emit(pos.x_mm, pos.y_mm)
 
         if microcontroller.signal_joystick_button_pressed_event:
             if self.enable_joystick_button_action:
@@ -906,117 +796,7 @@ class NavigationController(QObject):
             print('joystick button pressed')
             microcontroller.signal_joystick_button_pressed_event = False
 
-        # Check if position has changed
-        if last_x_pos != self.x_pos_mm or last_y_pos != self.y_pos_mm:
-            # restart movement timer
-            QMetaObject.invokeMethod(self.movement_timer, "start", Qt.QueuedConnection)
-
-    def check_movement_status(self):
-        """Check if stage has stopped moving after timer delay"""
-        x_pos, y_pos, z_pos, theta_pos = self.microcontroller.get_pos()
-        # calculate position in mm or rad
-        if USE_ENCODER_X:
-            x_pos_mm = x_pos*ENCODER_POS_SIGN_X*ENCODER_STEP_SIZE_X_MM
-        else:
-            x_pos_mm = x_pos*STAGE_POS_SIGN_X*self.get_mm_per_ustep_X()
-        if USE_ENCODER_Y:
-            y_pos_mm = y_pos*ENCODER_POS_SIGN_Y*ENCODER_STEP_SIZE_Y_MM
-        else:
-            y_pos_mm = y_pos*STAGE_POS_SIGN_Y*self.get_mm_per_ustep_Y()
-
-        delta_x = abs(self.x_pos_mm - x_pos_mm)
-        delta_y = abs(self.y_pos_mm - y_pos_mm)
-
-        # check if movement less than thresshold (i.e. stopped moving)
-        if delta_x < self.movement_threshold and delta_y < self.movement_threshold and not self.microcontroller.is_busy():
-            # emit pos to draw scan grid
-            self.scanGridPos.emit(self.x_pos_mm, self.y_pos_mm)
-
-    def home_x(self):
-        self.microcontroller.home_x()
-
-    def home_y(self):
-        self.microcontroller.home_y()
-
-    def home_z(self):
-        self.microcontroller.home_z()
-
-    def home_w(self):
-        self.microcontroller.home_w()
-
-    def home_theta(self):
-        self.microcontroller.home_theta()
-
-    def home_xy(self):
-        self.microcontroller.home_xy()
-
-    def zero_x(self):
-        self.microcontroller.zero_x()
-
-    def zero_y(self):
-        self.microcontroller.zero_y()
-
-    def zero_z(self):
-        self.microcontroller.zero_z()
-
-    def zero_theta(self):
-        self.microcontroller.zero_theta()
-
-    def home(self):
-        pass
-
-    def set_x_limit_pos_mm(self,value_mm):
-        if STAGE_MOVEMENT_SIGN_X > 0:
-            self.microcontroller.set_lim(LIMIT_CODE.X_POSITIVE,int(value_mm/self.get_mm_per_ustep_X()))
-        else:
-            self.microcontroller.set_lim(LIMIT_CODE.X_NEGATIVE,STAGE_MOVEMENT_SIGN_X*int(value_mm/self.get_mm_per_ustep_X()))
-
-    def set_x_limit_neg_mm(self,value_mm):
-        if STAGE_MOVEMENT_SIGN_X > 0:
-            self.microcontroller.set_lim(LIMIT_CODE.X_NEGATIVE,int(value_mm/self.get_mm_per_ustep_X()))
-        else:
-            self.microcontroller.set_lim(LIMIT_CODE.X_POSITIVE,STAGE_MOVEMENT_SIGN_X*int(value_mm/self.get_mm_per_ustep_X()))
-
-    def set_y_limit_pos_mm(self,value_mm):
-        if STAGE_MOVEMENT_SIGN_Y > 0:
-            self.microcontroller.set_lim(LIMIT_CODE.Y_POSITIVE,int(value_mm/self.get_mm_per_ustep_Y()))
-        else:
-            self.microcontroller.set_lim(LIMIT_CODE.Y_NEGATIVE,STAGE_MOVEMENT_SIGN_Y*int(value_mm/self.get_mm_per_ustep_Y()))
-
-    def set_y_limit_neg_mm(self,value_mm):
-        if STAGE_MOVEMENT_SIGN_Y > 0:
-            self.microcontroller.set_lim(LIMIT_CODE.Y_NEGATIVE,int(value_mm/self.get_mm_per_ustep_Y()))
-        else:
-            self.microcontroller.set_lim(LIMIT_CODE.Y_POSITIVE,STAGE_MOVEMENT_SIGN_Y*int(value_mm/self.get_mm_per_ustep_Y()))
-
-    def set_z_limit_pos_mm(self,value_mm):
-        if STAGE_MOVEMENT_SIGN_Z > 0:
-            self.microcontroller.set_lim(LIMIT_CODE.Z_POSITIVE,int(value_mm/self.get_mm_per_ustep_Z()))
-        else:
-            self.microcontroller.set_lim(LIMIT_CODE.Z_NEGATIVE,STAGE_MOVEMENT_SIGN_Z*int(value_mm/self.get_mm_per_ustep_Z()))
-
-    def set_z_limit_neg_mm(self,value_mm):
-        if STAGE_MOVEMENT_SIGN_Z > 0:
-            self.microcontroller.set_lim(LIMIT_CODE.Z_NEGATIVE,int(value_mm/self.get_mm_per_ustep_Z()))
-        else:
-            self.microcontroller.set_lim(LIMIT_CODE.Z_POSITIVE,STAGE_MOVEMENT_SIGN_Z*int(value_mm/self.get_mm_per_ustep_Z()))
-
-    def move_to(self,x_mm,y_mm):
-        self.move_x_to(x_mm)
-        self.microcontroller.wait_till_operation_is_completed()
-        self.move_y_to(y_mm)
-        self.microcontroller.wait_till_operation_is_completed()
-
-    def configure_encoder(self, axis, transitions_per_revolution,flip_direction):
-        self.microcontroller.configure_stage_pid(axis, transitions_per_revolution=int(transitions_per_revolution), flip_direction=flip_direction)
-
-    def set_pid_control_enable(self, axis, enable_flag):
-        self.pid_enable_flag[axis] = enable_flag;
-        if self.pid_enable_flag[axis] is True:
-            self.microcontroller.turn_on_stage_pid(axis)
-        else:
-            self.microcontroller.turn_off_stage_pid(axis)
-
+    # TODO(imo): This is only called from a closeEvent.  This isn't guaranteed to run - do we need to do this?
     def turnoff_axis_pid_control(self):
         for i in range(len(self.pid_enable_flag)):
             if self.pid_enable_flag[i] is True:
@@ -1025,13 +805,9 @@ class NavigationController(QObject):
     def get_pid_control_flag(self, axis):
         return self.pid_enable_flag[axis]
 
-    def set_axis_PID_arguments(self, axis, pid_p, pid_i, pid_d):
-        self.microcontroller.set_pid_arguments(axis, pid_p, pid_i, pid_d)
-
-    def set_piezo_um(self, z_piezo_um):
-        dac = int(65535 * (z_piezo_um / OBJECTIVE_PIEZO_RANGE_UM))
-        dac = 65535 - dac if OBJECTIVE_PIEZO_FLIP_DIR else dac
-        self.microcontroller.analog_write_onboard_DAC(7, dac)
+    def keep_scan_begin_position(self, x, y):
+        self.scan_begin_position_x = x
+        self.scan_begin_position_y = y
 
 
 class SlidePositionControlWorker(QObject):
@@ -1040,22 +816,12 @@ class SlidePositionControlWorker(QObject):
     signal_stop_live = Signal()
     signal_resume_live = Signal()
 
-    def __init__(self,slidePositionController,home_x_and_y_separately=False):
+    def __init__(self, slidePositionController, stage: AbstractStage, home_x_and_y_separately=False):
         QObject.__init__(self)
         self.slidePositionController = slidePositionController
-        self.navigationController = slidePositionController.navigationController
-        self.microcontroller = self.navigationController.microcontroller
+        self.stage = stage
         self.liveController = self.slidePositionController.liveController
         self.home_x_and_y_separately = home_x_and_y_separately
-
-    def wait_till_operation_is_completed(self,timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S):
-        while self.microcontroller.is_busy():
-            time.sleep(SLEEP_TIME_S)
-            if time.time() - timestamp_start > SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S:
-                print('Error - slide position switching timeout, the program will exit')
-                self.navigationController.move_x(0)
-                self.navigationController.move_y(0)
-                sys.exit(1)
 
     def move_to_slide_loading_position(self):
         was_live = self.liveController.is_live
@@ -1063,84 +829,65 @@ class SlidePositionControlWorker(QObject):
             self.signal_stop_live.emit()
 
         # retract z
-        timestamp_start = time.time()
-        self.slidePositionController.z_pos = self.navigationController.z_pos # zpos at the beginning of the scan
-        self.navigationController.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-        self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+        self.slidePositionController.z_pos = self.stage.get_pos().z_mm # zpos at the beginning of the scan
+        self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM, blocking=False)
+        self.stage.wait_for_idle(SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+
         print('z retracted')
         self.slidePositionController.objective_retracted = True
 
         # move to position
         # for well plate
         if self.slidePositionController.is_for_wellplate:
-            # reset limits
-            self.navigationController.set_x_limit_pos_mm(100)
-            self.navigationController.set_x_limit_neg_mm(-100)
-            self.navigationController.set_y_limit_pos_mm(100)
-            self.navigationController.set_y_limit_neg_mm(-100)
+            # So we can home without issue, set our limits to something large.  Then later reset them back to
+            # the safe values.
+            a_large_limit_mm = 100
+            self.stage.set_limits(
+                x_pos_mm=a_large_limit_mm,
+                x_neg_mm=-a_large_limit_mm,
+                y_pos_mm=a_large_limit_mm,
+                y_neg_mm=-a_large_limit_mm)
+
             # home for the first time
             if self.slidePositionController.homing_done == False:
                 print('running homing first')
                 timestamp_start = time.time()
                 # x needs to be at > + 20 mm when homing y
-                self.navigationController.move_x(20)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                # home y
-                self.navigationController.home_y()
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                self.navigationController.zero_y()
-                # home x
-                self.navigationController.home_x()
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                self.navigationController.zero_x()
+                self.stage.move_x(20)
+                self.stage.home(y=True)
+                self.stage.home(x=True)
+
                 self.slidePositionController.homing_done = True
             # homing done previously
             else:
-                timestamp_start = time.time()
-                self.navigationController.move_x_to(20)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                self.navigationController.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                self.navigationController.move_x_to(SLIDE_POSITION.LOADING_X_MM)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+                self.stage.move_x_to(20)
+                self.stage.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
+                self.stage.move_x_to(SLIDE_POSITION.LOADING_X_MM)
             # set limits again
-            self.navigationController.set_x_limit_pos_mm(SOFTWARE_POS_LIMIT.X_POSITIVE)
-            self.navigationController.set_x_limit_neg_mm(SOFTWARE_POS_LIMIT.X_NEGATIVE)
-            self.navigationController.set_y_limit_pos_mm(SOFTWARE_POS_LIMIT.Y_POSITIVE)
-            self.navigationController.set_y_limit_neg_mm(SOFTWARE_POS_LIMIT.Y_NEGATIVE)
+            self.stage.set_limits(
+                x_pos_mm=self.stage.get_config().X_AXIS.MAX_POSITION,
+                x_neg_mm=self.stage.get_config().X_AXIS.MIN_POSITION,
+                y_pos_mm=self.stage.get_config().Y_AXIS.MAX_POSITION,
+                y_neg_mm=self.stage.get_config().Y_AXIS.MIN_POSITION)
         else:
 
             # for glass slide
             if self.slidePositionController.homing_done == False or SLIDE_POTISION_SWITCHING_HOME_EVERYTIME:
                 if self.home_x_and_y_separately:
-                    timestamp_start = time.time()
-                    self.navigationController.home_x()
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                    self.navigationController.zero_x()
-                    self.navigationController.move_x(SLIDE_POSITION.LOADING_X_MM)
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                    self.navigationController.home_y()
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                    self.navigationController.zero_y()
-                    self.navigationController.move_y(SLIDE_POSITION.LOADING_Y_MM)
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+                    self.stage.home(x=True)
+                    self.stage.move_x_to(SLIDE_POSITION.LOADING_X_MM)
+
+                    self.stage.home(y=True)
+                    self.stage.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
                 else:
-                    timestamp_start = time.time()
-                    self.navigationController.home_xy()
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                    self.navigationController.zero_x()
-                    self.navigationController.zero_y()
-                    self.navigationController.move_x(SLIDE_POSITION.LOADING_X_MM)
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                    self.navigationController.move_y(SLIDE_POSITION.LOADING_Y_MM)
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+                    self.stage.home(x=True, y=True)
+
+                    self.stage.move_x_to(SLIDE_POSITION.LOADING_X_MM)
+                    self.stage.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
                 self.slidePositionController.homing_done = True
             else:
-                timestamp_start = time.time()
-                self.navigationController.move_y(SLIDE_POSITION.LOADING_Y_MM-self.navigationController.y_pos_mm)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                self.navigationController.move_x(SLIDE_POSITION.LOADING_X_MM-self.navigationController.x_pos_mm)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+                self.stage.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
+                self.stage.move_x_to(SLIDE_POSITION.LOADING_X_MM)
 
         if was_live:
             self.signal_resume_live.emit()
@@ -1161,73 +908,47 @@ class SlidePositionControlWorker(QObject):
                 timestamp_start = time.time()
 
                 # x needs to be at > + 20 mm when homing y
-                self.navigationController.move_x(20)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+                self.stage.move_x_to(20)
                 # home y
-                self.navigationController.home_y()
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                self.navigationController.zero_y()
+                self.stage.home(y=True)
                 # home x
-                self.navigationController.home_x()
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                self.navigationController.zero_x()
+                self.stage.home(x=True)
                 self.slidePositionController.homing_done = True
+
                 # move to scanning position
-                self.navigationController.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-
-                self.navigationController.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-
+                self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
+                self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
             else:
-                timestamp_start = time.time()
-                self.navigationController.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                self.navigationController.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+                self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
+                self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
         else:
             if self.slidePositionController.homing_done == False or SLIDE_POTISION_SWITCHING_HOME_EVERYTIME:
                 if self.home_x_and_y_separately:
-                    timestamp_start = time.time()
-                    self.navigationController.home_y()
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                    self.navigationController.zero_y()
-                    self.navigationController.move_y(SLIDE_POSITION.SCANNING_Y_MM)
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                    self.navigationController.home_x()
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                    self.navigationController.zero_x()
-                    self.navigationController.move_x(SLIDE_POSITION.SCANNING_X_MM)
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+                    self.stage.home(y=True)
+
+                    self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
+
+                    self.stage.home(x=True)
+                    self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
                 else:
-                    timestamp_start = time.time()
-                    self.navigationController.home_xy()
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                    self.navigationController.zero_x()
-                    self.navigationController.zero_y()
-                    self.navigationController.move_y(SLIDE_POSITION.SCANNING_Y_MM)
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                    self.navigationController.move_x(SLIDE_POSITION.SCANNING_X_MM)
-                    self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+                    self.stage.home(x=True, y=True)
+
+                    self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
+                    self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
                 self.slidePositionController.homing_done = True
             else:
-                timestamp_start = time.time()
-                self.navigationController.move_y(SLIDE_POSITION.SCANNING_Y_MM-self.navigationController.y_pos_mm)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                self.navigationController.move_x(SLIDE_POSITION.SCANNING_X_MM-self.navigationController.x_pos_mm)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+                self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
+                self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
 
         # restore z
         if self.slidePositionController.objective_retracted:
-            if self.navigationController.get_pid_control_flag(2) is False:
-                _usteps_to_clear_backlash = max(160,20*self.navigationController.z_microstepping)
-                self.navigationController.move_z_to_usteps(self.slidePositionController.z_pos - STAGE_MOVEMENT_SIGN_Z*_usteps_to_clear_backlash)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-                self.navigationController.move_z_usteps(_usteps_to_clear_backlash)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-            else:
-                self.navigationController.move_z_to_usteps(self.slidePositionController.z_pos)
-                self.wait_till_operation_is_completed(timestamp_start, SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+            # NOTE(imo): We want to move backlash compensation down to the firmware level.  Also, before the Stage
+            # migration, we only compensated for backlash in the case that we were using PID control.  Since that
+            # info isn't plumbed through yet (or ever from now on?), we just always compensate now.  It doesn't hurt
+            # in the case of not needing it, except that it's a little slower because we need 2 moves.
+            mm_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(max(160, 20*self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+            self.stage.move_z_to(self.slidePositionController.z_pos-mm_to_clear_backlash)
+            self.stage.move_z_to(self.slidePositionController.z_pos)
             self.slidePositionController.objective_retracted = False
             print('z position restored')
 
@@ -1244,9 +965,9 @@ class SlidePositionController(QObject):
     signal_slide_scanning_position_reached = Signal()
     signal_clear_slide = Signal()
 
-    def __init__(self,navigationController,liveController,is_for_wellplate=False):
+    def __init__(self, stage: AbstractStage, liveController, is_for_wellplate=False):
         QObject.__init__(self)
-        self.navigationController = navigationController
+        self.stage = stage
         self.liveController = liveController
         self.slide_loading_position_reached = False
         self.slide_scanning_position_reached = False
@@ -1260,7 +981,7 @@ class SlidePositionController(QObject):
         # create a QThread object
         self.thread = QThread()
         # create a worker object
-        self.slidePositionControlWorker = SlidePositionControlWorker(self)
+        self.slidePositionControlWorker = SlidePositionControlWorker(self, self.stage)
         # move the worker to the thread
         self.slidePositionControlWorker.moveToThread(self.thread)
         # connect signals and slots
@@ -1279,7 +1000,7 @@ class SlidePositionController(QObject):
     	# create a QThread object
         self.thread = QThread()
         # create a worker object
-        self.slidePositionControlWorker = SlidePositionControlWorker(self)
+        self.slidePositionControlWorker = SlidePositionControlWorker(self, self.stage)
         # move the worker to the thread
         self.slidePositionControlWorker.moveToThread(self.thread)
         # connect signals and slots
@@ -1302,9 +1023,6 @@ class SlidePositionController(QObject):
     def slot_resume_live(self):
         self.liveController.start_live()
 
-    # def threadFinished(self):
-    # 	print('========= threadFinished ========= ')
-
 class AutofocusWorker(QObject):
 
     finished = Signal()
@@ -1316,8 +1034,8 @@ class AutofocusWorker(QObject):
         self.autofocusController = autofocusController
 
         self.camera = self.autofocusController.camera
-        self.microcontroller = self.autofocusController.navigationController.microcontroller
-        self.navigationController = self.autofocusController.navigationController
+        self.microcontroller = self.autofocusController.microcontroller
+        self.stage = self.autofocusController.stage
         self.liveController = self.autofocusController.liveController
 
         self.N = self.autofocusController.N
@@ -1341,25 +1059,19 @@ class AutofocusWorker(QObject):
         focus_measure_vs_z = [0]*self.N
         focus_measure_max = 0
 
-        z_af_offset_usteps = self.deltaZ_usteps*round(self.N/2)
-        # self.navigationController.move_z_usteps(-z_af_offset_usteps) # combine with the back and forth maneuver below
-        # self.wait_till_operation_is_completed()
+        z_af_offset = self.deltaZ*round(self.N/2)
 
         # maneuver for achiving uniform step size and repeatability when using open-loop control
         # can be moved to the firmware
-        if self.navigationController.get_pid_control_flag(2) is False:
-            _usteps_to_clear_backlash = max(160,20*self.navigationController.z_microstepping)
-            self.navigationController.move_z_usteps(-_usteps_to_clear_backlash-z_af_offset_usteps)
-            self.wait_till_operation_is_completed()
-            self.navigationController.move_z_usteps(_usteps_to_clear_backlash)
-            self.wait_till_operation_is_completed()
-        else:
-            self.navigationController.move_z_usteps(-z_af_offset_usteps)
-            self.wait_till_operation_is_completed()
+        mm_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
+            max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+
+        self.stage.move_z(-mm_to_clear_backlash - z_af_offset)
+        self.stage.move_z(mm_to_clear_backlash)
 
         steps_moved = 0
         for i in range(self.N):
-            self.navigationController.move_z_usteps(self.deltaZ_usteps)
+            self.stage.move_z(self.deltaZ)
             self.wait_till_operation_is_completed()
             steps_moved = steps_moved + 1
             # trigger acquisition (including turning on the illumination) and read frame
@@ -1400,30 +1112,17 @@ class AutofocusWorker(QObject):
 
         QApplication.processEvents()
 
-        # move to the starting location
-        # self.navigationController.move_z_usteps(-steps_moved*self.deltaZ_usteps) # combine with the back and forth maneuver below
-        # self.wait_till_operation_is_completed()
-
         # maneuver for achiving uniform step size and repeatability when using open-loop control
-        if self.navigationController.get_pid_control_flag(2) is False:
-            _usteps_to_clear_backlash = max(160,20*self.navigationController.z_microstepping)
-            self.navigationController.move_z_usteps(-_usteps_to_clear_backlash-steps_moved*self.deltaZ_usteps)
-            # determine the in-focus position
-            idx_in_focus = focus_measure_vs_z.index(max(focus_measure_vs_z))
-            self.wait_till_operation_is_completed()
-            self.navigationController.move_z_usteps(_usteps_to_clear_backlash+(idx_in_focus+1)*self.deltaZ_usteps)
-            self.wait_till_operation_is_completed()
-        else:
-            # determine the in-focus position
-            idx_in_focus = focus_measure_vs_z.index(max(focus_measure_vs_z))
-            self.navigationController.move_z_usteps((idx_in_focus+1)*self.deltaZ_usteps-steps_moved*self.deltaZ_usteps)
-            self.wait_till_operation_is_completed()
+        # TODO(imo): The backlash handling should be done at a lower level.  For now, do backlash compensation no matter if it makes sense to do or not (it is not harmful if it doesn't make sense)
+        mm_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(max(160, 20*self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+        self.stage.move_z(-mm_to_clear_backlash - steps_moved * self.deltaZ)
+        # determine the in-focus position
+        idx_in_focus = focus_measure_vs_z.index(max(focus_measure_vs_z))
+        self.stage.move_z(mm_to_clear_backlash + (idx_in_focus + 1) * self.deltaZ)
 
         QApplication.processEvents()
 
         # move to the calculated in-focus position
-        # self.navigationController.move_z_usteps(idx_in_focus*self.deltaZ_usteps)
-        # self.wait_till_operation_is_completed() # combine with the movement above
         if idx_in_focus == 0:
             print('moved to the bottom end of the AF range')
         if idx_in_focus == self.N-1:
@@ -1435,14 +1134,13 @@ class AutoFocusController(QObject):
     autofocusFinished = Signal()
     image_to_display = Signal(np.ndarray)
 
-    def __init__(self,camera,navigationController,liveController):
+    def __init__(self,camera, stage: AbstractStage, liveController):
         QObject.__init__(self)
         self.camera = camera
-        self.navigationController = navigationController
+        self.stage = stage
         self.liveController = liveController
         self.N = None
         self.deltaZ = None
-        self.deltaZ_usteps = None
         self.crop_width = AF.CROP_WIDTH
         self.crop_height = AF.CROP_HEIGHT
         self.autofocus_in_progress = False
@@ -1452,10 +1150,8 @@ class AutoFocusController(QObject):
     def set_N(self,N):
         self.N = N
 
-    def set_deltaZ(self,deltaZ_um):
-        mm_per_ustep_Z = self.navigationController.get_mm_per_ustep_Z()
-        self.deltaZ = deltaZ_um/1000
-        self.deltaZ_usteps = round((deltaZ_um/1000)/mm_per_ustep_Z)
+    def set_deltaZ(self, delta_z_um):
+        self.deltaZ = delta_z_um / 1000
 
     def set_crop(self,crop_width,crop_height):
         self.crop_width = crop_width
@@ -1464,15 +1160,14 @@ class AutoFocusController(QObject):
     def autofocus(self, focus_map_override=False):
         if self.use_focus_map and (not focus_map_override):
             self.autofocus_in_progress = True
-            self.navigationController.microcontroller.wait_till_operation_is_completed()
-            x = self.navigationController.x_pos_mm
-            y = self.navigationController.y_pos_mm
+
+            self.stage.wait_for_idle(1.0)
+            pos = self.stage.get_pos()
 
             # z here is in mm because that's how the navigation controller stores it
-            target_z = utils.interpolate_plane(*self.focus_map_coords[:3], (x,y))
+            target_z = utils.interpolate_plane(*self.focus_map_coords[:3], (pos.x_mm, pos.y_mm))
             print(f"Interpolated target z as {target_z} mm from focus map, moving there.")
-            self.navigationController.move_z_to(target_z)
-            self.navigationController.microcontroller.wait_till_operation_is_completed()
+            self.stage.move_z_to(target_z)
             self.autofocus_in_progress = False
             self.autofocusFinished.emit()
             return
@@ -1512,7 +1207,6 @@ class AutoFocusController(QObject):
         self.autofocusWorker.finished.connect(self.autofocusWorker.deleteLater)
         self.autofocusWorker.finished.connect(self.thread.quit)
         self.autofocusWorker.image_to_display.connect(self.slot_image_to_display)
-        # self.thread.finished.connect(self.thread.deleteLater)
         self.thread.finished.connect(self.thread.quit)
         # start the thread
         self.thread.start()
@@ -1588,31 +1282,30 @@ class AutoFocusController(QObject):
 
         for coord in [coord1,coord2,coord3]:
             print(f"Navigating to coordinates ({coord[0]},{coord[1]}) to sample for focus map")
-            self.navigationController.move_to(coord[0],coord[1])
-            self.navigationController.microcontroller.wait_till_operation_is_completed()
+            self.stage.move_x_to(coord[0])
+            self.stage.move_y_to(coord[1])
+
             print("Autofocusing")
             self.autofocus(True)
             self.wait_till_autofocus_has_completed()
-            #self.navigationController.microcontroller.wait_till_operation_is_completed()
-            x = self.navigationController.x_pos_mm
-            y = self.navigationController.y_pos_mm
-            z = self.navigationController.z_pos_mm
-            print(f"Adding coordinates ({x},{y},{z}) to focus map")
-            self.focus_map_coords.append((x,y,z))
+            pos = self.stage.get_pos()
+
+            print(f"Adding coordinates ({pos.x},{pos.y},{pos.z}) to focus map")
+            self.focus_map_coords.append((pos.x, pos.y, pos.z))
 
         print("Generated focus map.")
 
     def add_current_coords_to_focus_map(self):
         if len(self.focus_map_coords) >= 3:
             print("Replacing last coordinate on focus map.")
-        self.navigationController.microcontroller.wait_till_operation_is_completed()
+        self.stage.wait_for_idle(timeout_s=0.5)
         print("Autofocusing")
         self.autofocus(True)
         self.wait_till_autofocus_has_completed()
-        #self.navigationController.microcontroller.wait_till_operation_is_completed()
-        x = self.navigationController.x_pos_mm
-        y = self.navigationController.y_pos_mm
-        z = self.navigationController.z_pos_mm
+        pos = self.stage.get_pos()
+        x = pos.x_mm
+        y = pos.y_mm
+        z = pos.z_mm
         if len(self.focus_map_coords) >= 2:
             x1,y1,_ = self.focus_map_coords[0]
             x2,y2,_ = self.focus_map_coords[1]
@@ -1645,10 +1338,10 @@ class MultiPointWorker(QObject):
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
 
-    def __init__(self,multiPointController):
+    def __init__(self, multiPointController):
         QObject.__init__(self)
         self.multiPointController = multiPointController
-
+        self._log = squid.logging.get_logger(__class__.__name__)
         self.signal_update_stats.connect(self.update_stats)
         self.start_time = 0
         if DO_FLUORESCENCE_RTP:
@@ -1656,7 +1349,7 @@ class MultiPointWorker(QObject):
         self.camera = self.multiPointController.camera
         self.microcontroller = self.multiPointController.microcontroller
         self.usb_spectrometer = self.multiPointController.usb_spectrometer
-        self.navigationController = self.multiPointController.navigationController
+        self.stage: squid.abc.AbstractStage = self.multiPointController.stage
         self.liveController = self.multiPointController.liveController
         self.autofocusController = self.multiPointController.autofocusController
         self.configurationManager = self.multiPointController.configurationManager
@@ -1665,11 +1358,8 @@ class MultiPointWorker(QObject):
         self.NZ = self.multiPointController.NZ
         self.Nt = self.multiPointController.Nt
         self.deltaX = self.multiPointController.deltaX
-        self.deltaX_usteps = self.multiPointController.deltaX_usteps
         self.deltaY = self.multiPointController.deltaY
-        self.deltaY_usteps = self.multiPointController.deltaY_usteps
         self.deltaZ = self.multiPointController.deltaZ
-        self.deltaZ_usteps = self.multiPointController.deltaZ_usteps
         self.dt = self.multiPointController.deltat
         self.do_autofocus = self.multiPointController.do_autofocus
         self.do_reflection_af= self.multiPointController.do_reflection_af
@@ -1688,10 +1378,14 @@ class MultiPointWorker(QObject):
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
-        self.scan_region_fov_coords_mm = self.multiPointController.scan_region_fov_coords_mm.copy()
-        self.scan_region_coords_mm = self.multiPointController.scan_region_coords_mm
-        self.scan_region_names = self.multiPointController.scan_region_names
-        self.z_stacking_config = self.multiPointController.z_stacking_config # default 'from bottom'
+        if self.multiPointController.coordinate_dict is not None:
+            self.coordinate_dict = self.multiPointController.coordinate_dict.copy()
+        else:
+            self.coordinate_dict = None
+        self.use_scan_coordinates = self.multiPointController.use_scan_coordinates
+        self.scan_coordinates_mm = self.multiPointController.scan_coordinates_mm
+        self.scan_coordinates_name = self.multiPointController.scan_coordinates_name
+        self.z_stacking_config = self.multiPointController.z_stacking_config
         self.z_range = self.multiPointController.z_range
 
         self.microscope = self.multiPointController.parent
@@ -1717,20 +1411,20 @@ class MultiPointWorker(QObject):
 
     def update_stats(self, new_stats):
         self.count += 1
-        print("stats", self.count)
+        self._log.info("stats", self.count)
         for k in new_stats.keys():
             try:
                 self.detection_stats[k]+=new_stats[k]
             except:
                 self.detection_stats[k] = 0
-                self.detection_stats[k]+=new_stats[k]
+                self.detection_stats[k] += new_stats[k]
         if "Total RBC" in self.detection_stats and "Total Positives" in self.detection_stats:
             self.detection_stats["Positives per 5M RBC"] = 5e6*(self.detection_stats["Total Positives"]/self.detection_stats["Total RBC"])
         self.signal_detection_stats.emit(self.detection_stats)
 
     def update_use_piezo(self, value):
         self.use_piezo = value
-        print("MultiPointWorker: updated use_piezo to", value)
+        self._log.info("MultiPointWorker: updated use_piezo to", value)
 
     def run(self):
         self.start_time = time.perf_counter_ns()
@@ -1751,7 +1445,7 @@ class MultiPointWorker(QObject):
 
                 # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
                 while time.time() > self.timestamp_acquisition_started + self.time_point*self.dt:
-                    print('skip time point ' + str(self.time_point+1))
+                    self._log.info('skip time point ' + str(self.time_point+1))
                     self.time_point = self.time_point+1
 
                 # check if it has reached Nt
@@ -1765,16 +1459,15 @@ class MultiPointWorker(QObject):
                     time.sleep(0.05)
 
         elapsed_time = time.perf_counter_ns() - self.start_time
-        print("Time taken for acquisition: " + str(elapsed_time/10**9))
+        self._log.info("Time taken for acquisition: " + str(elapsed_time/10**9))
 
         # End processing using the updated method
         if DO_FLUORESCENCE_RTP:
             self.processingHandler.processing_queue.join()
             self.processingHandler.upload_queue.join()
             self.processingHandler.end_processing()
-        # time.sleep(0.2)
-        # wait for signal_update_stats in process_fn_with_count_and_display
-        print("Time taken for acquisition/processing: ", (time.perf_counter_ns() - self.start_time) / 1e9)
+
+        self._log.info("Time taken for acquisition/processing: ", (time.perf_counter_ns() - self.start_time) / 1e9)
         self.finished.emit()
 
     def wait_till_operation_is_completed(self):
@@ -1783,11 +1476,10 @@ class MultiPointWorker(QObject):
 
     def run_single_time_point(self):
         start = time.time()
-        print(time.time())
-        # disable joystick button action
-        self.navigationController.enable_joystick_button_action = False
+        # TODO(imo): Fix joystick button enable/disable.  It is broken after stage refactor
+        # self.navigationController.enable_joystick_button_action = False
 
-        print('multipoint acquisition - time point ' + str(self.time_point+1))
+        self._log.debug('multipoint acquisition - time point ' + str(self.time_point+1))
 
         # for each time point, create a new folder
         current_path = os.path.join(self.base_path,self.experiment_ID,str(self.time_point))
@@ -1806,27 +1498,27 @@ class MultiPointWorker(QObject):
         # finished region scan
         self.coordinates_pd.to_csv(os.path.join(current_path,'coordinates.csv'),index=False,header=True)
         utils.create_done_file(current_path)
-        self.navigationController.enable_joystick_button_action = True
-        print(time.time())
-        print(time.time()-start)
+        # TODO(imo): Fix joystick button enable/disable.  It is broken after stage refactor
+        # self.navigationController.enable_joystick_button_action = True
+        self._log.debug(f"Single time point took: {time.time() - start} [s]")
 
     def initialize_z_stack(self):
         self.count_rtp = 0
-        self.dz_usteps = 0 # accumulated z displacement
 
         # z stacking config
         if self.z_stacking_config == 'FROM TOP':
-            self.deltaZ_usteps = -abs(self.deltaZ_usteps)
+            self.deltaZ = -abs(self.deltaZ)
             self.move_to_z_level(self.z_range[1])
         else:
             self.move_to_z_level(self.z_range[0])
 
-        self.z_pos = self.navigationController.z_pos # zpos at the beginning of the scan
+        self.z_pos = self.stage.get_pos().z_mm # zpos at the beginning of the scan
 
         # reset piezo to home position
         if self.use_piezo:
             self.z_piezo_um = OBJECTIVE_PIEZO_HOME_UM
-            self.navigationController.set_piezo_um(self.z_piezo_um)
+            self.microcontroller.set_piezo_um(self.z_piezo_um)
+            # TODO(imo): Not sure the wait comment below is actually correct?  Should this wait just be in the set_piezo_um helper?
             if self.liveController.trigger_mode == TriggerMode.SOFTWARE: # for hardware trigger, delay is in waiting for the last row to start exposure
                 time.sleep(MULTIPOINT_PIEZO_DELAY_MS/1000)
             if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
@@ -1838,11 +1530,12 @@ class MultiPointWorker(QObject):
         self.coordinates_pd = pd.DataFrame(columns=['region', 'fov'] + base_columns + piezo_column)
 
     def update_coordinates_dataframe(self, region_id, z_level, fov=None):
+        pos = self.stage.get_pos()
         base_data = {
             'z_level': [z_level],
-            'x (mm)': [self.navigationController.x_pos_mm],
-            'y (mm)': [self.navigationController.y_pos_mm],
-            'z (um)': [self.navigationController.z_pos_mm * 1000],
+            'x (mm)': [pos.x_mm],
+            'y (mm)': [pos.y_mm],
+            'z (um)': [pos.z_mm * 1000],
             'time': [datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')]
         }
         piezo_data = {'z_piezo (um)': [self.z_piezo_um - OBJECTIVE_PIEZO_HOME_UM]} if self.use_piezo else {}
@@ -1859,13 +1552,11 @@ class MultiPointWorker(QObject):
     def move_to_coordinate(self, coordinate_mm):
         print("moving to coordinate", coordinate_mm)
         x_mm = coordinate_mm[0]
-        self.navigationController.move_x_to(x_mm)
-        self.wait_till_operation_is_completed()
+        self.stage.move_x_to(x_mm)
         time.sleep(SCAN_STABILIZATION_TIME_MS_X/1000)
 
         y_mm = coordinate_mm[1]
-        self.navigationController.move_y_to(y_mm)
-        self.wait_till_operation_is_completed()
+        self.stage.move_y_to(y_mm)
         time.sleep(SCAN_STABILIZATION_TIME_MS_Y/1000)
 
         # check if z is included in the coordinate
@@ -1875,20 +1566,17 @@ class MultiPointWorker(QObject):
 
     def move_to_z_level(self, z_mm):
         print("moving z")
-        if z_mm >= self.navigationController.z_pos_mm:
-            self.navigationController.move_z_to(z_mm)
-            self.wait_till_operation_is_completed()
-        else:
-            self.navigationController.move_z_to(z_mm)
-            self.wait_till_operation_is_completed()
-            # remove backlash
-            if self.navigationController.get_pid_control_flag(2) is False:
-                _usteps_to_clear_backlash = max(160,20*self.navigationController.z_microstepping)
-                self.navigationController.move_z_usteps(-_usteps_to_clear_backlash) # to-do: combine this with the above
-                self.wait_till_operation_is_completed()
-                self.navigationController.move_z_usteps(_usteps_to_clear_backlash)
-                self.wait_till_operation_is_completed()
-        time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
+        self.stage.move_z_to(z_mm)
+        # TODO(imo): If we are moving to a more +z position, we'll approach the position from the negative side.  But then our backlash elimination goes negative and positive.  This seems like the final move is in the same direction as the original full move?  Does that actually eliminate backlash?
+        if z_mm >= self.stage.get_pos().z_mm:
+            # Attempt to remove backlash.
+            # TODO(imo): We used to only do this if in PID control mode, but we don't expose the PID mode settings
+            # yet, so for now just do this for all.
+            # TODO(imo): Ideally this would be done at a lower level, and only if needed.  As is we only remove backlash in this specific case (and no other Z moves!)
+            distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+            self.stage.move_z(-distance_to_clear_backlash)
+            self.stage.move_z(distance_to_clear_backlash)
+        time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def run_coordinate_acquisition(self, current_path):
         n_regions = len(self.scan_region_coords_mm)
@@ -1921,13 +1609,15 @@ class MultiPointWorker(QObject):
         if self.NZ > 1:
             self.prepare_z_stack()
 
-        x_mm = self.navigationController.x_pos_mm
-        y_mm = self.navigationController.y_pos_mm
+        pos = self.stage.get_pos()
+        x_mm = pos.x_mm
+        y_mm = pos.y_mm
 
         for z_level in range(self.NZ):
             file_ID = f"{region_id}_{fov}_{z_level}"
 
-            metadata = dict(x = self.navigationController.x_pos_mm, y = self.navigationController.y_pos_mm, z = self.navigationController.z_pos_mm)
+            acquire_pos = self.stage.get_pos()
+            metadata = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
             print(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
 
             # laser af characterization mode
@@ -1961,7 +1651,7 @@ class MultiPointWorker(QObject):
 
             # updates coordinates df
             self.update_coordinates_dataframe(region_id, z_level, fov)
-            self.signal_register_current_fov.emit(self.navigationController.x_pos_mm, self.navigationController.y_pos_mm)
+            self.signal_register_current_fov.emit(self.stage.get_pos().x_mm, self.stage.get_pos().y_mm)
 
             # check if the acquisition should be aborted
             if self.multiPointController.abort_acqusition_requested:
@@ -2012,7 +1702,7 @@ class MultiPointWorker(QObject):
         else:
             # initialize laser autofocus if it has not been done
             if self.microscope.laserAutofocusController.is_initialized==False:
-                print("init reflection af")
+                self._log.info("init reflection af")
                 # initialize the reflection AF
                 self.microscope.laserAutofocusController.initialize_auto()
                 # do contrast AF for the first FOV (if contrast AF box is checked)
@@ -2025,58 +1715,40 @@ class MultiPointWorker(QObject):
                 # set the current plane as reference
                 self.microscope.laserAutofocusController.set_reference()
             else:
-                print("laser reflection af")
+                self._log.info("laser reflection af")
                 try:
-                    if self.navigationController.get_pid_control_flag(2) is False:
-                        self.microscope.laserAutofocusController.move_to_target(0)
-                        self.microscope.laserAutofocusController.move_to_target(0) # for stepper in open loop mode, repeat the operation to counter backlash
-                    else:
-                        self.microscope.laserAutofocusController.move_to_target(0)
+                    # TODO(imo): We used to have a case here to try to fix backlash by double commanding a position.  Now, just double command it whether or not we are using PID since we don't expose that now.  But in the future, backlash handing shouldb e done at a lower level (and we can remove the double here)
+                    self.microscope.laserAutofocusController.move_to_target(0)
+                    self.microscope.laserAutofocusController.move_to_target(0) # for stepper in open loop mode, repeat the operation to counter backlash.  It's harmless if any other case.
                 except:
                     file_ID = f"{region_id}_focus_camera.bmp"
                     saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
                     iio.imwrite(saving_path, self.microscope.laserAutofocusController.image)
-                    print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
-
-        # update new Z position after autofocus
-        new_z = self.navigationController.z_pos_mm
-
-        # update FOV-specific z-level
-        self.microscope.scanCoordinates.update_fov_z_level(region_id, fov, new_z)
-
-        # For first FOV, also update region center and/or location list
-        if (fov == 0 and
-            hasattr(self.microscope, 'recordTabWidget') and
-            hasattr(self.microscope, 'flexibleMultiPointWidget') and
-            isinstance(self.microscope.recordTabWidget.currentWidget(), type(self.microscope.flexibleMultiPointWidget)) and
-            region_id.startswith('R')):
-            # Get index from region_id (e.g., 'R0' -> 0)
-            index = int(region_id[1:])
-            self.microscope.flexibleMultiPointWidget.update_location_z_level(index, new_z)
+                    self._log.error('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
 
     def prepare_z_stack(self):
         # move to bottom of the z stack
         if self.z_stacking_config == 'FROM CENTER':
-            self.navigationController.move_z_usteps(-self.deltaZ_usteps*round((self.NZ-1)/2))
-            self.wait_till_operation_is_completed()
+            self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
             time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
+        # TODO(imo): This is some sort of backlash compensation.  We should move this down to the low level, and remove it from here.
         # maneuver for achiving uniform step size and repeatability when using open-loop control
-        self.navigationController.move_z_usteps(-160)
-        self.wait_till_operation_is_completed()
-        self.navigationController.move_z_usteps(160)
-        self.wait_till_operation_is_completed()
+        distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
+            max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+        self.stage.move_z(-distance_to_clear_backlash)
+        self.stage.move_z(distance_to_clear_backlash)
         time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
 
     def handle_z_offset(self, config, not_offset):
         if config.z_offset is not None:  # perform z offset for config, assume z_offset is in um
             if config.z_offset != 0.0:
                 direction = 1 if not_offset else -1
-                print("Moving Z offset" + str(config.z_offset * direction))
-                self.navigationController.move_z(config.z_offset/1000*direction)
+                self._log.info("Moving Z offset" + str(config.z_offset * direction))
+                self.stage.move_z(config.z_offset/1000*direction)
                 self.wait_till_operation_is_completed()
                 time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
 
-    def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k):
+    def acquire_camera_image(self, config, file_ID, current_path, current_round_images, i, j, k):
         # update the current configuration
         self.signal_current_configuration.emit(config)
         self.wait_till_operation_is_completed()
@@ -2099,7 +1771,7 @@ class MultiPointWorker(QObject):
             image = self.camera.read_frame()
 
         if image is None:
-            print('self.camera.read_frame() returned None')
+            self._log.warning('self.camera.read_frame() returned None')
             return
 
         # turn off the illumination if using software trigger
@@ -2136,6 +1808,7 @@ class MultiPointWorker(QObject):
 
                 # trigger acquisition (including turning on the illumination)
                 if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                    # TODO(imo): use illum controller
                     self.liveController.turn_on_illumination()
                     self.wait_till_operation_is_completed()
                     self.camera.send_trigger()
@@ -2149,6 +1822,7 @@ class MultiPointWorker(QObject):
                     print('self.camera.read_frame() returned None')
                     continue
 
+                # TODO(imo): use illum controller
                 # turn off the illumination if using software trigger
                 if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                     self.liveController.turn_off_illumination()
@@ -2247,13 +1921,14 @@ class MultiPointWorker(QObject):
                 print("init napari layers")
                 self.init_napari_layers = True
                 self.napari_layers_init.emit(image.shape[0],image.shape[1], image.dtype)
-
-            self.napari_layers_update.emit(image, self.navigationController.x_pos_mm, self.navigationController.y_pos_mm, k, config_name)
+            pos = self.stage.get_pos()
+            self.napari_layers_update.emit(image, pos.x_mm, pos.y_mm, k, config_name)
 
     def handle_dpc_generation(self, current_round_images):
         keys_to_check = ['BF LED matrix left half', 'BF LED matrix right half', 'BF LED matrix top half', 'BF LED matrix bottom half']
         if all(key in current_round_images for key in keys_to_check):
             # generate dpc
+            # TODO(imo): What's the point of this?  Is it just a placeholder?
             pass
 
     def handle_rgb_generation(self, current_round_images, file_ID, current_path, k):
@@ -2268,8 +1943,7 @@ class MultiPointWorker(QObject):
             rgb_image[:, :, 1] = current_round_images['BF LED matrix full_G']
             rgb_image[:, :, 2] = current_round_images['BF LED matrix full_B']
 
-            # send image to display
-            image_to_display = utils.crop_image(rgb_image,round(self.crop_width*self.display_resolution_scaling), round(self.crop_height*self.display_resolution_scaling))
+            # TODO(imo): There used to be a "display image" comment here, and then an unused cropped image.  Do we need to emit an image here?
 
             # write the image
             if len(rgb_image.shape) == 3:
@@ -2315,55 +1989,40 @@ class MultiPointWorker(QObject):
 
         # Save coordinates.csv
         self.coordinates_pd.to_csv(os.path.join(current_path, 'coordinates.csv'), index=False, header=True)
-        self.navigationController.enable_joystick_button_action = True
+        # TODO(imo): Fix joystick handling
+        # self.navigationController.enable_joystick_button_action = True
 
     def move_z_for_stack(self):
         if self.use_piezo:
             self.z_piezo_um += self.deltaZ*1000
-            self.navigationController.set_piezo_um(self.z_piezo_um)
+            self.microcontroller.set_piezo_um(self.z_piezo_um)
             if self.liveController.trigger_mode == TriggerMode.SOFTWARE: # for hardware trigger, delay is in waiting for the last row to start exposure
                 time.sleep(MULTIPOINT_PIEZO_DELAY_MS/1000)
             if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
                 self.signal_z_piezo_um.emit(self.z_piezo_um)
         else:
-            self.navigationController.move_z_usteps(self.deltaZ_usteps)
+            self.microcontroller.move_z_usteps(self.deltaZ_usteps)
             self.wait_till_operation_is_completed()
             time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
-            self.dz_usteps = self.dz_usteps + self.deltaZ_usteps
 
     def move_z_back_after_stack(self):
         if self.use_piezo:
             self.z_piezo_um = OBJECTIVE_PIEZO_HOME_UM
-            self.navigationController.set_piezo_um(self.z_piezo_um)
+            self.microcontroller.set_piezo_um(self.z_piezo_um)
             if self.liveController.trigger_mode == TriggerMode.SOFTWARE: # for hardware trigger, delay is in waiting for the last row to start exposure
                 time.sleep(MULTIPOINT_PIEZO_DELAY_MS/1000)
             if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
                 self.signal_z_piezo_um.emit(self.z_piezo_um)
         else:
-            _usteps_to_clear_backlash = max(160,20*self.navigationController.z_microstepping)
-            if self.z_stacking_config == 'FROM CENTER':
-                if self.navigationController.get_pid_control_flag(2) is False:
-                    _usteps_to_clear_backlash = max(160,20*self.navigationController.z_microstepping)
-                    self.navigationController.move_z_usteps( -self.deltaZ_usteps*(self.NZ-1) + self.deltaZ_usteps*round((self.NZ-1)/2) - _usteps_to_clear_backlash)
-                    self.wait_till_operation_is_completed()
-                    self.navigationController.move_z_usteps(_usteps_to_clear_backlash)
-                    self.wait_till_operation_is_completed()
-                else:
-                    self.navigationController.move_z_usteps( -self.deltaZ_usteps*(self.NZ-1) + self.deltaZ_usteps*round((self.NZ-1)/2) )
-                    self.wait_till_operation_is_completed()
-                self.dz_usteps = self.dz_usteps - self.deltaZ_usteps*(self.NZ-1) + self.deltaZ_usteps*round((self.NZ-1)/2)
+            distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+            if self.z_stacking_config == "FROM CENTER":
+                rel_z_to_start = -self.deltaZ * (self.NZ - 1) + self.deltaZ * round((self.NZ - 1) / 2)
             else:
-                if self.navigationController.get_pid_control_flag(2) is False:
-                    _usteps_to_clear_backlash = max(160,20*self.navigationController.z_microstepping)
-                    self.navigationController.move_z_usteps(-self.deltaZ_usteps*(self.NZ-1) - _usteps_to_clear_backlash)
-                    self.wait_till_operation_is_completed()
-                    self.navigationController.move_z_usteps(_usteps_to_clear_backlash)
-                    self.wait_till_operation_is_completed()
-                else:
-                    self.navigationController.move_z_usteps(-self.deltaZ_usteps*(self.NZ-1))
-                    self.wait_till_operation_is_completed()
-                self.dz_usteps = self.dz_usteps - self.deltaZ_usteps*(self.NZ-1)
+                rel_z_to_start = -self.deltaZ * (self.NZ - 1)
 
+            # TODO(imo): backlash should be handled at a lower level.  For now, we do it here no matter what control scheme is being used below.
+            self.stage.move_z(rel_z_to_start - distance_to_clear_backlash)
+            self.stage.move_z(distance_to_clear_backlash)
 
 class MultiPointController(QObject):
 
@@ -2382,14 +2041,14 @@ class MultiPointController(QObject):
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
 
-    def __init__(self,camera,navigationController,liveController,autofocusController,configurationManager,usb_spectrometer=None,scanCoordinates=None,parent=None):
+    def __init__(self, camera, stage: AbstractStage, microcontroller: Microcontroller, liveController, autofocusController, configurationManager, usb_spectrometer=None, scanCoordinates=None, parent=None):
         QObject.__init__(self)
 
         self.camera = camera
         if DO_FLUORESCENCE_RTP:
             self.processingHandler = ProcessingHandler()
-        self.microcontroller = navigationController.microcontroller # to move to gui for transparency
-        self.navigationController = navigationController
+        self.stage = stage
+        self.microcontroller = microcontroller
         self.liveController = liveController
         self.autofocusController = autofocusController
         self.configurationManager = configurationManager
@@ -2397,15 +2056,10 @@ class MultiPointController(QObject):
         self.NY = 1
         self.NZ = 1
         self.Nt = 1
-        mm_per_ustep_X = self.navigationController.get_mm_per_ustep_X()
-        mm_per_ustep_Y = self.navigationController.get_mm_per_ustep_Y()
-        mm_per_ustep_Z = self.navigationController.get_mm_per_ustep_Z()
         self.deltaX = Acquisition.DX
-        self.deltaX_usteps = round(self.deltaX/mm_per_ustep_X)
         self.deltaY = Acquisition.DY
-        self.deltaY_usteps = round(self.deltaY/mm_per_ustep_Y)
+        # TODO(imo): Switch all to consistent mm units
         self.deltaZ = Acquisition.DZ/1000
-        self.deltaZ_usteps = round(self.deltaZ/mm_per_ustep_Z)
         self.deltat = 0
         self.do_autofocus = False
         self.do_reflection_af = False
@@ -2430,7 +2084,9 @@ class MultiPointController(QObject):
         self.parent = parent
         self.start_time = 0
         self.old_images_per_page = 1
-        self.z_range = [self.navigationController.z_pos_mm, self.navigationController.z_pos_mm + self.deltaZ * (self.NZ - 1)] # [start_mm, end_mm]
+        z_mm_current = self.stage.get_pos().z_mm
+        self.z_range = [z_mm_current, z_mm_current + self.deltaZ * (self.NZ - 1)] # [start_mm, end_mm]
+
         try:
             if self.parent is not None:
                 self.old_images_per_page = self.parent.dataHandler.n_images_per_page
@@ -2465,19 +2121,13 @@ class MultiPointController(QObject):
         self.Nt = N
 
     def set_deltaX(self,delta):
-        mm_per_ustep_X = self.navigationController.get_mm_per_ustep_X()
         self.deltaX = delta
-        self.deltaX_usteps = round(delta/mm_per_ustep_X)
 
     def set_deltaY(self,delta):
-        mm_per_ustep_Y = self.navigationController.get_mm_per_ustep_Y()
         self.deltaY = delta
-        self.deltaY_usteps = round(delta/mm_per_ustep_Y)
 
     def set_deltaZ(self,delta_um):
-        mm_per_ustep_Z = self.navigationController.get_mm_per_ustep_Z()
         self.deltaZ = delta_um/1000
-        self.deltaZ_usteps = round((delta_um/1000)/mm_per_ustep_Z)
 
     def set_deltat(self,delta):
         self.deltat = delta
@@ -2515,6 +2165,7 @@ class MultiPointController(QObject):
         self.recording_start_time = time.time()
         # create a new folder
         os.mkdir(os.path.join(self.base_path,self.experiment_ID))
+        # TODO(imo): If the config has changed since boot, is this still the correct config?
         configManagerThrowaway = ConfigurationManager(self.configurationManager.config_filename)
         configManagerThrowaway.write_configuration_selected(self.selected_configurations,os.path.join(self.base_path,self.experiment_ID)+"/configurations.xml") # save the configuration for the experiment
         # Prepare acquisition parameters
@@ -2617,8 +2268,8 @@ class MultiPointController(QObject):
         # create a QThread object
         if self.gen_focus_map and not self.do_reflection_af:
             print("Generating focus map for multipoint grid")
-            starting_x_mm = self.navigationController.x_pos_mm
-            starting_y_mm = self.navigationController.y_pos_mm
+            starting_x_mm = self.stage.get_pos().x_mm
+            starting_y_mm = self.stage.get_pos().y_mm
             fmap_Nx = max(2,self.NX-1)
             fmap_Ny = max(2,self.NY-1)
             fmap_dx = self.deltaX
@@ -2641,8 +2292,8 @@ class MultiPointController(QObject):
                 coord3 = (starting_x_mm,starting_y_mm+fmap_Ny*fmap_dy)
                 self.autofocusController.gen_focus_map(coord1, coord2, coord3)
                 self.autofocusController.set_focus_map_use(True)
-                self.navigationController.move_to(starting_x_mm, starting_y_mm)
-                self.navigationController.microcontroller.wait_till_operation_is_completed()
+                self.stage.move_x_to(starting_x_mm)
+                self.stage.move_y_to(starting_y_mm)
             except ValueError:
                 print("Invalid coordinates for focus map, aborting.")
                 return
@@ -2767,20 +2418,16 @@ class TrackingController(QObject):
     image_to_display_multi = Signal(np.ndarray,int)
     signal_current_configuration = Signal(Configuration)
 
-    def __init__(self,camera,microcontroller,navigationController,configurationManager,liveController,autofocusController,imageDisplayWindow):
+    def __init__(self, camera, microcontroller: Microcontroller, stage: AbstractStage, configurationManager, liveController: LiveController, autofocusController, imageDisplayWindow):
         QObject.__init__(self)
         self.camera = camera
         self.microcontroller = microcontroller
-        self.navigationController = navigationController
+        self.stage = stage
         self.configurationManager = configurationManager
         self.liveController = liveController
         self.autofocusController = autofocusController
         self.imageDisplayWindow = imageDisplayWindow
         self.tracker = tracking.Tracker_Image()
-        # self.tracker_z = tracking.Tracker_Z()
-        # self.pid_controller_x = tracking.PID_Controller()
-        # self.pid_controller_y = tracking.PID_Controller()
-        # self.pid_controller_z = tracking.PID_Controller()
 
         self.tracking_time_interval_s = 0
 
@@ -2976,13 +2623,13 @@ class TrackingWorker(QObject):
     image_to_display_multi = Signal(np.ndarray,int)
     signal_current_configuration = Signal(Configuration)
 
-    def __init__(self,trackingController):
+    def __init__(self, trackingController: TrackingController):
         QObject.__init__(self)
         self.trackingController = trackingController
 
         self.camera = self.trackingController.camera
+        self.stage = self.trackingController.stage
         self.microcontroller = self.trackingController.microcontroller
-        self.navigationController = self.trackingController.navigationController
         self.liveController = self.trackingController.liveController
         self.autofocusController = self.trackingController.autofocusController
         self.configurationManager = self.trackingController.configurationManager
@@ -2997,12 +2644,6 @@ class TrackingWorker(QObject):
         self.tracker = trackingController.tracker
 
         self.number_of_selected_configurations = len(self.selected_configurations)
-
-        # self.tracking_time_interval_s = self.trackingController.tracking_time_interval_s
-        # self.flag_stage_tracking_enabled = self.trackingController.flag_stage_tracking_enabled
-        # self.flag_AF_enabled = False
-        # self.flag_save_image = False
-        # self.flag_stop_tracking_requested = False
 
         self.image_saver = ImageSaver_Tracking(base_path=os.path.join(self.base_path,self.experiment_ID),image_format='bmp')
 
@@ -3029,8 +2670,7 @@ class TrackingWorker(QObject):
         self.tracker.set_roi_bbox(init_roi)
 
         # tracking loop
-        while self.trackingController.flag_stop_tracking_requested == False:
-
+        while not self.trackingController.flag_stop_tracking_requested:
             print('tracking_frame_counter: ' + str(tracking_frame_counter) )
             if tracking_frame_counter == 0:
                 is_first_frame = True
@@ -3043,8 +2683,7 @@ class TrackingWorker(QObject):
             # switch to the tracking config
             config = self.selected_configurations[0]
             self.signal_current_configuration.emit(config)
-            self.wait_till_operation_is_completed()
-
+            self.microcontroller.wait_till_operation_is_completed()
             # do autofocus
             if self.trackingController.flag_AF_enabled and tracking_frame_counter > 1:
                 # do autofocus
@@ -3054,21 +2693,20 @@ class TrackingWorker(QObject):
                 print('>>> autofocus completed')
 
             # get current position
-            x_stage = self.navigationController.x_pos_mm
-            y_stage = self.navigationController.y_pos_mm
-            z_stage = self.navigationController.z_pos_mm
+            pos = self.stage.get_pos()
 
             # grab an image
             config = self.selected_configurations[0]
-            if(self.number_of_selected_configurations > 1):
+            if self.number_of_selected_configurations > 1:
                 self.signal_current_configuration.emit(config)
-                self.wait_till_operation_is_completed()
+                # TODO(imo): replace with illumination controller
+                self.microcontroller.wait_till_operation_is_completed()
                 self.liveController.turn_on_illumination()        # keep illumination on for single configuration acqusition
-                self.wait_till_operation_is_completed()
+                self.microcontroller.wait_till_operation_is_completed()
             t = time.time()
             self.camera.send_trigger()
             image = self.camera.read_frame()
-            if(self.number_of_selected_configurations > 1):
+            if self.number_of_selected_configurations > 1:
                 self.liveController.turn_off_illumination()       # keep illumination on for single configuration acqusition
             # image crop, rotation and flip
             image = utils.crop_image(image,self.crop_width,self.crop_height)
@@ -3081,19 +2719,20 @@ class TrackingWorker(QObject):
             # image the rest configurations
             for config_ in self.selected_configurations[1:]:
                 self.signal_current_configuration.emit(config_)
-                self.wait_till_operation_is_completed()
+                # TODO(imo): replace with illumination controller
+                self.microcontroller.wait_till_operation_is_completed()
                 self.liveController.turn_on_illumination()
-                self.wait_till_operation_is_completed()
+                self.microcontroller.wait_till_operation_is_completed()
+                # TODO(imo): this is broken if we are using hardware triggering
                 self.camera.send_trigger()
                 image_ = self.camera.read_frame()
+                # TODO(imo): use illumination controller
                 self.liveController.turn_off_illumination()
                 image_ = utils.crop_image(image_,self.crop_width,self.crop_height)
                 image_ = np.squeeze(image_)
                 image_ = utils.rotate_and_flip_image(image_,rotate_image_angle=ROTATE_IMAGE_ANGLE,flip_image=FLIP_IMAGE)
                 # display image
-                # self.image_to_display.emit(cv2.resize(image,(round(self.crop_width*self.display_resolution_scaling), round(self.crop_height*self.display_resolution_scaling)),cv2.INTER_LINEAR))
                 image_to_display_ = utils.crop_image(image_,round(self.crop_width*self.liveController.display_resolution_scaling), round(self.crop_height*self.liveController.display_resolution_scaling))
-                # self.image_to_display.emit(image_to_display_)
                 self.image_to_display_multi.emit(image_to_display_,config_.illumination_source)
                 # save image
                 if self.trackingController.flag_save_image:
@@ -3102,8 +2741,8 @@ class TrackingWorker(QObject):
                     self.image_saver.enqueue(image_,tracking_frame_counter,str(config_.name))
 
             # track
-            objectFound,centroid,rect_pts = self.tracker.track(image, None, is_first_frame = is_first_frame)
-            if objectFound == False:
+            object_found, centroid,rect_pts = self.tracker.track(image, None, is_first_frame = is_first_frame)
+            if not object_found:
                 print('tracker: object not found')
                 break
             in_plane_position_error_pixel = image_center - centroid
@@ -3117,23 +2756,18 @@ class TrackingWorker(QObject):
 
             # move
             if self.trackingController.flag_stage_tracking_enabled:
-                x_correction_usteps = int(x_error_mm/self.navigationController.get_mm_per_ustep_X())
-                y_correction_usteps = int(y_error_mm/self.navigationController.get_mm_per_ustep_Y())
-                self.microcontroller.move_x_usteps(TRACKING_MOVEMENT_SIGN_X*x_correction_usteps)
-                self.microcontroller.move_y_usteps(TRACKING_MOVEMENT_SIGN_Y*y_correction_usteps)
+                # TODO(imo): This needs testing!
+                self.stage.move_x(x_error_mm)
+                self.stage.move_y(y_error_mm)
 
             # save image
             if self.trackingController.flag_save_image:
                 self.image_saver.enqueue(image,tracking_frame_counter,str(config.name))
 
             # save position data
-            # self.csv_file.write('dt (s), x_stage (mm), y_stage (mm), z_stage (mm), x_image (mm), y_image(mm), image_filename\n')
-            self.csv_file.write(str(t)+','+str(x_stage)+','+str(y_stage)+','+str(z_stage)+','+str(x_error_mm)+','+str(y_error_mm)+','+str(tracking_frame_counter)+'\n')
+            self.csv_file.write(str(t)+','+str(pos.x_mm)+','+str(pos.y_mm)+','+str(pos.z_mm)+','+str(x_error_mm)+','+str(y_error_mm)+','+str(tracking_frame_counter)+'\n')
             if tracking_frame_counter%100 == 0:
                 self.csv_file.flush()
-
-            # wait for movement to complete
-            self.wait_till_operation_is_completed() # to do - make sure both x movement and y movement are complete
 
             # wait till tracking interval has elapsed
             while(time.time() - timestamp_last_frame < self.trackingController.tracking_time_interval_s):
@@ -3146,10 +2780,6 @@ class TrackingWorker(QObject):
         self.csv_file.close()
         self.image_saver.close()
         self.finished.emit()
-
-    def wait_till_operation_is_completed(self):
-        while self.microcontroller.is_busy():
-            time.sleep(SLEEP_TIME_S)
 
 
 class ImageDisplayWindow(QMainWindow):
@@ -3252,8 +2882,8 @@ class ImageDisplayWindow(QMainWindow):
         if self.is_within_image(image_coord):
             x_pixel_centered = int(image_coord.x() - self.graphics_widget.img.width()/2)
             y_pixel_centered = int(image_coord.y() - self.graphics_widget.img.height()/2)
-            self.image_click_coordinates.emit(x_pixel_centered, y_pixel_centered,
-                                           self.graphics_widget.img.width(),
+            self.image_click_coordinates.emit(x_pixel_centered, y_pixel_centered, 
+                                           self.graphics_widget.img.width(), 
                                            self.graphics_widget.img.height())
 
     def is_within_image(self, coordinates):
@@ -3755,122 +3385,6 @@ class ContrastManager:
         self.acquisition_dtype = target_dtype
 
 
-class PlateReaderNavigationController(QObject):             # Not implemented for Prior stage
-
-    signal_homing_complete = Signal()
-    signal_current_well = Signal(str)
-
-    def __init__(self,microcontroller):
-        QObject.__init__(self)
-        self.microcontroller = microcontroller
-        self.x_pos_mm = 0
-        self.y_pos_mm = 0
-        self.z_pos_mm = 0
-        self.z_pos = 0
-        self.x_microstepping = MICROSTEPPING_DEFAULT_X
-        self.y_microstepping = MICROSTEPPING_DEFAULT_Y
-        self.z_microstepping = MICROSTEPPING_DEFAULT_Z
-        self.column = ''
-        self.row = ''
-
-        # to be moved to gui for transparency
-        self.microcontroller.set_callback(self.update_pos)
-
-        self.is_homing = False
-        self.is_scanning = False
-
-    def move_x_usteps(self,usteps):
-        self.microcontroller.move_x_usteps(usteps)
-
-    def move_y_usteps(self,usteps):
-        self.microcontroller.move_y_usteps(usteps)
-
-    def move_z_usteps(self,usteps):
-        self.microcontroller.move_z_usteps(usteps)
-
-    def move_x_to_usteps(self,usteps):
-        self.microcontroller.move_x_to_usteps(usteps)
-
-    def move_y_to_usteps(self,usteps):
-        self.microcontroller.move_y_to_usteps(usteps)
-
-    def move_z_to_usteps(self,usteps):
-        self.microcontroller.move_z_to_usteps(usteps)
-
-    def moveto(self,column,row):
-        if column != '':
-            mm_per_ustep_X = SCREW_PITCH_X_MM/(self.x_microstepping*FULLSTEPS_PER_REV_X)
-            x_mm = PLATE_READER.OFFSET_COLUMN_1_MM + (int(column)-1)*PLATE_READER.COLUMN_SPACING_MM
-            x_usteps = STAGE_MOVEMENT_SIGN_X*round(x_mm/mm_per_ustep_X)
-            self.move_x_to_usteps(x_usteps)
-        if row != '':
-            mm_per_ustep_Y = SCREW_PITCH_Y_MM/(self.y_microstepping*FULLSTEPS_PER_REV_Y)
-            y_mm = PLATE_READER.OFFSET_ROW_A_MM + (ord(row) - ord('A'))*PLATE_READER.ROW_SPACING_MM
-            y_usteps = STAGE_MOVEMENT_SIGN_Y*round(y_mm/mm_per_ustep_Y)
-            self.move_y_to_usteps(y_usteps)
-
-    def moveto_row(self,row):
-        # row: int, starting from 0
-        mm_per_ustep_Y = SCREW_PITCH_Y_MM/(self.y_microstepping*FULLSTEPS_PER_REV_Y)
-        y_mm = PLATE_READER.OFFSET_ROW_A_MM + row*PLATE_READER.ROW_SPACING_MM
-        y_usteps = round(y_mm/mm_per_ustep_Y)
-        self.move_y_to_usteps(y_usteps)
-
-    def moveto_column(self,column):
-        # column: int, starting from 0
-        mm_per_ustep_X = SCREW_PITCH_X_MM/(self.x_microstepping*FULLSTEPS_PER_REV_X)
-        x_mm = PLATE_READER.OFFSET_COLUMN_1_MM + column*PLATE_READER.COLUMN_SPACING_MM
-        x_usteps = round(x_mm/mm_per_ustep_X)
-        self.move_x_to_usteps(x_usteps)
-
-    def update_pos(self,microcontroller):
-        # get position from the microcontroller
-        x_pos, y_pos, z_pos, theta_pos = microcontroller.get_pos()
-        self.z_pos = z_pos
-        # calculate position in mm or rad
-        if USE_ENCODER_X:
-            self.x_pos_mm = x_pos*STAGE_POS_SIGN_X*ENCODER_STEP_SIZE_X_MM
-        else:
-            self.x_pos_mm = x_pos*STAGE_POS_SIGN_X*(SCREW_PITCH_X_MM/(self.x_microstepping*FULLSTEPS_PER_REV_X))
-        if USE_ENCODER_Y:
-            self.y_pos_mm = y_pos*STAGE_POS_SIGN_Y*ENCODER_STEP_SIZE_Y_MM
-        else:
-            self.y_pos_mm = y_pos*STAGE_POS_SIGN_Y*(SCREW_PITCH_Y_MM/(self.y_microstepping*FULLSTEPS_PER_REV_Y))
-        if USE_ENCODER_Z:
-            self.z_pos_mm = z_pos*STAGE_POS_SIGN_Z*ENCODER_STEP_SIZE_Z_MM
-        else:
-            self.z_pos_mm = z_pos*STAGE_POS_SIGN_Z*(SCREW_PITCH_Z_MM/(self.z_microstepping*FULLSTEPS_PER_REV_Z))
-        # check homing status
-        if self.is_homing and self.microcontroller.mcu_cmd_execution_in_progress == False:
-            self.signal_homing_complete.emit()
-        # for debugging
-        # print('X: ' + str(self.x_pos_mm) + ' Y: ' + str(self.y_pos_mm))
-        # check and emit current position
-        column = round((self.x_pos_mm - PLATE_READER.OFFSET_COLUMN_1_MM)/PLATE_READER.COLUMN_SPACING_MM)
-        if column >= 0 and column <= PLATE_READER.NUMBER_OF_COLUMNS:
-            column = str(column+1)
-        else:
-            column = ' '
-        row = round((self.y_pos_mm - PLATE_READER.OFFSET_ROW_A_MM)/PLATE_READER.ROW_SPACING_MM)
-        if row >= 0 and row <= PLATE_READER.NUMBER_OF_ROWS:
-            row = chr(ord('A')+row)
-        else:
-            row = ' '
-
-        if self.is_scanning:
-            self.signal_current_well.emit(row+column)
-
-    def home(self):
-        self.is_homing = True
-        self.microcontroller.home_xy()
-
-    def home_x(self):
-        self.microcontroller.home_x()
-
-    def home_y(self):
-        self.microcontroller.home_y()
-
-
 class ScanCoordinates:
     def __init__(self, objectiveStore, navigationViewer, navigationController):
         # Wellplate settings
@@ -4291,12 +3805,12 @@ class LaserAutofocusController(QObject):
     image_to_display = Signal(np.ndarray)
     signal_displacement_um = Signal(float)
 
-    def __init__(self,microcontroller,camera,liveController,navigationController,has_two_interfaces=True,use_glass_top=True, look_for_cache=True):
+    def __init__(self, microcontroller: Microcontroller, camera, liveController, stage: AbstractStage, has_two_interfaces=True, use_glass_top=True, look_for_cache=True):
         QObject.__init__(self)
         self.microcontroller = microcontroller
         self.camera = camera
         self.liveController = liveController
-        self.navigationController = navigationController
+        self.stage = stage
 
         self.is_initialized = False
         self.x_reference = 0
@@ -4363,14 +3877,14 @@ class LaserAutofocusController(QObject):
 
         # turn on the laser
         self.microcontroller.turn_on_AF_laser()
-        self.wait_till_operation_is_completed()
+        self.microcontroller.wait_till_operation_is_completed()
 
         # get laser spot location
         x,y = self._get_laser_spot_centroid()
 
         # turn off the laser
         self.microcontroller.turn_off_AF_laser()
-        self.wait_till_operation_is_completed()
+        self.microcontroller.wait_till_operation_is_completed()
 
         x_offset = x - LASER_AF_CROP_WIDTH/2
         y_offset = y - LASER_AF_CROP_HEIGHT/2
@@ -4381,21 +3895,18 @@ class LaserAutofocusController(QObject):
 
         # turn on laser
         self.microcontroller.turn_on_AF_laser()
-        self.wait_till_operation_is_completed()
+        self.microcontroller.wait_till_operation_is_completed()
 
         # move z to - 6 um
-        self.navigationController.move_z(-0.018)
-        self.wait_till_operation_is_completed()
-        self.navigationController.move_z(0.012)
-        self.wait_till_operation_is_completed()
+        self.stage.move_z(-0.018)
+        self.stage.move_z(0.012)
         time.sleep(0.02)
 
         # measure
         x0,y0 = self._get_laser_spot_centroid()
 
         # move z to 6 um
-        self.navigationController.move_z(0.006)
-        self.wait_till_operation_is_completed()
+        self.stage.move_z(0.006)
         time.sleep(0.02)
 
         # measure
@@ -4403,7 +3914,7 @@ class LaserAutofocusController(QObject):
 
         # turn off laser
         self.microcontroller.turn_off_AF_laser()
-        self.wait_till_operation_is_completed()
+        self.microcontroller.wait_till_operation_is_completed()
 
         if x1-x0 == 0:
             # for simulation
@@ -4447,12 +3958,12 @@ class LaserAutofocusController(QObject):
     def measure_displacement(self):
         # turn on the laser
         self.microcontroller.turn_on_AF_laser()
-        self.wait_till_operation_is_completed()
+        self.microcontroller.wait_till_operation_is_completed()
         # get laser spot location
         x,y = self._get_laser_spot_centroid()
         # turn off the laser
         self.microcontroller.turn_off_AF_laser()
-        self.wait_till_operation_is_completed()
+        self.microcontroller.wait_till_operation_is_completed()
         # calculate displacement
         displacement_um = (x - self.x_reference)*self.pixel_to_um
         self.signal_displacement_um.emit(displacement_um)
@@ -4476,12 +3987,12 @@ class LaserAutofocusController(QObject):
     def set_reference(self):
         # turn on the laser
         self.microcontroller.turn_on_AF_laser()
-        self.wait_till_operation_is_completed()
+        self.microcontroller.wait_till_operation_is_completed()
         # get laser spot location
         x,y = self._get_laser_spot_centroid()
         # turn off the laser
         self.microcontroller.turn_off_AF_laser()
-        self.wait_till_operation_is_completed()
+        self.microcontroller.wait_till_operation_is_completed()
         self.x_reference = x
         self.signal_displacement_um.emit(0)
 
@@ -4566,19 +4077,14 @@ class LaserAutofocusController(QObject):
         y = tmp_y/LASER_AF_AVERAGING_N
         return x,y
 
-    def wait_till_operation_is_completed(self):
-        while self.microcontroller.is_busy():
-            time.sleep(SLEEP_TIME_S)
-
     def get_image(self):
         # turn on the laser
         self.microcontroller.turn_on_AF_laser()
-        self.wait_till_operation_is_completed()
-        # send trigger, grab image and display image
+        self.microcontroller.wait_till_operation_is_completed()        # send trigger, grab image and display image
         self.camera.send_trigger()
         image = self.camera.read_frame()
         self.image_to_display.emit(image)
         # turn off the laser
         self.microcontroller.turn_off_AF_laser()
-        self.wait_till_operation_is_completed()
+        self.microcontroller.wait_till_operation_is_completed()
         return image

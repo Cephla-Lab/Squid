@@ -3,9 +3,10 @@ import time
 
 from PyQt5.QtCore import QObject
 
-import control.core as core
+import control.core.core as core
 from control._def import *
 import control
+from squid.abc import AbstractStage
 
 if CAMERA_TYPE == "Toupcam":
     import control.camera_toupcam as camera
@@ -15,8 +16,9 @@ import control.serial_peripherals as serial_peripherals
 
 class Microscope(QObject):
 
-    def __init__(self, microscope=None, is_simulation=False):
+    def __init__(self, stage: AbstractStage, microscope=None, is_simulation=False):
         super().__init__()
+        self.stage = stage
         if microscope is None:
             self.initialize_camera(is_simulation=is_simulation)
             self.initialize_microcontroller(is_simulation=is_simulation)
@@ -29,7 +31,6 @@ class Microscope(QObject):
             self.objectiveStore = microscope.objectiveStore
             self.streamHandler = microscope.streamHandler
             self.liveController = microscope.liveController
-            self.navigationController = microscope.navigationController
             self.autofocusController = microscope.autofocusController
             self.slidePositionController = microscope.slidePositionController
             if USE_ZABER_EMISSION_FILTER_WHEEL:
@@ -67,9 +68,8 @@ class Microscope(QObject):
         self.objectiveStore = core.ObjectiveStore()
         self.streamHandler = core.StreamHandler(display_resolution_scaling=DEFAULT_DISPLAY_CROP/100)
         self.liveController = core.LiveController(self.camera, self.microcontroller, self.configurationManager, self)
-        self.navigationController = core.NavigationController(self.microcontroller, self.objectiveStore)
-        self.autofocusController = core.AutoFocusController(self.camera, self.navigationController, self.liveController)
-        self.slidePositionController = core.SlidePositionController(self.navigationController,self.liveController)
+        self.autofocusController = core.AutoFocusController(self.camera, self.stage, self.liveController)
+        self.slidePositionController = core.SlidePositionController(self.stage,self.liveController)
 
     def initialize_peripherals(self):
         if USE_ZABER_EMISSION_FILTER_WHEEL:

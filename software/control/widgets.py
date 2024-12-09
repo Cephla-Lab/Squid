@@ -1,5 +1,10 @@
 import os
 import sys
+from typing import Optional
+
+import squid.logging
+from control.microcontroller import Microcontroller
+from squid.abc import AbstractStage
 
 # set QT_API environment variable
 os.environ["QT_API"] = "pyqt5"
@@ -1151,9 +1156,9 @@ class LiveControlWidget(QFrame):
 
 
 class PiezoWidget(QFrame):
-    def __init__(self, navigationController, *args, **kwargs):
+    def __init__(self, microcontroller: Microcontroller, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.navigationController = navigationController
+        self.microcontroller = microcontroller
         self.slider_value = 0.00
         self.add_components()
 
@@ -1228,7 +1233,7 @@ class PiezoWidget(QFrame):
 
     def update_piezo_position(self):
         displacement_um = self.slider_value
-        self.navigationController.set_piezo_um(displacement_um)
+        self.microcontroller.set_piezo_um(displacement_um)
 
     def adjust_position(self, up):
         increment = self.increment_spinBox.value()
@@ -1358,15 +1363,29 @@ class RecordingWidget(QFrame):
 
 
 class NavigationWidget(QFrame):
-    def __init__(self, navigationController, slidePositionController=None, main=None, widget_configuration = 'full', *args, **kwargs):
+    def __init__(self, stage: AbstractStage, slidePositionController=None, main=None, widget_configuration = 'full', *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.navigationController = navigationController
+        self.log = squid.logging.get_logger(self.__class__.__name__)
+        self.stage = stage
         self.slidePositionController = slidePositionController
         self.widget_configuration = widget_configuration
         self.slide_position = None
-        self.flag_click_to_move = navigationController.click_to_move
+        # TODO(imo): Fix below.  Used to use NavigationController click flag tracking
+        self.flag_click_to_move = False
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
+
+        self.position_update_timer = QTimer()
+        self.position_update_timer.setInterval(100)
+        self.position_update_timer.timeout.connect(self._update_position)
+        self.position_update_timer.start()
+
+    def _update_position(self):
+        pos = self.stage.get_pos()
+        self.label_Xpos.setNum(pos.x_mm)
+        self.label_Ypos.setNum(pos.y_mm)
+        # NOTE: The z label is in um
+        self.label_Zpos.setNum(pos.z_mm * 1000)
 
     def add_components(self):
         x_label = QLabel('X :')
@@ -1508,7 +1527,8 @@ class NavigationWidget(QFrame):
         self.btn_zero_Y.clicked.connect(self.zero_y)
         self.btn_zero_Z.clicked.connect(self.zero_z)
 
-        self.checkbox_clickToMove.stateChanged.connect(self.navigationController.set_flag_click_to_move)
+        # TODO(imo): I broke click to move since removing navigationController
+        # self.checkbox_clickToMove.stateChanged.connect(self.navigationController.set_flag_click_to_move)
 
         self.btn_load_slide.clicked.connect(self.switch_position)
         self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
@@ -1543,28 +1563,28 @@ class NavigationWidget(QFrame):
         self.btn_load_slide.setEnabled(enabled)
 
     def move_x_forward(self):
-        self.navigationController.move_x(self.entry_dX.value())
+        self.stage.move_x(self.entry_dX.value())
     def move_x_backward(self):
-        self.navigationController.move_x(-self.entry_dX.value())
+        self.stage.move_x(-self.entry_dX.value())
     def move_y_forward(self):
-        self.navigationController.move_y(self.entry_dY.value())
+        self.stage.move_y(self.entry_dY.value())
     def move_y_backward(self):
-        self.navigationController.move_y(-self.entry_dY.value())
+        self.stage.move_y(-self.entry_dY.value())
     def move_z_forward(self):
-        self.navigationController.move_z(self.entry_dZ.value()/1000)
+        self.stage.move_z(self.entry_dZ.value()/1000)
     def move_z_backward(self):
-        self.navigationController.move_z(-self.entry_dZ.value()/1000)
+        self.stage.move_z(-self.entry_dZ.value()/1000)
 
     def set_deltaX(self,value):
-        mm_per_ustep = self.navigationController.get_mm_per_ustep_X()
+        mm_per_ustep = 1.0 / self.stage.get_config().X_AXIS.convert_real_units_to_ustep(1.0)
         deltaX = round(value/mm_per_ustep)*mm_per_ustep
         self.entry_dX.setValue(deltaX)
     def set_deltaY(self,value):
-        mm_per_ustep = self.navigationController.get_mm_per_ustep_Y()
+        mm_per_ustep = 1.0 / self.stage.get_config().Y_AXIS.convert_real_units_to_ustep(1.0)
         deltaY = round(value/mm_per_ustep)*mm_per_ustep
         self.entry_dY.setValue(deltaY)
     def set_deltaZ(self,value):
-        mm_per_ustep = self.navigationController.get_mm_per_ustep_Z()
+        mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
         deltaZ = round(value/1000/mm_per_ustep)*mm_per_ustep*1000
         self.entry_dZ.setValue(deltaZ)
 
@@ -1578,7 +1598,7 @@ class NavigationWidget(QFrame):
         msg.setDefaultButton(QMessageBox.Cancel)
         retval = msg.exec_()
         if QMessageBox.Ok == retval:
-            self.navigationController.home_x()
+            self.stage.home(x=True, y=False, z=False, theta=False)
 
     def home_y(self):
         msg = QMessageBox()
@@ -1590,7 +1610,7 @@ class NavigationWidget(QFrame):
         msg.setDefaultButton(QMessageBox.Cancel)
         retval = msg.exec_()
         if QMessageBox.Ok == retval:
-            self.navigationController.home_y()
+            self.stage.home(x=False, y=True, z=False, theta=False)
 
     def home_z(self):
         msg = QMessageBox()
@@ -1602,16 +1622,16 @@ class NavigationWidget(QFrame):
         msg.setDefaultButton(QMessageBox.Cancel)
         retval = msg.exec_()
         if QMessageBox.Ok == retval:
-            self.navigationController.home_z()
+            self.stage.home(x=False, y=False, z=True, theta=False)
 
     def zero_x(self):
-        self.navigationController.zero_x()
+        self.stage.zero(x=True, y=False, z=False, theta=False)
 
     def zero_y(self):
-        self.navigationController.zero_y()
+        self.stage.zero(x=False, y=True, z=False, theta=False)
 
     def zero_z(self):
-        self.navigationController.zero_z()
+        self.stage.zero(x=False, y=False, z=True, theta=False)
 
     def slot_slide_loading_position_reached(self):
         self.slide_position = 'loading'
@@ -1651,12 +1671,22 @@ class NavigationWidget(QFrame):
 
 
 class NavigationBarWidget(QWidget):
-    def __init__(self, navigationController=None, slidePositionController=None, add_z_buttons=True,*args, **kwargs):
+    def __init__(self, stage: Optional[AbstractStage], slidePositionController=None, add_z_buttons=True,*args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.navigationController = navigationController
+        self.stage = stage
         self.slidePositionController = slidePositionController
         self.add_z_buttons = add_z_buttons
         self.initUI()
+
+        self.position_update_timer = QTimer()
+        self.position_update_timer.setInterval(100)
+        self.position_update_timer.timeout.connect(self._update_position)
+
+    def _update_position(self):
+        pos = self.stage.get_pos()
+        self.label_Xpos.setText(f"{pos.x_mm:.3f} mm")
+        self.label_Ypos.setText(f"{pos.y_mm:.3f} mm")
+        self.label_Zpos.setText(f"{pos.z_mm * 1000:.3f} μm")
 
     def initUI(self):
         layout = QHBoxLayout()
@@ -1687,7 +1717,7 @@ class NavigationBarWidget(QWidget):
             layout.addWidget(self.btn_zero_Z)
             layout.addSpacing(20)
 
-            if self.navigationController is not None:
+            if self.stage is not None:
                 layout.addWidget(self.checkbox_clickToMove)
                 layout.addSpacing(10)
 
@@ -1727,15 +1757,6 @@ class NavigationBarWidget(QWidget):
         self.setFixedHeight(self.sizeHint().height())  # Set fixed height to make it as thin as possible
         self.connect_signals()
 
-    def update_x_position(self, x):
-        self.label_Xpos.setText(f"{x:.3f} mm")
-
-    def update_y_position(self, y):
-        self.label_Ypos.setText(f"{y:.3f} mm")
-
-    def update_z_position(self, z):
-        self.label_Zpos.setText(f"{z:.3f} μm")
-
     def home_z(self):
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Information)
@@ -1746,7 +1767,7 @@ class NavigationBarWidget(QWidget):
         msg.setDefaultButton(QMessageBox.Cancel)
         retval = msg.exec_()
         if QMessageBox.Ok == retval:
-            self.navigationController.home_z()
+            self.stage.home_z()
 
     def zero_z(self):
         msg = QMessageBox()
@@ -1758,7 +1779,7 @@ class NavigationBarWidget(QWidget):
         msg.setDefaultButton(QMessageBox.Cancel)
         retval = msg.exec_()
         if QMessageBox.Ok == retval:
-            self.navigationController.zero_z()
+            self.stage.zero_z()
 
     def switch_position(self):
         if self.btn_load_slide.text() == 'Move To Loading Position':
@@ -1783,8 +1804,9 @@ class NavigationBarWidget(QWidget):
         self.slidePositionController.signal_slide_scanning_position_reached.connect(self.slot_slide_scanning_position_reached)
 
     def connect_signals(self):
-        if self.navigationController is not None:
-            self.checkbox_clickToMove.stateChanged.connect(self.navigationController.set_flag_click_to_move)
+        # TODO(imo): I broke click to move with the navigationController rip out
+        # if self.stage is not None:
+        #     self.checkbox_clickToMove.stateChanged.connect(self.navigationController.set_flag_click_to_move)
         if self.slidePositionController is not None:
             self.slidePositionController.signal_slide_loading_position_reached.connect(self.slot_slide_loading_position_reached)
             self.slidePositionController.signal_slide_scanning_position_reached.connect(self.slot_slide_scanning_position_reached)
@@ -1860,8 +1882,10 @@ class AutoFocusWidget(QFrame):
     def __init__(self, autofocusController, main=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.autofocusController = autofocusController
+        self.log = squid.logging.get_logger(self.__class__.__name__)
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
+        self.stage = self.autofocusController.stage
 
     def add_components(self):
         self.entry_delta = QDoubleSpinBox()
@@ -1919,8 +1943,10 @@ class AutoFocusWidget(QFrame):
         self.autofocusController.autofocusFinished.connect(self.autofocus_is_finished)
 
     def set_deltaZ(self,value):
-        mm_per_ustep = self.autofocusController.navigationController.get_mm_per_ustep_Z()
+        mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
         deltaZ = round(value/1000/mm_per_ustep)*mm_per_ustep*1000
+        self.log.debug(f"{deltaZ=}")
+
         self.entry_delta.setValue(deltaZ)
         self.autofocusController.set_deltaZ(deltaZ)
 
@@ -2004,16 +2030,16 @@ class FlexibleMultiPointWidget(QFrame):
     signal_acquisition_shape = Signal(int, float) # Nz, dz
     signal_stitcher_z_levels = Signal(int) # live Nz
     signal_stitcher_widget = Signal(bool) # signal start stitcher
-    # signal_z_stacking = Signal(int) # z-stacking config no longer in this widget
 
-    def __init__(self, navigationController, navigationViewer, multipointController, objectiveStore, configurationManager = None, scanCoordinates=None, main=None, *args, **kwargs):
+    def __init__(self, stage: AbstractStage, navigationViewer, multipointController, objectiveStore, configurationManager = None, main=None, scanCoordinates=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.last_used_locations = None
         self.last_used_location_ids = None
         self.multipointController = multipointController
         self.objectiveStore = objectiveStore
         self.configurationManager = configurationManager
-        self.navigationController = navigationController
+        self.stage = stage
         self.navigationViewer = navigationViewer
         self.scanCoordinates = scanCoordinates
         self.base_path_is_set = False
@@ -2191,7 +2217,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
         self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_minZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_minZ.setValue(self.navigationController.z_pos_mm * 1000)  # Set to current position
+        self.entry_minZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to current position
         self.entry_minZ.setSuffix(" μm")
         #self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.set_minZ_button = QPushButton('Set')
@@ -2201,7 +2227,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
         self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_maxZ.setValue(self.navigationController.z_pos_mm * 1000)  # Set to current position
+        self.entry_maxZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to current position
         self.entry_maxZ.setSuffix(" μm")
         #self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.set_maxZ_button = QPushButton('Set')
@@ -2393,8 +2419,8 @@ class FlexibleMultiPointWidget(QFrame):
             self.entry_deltaY.valueChanged.connect(self.update_fov_positions)
         self.entry_NX.valueChanged.connect(self.update_fov_positions)
         self.entry_NY.valueChanged.connect(self.update_fov_positions)
-        # self.btn_add.clicked.connect(self.update_fov_positions)
-        # self.btn_remove.clicked.connect(self.update_fov_positions) # repaints all regions if region overlapps with another when we remove one.
+        self.btn_add.clicked.connect(self.update_fov_positions)
+        self.btn_remove.clicked.connect(self.update_fov_positions)
         self.entry_deltaZ.valueChanged.connect(self.set_deltaZ)
         self.entry_dt.valueChanged.connect(self.multipointController.set_deltat)
         self.entry_NX.valueChanged.connect(self.multipointController.set_NX)
@@ -2463,7 +2489,7 @@ class FlexibleMultiPointWidget(QFrame):
             except:
                 pass
             # When Z-range is not specified, set Z-min and Z-max to current Z position
-            current_z = self.navigationController.z_pos_mm * 1000
+            current_z = self.stage.get_pos().z_mm * 1000
             self.entry_minZ.setValue(current_z)
             self.entry_maxZ.setValue(current_z)
         else:
@@ -2480,7 +2506,7 @@ class FlexibleMultiPointWidget(QFrame):
 
     def init_z(self, z_pos_mm=None):
         if z_pos_mm is None:
-            z_pos_mm = self.navigationController.z_pos_mm
+            z_pos_mm = self.stage.get_pos().z_mm
 
         # block entry update signals
         self.entry_minZ.blockSignals(True)
@@ -2496,11 +2522,11 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_maxZ.blockSignals(False)
 
     def set_z_min(self):
-        z_value = self.navigationController.z_pos_mm * 1000  # Convert to μm
+        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
         self.entry_minZ.setValue(z_value)
 
     def set_z_max(self):
-        z_value = self.navigationController.z_pos_mm * 1000  # Convert to μm
+        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
         self.entry_maxZ.setValue(z_value)
 
     def update_z_min(self, z_pos_um):
@@ -2611,7 +2637,7 @@ class FlexibleMultiPointWidget(QFrame):
                                      )
 
     def set_deltaZ(self,value):
-        mm_per_ustep = self.multipointController.navigationController.get_mm_per_ustep_Z()
+        mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
         deltaZ = round(value/1000/mm_per_ustep)*mm_per_ustep*1000
         self.entry_deltaZ.setValue(deltaZ)
         self.multipointController.set_deltaZ(deltaZ)
@@ -2659,7 +2685,7 @@ class FlexibleMultiPointWidget(QFrame):
                 maxZ = self.entry_maxZ.value() / 1000
                 self.multipointController.set_z_range(minZ, maxZ)
             else:
-                z = self.navigationController.z_pos_mm
+                z = self.stage.get_pos().z_mm
                 dz = self.entry_deltaZ.value()
                 Nz = self.entry_NZ.value()
                 self.multipointController.set_z_range(z, z + dz * (Nz - 1))
@@ -2717,10 +2743,11 @@ class FlexibleMultiPointWidget(QFrame):
 
     def add_location(self):
         # Get raw positions without rounding
-        x = self.navigationController.x_pos_mm
-        y = self.navigationController.y_pos_mm
-        z = self.navigationController.z_pos_mm
-        region_id = f'R{len(self.location_ids)}'
+        pos = self.stage.get_pos()
+        x = pos.x_mm
+        y = pos.y_mm
+        z = pos.z_mm
+        name = f'R{len(self.location_ids)}'
 
         # Check for duplicates using rounded values for comparison
         if not np.any(np.all(self.location_list[:, :2] == [round(x,3), round(y,3)], axis=1)):
@@ -2839,14 +2866,18 @@ class FlexibleMultiPointWidget(QFrame):
         # max_index = self.dropdown_location_list.count() - 1
         # index = min(index + 1, max_index)
         num_regions = self.dropdown_location_list.count()
-        index = (index + 1) % (num_regions)
+        if num_regions <= 0:
+            self._log.error("Cannot move to next location, because there are no locations in the list")
+            return
+
+        index = (index + 1) % num_regions
         self.dropdown_location_list.setCurrentIndex(index)
         x = self.location_list[index,0]
         y = self.location_list[index,1]
         z = self.location_list[index,2]
-        self.navigationController.move_x_to(x)
-        self.navigationController.move_y_to(y)
-        self.navigationController.move_z_to(z)
+        self.stage.move_x_to(x)
+        self.stage.move_y_to(y)
+        self.stage.move_z_to(z)
 
     def previous(self):
         index = self.dropdown_location_list.currentIndex()
@@ -2855,9 +2886,9 @@ class FlexibleMultiPointWidget(QFrame):
         x = self.location_list[index,0]
         y = self.location_list[index,1]
         z = self.location_list[index,2]
-        self.navigationController.move_x_to(x)
-        self.navigationController.move_y_to(y)
-        self.navigationController.move_z_to(z)
+        self.stage.move_x_to(x)
+        self.stage.move_y_to(y)
+        self.stage.move_z_to(z)
 
     def clear(self):
         self.location_list = np.empty((0, 3), dtype=float)
@@ -2866,7 +2897,8 @@ class FlexibleMultiPointWidget(QFrame):
         self.dropdown_location_list.clear()
         self.table_location_list.setRowCount(0)
         self.navigationViewer.clear_overlay()
-        print("Cleared all locations and overlays.")
+
+        self._log.info("Cleared all locations and overlays.")
 
     def clear_only_location_list(self):
         self.location_list = np.empty((0,3),dtype=float)
@@ -2880,9 +2912,9 @@ class FlexibleMultiPointWidget(QFrame):
                 x = self.location_list[index,0]
                 y = self.location_list[index,1]
                 z = self.location_list[index,2]
-                self.navigationController.move_x_to(x)
-                self.navigationController.move_y_to(y)
-                self.navigationController.move_z_to(z)
+                self.stage.move_x_to(x)
+                self.stage.move_y_to(y)
+                self.stage.move_z_to(z)
                 self.table_location_list.selectRow(index)
 
     def cell_was_clicked(self,row,column):
@@ -2973,7 +3005,7 @@ class FlexibleMultiPointWidget(QFrame):
             try:
                 location_list_df_relevant = location_list_df[['x (mm)', 'y (mm)', 'z (um)']]
             except KeyError:
-                print("Improperly formatted location list being imported")
+                self._log.error("Improperly formatted location list being imported")
                 return
             if 'ID' in location_list_df.columns:
                 location_list_df_relevant['ID'] = location_list_df['ID'].astype(str)
@@ -3010,8 +3042,8 @@ class FlexibleMultiPointWidget(QFrame):
                                                  self.entry_deltaX.value(),self.entry_deltaY.value()
                                              )
                 else:
-                    print("Duplicate values not added based on x and y.")
-            print(self.location_list)
+                    self._log.warning("Duplicate values not added based on x and y.")
+            self._log.debug(self.location_list)
 
     def acquisition_is_finished(self):
         if not self.is_current_acquisition_widget:
@@ -3069,14 +3101,12 @@ class WellplateMultiPointWidget(QFrame):
     signal_stitcher_z_levels = Signal(int) # live Nz
     signal_stitcher_widget = Signal(bool) # start stitching
     signal_manual_shape_mode = Signal(bool) # enable manual shape layer on mosaic display
-    # signal_z_stacking = Signal(int)
 
-
-    def __init__(self, navigationController, navigationViewer, multipointController, objectiveStore, configurationManager, scanCoordinates, napariMosaicWidget=None, *args, **kwargs):
+    def __init__(self, stage: AbstractStage, navigationViewer, multipointController, objectiveStore, configurationManager, scanCoordinates, napariMosaicWidget=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.objectiveStore = objectiveStore
         self.multipointController = multipointController
-        self.navigationController = navigationController
+        self.stage = stage
         self.navigationViewer = navigationViewer
         self.scanCoordinates = scanCoordinates
         self.configurationManager = configurationManager
@@ -3134,7 +3164,7 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
         self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_minZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_minZ.setValue(self.navigationController.z_pos_mm * 1000)  # Set to minimum
+        self.entry_minZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to minimum
         self.entry_minZ.setSuffix(" μm")
         #self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -3145,7 +3175,7 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
         self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_maxZ.setValue(self.navigationController.z_pos_mm * 1000)  # Set to maximum
+        self.entry_maxZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to maximum
         self.entry_maxZ.setSuffix(" μm")
         #self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -3461,7 +3491,7 @@ class WellplateMultiPointWidget(QFrame):
 
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
-        current_z = self.navigationController.z_pos_mm * 1000
+        current_z = self.stage.get_pos().z_mm * 1000
         self.entry_minZ.setValue(current_z)
         self.entry_maxZ.setValue(current_z)
 
@@ -3583,11 +3613,11 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_NZ.setValue(nz)
 
     def set_z_min(self):
-        z_value = self.navigationController.z_pos_mm * 1000  # Convert to μm
+        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
         self.entry_minZ.setValue(z_value)
 
     def set_z_max(self):
-        z_value = self.navigationController.z_pos_mm * 1000  # Convert to μm
+        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
         self.entry_maxZ.setValue(z_value)
 
     def update_z_min(self, z_pos_um):
@@ -3601,7 +3631,7 @@ class WellplateMultiPointWidget(QFrame):
     def init_z(self, z_pos_mm=None):
         # sets initial z range form the current z position used after startup of the GUI
         if z_pos_mm is None:
-            z_pos_mm = self.navigationController.z_pos_mm
+            z_pos_mm = self.stage.get_pos().z_mm
 
         # block entry update signals
         self.entry_minZ.blockSignals(True)
@@ -3627,9 +3657,8 @@ class WellplateMultiPointWidget(QFrame):
             self.scanCoordinates.set_manual_coordinates(self.shapes_mm, overlap_percent)
 
         elif 'glass slide' in self.navigationViewer.sample:
-            x = self.navigationController.x_pos_mm
-            y = self.navigationController.y_pos_mm
-            self.scanCoordinates.set_live_scan_coordinates(x, y, scan_size_mm, overlap_percent, shape)
+            pos = self.stage.get_pos()
+            self.scanCoordinates.set_live_scan_coordinates(pos.x_mm, pos.y_mm)
         else:
             if self.scanCoordinates.has_regions():
                 self.scanCoordinates.clear_regions()
@@ -3677,9 +3706,10 @@ class WellplateMultiPointWidget(QFrame):
 
             if len(self.scanCoordinates.region_centers) == 0:
                 # Use current location if no regions added #TODO FIX
-                x = self.navigationController.x_pos_mm
-                y = self.navigationController.y_pos_mm
-                z = self.navigationController.z_pos_mm
+                pos = self.stage.get_pos()
+                x = pos.x_mm
+                y = pos.y_mm
+                z = pos.z_mm
                 self.scanCoordinates.add_region('current', x, y, scan_size_mm, overlap_percent, shape)
 
             # Calculate total number of positions for signal emission # not needed ever
@@ -3694,7 +3724,7 @@ class WellplateMultiPointWidget(QFrame):
                 self.multipointController.set_z_range(minZ, maxZ)
                 print("set z-range", (minZ, maxZ))
             else:
-                z = self.navigationController.z_pos_mm
+                z = self.get_pos().z_mm
                 dz = self.entry_deltaZ.value()
                 Nz = self.entry_NZ.value()
                 self.multipointController.set_z_range(z, z + dz * (Nz - 1))
@@ -3756,7 +3786,7 @@ class WellplateMultiPointWidget(QFrame):
         self.base_path_is_set = True
 
     def set_deltaZ(self, value):
-        mm_per_ustep = SCREW_PITCH_Z_MM/(self.multipointController.navigationController.z_microstepping*FULLSTEPS_PER_REV_Z)
+        mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
         deltaZ = round(value/1000/mm_per_ustep)*mm_per_ustep*1000
         self.entry_deltaZ.setValue(deltaZ)
         self.multipointController.set_deltaZ(deltaZ)
@@ -3995,11 +4025,11 @@ class NapariLiveWidget(QWidget):
     signal_newAnalogGain = Signal(float)
     signal_autoLevelSetting = Signal(bool)
 
-    def __init__(self, streamHandler, liveController, navigationController, configurationManager, contrastManager, wellSelectionWidget=None, show_trigger_options=True, show_display_options=True, show_autolevel=False, autolevel=False, parent=None):
+    def __init__(self, streamHandler, liveController, stage: AbstractStage, configurationManager, contrastManager, wellSelectionWidget=None, show_trigger_options=True, show_display_options=True, show_autolevel=False, autolevel=False, parent=None):
         super().__init__(parent)
         self.streamHandler = streamHandler
         self.liveController = liveController
-        self.navigationController = navigationController
+        self.stage = stage
         self.configurationManager = configurationManager
         self.wellSelectionWidget = wellSelectionWidget
         self.live_configuration = self.liveController.currentConfiguration
@@ -4444,17 +4474,19 @@ class NapariLiveWidget(QWidget):
 
     def onDoubleClick(self, layer, event):
         """Handle double-click events and emit centered coordinates if within the data range."""
-        if self.navigationController.get_flag_click_to_move():
-            coords = layer.world_to_data(event.position)
-            layer_shape = layer.data.shape[0:2] if len(layer.data.shape) >= 3 else layer.data.shape
-
-            if coords is not None and (0 <= int(coords[-1]) < layer_shape[-1] and (0 <= int(coords[-2]) < layer_shape[-2])):
-                x_centered = int(coords[-1] - layer_shape[-1] / 2)
-                y_centered = int(coords[-2] - layer_shape[-2] / 2)
-                # Emit the centered coordinates and dimensions of the layer's data array
-                self.signal_coordinates_clicked.emit(x_centered, y_centered, layer_shape[-1], layer_shape[-2])
-        else:
-            self.resetView()
+        # TODO(imo): I broke click to move with the nav controller rip out
+        # if self.navigationController.get_flag_click_to_move():
+        #     coords = layer.world_to_data(event.position)
+        #     layer_shape = layer.data.shape[0:2] if len(layer.data.shape) >= 3 else layer.data.shape
+        #
+        #     if coords is not None and (0 <= int(coords[-1]) < layer_shape[-1] and (0 <= int(coords[-2]) < layer_shape[-2])):
+        #         x_centered = int(coords[-1] - layer_shape[-1] / 2)
+        #         y_centered = int(coords[-2] - layer_shape[-2] / 2)
+        #         # Emit the centered coordinates and dimensions of the layer's data array
+        #         self.signal_coordinates_clicked.emit(x_centered, y_centered, layer_shape[-1], layer_shape[-2])
+        # else:
+        #     self.resetView()
+        self.resetView()
 
     def set_live_configuration(self, live_configuration):
         self.live_configuration = live_configuration
@@ -5893,9 +5925,9 @@ class WellplateFormatWidget(QWidget):
 
     signalWellplateSettings = Signal(QVariant, float, float, int, int, float, float, int, int, int)
 
-    def __init__(self, navigationController, navigationViewer, streamHandler, liveController):
+    def __init__(self, stage: AbstractStage, navigationViewer, streamHandler, liveController):
         super().__init__()
-        self.navigationController = navigationController
+        self.stage = stage
         self.navigationViewer = navigationViewer
         self.streamHandler = streamHandler
         self.liveController = liveController
@@ -5931,7 +5963,7 @@ class WellplateFormatWidget(QWidget):
     def wellplateChanged(self, index):
         self.wellplate_format = self.comboBox.itemData(index)
         if self.wellplate_format == "custom":
-            calibration_dialog = WellplateCalibration(self, self.navigationController, self.navigationViewer, self.streamHandler, self.liveController)
+            calibration_dialog = WellplateCalibration(self, self.stage, self.navigationViewer, self.streamHandler, self.liveController)
             result = calibration_dialog.exec_()
             if result == QDialog.Rejected:
                 # If the dialog was closed without adding a new format, revert to the previous selection
@@ -6019,11 +6051,11 @@ class WellplateFormatWidget(QWidget):
 
 class WellplateCalibration(QDialog):
 
-    def __init__(self, wellplateFormatWidget, navigationController, navigationViewer, streamHandler, liveController):
+    def __init__(self, wellplateFormatWidget, stage: AbstractStage, navigationViewer, streamHandler, liveController):
         super().__init__()
         self.setWindowTitle("Well Plate Calibration")
         self.wellplateFormatWidget = wellplateFormatWidget
-        self.navigationController = navigationController
+        self.stage = stage
         self.navigationViewer = navigationViewer
         self.streamHandler = streamHandler
         self.liveController = liveController
@@ -6141,7 +6173,6 @@ class WellplateCalibration(QDialog):
 
         self.live_viewer = CalibrationLiveViewer(parent=self)
         self.streamHandler.image_to_display.connect(self.live_viewer.display_image)
-        #self.live_viewer.signal_calibration_viewer_click.connect(self.navigationController.move_from_click)
 
         if not self.was_live:
             self.liveController.start_live()
@@ -6199,10 +6230,6 @@ class WellplateCalibration(QDialog):
             self.right_layout.itemAt(self.right_layout.count() - 1).layout().itemAt(0).widget().hide()  # Hide sensitivity label
             self.right_layout.itemAt(self.right_layout.count() - 1).layout().itemAt(1).widget().hide()  # Hide sensitivity slider
 
-    # def updateCursorPosition(self, x, y):
-    #     x_mm = self.navigationController.x_pos_mm + (x - self.live_viewer.width() / 2) * self.navigationController.x_mm_per_pixel
-    #     y_mm = self.navigationController.y_pos_mm + (y - self.live_viewer.height() / 2) * self.navigationController.y_mm_per_pixel
-
     def moveStage(self, x, y):
         sensitivity = self.sensitivitySlider.value() / 50.0  # Normalize to 0-2 range
         max_speed = 0.1 * sensitivity
@@ -6211,25 +6238,30 @@ class WellplateCalibration(QDialog):
         dx = math.copysign(max_speed * abs(x)**exponent, x)
         dy = math.copysign(max_speed * abs(y)**exponent, y)
 
-        self.navigationController.move_x(dx)
-        self.navigationController.move_y(dy)
+        self.stage.move_x(dx)
+        self.stage.move_y(dy)
 
     def toggleClickToMove(self, state):
-        if state == Qt.Checked:
-            self.navigationController.set_flag_click_to_move(True)
-            self.live_viewer.signal_calibration_viewer_click.connect(self.viewerClicked)
-        else:
-            self.live_viewer.signal_calibration_viewer_click.disconnect(self.viewerClicked)
-            self.navigationController.set_flag_click_to_move(False)
+        # TODO(imo): I broke click to move with the navigation controller rip out
+        # if state == Qt.Checked:
+        #     self.navigationController.set_flag_click_to_move(True)
+        #     self.live_viewer.signal_calibration_viewer_click.connect(self.viewerClicked)
+        # else:
+        #     self.live_viewer.signal_calibration_viewer_click.disconnect(self.viewerClicked)
+        #     self.navigationController.set_flag_click_to_move(False)
+        pass
 
     def viewerClicked(self, x, y, width, height):
-        if self.clickToMoveCheckbox.isChecked():
-            self.navigationController.move_from_click(x, y, width, height)
+        # TODO(imo): I broke click to move with the navigation controller rip out
+        # if self.clickToMoveCheckbox.isChecked():
+        #     self.navigationController.move_from_click(x, y, width, height)
+        pass
 
     def setCorner(self, index):
         if self.corners[index] is None:
-            x = self.navigationController.x_pos_mm
-            y = self.navigationController.y_pos_mm
+            pos = self.stage.get_pos()
+            x = pos.x_mm
+            y = pos.y_mm
 
             # Check if the new point is different from existing points
             if any(corner is not None and np.allclose([x, y], corner) for corner in self.corners):
@@ -6315,13 +6347,6 @@ class WellplateCalibration(QDialog):
                 # Get the existing format settings
                 existing_settings = WELLPLATE_FORMAT_SETTINGS[selected_format]
 
-                # # Calculate the offset between the original 0,0 pixel and 0,0 mm
-                # original_offset_x = existing_settings['a1_x_mm'] - (existing_settings['a1_x_pixel'] * 0.084665)
-                # original_offset_y = existing_settings['a1_y_mm'] - (existing_settings['a1_y_pixel'] * 0.084665)
-                # # Calculate new pixel coordinates using the original offset
-                # a1_x_pixel = round((a1_x_mm - original_offset_x) / 0.084665)
-                # a1_y_pixel = round((a1_y_mm - original_offset_y) / 0.084665)
-
                 print(f"Updating existing format {selected_format} well plate")
                 print(f"OLD: 'a1_x_mm': {existing_settings['a1_x_mm']}, 'a1_y_mm': {existing_settings['a1_y_mm']}, 'well_size_mm': {existing_settings['well_size_mm']}")
                 print(f"NEW: 'a1_x_mm': {a1_x_mm}, 'a1_y_mm': {a1_y_mm}, 'well_size_mm': {well_size_mm}")
@@ -6329,8 +6354,6 @@ class WellplateCalibration(QDialog):
                 updated_settings = {
                     'a1_x_mm': a1_x_mm,
                     'a1_y_mm': a1_y_mm,
-                    # 'a1_x_pixel': a1_x_pixel,
-                    # 'a1_y_pixel': a1_y_pixel,
                     'well_size_mm': well_size_mm,
                 }
 

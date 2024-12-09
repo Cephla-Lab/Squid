@@ -623,6 +623,11 @@ class Microcontroller:
         cmd[4] = value & 0xff
         self.send_command(cmd)
 
+    def set_piezo_um(self, z_piezo_um):
+        dac = int(65535 * (z_piezo_um / OBJECTIVE_PIEZO_RANGE_UM))
+        dac = 65535 - dac if OBJECTIVE_PIEZO_FLIP_DIR else dac
+        self.analog_write_onboard_DAC(7, dac)
+
     def configure_dac80508_refdiv_and_gain(self, div, gains):
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_DAC80508_REFDIV_GAIN
