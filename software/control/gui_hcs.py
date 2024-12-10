@@ -939,7 +939,7 @@ class HighContentScreeningGui(QMainWindow):
     def setupSlidePositionController(self, is_for_wellplate):
         self.slidePositionController.setParent(None)
         self.slidePositionController.deleteLater()
-        self.slidePositionController = core.SlidePositionController(self.navigationController, self.liveController, is_for_wellplate=is_for_wellplate)
+        self.slidePositionController = core.SlidePositionController(self.stage, self.liveController, is_for_wellplate=is_for_wellplate)
         self.connectSlidePositionController()
 
     def connectSlidePositionController(self):
