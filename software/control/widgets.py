@@ -1360,13 +1360,14 @@ class RecordingWidget(QFrame):
 
 
 class NavigationWidget(QFrame):
-    def __init__(self, stage: AbstractStage, click_to_move_getter: slidePositionController=None, main=None, widget_configuration = 'full', *args, **kwargs):
+    def __init__(self, stage: AbstractStage, slidePositionController=None, main=None, widget_configuration = 'full', *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._stage = stage
         self.slidePositionController = slidePositionController
         self.widget_configuration = widget_configuration
         self.slide_position = None
-        self.flag_click_to_move = navigationController.click_to_move
+        # TODO(imo): Fix below.  Used to be NavigationController
+        self.flag_click_to_move = False
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 

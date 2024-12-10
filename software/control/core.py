@@ -743,10 +743,6 @@ class NavigationController(QObject):
         self.click_to_move = ENABLE_CLICK_TO_MOVE_BY_DEFAULT # default on when acquisition not running
         self.enable_joystick_button_action = True
 
-        # to be moved to gui for transparency
-        # TODO(imo)
-        self.microcontroller.set_callback(self.update_pos)
-
         # scan start position (obsolete? only for TiledDisplay)
         self.scan_begin_position_x = 0
         self.scan_begin_position_y = 0
@@ -834,43 +830,8 @@ class NavigationController(QObject):
             with open("cache/last_coords.txt","w") as f:
                 f.write(",".join([str(pos.x_pos_mm),str(pos.y_pos_mm),str(pos.z_pos_mm)]))
 
-    def move_x(self,delta):
-        self.microcontroller.move_x_usteps(int(delta/self.get_mm_per_ustep_X()))
-
-    def move_y(self,delta):
-        self.microcontroller.move_y_usteps(int(delta/self.get_mm_per_ustep_Y()))
-
-    def move_z(self,delta):
-        self.microcontroller.move_z_usteps(int(delta/self.get_mm_per_ustep_Z()))
-
-    def move_x_to(self,delta):
-        self.microcontroller.move_x_to_usteps(STAGE_MOVEMENT_SIGN_X*int(delta/self.get_mm_per_ustep_X()))
-
-    def move_y_to(self,delta):
-        self.microcontroller.move_y_to_usteps(STAGE_MOVEMENT_SIGN_Y*int(delta/self.get_mm_per_ustep_Y()))
-
-    def move_z_to(self,delta):
-        self.microcontroller.move_z_to_usteps(STAGE_MOVEMENT_SIGN_Z*int(delta/self.get_mm_per_ustep_Z()))
-
-    def move_x_usteps(self,usteps):
-        self.microcontroller.move_x_usteps(usteps)
-
-    def move_y_usteps(self,usteps):
-        self.microcontroller.move_y_usteps(usteps)
-
-    def move_z_usteps(self,usteps):
-        self.microcontroller.move_z_usteps(usteps)
-
-    def move_x_to_usteps(self,usteps):
-        self.microcontroller.move_x_to_usteps(usteps)
-
-    def move_y_to_usteps(self,usteps):
-        self.microcontroller.move_y_to_usteps(usteps)
-
-    def move_z_to_usteps(self,usteps):
-        self.microcontroller.move_z_to_usteps(usteps)
-
-    def update_pos(self,microcontroller):
+# TODO(imo): This needs to be called from a timer in the main gui.  It used to be done via micro callback.
+    def update_pos(self, microcontroller):
         # get position from the microcontroller
         pos = self.stage.get_pos()
 
@@ -889,80 +850,19 @@ class NavigationController(QObject):
             print('joystick button pressed')
             microcontroller.signal_joystick_button_pressed_event = False
 
-    def home_x(self):
-        self.microcontroller.home_x()
-
-    def home_y(self):
-        self.microcontroller.home_y()
-
-    def home_z(self):
-        self.microcontroller.home_z()
-
-    def home_theta(self):
-        self.microcontroller.home_theta()
-
-    def home_xy(self):
-        self.microcontroller.home_xy()
-
-    def zero_x(self):
-        self.microcontroller.zero_x()
-
-    def zero_y(self):
-        self.microcontroller.zero_y()
-
-    def zero_z(self):
-        self.microcontroller.zero_z()
-
-    def set_x_limit_pos_mm(self,value_mm):
-        if STAGE_MOVEMENT_SIGN_X > 0:
-            self.microcontroller.set_lim(LIMIT_CODE.X_POSITIVE,int(value_mm/self.get_mm_per_ustep_X()))
-        else:
-            self.microcontroller.set_lim(LIMIT_CODE.X_NEGATIVE,STAGE_MOVEMENT_SIGN_X*int(value_mm/self.get_mm_per_ustep_X()))
-
-    def set_x_limit_neg_mm(self,value_mm):
-        if STAGE_MOVEMENT_SIGN_X > 0:
-            self.microcontroller.set_lim(LIMIT_CODE.X_NEGATIVE,int(value_mm/self.get_mm_per_ustep_X()))
-        else:
-            self.microcontroller.set_lim(LIMIT_CODE.X_POSITIVE,STAGE_MOVEMENT_SIGN_X*int(value_mm/self.get_mm_per_ustep_X()))
-
-    def set_y_limit_pos_mm(self,value_mm):
-        if STAGE_MOVEMENT_SIGN_Y > 0:
-            self.microcontroller.set_lim(LIMIT_CODE.Y_POSITIVE,int(value_mm/self.get_mm_per_ustep_Y()))
-        else:
-            self.microcontroller.set_lim(LIMIT_CODE.Y_NEGATIVE,STAGE_MOVEMENT_SIGN_Y*int(value_mm/self.get_mm_per_ustep_Y()))
-
-    def set_y_limit_neg_mm(self,value_mm):
-        if STAGE_MOVEMENT_SIGN_Y > 0:
-            self.microcontroller.set_lim(LIMIT_CODE.Y_NEGATIVE,int(value_mm/self.get_mm_per_ustep_Y()))
-        else:
-            self.microcontroller.set_lim(LIMIT_CODE.Y_POSITIVE,STAGE_MOVEMENT_SIGN_Y*int(value_mm/self.get_mm_per_ustep_Y()))
-
-    def set_z_limit_pos_mm(self,value_mm):
-        if STAGE_MOVEMENT_SIGN_Z > 0:
-            self.microcontroller.set_lim(LIMIT_CODE.Z_POSITIVE,int(value_mm/self.get_mm_per_ustep_Z()))
-        else:
-            self.microcontroller.set_lim(LIMIT_CODE.Z_NEGATIVE,STAGE_MOVEMENT_SIGN_Z*int(value_mm/self.get_mm_per_ustep_Z()))
-
-    def set_z_limit_neg_mm(self,value_mm):
-        if STAGE_MOVEMENT_SIGN_Z > 0:
-            self.microcontroller.set_lim(LIMIT_CODE.Z_NEGATIVE,int(value_mm/self.get_mm_per_ustep_Z()))
-        else:
-            self.microcontroller.set_lim(LIMIT_CODE.Z_POSITIVE,STAGE_MOVEMENT_SIGN_Z*int(value_mm/self.get_mm_per_ustep_Z()))
-
-    def move_to(self,x_mm,y_mm):
-        self.move_x_to(x_mm)
-        self.move_y_to(y_mm)
-
+    # TODO(imo): This should be don in the CephlaStage init since we have the encoder info there already
     def configure_encoder(self, axis, transitions_per_revolution,flip_direction):
         self.microcontroller.configure_stage_pid(axis, transitions_per_revolution=int(transitions_per_revolution), flip_direction=flip_direction)
 
+    # TODO(imo): This should be done in the CephlaStage init
     def set_pid_control_enable(self, axis, enable_flag):
-        self.pid_enable_flag[axis] = enable_flag;
+        self.pid_enable_flag[axis] = enable_flag
         if self.pid_enable_flag[axis] is True:
             self.microcontroller.turn_on_stage_pid(axis)
         else:
             self.microcontroller.turn_off_stage_pid(axis)
 
+    # TODO(imo): This is only called from a closeEvent.  This isn't guaranteed to run - do we need to do this?
     def turnoff_axis_pid_control(self):
         for i in range(len(self.pid_enable_flag)):
             if self.pid_enable_flag[i] is True:
@@ -975,9 +875,11 @@ class NavigationController(QObject):
         self.scan_begin_position_x = x
         self.scan_begin_position_y = y
 
+    # TODO(imo): This is only called in an init, so it should be done in CephlaStage init via CephlaStage specific axis config
     def set_axis_PID_arguments(self, axis, pid_p, pid_i, pid_d):
         self.microcontroller.set_pid_arguments(axis, pid_p, pid_i, pid_d)
 
+    # TODO(imo): Can we just have this be a part of move_z and move_z_to?  Or does it need to be a separate axis concept?
     def set_piezo_um(self, z_piezo_um):
         dac = int(65535 * (z_piezo_um / OBJECTIVE_PIEZO_RANGE_UM))
         dac = 65535 - dac if OBJECTIVE_PIEZO_FLIP_DIR else dac
@@ -2362,7 +2264,6 @@ class MultiPointController(QObject):
         self.camera = camera
         if DO_FLUORESCENCE_RTP:
             self.processingHandler = ProcessingHandler()
-        self.microcontroller = navigationController.microcontroller # to move to gui for transparency
         self.navigationController = navigationController
         self.liveController = liveController
         self.autofocusController = autofocusController
