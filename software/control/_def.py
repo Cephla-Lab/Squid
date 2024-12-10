@@ -689,6 +689,7 @@ try:
     with open("cache/config_file_path.txt", 'r') as file:
         for line in file:
             CACHED_CONFIG_FILE_PATH = line
+            CACHED_CONFIG_FILE_PATH = CACHED_CONFIG_FILE_PATH.split('/')[-1]
             break
     parent_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = parent_dir.split('control')[0]
