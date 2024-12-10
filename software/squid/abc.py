@@ -12,6 +12,8 @@ class Pos(pydantic.BaseModel):
     z_mm: float
     theta_rad: float
 
+class StageStage(pydantic.BaseModel):
+    busy: bool
 
 class AbstractStage(metaclass=abc.ABCMeta):
     @abc.abstractmethod
@@ -40,6 +42,10 @@ class AbstractStage(metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def get_pos(self) -> Pos:
+        pass
+
+    @abc.abstractmethod
+    def get_state(self) -> StageStage:
         pass
 
     @abc.abstractmethod

@@ -3,7 +3,7 @@ from typing import Optional
 import control.microcontroller
 import control._def as _def
 import squid.logging
-from squid.abc import AbstractStage, Pos
+from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
 
 
@@ -51,6 +51,9 @@ class CephlaStage(AbstractStage):
         theta_rad = self._config.THETA_AXIS.convert_to_real_units(pos_usteps[3])
 
         return Pos(x_mm=x_mm, y_mm=y_mm, z_mm=z_mm, theta_rad=theta_rad)
+
+    def get_state(self) -> StageStage:
+        return StageStage(busy=self._microcontroller.is_busy())
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if x and y:

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from squid.abc import AbstractStage, Pos
+from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
 
 
@@ -33,6 +33,9 @@ class PriorStage(AbstractStage):
         self._not_impl()
 
     def get_pos(self) -> Pos:
+        self._not_impl()
+
+    def get_state(self) -> StageStage:
         self._not_impl()
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
