@@ -697,8 +697,8 @@ try:
     log.error(f'cached config file path: {CACHED_CONFIG_FILE_PATH}')
 except FileNotFoundError:
     CACHED_CONFIG_FILE_PATH = None
-
-config_files = glob.glob('.' + '/' + 'configuration*.ini')
+config_files = glob.glob(parent_dir + '/' + 'configuration*.ini')
+#config_files = glob.glob('.' + '/' + 'configuration*.ini')
 if config_files:
     if len(config_files) > 1:
         if CACHED_CONFIG_FILE_PATH in config_files:
