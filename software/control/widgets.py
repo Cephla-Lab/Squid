@@ -1,6 +1,8 @@
 import os
 import sys
 
+from squid.abc import AbstractStage
+
 # set QT_API environment variable
 os.environ["QT_API"] = "pyqt5"
 
@@ -1358,9 +1360,9 @@ class RecordingWidget(QFrame):
 
 
 class NavigationWidget(QFrame):
-    def __init__(self, navigationController, slidePositionController=None, main=None, widget_configuration = 'full', *args, **kwargs):
+    def __init__(self, stage: AbstractStage, click_to_move_getter: slidePositionController=None, main=None, widget_configuration = 'full', *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.navigationController = navigationController
+        self._stage = stage
         self.slidePositionController = slidePositionController
         self.widget_configuration = widget_configuration
         self.slide_position = None
@@ -7969,4 +7971,3 @@ class SampleSettingsWidget(QFrame):
 
         with open('cache/objective_and_sample_format.txt', 'w') as f:
             json.dump(data, f)
-

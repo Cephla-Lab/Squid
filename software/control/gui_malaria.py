@@ -370,8 +370,6 @@ class MalariaGUI(QMainWindow):
     def closeEvent(self, event):
         self.navigationController.cache_current_position()
         event.accept()
-        # self.softwareTriggerGenerator.stop() @@@ => 
-        self.navigationController.home()
         self.navigationController.turnoff_axis_pid_control()
 
         self.liveController.stop_live()
