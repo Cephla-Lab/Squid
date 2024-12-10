@@ -692,6 +692,7 @@ try:
             break
     parent_dir = os.path.dirname(os.path.abspath(__file__))
     CACHED_CONFIG_FILE_PATH = os.path.join(parent_dir, '..' , CACHED_CONFIG_FILE_PATH)
+    print(f'cached config file path: {CACHED_CONFIG_FILE_PATH}')
 except FileNotFoundError:
     CACHED_CONFIG_FILE_PATH = None
 
