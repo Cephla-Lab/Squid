@@ -636,7 +636,9 @@ def read_sample_formats_csv(file_path):
 def load_formats():
     """Load formats, prioritizing cache for sample formats."""
     cache_path = 'cache'
-    default_path = 'objective_and_sample_formats'
+    parent_dir = os.path.dirname(os.path.abspath(__file__))
+    default_path = os.path.join(parent_dir, '..', 'objective_and_sample_formats')
+    #default_path = 'objective_and_sample_formats'
 
     # Load objectives (from default location)
     objectives = read_objectives_csv(os.path.join(default_path, 'objectives.csv'))
