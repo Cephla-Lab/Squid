@@ -1,5 +1,2 @@
-*.ini
-*.txt
-*_configurations.xml
 cache/
 drivers and libraries/daheng camera/
