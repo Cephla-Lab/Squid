@@ -27,6 +27,16 @@ class AxisConfig(pydantic.BaseModel):
     # step and so will travel a distance of 2.
     MICROSTEPS_PER_STEP: float
 
+    # The Max speed the axis is allowed to travel in denoted in its native units.  This means mm/s for
+    # linear axes, and radians/s for rotary axes.
+    MAX_SPEED: float
+    MAX_ACCELERATION: float
+
+    # The min and maximum position of this axis in its native units.  This means mm for linear axes, and
+    # radians for rotary.  `inf` is allowed (for something like a continuous rotary axis)
+    MIN_POSITION: float
+    MAX_POSITION: float
+
     def convert_to_real_units(self, usteps: float):
         if self.USE_ENCODER:
             # TODO(imo): Do we need ENCODER_SIGN here too?
@@ -53,7 +63,11 @@ _stage_config = StageConfig(
         ENCODER_STEP_SIZE=_def.ENCODER_STEP_SIZE_X_MM,
         FULL_STEPS_PER_REV=_def.FULLSTEPS_PER_REV_X,
         SCREW_PITCH=_def.SCREW_PITCH_X_MM,
-        MICROSTEPS_PER_STEP=_def.MICROSTEPPING_DEFAULT_X
+        MICROSTEPS_PER_STEP=_def.MICROSTEPPING_DEFAULT_X,
+        MAX_SPEED=_def.MAX_VELOCITY_X_mm,
+        MAX_ACCELERATION=_def.MAX_ACCELERATION_X_mm,
+        MIN_POSITION=0,  # NOTE(imo): Min and Max need adjusting.  They are arbitrary right now!
+        MAX_POSITION=10
     ),
     Y_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_Y,
@@ -62,7 +76,11 @@ _stage_config = StageConfig(
         ENCODER_STEP_SIZE=_def.ENCODER_STEP_SIZE_Y_MM,
         FULL_STEPS_PER_REV=_def.FULLSTEPS_PER_REV_Y,
         SCREW_PITCH=_def.SCREW_PITCH_Y_MM,
-        MICROSTEPS_PER_STEP=_def.MICROSTEPPING_DEFAULT_Y
+        MICROSTEPS_PER_STEP=_def.MICROSTEPPING_DEFAULT_Y,
+        MAX_SPEED=_def.MAX_VELOCITY_Y_mm,
+        MAX_ACCELERATION=_def.MAX_ACCELERATION_Y_mm,
+        MIN_POSITION=0,  # NOTE(imo): Min and Max need adjusting.  They are arbitrary right now!
+        MAX_POSITION=10
     ),
     Z_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_Z,
@@ -71,7 +89,11 @@ _stage_config = StageConfig(
         ENCODER_STEP_SIZE=_def.ENCODER_STEP_SIZE_Z_MM,
         FULL_STEPS_PER_REV=_def.FULLSTEPS_PER_REV_Z,
         SCREW_PITCH=_def.SCREW_PITCH_Z_MM,
-        MICROSTEPS_PER_STEP=_def.MICROSTEPPING_DEFAULT_Z
+        MICROSTEPS_PER_STEP=_def.MICROSTEPPING_DEFAULT_Z,
+        MAX_SPEED=_def.MAX_VELOCITY_Z_mm,
+        MAX_ACCELERATION=_def.MAX_ACCELERATION_Z_mm,
+        MIN_POSITION=0,  # NOTE(imo): Min and Max need adjusting.  They are arbitrary right now!
+        MAX_POSITION=1
     ),
     THETA_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_THETA,
@@ -80,7 +102,11 @@ _stage_config = StageConfig(
         ENCODER_STEP_SIZE=_def.ENCODER_STEP_SIZE_THETA,
         FULL_STEPS_PER_REV=_def.FULLSTEPS_PER_REV_THETA,
         SCREW_PITCH=2.0*math.pi/_def.FULLSTEPS_PER_REV_THETA ,
-        MICROSTEPS_PER_STEP=_def.MICROSTEPPING_DEFAULT_Y
+        MICROSTEPS_PER_STEP=_def.MICROSTEPPING_DEFAULT_Y,
+        MAX_SPEED=2.0 * math.pi / 4,  # NOTE(imo): I arbitrarily guessed this at 4 sec / rev, so it probably needs adjustment.
+        MAX_ACCELERATION=_def.MAX_ACCELERATION_X_mm,
+        MIN_POSITION=0,  # NOTE(imo): Min and Max need adjusting.  They are arbitrary right now!
+        MAX_POSITION=2.0 * math.pi / 4
     )
 )
 

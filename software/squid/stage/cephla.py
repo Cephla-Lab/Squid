@@ -1,47 +1,59 @@
+import math
 from typing import Optional
 
 import control.microcontroller
 import control._def as _def
-import squid.logging
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
 
 
 class CephlaStage(AbstractStage):
+    @staticmethod
+    def _calc_move_timeout(distance, max_speed):
+        # We arbitrarily guess that if a move takes 3x the naive "infinite acceleration" time, then it
+        # probably timed out.  But always use a minimum timeout of at least 3 seconds.
+        #
+        # Also protect against divide by zero.
+        return max((3, 3 * abs(distance) / min(0.1, abs(max_speed))))
+
     def __init__(self, microcontroller: control.microcontroller.Microcontroller, stage_config: StageConfig):
+        super().__init__(stage_config)
         self._microcontroller = microcontroller
-        self._config = stage_config
-        self._log = squid.logging.get_logger(self.__class__.__name__)
 
     def move_x(self, rel_mm: float, blocking: bool = True):
         self._microcontroller.move_x_usteps(self._config.X_AXIS.convert_real_units_to_ustep(rel_mm))
         if blocking:
-            self._microcontroller.wait_till_operation_is_completed()
+            self._microcontroller.wait_till_operation_is_completed(
+                self._calc_move_timeout(rel_mm, self.get_config().X_AXIS.MAX_SPEED))
 
     def move_y(self, rel_mm: float, blocking: bool = True):
         self._microcontroller.move_y_usteps(self._config.Y_AXIS.convert_real_units_to_ustep(rel_mm))
         if blocking:
-            self._microcontroller.wait_till_operation_is_completed()
+            self._microcontroller.wait_till_operation_is_completed(
+                self._calc_move_timeout(rel_mm, self.get_config().Y_AXIS.MAX_SPEED))
 
     def move_z(self, rel_mm: float, blocking: bool = True):
         self._microcontroller.move_z_usteps(self._config.Z_AXIS.convert_real_units_to_ustep(rel_mm))
         if blocking:
-            self._microcontroller.wait_till_operation_is_completed()
+            self._microcontroller.wait_till_operation_is_completed(
+                self._calc_move_timeout(rel_mm, self.get_config().Z_AXIS.MAX_SPEED))
 
     def move_x_to(self, abs_mm: float, blocking: bool = True):
         self._microcontroller.move_x_to_usteps(self._config.X_AXIS.convert_real_units_to_ustep(abs_mm))
         if blocking:
-            self._microcontroller.wait_till_operation_is_completed()
+            self._microcontroller.wait_till_operation_is_completed(
+                self._calc_move_timeout(abs_mm - self.get_pos().x, self.get_config().X_AXIS.MAX_SPEED))
 
     def move_y_to(self, abs_mm: float, blocking: bool = True):
         self._microcontroller.move_y_to_usteps(self._config.Y_AXIS.convert_real_units_to_ustep(abs_mm))
         if blocking:
-            self._microcontroller.wait_till_operation_is_completed()
+            self._microcontroller.wait_till_operation_is_completed(
+                self._calc_move_timeout(abs_mm - self.get_pos().y, self.get_config().Y_AXIS.MAX_SPEED))
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
-        self._microcontroller.move_z_to_usteps(self._config.Z_AXIS.convert_real_units_to_ustep(abs_mm))
         if blocking:
-            self._microcontroller.wait_till_operation_is_completed()
+            self._microcontroller.wait_till_operation_is_completed(
+                self._calc_move_timeout(abs_mm - self.get_pos().z, self.get_config().Z_AXIS.MAX_SPEED))
 
     def get_pos(self) -> Pos:
         pos_usteps = self._microcontroller.get_pos()
@@ -56,6 +68,17 @@ class CephlaStage(AbstractStage):
         return StageStage(busy=self._microcontroller.is_busy())
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+        # NOTE(imo): Arbitrarily use max speed / 5 for homing speed.  It'd be better to have it exactly!
+        x_timeout = self._calc_move_timeout(
+            self.get_config().X_AXIS.MAX_POSITION - self.get_config().X_AXIS.MIN_POSITION,
+            self.get_config().X_AXIS.MAX_SPEED / 5.0)
+        y_timeout = self._calc_move_timeout(
+            self.get_config().Y_AXIS.MAX_POSITION - self.get_config().Y_AXIS.MIN_POSITION,
+            self.get_config().Y_AXIS.MAX_SPEED / 5.0)
+        z_timeout = self._calc_move_timeout(
+            self.get_config().Z_AXIS.MAX_POSITION - self.get_config().Z_AXIS.MIN_POSITION,
+            self.get_config().Z_AXIS.MAX_SPEED / 5.0)
+        theta_timeout = self._calc_move_timeout(2.0 * math.pi, self.get_config().THETA_AXIS.MAX_SPEED / 5.0)
         if x and y:
             self._microcontroller.home_xy()
         elif x:
@@ -63,17 +86,17 @@ class CephlaStage(AbstractStage):
         elif y:
             self._microcontroller.home_y()
         if blocking:
-            self._microcontroller.wait_till_operation_is_completed()
+            self._microcontroller.wait_till_operation_is_completed(max(x_timeout, y_timeout))
 
         if z:
             self._microcontroller.home_z()
         if blocking:
-            self._microcontroller.wait_till_operation_is_completed()
+            self._microcontroller.wait_till_operation_is_completed(z_timeout)
 
         if theta:
             self._microcontroller.home_theta()
         if blocking:
-            self._microcontroller.wait_till_operation_is_completed()
+            self._microcontroller.wait_till_operation_is_completed(theta_timeout)
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if x:

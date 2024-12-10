@@ -1,9 +1,12 @@
 import abc
+import time
 from typing import Optional
 
 import pydantic
 
+import squid.logging
 from squid.config import AxisConfig, StageConfig
+from squid.exceptions import SquidTimeout
 
 
 class Pos(pydantic.BaseModel):
@@ -16,6 +19,10 @@ class StageStage(pydantic.BaseModel):
     busy: bool
 
 class AbstractStage(metaclass=abc.ABCMeta):
+    def __init__(self, stage_config: StageConfig):
+        self._config = stage_config
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
     @abc.abstractmethod
     def move_x(self, rel_mm: float, blocking: bool=True):
         pass
@@ -39,6 +46,11 @@ class AbstractStage(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def move_z_to(self, abs_mm: float, blocking: bool=True):
         pass
+
+    # TODO(imo): We need a stop or halt or something along these lines
+    # @abc.abstractmethod
+    # def stop(self, blocking: bool=True):
+    #     pass
 
     @abc.abstractmethod
     def get_pos(self) -> Pos:
@@ -70,3 +82,17 @@ class AbstractStage(metaclass=abc.ABCMeta):
 
     def get_config(self) -> StageConfig:
         pass
+
+    def wait_for_idle(self, timeout_s):
+        start_time = time.time()
+        while time.time() < start_time + timeout_s:
+            if not self.get_state().busy:
+                return
+            # Sleep some small amount of time so we can yield to other threads if needed
+            # while waiting.
+            time.sleep(0.001)
+
+        error_message = f"Timed out waiting after {timeout_s:0.3f} [s]"
+        self._log.error(error_message)
+
+        raise SquidTimeout(error_message)
