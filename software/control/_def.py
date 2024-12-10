@@ -685,18 +685,18 @@ AWB_RATIOS_R = 1.375
 AWB_RATIOS_G = 1
 AWB_RATIOS_B = 1.4141
 
-try:
-    with open("cache/config_file_path.txt", 'r') as file:
-        for line in file:
-            CACHED_CONFIG_FILE_PATH = line
-            CACHED_CONFIG_FILE_PATH = CACHED_CONFIG_FILE_PATH.split('/')[-1]
-            break
-    parent_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = parent_dir.split('control')[0]
-    CACHED_CONFIG_FILE_PATH = os.path.join(parent_dir, CACHED_CONFIG_FILE_PATH)
-    log.error(f'cached config file path: {CACHED_CONFIG_FILE_PATH}')
-except FileNotFoundError:
-    CACHED_CONFIG_FILE_PATH = None
+#try:
+parent_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = parent_dir.split('control')[0]
+cache_txt = os.path.join(parent_dir, 'cache/config_file_path.txt')
+with open(cache_txt, 'r') as file:
+    for line in file:
+        CACHED_CONFIG_FILE_PATH = line
+        CACHED_CONFIG_FILE_PATH = CACHED_CONFIG_FILE_PATH.split('/')[-1]
+        break
+CACHED_CONFIG_FILE_PATH = os.path.join(parent_dir, CACHED_CONFIG_FILE_PATH)
+#except FileNotFoundError:
+#    CACHED_CONFIG_FILE_PATH = None
 config_files = glob.glob(parent_dir + '/' + 'configuration*.ini')
 #config_files = glob.glob('.' + '/' + 'configuration*.ini')
 if config_files:
@@ -734,7 +734,7 @@ if config_files:
         myclass = locals()[classkey]
         populate_class_from_dict(myclass,pop_items)
     
-    with open("cache/config_file_path.txt", 'w') as file:
+    with open(cache_txt, 'w') as file:
         file.write(config_files[0])
     CACHED_CONFIG_FILE_PATH = config_files[0]
 else:
@@ -751,7 +751,8 @@ else:
         sys.exit(1)
 
 try:
-    with open("cache/objective_and_sample_format.txt", 'r') as f:
+    cache_txt = os.path.join(parent_dir, 'cache/objective_and_sample_format.txt')
+    with open(cache_txt, 'r') as f:
         cached_settings = json.load(f)
         DEFAULT_OBJECTIVE = cached_settings.get('objective') if cached_settings.get('objective') in OBJECTIVES else '20x'
         WELLPLATE_FORMAT = str(cached_settings.get('wellplate_format'))

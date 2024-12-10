@@ -1,1 +1,1 @@
-./configuration_Squid+.ini
+/Users/noorsherahmed/Desktop/GitHub/gabeen/robot/hardware/microscopes/Squid/software/configuration_Squid+.ini
