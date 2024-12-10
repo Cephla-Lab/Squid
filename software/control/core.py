@@ -905,7 +905,6 @@ class SlidePositionControlWorker(QObject):
             self.signal_stop_live.emit()
 
         # retract z
-        timestamp_start = time.time()
         self.slidePositionController.z_pos = self.stage.get_pos().z_mm # zpos at the beginning of the scan
         self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM, blocking=False)
         self.stage.wait_for_idle(SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
@@ -928,7 +927,6 @@ class SlidePositionControlWorker(QObject):
             # home for the first time
             if self.slidePositionController.homing_done == False:
                 print('running homing first')
-                timestamp_start = time.time()
                 # x needs to be at > + 20 mm when homing y
                 self.stage.move_x(20)
                 self.stage.home(y=True)
