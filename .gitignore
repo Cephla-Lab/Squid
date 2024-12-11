@@ -2,3 +2,4 @@
 *.pyc 
 *.xml
 **/.idea/
+software/cache/config_file_path.txt
