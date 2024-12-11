@@ -36,6 +36,7 @@ class GabeenSquid:
         self.simulation = simulation
         self.live_only = live_only
         self.verbose = verbose
+        self.run()
         
     def run(self):
         log = squid.logging.get_logger("main_hcs")
