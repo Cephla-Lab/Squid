@@ -2044,11 +2044,11 @@ class MultiPointWorker(QObject):
                     log.debug(f"Received RGB red image with 3 channels, assuming it is actually a full RGB image and processing it (capture={ijk_key}).")
                     self.handle_rgb_channels(this_images, file_ID, current_path, config, i, j, k)
                     del local_rgb_images[ijk_key]
-                elif RED_CHANNEL in this_image and BLUE_CHANNEL in this_image and GREEN_CHANNEL in this_image:
+                elif RED_CHANNEL in this_images and BLUE_CHANNEL in this_images and GREEN_CHANNEL in this_images:
                     log.debug(f"Received 3 RGB channels for capture={ijk_key}, proceesing them!")
                     self.construct_rgb_image(this_images, file_ID, current_path, config, i, j, k)
                     del local_rgb_images[ijk_key]
-                elif len(this_image) >= 3:
+                elif len(this_images) >= 3:
                     log.warn(f"Received 3+ channels for RGB capture={ijk_key}, but do not have R,G,B channels. Something is wrong. Tossing capture!")
                     del local_rgb_images[ijk_key]
                 # else, we're waiting for more channels so do nothing.
