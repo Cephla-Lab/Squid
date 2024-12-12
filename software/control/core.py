@@ -434,7 +434,7 @@ class Configuration:
 class LiveController(QObject):
     def __init__(self,camera,microcontroller,configurationManager,parent=None,control_illumination=True,use_internal_timer_for_hardware_trigger=True,for_displacement_measurement=False):
         QObject.__init__(self)
-        self_log = squid.logging.get_logger(self.__class__.__name__)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope = parent
         self.camera = camera
         self.microcontroller = microcontroller
@@ -1997,6 +1997,7 @@ class MultiPointWorker(QObject):
 
     def get_image_processor_fn(self, expected_capture_queue: deque, image_processing_output_queue: deque):
         log = squid.logging.get_logger("core.streaming_camera_cb")
+        log.debug(f"image processor received image, and frame_id={self.camera.frame_ID}")
         # This is for handling incoming RGB images.  We use (i,j,k) as a key since that's unique per capture
         # position, and then each local_rgb_images[(i,j,k)] contains a dict of config name -> image.
         #
@@ -2009,6 +2010,8 @@ class MultiPointWorker(QObject):
         BLUE_CHANNEL = 'BF LED matrix full_B'
         GREEN_CHANNEL = 'BF LED matrix full_G'
         def streaming_camera_cb(camera):
+            # NOTE/WARNING(imo): We don't have any locks on the camera, so information in self.camera (eg: the image,
+            # the frame id, anything) could change on us in here.
             try:
                 next_expected = expected_capture_queue.popleft()
             except IndexError:
@@ -2019,9 +2022,17 @@ class MultiPointWorker(QObject):
                 log.warning(f"trigger time={next_expected.trigger_time} is >= camera capture timestamp={camera.timestamp}, trigger is in the future! skipping frame.")
                 return
 
+            file_id = next_expected.file_id
+            current_path = next_expected.current_path
+            config = next_expected.config
+            i = next_expected.i
+            j = next_expected.j
+            k = next_expected.k
+            trigger_time = next_expected.trigger_time
+
             log.debug(
-                f"Received image frame for file={next_expected.current_path}, " +
-                f"file_id={next_expected.file_id} and camera frame timestamp={camera.timestamp}")
+                f"(e={len(expected_capture_queue)}, p={len(image_processing_output_queue)}) Received image frame for file={current_path}, " +
+                f"file_id={file_id}, (i,j,k)=({i},{j},{k}), trigger_time={trigger_time}, camera frame timestamp={camera.timestamp}, frame id={camera.frame_ID}")
 
             image = camera.current_frame
 
@@ -2036,29 +2047,24 @@ class MultiPointWorker(QObject):
                 self.update_napari(image, next_expected.config.name, next_expected.i, next_expected.j, next_expected.k, next_expected.x_mm, next_expected.y_mm)
             else:
                 # Check if the image is RGB or monochrome
-                ijk_key = (next_expected.i, next_expected.j, next_expected.k)
-                local_rgb_images.setdefault(ijk_key, {})
-                this_images = local_rgb_images[ijk_key]
-                file_ID = next_expected.file_id
-                current_path = next_expected.current_path
-                config = next_expected.config
-                i = next_expected.i
-                j = next_expected.j
-                k = next_expected.k
+                capture_loc_and_channel_key = (i, j, k, file_id, current_path)
+                local_rgb_images.setdefault(capture_loc_and_channel_key, {})
+                this_images = local_rgb_images[capture_loc_and_channel_key]
+
                 if next_expected.config in this_images:
-                    log.warn(f"Received duplicate RGB channel {next_expected.config} for capture {ijk_key}, assuming capture is bad and throwing it out.")
-                    del local_rgb_images[ijk_key]
+                    log.warn(f"Received duplicate RGB channel {next_expected.config} for capture {capture_loc_and_channel_key}, assuming capture is bad and throwing it out.")
+                    del local_rgb_images[capture_loc_and_channel_key]
                 elif RED_CHANNEL in this_images and len(this_images[RED_CHANNEL].shape) == 3:
-                    log.debug(f"Received RGB red image with 3 channels, assuming it is actually a full RGB image and processing it (capture={ijk_key}).")
-                    self.handle_rgb_channels(this_images, file_ID, current_path, config, i, j, k, next_expected.x_mm, next_expected.y_mm)
-                    del local_rgb_images[ijk_key]
+                    log.debug(f"Received RGB red image with 3 channels, assuming it is actually a full RGB image and processing it (capture={capture_loc_and_channel_key}).")
+                    self.handle_rgb_channels(this_images, file_id, current_path, config, i, j, k, next_expected.x_mm, next_expected.y_mm)
+                    del local_rgb_images[capture_loc_and_channel_key]
                 elif RED_CHANNEL in this_images and BLUE_CHANNEL in this_images and GREEN_CHANNEL in this_images:
-                    log.debug(f"Received 3 RGB channels for capture={ijk_key}, proceesing them!")
-                    self.construct_rgb_image(this_images, file_ID, current_path, config, i, j, k, next_expected.x_mm, next_expected.y_mm)
-                    del local_rgb_images[ijk_key]
+                    log.debug(f"Received 3 RGB channels for capture={capture_loc_and_channel_key}, proceesing them!")
+                    self.construct_rgb_image(this_images, file_id, current_path, config, i, j, k, next_expected.x_mm, next_expected.y_mm)
+                    del local_rgb_images[capture_loc_and_channel_key]
                 elif len(this_images) >= 3:
-                    log.warn(f"Received 3+ channels for RGB capture={ijk_key}, but do not have R,G,B channels. Something is wrong. Tossing capture!")
-                    del local_rgb_images[ijk_key]
+                    log.warn(f"Received 3+ channels for RGB capture={capture_loc_and_channel_key}, but do not have R,G,B channels. Something is wrong. Tossing capture!")
+                    del local_rgb_images[capture_loc_and_channel_key]
                 # else, we're waiting for more channels so do nothing.
 
             QApplication.processEvents()
@@ -2251,6 +2257,7 @@ class MultiPointWorker(QObject):
         exposure_time_usec = exposure_time_ms * 1000
         time_right_before_trigger_sec = time.time()
         existing_camera_timestamp = self.camera.timestamp
+        self._log.debug(f"Sending trigger for frame capture, (i,j,k)=({i}, {j}, {k}), file_ID={file_ID}, trigger_time={time_right_before_trigger_sec}.  total frame time is {self.camera.get_full_frame_time()} [ms] and before frame_id = {self.camera.frame_ID}")
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_on_illumination()
             self.wait_till_operation_is_completed()
@@ -2273,19 +2280,13 @@ class MultiPointWorker(QObject):
             x_mm=x_mm,
             y_mm=y_mm))
 
-        start = time.time()
-        while (self.camera.timestamp == existing_camera_timestamp):
-            time.sleep(0.001)
-        end = time.time()
-        self._log.debug(f"Took {end - start} [s] to wait for frame {self._this_acquisition_save_image_count}")
-
-        # # To make sure we actually get our image at this location, we sleep for exposure time here.  Otherwise if we
-        # # return, the caller might immediately go move somewhere.  It is important that we send the ExpectedCameraImage
-        # # out to the queue first, though, just in case the image comes back before this sleep finishes.  If there's
-        # # no ExpectedCameraImage waiting when the image arrives, it'll be tossed!
-        # # NOTE/TODO(imo): We could potentially call processEvents first, then sleep whatever time is remaining of
-        # # the exposure by checking current time against time_right_before_trigger_sec
-        # time.sleep(exposure_time_ms / 1000.0)
+        # To make sure we actually get our image at this location, we sleep for exposure time here.  Otherwise if we
+        # return, the caller might immediately go move somewhere.  It is important that we send the ExpectedCameraImage
+        # out to the queue first, though, just in case the image comes back before this sleep finishes.  If there's
+        # no ExpectedCameraImage waiting when the image arrives, it'll be tossed!
+        # NOTE/TODO(imo): We could potentially call processEvents first, then sleep whatever time is remaining of
+        # the exposure by checking current time against time_right_before_trigger_sec
+        time.sleep(self.camera.get_full_frame_time() / 1000.0)
 
         QApplication.processEvents()
 
@@ -2370,7 +2371,6 @@ class MultiPointWorker(QObject):
         if not self.performance_mode:
             i = -1 if i is None else i
             j = -1 if j is None else j
-            print("update napari:", i, j, k, config_name)
 
             if USE_NAPARI_FOR_MULTIPOINT or USE_NAPARI_FOR_TILED_DISPLAY:
                 if not self.init_napari_layers:
@@ -2379,7 +2379,7 @@ class MultiPointWorker(QObject):
                     self.napari_layers_init.emit(image.shape[0],image.shape[1], image.dtype)
                 self.napari_layers_update.emit(image, i, j, k, config_name)
             if USE_NAPARI_FOR_MOSAIC_DISPLAY and k == 0:
-                print(f"Updating mosaic layers: x={x_mm:.6f}, y={y_mm:.6f}")
+                # print(f"Updating mosaic layers: x={x_mm:.6f}, y={y_mm:.6f}")
                 self.napari_mosaic_update.emit(image, x_mm, y_mm, k, config_name)
 
     def handle_dpc_generation(self, current_round_images):
