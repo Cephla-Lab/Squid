@@ -428,7 +428,7 @@ class Configuration:
 
 
 class LiveController(QObject):
-    def __init__(self,camera,microcontroller,configurationManager,parent=None,control_illumination=True,use_internal_timer_for_hardware_trigger=True,for_displacement_measurement=False):
+    def __init__(self,camera,microcontroller,configurationManager,illuminationController,parent=None,control_illumination=True,use_internal_timer_for_hardware_trigger=True,for_displacement_measurement=False):
         QObject.__init__(self)
         self.microscope = parent
         self.camera = camera
@@ -439,6 +439,7 @@ class LiveController(QObject):
         self.is_live = False
         self.control_illumination = control_illumination
         self.illumination_on = False
+        self.illuminationController = illuminationController
         self.use_internal_timer_for_hardware_trigger = use_internal_timer_for_hardware_trigger # use QTimer vs timer in the MCU
         self.for_displacement_measurement = for_displacement_measurement
 
@@ -469,8 +470,8 @@ class LiveController(QObject):
 
     # illumination control
     def turn_on_illumination(self):
-        if USE_LDI_SERIAL_CONTROL and 'Fluorescence' in self.currentConfiguration.name and LDI_SHUTTER_MODE == 'PC':
-            self.ldi.set_active_channel_shutter(1)
+        if self.illuminationController is not None and not 'LED matrix' in self.currentConfiguration.name:
+            self.illuminationController.turn_on_illumination(int(self.configurationManager.extract_wavelength(self.currentConfiguration.name)))
         elif SUPPORT_SCIMICROSCOPY_LED_ARRAY and 'LED matrix' in self.currentConfiguration.name:
             self.led_array.turn_on_illumination()
         else:
@@ -478,8 +479,8 @@ class LiveController(QObject):
         self.illumination_on = True
 
     def turn_off_illumination(self):
-        if USE_LDI_SERIAL_CONTROL and 'Fluorescence' in self.currentConfiguration.name and LDI_SHUTTER_MODE == 'PC':
-            self.ldi.set_active_channel_shutter(0)
+        if self.illuminationController is not None and not 'LED matrix' in self.currentConfiguration.name:
+            self.illuminationController.turn_off_illumination(int(self.configurationManager.extract_wavelength(self.currentConfiguration.name)))
         elif SUPPORT_SCIMICROSCOPY_LED_ARRAY and 'LED matrix' in self.currentConfiguration.name:
             self.led_array.turn_off_illumination()
         else:
@@ -524,18 +525,8 @@ class LiveController(QObject):
                     self.microcontroller.set_illumination_led_matrix(illumination_source,r=(intensity/100)*LED_MATRIX_R_FACTOR,g=(intensity/100)*LED_MATRIX_G_FACTOR,b=(intensity/100)*LED_MATRIX_B_FACTOR)
         else:
             # update illumination
-            if USE_LDI_SERIAL_CONTROL and 'Fluorescence' in self.currentConfiguration.name:
-                if LDI_SHUTTER_MODE == 'PC':
-                    # set LDI active channel
-                    print('set active channel to ' + str(illumination_source))
-                    self.ldi.set_active_channel(int(illumination_source))
-                if LDI_INTENSITY_MODE == 'PC':
-                    if update_channel_settings:
-                        # set intensity for active channel
-                        print('set intensity')
-                        self.ldi.set_intensity(int(illumination_source),intensity)
-                if LDI_SHUTTER_MODE == "EXT" or LDI_INTENSITY_MODE == "EXT":
-                    self.microcontroller.set_illumination(illumination_source,intensity)
+            if self.illuminationController is not None:
+                self.illuminationController.set_intensity(int(self.configurationManager.extract_wavelength(self.currentConfiguration.name)), intensity)
             elif ENABLE_NL5 and NL5_USE_DOUT and 'Fluorescence' in self.currentConfiguration.name:
                 wavelength = int(self.currentConfiguration.name[13:16])
                 self.microscope.nl5.set_active_channel(NL5_WAVENLENGTH_MAP[wavelength])

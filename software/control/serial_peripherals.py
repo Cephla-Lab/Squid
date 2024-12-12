@@ -3,6 +3,7 @@ from serial.tools import list_ports
 import time
 from typing import Tuple, Optional
 import struct
+from squid.abc import LightSource
 
 import squid.logging
 log = squid.logging.get_logger(__name__)
@@ -355,7 +356,7 @@ class XLight:
         self.disk_motor_state = bool(int(current_pos[2]))
         return self.disk_motor_state
 
-class LDI:
+class LDI(LightSource):
     """Wrapper for communicating with LDI over serial"""
     def __init__(self, SN="00000001"):
         """
@@ -367,21 +368,52 @@ class LDI:
                 parity=serial.PARITY_NONE,
                 xonxoff=False,rtscts=False,dsrdtr=False)
         self.serial_connection.open_ser()
-        self.intensity_mode = 'PC'
-        self.shutter_mode = 'PC'
+        if LDI_INTENSITY_MODE == 'PC':
+            self.intensity_mode = IntensityControlMode.Software
+        elif LDI_INTENSITY_MODE == 'EXT':
+            self.intensity_mode = IntensityControlMode.SquidControllerDAC
+        if LDI_SHUTTER_MODE == 'PC':
+            self.shutter_mode = ShutterControlMode.Software
+        elif LDI_SHUTTER_MODE == 'EXT':
+            self.shutter_mode = ShutterControlMode.TTL
 
-    def run(self):
+        self.channel_mappings = {
+            405: 405,
+            470: 470,
+            488: 470,
+            545: 555,
+            550: 555,
+            555: 555,
+            561: 555,
+            638: 640,
+            640: 640,
+            730: 730,
+            735: 730,
+            750: 730
+        }
+
+    def initialize(self):
         self.serial_connection.write_and_check("run!\r","ok")
 
-    def set_shutter_mode(self,mode):
-        if mode in ['EXT','PC']:
-            self.serial_connection.write_and_check('SH_MODE='+mode+'\r',"ok")
-            self.intensity_mode = mode
+    def set_shutter_control_mode(self,mode):
+        if mode == ShutterControlMode.TTL:
+            self.serial_connection.write_and_check('SH_MODE=EXT\r',"ok")
+        elif mode == ShutterControlMode.Software:
+            self.serial_connection.write_and_check('SH_MODE=PC\r',"ok")
+        self.shutter_mode = mode
 
-    def set_intensity_mode(self,mode):
-        if mode in ['EXT','PC']:
-            self.serial_connection.write_and_check('INT_MODE='+mode+'\r',"ok")
-            self.intensity_mode = mode
+    def get_shutter_control_mode(self):
+        pass
+
+    def set_intensity_control_mode(self,mode):
+        if mode == IntensityControlMode.SquidControllerDAC:
+            self.serial_connection.write_and_check('INT_MODE=EXT\r',"ok")
+        elif mode == IntensityControlMode.Software:
+            self.serial_connection.write_and_check('INT_MODE=PC\r',"ok")
+        self.intensity_mode = mode
+
+    def get_intensity_control_mode(self):
+        pass
 
     def set_intensity(self,channel,intensity):
         channel = str(channel)
@@ -390,13 +422,20 @@ class LDI:
         self.serial_connection.write_and_check('set:'+channel+'='+intensity+'\r',"ok")
         self.log.debug('active channel: ' + str(self.active_channel))
 
-    def set_shutter(self,channel,state):
+    def get_intensity(self, channel):
+        return 0    # To be implemented
+
+    def get_intensity_range(self):
+        return [0, 100]
+
+    def set_shutter_state(self,channel,state):
         channel = str(channel)
         state = str(state)
         self.serial_connection.write_and_check('shutter:'+channel+'='+state+'\r',"ok")
 
-    def get_shutter_state(self):
+    def get_shutter_state(self, channel):
         self.serial_connection.write_and_check('shutter?\r','')
+        return 0    # To be implemented
 
     def set_active_channel(self,channel):
         self.active_channel = channel
@@ -409,26 +448,47 @@ class LDI:
         self.serial_connection.write_and_check('shutter:'+channel+'='+state+'\r',"ok")
 
 
-class LDI_Simulation:
+class LDI_Simulation(LightSource):
     """Wrapper for communicating with LDI over serial"""
     def __init__(self, SN="00000001"):
         """
         Provide serial number
         """
         self.log = squid.logging.get_logger(self.__class__.__name__)
-        self.intensity_mode = 'PC'
-        self.shutter_mode = 'PC'
+        self.intensity_mode = IntensityControlMode.Software
+        self.shutter_mode = ShutterControlMode.Software
 
-    def run(self):
+        self.channel_mappings = {
+            405: 405,
+            470: 470,
+            488: 470,
+            545: 555,
+            550: 555,
+            555: 555,
+            561: 555,
+            638: 640,
+            640: 640,
+            730: 730,
+            735: 730,
+            750: 730
+        }
+
+    def initialize(self):
         pass
 
     def set_shutter_mode(self,mode):
-        if mode in ['EXT','PC']:
-            self.intensity_mode = mode
+        if mode == ShutterControlMode.TTL:
+            self.serial_connection.write_and_check('SH_MODE=EXT\r',"ok")
+        elif mode == ShutterControlMode.Software:
+            self.serial_connection.write_and_check('SH_MODE=PC\r',"ok")
+        self.shutter_mode = mode
 
     def set_intensity_mode(self,mode):
-        if mode in ['EXT','PC']:
-            self.intensity_mode = mode
+        if mode == IntensityControlMode.SquidControllerDAC:
+            self.serial_connection.write_and_check('INT_MODE=EXT\r',"ok")
+        elif mode == IntensityControlMode.Software:
+            self.serial_connection.write_and_check('INT_MODE=PC\r',"ok")
+        self.intensity_mode = mode
 
     def set_intensity(self,channel,intensity):
         channel = str(channel)
@@ -436,11 +496,17 @@ class LDI_Simulation:
         self.log.debug('set:'+channel+'='+intensity+'\r')
         self.log.debug('active channel: ' + str(self.active_channel))
 
-    def set_shutter(self,channel,state):
+    def get_intensity(self, channel):
+        return 0
+
+    def get_intensity_range(self):
+        return [0, 100]
+
+    def set_shutter_state(self,channel,state):
         channel = str(channel)
         state = str(state)
 
-    def get_shutter_state(self):
+    def get_shutter_state(self, channel):
         return 0
 
     def set_active_channel(self,channel):
