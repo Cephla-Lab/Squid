@@ -23,7 +23,6 @@ class Microscope(QObject):
             self.initialize_core_components()
             self.initialize_peripherals()
         else:
-            self.debug = 1
             self.camera = microscope.camera
             self.microcontroller = microscope.microcontroller
             self.configurationManager = microscope.microcontroller
@@ -40,7 +39,19 @@ class Microscope(QObject):
             self.multipointController = microscope.multipointController
             self.imageSaver = microscope.imageSaver
             self.imageDisplay = microscope.imageDisplay
+            
+            # also grab GUI widgets
             self.wellplateMultiPointWidget = microscope.wellplateMultiPointWidget
+            self.multipointController = microscope.multipointController
+            self.liveControlWidget = microscope.liveControlWidget
+            self.navigationWidget = microscope.navigationWidget
+            self.autofocusWidget = microscope.autofocusWidget
+            self.objectivesWidget = microscope.objectivesWidget
+            self.wellSelectionWidget = microscope.wellSelectionWidget
+            self.cameraSettingsWidget = microscope.cameraSettingsWidget
+            self.liveControlWidget_focus_camera = microscope.liveControlWidget_focus_camera
+            self.displacementMeasurementWidget = microscope.displacementMeasurementWidget
+            self.laserAutofocusControlWidget = microscope.laserAutofocusControlWidget
 
     def initialize_camera(self, is_simulation):
         if is_simulation:
@@ -68,7 +79,6 @@ class Microscope(QObject):
         self.home_x_and_y_separately = False
 
     def initialize_core_components(self):
-        self.debug = 2
         self.configurationManager = core.ConfigurationManager(filename='./channel_configurations.xml')
         self.objectiveStore = core.ObjectiveStore()
         self.streamHandler = core.StreamHandler(display_resolution_scaling=DEFAULT_DISPLAY_CROP/100)
