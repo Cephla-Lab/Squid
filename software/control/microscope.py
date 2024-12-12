@@ -36,6 +36,9 @@ class Microscope(QObject):
                 self.emission_filter_wheel = microscope.emission_filter_wheel
             elif USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
                 self.emission_filter_wheel = microscope.emission_filter_wheel
+            self.multipointController = microscope.multipointController
+            self.imageSaver = microscope.imageSaver
+            self.imageDisplay = microscope.imageDisplay
 
     def initialize_camera(self, is_simulation):
         if is_simulation:
