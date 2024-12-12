@@ -30,6 +30,14 @@ class Camera(object):
             if camera.is_streaming:
                 camera._on_frame_callback()
                 camera._software_trigger_sent = False
+        elif nEvent == toupcam.TOUPCAM_EVENT_TRIGGER_ALLOW:
+            print("TRIGGER ALLOW")
+        elif nEvent == toupcam.TOUPCAM_EVENT_TRIGGERFAIL:
+            print("TRIGGER FAIL")
+        elif nEvent == toupcam.TOUPCAM_EVENT_EXPO_START:
+            print("EXPOSURE START")
+        elif nEvent == toupcam.TOUPCAM_EVENT_EXPO_STOP:
+            print("EXPOSURE STOP")
 
     def _on_frame_callback(self):
         
@@ -292,13 +300,16 @@ class Camera(object):
         #     camera_exposure_time = self.exposure_delay_us + self.exposure_time*1000 + self.row_period_us*self.pixel_size_byte*(self.row_numbers-1) + 500 # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
         #     self.camera.ExposureTime.set(camera_exposure_time)
         self.exposure_time = exposure_time
-        self._log.debug(f"set_exposure_time - {exposure_time} [ms]")
+        self.log.debug(f"set_exposure_time - {exposure_time} [ms]")
 
         # exposure time in ms
         if self.trigger_mode == TriggerMode.HARDWARE:
             self.camera.put_ExpoTime(int(exposure_time*1000) + int(self.strobe_delay_us))
         else:
             self.camera.put_ExpoTime(int(exposure_time*1000))
+
+    def get_full_frame_time(self):
+        return self.exposure_time + self.strobe_delay_us / 1000.0
 
     def update_camera_exposure_time(self):
         pass
