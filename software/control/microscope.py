@@ -48,7 +48,7 @@ class Microscope(QObject):
             self.autofocusWidget = microscope.autofocusWidget
             self.objectivesWidget = microscope.objectivesWidget
             self.wellSelectionWidget = microscope.wellSelectionWidget
-            self.cameraSettingsWidget = microscope.cameraSettingsWidget
+            #self.cameraSettingsWidget = microscope.cameraSettingsWidget
             self.liveControlWidget_focus_camera = microscope.liveControlWidget_focus_camera
             self.displacementMeasurementWidget = microscope.displacementMeasurementWidget
             self.laserAutofocusControlWidget = microscope.laserAutofocusControlWidget
