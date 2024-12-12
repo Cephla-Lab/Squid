@@ -3,7 +3,7 @@ from collections import deque
 import os
 import pydantic
 import sys
-from typing import Any
+from typing import Any, Optional
 
 # qt libraries
 os.environ["QT_API"] = "pyqt5"
@@ -2031,7 +2031,7 @@ class MultiPointWorker(QObject):
                 ijk_key = (next_expected.i, next_expected.j, next_expected.k)
                 local_rgb_images.setdefault(ijk_key, {})
                 this_images = local_rgb_images[ijk_key]
-                file_id = next_expected.file_id
+                file_ID = next_expected.file_id
                 current_path = next_expected.current_path
                 config = next_expected.config
                 i = next_expected.i
@@ -2042,11 +2042,11 @@ class MultiPointWorker(QObject):
                     del local_rgb_images[ijk_key]
                 elif RED_CHANNEL in this_images and len(this_images[RED_CHANNEL].shape) == 3:
                     log.debug(f"Received RGB red image with 3 channels, assuming it is actually a full RGB image and processing it (capture={ijk_key}).")
-                    self.handle_rgb_channels(this_images, file_id, current_path, config, i, j, k)
+                    self.handle_rgb_channels(this_images, file_ID, current_path, config, i, j, k)
                     del local_rgb_images[ijk_key]
                 elif RED_CHANNEL in this_image and BLUE_CHANNEL in this_image and GREEN_CHANNEL in this_image:
                     log.debug(f"Received 3 RGB channels for capture={ijk_key}, proceesing them!")
-                    self.construct_rgb_image(this_images, file_id, current_path, config, i, j, k)
+                    self.construct_rgb_image(this_images, file_ID, current_path, config, i, j, k)
                     del local_rgb_images[ijk_key]
                 elif len(this_image) >= 3:
                     log.warn(f"Received 3+ channels for RGB capture={ijk_key}, but do not have R,G,B channels. Something is wrong. Tossing capture!")
@@ -2219,9 +2219,9 @@ class MultiPointWorker(QObject):
         config: Any
         file_id: Any
         current_path: str
-        i: int
-        j: int
-        k: int
+        i: Optional[int]
+        j: Optional[int]
+        k: Optional[int]
         trigger_time: float
         is_rgb: bool
 
@@ -2244,7 +2244,7 @@ class MultiPointWorker(QObject):
         # we're guaranteed that the actual incoming image time is > trigger_time.
         streaming_camera_queue.append(self.ExpectedCameraImage(
             config=config,
-            file_ID=file_ID,
+            file_id=file_ID,
             current_path=current_path,
             i=i,
             j=j,
