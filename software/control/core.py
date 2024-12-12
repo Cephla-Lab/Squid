@@ -434,6 +434,7 @@ class Configuration:
 class LiveController(QObject):
     def __init__(self,camera,microcontroller,configurationManager,parent=None,control_illumination=True,use_internal_timer_for_hardware_trigger=True,for_displacement_measurement=False):
         QObject.__init__(self)
+        self_log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope = parent
         self.camera = camera
         self.microcontroller = microcontroller
@@ -679,7 +680,7 @@ class LiveController(QObject):
     def set_microscope_mode(self,configuration):
 
         self.currentConfiguration = configuration
-        print("setting microscope mode to " + self.currentConfiguration.name)
+        self._log.debug("setting microscope mode to " + self.currentConfiguration.name)
 
         # temporarily stop live while changing mode
         if self.is_live is True:
@@ -1678,6 +1679,7 @@ class MultiPointWorker(QObject):
 
     def __init__(self,multiPointController):
         QObject.__init__(self)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.multiPointController = multiPointController
 
         self.signal_update_stats.connect(self.update_stats)
@@ -1719,6 +1721,7 @@ class MultiPointWorker(QObject):
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
+        self._this_acquisition_save_image_count = 0
         if self.multiPointController.coordinate_dict is not None:
             self.coordinate_dict = self.multiPointController.coordinate_dict.copy()
         else:
@@ -1953,7 +1956,7 @@ class MultiPointWorker(QObject):
     def run_coordinate_acquisition(self, current_path):
         n_regions = len(self.scan_coordinates_mm)
 
-        # IMO: Start camera streaming
+        self._this_acquisition_save_image_count = 0
         streaming_camera_queue = deque()
         image_processing_output_queue = deque()
         streaming_callback = self.get_image_processor_fn(streaming_camera_queue, image_processing_output_queue)
@@ -1982,6 +1985,11 @@ class MultiPointWorker(QObject):
                 self.time_stats["coord_times"].append(time.time() - coord_start)
 
         print(self.time_stats)
+
+        self._log.info(f"After acquisition, {len(image_processing_output_queue)} images are in the processing queue.  And there are {len(streaming_camera_queue)} left in the streaming camera queue.")
+        self._log.info(f"The acquisition had {len(coordinates)} coordinates, and we expected {self.total_scans} images.")
+        self._log.info(f"save_image was called {self._this_acquisition_save_image_count} times.")
+
         # TODO: this is missed if we throw above
         self.camera.stop_streaming()
         self.camera.disable_callback()
@@ -2242,6 +2250,7 @@ class MultiPointWorker(QObject):
         exposure_time_ms = self.camera.exposure_time
         exposure_time_usec = exposure_time_ms * 1000
         time_right_before_trigger_sec = time.time()
+        existing_camera_timestamp = self.camera.timestamp
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_on_illumination()
             self.wait_till_operation_is_completed()
@@ -2264,13 +2273,19 @@ class MultiPointWorker(QObject):
             x_mm=x_mm,
             y_mm=y_mm))
 
-        # To make sure we actually get our image at this location, we sleep for exposure time here.  Otherwise if we
-        # return, the caller might immediately go move somewhere.  It is important that we send the ExpectedCameraImage
-        # out to the queue first, though, just in case the image comes back before this sleep finishes.  If there's
-        # no ExpectedCameraImage waiting when the image arrives, it'll be tossed!
-        # NOTE/TODO(imo): We could potentially call processEvents first, then sleep whatever time is remaining of
-        # the exposure by checking current time against time_right_before_trigger_sec
-        time.sleep(exposure_time_ms / 1000.0)
+        start = time.time()
+        while (self.camera.timestamp == existing_camera_timestamp):
+            time.sleep(0.001)
+        end = time.time()
+        self._log.debug(f"Took {end - start} [s] to wait for frame {self._this_acquisition_save_image_count}")
+
+        # # To make sure we actually get our image at this location, we sleep for exposure time here.  Otherwise if we
+        # # return, the caller might immediately go move somewhere.  It is important that we send the ExpectedCameraImage
+        # # out to the queue first, though, just in case the image comes back before this sleep finishes.  If there's
+        # # no ExpectedCameraImage waiting when the image arrives, it'll be tossed!
+        # # NOTE/TODO(imo): We could potentially call processEvents first, then sleep whatever time is remaining of
+        # # the exposure by checking current time against time_right_before_trigger_sec
+        # time.sleep(exposure_time_ms / 1000.0)
 
         QApplication.processEvents()
 
@@ -2310,6 +2325,7 @@ class MultiPointWorker(QObject):
         if Acquisition.MERGE_CHANNELS:
             self._save_merged_image(image, file_ID, current_path)
 
+        self._this_acquisition_save_image_count += 1
         iio.imwrite(saving_path,image)
 
     def _save_merged_image(self, image, file_ID, current_path):

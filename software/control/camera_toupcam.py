@@ -280,7 +280,7 @@ class Camera(object):
         self.last_converted_image = None
         self.last_numpy_image = None
 
-    def set_exposure_time(self,exposure_time):
+    def set_exposure_time(self, exposure_time):
         # use_strobe = (self.trigger_mode == TriggerMode.HARDWARE) # true if using hardware trigger
         # if use_strobe == False or self.is_global_shutter:
         #     self.exposure_time = exposure_time
@@ -292,6 +292,7 @@ class Camera(object):
         #     camera_exposure_time = self.exposure_delay_us + self.exposure_time*1000 + self.row_period_us*self.pixel_size_byte*(self.row_numbers-1) + 500 # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
         #     self.camera.ExposureTime.set(camera_exposure_time)
         self.exposure_time = exposure_time
+        self._log.debug(f"set_exposure_time - {exposure_time} [ms]")
 
         # exposure time in ms
         if self.trigger_mode == TriggerMode.HARDWARE:
