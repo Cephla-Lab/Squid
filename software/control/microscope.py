@@ -39,6 +39,7 @@ class Microscope(QObject):
             self.multipointController = microscope.multipointController
             self.imageSaver = microscope.imageSaver
             self.imageDisplay = microscope.imageDisplay
+            self.wellplateMultiPointWidget = microscope.wellplateMultiPointWidget
 
     def initialize_camera(self, is_simulation):
         if is_simulation:
@@ -66,6 +67,7 @@ class Microscope(QObject):
         self.home_x_and_y_separately = False
 
     def initialize_core_components(self):
+        print('Initializing core components...None were provided')
         self.configurationManager = core.ConfigurationManager(filename='./channel_configurations.xml')
         self.objectiveStore = core.ObjectiveStore()
         self.streamHandler = core.StreamHandler(display_resolution_scaling=DEFAULT_DISPLAY_CROP/100)
