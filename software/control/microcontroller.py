@@ -615,7 +615,7 @@ class Microcontroller:
         self._cmd_id = (self._cmd_id + 1)%256
         command[0] = self._cmd_id
         command[-1] = self.crc_calculator.calculate_checksum(command[:-1])
-        self.log.debug(f"Sending command id={command[0]}, command byte = {command[1]}, in progress? = {self.mcu_cmd_execution_in_progress}")
+        # self.log.debug(f"Sending command id={command[0]}, command byte = {command[1]}, in progress? = {self.mcu_cmd_execution_in_progress}")
         self.serial.write(command)
         self.mcu_cmd_execution_in_progress = True
         self.last_command = command
