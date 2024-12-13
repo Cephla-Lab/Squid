@@ -52,6 +52,7 @@ class Microscope(QObject):
             self.liveControlWidget_focus_camera = microscope.liveControlWidget_focus_camera
             self.displacementMeasurementWidget = microscope.displacementMeasurementWidget
             self.laserAutofocusControlWidget = microscope.laserAutofocusControlWidget
+            self.sampleSettingsWidget = microscope.sampleSettingsWidget
 
     def initialize_camera(self, is_simulation):
         if is_simulation:
