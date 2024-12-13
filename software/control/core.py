@@ -659,6 +659,7 @@ class LiveController(QObject):
             if self.trigger_mode == TriggerMode.SOFTWARE and self.is_live:
                 self._stop_triggerred_acquisition()
             # self.camera.reset_camera_acquisition_counter()
+            # set_hardware_triggered_acquisition
             self.camera.set_hardware_triggered_acquisition()
             self.reset_strobe_arugment()
             self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
