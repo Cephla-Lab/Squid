@@ -6,6 +6,7 @@ from control._def import *
 
 import threading
 import control.toupcam as toupcam
+from control.toupcam import HRESULTException
 from control.toupcam_exceptions import hresult_checker
 
 log = squid.logging.get_logger(__name__)
@@ -30,14 +31,6 @@ class Camera(object):
             if camera.is_streaming:
                 camera._on_frame_callback()
                 camera._software_trigger_sent = False
-        elif nEvent == toupcam.TOUPCAM_EVENT_TRIGGER_ALLOW:
-            print("TRIGGER ALLOW")
-        elif nEvent == toupcam.TOUPCAM_EVENT_TRIGGERFAIL:
-            print("TRIGGER FAIL")
-        elif nEvent == toupcam.TOUPCAM_EVENT_EXPO_START:
-            print("EXPOSURE START")
-        elif nEvent == toupcam.TOUPCAM_EVENT_EXPO_STOP:
-            print("EXPOSURE STOP")
 
     def _on_frame_callback(self):
         
@@ -299,14 +292,17 @@ class Camera(object):
         #     # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
         #     camera_exposure_time = self.exposure_delay_us + self.exposure_time*1000 + self.row_period_us*self.pixel_size_byte*(self.row_numbers-1) + 500 # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
         #     self.camera.ExposureTime.set(camera_exposure_time)
+        self.log.debug(f"setting exposure time - {exposure_time} [ms]")
         self.exposure_time = exposure_time
-        self.log.debug(f"set_exposure_time - {exposure_time} [ms]")
+        new_exposure_time_for_cam = (int(exposure_time*1000) + int(self.strobe_delay_us)) if self.trigger_mode == TriggerMode.HARDWARE else int(exposure_time*1000)
+        existing_exposure_time_on_cam = self.camera.get_ExpoTime()
+        if new_exposure_time_for_cam == existing_exposure_time_on_cam:
+            self.log.debug("Skipping exposure - already set")
+            return
+        exposure_time_sleep_hack_s = 0.025
+        time.sleep(exposure_time_sleep_hack_s)
 
-        # exposure time in ms
-        if self.trigger_mode == TriggerMode.HARDWARE:
-            self.camera.put_ExpoTime(int(exposure_time*1000) + int(self.strobe_delay_us))
-        else:
-            self.camera.put_ExpoTime(int(exposure_time*1000))
+        self.camera.put_ExpoTime(new_exposure_time_for_cam)
 
     def get_full_frame_time(self):
         return self.exposure_time + self.strobe_delay_us / 1000.0
@@ -324,9 +320,17 @@ class Camera(object):
         analog_gain = min(self.GAIN_MAX,analog_gain)
         analog_gain = max(self.GAIN_MIN,analog_gain)
         self.analog_gain = analog_gain
+
+        existing_gain = self.camera.get_ExpoAGain()
+        desired_device_gain = int(100*(10**(analog_gain/20)))
+
+        if existing_gain == desired_device_gain:
+            self.log.debug("Skipping gain - already set")
+            return
+
         # gain_min, gain_max, gain_default = self.camera.get_ExpoAGainRange() # remove from set_analog_gain
         # for touptek cameras gain is 100-10000 (for 1x - 100x)
-        self.camera.put_ExpoAGain(int(100*(10**(analog_gain/20))))
+        self.camera.put_ExpoAGain(desired_device_gain)
         # self.camera.Gain.set(analog_gain)
 
     def get_awb_ratios(self):
@@ -799,7 +803,38 @@ class Camera(object):
             self.camera.put_Option(toupcam.TOUPCAM_OPTION_BLACKLEVEL, _blacklevel)
         except toupcam.HRESULTException as ex:
             print('put blacklevel fail, hr=0x{:x}'.format(ex.hr))
-        
+
+    def get_settings_summary(self):
+        def try_get(opt):
+            try:
+                return self.camera.get_Option(opt)
+            except HRESULTException as e:
+                return f"Error during get: {e.hr}"
+        return f"Toupcam Settings:\n" + \
+            f"NO_FRAME_TIMEOUT={try_get(toupcam.TOUPCAM_OPTION_NOFRAME_TIMEOUT)}\n" + \
+            f"TOUPCAM_OPTION_THREAD_PRIORITY={try_get(toupcam.TOUPCAM_OPTION_THREAD_PRIORITY)}\n" + \
+            f"TOUPCAM_OPTION_TRIGGER={try_get(toupcam.TOUPCAM_OPTION_TRIGGER)}\n" + \
+            f"TOUPCAM_OPTION_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_FRAMERATE)}\n" + \
+            f"TOUPCAM_OPTION_BINNING={try_get(toupcam.TOUPCAM_OPTION_BINNING)}\n" + \
+            f"TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)}\n" + \
+            f"TOUPCAM_OPTION_PRECISE_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE)}\n" + \
+            f"TOUPCAM_OPTION_CALLBACK_THREAD={try_get(toupcam.TOUPCAM_OPTION_CALLBACK_THREAD)}\n" + \
+            f"TOUPCAM_OPTION_FRONTEND_DEQUE_LENGTH={try_get(toupcam.TOUPCAM_OPTION_FRONTEND_DEQUE_LENGTH)}\n" + \
+            f"TOUPCAM_OPTION_FRAME_DEQUE_LENGTH={try_get(toupcam.TOUPCAM_OPTION_FRAME_DEQUE_LENGTH)}\n" + \
+            f"TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE)}\n" + \
+            f"TOUPCAM_OPTION_SEQUENCER_ONOFF={try_get(toupcam.TOUPCAM_OPTION_SEQUENCER_ONOFF)}\n" + \
+            f"TOUPCAM_OPTION_NUMBER_DROP_FRAME={try_get(toupcam.TOUPCAM_OPTION_NUMBER_DROP_FRAME)}\n" + \
+            f"TOUPCAM_OPTION_BACKEND_DEQUE_LENGTH={try_get(toupcam.TOUPCAM_OPTION_BACKEND_DEQUE_LENGTH)}\n" + \
+            f"TOUPCAM_OPTION_FRONTEND_DEQUE_CURRENT={try_get(toupcam.TOUPCAM_OPTION_FRONTEND_DEQUE_CURRENT)}\n" + \
+            f"TOUPCAM_OPTION_BACKEND_DEQUE_CURRENT={try_get(toupcam.TOUPCAM_OPTION_BACKEND_DEQUE_CURRENT)}\n" + \
+            f"TOUPCAM_OPTION_EVENT_HARDWARE={try_get(toupcam.TOUPCAM_OPTION_EVENT_HARDWARE)}\n" + \
+            f"TOUPCAM_OPTION_PACKET_NUMBER={try_get(toupcam.TOUPCAM_OPTION_PACKET_NUMBER)}\n" + \
+            f"TOUPCAM_OPTION_LINE_PRE_DELAY={try_get(toupcam.TOUPCAM_OPTION_LINE_PRE_DELAY)}\n" + \
+            f"TOUPCAM_OPTION_LINE_POST_DELAY={try_get(toupcam.TOUPCAM_OPTION_LINE_POST_DELAY)}\n" + \
+            f"TOUPCAM_OPTION_POWER={try_get(toupcam.TOUPCAM_OPTION_POWER)}\n" + \
+            f"TOUPCAM_OPTION_EXPOSURE_PRE_DELAY={try_get(toupcam.TOUPCAM_OPTION_EXPOSURE_PRE_DELAY)}\n" + \
+            f"TOUPCAM_OPTION_EXPOSURE_POST_DELAY={try_get(toupcam.TOUPCAM_OPTION_EXPOSURE_POST_DELAY)}"
+
 
 class Camera_Simulation(object):
     
