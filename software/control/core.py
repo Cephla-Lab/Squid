@@ -2257,16 +2257,13 @@ class MultiPointWorker(QObject):
         exposure_time_usec = exposure_time_ms * 1000
         time_right_before_trigger_sec = time.time()
         existing_camera_timestamp = self.camera.timestamp
-        self._log.debug(f"Sending trigger for frame capture, (i,j,k)=({i}, {j}, {k}), file_ID={file_ID}, trigger_time={time_right_before_trigger_sec}.  total frame time is {self.camera.get_full_frame_time()} [ms] for exposure_time={exposure_time_ms} and before frame_id = {self.camera.frame_ID}")
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_on_illumination()
             self.wait_till_operation_is_completed()
             self.camera.send_trigger()
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
             self.microcontroller.send_hardware_trigger(control_illumination=True, illumination_on_time_us=exposure_time_usec)
-            self._log.debug(f"Waiting for micro")
             self.microcontroller.wait_till_operation_is_completed()
-            self._log.debug(f"Done waiting for micro")
 
         # At this point, we've setup the illumination and either sent a HW trigger to the camera to capture a frame or
         # told the camera to capture a frame.  As our "trigger_time", we use the time right before doing this so that
@@ -2292,9 +2289,7 @@ class MultiPointWorker(QObject):
         buffer_time = 0.010
         time.sleep(self.camera.get_full_frame_time() / 1000.0 + buffer_time)
 
-        self._log.debug("Before process events")
         QApplication.processEvents()
-        self._log.debug("After process events")
 
     def acquire_rgb_image(self, config, file_ID, current_path, i, j, k, streaming_camera_queue):
         # go through the channels
