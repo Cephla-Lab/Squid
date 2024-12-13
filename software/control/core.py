@@ -2248,8 +2248,11 @@ class MultiPointWorker(QObject):
 
     def acquire_camera_image(self, config, file_ID, current_path, i, j, k, is_rgb, streaming_camera_queue):
         # update the current configuration
+        self._log.debug("Entering acquire.")
         self.signal_current_configuration.emit(config)
+        self._log.debug("Done config update")
         self.wait_till_operation_is_completed()
+        self._log.debug("Done wait for micro")
         x_mm = self.navigationController.x_pos_mm
         y_mm = self.navigationController.y_pos_mm
 
