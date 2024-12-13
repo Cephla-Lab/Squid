@@ -738,7 +738,7 @@ class Microcontroller:
         """
         timestamp_start = time.time()
         while self.is_busy() and self.last_command_aborted_error is None:
-            time.sleep(0.02)
+            time.sleep(0.001)
             if time.time() - timestamp_start > timeout_limit_s:
                 raise TimeoutError(f"Current mcu operation timed out after {timeout_limit_s} [s].")
 
