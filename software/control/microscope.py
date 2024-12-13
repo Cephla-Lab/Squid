@@ -89,6 +89,7 @@ class Microscope(QObject):
             self.waitForMicrocontroller()
             self.camera.send_trigger()
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
+            self.camera.mark_triggered()
             self.microcontroller.send_hardware_trigger(control_illumination=True,illumination_on_time_us=self.camera.exposure_time*1000)
         
         # read a frame from camera

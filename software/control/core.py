@@ -1736,9 +1736,6 @@ class MultiPointWorker(QObject):
         self.microscope = self.multiPointController.parent
         self.performance_mode = self.microscope.performance_mode
 
-        # NOTE(imo): This is for external triggering hacks.  See https://linear.app/cephla/issue/S-83/2x-acquisition-performance
-        # Once/if we figure that out, we can remove.
-        self._last_hw_trigger = 0
         try:
             self.model = self.microscope.segmentation_model
         except:
@@ -1961,9 +1958,6 @@ class MultiPointWorker(QObject):
         n_regions = len(self.scan_coordinates_mm)
 
         self._this_acquisition_save_image_count = 0
-        # NOTE(imo): This is for external triggering hacks.  See https://linear.app/cephla/issue/S-83/2x-acquisition-performance
-        # Once/if we figure that out, we can remove.
-        self._last_hw_trigger = time.time()
         streaming_camera_queue = deque()
         image_processing_output_queue = deque()
         streaming_callback = self.get_image_processor_fn(streaming_camera_queue, image_processing_output_queue)
@@ -2092,7 +2086,6 @@ class MultiPointWorker(QObject):
         return streaming_camera_cb
 
     def acquire_at_position(self, region_id, current_path, fov, streaming_camera_queue, i=None, j=None):
-
         if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in globals():
             print('run custom multipoint')
             multipoint_custom_script_entry(self, current_path, region_id, fov, i, j)
@@ -2279,15 +2272,15 @@ class MultiPointWorker(QObject):
             self.wait_till_operation_is_completed()
             self.camera.send_trigger()
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-            # NOTE/HACK ALERT: See https://linear.app/cephla/issue/S-83/2x-acquisition-performance for context, but
-            # right now it looks like the toupcam needs at least 30-50 between external triggers after an exposure
-            # ends.  So we enforce that here.
-            now = time.time()
-            time_delta = now - self._last_hw_trigger
-            min_delta = self.camera.get_full_frame_time()/1000.0 + 0.050
-            if time_delta < min_delta:
-                time.sleep(min_delta - time_delta)
-            self._last_hw_trigger = now
+            # Arbitrarily use 10 x the full frame time as a timeout, and add a 250ms offset so we
+            # don't get too small with small frame times.
+            trigger_timeout = (250 + 10 * self.camera.get_full_frame_time()) / 1000.0
+            timeout_time = time.time() + trigger_timeout
+            while not self.camera.is_ready_for_trigger():
+                if time.time() > timeout_time:
+                    raise TimeoutError(f"Timed out waiting for image acquisition. {timeout_time} [s] timeout.")
+                time.sleep(0.001)
+            self.camera.mark_triggered()
             self.microcontroller.send_hardware_trigger(control_illumination=True, illumination_on_time_us=exposure_time_usec)
             self.microcontroller.wait_till_operation_is_completed()
 
