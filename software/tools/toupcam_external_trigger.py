@@ -27,9 +27,8 @@ class ImageStatCollector:
             frame_time_s = self.camera.get_full_frame_time() / 1000.0
             self.log.debug(
                 f"Received {len(self.receive_timestamps)} / {self.expected_count}"
-                f"  {dt} [s] since last trigger)"
-                f"  {frame_time_s} [s] frame time"
-                f"  {dt - frame_time_s} [s] extra over frame time")
+                f"  {dt} [s] since last trigger"
+                f"  {frame_time_s} [s] frame time")
 
         return streaming_cb
 
