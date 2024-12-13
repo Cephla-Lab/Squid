@@ -1963,6 +1963,7 @@ class MultiPointWorker(QObject):
         self.camera.set_callback(streaming_callback)
         self.camera.enable_callback()
         self.camera.start_streaming()
+        self._log.info(self.camera.get_settings_summary())
         self.time_stats = {"coord_times": [], "move_times": [], "acquire_times": []}
         for region_index, (region_id, coordinates) in enumerate(self.coordinate_dict.items()):
 
@@ -1984,6 +1985,7 @@ class MultiPointWorker(QObject):
                     return
                 self.time_stats["coord_times"].append(time.time() - coord_start)
 
+        self._log.info(self.camera.get_settings_summary())
         print(self.time_stats)
 
         self._log.info(f"After acquisition, {len(image_processing_output_queue)} images are in the processing queue.  And there are {len(streaming_camera_queue)} left in the streaming camera queue.")
@@ -2290,9 +2292,8 @@ class MultiPointWorker(QObject):
         # WARNING/NOTE(imo): Right now, it appears that setting the exposure on the toupcam camera after
         # a hardware triggered capture has been pulled from the camera can result in a lost frame.  Blocking here
         # to wait to receive the frame defeats the purpose of using hardware triggering and streaming mode,
-        # so add in a buffer sleep time as an intermediate.
-        buffer_time = 0.025
-        time.sleep(self.camera.get_full_frame_time() / 1000.0 + buffer_time)
+        # We add in a buffer in set_exposure when we actually change the exposure to hack around this.
+        time.sleep(self.camera.get_full_frame_time() / 1000.0)
 
         QApplication.processEvents()
 

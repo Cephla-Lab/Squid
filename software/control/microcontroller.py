@@ -615,6 +615,7 @@ class Microcontroller:
         self._cmd_id = (self._cmd_id + 1)%256
         command[0] = self._cmd_id
         command[-1] = self.crc_calculator.calculate_checksum(command[:-1])
+        self.log.debug(f"Sending command id={command[0]}, command byte = {command[1]}, in progress? = {self.mcu_cmd_execution_in_progress}")
         self.serial.write(command)
         self.mcu_cmd_execution_in_progress = True
         self.last_command = command
@@ -682,10 +683,11 @@ class Microcontroller:
             '''
             self._cmd_id_mcu = msg[0]
             self._cmd_execution_status = msg[1]
+            # self.log.debug(f"cmd_id_mcu={msg[0]}, cmd_exec_status={msg[1]}")
             if (self._cmd_id_mcu == self._cmd_id) and (self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS):
                 if self.mcu_cmd_execution_in_progress:
                     self.mcu_cmd_execution_in_progress = False
-                    #self.log.debug("mcu command " + str(self._cmd_id) + " complete")
+                    self.log.debug("mcu command " + str(self._cmd_id) + " complete")
             elif self.mcu_cmd_execution_in_progress and self._cmd_id_mcu != self._cmd_id and time.time() - self.last_command_send_timestamp > self.LAST_COMMAND_ACK_TIMEOUT and self.last_command is not None:
                 if self.retry > self.MAX_RETRY_COUNT:
                     self.abort_current_command(reason=f"Command timed out without an ack after {self.LAST_COMMAND_ACK_TIMEOUT} [s], and {self.retry} retries")
