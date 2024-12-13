@@ -175,7 +175,6 @@ class Camera(object):
         self.last_numpy_image = None
 
     def set_exposure_time(self,exposure_time):
-        print(f"SET_EXPOSURE_TIME {exposure_time}")
         use_strobe = (self.trigger_mode == TriggerMode.HARDWARE) # true if using hardware trigger
         if use_strobe == False or self.is_global_shutter:
             self.exposure_time = exposure_time
@@ -295,14 +294,12 @@ class Camera(object):
         self.update_camera_exposure_time()
 
     def set_software_triggered_acquisition(self):
-        print("camera - SOFTWARE TRIGGER SET")
         self.camera.TriggerMode.set(gx.GxSwitchEntry.ON)
         self.camera.TriggerSource.set(gx.GxTriggerSourceEntry.SOFTWARE)
         self.trigger_mode = TriggerMode.SOFTWARE
         self.update_camera_exposure_time()
 
     def set_hardware_triggered_acquisition(self):
-        print("camera - HARDWARE TRIGGER SET")
         self.camera.TriggerMode.set(gx.GxSwitchEntry.ON)
         self.camera.TriggerSource.set(gx.GxTriggerSourceEntry.LINE2) # LINE0 requires 7 mA min
         # self.camera.TriggerSource.set(gx.GxTriggerActivationEntry.RISING_EDGE)
