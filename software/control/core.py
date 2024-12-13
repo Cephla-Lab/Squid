@@ -680,7 +680,7 @@ class LiveController(QObject):
     def set_microscope_mode(self,configuration):
 
         self.currentConfiguration = configuration
-        self._log.debug("setting microscope mode to " + self.currentConfiguration.name)
+        # self._log.debug("setting microscope mode to " + self.currentConfiguration.name)
 
         # temporarily stop live while changing mode
         if self.is_live is True:
@@ -1735,6 +1735,9 @@ class MultiPointWorker(QObject):
         self.microscope = self.multiPointController.parent
         self.performance_mode = self.microscope.performance_mode
 
+        # NOTE(imo): This is for external triggering hacks.  See https://linear.app/cephla/issue/S-83/2x-acquisition-performance
+        # Once/if we figure that out, we can remove.
+        self._last_hw_trigger = 0
         try:
             self.model = self.microscope.segmentation_model
         except:
@@ -1957,13 +1960,15 @@ class MultiPointWorker(QObject):
         n_regions = len(self.scan_coordinates_mm)
 
         self._this_acquisition_save_image_count = 0
+        # NOTE(imo): This is for external triggering hacks.  See https://linear.app/cephla/issue/S-83/2x-acquisition-performance
+        # Once/if we figure that out, we can remove.
+        self._last_hw_trigger = time.time()
         streaming_camera_queue = deque()
         image_processing_output_queue = deque()
         streaming_callback = self.get_image_processor_fn(streaming_camera_queue, image_processing_output_queue)
         self.camera.set_callback(streaming_callback)
         self.camera.enable_callback()
         self.camera.start_streaming()
-        self._log.info(self.camera.get_settings_summary())
         self.time_stats = {"coord_times": [], "move_times": [], "acquire_times": []}
         for region_index, (region_id, coordinates) in enumerate(self.coordinate_dict.items()):
 
@@ -1987,7 +1992,6 @@ class MultiPointWorker(QObject):
 
         self._log.info(self.camera.get_settings_summary())
         print(self.time_stats)
-
         self._log.info(f"After acquisition, {len(image_processing_output_queue)} images are in the processing queue.  And there are {len(streaming_camera_queue)} left in the streaming camera queue.")
         self._log.info(f"The acquisition had {len(coordinates)} coordinates, and we expected {self.total_scans} images.")
         self._log.info(f"save_image was called {self._this_acquisition_save_image_count} times.")
@@ -1999,7 +2003,7 @@ class MultiPointWorker(QObject):
 
     def get_image_processor_fn(self, expected_capture_queue: deque, image_processing_output_queue: deque):
         log = squid.logging.get_logger("core.streaming_camera_cb")
-        log.debug(f"image processor received image, and frame_id={self.camera.frame_ID}")
+
         # This is for handling incoming RGB images.  We use (i,j,k) as a key since that's unique per capture
         # position, and then each local_rgb_images[(i,j,k)] contains a dict of config name -> image.
         #
@@ -2011,9 +2015,14 @@ class MultiPointWorker(QObject):
         RED_CHANNEL = 'BF LED matrix full_R'
         BLUE_CHANNEL = 'BF LED matrix full_B'
         GREEN_CHANNEL = 'BF LED matrix full_G'
+        last_time = 0
         def streaming_camera_cb(camera):
+            nonlocal last_time
+            nonlocal local_rgb_images
             # NOTE/WARNING(imo): We don't have any locks on the camera, so information in self.camera (eg: the image,
             # the frame id, anything) could change on us in here.
+            expected_cnt = len(expected_capture_queue)
+            processed_cnt = len(image_processing_output_queue)
             try:
                 next_expected = expected_capture_queue.popleft()
             except IndexError:
@@ -2032,9 +2041,14 @@ class MultiPointWorker(QObject):
             k = next_expected.k
             trigger_time = next_expected.trigger_time
 
-            log.debug(
-                f"(e={len(expected_capture_queue)}, p={len(image_processing_output_queue)}) Received image frame for file={current_path}, " +
-                f"file_id={file_id}, (i,j,k)=({i},{j},{k}), trigger_time={trigger_time}, camera frame timestamp={camera.timestamp}, frame id={camera.frame_ID}")
+            # log.debug(
+            #     f"(e={len(expected_capture_queue)}, p={len(image_processing_output_queue)}) Received image frame for file={current_path}, " +
+            #     f"file_id={file_id}, (i,j,k)=({i},{j},{k}), trigger_time={trigger_time}, camera frame timestamp={camera.timestamp}, frame id={camera.frame_ID}")
+
+            # now = time.time()
+            # time_delta = now - last_time
+            # log.debug(f"image processor: dt={time_delta}, e={expected_cnt}, p={processed_cnt}")
+            # last_time = now
 
             image = camera.current_frame
 
@@ -2264,6 +2278,14 @@ class MultiPointWorker(QObject):
             self.wait_till_operation_is_completed()
             self.camera.send_trigger()
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
+            # NOTE/HACK ALERT: See https://linear.app/cephla/issue/S-83/2x-acquisition-performance for context, but
+            # right now it looks like the toupcam needs at least 30ms between external triggers after an exposure
+            # ends.  So we enforce that here
+            now = time.time()
+            time_delta = now - self._last_hw_trigger
+            min_delta = self.camera.get_full_frame_time() + 0.030
+            if time_delta < min_delta:
+                time.sleep(min_delta - time_delta)
             self.microcontroller.send_hardware_trigger(control_illumination=True, illumination_on_time_us=exposure_time_usec)
             self.microcontroller.wait_till_operation_is_completed()
 
@@ -2289,10 +2311,11 @@ class MultiPointWorker(QObject):
         # NOTE/TODO(imo): We could potentially call processEvents first, then sleep whatever time is remaining of
         # the exposure by checking current time against time_right_before_trigger_sec
         #
-        # WARNING/NOTE(imo): Right now, it appears that setting the exposure on the toupcam camera after
-        # a hardware triggered capture has been pulled from the camera can result in a lost frame.  Blocking here
-        # to wait to receive the frame defeats the purpose of using hardware triggering and streaming mode,
-        # We add in a buffer in set_exposure when we actually change the exposure to hack around this.
+        # WARNING/NOTE(imo): Right now, it appears that the toupcam external trigger needs exposure time + 30ms between
+        # hardware triggers to work properly.  See the hack above to make sure we have at least exposure + 30ms between
+        # hardware triggers.
+        #
+        # See https://linear.app/cephla/issue/S-83/2x-acquisition-performance for context
         time.sleep(self.camera.get_full_frame_time() / 1000.0)
 
         QApplication.processEvents()

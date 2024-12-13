@@ -292,15 +292,13 @@ class Camera(object):
         #     # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
         #     camera_exposure_time = self.exposure_delay_us + self.exposure_time*1000 + self.row_period_us*self.pixel_size_byte*(self.row_numbers-1) + 500 # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
         #     self.camera.ExposureTime.set(camera_exposure_time)
-        self.log.debug(f"setting exposure time - {exposure_time} [ms]")
+        # self.log.debug(f"setting exposure time - {exposure_time} [ms]")
         self.exposure_time = exposure_time
         new_exposure_time_for_cam = (int(exposure_time*1000) + int(self.strobe_delay_us)) if self.trigger_mode == TriggerMode.HARDWARE else int(exposure_time*1000)
         existing_exposure_time_on_cam = self.camera.get_ExpoTime()
+        self.log.debug(f"set_exposure_time: existing={existing_exposure_time_on_cam} [us]")
         if new_exposure_time_for_cam == existing_exposure_time_on_cam:
-            self.log.debug("Skipping exposure - already set")
             return
-        exposure_time_sleep_hack_s = 0.025
-        time.sleep(exposure_time_sleep_hack_s)
 
         self.camera.put_ExpoTime(new_exposure_time_for_cam)
 
@@ -325,7 +323,6 @@ class Camera(object):
         desired_device_gain = int(100*(10**(analog_gain/20)))
 
         if existing_gain == desired_device_gain:
-            self.log.debug("Skipping gain - already set")
             return
 
         # gain_min, gain_max, gain_default = self.camera.get_ExpoAGainRange() # remove from set_analog_gain
