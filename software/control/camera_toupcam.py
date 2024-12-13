@@ -48,10 +48,7 @@ class Camera(object):
 
         # get the image from the camera
         try:
-            start = time.time()
             self.camera.PullImageV2(self.buf, self.pixel_size_byte*8, None) # the second camera is number of bits per pixel - ignored in RAW mode
-            end = time.time()
-            self.log.debug(f"PullImageV2 took {(end - start) * 1000} [ms]")
         except toupcam.HRESULTException as ex:
             # TODO(imo): Propagate error in some way and handle
             self.log.error('pull image failed, hr=0x{:x}'.format(ex.hr))
@@ -302,12 +299,8 @@ class Camera(object):
         #     # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
         #     camera_exposure_time = self.exposure_delay_us + self.exposure_time*1000 + self.row_period_us*self.pixel_size_byte*(self.row_numbers-1) + 500 # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
         #     self.camera.ExposureTime.set(camera_exposure_time)
-        current_frontend = self.camera.get_Option(toupcam.TOUPCAM_OPTION_FRONTEND_DEQUE_CURRENT)
-        current_backend = self.camera.get_Option(toupcam.TOUPCAM_OPTION_BACKEND_DEQUE_CURRENT)
-        precise_framerate = self.camera.get_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE)
-        dropped_frames = self.camera.get_Option(toupcam.TOUPCAM_OPTION_NUMBER_DROP_FRAME)
         self.exposure_time = exposure_time
-        self.log.debug(f"set_exposure_time - {exposure_time} [ms], full frame time = {self.get_full_frame_time()} [ms], current_frontend={current_frontend}, current_backend={current_backend}, precise_framerate={precise_framerate}, dropped_frames={dropped_frames}")
+        self.log.debug(f"set_exposure_time - {exposure_time} [ms]")
 
         # exposure time in ms
         if self.trigger_mode == TriggerMode.HARDWARE:
@@ -361,7 +354,6 @@ class Camera(object):
     def start_streaming(self):
         if self.buf and (self._toupcam_pullmode_started == False):
             try:
-                self.log.error("StartPullModeWithCallback")
                 self.camera.StartPullModeWithCallback(self._event_callback, self)
                 self._toupcam_pullmode_started = True
             except toupcam.HRESULTException as ex:
@@ -369,9 +361,6 @@ class Camera(object):
                 self.close()
                 # TODO(imo): Remove sys.exit and propagate+handle.
                 sys.exit(1)
-        frontend_queue_len = self.camera.get_Option(toupcam.TOUPCAM_OPTION_FRONTEND_DEQUE_LENGTH)
-        backend_queue_len = self.camera.get_Option(toupcam.TOUPCAM_OPTION_BACKEND_DEQUE_LENGTH)
-        self.log.debug(f"STREAMING START: frontend_queue_len={frontend_queue_len}, backend_queue_len={backend_queue_len}")
         self.log.info('start streaming')
         self.is_streaming = True
 
