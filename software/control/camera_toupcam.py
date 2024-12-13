@@ -296,7 +296,7 @@ class Camera(object):
         self.exposure_time = exposure_time
         new_exposure_time_for_cam = (int(exposure_time*1000) + int(self.strobe_delay_us)) if self.trigger_mode == TriggerMode.HARDWARE else int(exposure_time*1000)
         existing_exposure_time_on_cam = self.camera.get_ExpoTime()
-        self.log.debug(f"set_exposure_time: existing={existing_exposure_time_on_cam} [us]")
+        # self.log.debug(f"set_exposure_time: existing={existing_exposure_time_on_cam} [us]")
         if new_exposure_time_for_cam == existing_exposure_time_on_cam:
             return
 
