@@ -2286,7 +2286,12 @@ class MultiPointWorker(QObject):
         # no ExpectedCameraImage waiting when the image arrives, it'll be tossed!
         # NOTE/TODO(imo): We could potentially call processEvents first, then sleep whatever time is remaining of
         # the exposure by checking current time against time_right_before_trigger_sec
-        buffer_time = 0.010
+        #
+        # WARNING/NOTE(imo): Right now, it appears that setting the exposure on the toupcam camera after
+        # a hardware triggered capture has been pulled from the camera can result in a lost frame.  Blocking here
+        # to wait to receive the frame defeats the purpose of using hardware triggering and streaming mode,
+        # so add in a buffer sleep time as an intermediate.
+        buffer_time = 0.025
         time.sleep(self.camera.get_full_frame_time() / 1000.0 + buffer_time)
 
         QApplication.processEvents()
