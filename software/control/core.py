@@ -2117,7 +2117,7 @@ class MultiPointWorker(QObject):
                 file_ID = f"{coordinate_name}_{fov}_{z_level}"
 
             metadata = dict(x = self.navigationController.x_pos_mm, y = self.navigationController.y_pos_mm, z = self.navigationController.z_pos_mm)
-            print(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
+            print(f"Acquiring images: ID={file_ID}, Metadata={metadata}")
 
             # laser af characterization mode
             if LASER_AF_CHARACTERIZATION_MODE:
@@ -2279,13 +2279,14 @@ class MultiPointWorker(QObject):
             self.camera.send_trigger()
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
             # NOTE/HACK ALERT: See https://linear.app/cephla/issue/S-83/2x-acquisition-performance for context, but
-            # right now it looks like the toupcam needs at least 30ms between external triggers after an exposure
-            # ends.  So we enforce that here
+            # right now it looks like the toupcam needs at least 30-50 between external triggers after an exposure
+            # ends.  So we enforce that here.
             now = time.time()
             time_delta = now - self._last_hw_trigger
-            min_delta = self.camera.get_full_frame_time() + 0.030
+            min_delta = self.camera.get_full_frame_time()/1000.0 + 0.050
             if time_delta < min_delta:
                 time.sleep(min_delta - time_delta)
+            self._last_hw_trigger = now
             self.microcontroller.send_hardware_trigger(control_illumination=True, illumination_on_time_us=exposure_time_usec)
             self.microcontroller.wait_till_operation_is_completed()
 
