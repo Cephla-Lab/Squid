@@ -152,7 +152,7 @@ class Microcontroller:
 
         self.tx_buffer_length = MicrocontrollerDef.CMD_LENGTH
         self.rx_buffer_length = MicrocontrollerDef.MSG_LENGTH
-
+        self._last_hw_trigger = 0
         self._cmd_id = 0
         self._cmd_id_mcu = None # command id of mcu's last received command 
         self._cmd_execution_status = None
@@ -253,6 +253,10 @@ class Microcontroller:
         self.send_command(cmd)
 
     def send_hardware_trigger(self,control_illumination=False,illumination_on_time_us=0,trigger_output_ch=0):
+        # now = time.time()
+        # time_delta = now - self._last_hw_trigger
+        # self._last_hw_trigger = now
+        # self.log.debug(f"send_hardware_trigger: dt={time_delta}")
         illumination_on_time_us = int(illumination_on_time_us)
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SEND_HARDWARE_TRIGGER
@@ -687,7 +691,7 @@ class Microcontroller:
             if (self._cmd_id_mcu == self._cmd_id) and (self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS):
                 if self.mcu_cmd_execution_in_progress:
                     self.mcu_cmd_execution_in_progress = False
-                    self.log.debug("mcu command " + str(self._cmd_id) + " complete")
+                    # self.log.debug("mcu command " + str(self._cmd_id) + " complete")
             elif self.mcu_cmd_execution_in_progress and self._cmd_id_mcu != self._cmd_id and time.time() - self.last_command_send_timestamp > self.LAST_COMMAND_ACK_TIMEOUT and self.last_command is not None:
                 if self.retry > self.MAX_RETRY_COUNT:
                     self.abort_current_command(reason=f"Command timed out without an ack after {self.LAST_COMMAND_ACK_TIMEOUT} [s], and {self.retry} retries")
