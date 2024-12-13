@@ -40,10 +40,13 @@ class ImageStatCollector:
         return len(self.receive_timestamps)
 
     def get_summary(self):
+        runtime = max(self.receive_timestamps) - min(self.trigger_timestamps)
         return (
             f"expected count: {self.expected_count}\n"
             f"triggers sent : {self.get_trigger_count()}\n"
             f"received count: {self.get_received_count()}\n"
+            f"dt first trigger to last received: {runtime} [s]\n"
+            f"frame rate (only received): {self.get_received_count() / runtime} [Hz]"
         )
 
 
@@ -90,9 +93,24 @@ def main(args):
     camera.start_streaming()
 
     for i in range(image_collector.expected_count):
+        # Arbitrarily use 10 x the full frame time as a timeout, and add a 250ms offset so we
+        # don't get too small with small frame times.
+        trigger_timeout = (250 + 10 * camera.get_full_frame_time()) / 1000.0
+        timeout_time = time.time() + trigger_timeout
+        while not camera.is_ready_for_trigger():
+            if time.time() > timeout_time:
+                raise TimeoutError(f"Timed out waiting for image acquisition. {timeout_time} [s] timeout.")
+            time.sleep(0.001)
+        camera.mark_triggered()
         microcontroller.send_hardware_trigger(control_illumination=True, illumination_on_time_us=exposure_ms * 1000)
         image_collector.record_trigger()
-        time.sleep((inter_trigger_sleep_ms) / 1000.0)
+        time.sleep(inter_trigger_sleep_ms / 1000.0)
+
+    # Make sure to wait for the last frame. Once we've gotten
+    # word from the camera that we can send another trigger, that means all the images
+    # are here.
+
+    time.sleep(0.1 + 3 * camera.get_full_frame_time()/1000)
 
     if args.print_camera_settings:
         log.info(f"Camera settings: {camera.get_settings_summary()}")

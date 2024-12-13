@@ -1985,8 +1985,14 @@ class MultiPointWorker(QObject):
                     return
                 self.time_stats["coord_times"].append(time.time() - coord_start)
 
+        # Sleep for a few frames worth of time to make sure we receive and process the last image.
+        #
+        # TODO(imo): It'd be better to check for trigger readiness, and make sure the processed count is
+        # what we expect here.
+        time.sleep(0.1 + 3 * self.camera.get_full_frame_time() / 1000)
+
         self._log.info(self.camera.get_settings_summary())
-        print(self.time_stats)
+        self._log.info(self.time_stats)
         self._log.info(f"After acquisition, {len(image_processing_output_queue)} images are in the processing queue.  And there are {len(streaming_camera_queue)} left in the streaming camera queue.")
         self._log.info(f"The acquisition had {len(coordinates)} coordinates, and we expected {self.total_scans} images.")
         self._log.info(f"save_image was called {self._this_acquisition_save_image_count} times.")
