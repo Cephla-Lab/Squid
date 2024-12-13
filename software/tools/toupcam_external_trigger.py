@@ -1,16 +1,15 @@
+import logging
 import time
-
-from pyqtgraph import image
-from sympy.physics.units import micro
 
 import control.camera_toupcam
 import control.microcontroller
 import squid.logging
 
 class ImageStatCollector:
-    def __init__(self, expected_count):
+    def __init__(self, expected_count, camera: control.camera_toupcam.Camera):
         self.expected_count = expected_count
         self.log = squid.logging.get_logger("image collector")
+        self.camera = camera
 
         self.receive_timestamps = []
         self.trigger_timestamps = []
@@ -22,13 +21,39 @@ class ImageStatCollector:
     def get_streaming_callback(self):
         def streaming_cb(camera):
             nonlocal self
-            self.receive_timestamps.append(time.time())
-            self.log.debug(f"Received {len(self.receive_timestamps)} / {self.expected_count}")
+            now = time.time()
+            self.receive_timestamps.append(now)
+            dt = now - self.trigger_timestamps[-1]
+            frame_time_s = self.camera.get_full_frame_time() / 1000.0
+            self.log.debug(
+                f"Received {len(self.receive_timestamps)} / {self.expected_count}"
+                f"  {dt} [s] since last trigger)"
+                f"  {frame_time_s} [s] frame time"
+                f"  {dt - frame_time_s} [s] extra over frame time")
+
+        return streaming_cb
+
+    def get_trigger_count(self):
+        return len(self.trigger_timestamps)
+
+    def get_received_count(self):
+        return len(self.receive_timestamps)
+
+    def get_summary(self):
+        return (
+            f"expected count: {self.expected_count}\n"
+            f"triggers sent : {self.get_trigger_count()}\n"
+            f"received count: {self.get_received_count()}\n"
+        )
 
 
 def main(args):
     capture_count = args.count
     exposure_ms = args.exposure
+
+    if args.verbose:
+        squid.logging.set_stdout_log_level(logging.DEBUG)
+
     log = squid.logging.get_logger("")
 
     log.info(f"Using camera_model='{args.camera_model}' with pixel_format='{args.pixel_format}'")
@@ -55,30 +80,40 @@ def main(args):
     # NOTE/TODO(imo): It looks like calculate_hardware_trigger_arguments uses the full frame time, not frame_time - exposure_time. Is that right?
     microcontroller.set_strobe_delay_us(camera.strobe_delay_us)
     log.info(f"With exposure time of {exposure_ms} [ms], we actually set the camera exposure to {camera.get_full_frame_time()} [ms] for rolling shutter compensation.")
-    image_collector = ImageStatCollector(capture_count)
+    image_collector = ImageStatCollector(capture_count, camera)
 
     camera.set_callback(image_collector.get_streaming_callback())
     camera.enable_callback()
 
-    inter_trigger_sleep_ms = camera.get_full_frame_time()
+    inter_trigger_sleep_ms = camera.get_full_frame_time() + args.extra_inter_sleep_ms
     log.info(f"Starting camera streaming, then triggering {image_collector.expected_count} triggers with {inter_trigger_sleep_ms} [ms] sleeps between them.")
     camera.start_streaming()
 
     for i in range(image_collector.expected_count):
         microcontroller.send_hardware_trigger(control_illumination=True, illumination_on_time_us=exposure_ms * 1000)
+        image_collector.record_trigger()
+        time.sleep((inter_trigger_sleep_ms) / 1000.0)
 
+    if args.print_camera_settings:
+        log.info(f"Camera settings: {camera.get_settings_summary()}")
+
+    log.info(f"Done, summarizing results:\n{image_collector.get_summary()}")
 if __name__ == "__main__":
     import argparse
     import sys
 
     ap = argparse.ArgumentParser(description="A tool for testing toupcam external triggering and image streaming.")
-    ap.add_argument("c,count", type=int, default=100, help="How many frames to grab for this test.")
-    ap.add_argument("e,exposure", type=float, default=10, help="The exposure time, in ms, to use for each capture.")
+    ap.add_argument("-c", "--count", type=int, default=100, help="How many frames to grab for this test.")
+    ap.add_argument("-e", "--exposure", type=float, default=10, help="The exposure time, in ms, to use for each capture.")
     # NOTE(imo): I don't think this default is actually a toupcam model, but it's the model name used in the Squid+
     # config when we're using toupcam cameras.
-    ap.add_argument("camera_model", type=str, default="MER2-1220-32U3M")
-    ap.add_argument("pixel_format", type=str, default="MONO16")
-    ap.add_argument("microcontroller_version", type=str, default="Teensy")
+    ap.add_argument("--camera_model", type=str, default="MER2-1220-32U3M")
+    ap.add_argument("--pixel_format", type=str, default="MONO16")
+    ap.add_argument("--microcontroller_version", type=str, default="Teensy")
+    ap.add_argument("--extra_inter_sleep_ms", type=float, default=0, help="Extra number of ms to sleep after a trigger (in addition to frame time)")
+    ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--print_camera_settings", action="store_true")
+
     parsed_args = ap.parse_args()
 
     sys.exit(main(parsed_args))

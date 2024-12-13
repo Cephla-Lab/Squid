@@ -1,3 +1,4 @@
+import ctypes
 import time
 import numpy as np
 
@@ -28,6 +29,7 @@ class Camera(object):
     @staticmethod
     def _event_callback(nEvent, camera):
         if nEvent == toupcam.TOUPCAM_EVENT_IMAGE:
+            camera.mark_ready_for_next_trigger()
             if camera.is_streaming:
                 camera._on_frame_callback()
                 camera._software_trigger_sent = False
@@ -107,6 +109,7 @@ class Camera(object):
 
         self.callback_is_enabled = False
         self.is_streaming = False
+        self._ready_for_next_trigger = True
 
         self.GAIN_MAX = 40
         self.GAIN_MIN = 0
@@ -232,6 +235,7 @@ class Camera(object):
             # set camera resolution
             self.set_resolution(self.resolution[0],self.resolution[1]) # buffer created when setting resolution
             self._update_buffer_settings()
+            self.mark_ready_for_next_trigger()
             
             if self.camera:
                 if self.buf:
@@ -254,6 +258,33 @@ class Camera(object):
             pass
 
         self.thread_read_temperature.start()
+
+    def mark_ready_for_next_trigger(self):
+        """
+        This is a hack to keep trigger + receive in lockstep.  You must check that is_ready_for_trigger() is True before
+        sending a trigger, and must call mark_triggered() when you send an external HW signal.
+
+        We can remove this when we figure out how to capture in parallel.
+        """
+        self._ready_for_next_trigger = True
+
+    def is_ready_for_trigger(self):
+        """
+        When streaming and using external triggers, this can be checked to see if the last image we
+        triggered (signaled via mark_triggered()) has been fully captured.  Note that this being
+        true only means the camera told us the image is ready, not that we have the image.
+        """
+        return self._ready_for_next_trigger
+
+    def mark_triggered(self):
+        """
+        When streaming and using external triggers, you must call this to mark when you've sent
+        a hardware trigger.  And it is only okay to send an external trigger if is_ready_for_trigger()
+        is true.
+        """
+        if not self.is_streaming:
+            self.log.warning("Marking trigger does nothing if not streaming.")
+        self._ready_for_next_trigger = False
 
     def set_callback(self,function):
         self.new_image_callback_external = function
@@ -364,6 +395,7 @@ class Camera(object):
                 sys.exit(1)
         self.log.info('start streaming')
         self.is_streaming = True
+        self.mark_ready_for_next_trigger()
 
     def stop_streaming(self):
         self.camera.Stop()
@@ -371,7 +403,6 @@ class Camera(object):
         self._toupcam_pullmode_started = False
 
     def set_pixel_format(self,pixel_format):
-
         was_streaming = False
         if self.is_streaming:
             was_streaming = True
@@ -560,7 +591,7 @@ class Camera(object):
             self.camera.put_Option(toupcam.TOUPCAM_OPTION_CG,2)
             
     def send_trigger(self):
-        if self._last_software_trigger_timestamp!= None:
+        if self._last_software_trigger_timestamp != None:
             if (time.time() - self._last_software_trigger_timestamp) > (1.5*self.exposure_time/1000*1.02 + 4):
                 self.log.warning('last software trigger timed out')
                 self._software_trigger_sent = False
@@ -806,9 +837,10 @@ class Camera(object):
             try:
                 return self.camera.get_Option(opt)
             except HRESULTException as e:
-                return f"Error during get: {e.hr}"
+                return f"Error during get: 0x{ctypes.c_uint32(e.hr).value:x}"
         return f"Toupcam Settings:\n" + \
             f"NO_FRAME_TIMEOUT={try_get(toupcam.TOUPCAM_OPTION_NOFRAME_TIMEOUT)}\n" + \
+            f"TOUPCAM_OPTION_READOUT_MODE={try_get(toupcam.TOUPCAM_OPTION_READOUT_MODE)}\n" + \
             f"TOUPCAM_OPTION_THREAD_PRIORITY={try_get(toupcam.TOUPCAM_OPTION_THREAD_PRIORITY)}\n" + \
             f"TOUPCAM_OPTION_TRIGGER={try_get(toupcam.TOUPCAM_OPTION_TRIGGER)}\n" + \
             f"TOUPCAM_OPTION_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_FRAMERATE)}\n" + \
