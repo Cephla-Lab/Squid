@@ -67,7 +67,7 @@ if __name__ == "__main__":
     screen_width = screen_geometry.width()
     screen_height = screen_geometry.height()
     win.setMaximumSize(screen_width, screen_height)
-    win.resize(screen_width*0.8, screen_height*0.8)
+    win.resize(int(screen_width*0.8), int(screen_height*0.8))
 
     acq_config_action = QAction("Acquisition Settings", win)
     acq_config_action.triggered.connect(lambda : show_acq_config(win.configurationManager))
