@@ -1,3 +1,4 @@
+import ctypes
 import time
 import numpy as np
 
@@ -6,6 +7,7 @@ from control._def import *
 
 import threading
 import control.toupcam as toupcam
+from control.toupcam import HRESULTException
 from control.toupcam_exceptions import hresult_checker
 
 log = squid.logging.get_logger(__name__)
@@ -27,6 +29,7 @@ class Camera(object):
     @staticmethod
     def _event_callback(nEvent, camera):
         if nEvent == toupcam.TOUPCAM_EVENT_IMAGE:
+            camera.mark_ready_for_next_trigger()
             if camera.is_streaming:
                 camera._on_frame_callback()
                 camera._software_trigger_sent = False
@@ -106,6 +109,7 @@ class Camera(object):
 
         self.callback_is_enabled = False
         self.is_streaming = False
+        self._ready_for_next_trigger = True
 
         self.GAIN_MAX = 40
         self.GAIN_MIN = 0
@@ -231,6 +235,7 @@ class Camera(object):
             # set camera resolution
             self.set_resolution(self.resolution[0],self.resolution[1]) # buffer created when setting resolution
             self._update_buffer_settings()
+            self.mark_ready_for_next_trigger()
             
             if self.camera:
                 if self.buf:
@@ -253,6 +258,33 @@ class Camera(object):
             pass
 
         self.thread_read_temperature.start()
+
+    def mark_ready_for_next_trigger(self):
+        """
+        This is a hack to keep trigger + receive in lockstep.  You must check that is_ready_for_trigger() is True before
+        sending a trigger, and must call mark_triggered() when you send an external HW signal.
+
+        We can remove this when we figure out how to capture in parallel.
+        """
+        self._ready_for_next_trigger = True
+
+    def is_ready_for_trigger(self):
+        """
+        When streaming and using external triggers, this can be checked to see if the last image we
+        triggered (signaled via mark_triggered()) has been fully captured.  Note that this being
+        true only means the camera told us the image is ready, not that we have the image.
+        """
+        return self._ready_for_next_trigger
+
+    def mark_triggered(self):
+        """
+        When streaming and using external triggers, you must call this to mark when you've sent
+        a hardware trigger.  And it is only okay to send an external trigger if is_ready_for_trigger()
+        is true.
+        """
+        if not self.is_streaming:
+            self.log.warning("Marking trigger does nothing if not streaming.")
+        self._ready_for_next_trigger = False
 
     def set_callback(self,function):
         self.new_image_callback_external = function
@@ -280,7 +312,7 @@ class Camera(object):
         self.last_converted_image = None
         self.last_numpy_image = None
 
-    def set_exposure_time(self,exposure_time):
+    def set_exposure_time(self, exposure_time):
         # use_strobe = (self.trigger_mode == TriggerMode.HARDWARE) # true if using hardware trigger
         # if use_strobe == False or self.is_global_shutter:
         #     self.exposure_time = exposure_time
@@ -291,13 +323,18 @@ class Camera(object):
         #     # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
         #     camera_exposure_time = self.exposure_delay_us + self.exposure_time*1000 + self.row_period_us*self.pixel_size_byte*(self.row_numbers-1) + 500 # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
         #     self.camera.ExposureTime.set(camera_exposure_time)
+        # self.log.debug(f"setting exposure time - {exposure_time} [ms]")
         self.exposure_time = exposure_time
+        new_exposure_time_for_cam = (int(exposure_time*1000) + int(self.strobe_delay_us)) if self.trigger_mode == TriggerMode.HARDWARE else int(exposure_time*1000)
+        existing_exposure_time_on_cam = self.camera.get_ExpoTime()
+        # self.log.debug(f"set_exposure_time: existing={existing_exposure_time_on_cam} [us]")
+        if new_exposure_time_for_cam == existing_exposure_time_on_cam:
+            return
 
-        # exposure time in ms
-        if self.trigger_mode == TriggerMode.HARDWARE:
-            self.camera.put_ExpoTime(int(exposure_time*1000) + int(self.strobe_delay_us))
-        else:
-            self.camera.put_ExpoTime(int(exposure_time*1000))
+        self.camera.put_ExpoTime(new_exposure_time_for_cam)
+
+    def get_full_frame_time(self):
+        return self.exposure_time + self.strobe_delay_us / 1000.0
 
     def update_camera_exposure_time(self):
         pass
@@ -312,9 +349,16 @@ class Camera(object):
         analog_gain = min(self.GAIN_MAX,analog_gain)
         analog_gain = max(self.GAIN_MIN,analog_gain)
         self.analog_gain = analog_gain
+
+        existing_gain = self.camera.get_ExpoAGain()
+        desired_device_gain = int(100*(10**(analog_gain/20)))
+
+        if existing_gain == desired_device_gain:
+            return
+
         # gain_min, gain_max, gain_default = self.camera.get_ExpoAGainRange() # remove from set_analog_gain
         # for touptek cameras gain is 100-10000 (for 1x - 100x)
-        self.camera.put_ExpoAGain(int(100*(10**(analog_gain/20))))
+        self.camera.put_ExpoAGain(desired_device_gain)
         # self.camera.Gain.set(analog_gain)
 
     def get_awb_ratios(self):
@@ -351,6 +395,7 @@ class Camera(object):
                 sys.exit(1)
         self.log.info('start streaming')
         self.is_streaming = True
+        self.mark_ready_for_next_trigger()
 
     def stop_streaming(self):
         self.camera.Stop()
@@ -358,7 +403,6 @@ class Camera(object):
         self._toupcam_pullmode_started = False
 
     def set_pixel_format(self,pixel_format):
-
         was_streaming = False
         if self.is_streaming:
             was_streaming = True
@@ -547,7 +591,7 @@ class Camera(object):
             self.camera.put_Option(toupcam.TOUPCAM_OPTION_CG,2)
             
     def send_trigger(self):
-        if self._last_software_trigger_timestamp!= None:
+        if self._last_software_trigger_timestamp != None:
             if (time.time() - self._last_software_trigger_timestamp) > (1.5*self.exposure_time/1000*1.02 + 4):
                 self.log.warning('last software trigger timed out')
                 self._software_trigger_sent = False
@@ -787,7 +831,39 @@ class Camera(object):
             self.camera.put_Option(toupcam.TOUPCAM_OPTION_BLACKLEVEL, _blacklevel)
         except toupcam.HRESULTException as ex:
             print('put blacklevel fail, hr=0x{:x}'.format(ex.hr))
-        
+
+    def get_settings_summary(self):
+        def try_get(opt):
+            try:
+                return self.camera.get_Option(opt)
+            except HRESULTException as e:
+                return f"Error during get: 0x{ctypes.c_uint32(e.hr).value:x}"
+        return f"Toupcam Settings:\n" + \
+            f"NO_FRAME_TIMEOUT={try_get(toupcam.TOUPCAM_OPTION_NOFRAME_TIMEOUT)}\n" + \
+            f"TOUPCAM_OPTION_READOUT_MODE={try_get(toupcam.TOUPCAM_OPTION_READOUT_MODE)}\n" + \
+            f"TOUPCAM_OPTION_THREAD_PRIORITY={try_get(toupcam.TOUPCAM_OPTION_THREAD_PRIORITY)}\n" + \
+            f"TOUPCAM_OPTION_TRIGGER={try_get(toupcam.TOUPCAM_OPTION_TRIGGER)}\n" + \
+            f"TOUPCAM_OPTION_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_FRAMERATE)}\n" + \
+            f"TOUPCAM_OPTION_BINNING={try_get(toupcam.TOUPCAM_OPTION_BINNING)}\n" + \
+            f"TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)}\n" + \
+            f"TOUPCAM_OPTION_PRECISE_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE)}\n" + \
+            f"TOUPCAM_OPTION_CALLBACK_THREAD={try_get(toupcam.TOUPCAM_OPTION_CALLBACK_THREAD)}\n" + \
+            f"TOUPCAM_OPTION_FRONTEND_DEQUE_LENGTH={try_get(toupcam.TOUPCAM_OPTION_FRONTEND_DEQUE_LENGTH)}\n" + \
+            f"TOUPCAM_OPTION_FRAME_DEQUE_LENGTH={try_get(toupcam.TOUPCAM_OPTION_FRAME_DEQUE_LENGTH)}\n" + \
+            f"TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE)}\n" + \
+            f"TOUPCAM_OPTION_SEQUENCER_ONOFF={try_get(toupcam.TOUPCAM_OPTION_SEQUENCER_ONOFF)}\n" + \
+            f"TOUPCAM_OPTION_NUMBER_DROP_FRAME={try_get(toupcam.TOUPCAM_OPTION_NUMBER_DROP_FRAME)}\n" + \
+            f"TOUPCAM_OPTION_BACKEND_DEQUE_LENGTH={try_get(toupcam.TOUPCAM_OPTION_BACKEND_DEQUE_LENGTH)}\n" + \
+            f"TOUPCAM_OPTION_FRONTEND_DEQUE_CURRENT={try_get(toupcam.TOUPCAM_OPTION_FRONTEND_DEQUE_CURRENT)}\n" + \
+            f"TOUPCAM_OPTION_BACKEND_DEQUE_CURRENT={try_get(toupcam.TOUPCAM_OPTION_BACKEND_DEQUE_CURRENT)}\n" + \
+            f"TOUPCAM_OPTION_EVENT_HARDWARE={try_get(toupcam.TOUPCAM_OPTION_EVENT_HARDWARE)}\n" + \
+            f"TOUPCAM_OPTION_PACKET_NUMBER={try_get(toupcam.TOUPCAM_OPTION_PACKET_NUMBER)}\n" + \
+            f"TOUPCAM_OPTION_LINE_PRE_DELAY={try_get(toupcam.TOUPCAM_OPTION_LINE_PRE_DELAY)}\n" + \
+            f"TOUPCAM_OPTION_LINE_POST_DELAY={try_get(toupcam.TOUPCAM_OPTION_LINE_POST_DELAY)}\n" + \
+            f"TOUPCAM_OPTION_POWER={try_get(toupcam.TOUPCAM_OPTION_POWER)}\n" + \
+            f"TOUPCAM_OPTION_EXPOSURE_PRE_DELAY={try_get(toupcam.TOUPCAM_OPTION_EXPOSURE_PRE_DELAY)}\n" + \
+            f"TOUPCAM_OPTION_EXPOSURE_POST_DELAY={try_get(toupcam.TOUPCAM_OPTION_EXPOSURE_POST_DELAY)}"
+
 
 class Camera_Simulation(object):
     

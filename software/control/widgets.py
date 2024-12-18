@@ -5226,7 +5226,7 @@ class NapariMultiChannelWidget(QWidget):
                                           colormap=color, contrast_limits=limits, blending='additive',
                                           scale=(self.dz_um, self.pixel_size_um, self.pixel_size_um))
 
-            # print(f"multi channel - dz_um:{self.dz_um}, pixel_y_um:{self.pixel_size_um}, pixel_x_um:{self.pixel_size_um}")
+            print(f"multi channel - dz_um:{self.dz_um}, pixel_y_um:{self.pixel_size_um}, pixel_x_um:{self.pixel_size_um}")
             layer.contrast_limits = self.contrastManager.get_limits(channel_name)
             layer.events.contrast_limits.connect(self.signalContrastLimits)
 
@@ -7983,4 +7983,3 @@ class SampleSettingsWidget(QFrame):
 
         with open('cache/objective_and_sample_format.txt', 'w') as f:
             json.dump(data, f)
-
