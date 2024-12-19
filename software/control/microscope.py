@@ -7,6 +7,7 @@ import control.core as core
 from control._def import *
 import control
 
+from control.camera import Camera_Simulation
 if CAMERA_TYPE == "Toupcam":
     import control.camera_toupcam as camera
 import control.microcontroller as microcontroller
@@ -39,7 +40,7 @@ class Microscope(QObject):
 
     def initialize_camera(self, is_simulation):
         if is_simulation:
-            self.camera = camera.Camera_Simulation(rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
+            self.camera = Camera_Simulation(rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
         else:
             sn_camera_main = camera.get_sn_by_model(MAIN_CAMERA_MODEL)
             self.camera = camera.Camera(sn=sn_camera_main, rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)

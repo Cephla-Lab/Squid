@@ -1,5 +1,3 @@
-import argparse
-import cv2
 import time
 import numpy as np
 
@@ -24,7 +22,15 @@ def get_sn_by_model(model_name):
                 return device_info_list[i]['sn']
     return None # return None if no device with the specified model_name is connected
 
-class CameraWithTriggerMarking:
+# NOTE(imo): This will be expanded upon and made a proper abc class in future PRs
+class BaseCamera:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def get_full_frame_time(self):
+        return self.exposure_time + self.strobe_delay_us / 1000.0
+
+class WithTriggerMarking:
     """
     When we are using external triggering, we need some mechanism for signaling to the external
     trigger mechanism that the camera is ready for another trigger.  This is that mechanism.
@@ -68,10 +74,11 @@ class CameraWithTriggerMarking:
             self.log.warning("Marking trigger does nothing if not streaming.")
         self._ready_for_next_trigger = False
 
-class Camera(object):
+
+class Camera(BaseCamera, WithTriggerMarking):
 
     def __init__(self,sn=None,is_global_shutter=False,rotate_image_angle=None,flip_image=None):
-
+        super().__init__()
         # many to be purged
         self.sn = sn
         self.is_global_shutter = is_global_shutter
@@ -476,9 +483,10 @@ class Camera(object):
         self.camera.LineMode.set(gx.GxLineModeEntry.OUTPUT)
         self.camera.LineSource.set(gx.GxLineSourceEntry.EXPOSURE_ACTIVE)
 
-class Camera_Simulation(object):
 
+class Camera_Simulation(BaseCamera, WithTriggerMarking):
     def __init__(self,sn=None,is_global_shutter=False,rotate_image_angle=None,flip_image=None):
+        super().__init__()
         # many to be purged
         self.sn = sn
         self.is_global_shutter = is_global_shutter

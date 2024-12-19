@@ -436,7 +436,7 @@ class ImageEventHandler(PySpin.ImageEventHandler):
         self.camera.new_image_callback_external(self.camera)
        
 
-class Camera(control.camera.CameraWithTriggerMarking):
+class Camera(control.camera.BaseCamera, control.camera.WithTriggerMarking):
 
     def __init__(self,sn=None,is_global_shutter=False,rotate_image_angle=None,flip_image=None, is_color=False):
         super().__init__()
