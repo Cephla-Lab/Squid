@@ -1952,6 +1952,23 @@ class MultiPointWorker(QObject):
         # NOTE(imo): For now, all we do with the output queue is use it to check that
         # all the images we expected made it through processing.
         image_processing_output_queue = deque()
+
+        # There might be something else hooked up to the callback mechanism.  Make sure we
+        # can restore the camera to how it was before.
+        previous_camera_callback = self.camera.new_image_callback_external
+        previous_camera_streaming = self.camera.is_streaming
+        previous_callback_enabled = self.camera.callback_is_enabled
+        def cleanup_acquisition():
+            self.camera.set_callback(previous_camera_callback)
+            if previous_callback_enabled:
+                self.camera.enable_callback()
+            else:
+                self.camera.disable_callback()
+            if previous_camera_streaming:
+                self.camera.start_streaming()
+            else:
+                self.camera.stop_streaming()
+
         streaming_callback = self.get_image_processor_fn(expected_capture_queue, image_processing_output_queue)
         self.camera.set_callback(streaming_callback)
         self.camera.enable_callback()
@@ -1974,6 +1991,7 @@ class MultiPointWorker(QObject):
                 self.time_stats["acquire_times"].append(time.time() - acquire_start)
                 if self.multiPointController.abort_acqusition_requested:
                     self.handle_acquisition_abort(current_path, region_id)
+                    cleanup_acquisition()
                     return
                 self.time_stats["coord_times"].append(time.time() - coord_start)
 
@@ -1996,10 +2014,8 @@ class MultiPointWorker(QObject):
         self._log.info(f"The acquisition had {len(coordinates)} coordinates, and we expected {self.total_scans} images.")
         self._log.info(f"save_image was called {self._this_acquisition_save_image_count} times.")
 
-        # TODO: this is missed if we throw above
-        self.camera.stop_streaming()
-        self.camera.disable_callback()
-        self.camera.set_callback(None)
+        cleanup_acquisition()
+
 
     def get_image_processor_fn(self, expected_capture_queue: deque, image_processing_output_queue: deque):
         log = squid.logging.get_logger("core.streaming_camera_cb")
@@ -2105,9 +2121,6 @@ class MultiPointWorker(QObject):
             coordinate_name = region_id
         else:
             coordinate_name = self.scan_coordinates_name[region_id]
-
-        x_mm = self.navigationController.x_pos_mm
-        y_mm = self.navigationController.y_pos_mm
 
         for z_level in range(self.NZ):
             if i is not None and j is not None:
