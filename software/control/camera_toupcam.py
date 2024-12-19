@@ -110,7 +110,6 @@ class Camera(BaseCamera, WithTriggerMarking):
 
         self.callback_is_enabled = False
         self.is_streaming = False
-        self._ready_for_next_trigger = True
 
         self.GAIN_MAX = 40
         self.GAIN_MIN = 0

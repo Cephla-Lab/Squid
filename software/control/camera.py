@@ -25,10 +25,14 @@ def get_sn_by_model(model_name):
 # NOTE(imo): This will be expanded upon and made a proper abc class in future PRs
 class BaseCamera:
     def __init__(self, *args, **kwargs):
-        pass
+        super().__init__()
 
     def get_full_frame_time(self):
         return self.exposure_time + self.strobe_delay_us / 1000.0
+
+    def get_settings_summary(self):
+        return "BaseCamera: No Settings"
+
 
 class WithTriggerMarking:
     """
@@ -644,4 +648,13 @@ class Camera_Simulation(BaseCamera, WithTriggerMarking):
         pass
 
     def set_line3_to_exposure_active(self):
+        pass
+
+    def calculate_hardware_trigger_arguments(self):
+        pass
+
+    def set_reset_strobe_delay_function(self, function_body):
+        pass
+
+    def set_blacklevel(self, blacklevel):
         pass
