@@ -94,6 +94,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.live_only_mode = live_only_mode or LIVE_ONLY_MODE
+        self.is_live_scan_grid_on = False
         self.performance_mode = False
         self.napari_connections = {}
 
@@ -636,6 +637,7 @@ class HighContentScreeningGui(QMainWindow):
 
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.flexibleMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+            # self.flexibleMultiPointWidget.signal_z_stacking.connect(self.multipointController.set_z_stacking_config)
             if ENABLE_STITCHER:
                 self.flexibleMultiPointWidget.signal_stitcher_widget.connect(self.toggleStitcherWidget)
                 self.flexibleMultiPointWidget.signal_acquisition_channels.connect(self.stitcherWidget.updateRegistrationChannels)
@@ -643,6 +645,7 @@ class HighContentScreeningGui(QMainWindow):
 
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellplateMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+            # self.wellplateMultiPointWidget.signal_z_stacking.connect(self.multipointController.set_z_stacking_config)
             if ENABLE_STITCHER:
                 self.wellplateMultiPointWidget.signal_stitcher_widget.connect(self.toggleStitcherWidget)
                 self.wellplateMultiPointWidget.signal_acquisition_channels.connect(self.stitcherWidget.updateRegistrationChannels)
@@ -654,22 +657,19 @@ class HighContentScreeningGui(QMainWindow):
             self.liveControlWidget.signal_start_live.connect(self.onStartLive)
         self.liveControlWidget.update_camera_settings()
 
-        self.slidePositionController.signal_slide_loading_position_reached.connect(self.navigationWidget.slot_slide_loading_position_reached)
-        #self.slidePositionController.signal_slide_loading_position_reached.connect(self.multiPointWidget.disable_the_start_aquisition_button)
-        self.slidePositionController.signal_slide_scanning_position_reached.connect(self.navigationWidget.slot_slide_scanning_position_reached)
-        #self.slidePositionController.signal_slide_scanning_position_reached.connect(self.multiPointWidget.enable_the_start_aquisition_button)
-        self.slidePositionController.signal_clear_slide.connect(self.navigationViewer.clear_slide)
+        self.connectSlidePositionController()
+
         self.navigationViewer.signal_coordinates_clicked.connect(self.navigationController.move_from_click_mosaic)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.on_objective_changed)
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.objectivesWidget.signal_objective_changed.connect(self.flexibleMultiPointWidget.update_fov_positions)
         self.navigationController.xyPos.connect(self.navigationViewer.draw_fov_current_location)
         if WELLPLATE_FORMAT == 'glass slide':
-            self.navigationController.scanGridPos.connect(self.navigationViewer.draw_scan_grid)
+            self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
+            self.is_live_scan_grid_on = True
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.set_microscope_mode)
         self.multipointController.signal_z_piezo_um.connect(self.piezoWidget.update_displacement_um_display)
-        self.wellplateMultiPointWidget.signal_z_stacking.connect(self.multipointController.set_z_stacking_config)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
@@ -699,14 +699,13 @@ class HighContentScreeningGui(QMainWindow):
 
         self.wellplateFormatWidget.signalWellplateSettings.connect(self.navigationViewer.update_wellplate_settings)
         self.wellplateFormatWidget.signalWellplateSettings.connect(self.scanCoordinates.update_wellplate_settings)
+        self.wellplateFormatWidget.signalWellplateSettings.connect(self.wellSelectionWidget.onWellplateChanged)
         self.wellplateFormatWidget.signalWellplateSettings.connect(lambda format_, *args: self.onWellplateChanged(format_))
 
         self.wellSelectionWidget.signal_wellSelectedPos.connect(self.navigationController.move_to)
-        #self.wellSelectionWidget.signal_wellSelected.connect(self.multiPointWidget.set_well_selected)
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.set_well_coordinates)
             self.objectivesWidget.signal_objective_changed.connect(self.wellplateMultiPointWidget.update_coordinates)
-            self.wellplateMultiPointWidget.signal_update_navigation_viewer.connect(self.navigationViewer.draw_fov_current_location)
 
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveControlWidget_focus_camera.signal_newExposureTime.connect(self.cameraSettingWidget_focus_camera.set_exposure_time)
@@ -810,7 +809,7 @@ class HighContentScreeningGui(QMainWindow):
                     (self.multipointController.napari_mosaic_update, self.napariMosaicDisplayWidget.updateMosaic),
                     (self.napariMosaicDisplayWidget.signal_coordinates_clicked,
                      self.navigationController.move_from_click_mosaic),
-                    (self.napariMosaicDisplayWidget.signal_update_viewer, self.navigationViewer.update_slide)
+                    (self.napariMosaicDisplayWidget.signal_clear_viewer, self.navigationViewer.clear_slide)
                 ]
 
                 if ENABLE_FLEXIBLE_MULTIPOINT:
@@ -823,7 +822,7 @@ class HighContentScreeningGui(QMainWindow):
                     self.napari_connections['napariMosaicDisplayWidget'].extend([
                         (self.wellplateMultiPointWidget.signal_acquisition_channels, self.napariMosaicDisplayWidget.initChannels),
                         (self.wellplateMultiPointWidget.signal_acquisition_shape, self.napariMosaicDisplayWidget.initLayersShape),
-                        (self.wellplateMultiPointWidget.signal_draw_shape, self.napariMosaicDisplayWidget.enable_shape_drawing),
+                        (self.wellplateMultiPointWidget.signal_manual_shape_mode, self.napariMosaicDisplayWidget.enable_shape_drawing),
                         (self.napariMosaicDisplayWidget.signal_shape_drawn, self.wellplateMultiPointWidget.update_manual_shape)
                     ])
 
@@ -877,24 +876,29 @@ class HighContentScreeningGui(QMainWindow):
             dialog.exec_()
 
     def onTabChanged(self, index):
-        acquisitionWidget = self.recordTabWidget.widget(index)
-        is_flexible = (index == self.recordTabWidget.indexOf(self.flexibleMultiPointWidget))
-        is_scan_grid = (index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget)) if ENABLE_WELLPLATE_MULTIPOINT else False
-        self.toggleWellSelector(is_scan_grid and self.wellSelectionWidget.format != 'glass slide')
-        
-        if is_scan_grid:
-            self.navigationViewer.clear_overlay()
-            self.wellSelectionWidget.onSelectionChanged()
-        else:
-            self.wellplateMultiPointWidget.clear_regions()
+        is_flexible_acquisition = (index == self.recordTabWidget.indexOf(self.flexibleMultiPointWidget)) if ENABLE_FLEXIBLE_MULTIPOINT else False
+        is_wellplate_acquisition = (index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget)) if ENABLE_WELLPLATE_MULTIPOINT else False
 
-        if is_flexible:
+        if is_wellplate_acquisition:
+            if self.wellplateMultiPointWidget.combobox_shape.currentText() == 'Manual':
+                # trigger manual shape update
+                if self.wellplateMultiPointWidget.manual_shapes:
+                    self.wellplateMultiPointWidget.update_manual_shape(self.wellplateMultiPointWidget.manual_shapes)
+            else:
+                # trigger wellplate update
+                self.navigationViewer.clear_overlay()
+                self.wellSelectionWidget.onSelectionChanged()
+
+        elif is_flexible_acquisition:
+            # trigger flexible regions update
+            self.wellplateMultiPointWidget.clear_regions()
             self.flexibleMultiPointWidget.update_fov_positions()
 
+        self.toggleWellSelector(is_wellplate_acquisition and self.wellSelectionWidget.format != 'glass slide')
+        acquisitionWidget = self.recordTabWidget.widget(index)
         if ENABLE_STITCHER:
             self.toggleStitcherWidget(acquisitionWidget.checkbox_stitchOutput.isChecked())
         acquisitionWidget.emit_selected_channels()
-
 
     def resizeCurrentTab(self, tabWidget):
         current_widget = tabWidget.currentWidget()
@@ -918,43 +922,57 @@ class HighContentScreeningGui(QMainWindow):
             self.toggleWellSelector(False)
             self.multipointController.inverted_objective = False
             self.navigationController.inverted_objective = False
-            self.navigationController.scanGridPos.connect(self.navigationViewer.draw_scan_grid)
+            if not self.is_live_scan_grid_on: # connect live scan grid for glass slide
+                self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
+                self.is_live_scan_grid_on = True
+            self.log.debug("live scan grid connected.")
             self.setupSlidePositionController(is_for_wellplate=False)
         else:
             self.toggleWellSelector(True)
             self.multipointController.inverted_objective = True
             self.navigationController.inverted_objective = True
-            self.navigationController.scanGridPos.disconnect(self.navigationViewer.draw_scan_grid)
+            if self.is_live_scan_grid_on: # disconnect live scan grid for wellplate
+                self.navigationController.scanGridPos.disconnect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
+                self.is_live_scan_grid_on = False
+            self.log.debug("live scan grid disconnected.")
             self.setupSlidePositionController(is_for_wellplate=True)
 
+            # replace and reconnect new well selector
             if format_ == '1536 well plate':
                 self.replaceWellSelectionWidget(widgets.Well1536SelectionWidget())
             elif isinstance(self.wellSelectionWidget, widgets.Well1536SelectionWidget):
                 self.replaceWellSelectionWidget(widgets.WellSelectionWidget(format_, self.wellplateFormatWidget))
                 self.connectWellSelectionWidget()
 
-        if ENABLE_FLEXIBLE_MULTIPOINT:
+        if ENABLE_FLEXIBLE_MULTIPOINT: # clear regions
             self.flexibleMultiPointWidget.clear_only_location_list()
-        if ENABLE_WELLPLATE_MULTIPOINT:
+        if ENABLE_WELLPLATE_MULTIPOINT: # reset regions onto new wellplate with default size/shape
             self.wellplateMultiPointWidget.clear_regions()
             self.wellplateMultiPointWidget.set_default_scan_size()
-        self.wellSelectionWidget.onSelectionChanged()
 
     def setupSlidePositionController(self, is_for_wellplate):
         self.slidePositionController.setParent(None)
         self.slidePositionController.deleteLater()
         self.slidePositionController = core.SlidePositionController(self.navigationController, self.liveController, is_for_wellplate=is_for_wellplate)
         self.connectSlidePositionController()
-
-    def connectSlidePositionController(self):
-        self.slidePositionController.signal_slide_loading_position_reached.connect(self.navigationWidget.slot_slide_loading_position_reached)
-        #self.slidePositionController.signal_slide_loading_position_reached.connect(self.multiPointWidget.disable_the_start_aquisition_button)
-        self.slidePositionController.signal_slide_scanning_position_reached.connect(self.navigationWidget.slot_slide_scanning_position_reached)
-        #self.slidePositionController.signal_slide_scanning_position_reached.connect(self.multiPointWidget.enable_the_start_aquisition_button)
-        self.slidePositionController.signal_clear_slide.connect(self.navigationViewer.clear_slide)
         if SHOW_NAVIGATION_BAR:
             self.navigationBarWidget.replace_slide_controller(self.slidePositionController)
         self.navigationWidget.replace_slide_controller(self.slidePositionController)
+
+    def connectSlidePositionController(self):
+        self.slidePositionController.signal_slide_loading_position_reached.connect(self.navigationWidget.slot_slide_loading_position_reached)
+        if ENABLE_FLEXIBLE_MULTIPOINT:
+            self.slidePositionController.signal_slide_loading_position_reached.connect(self.flexibleMultiPointWidget.disable_the_start_aquisition_button)
+        if ENABLE_WELLPLATE_MULTIPOINT:
+            self.slidePositionController.signal_slide_loading_position_reached.connect(self.wellplateMultiPointWidget.disable_the_start_aquisition_button)
+
+        self.slidePositionController.signal_slide_scanning_position_reached.connect(self.navigationWidget.slot_slide_scanning_position_reached)
+        if ENABLE_FLEXIBLE_MULTIPOINT:
+            self.slidePositionController.signal_slide_scanning_position_reached.connect(self.flexibleMultiPointWidget.enable_the_start_aquisition_button)
+        if ENABLE_WELLPLATE_MULTIPOINT:
+            self.slidePositionController.signal_slide_scanning_position_reached.connect(self.wellplateMultiPointWidget.enable_the_start_aquisition_button)
+
+        self.slidePositionController.signal_clear_slide.connect(self.navigationViewer.clear_slide)
 
     def replaceWellSelectionWidget(self, new_widget):
         self.wellSelectionWidget.setParent(None)
@@ -967,9 +985,8 @@ class HighContentScreeningGui(QMainWindow):
             self.dock_wellSelection.addWidget(self.wellSelectionWidget)
 
     def connectWellSelectionWidget(self):
-        #self.wellSelectionWidget.signal_wellSelected.connect(self.multiPointWidget.set_well_selected)
         self.wellSelectionWidget.signal_wellSelectedPos.connect(self.navigationController.move_to)
-        self.wellplateFormatWidget.signalWellplateSettings.connect(self.wellSelectionWidget.updateWellplateSettings)
+        self.wellplateFormatWidget.signalWellplateSettings.connect(self.wellSelectionWidget.onWellplateChanged)
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.set_well_coordinates)
 
@@ -981,19 +998,36 @@ class HighContentScreeningGui(QMainWindow):
         self.wellSelectionWidget.setVisible(show)
 
     def toggleAcquisitionStart(self, acquisition_started):
+        if acquisition_started:
+            print("STARTING ACQUISITION")
+            if self.is_live_scan_grid_on: # disconnect live scan grid during acquisition
+                self.navigationController.scanGridPos.disconnect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
+                self.is_live_scan_grid_on = False
+        else:
+            print("FINISHED ACQUISITION")
+            if not self.is_live_scan_grid_on:  # reconnect live scan grid if was on before acqusition
+                self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
+                self.is_live_scan_grid_on = True
+
+        # click to move off during acquisition
         self.navigationWidget.toggle_click_to_move(acquisition_started)
+
+        # disable other acqusiition tabs during acquisition
         current_index = self.recordTabWidget.currentIndex()
         for index in range(self.recordTabWidget.count()):
             self.recordTabWidget.setTabEnabled(index, not acquisition_started or index == current_index)
+
+        # disable autolevel once acquisition started
         if acquisition_started:
             self.liveControlWidget.toggle_autolevel(not acquisition_started)
-        
-        is_scan_grid = (current_index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget)) if ENABLE_WELLPLATE_MULTIPOINT else False
-        if is_scan_grid and self.wellSelectionWidget.format != 'glass slide':
+
+        # hide well selector during acquisition
+        is_wellplate_acquisition = (current_index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget)) if ENABLE_WELLPLATE_MULTIPOINT else False
+        if is_wellplate_acquisition and self.wellSelectionWidget.format != 'glass slide':
             self.toggleWellSelector(not acquisition_started)
 
+        # display acquisition progress bar during acquisition
         self.recordTabWidget.currentWidget().display_progress_bar(acquisition_started)
-        self.navigationViewer.on_acquisition_start(acquisition_started)
 
     def toggleStitcherWidget(self, checked):
         if checked:
