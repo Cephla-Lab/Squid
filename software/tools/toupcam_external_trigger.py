@@ -16,7 +16,10 @@ class ImageStatCollector:
 
     def record_trigger(self):
         self.trigger_timestamps.append(time.time())
-        self.log.debug(f"Trigger {len(self.trigger_timestamps)} / {self.expected_count}")
+        trigger_dt = "?"
+        if len(self.trigger_timestamps) > 1:
+            trigger_dt = self.trigger_timestamps[-1] - self.trigger_timestamps[-2]
+        self.log.debug(f"Trigger {len(self.trigger_timestamps)} / {self.expected_count} (dt from last={trigger_dt} [s])")
 
     def get_streaming_callback(self):
         def streaming_cb(camera):
@@ -87,29 +90,34 @@ def main(args):
     camera.set_callback(image_collector.get_streaming_callback())
     camera.enable_callback()
 
+    # Full frame time is strobe time + exposure time
     inter_trigger_sleep_ms = camera.get_full_frame_time() + args.extra_inter_sleep_ms
     log.info(f"Starting camera streaming, then triggering {image_collector.expected_count} triggers with {inter_trigger_sleep_ms} [ms] sleeps between them.")
     camera.start_streaming()
 
     for i in range(image_collector.expected_count):
-        # Arbitrarily use 10 x the full frame time as a timeout, and add a 250ms offset so we
-        # don't get too small with small frame times.
-        trigger_timeout = (250 + 10 * camera.get_full_frame_time()) / 1000.0
-        timeout_time = time.time() + trigger_timeout
-        while not camera.is_ready_for_trigger():
-            if time.time() > timeout_time:
-                raise TimeoutError(f"Timed out waiting for image acquisition. {timeout_time} [s] timeout.")
-            time.sleep(0.001)
-        camera.mark_triggered()
+        if not args.allow_overlap:
+            # Arbitrarily use 10 x the full frame time as a timeout, and add a 250ms offset so we
+            # don't get too small with small frame times.
+            trigger_timeout = (250 + 10 * camera.get_full_frame_time()) / 1000.0
+            timeout_time = time.time() + trigger_timeout
+            while not camera.is_ready_for_trigger():
+                if time.time() > timeout_time:
+                    raise TimeoutError(f"Timed out waiting for image acquisition. {timeout_time} [s] timeout.")
+                time.sleep(0.001)
+            camera.mark_triggered()
         microcontroller.send_hardware_trigger(control_illumination=True, illumination_on_time_us=exposure_ms * 1000)
         image_collector.record_trigger()
+
         time.sleep(inter_trigger_sleep_ms / 1000.0)
 
-    # Make sure to wait for the last frame. Once we've gotten
-    # word from the camera that we can send another trigger, that means all the images
-    # are here.
-
+    # Wait a bit for the last frame.   If we're only missing 1 frame, be suspect of this!
     time.sleep(0.1 + 3 * camera.get_full_frame_time()/1000)
+
+    log.info(f"Summary of script settings:"
+             f"  --extra_inter_sleep={args.extra_inter_sleep}\n"
+             f"  --allow_overlap={args.allow_overlap}"
+             f"  inter_trigger_sleep_ms={inter_trigger_sleep_ms}")
 
     if args.print_camera_settings:
         log.info(f"Camera settings: {camera.get_settings_summary()}")
@@ -130,6 +138,7 @@ if __name__ == "__main__":
     ap.add_argument("--extra_inter_sleep_ms", type=float, default=0, help="Extra number of ms to sleep after a trigger (in addition to frame time)")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--print_camera_settings", action="store_true")
+    ap.add_argument("--allow_overlap", action="store_true", help="If specified, we will trigger immediately after the previous frame's exposure time finishes (instead of waiting for the previous frame to arrive)")
 
     parsed_args = ap.parse_args()
 
