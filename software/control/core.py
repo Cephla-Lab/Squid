@@ -1,14 +1,14 @@
 # set QT_API environment variable
+from collections import deque
 import os
-import sys
+import pydantic
+from typing import Any, Optional
 
 # qt libraries
 os.environ["QT_API"] = "pyqt5"
-import qtpy
 import pyqtgraph as pg
 from qtpy.QtCore import *
 from qtpy.QtWidgets import *
-from qtpy.QtGui import *
 
 # control
 from control._def import *
@@ -17,7 +17,6 @@ if DO_FLUORESCENCE_RTP:
     from control.processing_pipeline import *
     from control.multipoint_built_in_functionalities import malaria_rtp
 
-import control.utils as utils
 import control.utils_config as utils_config
 import control.tracking as tracking
 import control.serial_peripherals as serial_peripherals
@@ -33,12 +32,9 @@ from threading import Thread, Lock
 from pathlib import Path
 from datetime import datetime
 import time
-import subprocess
-import shutil
 from lxml import etree
 import json
 import math
-import random
 import numpy as np
 import pandas as pd
 import scipy.signal
@@ -431,6 +427,7 @@ class Configuration:
 class LiveController(QObject):
     def __init__(self,camera,microcontroller,configurationManager,parent=None,control_illumination=True,use_internal_timer_for_hardware_trigger=True,for_displacement_measurement=False):
         QObject.__init__(self)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope = parent
         self.camera = camera
         self.microcontroller = microcontroller
@@ -654,7 +651,6 @@ class LiveController(QObject):
         if mode == TriggerMode.HARDWARE:
             if self.trigger_mode == TriggerMode.SOFTWARE and self.is_live:
                 self._stop_triggerred_acquisition()
-            # self.camera.reset_camera_acquisition_counter()
             self.camera.set_hardware_triggered_acquisition()
             self.reset_strobe_arugment()
             self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
@@ -676,7 +672,7 @@ class LiveController(QObject):
     def set_microscope_mode(self,configuration):
 
         self.currentConfiguration = configuration
-        print("setting microscope mode to " + self.currentConfiguration.name)
+        # self._log.debug("setting microscope mode to " + self.currentConfiguration.name)
 
         # temporarily stop live while changing mode
         if self.is_live is True:
@@ -1675,6 +1671,7 @@ class MultiPointWorker(QObject):
 
     def __init__(self,multiPointController):
         QObject.__init__(self)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.multiPointController = multiPointController
 
         self.signal_update_stats.connect(self.update_stats)
@@ -1716,6 +1713,7 @@ class MultiPointWorker(QObject):
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
+        self._this_acquisition_save_image_count = 0
         if self.multiPointController.coordinate_dict is not None:
             self.coordinate_dict = self.multiPointController.coordinate_dict.copy()
         else:
@@ -1826,8 +1824,6 @@ class MultiPointWorker(QObject):
         current_path = os.path.join(self.base_path,self.experiment_ID,str(self.time_point))
         os.mkdir(current_path)
 
-        slide_path = os.path.join(self.base_path, self.experiment_ID)
-
         # create a dataframe to save coordinates
         self.initialize_coordinates_dataframe()
 
@@ -1840,8 +1836,6 @@ class MultiPointWorker(QObject):
         self.coordinates_pd.to_csv(os.path.join(current_path,'coordinates.csv'),index=False,header=True)
         utils.create_done_file(current_path)
         self.navigationController.enable_joystick_button_action = True
-        print(time.time())
-        print(time.time()-start)
 
     def initialize_z_stack(self):
         self.count_rtp = 0
@@ -1950,6 +1944,36 @@ class MultiPointWorker(QObject):
     def run_coordinate_acquisition(self, current_path):
         n_regions = len(self.scan_coordinates_mm)
 
+        self._this_acquisition_save_image_count = 0
+        # This is the queue that we'll push an "expected capture" onto every time we
+        # trigger a capture at a location.  Then we'll match these 1-1 to images that
+        # stream in from the camera.
+        expected_capture_queue = deque()
+        # NOTE(imo): For now, all we do with the output queue is use it to check that
+        # all the images we expected made it through processing.
+        image_processing_output_queue = deque()
+
+        # There might be something else hooked up to the callback mechanism.  Make sure we
+        # can restore the camera to how it was before.
+        previous_camera_callback = self.camera.new_image_callback_external
+        previous_camera_streaming = self.camera.is_streaming
+        previous_callback_enabled = self.camera.callback_is_enabled
+        def cleanup_acquisition():
+            self.camera.set_callback(previous_camera_callback)
+            if previous_callback_enabled:
+                self.camera.enable_callback()
+            else:
+                self.camera.disable_callback()
+            if previous_camera_streaming:
+                self.camera.start_streaming()
+            else:
+                self.camera.stop_streaming()
+
+        streaming_callback = self.get_image_processor_fn(expected_capture_queue, image_processing_output_queue)
+        self.camera.set_callback(streaming_callback)
+        self.camera.enable_callback()
+        self.camera.start_streaming()
+        self.time_stats = {"coord_times": [], "move_times": [], "acquire_times": []}
         for region_index, (region_id, coordinates) in enumerate(self.coordinate_dict.items()):
 
             self.signal_acquisition_progress.emit(region_index + 1, n_regions, self.time_point)
@@ -1958,16 +1982,131 @@ class MultiPointWorker(QObject):
             self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
 
             for fov_count, coordinate_mm in enumerate(coordinates):
-
+                coord_start = time.time()
+                move_start = time.time()
                 self.move_to_coordinate(coordinate_mm)
-                self.acquire_at_position(region_id, current_path, fov_count)
-
+                self.time_stats["move_times"].append(time.time() - move_start)
+                acquire_start = time.time()
+                self.acquire_at_position(region_id, current_path, fov_count, expected_capture_queue)
+                self.time_stats["acquire_times"].append(time.time() - acquire_start)
                 if self.multiPointController.abort_acqusition_requested:
                     self.handle_acquisition_abort(current_path, region_id)
+                    cleanup_acquisition()
                     return
+                self.time_stats["coord_times"].append(time.time() - coord_start)
 
-    def acquire_at_position(self, region_id, current_path, fov, i=None, j=None):
+        # Wait for a few frames worth of time to make sure we receive and process the last image.
+        #
+        # TODO(imo): We have no established way of telling the caller that the acquisition failed.
+        # We need to define some way of defining failed acquisitions.
+        last_frame_wait_time_s = 0.1 + 3 * self.camera.get_full_frame_time() / 1000
+        last_frame_timeout_time = time.time() + last_frame_wait_time_s
+        while time.time() < last_frame_timeout_time and not self.camera.is_ready_for_trigger():
+            time.sleep(0.001)
 
+        if not self.camera.is_ready_for_trigger():
+            self._log.error("Acquisition failed waiting for the last image to arrive!")
+            # For now, just continue on...
+
+        self._log.info(self.camera.get_settings_summary())
+        self._log.info(self.time_stats)
+        self._log.info(f"After acquisition, {len(image_processing_output_queue)} images are in the processing queue.  And there are {len(expected_capture_queue)} left in the streaming camera queue.")
+        self._log.info(f"The acquisition had {len(coordinates)} coordinates, and we expected {self.total_scans} images.")
+        self._log.info(f"save_image was called {self._this_acquisition_save_image_count} times.")
+
+        cleanup_acquisition()
+
+
+    def get_image_processor_fn(self, expected_capture_queue: deque, image_processing_output_queue: deque):
+        log = squid.logging.get_logger("core.streaming_camera_cb")
+
+        # This is for handling incoming RGB images.  We use (i,j,k) as a key since that's unique per capture
+        # position, and then each local_rgb_images[(i,j,k)] contains a dict of config name -> image.
+        #
+        # In the case of an RGB capture that results in a 3 channel image, that image will be under
+        # the 'BF LED matrix full_R' config name and will have 3 channels.  If we get one of those, we process it
+        # and then assume that's it for that RGB capture.  If we get single channel images, then we wait for all
+        # 3 RGB channels (as monochrome images) and process those after receiving all 3.
+        local_rgb_images = {}
+        RED_CHANNEL = 'BF LED matrix full_R'
+        BLUE_CHANNEL = 'BF LED matrix full_B'
+        GREEN_CHANNEL = 'BF LED matrix full_G'
+        last_time = 0
+        def streaming_camera_cb(camera):
+            nonlocal last_time
+            nonlocal local_rgb_images
+            # NOTE/WARNING(imo): We don't have any locks on the camera, so information in self.camera (eg: the image,
+            # the frame id, anything) could change on us in here.
+            expected_cnt = len(expected_capture_queue)
+            processed_cnt = len(image_processing_output_queue)
+            try:
+                next_expected = expected_capture_queue.popleft()
+            except IndexError:
+                log.debug("Not expecting captures, but got a frame.  Skipping.")
+                return
+
+            if next_expected.trigger_time >= camera.timestamp:
+                log.warning(f"trigger time={next_expected.trigger_time} is >= camera capture timestamp={camera.timestamp}, trigger is in the future! skipping frame.")
+                return
+
+            file_id = next_expected.file_id
+            current_path = next_expected.current_path
+            config = next_expected.config
+            i = next_expected.i
+            j = next_expected.j
+            k = next_expected.k
+            trigger_time = next_expected.trigger_time
+
+            # log.debug(
+            #     f"(e={len(expected_capture_queue)}, p={len(image_processing_output_queue)}) Received image frame for file={current_path}, " +
+            #     f"file_id={file_id}, (i,j,k)=({i},{j},{k}), trigger_time={trigger_time}, camera frame timestamp={camera.timestamp}, frame id={camera.frame_ID}")
+
+            # now = time.time()
+            # time_delta = now - last_time
+            # log.debug(f"image processor: dt={time_delta}, e={expected_cnt}, p={processed_cnt}")
+            # last_time = now
+
+            image = camera.current_frame
+
+            if not next_expected.is_rgb:
+                image = utils.crop_image(image,self.crop_width,self.crop_height)
+                image = utils.rotate_and_flip_image(image,rotate_image_angle=self.camera.rotate_image_angle,flip_image=self.camera.flip_image)
+                image_to_display = utils.crop_image(image,round(self.crop_width*self.display_resolution_scaling), round(self.crop_height*self.display_resolution_scaling))
+                self.image_to_display.emit(image_to_display)
+                self.image_to_display_multi.emit(image_to_display,next_expected.config.illumination_source)
+
+                self.save_image(image, next_expected.file_id, next_expected.config, next_expected.current_path)
+                self.update_napari(image, next_expected.config.name, next_expected.i, next_expected.j, next_expected.k, next_expected.x_mm, next_expected.y_mm)
+            else:
+                # Check if the image is RGB or monochrome
+                capture_loc_and_channel_key = (i, j, k, file_id, current_path)
+                local_rgb_images.setdefault(capture_loc_and_channel_key, {})
+                this_images = local_rgb_images[capture_loc_and_channel_key]
+
+                if next_expected.config in this_images:
+                    log.warn(f"Received duplicate RGB channel {next_expected.config} for capture {capture_loc_and_channel_key}, assuming capture is bad and throwing it out.")
+                    del local_rgb_images[capture_loc_and_channel_key]
+                elif RED_CHANNEL in this_images and len(this_images[RED_CHANNEL].shape) == 3:
+                    log.debug(f"Received RGB red image with 3 channels, assuming it is actually a full RGB image and processing it (capture={capture_loc_and_channel_key}).")
+                    self.handle_rgb_channels(this_images, file_id, current_path, config, i, j, k, next_expected.x_mm, next_expected.y_mm)
+                    del local_rgb_images[capture_loc_and_channel_key]
+                elif RED_CHANNEL in this_images and BLUE_CHANNEL in this_images and GREEN_CHANNEL in this_images:
+                    log.debug(f"Received 3 RGB channels for capture={capture_loc_and_channel_key}, proceesing them!")
+                    self.construct_rgb_image(this_images, file_id, current_path, config, i, j, k, next_expected.x_mm, next_expected.y_mm)
+                    del local_rgb_images[capture_loc_and_channel_key]
+                elif len(this_images) >= 3:
+                    log.warn(f"Received 3+ channels for RGB capture={capture_loc_and_channel_key}, but do not have R,G,B channels. Something is wrong. Tossing capture!")
+                    del local_rgb_images[capture_loc_and_channel_key]
+                # else, we're waiting for more channels so do nothing.
+
+            QApplication.processEvents()
+
+            # Signal that we successfully processed this image.
+            image_processing_output_queue.append(next_expected)
+
+        return streaming_camera_cb
+
+    def acquire_at_position(self, region_id, current_path, fov, streaming_camera_queue, i=None, j=None):
         if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in globals():
             print('run custom multipoint')
             multipoint_custom_script_entry(self, current_path, region_id, fov, i, j)
@@ -1983,9 +2122,6 @@ class MultiPointWorker(QObject):
         else:
             coordinate_name = self.scan_coordinates_name[region_id]
 
-        x_mm = self.navigationController.x_pos_mm
-        y_mm = self.navigationController.y_pos_mm
-
         for z_level in range(self.NZ):
             if i is not None and j is not None:
                 file_ID = f"{coordinate_name}_{i}_{j}_{z_level}"
@@ -1993,7 +2129,7 @@ class MultiPointWorker(QObject):
                 file_ID = f"{coordinate_name}_{fov}_{z_level}"
 
             metadata = dict(x = self.navigationController.x_pos_mm, y = self.navigationController.y_pos_mm, z = self.navigationController.z_pos_mm)
-            print(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
+            print(f"Acquiring images: ID={file_ID}, Metadata={metadata}")
 
             # laser af characterization mode
             if LASER_AF_CHARACTERIZATION_MODE:
@@ -2001,7 +2137,6 @@ class MultiPointWorker(QObject):
                 saving_path = os.path.join(current_path, file_ID + '_laser af camera' + '.bmp')
                 iio.imwrite(saving_path,image)
 
-            current_round_images = {}
             # iterate through selected modes
             for config_idx, config in enumerate(self.selected_configurations):
 
@@ -2009,9 +2144,10 @@ class MultiPointWorker(QObject):
 
                 # acquire image
                 if 'USB Spectrometer' not in config.name and 'RGB' not in config.name:
-                    self.acquire_camera_image(config, file_ID, current_path, current_round_images, i, j, z_level)
+                    # TODO(imo): current round images used in master here                    
+                    self.acquire_camera_image(config, file_ID, current_path, i, j, z_level, False, streaming_camera_queue)
                 elif 'RGB' in config.name:
-                    self.acquire_rgb_image(config, file_ID, current_path, current_round_images, i, j, z_level)
+                    self.acquire_rgb_image(config, file_ID, current_path, i, j, z_level, streaming_camera_queue)
                 else:
                     self.acquire_spectrometer_data(config, file_ID, current_path, i, j, z_level)
 
@@ -2019,31 +2155,6 @@ class MultiPointWorker(QObject):
 
                 current_image = (fov * self.NZ * len(self.selected_configurations) + z_level * len(self.selected_configurations) + config_idx + 1)
                 self.signal_region_progress.emit(current_image, self.total_scans)
-
-            '''
-            # tiled preview
-            if not USE_NAPARI_FOR_TILED_DISPLAY and SHOW_TILED_PREVIEW and 'BF LED matrix left half' in current_round_images:
-                # initialize the variable
-                if self.tiled_preview is None:
-                    size = current_round_images['BF LED matrix left half'].shape
-                    if len(size) == 2:
-                        self.tiled_preview = np.zeros((int(self.NY*size[0]/PRVIEW_DOWNSAMPLE_FACTOR),self.NX*int(size[1]/PRVIEW_DOWNSAMPLE_FACTOR)),dtype=current_round_images['BF LED matrix full'].dtype)
-                    else:
-                        self.tiled_preview = np.zeros((int(self.NY*size[0]/PRVIEW_DOWNSAMPLE_FACTOR),self.NX*int(size[1]/PRVIEW_DOWNSAMPLE_FACTOR),size[2]),dtype=current_round_images['BF LED matrix full'].dtype)
-                # downsample the image
-                I = current_round_images['BF LED matrix left half']
-                width = int(I.shape[1]/PRVIEW_DOWNSAMPLE_FACTOR)
-                height = int(I.shape[0]/PRVIEW_DOWNSAMPLE_FACTOR)
-                I = cv2.resize(I, (width,height), interpolation=cv2.INTER_AREA)
-                # populate the tiled_preview
-                self.tiled_preview[i*height:(i+1)*height, j*width:(j+1)*width, ] = I
-                # emit the result
-                self.image_to_display_tiled_preview.emit(self.tiled_preview)
-            '''
-
-            # real time processing
-            if self.multiPointController.do_fluorescence_rtp:
-                self.run_real_time_processing(current_round_images, i, j, z_level)
 
             # updates coordinates df
             if i is None or j is None:
@@ -2066,27 +2177,7 @@ class MultiPointWorker(QObject):
         if self.NZ > 1:
             self.move_z_back_after_stack()
 
-    def run_real_time_processing(self, current_round_images, i, j, z_level):
-        acquired_image_configs = list(current_round_images.keys())
-        if 'BF LED matrix left half' in current_round_images and 'BF LED matrix right half' in current_round_images and 'Fluorescence 405 nm Ex' in current_round_images:
-            try:
-                print("real time processing", self.count_rtp)
-                if (self.microscope.model is None) or (self.microscope.device is None) or (self.microscope.classification_th is None) or (self.microscope.dataHandler is None):
-                    raise AttributeError('microscope missing model, device, classification_th, and/or dataHandler')
-                I_fluorescence = current_round_images['Fluorescence 405 nm Ex']
-                I_left = current_round_images['BF LED matrix left half']
-                I_right = current_round_images['BF LED matrix right half']
-                if len(I_left.shape) == 3:
-                    I_left = cv2.cvtColor(I_left,cv2.COLOR_RGB2GRAY)
-                if len(I_right.shape) == 3:
-                    I_right = cv2.cvtColor(I_right,cv2.COLOR_RGB2GRAY)
-                malaria_rtp(I_fluorescence, I_left, I_right, i, j, z_level, self,
-                            classification_test_mode=self.microscope.classification_test_mode,
-                            sort_during_multipoint=SORT_DURING_MULTIPOINT,
-                            disp_th_during_multipoint=DISP_TH_DURING_MULTIPOINT)
-                self.count_rtp += 1
-            except AttributeError as e:
-                print(repr(e))
+        QApplication.processEvents()
 
     def perform_autofocus(self, region_id):
         if self.do_reflection_af == False:
@@ -2166,102 +2257,89 @@ class MultiPointWorker(QObject):
                 self.wait_till_operation_is_completed()
                 time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
 
-    def acquire_camera_image(self, config, file_ID, current_path, current_round_images, i, j, k):
+    class ExpectedCameraImage(pydantic.BaseModel):
+        config: Any
+        file_id: Any
+        current_path: str
+        i: Optional[int]
+        j: Optional[int]
+        k: Optional[int]
+        # Capture time in [s], as if grabbed from time.time()
+        trigger_time: float
+
+        # Indicates if this is an image that may only be 1 channel of an RGB capture
+        is_rgb: bool
+
+        # The capture position, in mm, of this image
+        x_mm: float
+        y_mm: float
+
+    def acquire_camera_image(self, config, file_ID, current_path, i, j, k, is_rgb, streaming_camera_queue):
         # update the current configuration
         self.signal_current_configuration.emit(config)
         self.wait_till_operation_is_completed()
+        x_mm = self.navigationController.x_pos_mm
+        y_mm = self.navigationController.y_pos_mm
 
-        # trigger acquisition (including turning on the illumination) and read frame
+        exposure_time_ms = self.camera.exposure_time
+        exposure_time_usec = exposure_time_ms * 1000
+        time_right_before_trigger_sec = time.time()
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_on_illumination()
             self.wait_till_operation_is_completed()
             self.camera.send_trigger()
-            image = self.camera.read_frame()
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-            if 'Fluorescence' in config.name and ENABLE_NL5 and NL5_USE_DOUT:
-                self.camera.image_is_ready = False # to remove
-                self.microscope.nl5.start_acquisition()
-                image = self.camera.read_frame(reset_image_ready_flag=False)
-            else:
-                self.microcontroller.send_hardware_trigger(control_illumination=True,illumination_on_time_us=self.camera.exposure_time*1000)
-                image = self.camera.read_frame()
-        else: # continuous acquisition
-            image = self.camera.read_frame()
+            # Arbitrarily use 10 x the full frame time as a timeout, and add a 250ms offset so we
+            # don't get too small with small frame times.
+            trigger_timeout = (250 + 10 * self.camera.get_full_frame_time()) / 1000.0
+            timeout_time = time.time() + trigger_timeout
+            while not self.camera.is_ready_for_trigger():
+                if time.time() > timeout_time:
+                    raise TimeoutError(f"Timed out waiting for image acquisition. {timeout_time} [s] timeout.")
+                time.sleep(0.001)
+            self.camera.mark_triggered()
+            self.microcontroller.send_hardware_trigger(control_illumination=True, illumination_on_time_us=exposure_time_usec)
+            self.microcontroller.wait_till_operation_is_completed()
 
-        if image is None:
-            print('self.camera.read_frame() returned None')
-            return
+        # At this point, we've setup the illumination and either sent a HW trigger to the camera to capture a frame or
+        # told the camera to capture a frame.  As our "trigger_time", we use the time right before doing this so that
+        # we're guaranteed that the actual incoming image time is > trigger_time.
+        streaming_camera_queue.append(self.ExpectedCameraImage(
+            config=config,
+            file_id=file_ID,
+            current_path=current_path,
+            i=i,
+            j=j,
+            k=k,
+            trigger_time=time_right_before_trigger_sec,
+            is_rgb=is_rgb,
+            x_mm=x_mm,
+            y_mm=y_mm))
 
-        # turn off the illumination if using software trigger
-        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-            self.liveController.turn_off_illumination()
-
-        # process the image -  @@@ to move to camera
-        image = utils.crop_image(image,self.crop_width,self.crop_height)
-        image = utils.rotate_and_flip_image(image,rotate_image_angle=self.camera.rotate_image_angle,flip_image=self.camera.flip_image)
-        image_to_display = utils.crop_image(image,round(self.crop_width*self.display_resolution_scaling), round(self.crop_height*self.display_resolution_scaling))
-        self.image_to_display.emit(image_to_display)
-        self.image_to_display_multi.emit(image_to_display,config.illumination_source)
-
-        self.save_image(image, file_ID, config, current_path)
-        self.update_napari(image, config.name, i, j, k)
-
-        current_round_images[config.name] = np.copy(image)
-
-        self.handle_dpc_generation(current_round_images)
-        self.handle_rgb_generation(current_round_images, file_ID, current_path, i, j, k)
+        # To make sure we actually get our image at this location, we sleep for exposure time here.  Otherwise if we
+        # return, the caller might immediately go move somewhere.  It is important that we send the ExpectedCameraImage
+        # out to the queue first, though, just in case the image comes back before this sleep finishes.  If there's
+        # no ExpectedCameraImage waiting when the image arrives, it'll be tossed!
+        # NOTE/TODO(imo): We could potentially call processEvents first, then sleep whatever time is remaining of
+        # the exposure by checking current time against time_right_before_trigger_sec
+        #
+        # WARNING/NOTE(imo): Right now, it appears that the toupcam external trigger needs exposure time + 30ms between
+        # hardware triggers to work properly.  See the hack above to make sure we have at least exposure + 30ms between
+        # hardware triggers.
+        #
+        # See https://linear.app/cephla/issue/S-83/2x-acquisition-performance for context
+        time.sleep(self.camera.get_full_frame_time() / 1000.0)
 
         QApplication.processEvents()
 
-    def acquire_rgb_image(self, config, file_ID, current_path, current_round_images, i, j, k):
+    def acquire_rgb_image(self, config, file_ID, current_path, i, j, k, streaming_camera_queue):
         # go through the channels
         rgb_channels = ['BF LED matrix full_R', 'BF LED matrix full_G', 'BF LED matrix full_B']
         images = {}
 
         for config_ in self.configurationManager.configurations:
             if config_.name in rgb_channels:
-                # update the current configuration
-                self.signal_current_configuration.emit(config_)
-                self.wait_till_operation_is_completed()
-
-                # trigger acquisition (including turning on the illumination)
-                if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-                    self.liveController.turn_on_illumination()
-                    self.wait_till_operation_is_completed()
-                    self.camera.send_trigger()
-
-                elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-                    self.microcontroller.send_hardware_trigger(control_illumination=True, illumination_on_time_us=self.camera.exposure_time * 1000)
-
-                # read camera frame
-                image = self.camera.read_frame()
-                if image is None:
-                    print('self.camera.read_frame() returned None')
-                    continue
-
-                # turn off the illumination if using software trigger
-                if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-                    self.liveController.turn_off_illumination()
-
-                # process the image  -  @@@ to move to camera
-                image = utils.crop_image(image, self.crop_width, self.crop_height)
-                image = utils.rotate_and_flip_image(image, rotate_image_angle=self.camera.rotate_image_angle, flip_image=self.camera.flip_image)
-
-                # add the image to dictionary
-                images[config_.name] = np.copy(image)
-
-        # Check if the image is RGB or monochrome
-        i_size = images['BF LED matrix full_R'].shape
-        i_dtype = images['BF LED matrix full_R'].dtype
-
-        if len(i_size) == 3:
-            # If already RGB, write and emit individual channels
-            print('writing R, G, B channels')
-            self.handle_rgb_channels(images, file_ID, current_path, config, i, j, k)
-        else:
-            # If monochrome, reconstruct RGB image
-            print('constructing RGB image')
-            self.construct_rgb_image(images, file_ID, current_path, config, i, j, k)
+                self.acquire_camera_image(config_, file_ID, current_path, i, j, k, True, streaming_camera_queue)
 
     def acquire_spectrometer_data(self, config, file_ID, current_path):
         if self.usb_spectrometer != None:
@@ -2290,6 +2368,7 @@ class MultiPointWorker(QObject):
         if Acquisition.MERGE_CHANNELS:
             self._save_merged_image(image, file_ID, current_path)
 
+        self._this_acquisition_save_image_count += 1
         iio.imwrite(saving_path,image)
 
     def _save_merged_image(self, image, file_ID, current_path):
@@ -2330,11 +2409,10 @@ class MultiPointWorker(QObject):
         rgb = np.stack([image] * 3, axis=-1) * rgb_ratios
         return rgb.astype(image.dtype)
 
-    def update_napari(self, image, config_name, i, j, k):
+    def update_napari(self, image, config_name, i, j, k, x_mm, y_mm):
         if not self.performance_mode:
             i = -1 if i is None else i
             j = -1 if j is None else j
-            print("update napari:", i, j, k, config_name)
 
             if USE_NAPARI_FOR_MULTIPOINT or USE_NAPARI_FOR_TILED_DISPLAY:
                 if not self.init_napari_layers:
@@ -2343,8 +2421,8 @@ class MultiPointWorker(QObject):
                     self.napari_layers_init.emit(image.shape[0],image.shape[1], image.dtype)
                 self.napari_layers_update.emit(image, i, j, k, config_name)
             if USE_NAPARI_FOR_MOSAIC_DISPLAY and k == 0:
-                print(f"Updating mosaic layers: x={self.navigationController.x_pos_mm:.6f}, y={self.navigationController.y_pos_mm:.6f}")
-                self.napari_mosaic_update.emit(image, self.navigationController.x_pos_mm, self.navigationController.y_pos_mm, k, config_name)
+                # print(f"Updating mosaic layers: x={x_mm:.6f}, y={y_mm:.6f}")
+                self.napari_mosaic_update.emit(image, x_mm, y_mm, k, config_name)
 
     def handle_dpc_generation(self, current_round_images):
         keys_to_check = ['BF LED matrix left half', 'BF LED matrix right half', 'BF LED matrix top half', 'BF LED matrix bottom half']
@@ -2375,18 +2453,18 @@ class MultiPointWorker(QObject):
                 else:
                     iio.imwrite(os.path.join(current_path, file_ID + '_BF_LED_matrix_full_RGB.' + Acquisition.IMAGE_FORMAT),rgb_image)
 
-    def handle_rgb_channels(self, images, file_ID, current_path, config, i, j, k):
+    def handle_rgb_channels(self, images, file_ID, current_path, config, i, j, k, x_mm, y_mm):
         for channel in ['BF LED matrix full_R', 'BF LED matrix full_G', 'BF LED matrix full_B']:
             image_to_display = utils.crop_image(images[channel], round(self.crop_width * self.display_resolution_scaling), round(self.crop_height * self.display_resolution_scaling))
             self.image_to_display.emit(image_to_display)
             self.image_to_display_multi.emit(image_to_display, config.illumination_source)
 
-            self.update_napari(images[channel], channel, i, j, k)
+            self.update_napari(images[channel], channel, i, j, k, x_mm, y_mm)
 
             file_name = file_ID + '_' + channel.replace(' ', '_') + ('.tiff' if images[channel].dtype == np.uint16 else '.' + Acquisition.IMAGE_FORMAT)
             iio.imwrite(os.path.join(current_path, file_name), images[channel])
 
-    def construct_rgb_image(self, images, file_ID, current_path, config, i, j, k):
+    def construct_rgb_image(self, images, file_ID, current_path, config, i, j, k, x_mm, y_mm):
         rgb_image = np.zeros((*images['BF LED matrix full_R'].shape, 3), dtype=images['BF LED matrix full_R'].dtype)
         rgb_image[:, :, 0] = images['BF LED matrix full_R']
         rgb_image[:, :, 1] = images['BF LED matrix full_G']
@@ -2397,7 +2475,7 @@ class MultiPointWorker(QObject):
         self.image_to_display.emit(image_to_display)
         self.image_to_display_multi.emit(image_to_display, config.illumination_source)
 
-        self.update_napari(rgb_image, config.name, i, j, k)
+        self.update_napari(rgb_image, config.name, i, j, k, x_mm, y_mm)
 
         # write the RGB image
         print('writing RGB image')
