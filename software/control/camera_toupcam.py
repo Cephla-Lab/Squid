@@ -9,7 +9,7 @@ import threading
 import control.toupcam as toupcam
 from control.toupcam import HRESULTException
 from control.toupcam_exceptions import hresult_checker
-from control.camera import WithTriggerMarking
+from control.camera import WithTriggerMarking, BaseCamera
 
 log = squid.logging.get_logger(__name__)
 
@@ -25,7 +25,7 @@ def get_sn_by_model(model_name):
     return None # return None if no device with the specified model_name is connected
 
 
-class Camera(control.camera.BaseCamera, WithTriggerMarking):
+class Camera(BaseCamera, WithTriggerMarking):
     @staticmethod
     def _event_callback(nEvent, camera):
         if nEvent == toupcam.TOUPCAM_EVENT_IMAGE:
