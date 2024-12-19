@@ -9,6 +9,7 @@ import threading
 import control.toupcam as toupcam
 from control.toupcam import HRESULTException
 from control.toupcam_exceptions import hresult_checker
+from control.camera import CameraWithTriggerMarking
 
 log = squid.logging.get_logger(__name__)
 
@@ -24,8 +25,7 @@ def get_sn_by_model(model_name):
     return None # return None if no device with the specified model_name is connected
 
 
-class Camera(object):
-
+class Camera(CameraWithTriggerMarking):
     @staticmethod
     def _event_callback(nEvent, camera):
         if nEvent == toupcam.TOUPCAM_EVENT_IMAGE:
@@ -81,6 +81,7 @@ class Camera(object):
         return (w * 24 + 31) // 32 * 4
 
     def __init__(self,sn=None,resolution=(3104,2084),is_global_shutter=False,rotate_image_angle=None,flip_image=None):
+        super().__init__()
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
         # many to be purged
@@ -258,33 +259,6 @@ class Camera(object):
             pass
 
         self.thread_read_temperature.start()
-
-    def mark_ready_for_next_trigger(self):
-        """
-        This is a hack to keep trigger + receive in lockstep.  You must check that is_ready_for_trigger() is True before
-        sending a trigger, and must call mark_triggered() when you send an external HW signal.
-
-        We can remove this when we figure out how to capture in parallel.
-        """
-        self._ready_for_next_trigger = True
-
-    def is_ready_for_trigger(self):
-        """
-        When streaming and using external triggers, this can be checked to see if the last image we
-        triggered (signaled via mark_triggered()) has been fully captured.  Note that this being
-        true only means the camera told us the image is ready, not that we have the image.
-        """
-        return self._ready_for_next_trigger
-
-    def mark_triggered(self):
-        """
-        When streaming and using external triggers, you must call this to mark when you've sent
-        a hardware trigger.  And it is only okay to send an external trigger if is_ready_for_trigger()
-        is true.
-        """
-        if not self.is_streaming:
-            self.log.warning("Marking trigger does nothing if not streaming.")
-        self._ready_for_next_trigger = False
 
     def set_callback(self,function):
         self.new_image_callback_external = function

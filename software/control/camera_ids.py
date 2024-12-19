@@ -2,6 +2,7 @@ import time
 import numpy as np
 import threading
 
+import control.camera
 from control._def import *
 
 from ids_peak import ids_peak
@@ -35,8 +36,9 @@ def get_sn_by_model(model_name):
     return None
 
 
-class Camera(object):
+class Camera(control.camera.CameraWithTriggerMarking):
     def __init__(self, sn=None, resolution=(1920,1080), is_global_shutter=False, rotate_image_angle=None, flip_image=None):
+        super().__init__()
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
         ids_peak.Library.Initialize()

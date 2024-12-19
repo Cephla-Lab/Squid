@@ -2,16 +2,13 @@
 from collections import deque
 import os
 import pydantic
-import sys
 from typing import Any, Optional
 
 # qt libraries
 os.environ["QT_API"] = "pyqt5"
-import qtpy
 import pyqtgraph as pg
 from qtpy.QtCore import *
 from qtpy.QtWidgets import *
-from qtpy.QtGui import *
 
 # control
 from control._def import *
@@ -20,7 +17,6 @@ if DO_FLUORESCENCE_RTP:
     from control.processing_pipeline import *
     from control.multipoint_built_in_functionalities import malaria_rtp
 
-import control.utils as utils
 import control.utils_config as utils_config
 import control.tracking as tracking
 import control.serial_peripherals as serial_peripherals
@@ -36,12 +32,9 @@ from threading import Thread, Lock
 from pathlib import Path
 from datetime import datetime
 import time
-import subprocess
-import shutil
 from lxml import etree
 import json
 import math
-import random
 import numpy as np
 import pandas as pd
 import scipy.signal
@@ -658,8 +651,6 @@ class LiveController(QObject):
         if mode == TriggerMode.HARDWARE:
             if self.trigger_mode == TriggerMode.SOFTWARE and self.is_live:
                 self._stop_triggerred_acquisition()
-            # self.camera.reset_camera_acquisition_counter()
-            # set_hardware_triggered_acquisition
             self.camera.set_hardware_triggered_acquisition()
             self.reset_strobe_arugment()
             self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
@@ -1833,8 +1824,6 @@ class MultiPointWorker(QObject):
         current_path = os.path.join(self.base_path,self.experiment_ID,str(self.time_point))
         os.mkdir(current_path)
 
-        slide_path = os.path.join(self.base_path, self.experiment_ID)
-
         # create a dataframe to save coordinates
         self.initialize_coordinates_dataframe()
 
@@ -1847,8 +1836,6 @@ class MultiPointWorker(QObject):
         self.coordinates_pd.to_csv(os.path.join(current_path,'coordinates.csv'),index=False,header=True)
         utils.create_done_file(current_path)
         self.navigationController.enable_joystick_button_action = True
-        print(time.time())
-        print(time.time()-start)
 
     def initialize_z_stack(self):
         self.count_rtp = 0
@@ -1958,9 +1945,14 @@ class MultiPointWorker(QObject):
         n_regions = len(self.scan_coordinates_mm)
 
         self._this_acquisition_save_image_count = 0
-        streaming_camera_queue = deque()
+        # This is the queue that we'll push an "expected capture" onto every time we
+        # trigger a capture at a location.  Then we'll match these 1-1 to images that
+        # stream in from the camera.
+        expected_capture_queue = deque()
+        # NOTE(imo): For now, all we do with the output queue is use it to check that
+        # all the images we expected made it through processing.
         image_processing_output_queue = deque()
-        streaming_callback = self.get_image_processor_fn(streaming_camera_queue, image_processing_output_queue)
+        streaming_callback = self.get_image_processor_fn(expected_capture_queue, image_processing_output_queue)
         self.camera.set_callback(streaming_callback)
         self.camera.enable_callback()
         self.camera.start_streaming()
@@ -1978,22 +1970,29 @@ class MultiPointWorker(QObject):
                 self.move_to_coordinate(coordinate_mm)
                 self.time_stats["move_times"].append(time.time() - move_start)
                 acquire_start = time.time()
-                self.acquire_at_position(region_id, current_path, fov_count, streaming_camera_queue)
+                self.acquire_at_position(region_id, current_path, fov_count, expected_capture_queue)
                 self.time_stats["acquire_times"].append(time.time() - acquire_start)
                 if self.multiPointController.abort_acqusition_requested:
                     self.handle_acquisition_abort(current_path, region_id)
                     return
                 self.time_stats["coord_times"].append(time.time() - coord_start)
 
-        # Sleep for a few frames worth of time to make sure we receive and process the last image.
+        # Wait for a few frames worth of time to make sure we receive and process the last image.
         #
-        # TODO(imo): It'd be better to check for trigger readiness, and make sure the processed count is
-        # what we expect here.
-        time.sleep(0.1 + 3 * self.camera.get_full_frame_time() / 1000)
+        # TODO(imo): We have no established way of telling the caller that the acquisition failed.
+        # We need to define some way of defining failed acquisitions.
+        last_frame_wait_time_s = 0.1 + 3 * self.camera.get_full_frame_time() / 1000
+        last_frame_timeout_time = time.time() + last_frame_wait_time_s
+        while time.time() < last_frame_timeout_time and not self.camera.is_ready_for_trigger():
+            time.sleep(0.001)
+
+        if not self.camera.is_ready_for_trigger():
+            self._log.error("Acquisition failed waiting for the last image to arrive!")
+            # For now, just continue on...
 
         self._log.info(self.camera.get_settings_summary())
         self._log.info(self.time_stats)
-        self._log.info(f"After acquisition, {len(image_processing_output_queue)} images are in the processing queue.  And there are {len(streaming_camera_queue)} left in the streaming camera queue.")
+        self._log.info(f"After acquisition, {len(image_processing_output_queue)} images are in the processing queue.  And there are {len(expected_capture_queue)} left in the streaming camera queue.")
         self._log.info(f"The acquisition had {len(coordinates)} coordinates, and we expected {self.total_scans} images.")
         self._log.info(f"save_image was called {self._this_acquisition_save_image_count} times.")
 
@@ -2272,7 +2271,6 @@ class MultiPointWorker(QObject):
         exposure_time_ms = self.camera.exposure_time
         exposure_time_usec = exposure_time_ms * 1000
         time_right_before_trigger_sec = time.time()
-        existing_camera_timestamp = self.camera.timestamp
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_on_illumination()
             self.wait_till_operation_is_completed()

@@ -2,6 +2,9 @@ import argparse
 import cv2
 import time
 import numpy as np
+
+import squid.logging
+
 try:
     import control.gxipy as gx
 except:
@@ -20,6 +23,50 @@ def get_sn_by_model(model_name):
             if device_info_list[i]['model_name'] == model_name:
                 return device_info_list[i]['sn']
     return None # return None if no device with the specified model_name is connected
+
+class CameraWithTriggerMarking:
+    """
+    When we are using external triggering, we need some mechanism for signaling to the external
+    trigger mechanism that the camera is ready for another trigger.  This is that mechanism.
+
+    In camera implementations, you should use `mark_ready_for_next_trigger` to signal that the
+    camera is ready for another trigger (this is often in the image receive callback).
+
+    For triggering mechanisms, they should check is_ready_for_trigger before sending a trigger,
+    then call mark_triggered when a trigger has been sent.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ready_for_next_trigger = True
+
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+    def mark_ready_for_next_trigger(self):
+        """
+        This is a hack to keep trigger + receive in lockstep.  You must check that is_ready_for_trigger() is True before
+        sending a trigger, and must call mark_triggered() when you send an external HW signal.
+
+        We can remove this when we figure out how to capture in parallel.
+        """
+        self._ready_for_next_trigger = True
+
+    def is_ready_for_trigger(self):
+        """
+        When streaming and using external triggers, this can be checked to see if the last image we
+        triggered (signaled via mark_triggered()) has been fully captured.  Note that this being
+        true only means the camera told us the image is ready, not that we have the image.
+        """
+        return self._ready_for_next_trigger
+
+    def mark_triggered(self):
+        """
+        When streaming and using external triggers, you must call this to mark when you've sent
+        a hardware trigger.  And it is only okay to send an external trigger if is_ready_for_trigger()
+        is true.
+        """
+        if not self.is_streaming:
+            self.log.warning("Marking trigger does nothing if not streaming.")
+        self._ready_for_next_trigger = False
 
 class Camera(object):
 

@@ -4,6 +4,7 @@ import time
 import numpy as np
 import threading
 
+import control.camera
 from control.dcam import Dcam, Dcamapi
 from control.dcamapi4 import *
 from control._def import *
@@ -27,8 +28,9 @@ def get_sn_by_model(model_name):
     return None 
 
 
-class Camera(object):
+class Camera(control.camera.CameraWithTriggerMarking):
     def __init__(self,sn=None, resolution=(2304,2304), is_global_shutter=False, rotate_image_angle=None, flip_image=None):
+        super().__init__()
         self.dcam = None
         self.exposure_time = 1  # ms
         self.analog_gain = 0

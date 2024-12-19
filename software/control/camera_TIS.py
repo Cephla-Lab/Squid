@@ -7,6 +7,7 @@ import numpy as np
 from scipy import misc
 import cv2
 
+import control.camera
 import squid.logging
 log = squid.logging.get_logger(__name__)
 
@@ -22,9 +23,10 @@ except ImportError:
 DeviceInfo = namedtuple("DeviceInfo", "status name identifier connection_type")
 CameraProperty = namedtuple("CameraProperty", "status value min max default step type flags category group")
 
-class Camera(object):
+class Camera(control.camera.CameraWithTriggerMarking):
 
     def __init__(self,sn=None,width=1920,height=1080,framerate=30,color=False):
+        super().__init__()
         self.log = squid.logging.get_logger(self.__class__.__name__)
         Gst.init(sys.argv)
         self.height = height

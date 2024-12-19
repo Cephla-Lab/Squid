@@ -3,6 +3,8 @@ import cv2
 import time
 import numpy as np
 import PySpin
+
+import control.camera
 from control._def import *
 
 class ReadType:
@@ -434,20 +436,19 @@ class ImageEventHandler(PySpin.ImageEventHandler):
         self.camera.new_image_callback_external(self.camera)
        
 
-class Camera(object):
+class Camera(control.camera.CameraWithTriggerMarking):
 
     def __init__(self,sn=None,is_global_shutter=False,rotate_image_angle=None,flip_image=None, is_color=False):
-
+        super().__init__()
         self.py_spin_system = PySpin.System.GetInstance()
         self.camera_list = self.py_spin_system.GetCameras()
-        self.sn = sn 
-        self_is_color = is_color
+        self.sn = sn
         # many to be purged
         self.is_global_shutter = is_global_shutter
         self.device_info_dict = None
         self.device_index = 0
         self.camera = None #PySpin CameraPtr type
-        self.is_color = None
+        self.is_color = is_color
         self.gamma_lut = None
         self.contrast_lut = None
         self.color_correction_param = None
@@ -1160,4 +1161,3 @@ class Camera(object):
             pass
         self.camera_list.Clear()
         self.py_spin_system.ReleaseInstance()
-
