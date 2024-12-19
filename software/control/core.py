@@ -761,10 +761,6 @@ class NavigationController(QObject):
         self.movement_timer.setSingleShot(True)  # Timer only fires once
         self.movement_threshold = 0.0001  # mm
 
-        # scan start position (obsolete? only for TiledDisplay)
-        self.scan_begin_position_x = 0
-        self.scan_begin_position_y = 0
-    
     def get_mm_per_ustep_X(self):
         return SCREW_PITCH_X_MM/(self.x_microstepping*FULLSTEPS_PER_REV_X)
 
@@ -779,41 +775,6 @@ class NavigationController(QObject):
 
     def get_flag_click_to_move(self):
         return self.click_to_move
-
-    def scan_preview_move_from_click(self, click_x, click_y, image_width, image_height, Nx=1, Ny=1, dx_mm=0.9, dy_mm=0.9): # obsolete (only for tiled display)
-        """
-        napariTiledDisplay uses the Nx, Ny, dx_mm, dy_mm fields to move to the correct fov first
-        imageArrayDisplayWindow assumes only a single fov (default values do not impact calculation but this is less correct)
-        """
-        # check if click to move enabled
-        if not self.click_to_move:
-            print("allow click to move")
-            return
-        # restore to raw coordicate
-        click_x = image_width / 2.0 + click_x
-        click_y = image_height / 2.0 - click_y
-        print("click - (x, y):", (click_x, click_y))
-        fov_col = click_x * Nx // image_width
-        fov_row = click_y * Ny // image_height
-        end_position_x = Ny % 2 # right side or left side
-        fov_col = Nx - (fov_col + 1) if end_position_x else fov_col
-        fov_row = fov_row
-        pixel_sign_x = (-1)**end_position_x # inverted
-        pixel_sign_y = -1 if INVERTED_OBJECTIVE else 1
-
-        # move to selected fov
-        x_pos = self.scan_begin_position_x+dx_mm*fov_col*pixel_sign_x
-        y_pos = self.scan_begin_position_y+dy_mm*fov_row*pixel_sign_y
-        self.move_to(x_pos, y_pos)
-
-        # move to actual click, offset from center fov
-        tile_width = (image_width / Nx) * PRVIEW_DOWNSAMPLE_FACTOR
-        tile_height = (image_height / Ny) * PRVIEW_DOWNSAMPLE_FACTOR
-        offset_x = (click_x * PRVIEW_DOWNSAMPLE_FACTOR) % tile_width
-        offset_y = (click_y * PRVIEW_DOWNSAMPLE_FACTOR) % tile_height
-        offset_x_centered = int(offset_x - tile_width / 2)
-        offset_y_centered = int(tile_height / 2 - offset_y)
-        self.move_from_click(offset_x_centered, offset_y_centered, tile_width, tile_height)
 
     def move_from_click(self, click_x, click_y, image_width, image_height):
         if self.click_to_move:
@@ -1046,10 +1007,6 @@ class NavigationController(QObject):
 
     def get_pid_control_flag(self, axis):
         return self.pid_enable_flag[axis]
-
-    def keep_scan_begin_position(self, x, y):
-        self.scan_begin_position_x = x
-        self.scan_begin_position_y = y
 
     def set_axis_PID_arguments(self, axis, pid_p, pid_i, pid_d):
         self.microcontroller.set_pid_arguments(axis, pid_p, pid_i, pid_d)
@@ -1660,15 +1617,13 @@ class MultiPointWorker(QObject):
     image_to_display = Signal(np.ndarray)
     spectrum_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray,int)
-    image_to_display_tiled_preview = Signal(np.ndarray)
     signal_current_configuration = Signal(Configuration)
     signal_register_current_fov = Signal(float,float)
     signal_detection_stats = Signal(object)
     signal_update_stats = Signal(object)
     signal_z_piezo_um = Signal(float)
     napari_layers_init = Signal(int, int, object)
-    napari_layers_update = Signal(np.ndarray, int, int, int, str) # image, i, j, k, channel
-    napari_mosaic_update = Signal(np.ndarray, float, float, int, str) # image, x_mm, y_mm, k, channel
+    napari_layers_update = Signal(np.ndarray, float, float, int, str) # image, x_mm, y_mm, k, channel
     napari_rtp_layers_update = Signal(np.ndarray, str)
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
@@ -1739,10 +1694,9 @@ class MultiPointWorker(QObject):
         self.t_inf = []
         self.t_over = []
 
-        if USE_NAPARI_FOR_MULTIPOINT or USE_NAPARI_FOR_TILED_DISPLAY:
+        if USE_NAPARI_FOR_MULTIPOINT:
             self.init_napari_layers = False
 
-        self.tiled_preview = None
         self.count = 0
 
         self.merged_image = None
@@ -1970,7 +1924,7 @@ class MultiPointWorker(QObject):
 
         if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in globals():
             print('run custom multipoint')
-            multipoint_custom_script_entry(self, current_path, region_id, fov, i, j)
+            multipoint_custom_script_entry(self, current_path, region_id, fov)
             return
 
         self.perform_autofocus(region_id)
@@ -2009,47 +1963,26 @@ class MultiPointWorker(QObject):
 
                 # acquire image
                 if 'USB Spectrometer' not in config.name and 'RGB' not in config.name:
-                    self.acquire_camera_image(config, file_ID, current_path, current_round_images, i, j, z_level)
+                    self.acquire_camera_image(config, file_ID, current_path, current_round_images, z_level)
                 elif 'RGB' in config.name:
-                    self.acquire_rgb_image(config, file_ID, current_path, current_round_images, i, j, z_level)
+                    self.acquire_rgb_image(config, file_ID, current_path, current_round_images, z_level)
                 else:
-                    self.acquire_spectrometer_data(config, file_ID, current_path, i, j, z_level)
+                    self.acquire_spectrometer_data(config, file_ID, current_path, z_level)
 
                 self.handle_z_offset(config, False)
 
                 current_image = (fov * self.NZ * len(self.selected_configurations) + z_level * len(self.selected_configurations) + config_idx + 1)
                 self.signal_region_progress.emit(current_image, self.total_scans)
 
-            '''
-            # tiled preview
-            if not USE_NAPARI_FOR_TILED_DISPLAY and SHOW_TILED_PREVIEW and 'BF LED matrix left half' in current_round_images:
-                # initialize the variable
-                if self.tiled_preview is None:
-                    size = current_round_images['BF LED matrix left half'].shape
-                    if len(size) == 2:
-                        self.tiled_preview = np.zeros((int(self.NY*size[0]/PRVIEW_DOWNSAMPLE_FACTOR),self.NX*int(size[1]/PRVIEW_DOWNSAMPLE_FACTOR)),dtype=current_round_images['BF LED matrix full'].dtype)
-                    else:
-                        self.tiled_preview = np.zeros((int(self.NY*size[0]/PRVIEW_DOWNSAMPLE_FACTOR),self.NX*int(size[1]/PRVIEW_DOWNSAMPLE_FACTOR),size[2]),dtype=current_round_images['BF LED matrix full'].dtype)
-                # downsample the image
-                I = current_round_images['BF LED matrix left half']
-                width = int(I.shape[1]/PRVIEW_DOWNSAMPLE_FACTOR)
-                height = int(I.shape[0]/PRVIEW_DOWNSAMPLE_FACTOR)
-                I = cv2.resize(I, (width,height), interpolation=cv2.INTER_AREA)
-                # populate the tiled_preview
-                self.tiled_preview[i*height:(i+1)*height, j*width:(j+1)*width, ] = I
-                # emit the result
-                self.image_to_display_tiled_preview.emit(self.tiled_preview)
-            '''
-
             # real time processing
             if self.multiPointController.do_fluorescence_rtp:
-                self.run_real_time_processing(current_round_images, i, j, z_level)
+                self.run_real_time_processing(current_round_images, z_level)
 
             # updates coordinates df
             if i is None or j is None:
                 self.update_coordinates_dataframe(region_id, z_level, fov)
             else:
-                self.update_coordinates_dataframe(region_id, z_level, i, j)
+                self.update_coordinates_dataframe(region_id, z_level)
             self.signal_register_current_fov.emit(self.navigationController.x_pos_mm, self.navigationController.y_pos_mm)
 
             # check if the acquisition should be aborted
@@ -2066,7 +1999,7 @@ class MultiPointWorker(QObject):
         if self.NZ > 1:
             self.move_z_back_after_stack()
 
-    def run_real_time_processing(self, current_round_images, i, j, z_level):
+    def run_real_time_processing(self, current_round_images, z_level):
         acquired_image_configs = list(current_round_images.keys())
         if 'BF LED matrix left half' in current_round_images and 'BF LED matrix right half' in current_round_images and 'Fluorescence 405 nm Ex' in current_round_images:
             try:
@@ -2080,7 +2013,7 @@ class MultiPointWorker(QObject):
                     I_left = cv2.cvtColor(I_left,cv2.COLOR_RGB2GRAY)
                 if len(I_right.shape) == 3:
                     I_right = cv2.cvtColor(I_right,cv2.COLOR_RGB2GRAY)
-                malaria_rtp(I_fluorescence, I_left, I_right, i, j, z_level, self,
+                malaria_rtp(I_fluorescence, I_left, I_right, z_level, self,
                             classification_test_mode=self.microscope.classification_test_mode,
                             sort_during_multipoint=SORT_DURING_MULTIPOINT,
                             disp_th_during_multipoint=DISP_TH_DURING_MULTIPOINT)
@@ -2115,7 +2048,7 @@ class MultiPointWorker(QObject):
                         except:
                             print("failed update grid widget z")
                             pass
-        else: 
+        else:
             # initialize laser autofocus if it has not been done
             if self.microscope.laserAutofocusController.is_initialized==False:
                 print("init reflection af")
@@ -2166,7 +2099,7 @@ class MultiPointWorker(QObject):
                 self.wait_till_operation_is_completed()
                 time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
 
-    def acquire_camera_image(self, config, file_ID, current_path, current_round_images, i, j, k):
+    def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k):
         # update the current configuration
         self.signal_current_configuration.emit(config)
         self.wait_till_operation_is_completed()
@@ -2204,16 +2137,16 @@ class MultiPointWorker(QObject):
         self.image_to_display_multi.emit(image_to_display,config.illumination_source)
 
         self.save_image(image, file_ID, config, current_path)
-        self.update_napari(image, config.name, i, j, k)
+        self.update_napari(image, config.name, k)
 
         current_round_images[config.name] = np.copy(image)
 
         self.handle_dpc_generation(current_round_images)
-        self.handle_rgb_generation(current_round_images, file_ID, current_path, i, j, k)
+        self.handle_rgb_generation(current_round_images, file_ID, current_path, k)
 
         QApplication.processEvents()
 
-    def acquire_rgb_image(self, config, file_ID, current_path, current_round_images, i, j, k):
+    def acquire_rgb_image(self, config, file_ID, current_path, current_round_images, k):
         # go through the channels
         rgb_channels = ['BF LED matrix full_R', 'BF LED matrix full_G', 'BF LED matrix full_B']
         images = {}
@@ -2257,11 +2190,11 @@ class MultiPointWorker(QObject):
         if len(i_size) == 3:
             # If already RGB, write and emit individual channels
             print('writing R, G, B channels')
-            self.handle_rgb_channels(images, file_ID, current_path, config, i, j, k)
+            self.handle_rgb_channels(images, file_ID, current_path, config, k)
         else:
             # If monochrome, reconstruct RGB image
             print('constructing RGB image')
-            self.construct_rgb_image(images, file_ID, current_path, config, i, j, k)
+            self.construct_rgb_image(images, file_ID, current_path, config, k)
 
     def acquire_spectrometer_data(self, config, file_ID, current_path):
         if self.usb_spectrometer != None:
@@ -2312,13 +2245,13 @@ class MultiPointWorker(QObject):
     def return_pseudo_colored_image(self, image, config):
         if '405 nm' in config.name:
             image = self.grayscale_to_rgb(image, Acquisition.PSEUDO_COLOR_MAP["405"]["hex"])
-        elif '488 nm' in config.name:     
+        elif '488 nm' in config.name:
             image = self.grayscale_to_rgb(image, Acquisition.PSEUDO_COLOR_MAP["488"]["hex"])
         elif '561 nm' in config.name:
             image = self.grayscale_to_rgb(image, Acquisition.PSEUDO_COLOR_MAP["561"]["hex"])
         elif '638 nm' in config.name:
             image = self.grayscale_to_rgb(image, Acquisition.PSEUDO_COLOR_MAP["638"]["hex"])
-        elif '730 nm' in config.name:          
+        elif '730 nm' in config.name:
             image = self.grayscale_to_rgb(image, Acquisition.PSEUDO_COLOR_MAP["730"]["hex"])
 
         return image
@@ -2330,21 +2263,15 @@ class MultiPointWorker(QObject):
         rgb = np.stack([image] * 3, axis=-1) * rgb_ratios
         return rgb.astype(image.dtype)
 
-    def update_napari(self, image, config_name, i, j, k):
-        if not self.performance_mode:
-            i = -1 if i is None else i
-            j = -1 if j is None else j
-            print("update napari:", i, j, k, config_name)
+    def update_napari(self, image, config_name, k):
+        if not self.performance_mode and (USE_NAPARI_FOR_MOSAIC_DISPLAY or USE_NAPARI_FOR_MULTIPOINT):
 
-            if USE_NAPARI_FOR_MULTIPOINT or USE_NAPARI_FOR_TILED_DISPLAY:
-                if not self.init_napari_layers:
-                    print("init napari layers")
-                    self.init_napari_layers = True
-                    self.napari_layers_init.emit(image.shape[0],image.shape[1], image.dtype)
-                self.napari_layers_update.emit(image, i, j, k, config_name)
-            if USE_NAPARI_FOR_MOSAIC_DISPLAY and k == 0:
-                print(f"Updating mosaic layers: x={self.navigationController.x_pos_mm:.6f}, y={self.navigationController.y_pos_mm:.6f}")
-                self.napari_mosaic_update.emit(image, self.navigationController.x_pos_mm, self.navigationController.y_pos_mm, k, config_name)
+            if not self.init_napari_layers:
+                print("init napari layers")
+                self.init_napari_layers = True
+                self.napari_layers_init.emit(image.shape[0],image.shape[1], image.dtype)
+
+            self.napari_layers_update.emit(image, self.navigationController.x_pos_mm, self.navigationController.y_pos_mm, k, config_name)
 
     def handle_dpc_generation(self, current_round_images):
         keys_to_check = ['BF LED matrix left half', 'BF LED matrix right half', 'BF LED matrix top half', 'BF LED matrix bottom half']
@@ -2352,7 +2279,7 @@ class MultiPointWorker(QObject):
             # generate dpc
             pass
 
-    def handle_rgb_generation(self, current_round_images, file_ID, current_path, i, j, k):
+    def handle_rgb_generation(self, current_round_images, file_ID, current_path, k):
         keys_to_check = ['BF LED matrix full_R', 'BF LED matrix full_G', 'BF LED matrix full_B']
         if all(key in current_round_images for key in keys_to_check):
             print('constructing RGB image')
@@ -2375,18 +2302,18 @@ class MultiPointWorker(QObject):
                 else:
                     iio.imwrite(os.path.join(current_path, file_ID + '_BF_LED_matrix_full_RGB.' + Acquisition.IMAGE_FORMAT),rgb_image)
 
-    def handle_rgb_channels(self, images, file_ID, current_path, config, i, j, k):
+    def handle_rgb_channels(self, images, file_ID, current_path, config, k):
         for channel in ['BF LED matrix full_R', 'BF LED matrix full_G', 'BF LED matrix full_B']:
             image_to_display = utils.crop_image(images[channel], round(self.crop_width * self.display_resolution_scaling), round(self.crop_height * self.display_resolution_scaling))
             self.image_to_display.emit(image_to_display)
             self.image_to_display_multi.emit(image_to_display, config.illumination_source)
 
-            self.update_napari(images[channel], channel, i, j, k)
+            self.update_napari(images[channel], channel, k)
 
             file_name = file_ID + '_' + channel.replace(' ', '_') + ('.tiff' if images[channel].dtype == np.uint16 else '.' + Acquisition.IMAGE_FORMAT)
             iio.imwrite(os.path.join(current_path, file_name), images[channel])
 
-    def construct_rgb_image(self, images, file_ID, current_path, config, i, j, k):
+    def construct_rgb_image(self, images, file_ID, current_path, config, k):
         rgb_image = np.zeros((*images['BF LED matrix full_R'].shape, 3), dtype=images['BF LED matrix full_R'].dtype)
         rgb_image[:, :, 0] = images['BF LED matrix full_R']
         rgb_image[:, :, 1] = images['BF LED matrix full_G']
@@ -2397,7 +2324,7 @@ class MultiPointWorker(QObject):
         self.image_to_display.emit(image_to_display)
         self.image_to_display_multi.emit(image_to_display, config.illumination_source)
 
-        self.update_napari(rgb_image, config.name, i, j, k)
+        self.update_napari(rgb_image, config.name, k)
 
         # write the RGB image
         print('writing RGB image')
@@ -2456,32 +2383,12 @@ class MultiPointWorker(QObject):
                     self.wait_till_operation_is_completed()
                 self.dz_usteps = self.dz_usteps - self.deltaZ_usteps*(self.NZ-1)
 
-    def update_tiled_preview(self, current_round_images, i, j, k):
-        if SHOW_TILED_PREVIEW and 'BF LED matrix full' in current_round_images:
-            # initialize the variable
-            if self.tiled_preview is None:
-                size = current_round_images['BF LED matrix full'].shape
-                if len(size) == 2:
-                    self.tiled_preview = np.zeros((int(self.NY*size[0]/PRVIEW_DOWNSAMPLE_FACTOR),self.NX*int(size[1]/PRVIEW_DOWNSAMPLE_FACTOR)),dtype=current_round_images['BF LED matrix full'].dtype)
-                else:
-                    self.tiled_preview = np.zeros((int(self.NY*size[0]/PRVIEW_DOWNSAMPLE_FACTOR),self.NX*int(size[1]/PRVIEW_DOWNSAMPLE_FACTOR),size[2]),dtype=current_round_images['BF LED matrix full'].dtype)
-            # downsample the image
-            I = current_round_images['BF LED matrix full']
-            width = int(I.shape[1]/PRVIEW_DOWNSAMPLE_FACTOR)
-            height = int(I.shape[0]/PRVIEW_DOWNSAMPLE_FACTOR)
-            I = cv2.resize(I, (width,height), interpolation=cv2.INTER_AREA)
-            # populate the tiled_preview
-            self.tiled_preview[i*height:(i+1)*height, j*width:(j+1)*width,] = I
-            # emit the result
-            self.image_to_display_tiled_preview.emit(self.tiled_preview)
-
 
 class MultiPointController(QObject):
 
     acquisitionFinished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray,int)
-    image_to_display_tiled_preview = Signal(np.ndarray)
     spectrum_to_display = Signal(np.ndarray)
     signal_current_configuration = Signal(Configuration)
     signal_register_current_fov = Signal(float,float)
@@ -2489,8 +2396,7 @@ class MultiPointController(QObject):
     signal_stitcher = Signal(str)
     napari_rtp_layers_update = Signal(np.ndarray, str)
     napari_layers_init = Signal(int, int, object)
-    napari_layers_update = Signal(np.ndarray, int, int, int, str) # image, i, j, k, channel
-    napari_mosaic_update = Signal(np.ndarray, float, float, int, str) # image, x_mm, y_mm, k, channel
+    napari_layers_update = Signal(np.ndarray, float, float, int, str) # image, x_mm, y_mm, k, channel
     signal_z_piezo_um = Signal(float)
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
@@ -2554,7 +2460,7 @@ class MultiPointController(QObject):
         self.z_stacking_config = Z_STACKING_CONFIG
 
     def set_use_piezo(self, checked):
-        print("set use_piezo to", checked)
+        print("Use Piezo:", checked)
         self.use_piezo = checked
         if hasattr(self, 'multiPointWorker'):
             self.multiPointWorker.update_use_piezo(checked)
@@ -2730,9 +2636,6 @@ class MultiPointController(QObject):
             elif USE_NAPARI_FOR_MOSAIC_DISPLAY and self.coordinate_dict is not None and self.NZ == 1:
                 self.parent.imageDisplayTabs.setCurrentWidget(self.parent.napariMosaicDisplayWidget)
 
-            elif USE_NAPARI_FOR_TILED_DISPLAY and SHOW_TILED_PREVIEW:
-                self.parent.imageDisplayTabs.setCurrentWidget(self.parent.napariTiledDisplayWidget)
-
             elif USE_NAPARI_FOR_MULTIPOINT:
                 self.parent.imageDisplayTabs.setCurrentWidget(self.parent.napariMultiChannelWidget)
             else:
@@ -2740,9 +2643,6 @@ class MultiPointController(QObject):
 
         # run the acquisition
         self.timestamp_acquisition_started = time.time()
-
-        if SHOW_TILED_PREVIEW:
-            self.navigationController.keep_scan_begin_position(self.navigationController.x_pos_mm, self.navigationController.y_pos_mm)
 
         # create a QThread object
         if self.gen_focus_map and not self.do_reflection_af:
@@ -2798,14 +2698,12 @@ class MultiPointController(QObject):
             self.multiPointWorker.finished.connect(self.thread.quit)
         self.multiPointWorker.image_to_display.connect(self.slot_image_to_display)
         self.multiPointWorker.image_to_display_multi.connect(self.slot_image_to_display_multi)
-        self.multiPointWorker.image_to_display_tiled_preview.connect(self.slot_image_to_display_tiled_preview)
         self.multiPointWorker.spectrum_to_display.connect(self.slot_spectrum_to_display)
         self.multiPointWorker.signal_current_configuration.connect(self.slot_current_configuration,type=Qt.BlockingQueuedConnection)
         self.multiPointWorker.signal_register_current_fov.connect(self.slot_register_current_fov)
         self.multiPointWorker.napari_layers_init.connect(self.slot_napari_layers_init)
         self.multiPointWorker.napari_rtp_layers_update.connect(self.slot_napari_rtp_layers_update)
         self.multiPointWorker.napari_layers_update.connect(self.slot_napari_layers_update)
-        self.multiPointWorker.napari_mosaic_update.connect(self.slot_napari_mosaic_update)
         self.multiPointWorker.signal_z_piezo_um.connect(self.slot_z_piezo_um)
         self.multiPointWorker.signal_acquisition_progress.connect(self.slot_acquisition_progress)
         self.multiPointWorker.signal_region_progress.connect(self.slot_region_progress)
@@ -2861,9 +2759,6 @@ class MultiPointController(QObject):
     def slot_image_to_display(self,image):
         self.image_to_display.emit(image)
 
-    def slot_image_to_display_tiled_preview(self,image):
-        self.image_to_display_tiled_preview.emit(image)
-
     def slot_spectrum_to_display(self,data):
         self.spectrum_to_display.emit(data)
 
@@ -2882,11 +2777,8 @@ class MultiPointController(QObject):
     def slot_napari_layers_init(self, image_height, image_width, dtype):
         self.napari_layers_init.emit(image_height, image_width, dtype)
 
-    def slot_napari_layers_update(self, image, i, j, k, channel):
-        self.napari_layers_update.emit(image, i, j, k, channel)
-
-    def slot_napari_mosaic_update(self, image, x_mm, y_mm, k, channel):
-        self.napari_mosaic_update.emit(image, x_mm, y_mm, k, channel)
+    def slot_napari_layers_update(self, image, x_mm, y_mm, k, channel):
+        self.napari_layers_update.emit(image, x_mm, y_mm, k, channel)
 
     def slot_z_piezo_um(self, displacement_um):
         self.signal_z_piezo_um.emit(displacement_um)
@@ -3365,7 +3257,7 @@ class ImageDisplayWindow(QMainWindow):
         width = min(desktopWidget.height()*0.9,1000)
         height = width
         self.setFixedSize(int(width),int(height))
-        
+
         # Connect mouse click handler
         if self.show_LUT:
             self.graphics_widget.view.getView().scene().sigMouseClicked.connect(self.handle_mouse_click)
@@ -3390,8 +3282,8 @@ class ImageDisplayWindow(QMainWindow):
         if self.is_within_image(image_coord):
             x_pixel_centered = int(image_coord.x() - self.graphics_widget.img.width()/2)
             y_pixel_centered = int(image_coord.y() - self.graphics_widget.img.height()/2)
-            self.image_click_coordinates.emit(x_pixel_centered, y_pixel_centered, 
-                                           self.graphics_widget.img.width(), 
+            self.image_click_coordinates.emit(x_pixel_centered, y_pixel_centered,
+                                           self.graphics_widget.img.width(),
                                            self.graphics_widget.img.height())
 
     def is_within_image(self, coordinates):
@@ -3470,8 +3362,6 @@ class ImageDisplayWindow(QMainWindow):
 class NavigationViewer(QFrame):
 
     signal_coordinates_clicked = Signal(float, float)  # Will emit x_mm, y_mm when clicked
-    signal_update_live_scan_grid = Signal(float, float)
-    signal_update_well_coordinates = Signal(bool)
 
     def __init__(self, objectivestore, sample = 'glass slide', invertX = False, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -3491,7 +3381,6 @@ class NavigationViewer(QFrame):
         self.acquisition_size = Acquisition.CROP_HEIGHT
         self.x_mm = None
         self.y_mm = None
-        self.acquisition_started = False
         self.image_paths = {
             'glass slide': 'images/slide carrier_828x662.png',
             '4 glass slide': 'images/4 slide carrier_1509x1010.png',
@@ -3517,7 +3406,7 @@ class NavigationViewer(QFrame):
         self.graphics_widget = pg.GraphicsLayoutWidget()
         self.graphics_widget.setBackground("w")
 
-        self.view = self.graphics_widget.addViewBox(invertX=invertX, invertY=True)
+        self.view = self.graphics_widget.addViewBox(invertX=not INVERTED_OBJECTIVE, invertY=True)
         self.view.setAspectLocked(True)
 
         self.grid = QVBoxLayout()
@@ -3532,7 +3421,7 @@ class NavigationViewer(QFrame):
         if self.background_image is None:
             #raise ValueError(f"Failed to load image from {image_path}")
              self.background_image = cv2.imread(self.image_paths.get('glass slide'))
-        
+
         if len(self.background_image.shape) == 2:  # Grayscale image
             self.background_image = cv2.cvtColor(self.background_image, cv2.COLOR_GRAY2RGBA)
         elif self.background_image.shape[2] == 3:  # BGR image
@@ -3570,15 +3459,11 @@ class NavigationViewer(QFrame):
             self.mm_per_pixel = 0.084665
             self.origin_x_pixel = 50
             self.origin_y_pixel = 0
-            self.view.invertX(False)
-            self.view.invertY(True)
         else:
             self.location_update_threshold_mm = 0.05
             self.mm_per_pixel = 0.084665
             self.origin_x_pixel = self.a1_x_pixel - (self.a1_x_mm)/self.mm_per_pixel
             self.origin_y_pixel = self.a1_y_pixel - (self.a1_y_mm)/self.mm_per_pixel
-            self.view.invertX(False)
-            self.view.invertY(True)
         self.update_fov_size()
 
     def update_fov_size(self):
@@ -3588,13 +3473,7 @@ class NavigationViewer(QFrame):
     def on_objective_changed(self):
         self.clear_overlay()
         self.update_fov_size()
-        if self.x_mm is not None and self.y_mm is not None:
-            if 'glass slide'in self.sample:
-                self.signal_update_live_scan_grid.emit(self.x_mm, self.y_mm)
-            self.draw_current_fov(self.x_mm, self.y_mm)
-
-    def on_acquisition_start(self, acquisition_started):
-        self.acquisition_started = acquisition_started
+        self.draw_current_fov(self.x_mm, self.y_mm)
 
     def update_wellplate_settings(self, sample_format, a1_x_mm, a1_y_mm, a1_x_pixel, a1_y_pixel, well_size_mm, well_spacing_mm, number_of_skip, rows, cols):
         if isinstance(sample_format, QVariant):
@@ -3646,10 +3525,6 @@ class NavigationViewer(QFrame):
             self.x_mm = x_mm
             self.y_mm = y_mm
 
-    def draw_scan_grid(self, x_mm, y_mm):
-        if 'glass slide' in self.sample and not self.acquisition_started:
-            self.signal_update_live_scan_grid.emit(x_mm, y_mm)
-
     def get_FOV_pixel_coordinates(self, x_mm, y_mm):
         if self.sample == 'glass slide':
             current_FOV_top_left = (
@@ -3698,12 +3573,6 @@ class NavigationViewer(QFrame):
         self.background_image = self.background_image_copy.copy()
         self.background_item.setImage(self.background_image)
         self.draw_current_fov(self.x_mm, self.y_mm)
-
-    def update_slide(self):
-        self.background_image = self.background_image_copy.copy()
-        self.background_item.setImage(self.background_image)
-        self.draw_current_fov(self.x_mm, self.y_mm)
-        self.signal_update_well_coordinates.emit(True)
 
     def clear_overlay(self):
         self.scan_overlay.fill(0)
@@ -3790,6 +3659,7 @@ class ImageArrayDisplayWindow(QMainWindow):
             self.graphics_widget_3.img.setImage(image,autoLevels=False)
         elif illumination_source == 13:
             self.graphics_widget_4.img.setImage(image,autoLevels=False)
+
 
 class ConfigurationManager(QObject):
     def __init__(self,filename="channel_configurations.xml"):
@@ -3911,7 +3781,7 @@ class ContrastManager:
         print(f"{self.acquisition_dtype} -> {target_dtype}")
         for channel in self.contrast_limits.keys():
             self.contrast_limits[channel] = self.get_scaled_limits(channel, target_dtype)
-        
+
         self.acquisition_dtype = target_dtype
 
 
