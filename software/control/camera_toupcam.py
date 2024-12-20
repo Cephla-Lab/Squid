@@ -1,3 +1,4 @@
+import ctypes
 import time
 import numpy as np
 
@@ -6,7 +7,9 @@ from control._def import *
 
 import threading
 import control.toupcam as toupcam
+from control.toupcam import HRESULTException
 from control.toupcam_exceptions import hresult_checker
+from control.camera import WithTriggerMarking, BaseCamera
 
 log = squid.logging.get_logger(__name__)
 
@@ -22,11 +25,11 @@ def get_sn_by_model(model_name):
     return None # return None if no device with the specified model_name is connected
 
 
-class Camera(object):
-
+class Camera(BaseCamera, WithTriggerMarking):
     @staticmethod
     def _event_callback(nEvent, camera):
         if nEvent == toupcam.TOUPCAM_EVENT_IMAGE:
+            camera.mark_ready_for_next_trigger()
             if camera.is_streaming:
                 camera._on_frame_callback()
                 camera._software_trigger_sent = False
@@ -78,6 +81,7 @@ class Camera(object):
         return (w * 24 + 31) // 32 * 4
 
     def __init__(self,sn=None,resolution=(3104,2084),is_global_shutter=False,rotate_image_angle=None,flip_image=None):
+        super().__init__()
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
         # many to be purged
@@ -231,6 +235,7 @@ class Camera(object):
             # set camera resolution
             self.set_resolution(self.resolution[0],self.resolution[1]) # buffer created when setting resolution
             self._update_buffer_settings()
+            self.mark_ready_for_next_trigger()
             
             if self.camera:
                 if self.buf:
@@ -280,7 +285,7 @@ class Camera(object):
         self.last_converted_image = None
         self.last_numpy_image = None
 
-    def set_exposure_time(self,exposure_time):
+    def set_exposure_time(self, exposure_time):
         # use_strobe = (self.trigger_mode == TriggerMode.HARDWARE) # true if using hardware trigger
         # if use_strobe == False or self.is_global_shutter:
         #     self.exposure_time = exposure_time
@@ -291,13 +296,15 @@ class Camera(object):
         #     # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
         #     camera_exposure_time = self.exposure_delay_us + self.exposure_time*1000 + self.row_period_us*self.pixel_size_byte*(self.row_numbers-1) + 500 # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
         #     self.camera.ExposureTime.set(camera_exposure_time)
+        # self.log.debug(f"setting exposure time - {exposure_time} [ms]")
         self.exposure_time = exposure_time
+        new_exposure_time_for_cam = (int(exposure_time*1000) + int(self.strobe_delay_us)) if self.trigger_mode == TriggerMode.HARDWARE else int(exposure_time*1000)
+        existing_exposure_time_on_cam = self.camera.get_ExpoTime()
+        # self.log.debug(f"set_exposure_time: existing={existing_exposure_time_on_cam} [us]")
+        if new_exposure_time_for_cam == existing_exposure_time_on_cam:
+            return
 
-        # exposure time in ms
-        if self.trigger_mode == TriggerMode.HARDWARE:
-            self.camera.put_ExpoTime(int(exposure_time*1000) + int(self.strobe_delay_us))
-        else:
-            self.camera.put_ExpoTime(int(exposure_time*1000))
+        self.camera.put_ExpoTime(new_exposure_time_for_cam)
 
     def update_camera_exposure_time(self):
         pass
@@ -312,9 +319,16 @@ class Camera(object):
         analog_gain = min(self.GAIN_MAX,analog_gain)
         analog_gain = max(self.GAIN_MIN,analog_gain)
         self.analog_gain = analog_gain
+
+        existing_gain = self.camera.get_ExpoAGain()
+        desired_device_gain = int(100*(10**(analog_gain/20)))
+
+        if existing_gain == desired_device_gain:
+            return
+
         # gain_min, gain_max, gain_default = self.camera.get_ExpoAGainRange() # remove from set_analog_gain
         # for touptek cameras gain is 100-10000 (for 1x - 100x)
-        self.camera.put_ExpoAGain(int(100*(10**(analog_gain/20))))
+        self.camera.put_ExpoAGain(desired_device_gain)
         # self.camera.Gain.set(analog_gain)
 
     def get_awb_ratios(self):
@@ -351,6 +365,7 @@ class Camera(object):
                 sys.exit(1)
         self.log.info('start streaming')
         self.is_streaming = True
+        self.mark_ready_for_next_trigger()
 
     def stop_streaming(self):
         self.camera.Stop()
@@ -358,7 +373,6 @@ class Camera(object):
         self._toupcam_pullmode_started = False
 
     def set_pixel_format(self,pixel_format):
-
         was_streaming = False
         if self.is_streaming:
             was_streaming = True
@@ -547,7 +561,7 @@ class Camera(object):
             self.camera.put_Option(toupcam.TOUPCAM_OPTION_CG,2)
             
     def send_trigger(self):
-        if self._last_software_trigger_timestamp!= None:
+        if self._last_software_trigger_timestamp != None:
             if (time.time() - self._last_software_trigger_timestamp) > (1.5*self.exposure_time/1000*1.02 + 4):
                 self.log.warning('last software trigger timed out')
                 self._software_trigger_sent = False
@@ -787,198 +801,36 @@ class Camera(object):
             self.camera.put_Option(toupcam.TOUPCAM_OPTION_BLACKLEVEL, _blacklevel)
         except toupcam.HRESULTException as ex:
             print('put blacklevel fail, hr=0x{:x}'.format(ex.hr))
-        
 
-class Camera_Simulation(object):
-    
-    def __init__(self,sn=None,is_global_shutter=False,rotate_image_angle=None,flip_image=None):
-        self.log = squid.logging.get_logger(self.__class__.__name__)
-        # many to be purged
-        self.sn = sn
-        self.is_global_shutter = is_global_shutter
-        self.device_info_list = None
-        self.device_index = 0
-        self.camera = None
-        self.is_color = None
-        self.gamma_lut = None
-        self.contrast_lut = None
-        self.color_correction_param = None
-
-        self.rotate_image_angle = rotate_image_angle
-        self.flip_image = flip_image
-
-        self.exposure_time = 0
-        self.analog_gain = 0
-        self.frame_ID = 0
-        self.frame_ID_software = -1
-        self.frame_ID_offset_hardware_trigger = 0
-        self.timestamp = 0
-
-        self.image_locked = False
-        self.current_frame = None
-
-        self.callback_is_enabled = False
-        self.is_streaming = False
-
-        self.GAIN_MAX = 40
-        self.GAIN_MIN = 0
-        self.GAIN_STEP = 1
-        self.EXPOSURE_TIME_MS_MIN = 0.1
-        self.EXPOSURE_TIME_MS_MAX = 3600000
-
-        self.trigger_mode = None
-        self.pixel_size_byte = 1
-
-        # below are values for IMX226 (MER2-1220-32U3M) - to make configurable 
-        self.row_period_us = 10
-        self.row_numbers = 3036
-        self.exposure_delay_us_8bit = 650
-        self.exposure_delay_us = self.exposure_delay_us_8bit*self.pixel_size_byte
-
-        # just setting a default value
-        # it would be re-calculate with function calculate_hardware_trigger_arguments
-        self.strobe_delay_us = self.exposure_delay_us + self.row_period_us*self.pixel_size_byte*(self.row_numbers-1)
-
-        self.pixel_format = 'MONO16'
-
-        self.Width = Acquisition.CROP_WIDTH
-        self.Height = Acquisition.CROP_HEIGHT
-        self.WidthMax = 4000
-        self.HeightMax = 3000
-        self.OffsetX = 0
-        self.OffsetY = 0
-
-        self.brand = 'ToupTek'
-
-        # when camera arguments changed, call it to update strobe_delay
-        self.reset_strobe_delay = None
-
-        # the balcklevel factor
-        # 8 bits: 1
-        # 10 bits: 4
-        # 12 bits: 16 
-        # 14 bits: 64 
-        # 16 bits: 256
-        self.blacklevel_factor = 1
-
-    def open(self,index=0):
-        pass
-
-    def set_callback(self,function):
-        self.new_image_callback_external = function
-
-    def set_temperature_reading_callback(self, func):
-        self.temperature_reading_callback = func
-
-    def enable_callback(self):
-        self.callback_is_enabled = True
-
-    def disable_callback(self):
-        self.callback_is_enabled = False
-
-    def open_by_sn(self,sn):
-        pass
-
-    def close(self):
-        pass
-
-    def set_exposure_time(self,exposure_time):
-        pass
-
-    def update_camera_exposure_time(self):
-        pass
-
-    def set_analog_gain(self,analog_gain):
-        pass
-
-    def get_awb_ratios(self):
-        pass
-
-    def set_wb_ratios(self, wb_r=None, wb_g=None, wb_b=None):
-        pass
-
-    def start_streaming(self):
-        self.frame_ID_software = 0
-
-    def stop_streaming(self):
-        pass
-
-    def set_pixel_format(self,pixel_format):
-        self.pixel_format = pixel_format
-        self.log.debug(f"Pixel format: {pixel_format}")
-        self.frame_ID = 0
-
-    def get_temperature(self):
-        return 0
-
-    def set_temperature(self,temperature):
-        pass
-
-    def set_fan_speed(self,speed):
-        pass
-
-    def set_continuous_acquisition(self):
-        pass
-
-    def set_software_triggered_acquisition(self):
-        pass
-
-    def set_hardware_triggered_acquisition(self):
-        pass
-
-    def set_gain_mode(self,mode):
-        pass
-
-    def send_trigger(self):
-        self.frame_ID = self.frame_ID + 1
-        self.timestamp = time.time()
-        if self.frame_ID == 1:
-            if self.pixel_format == 'MONO8':
-                self.current_frame = np.random.randint(255,size=(self.Height,self.Width),dtype=np.uint8)
-                self.current_frame[self.Height//2-99:self.Height//2+100,self.Width//2-99:self.Width//2+100] = 200
-            elif self.pixel_format == 'MONO12':
-                self.current_frame = np.random.randint(4095,size=(self.Height,self.Width),dtype=np.uint16)
-                self.current_frame[self.Height//2-99:self.Height//2+100,self.Width//2-99:self.Width//2+100] = 200*16
-                self.current_frame = self.current_frame << 4
-            elif self.pixel_format == 'MONO16':
-                self.current_frame = np.random.randint(65535,size=(self.Height,self.Width),dtype=np.uint16)
-                self.current_frame[self.Height//2-99:self.Height//2+100,self.Width//2-99:self.Width//2+100] = 200*256
-        else:
-            self.current_frame = np.roll(self.current_frame,10,axis=0)
-            pass 
-            # self.current_frame = np.random.randint(255,size=(768,1024),dtype=np.uint8)
-        if self.new_image_callback_external is not None and self.callback_is_enabled:
-            self.new_image_callback_external(self)
-
-    def stop_exposure(self):
-        if self.is_streaming and self._software_trigger_sent == True:
-            self._software_trigger_sent = False
-        else:
-            pass
-
-    def read_frame(self):
-        return self.current_frame
-
-    def _on_frame_callback(self, user_param, raw_image):
-        pass
-
-    def set_ROI(self,offset_x=None,offset_y=None,width=None,height=None):
-        pass
-
-    def reset_camera_acquisition_counter(self):
-        pass
-
-    def set_line3_to_strobe(self):
-        pass
-
-    def set_line3_to_exposure_active(self):
-        pass
-
-    def calculate_hardware_trigger_arguments(self):
-        pass
-
-    def set_reset_strobe_delay_function(self, function_body):
-        pass
-    
-    def set_blacklevel(self, blacklevel):
-        pass
+    def get_settings_summary(self):
+        def try_get(opt):
+            try:
+                return self.camera.get_Option(opt)
+            except HRESULTException as e:
+                return f"Error during get: 0x{ctypes.c_uint32(e.hr).value:x}"
+        return f"Toupcam Settings:\n" + \
+            f"get_ExpoTime()={self.camera.get_ExpoTime()}\n" + \
+            f"NO_FRAME_TIMEOUT={try_get(toupcam.TOUPCAM_OPTION_NOFRAME_TIMEOUT)}\n" + \
+            f"TOUPCAM_OPTION_READOUT_MODE={try_get(toupcam.TOUPCAM_OPTION_READOUT_MODE)}\n" + \
+            f"TOUPCAM_OPTION_THREAD_PRIORITY={try_get(toupcam.TOUPCAM_OPTION_THREAD_PRIORITY)}\n" + \
+            f"TOUPCAM_OPTION_TRIGGER={try_get(toupcam.TOUPCAM_OPTION_TRIGGER)}\n" + \
+            f"TOUPCAM_OPTION_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_FRAMERATE)}\n" + \
+            f"TOUPCAM_OPTION_BINNING={try_get(toupcam.TOUPCAM_OPTION_BINNING)}\n" + \
+            f"TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)}\n" + \
+            f"TOUPCAM_OPTION_PRECISE_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE)}\n" + \
+            f"TOUPCAM_OPTION_CALLBACK_THREAD={try_get(toupcam.TOUPCAM_OPTION_CALLBACK_THREAD)}\n" + \
+            f"TOUPCAM_OPTION_FRONTEND_DEQUE_LENGTH={try_get(toupcam.TOUPCAM_OPTION_FRONTEND_DEQUE_LENGTH)}\n" + \
+            f"TOUPCAM_OPTION_FRAME_DEQUE_LENGTH={try_get(toupcam.TOUPCAM_OPTION_FRAME_DEQUE_LENGTH)}\n" + \
+            f"TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE={try_get(toupcam.TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE)}\n" + \
+            f"TOUPCAM_OPTION_SEQUENCER_ONOFF={try_get(toupcam.TOUPCAM_OPTION_SEQUENCER_ONOFF)}\n" + \
+            f"TOUPCAM_OPTION_NUMBER_DROP_FRAME={try_get(toupcam.TOUPCAM_OPTION_NUMBER_DROP_FRAME)}\n" + \
+            f"TOUPCAM_OPTION_BACKEND_DEQUE_LENGTH={try_get(toupcam.TOUPCAM_OPTION_BACKEND_DEQUE_LENGTH)}\n" + \
+            f"TOUPCAM_OPTION_FRONTEND_DEQUE_CURRENT={try_get(toupcam.TOUPCAM_OPTION_FRONTEND_DEQUE_CURRENT)}\n" + \
+            f"TOUPCAM_OPTION_BACKEND_DEQUE_CURRENT={try_get(toupcam.TOUPCAM_OPTION_BACKEND_DEQUE_CURRENT)}\n" + \
+            f"TOUPCAM_OPTION_EVENT_HARDWARE={try_get(toupcam.TOUPCAM_OPTION_EVENT_HARDWARE)}\n" + \
+            f"TOUPCAM_OPTION_PACKET_NUMBER={try_get(toupcam.TOUPCAM_OPTION_PACKET_NUMBER)}\n" + \
+            f"TOUPCAM_OPTION_LINE_PRE_DELAY={try_get(toupcam.TOUPCAM_OPTION_LINE_PRE_DELAY)}\n" + \
+            f"TOUPCAM_OPTION_LINE_POST_DELAY={try_get(toupcam.TOUPCAM_OPTION_LINE_POST_DELAY)}\n" + \
+            f"TOUPCAM_OPTION_POWER={try_get(toupcam.TOUPCAM_OPTION_POWER)}\n" + \
+            f"TOUPCAM_OPTION_EXPOSURE_PRE_DELAY={try_get(toupcam.TOUPCAM_OPTION_EXPOSURE_PRE_DELAY)}\n" + \
+            f"TOUPCAM_OPTION_EXPOSURE_POST_DELAY={try_get(toupcam.TOUPCAM_OPTION_EXPOSURE_POST_DELAY)}"

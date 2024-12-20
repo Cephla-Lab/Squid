@@ -20,6 +20,8 @@ import control.microscope
 
 log = squid.logging.get_logger(__name__)
 
+# No matter what, import our simulation camera for simulation mode
+from control.camera import Camera_Simulation
 if CAMERA_TYPE == "Toupcam":
     try:
         import control.camera_toupcam as camera
@@ -178,10 +180,10 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_CELLX:
             self.cellx = serial_peripherals.CellX_Simulation()
         if SUPPORT_LASER_AUTOFOCUS:
-            self.camera_focus = camera_fc.Camera_Simulation()
+            self.camera_focus = Camera_Simulation()
         if USE_LDI_SERIAL_CONTROL:
             self.ldi = serial_peripherals.LDI_Simulation()
-        self.camera = camera.Camera_Simulation(rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
+        self.camera = Camera_Simulation(rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
         self.camera.set_pixel_format(DEFAULT_PIXEL_FORMAT)
         if USE_ZABER_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel = serial_peripherals.FilterController_Simulation(115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE)
