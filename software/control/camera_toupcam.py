@@ -809,6 +809,7 @@ class Camera(BaseCamera, WithTriggerMarking):
             except HRESULTException as e:
                 return f"Error during get: 0x{ctypes.c_uint32(e.hr).value:x}"
         return f"Toupcam Settings:\n" + \
+            f"get_ExpoTime()={self.camera.get_ExpoTime()}\n" + \
             f"NO_FRAME_TIMEOUT={try_get(toupcam.TOUPCAM_OPTION_NOFRAME_TIMEOUT)}\n" + \
             f"TOUPCAM_OPTION_READOUT_MODE={try_get(toupcam.TOUPCAM_OPTION_READOUT_MODE)}\n" + \
             f"TOUPCAM_OPTION_THREAD_PRIORITY={try_get(toupcam.TOUPCAM_OPTION_THREAD_PRIORITY)}\n" + \

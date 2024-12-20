@@ -26,12 +26,10 @@ class ImageStatCollector:
             nonlocal self
             now = time.time()
             self.receive_timestamps.append(now)
-            dt = now - self.trigger_timestamps[-1]
             frame_time_s = self.camera.get_full_frame_time() / 1000.0
             self.log.debug(
-                f"Received {len(self.receive_timestamps)} / {self.expected_count}"
-                f"  {dt} [s] since last trigger"
-                f"  {frame_time_s} [s] frame time")
+                f"Received {len(self.receive_timestamps)} / {self.expected_count}\n"
+                f"  {frame_time_s} [s] full frame time (strobe + exposure)\n")
 
         return streaming_cb
 
@@ -43,11 +41,14 @@ class ImageStatCollector:
 
     def get_summary(self):
         runtime = max(self.receive_timestamps) - min(self.trigger_timestamps)
+        trigger_dts = [later - earlier for (later, earlier) in zip(self.trigger_timestamps[1:], self.trigger_timestamps)]
         return (
             f"expected count: {self.expected_count}\n"
             f"triggers sent : {self.get_trigger_count()}\n"
             f"received count: {self.get_received_count()}\n"
             f"dt first trigger to last received: {runtime} [s]\n"
+            f"minimum inter trigger dt: {min(trigger_dts)}\n"
+            f"maximum inter trigger dt: {max(trigger_dts)}\n"
             f"frame rate (only received): {self.get_received_count() / runtime} [Hz]"
         )
 
@@ -114,10 +115,10 @@ def main(args):
     # Wait a bit for the last frame.   If we're only missing 1 frame, be suspect of this!
     time.sleep(0.1 + 3 * camera.get_full_frame_time()/1000)
 
-    log.info(f"Summary of script settings:"
-             f"  --extra_inter_sleep={args.extra_inter_sleep}\n"
-             f"  --allow_overlap={args.allow_overlap}"
-             f"  inter_trigger_sleep_ms={inter_trigger_sleep_ms}")
+    log.info(f"Summary of script settings:\n"
+             f"  --extra_inter_sleep={args.extra_inter_sleep_ms}\n"
+             f"  --allow_overlap={args.allow_overlap}\n"
+             f"  inter_trigger_sleep_ms={inter_trigger_sleep_ms}\n")
 
     if args.print_camera_settings:
         log.info(f"Camera settings: {camera.get_settings_summary()}")
