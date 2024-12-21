@@ -858,6 +858,7 @@ class HighContentScreeningGui(QMainWindow):
                 # trigger wellplate update
                 self.navigationViewer.clear_overlay()
                 self.wellSelectionWidget.onSelectionChanged()
+
         elif is_flexible_acquisition:
             # trigger flexible regions update
             self.wellplateMultiPointWidget.clear_regions()

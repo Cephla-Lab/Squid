@@ -3108,6 +3108,7 @@ class WellplateMultiPointWidget(QFrame):
         self.acquisition_start_time = None
         self.manual_shape = None
         self.eta_seconds = 0
+        self.is_current_acquisition_widget = False
         self.parent = self.multipointController.parent
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
