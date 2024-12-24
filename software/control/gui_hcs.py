@@ -20,6 +20,9 @@ import control.microscope
 
 log = squid.logging.get_logger(__name__)
 
+import control.filterwheel as filterwheel
+
+
 if CAMERA_TYPE == "Toupcam":
     try:
         import control.camera_toupcam as camera
@@ -168,6 +171,9 @@ class HighContentScreeningGui(QMainWindow):
             self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
             self.laserAutofocusController = core.LaserAutofocusController(self.microcontroller,self.camera_focus,self.liveController_focus_camera,self.navigationController,has_two_interfaces=HAS_TWO_INTERFACES,use_glass_top=USE_GLASS_TOP,look_for_cache=False)
 
+        if USE_SQUID_FILTERWHEEL:
+            self.squid_filter_wheel = filterwheel.SquidFilterWheelWrapper(self.microcontroller)
+
     def loadSimulationObjects(self):
         self.log.debug("Loading simulated hardware objects...")
         # Initialize simulation objects
@@ -188,7 +194,10 @@ class HighContentScreeningGui(QMainWindow):
             self.emission_filter_wheel = serial_peripherals.FilterController_Simulation(115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE)
         if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel = serial_peripherals.Optospin_Simulation(SN=None)
+
         self.microcontroller = microcontroller.Microcontroller(existing_serial=microcontroller.SimSerial())
+        if USE_SQUID_FILTERWHEEL:
+            self.squid_filter_wheel = filterwheel.SquidFilterWheelWrapper_Simulation(None)
 
     def loadHardwareObjects(self):
         # Initialize hardware objects
@@ -279,9 +288,75 @@ class HighContentScreeningGui(QMainWindow):
             self.emission_filter_wheel.start_homing()
         if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel.set_speed(OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ)
-
         if not self.microcontroller:
             raise ValueError("Microcontroller must be none-None for hardware setup.")
+
+        self.microcontroller.reset()
+        time.sleep(0.5)
+        if USE_SQUID_FILTERWHEEL:
+            self.microcontroller.init_filter_wheel()
+            time.sleep(0.5)
+        self.microcontroller.initialize_drivers()
+        time.sleep(0.5)
+
+        self.microcontroller.configure_actuators()
+        if USE_SQUID_FILTERWHEEL:
+            self.microcontroller.configure_squidfilter()
+        time.sleep(0.5)
+
+        if HAS_ENCODER_X:
+            self.navigationController.set_axis_PID_arguments(0, PID_P_X, PID_I_X, PID_D_X)
+            self.navigationController.configure_encoder(0, (SCREW_PITCH_X_MM * 1000) / ENCODER_RESOLUTION_UM_X, ENCODER_FLIP_DIR_X)
+            self.navigationController.set_pid_control_enable(0, ENABLE_PID_X)
+        if HAS_ENCODER_Y:
+            self.navigationController.set_axis_PID_arguments(1, PID_P_Y, PID_I_Y, PID_D_Y)
+            self.navigationController.configure_encoder(1, (SCREW_PITCH_Y_MM * 1000) / ENCODER_RESOLUTION_UM_Y, ENCODER_FLIP_DIR_Y)
+            self.navigationController.set_pid_control_enable(1, ENABLE_PID_Y)
+        if HAS_ENCODER_Z:
+            self.navigationController.set_axis_PID_arguments(2, PID_P_Z, PID_I_Z, PID_D_Z)
+            self.navigationController.configure_encoder(2, (SCREW_PITCH_Z_MM * 1000) / ENCODER_RESOLUTION_UM_Z, ENCODER_FLIP_DIR_Z)
+            self.navigationController.set_pid_control_enable(2, ENABLE_PID_Z)
+        if USE_SQUID_FILTERWHEEL:
+            if HAS_ENCODER_W:
+                self.navigationController.set_axis_PID_arguments(3, PID_P_W, PID_I_W, PID_D_W)
+                self.navigationController.configure_encoder(3, 4000, ENCODER_FLIP_DIR_W)
+                self.navigationController.set_pid_control_enable(3, ENABLE_PID_W)
+        time.sleep(0.5)
+
+        self.navigationController.set_x_limit_pos_mm(SOFTWARE_POS_LIMIT.X_POSITIVE)
+        self.navigationController.set_x_limit_neg_mm(SOFTWARE_POS_LIMIT.X_NEGATIVE)
+        self.navigationController.set_y_limit_pos_mm(SOFTWARE_POS_LIMIT.Y_POSITIVE)
+        self.navigationController.set_y_limit_neg_mm(SOFTWARE_POS_LIMIT.Y_NEGATIVE)
+        self.navigationController.set_z_limit_pos_mm(SOFTWARE_POS_LIMIT.Z_POSITIVE)
+        self.navigationController.set_z_limit_neg_mm(SOFTWARE_POS_LIMIT.Z_NEGATIVE)
+
+        if HOMING_ENABLED_Z:
+            self.navigationController.home_z()
+            self.waitForMicrocontroller(10, 'z homing timeout')
+        if HOMING_ENABLED_X and HOMING_ENABLED_Y:
+            self.navigationController.move_x(20)
+            self.waitForMicrocontroller()
+            self.navigationController.home_y()
+            self.waitForMicrocontroller(10, 'y homing timeout')
+            self.navigationController.zero_y()
+            self.navigationController.home_x()
+            self.waitForMicrocontroller(10, 'x homing timeout')
+            self.navigationController.zero_x()
+            self.slidePositionController.homing_done = True
+        if USE_ZABER_EMISSION_FILTER_WHEEL:
+            self.emission_filter_wheel.wait_for_homing_complete()
+        if HOMING_ENABLED_X and HOMING_ENABLED_Y:
+            self.navigationController.move_x(20)
+            self.waitForMicrocontroller()
+            self.navigationController.move_y(20)
+            self.waitForMicrocontroller()
+        
+        if ENABLE_OBJECTIVE_PIEZO:
+            OUTPUT_GAINS.CHANNEL7_GAIN = (OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE == 5)
+        div = 1 if OUTPUT_GAINS.REFDIV else 0
+        gains = sum(getattr(OUTPUT_GAINS, f'CHANNEL{i}_GAIN') << i for i in range(8))
+        self.microcontroller.configure_dac80508_refdiv_and_gain(div, gains)
+        self.microcontroller.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
 
         try:
             self.microcontroller.reset()
@@ -357,6 +432,10 @@ class HighContentScreeningGui(QMainWindow):
             self.camera_focus.enable_callback()
             self.camera_focus.start_streaming()
 
+        if USE_SQUID_FILTERWHEEL:
+            if SQUID_FILTERWHEEL_HOMING_ENABLED:
+                self.squid_filter_wheel.homing()
+
     def waitForMicrocontroller(self, timeout=5.0, error_message=None):
         try:
             self.microcontroller.wait_till_operation_is_completed(timeout)
@@ -386,6 +465,9 @@ class HighContentScreeningGui(QMainWindow):
 
         if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.filterControllerWidget = widgets.FilterControllerWidget(self.emission_filter_wheel, self.liveController)
+
+        if USE_SQUID_FILTERWHEEL:
+            self.squidFilterWidget = widgets.SquidFilterWidget(self)
 
         self.recordingControlWidget = widgets.RecordingWidget(self.streamHandler, self.imageSaver)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(self.navigationController, self.navigationViewer, self.streamHandler, self.liveController)
@@ -437,7 +519,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self.cameraTabWidget = QTabWidget()
         self.setupCameraTabWidget()
-
+        
     def setupImageDisplayTabs(self):
         if USE_NAPARI_FOR_LIVE_VIEW:
             self.napariLiveWidget = widgets.NapariLiveWidget(self.streamHandler, self.liveController, self.navigationController, self.configurationManager, self.contrastManager, self.wellSelectionWidget)
@@ -517,6 +599,8 @@ class HighContentScreeningGui(QMainWindow):
             self.cameraTabWidget.addTab(self.spinningDiskConfocalWidget, "Confocal")
         if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.cameraTabWidget.addTab(self.filterControllerWidget, "Emission Filter")
+        if USE_SQUID_FILTERWHEEL:
+            self.cameraTabWidget.addTab(self.squidFilterWidget,"SquidFilter")
         self.cameraTabWidget.addTab(self.cameraSettingWidget, 'Camera')
         self.cameraTabWidget.addTab(self.autofocusWidget, "Contrast AF")
         if SUPPORT_LASER_AUTOFOCUS:

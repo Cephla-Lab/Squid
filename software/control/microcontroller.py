@@ -161,6 +161,7 @@ class Microcontroller:
         self.x_pos = 0 # unit: microstep or encoder resolution
         self.y_pos = 0 # unit: microstep or encoder resolution
         self.z_pos = 0 # unit: microstep or encoder resolution
+        self.w_pos = 0 # unit: microstep or encoder resolution
         self.theta_pos = 0 # unit: microstep or encoder resolution
         self.button_and_switch_state = 0
         self.joystick_button_pressed = 0
@@ -224,6 +225,13 @@ class Microcontroller:
         cmd[1] = CMD_SET.INITIALIZE
         self.send_command(cmd)
         self.log.debug("initialize the drivers")
+
+    def init_filter_wheel(self):
+        self._cmd_id = 0
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.INITFILTERWHEEL
+        self.send_command(cmd)
+        print('initialize filter wheel') # debug
 
     def turn_on_illumination(self):
         cmd = bytearray(self.tx_buffer_length)
@@ -297,7 +305,6 @@ class Microcontroller:
             # TODO(imo): Since this issues multiple commands, there's no way to check for and abort failed
             # ones mid-move.
             self.send_command(cmd)
-
             n_microsteps_abs = n_microsteps_abs - n_microsteps_partial_abs
         n_microsteps = direction * n_microsteps_abs
         payload = self._int_to_payload(n_microsteps, 4)
@@ -350,6 +357,9 @@ class Microcontroller:
 
     def move_theta_usteps(self,usteps):
         self._move_axis_usteps(usteps, CMD_SET.MOVE_THETA, STAGE_MOVEMENT_SIGN_THETA)
+        
+    def move_w_usteps(self,usteps):
+        self._move_axis_usteps(usteps, CMD_SET.MOVE_W, STAGE_MOVEMENT_SIGN_W)
 
     def set_off_set_velocity_x(self,off_set_velocity):
         # off_set_velocity is in mm/s
@@ -412,6 +422,13 @@ class Microcontroller:
         cmd[4] = int((STAGE_MOVEMENT_SIGN_Y+1)/2) # "move backward" if SIGN is 1, "move forward" if SIGN is -1
         self.send_command(cmd)
 
+    def home_w(self):
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.HOME_OR_ZERO
+        cmd[2] = AXIS.W
+        cmd[3] = int((STAGE_MOVEMENT_SIGN_W+1)/2) # "move backward" if SIGN is 1, "move forward" if SIGN is -1
+        self.send_command(cmd)
+
     def zero_x(self):
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
@@ -430,6 +447,13 @@ class Microcontroller:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.Z
+        cmd[3] = HOME_OR_ZERO.ZERO
+        self.send_command(cmd)
+
+    def zero_w(self):
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.HOME_OR_ZERO
+        cmd[2] = AXIS.W
         cmd[3] = HOME_OR_ZERO.ZERO
         self.send_command(cmd)
 
@@ -576,6 +600,14 @@ class Microcontroller:
         self.set_home_safety_margin(AXIS.Y, int(Y_HOME_SAFETY_MARGIN_UM))
         self.wait_till_operation_is_completed()
         self.set_home_safety_margin(AXIS.Z, int(Z_HOME_SAFETY_MARGIN_UM))
+        self.wait_till_operation_is_completed()
+
+    def configure_squidfilter(self):
+        self.set_leadscrew_pitch(AXIS.W,SCREW_PITCH_W_MM)
+        self.wait_till_operation_is_completed()
+        self.configure_motor_driver(AXIS.W,MICROSTEPPING_DEFAULT_W,W_MOTOR_RMS_CURRENT_mA,W_MOTOR_I_HOLD)
+        self.wait_till_operation_is_completed()
+        self.set_max_velocity_acceleration(AXIS.W,MAX_VELOCITY_W_mm,MAX_ACCELERATION_W_mm)
         self.wait_till_operation_is_completed()
 
     def ack_joystick_button_pressed(self):
