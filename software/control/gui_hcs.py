@@ -146,24 +146,24 @@ class HighContentScreeningGui(QMainWindow):
             self.navigationController = NavigationController_PriorStage(self.priorstage, self.microcontroller, self.objectiveStore, parent=self)
         else:
             self.navigationController = core.NavigationController(self.microcontroller, self.objectiveStore, parent=self)
+        if WELLPLATE_FORMAT == 'glass slide':
+            self.navigationViewer = core.NavigationViewer(self.objectiveStore, sample='4 glass slide')
+        else:
+            self.navigationViewer = core.NavigationViewer(self.objectiveStore, sample=WELLPLATE_FORMAT)
         self.slidePositionController = core.SlidePositionController(self.navigationController, self.liveController, is_for_wellplate=True)
         self.autofocusController = core.AutoFocusController(self.camera, self.navigationController, self.liveController)
-        self.scanCoordinates = core.ScanCoordinates()
+        self.scanCoordinates = core.ScanCoordinates(self.objectiveStore, self.navigationViewer, self.navigationController)
         self.multipointController = core.MultiPointController(self.camera, self.navigationController, self.liveController, self.autofocusController, self.configurationManager, scanCoordinates=self.scanCoordinates, parent=self)
         self.imageSaver = core.ImageSaver()
         self.imageDisplay = core.ImageDisplay()
         if ENABLE_TRACKING:
             self.trackingController = core.TrackingController(self.camera, self.microcontroller, self.navigationController, self.configurationManager, self.liveController, self.autofocusController, self.imageDisplayWindow)
-        if WELLPLATE_FORMAT == 'glass slide':
-            self.navigationViewer = core.NavigationViewer(self.objectiveStore, sample='4 glass slide')
-        else:
-            self.navigationViewer = core.NavigationViewer(self.objectiveStore, sample=WELLPLATE_FORMAT)
 
         if SUPPORT_LASER_AUTOFOCUS:
             self.configurationManager_focus_camera = core.ConfigurationManager(filename='./focus_camera_configurations.xml')
             self.streamHandler_focus_camera = core.StreamHandler()
             self.liveController_focus_camera = core.LiveController(self.camera_focus,self.microcontroller,self.configurationManager_focus_camera, self, control_illumination=False,for_displacement_measurement=True)
-            self.multipointController = core.MultiPointController(self.camera,self.navigationController,self.liveController,self.autofocusController,self.configurationManager,scanCoordinates=self.scanCoordinates,parent=self)
+            self.multipointController = core.MultiPointController(self.camera,self.navigationController,self.liveController,self.autofocusController,self.configurationManager, scanCoordinates=self.scanCoordinates, parent=self)
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(draw_crosshairs=True, show_LUT=False, autoLevels=False)
             self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
             self.laserAutofocusController = core.LaserAutofocusController(self.microcontroller,self.camera_focus,self.liveController_focus_camera,self.navigationController,has_two_interfaces=HAS_TWO_INTERFACES,use_glass_top=USE_GLASS_TOP,look_for_cache=False)
@@ -423,7 +423,7 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.setupImageDisplayTabs()
 
-        self.flexibleMultiPointWidget = widgets.FlexibleMultiPointWidget(self.navigationController, self.navigationViewer, self.multipointController, self.objectiveStore, self.configurationManager, scanCoordinates=None)
+        self.flexibleMultiPointWidget = widgets.FlexibleMultiPointWidget(self.navigationController, self.navigationViewer, self.multipointController, self.objectiveStore, self.configurationManager, self.scanCoordinates)
         self.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(self.navigationController, self.navigationViewer, self.multipointController, self.objectiveStore, self.configurationManager, self.scanCoordinates, self.napariMosaicDisplayWidget)
         self.sampleSettingsWidget = widgets.SampleSettingsWidget(self.objectivesWidget, self.wellplateFormatWidget)
 
@@ -657,7 +657,7 @@ class HighContentScreeningGui(QMainWindow):
             self.objectivesWidget.signal_objective_changed.connect(self.flexibleMultiPointWidget.update_fov_positions)
         self.navigationController.xyPos.connect(self.navigationViewer.draw_fov_current_location)
         if WELLPLATE_FORMAT == 'glass slide':
-            self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
+            self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.update_live_coordinates)
             self.is_live_scan_grid_on = True
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.set_microscope_mode)
@@ -696,7 +696,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self.wellSelectionWidget.signal_wellSelectedPos.connect(self.navigationController.move_to)
         if ENABLE_WELLPLATE_MULTIPOINT:
-            self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.set_well_coordinates)
+            self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
             self.objectivesWidget.signal_objective_changed.connect(self.wellplateMultiPointWidget.update_coordinates)
 
         if SUPPORT_LASER_AUTOFOCUS:
@@ -848,6 +848,7 @@ class HighContentScreeningGui(QMainWindow):
     def onTabChanged(self, index):
         is_flexible_acquisition = (index == self.recordTabWidget.indexOf(self.flexibleMultiPointWidget)) if ENABLE_FLEXIBLE_MULTIPOINT else False
         is_wellplate_acquisition = (index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget)) if ENABLE_WELLPLATE_MULTIPOINT else False
+        self.scanCoordinates.clear_regions()
 
         if is_wellplate_acquisition:
             if self.wellplateMultiPointWidget.combobox_shape.currentText() == 'Manual':
@@ -856,11 +857,9 @@ class HighContentScreeningGui(QMainWindow):
                     self.wellplateMultiPointWidget.update_manual_shape(self.wellplateMultiPointWidget.manual_shapes)
             else:
                 # trigger wellplate update
-                self.navigationViewer.clear_overlay()
-                self.wellSelectionWidget.onSelectionChanged()
+                self.wellplateMultiPointWidget.update_coordinates()
         elif is_flexible_acquisition:
             # trigger flexible regions update
-            self.wellplateMultiPointWidget.clear_regions()
             self.flexibleMultiPointWidget.update_fov_positions()
 
         self.toggleWellSelector(is_wellplate_acquisition and self.wellSelectionWidget.format != 'glass slide')
@@ -892,7 +891,7 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController.inverted_objective = False
             self.navigationController.inverted_objective = False
             if not self.is_live_scan_grid_on: # connect live scan grid for glass slide
-                self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
+                self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.update_live_coordinates)
                 self.is_live_scan_grid_on = True
             self.log.debug("live scan grid connected.")
             self.setupSlidePositionController(is_for_wellplate=False)
@@ -901,7 +900,7 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController.inverted_objective = True
             self.navigationController.inverted_objective = True
             if self.is_live_scan_grid_on: # disconnect live scan grid for wellplate
-                self.navigationController.scanGridPos.disconnect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
+                self.navigationController.scanGridPos.disconnect(self.wellplateMultiPointWidget.update_live_coordinates)
                 self.is_live_scan_grid_on = False
             self.log.debug("live scan grid disconnected.")
             self.setupSlidePositionController(is_for_wellplate=True)
@@ -916,7 +915,7 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_FLEXIBLE_MULTIPOINT: # clear regions
             self.flexibleMultiPointWidget.clear_only_location_list()
         if ENABLE_WELLPLATE_MULTIPOINT: # reset regions onto new wellplate with default size/shape
-            self.wellplateMultiPointWidget.clear_regions()
+            self.scanCoordinates.clear_regions()
             self.wellplateMultiPointWidget.set_default_scan_size()
 
     def setupSlidePositionController(self, is_for_wellplate):
@@ -957,7 +956,7 @@ class HighContentScreeningGui(QMainWindow):
         self.wellSelectionWidget.signal_wellSelectedPos.connect(self.navigationController.move_to)
         self.wellplateFormatWidget.signalWellplateSettings.connect(self.wellSelectionWidget.onWellplateChanged)
         if ENABLE_WELLPLATE_MULTIPOINT:
-            self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.set_well_coordinates)
+            self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
 
     def toggleWellSelector(self, show):
         if USE_NAPARI_WELL_SELECTION and not self.performance_mode and not self.live_only_mode:
@@ -970,12 +969,12 @@ class HighContentScreeningGui(QMainWindow):
         if acquisition_started:
             print("STARTING ACQUISITION")
             if self.is_live_scan_grid_on: # disconnect live scan grid during acquisition
-                self.navigationController.scanGridPos.disconnect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
+                self.navigationController.scanGridPos.disconnect(self.wellplateMultiPointWidget.update_live_coordinates)
                 self.is_live_scan_grid_on = False
         else:
             print("FINISHED ACQUISITION")
             if not self.is_live_scan_grid_on:  # reconnect live scan grid if was on before acqusition
-                self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
+                self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.update_live_coordinates)
                 self.is_live_scan_grid_on = True
 
         # click to move off during acquisition

@@ -12,6 +12,7 @@ from qtpy.QtGui import *
 
 # control
 from control._def import *
+
 if DO_FLUORESCENCE_RTP:
     from control.processing_handler import ProcessingHandler
     from control.processing_pipeline import *
@@ -1671,14 +1672,10 @@ class MultiPointWorker(QObject):
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
-        if self.multiPointController.coordinate_dict is not None:
-            self.coordinate_dict = self.multiPointController.coordinate_dict.copy()
-        else:
-            self.coordinate_dict = None
-        self.use_scan_coordinates = self.multiPointController.use_scan_coordinates
-        self.scan_coordinates_mm = self.multiPointController.scan_coordinates_mm
-        self.scan_coordinates_name = self.multiPointController.scan_coordinates_name
-        self.z_stacking_config = self.multiPointController.z_stacking_config
+        self.scan_region_fov_coords_mm = self.multiPointController.scan_region_fov_coords_mm.copy()
+        self.scan_region_coords_mm = self.multiPointController.scan_region_coords_mm
+        self.scan_region_names = self.multiPointController.scan_region_names
+        self.z_stacking_config = self.multiPointController.z_stacking_config # default 'from bottom'
         self.z_range = self.multiPointController.z_range
 
         self.microscope = self.multiPointController.parent
@@ -1802,15 +1799,11 @@ class MultiPointWorker(QObject):
         self.dz_usteps = 0 # accumulated z displacement
 
         # z stacking config
-        if self.coordinate_dict is not None:
-            if self.z_stacking_config == 'FROM TOP':
-                self.deltaZ_usteps = -abs(self.deltaZ_usteps)
-                self.move_to_z_level(self.z_range[1])
-            else:
-                self.move_to_z_level(self.z_range[0])
-
-        elif self.z_stacking_config == 'FROM TOP':
+        if self.z_stacking_config == 'FROM TOP':
             self.deltaZ_usteps = -abs(self.deltaZ_usteps)
+            self.move_to_z_level(self.z_range[1])
+        else:
+            self.move_to_z_level(self.z_range[0])
 
         self.z_pos = self.navigationController.z_pos # zpos at the beginning of the scan
 
@@ -1826,13 +1819,9 @@ class MultiPointWorker(QObject):
     def initialize_coordinates_dataframe(self):
         base_columns = ['z_level', 'x (mm)', 'y (mm)', 'z (um)', 'time']
         piezo_column = ['z_piezo (um)'] if self.use_piezo else []
+        self.coordinates_pd = pd.DataFrame(columns=['region', 'fov'] + base_columns + piezo_column)
 
-        if self.coordinate_dict is not None:
-            self.coordinates_pd = pd.DataFrame(columns=['region', 'fov'] + base_columns + piezo_column)
-        else:
-            self.coordinates_pd = pd.DataFrame(columns=['region', 'i', 'j'] + base_columns + piezo_column)
-
-    def update_coordinates_dataframe(self, region_id, z_level, fov=None, i=None, j=None):
+    def update_coordinates_dataframe(self, region_id, z_level, fov=None):
         base_data = {
             'z_level': [z_level],
             'x (mm)': [self.navigationController.x_pos_mm],
@@ -1842,30 +1831,14 @@ class MultiPointWorker(QObject):
         }
         piezo_data = {'z_piezo (um)': [self.z_piezo_um - OBJECTIVE_PIEZO_HOME_UM]} if self.use_piezo else {}
 
-        if IS_HCS:
-            if self.coordinate_dict is not None:
-                new_row = pd.DataFrame({
-                    'region': [region_id],
-                    'fov': [fov],
-                    **base_data,
-                    **piezo_data
-                })
-            else:
-                new_row = pd.DataFrame({
-                    'region': [self.scan_coordinates_name[region_id]],
-                    'i': [i], 'j': [j],
-                    **base_data,
-                    **piezo_data
-                })
-        else:
-            new_row = pd.DataFrame({
-                'i': [i], 'j': [j],
-                **base_data,
-                **piezo_data
-            })
+        new_row = pd.DataFrame({
+            'region': [region_id],
+            'fov': [fov],
+            **base_data,
+            **piezo_data
+        })
 
         self.coordinates_pd = pd.concat([self.coordinates_pd, new_row], ignore_index=True)
-
 
     def move_to_coordinate(self, coordinate_mm):
         print("moving to coordinate", coordinate_mm)
@@ -1902,9 +1875,9 @@ class MultiPointWorker(QObject):
         time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
 
     def run_coordinate_acquisition(self, current_path):
-        n_regions = len(self.scan_coordinates_mm)
+        n_regions = len(self.scan_region_coords_mm)
 
-        for region_index, (region_id, coordinates) in enumerate(self.coordinate_dict.items()):
+        for region_index, (region_id, coordinates) in enumerate(self.scan_region_fov_coords_mm.items()):
 
             self.signal_acquisition_progress.emit(region_index + 1, n_regions, self.time_point)
 
@@ -1920,31 +1893,23 @@ class MultiPointWorker(QObject):
                     self.handle_acquisition_abort(current_path, region_id)
                     return
 
-    def acquire_at_position(self, region_id, current_path, fov, i=None, j=None):
+    def acquire_at_position(self, region_id, current_path, fov):
 
         if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in globals():
             print('run custom multipoint')
             multipoint_custom_script_entry(self, current_path, region_id, fov)
             return
 
-        self.perform_autofocus(region_id)
+        self.perform_autofocus(region_id, fov)
 
         if self.NZ > 1:
             self.prepare_z_stack()
-
-        if self.coordinate_dict is not None:
-            coordinate_name = region_id
-        else:
-            coordinate_name = self.scan_coordinates_name[region_id]
 
         x_mm = self.navigationController.x_pos_mm
         y_mm = self.navigationController.y_pos_mm
 
         for z_level in range(self.NZ):
-            if i is not None and j is not None:
-                file_ID = f"{coordinate_name}_{i}_{j}_{z_level}"
-            else:
-                file_ID = f"{coordinate_name}_{fov}_{z_level}"
+            file_ID = f"{region_id}_{fov}_{z_level}"
 
             metadata = dict(x = self.navigationController.x_pos_mm, y = self.navigationController.y_pos_mm, z = self.navigationController.z_pos_mm)
             print(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
@@ -1979,10 +1944,7 @@ class MultiPointWorker(QObject):
                 self.run_real_time_processing(current_round_images, z_level)
 
             # updates coordinates df
-            if i is None or j is None:
-                self.update_coordinates_dataframe(region_id, z_level, fov)
-            else:
-                self.update_coordinates_dataframe(region_id, z_level)
+            self.update_coordinates_dataframe(region_id, z_level, fov)
             self.signal_register_current_fov.emit(self.navigationController.x_pos_mm, self.navigationController.y_pos_mm)
 
             # check if the acquisition should be aborted
@@ -2021,33 +1983,16 @@ class MultiPointWorker(QObject):
             except AttributeError as e:
                 print(repr(e))
 
-    def perform_autofocus(self, region_id):
+    def perform_autofocus(self, region_id, fov):
         if self.do_reflection_af == False:
             # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
-            if ( (self.NZ == 1) or self.z_stacking_config == 'FROM CENTER' ) and (self.do_autofocus) and (self.af_fov_count%Acquisition.NUMBER_OF_FOVS_PER_AF==0):
+            if ((self.NZ == 1) or self.z_stacking_config == 'FROM CENTER') and (self.do_autofocus) and (self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0):
                 configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
                 config_AF = next((config for config in self.configurationManager.configurations if config.name == configuration_name_AF))
                 self.signal_current_configuration.emit(config_AF)
-                if (self.af_fov_count%Acquisition.NUMBER_OF_FOVS_PER_AF==0) or self.autofocusController.use_focus_map:
+                if (self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0) or self.autofocusController.use_focus_map:
                     self.autofocusController.autofocus()
                     self.autofocusController.wait_till_autofocus_has_completed()
-                # update z location of scan_coordinates_mm after AF
-                if len(self.scan_coordinates_mm[region_id]) == 3:
-                    self.scan_coordinates_mm[region_id][2] = self.navigationController.z_pos_mm
-                    # update the coordinate in the widget
-                    if self.coordinate_dict is not None:
-                        self.microscope.wellplateMultiPointWidget.update_region_z_level(region_id, self.navigationController.z_pos_mm)
-                    elif self.multiPointController.location_list is not None:
-                        try:
-                            self.microscope.flexibleMultiPointWidget._update_z(region_id, self.navigationController.z_pos_mm)
-                        except:
-                            print("failed update flexible widget z")
-                            pass
-                        try:
-                            self.microscope.wellplateMultiPointWidget.update_region_z_level(region_id, self.navigationController.z_pos_mm)
-                        except:
-                            print("failed update grid widget z")
-                            pass
         else:
             # initialize laser autofocus if it has not been done
             if self.microscope.laserAutofocusController.is_initialized==False:
@@ -2055,7 +2000,7 @@ class MultiPointWorker(QObject):
                 # initialize the reflection AF
                 self.microscope.laserAutofocusController.initialize_auto()
                 # do contrast AF for the first FOV (if contrast AF box is checked)
-                if self.do_autofocus and ( (self.NZ == 1) or self.z_stacking_config == 'FROM CENTER' ) :
+                if self.do_autofocus and ((self.NZ == 1) or self.z_stacking_config == 'FROM CENTER'):
                     configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
                     config_AF = next((config for config in self.configurationManager.configurations if config.name == configuration_name_AF))
                     self.signal_current_configuration.emit(config_AF)
@@ -2076,6 +2021,22 @@ class MultiPointWorker(QObject):
                     saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
                     iio.imwrite(saving_path, self.microscope.laserAutofocusController.image)
                     print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+
+        # Get new Z position after autofocus
+        new_z = self.navigationController.z_pos_mm
+
+        # Always update FOV-specific z-level
+        self.microscope.scanCoordinates.update_fov_z_level(region_id, fov, new_z)
+
+        # For first FOV, also update region center and/or location list
+        if (fov == 0 and
+            hasattr(self.microscope, 'recordTabWidget') and
+            hasattr(self.microscope, 'flexibleMultiPointWidget') and
+            isinstance(self.microscope.recordTabWidget.currentWidget(), type(self.microscope.flexibleMultiPointWidget)) and
+            region_id.startswith('R')):
+            # Get index from region_id (e.g., 'R0' -> 0)
+            index = int(region_id[1:])
+            self.microscope.flexibleMultiPointWidget.update_location_z_level(index, new_z)
 
     def prepare_z_stack(self):
         # move to bottom of the z stack
@@ -2332,7 +2293,8 @@ class MultiPointWorker(QObject):
         iio.imwrite(os.path.join(current_path, file_name), rgb_image)
 
     def handle_acquisition_abort(self, current_path, region_id=0):
-        self.move_to_coordinate(self.scan_coordinates_mm[region_id])
+        current_pos = (self.navigationController.x_pos_mm, self.navigationController.y_pos_mm, self.navigationController.z_pos_mm)
+        self.move_to_coordinate(self.scanCoordinates.region_centers.get(region_id, current_pos))
         self.coordinates_pd.to_csv(os.path.join(current_path,'coordinates.csv'),index=False,header=True)
         self.navigationController.enable_joystick_button_action = True
 
@@ -2443,20 +2405,18 @@ class MultiPointController(QObject):
         self.selected_configurations = []
         self.usb_spectrometer = usb_spectrometer
         self.scanCoordinates = scanCoordinates
-        self.scan_coordinates_mm = []
-        self.scan_coordinates_name = []
+        self.scan_region_names = []
+        self.scan_region_coords_mm = []
+        self.scan_region_fov_coords_mm = {}
         self.parent = parent
         self.start_time = 0
         self.old_images_per_page = 1
         self.z_range = [self.navigationController.z_pos_mm, self.navigationController.z_pos_mm + self.deltaZ * (self.NZ - 1)] # [start_mm, end_mm]
-
         try:
             if self.parent is not None:
                 self.old_images_per_page = self.parent.dataHandler.n_images_per_page
         except:
             pass
-        self.location_list = None # for flexible multipoint
-        self.coordinate_dict = None # for coordinate grid vs postion grid
         self.z_stacking_config = Z_STACKING_CONFIG
 
     def set_use_piezo(self, checked):
@@ -2574,26 +2534,17 @@ class MultiPointController(QObject):
         for configuration_name in selected_configurations_name:
             self.selected_configurations.append(next((config for config in self.configurationManager.configurations if config.name == configuration_name)))
 
-    def run_acquisition(self, location_list=None, coordinate_dict=None):
-        # location_list dict -> {key: region_id, value: center coordinate (x,y,z)}
-        # coordinate_dict dict -> {key: region_id, value: fov coordinates list [(x0,y0,z0), (x1,y1,z1), ... ]}
+    def run_acquisition(self):
         print('start multipoint')
 
-        if coordinate_dict is not None:
-            print('Using coordinate-based acquisition') # always
-            total_points = sum(len(coords) for coords in coordinate_dict)
-            self.coordinate_dict = coordinate_dict
-            self.location_list = None
-            self.use_scan_coordinates = False
-            self.scan_coordinates_mm = location_list
-            self.scan_coordinates_name = list(coordinate_dict.keys()) # list(coordinate_dict.keys()) if not wellplate
-        else:
-            print("obsolete functionailty. use coordinate acquisition instead of grid acquisition")
-            return
+        self.scan_region_coords_mm = list(self.scanCoordinates.region_centers.values())
+        self.scan_region_names = list(self.scanCoordinates.region_centers.keys())
+        self.scan_region_fov_coords_mm = self.scanCoordinates.region_fov_coordinates
 
-        print("num regions:",len(self.scan_coordinates_mm))
-        print("region ids:", self.scan_coordinates_name)
-        print("region coordinates:", self.scan_coordinates_mm)
+        print("num fovs:", sum(len(coords) for coords in self.scan_region_fov_coords_mm))
+        print("num regions:",len(self.scan_region_coords_mm))
+        print("region ids:", self.scan_region_names)
+        print("region centers:", self.scan_region_coords_mm)
 
         self.abort_acqusition_requested = False
 
@@ -2633,7 +2584,7 @@ class MultiPointController(QObject):
                 else:
                     self.parent.imageDisplayTabs.setCurrentWidget(self.parent.imageArrayDisplayWindow.widget)
 
-            elif USE_NAPARI_FOR_MOSAIC_DISPLAY and self.coordinate_dict is not None and self.NZ == 1:
+            elif USE_NAPARI_FOR_MOSAIC_DISPLAY and self.NZ == 1:
                 self.parent.imageDisplayTabs.setCurrentWidget(self.parent.napariMosaicDisplayWidget)
 
             elif USE_NAPARI_FOR_MULTIPOINT:
@@ -3901,11 +3852,15 @@ class PlateReaderNavigationController(QObject):             # Not implemented fo
         self.microcontroller.home_y()
 
 
-class ScanCoordinates(object):
-    def __init__(self):
-        self.coordinates_mm = []
-        self.name = []
+class ScanCoordinates:
+    def __init__(self, objectiveStore, navigationViewer, navigationController):
+        # Wellplate settings
+        self.objectiveStore = objectiveStore
+        self.navigationViewer = navigationViewer
+        self.navigationController = navigationController
         self.well_selector = None
+        self.acquisition_pattern = ACQUISITION_PATTERN
+        self.fov_pattern = FOV_PATTERN
         self.format = WELLPLATE_FORMAT
         self.a1_x_mm = A1_X_MM
         self.a1_y_mm = A1_Y_MM
@@ -3913,17 +3868,15 @@ class ScanCoordinates(object):
         self.wellplate_offset_y_mm = WELLPLATE_OFFSET_Y_mm
         self.well_spacing_mm = WELL_SPACING_MM
         self.well_size_mm = WELL_SIZE_MM
+        self.a1_x_pixel = None
+        self.a1_y_pixel = None
+        self.number_of_skip = None
 
-    def _index_to_row(self,index):
-        index += 1
-        row = ""
-        while index > 0:
-            index -= 1
-            row = chr(index % 26 + ord('A')) + row
-            index //= 26
-        return row
+        # Centralized region management
+        self.region_centers = {}  # {region_id: [x, y, z]}
+        self.region_fov_coordinates = {}  # {region_id: [(x,y,z), ...]}
 
-    def add_well_selector(self,well_selector):
+    def add_well_selector(self, well_selector):
         self.well_selector = well_selector
 
     def update_wellplate_settings(self, format_, a1_x_mm, a1_y_mm, a1_x_pixel, a1_y_pixel, size_mm, spacing_mm, number_of_skip):
@@ -3936,18 +3889,27 @@ class ScanCoordinates(object):
         self.well_spacing_mm = spacing_mm
         self.number_of_skip = number_of_skip
 
+    def _index_to_row(self,index):
+        index += 1
+        row = ""
+        while index > 0:
+            index -= 1
+            row = chr(index % 26 + ord('A')) + row
+            index //= 26
+        return row
+
     def get_selected_wells(self):
         # get selected wells from the widget
         print("getting selected wells for acquisition")
         if not self.well_selector or self.format == 'glass slide':
-            return False
-        selected_wells = self.well_selector.get_selected_cells()
-        selected_wells = np.array(selected_wells)
-        # clear the previous selection
-        self.coordinates_mm = []
-        self.name = []
+            return None
+
+        selected_wells = np.array(self.well_selector.get_selected_cells())
+        region_centers = {}
+
+        # if no well selected
         if len(selected_wells) == 0:
-            return False # if no well selected
+            return region_centers
         # populate the coordinates
         rows = np.unique(selected_wells[:,0])
         _increasing = True
@@ -3955,15 +3917,356 @@ class ScanCoordinates(object):
             items = selected_wells[selected_wells[:,0]==row]
             columns = items[:,1]
             columns = np.sort(columns)
-            if _increasing==False:
+            if _increasing == False:
                 columns = np.flip(columns)
             for column in columns:
-                x_mm = self.a1_x_mm + column*self.well_spacing_mm + self.wellplate_offset_x_mm
-                y_mm = self.a1_y_mm + row*self.well_spacing_mm + self.wellplate_offset_y_mm
-                self.coordinates_mm.append((x_mm,y_mm))
-                self.name.append(self._index_to_row(row)+str(column+1))
+                x_mm = self.a1_x_mm + (column * self.well_spacing_mm) + self.wellplate_offset_x_mm
+                y_mm = self.a1_y_mm + (row * self.well_spacing_mm) + self.wellplate_offset_y_mm
+                well_id = self._index_to_row(row) + str(column+1)
+                region_centers[well_id] = (x_mm,y_mm)
             _increasing = not _increasing
-        return len(selected_wells) # if wells selected
+        return region_centers
+
+    def set_live_scan_coordinates(self, x_mm, y_mm, scan_size_mm, overlap_percent, shape):
+        if shape != 'Manual' and self.format == 'glass slide':
+            if self.region_centers:
+                self.clear_regions()
+            self.add_region('current', x_mm, y_mm, scan_size_mm, overlap_percent, shape)
+
+    def set_well_coordinates(self, scan_size_mm, overlap_percent, shape):
+        new_region_centers = self.get_selected_wells()
+
+        if self.format == 'glass slide':
+            x = self.navigationController.x_pos_mm
+            y = self.navigationController.y_pos_mm
+            self.set_live_scan_coordinates(x, y, scan_size_mm, overlap_percent, shape)
+
+        elif bool(new_region_centers):
+            # Remove regions that are no longer selected
+            for well_id in list(self.region_centers.keys()):
+                if well_id not in new_region_centers.keys():
+                    self.remove_region(well_id)
+
+            # Add regions for selected wells
+            for well_id, (x, y) in new_region_centers.items():
+                if well_id not in self.region_centers:
+                    self.add_region(well_id, x, y, scan_size_mm, overlap_percent, shape)
+            print(f"Updated region coordinates: {len(self.region_centers)} wells")
+
+        else:
+            print("Clear well coordinates")
+            self.clear_regions()
+
+    def set_manual_coordinates(self, manual_shapes, overlap_percent):
+        self.region_fov_coordinates.clear()
+        self.region_centers.clear()
+
+        if manual_shapes is not None:
+            # Handle manual ROIs
+            for i, shape_coords in enumerate(manual_shapes):
+                scan_coordinates = self.add_manual_region(shape_coords, overlap_percent)
+                if scan_coordinates:
+                    if len(manual_shapes) <= 1:
+                        region_name = f'manual'
+                    else:
+                        region_name = f'manual{i}'
+                    center = np.mean(shape_coords, axis=0)
+                    self.region_centers[region_name] = [center[0], center[1]]
+                    self.region_fov_coordinates[region_name] = scan_coordinates
+        else:
+            print("No Manual ROI found")
+
+    def remove_region(self, well_id):
+        if well_id in self.region_centers:
+            del self.region_centers[well_id]
+
+            if well_id in self.region_fov_coordinates:
+                region_scan_coordinates = self.region_fov_coordinates.pop(well_id)
+                for coord in region_scan_coordinates:
+                    self.navigationViewer.deregister_fov_to_image(coord[0], coord[1])
+
+            print(f"Removed Region: {well_id}")
+
+    def clear_regions(self):
+        self.region_centers.clear()
+        self.region_fov_coordinates.clear()
+        self.navigationViewer.clear_overlay()
+        print("Cleared All Regions")
+
+    def has_regions(self):
+        """Check if any regions exist"""
+        return len(self.region_centers) > 0
+
+    def validate_region(self, region_id):
+        """Validate a region exists"""
+        return region_id in self.region_centers and region_id in self.region_fov_coordinates
+
+    def validate_coordinates(self, x, y):
+        return (SOFTWARE_POS_LIMIT.X_NEGATIVE <= x <= SOFTWARE_POS_LIMIT.X_POSITIVE and
+                SOFTWARE_POS_LIMIT.Y_NEGATIVE <= y <= SOFTWARE_POS_LIMIT.Y_POSITIVE)
+
+    def get_region_bounds(self, region_id):
+        """Get region boundaries"""
+        if not self.validate_region(region_id):
+            return None
+        fovs = np.array(self.region_fov_coordinates[region_id])
+        return {
+            'min_x': np.min(fovs[:,0]),
+            'max_x': np.max(fovs[:,0]),
+            'min_y': np.min(fovs[:,1]),
+            'max_y': np.max(fovs[:,1])
+        }
+
+    def update_fov_z_level(self, region_id, fov, new_z):
+        """Update z-level for a specific FOV and its region center"""
+        if not self.validate_region(region_id):
+            print(f"Region {region_id} not found")
+            return
+
+        # Update FOV coordinates
+        fov_coords = self.region_fov_coordinates[region_id]
+        if fov < len(fov_coords):
+            # Handle both (x,y) and (x,y,z) cases
+            x, y = fov_coords[fov][:2]  # Takes first two elements regardless of length
+            self.region_fov_coordinates[region_id][fov] = (x, y, new_z)
+
+        # If first FOV, update region center coordinates
+        if fov == 0:
+            if len(self.region_centers[region_id]) == 3:
+                self.region_centers[region_id][2] = new_z
+            else:
+                self.region_centers[region_id].append(new_z)
+
+        print(f"Updated z-level to {new_z} for region:{region_id}, fov:{fov}")
+
+
+    def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape='Square'):
+        pixel_size_um = self.objectiveStore.get_pixel_size()
+        fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
+        step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
+
+        steps = math.floor(scan_size_mm / step_size_mm)
+        if shape == 'Circle':
+            tile_diagonal = math.sqrt(2) * fov_size_mm
+            if steps % 2 == 1:  # for odd steps
+                actual_scan_size_mm = (steps - 1) * step_size_mm + tile_diagonal
+            else:  # for even steps
+                actual_scan_size_mm = math.sqrt(((steps - 1) * step_size_mm + fov_size_mm)**2 + (step_size_mm + fov_size_mm)**2)
+
+            if actual_scan_size_mm > scan_size_mm:
+                actual_scan_size_mm -= step_size_mm
+                steps -= 1
+        else:
+            actual_scan_size_mm = (steps - 1) * step_size_mm + fov_size_mm
+
+        steps = max(1, steps)  # Ensure at least one step
+        # print("steps:", steps)
+        # print("scan size mm:", scan_size_mm)
+        # print("actual scan size mm:", actual_scan_size_mm)
+        scan_coordinates = []
+        half_steps = (steps - 1) / 2
+        radius_squared = (scan_size_mm / 2) ** 2
+        fov_size_mm_half = fov_size_mm / 2
+
+        for i in range(steps):
+            row = []
+            y = center_y + (i - half_steps) * step_size_mm
+            for j in range(steps):
+                x = center_x + (j - half_steps) * step_size_mm
+                if shape == 'Square' or (shape == 'Circle' and self._is_in_circle(x, y, center_x, center_y, radius_squared, fov_size_mm_half)):
+                    if self.validate_coordinates(x, y):
+                        row.append((x, y))
+                        self.navigationViewer.register_fov_to_image(x, y)
+
+            if self.fov_pattern == 'S-Pattern' and i % 2 == 1:
+                row.reverse()
+            scan_coordinates.extend(row)
+
+        if not scan_coordinates and shape == 'Circle':
+            if self.validate_coordinates(center_x, center_y):
+                scan_coordinates.append((center_x, center_y))
+                self.navigationViewer.register_fov_to_image(center_x, center_y)
+
+        self.region_centers[well_id] = [float(center_x), float(center_y), float(self.navigationController.z_pos_mm)]
+        self.region_fov_coordinates[well_id] =  scan_coordinates
+
+    def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
+        """Convert grid parameters (NX, NY) to FOV coordinates based on overlap"""
+        fov_size_mm = (self.objectiveStore.get_pixel_size() / 1000) * Acquisition.CROP_WIDTH
+        step_size_mm = fov_size_mm * (1 - overlap_percent/100)
+
+        # Calculate total grid size
+        grid_width_mm = (Nx - 1) * step_size_mm
+        grid_height_mm = (Ny - 1) * step_size_mm
+
+        scan_coordinates = []
+        for i in range(Ny):
+            row = []
+            y = center_y - grid_height_mm/2 + i * step_size_mm
+            for j in range(Nx):
+                x = center_x - grid_width_mm/2 + j * step_size_mm
+                if self.validate_coordinates(x, y):
+                    row.append((x, y))
+                    self.navigationViewer.register_fov_to_image(x, y)
+
+            if self.fov_pattern == 'S-Pattern' and i % 2 == 1:  # reverse even rows
+                row.reverse()
+            scan_coordinates.extend(row)
+
+        # Region coordinates are already centered since center_x, center_y is grid center
+        if scan_coordinates:  # Only add region if there are valid coordinates
+            print(f"Added Flexible Region: {region_id}")
+            self.region_centers[region_id] = [center_x, center_y, center_z]
+            self.region_fov_coordinates[region_id] = scan_coordinates
+        else:
+            print(f"Region Out of Bounds: {region_id}")
+
+    def add_flexible_region_with_step_size(self, region_id, center_x, center_y, center_z, Nx, Ny, dx, dy):
+        grid_width_mm = (Nx - 1) * dx
+        grid_height_mm = (Ny - 1) * dy
+
+        # Pre-calculate step sizes and ranges
+        x_steps = [center_x - grid_width_mm/2 + j * dx
+                   for j in range(Nx)]
+        y_steps = [center_y - grid_height_mm/2 + i * dy
+                   for i in range(Ny)]
+
+        scan_coordinates = []
+        for i, y in enumerate(y_steps):
+            row = []
+            x_range = x_steps if i % 2 == 0 else reversed(x_steps)
+            for x in x_range:
+                if self.validate_coordinates(x, y):
+                    row.append((x, y))
+                    self.navigationViewer.register_fov_to_image(x, y)
+            scan_coordinates.extend(row)
+
+        if scan_coordinates:  # Only add region if there are valid coordinates
+            self.region_centers[region_id] = [center_x, center_y, center_z]
+            self.region_fov_coordinates[region_id] = scan_coordinates
+        else:
+            print(f"Region Out of Bounds: {region_id}")
+
+    def add_manual_region(self, shape_coords, overlap_percent):
+        if shape_coords is None or len(shape_coords) < 3:
+            print("Invalid manual ROI data")
+            return []
+
+        pixel_size_um = self.objectiveStore.get_pixel_size()
+        fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
+        step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
+
+        # Ensure shape_coords is a numpy array
+        shape_coords = np.array(shape_coords)
+        if shape_coords.ndim == 1:
+            shape_coords = shape_coords.reshape(-1, 2)
+        elif shape_coords.ndim > 2:
+            print(f"Unexpected shape of manual_shape: {shape_coords.shape}")
+            return []
+
+        # Calculate bounding box
+        x_min, y_min = np.min(shape_coords, axis=0)
+        x_max, y_max = np.max(shape_coords, axis=0)
+
+        # Create a grid of points within the bounding box
+        x_range = np.arange(x_min, x_max + step_size_mm, step_size_mm)
+        y_range = np.arange(y_min, y_max + step_size_mm, step_size_mm)
+        xx, yy = np.meshgrid(x_range, y_range)
+        grid_points = np.column_stack((xx.ravel(), yy.ravel()))
+
+        # # Use Delaunay triangulation for efficient point-in-polygon test
+        # # hull = Delaunay(shape_coords)
+        # # mask = hull.find_simplex(grid_points) >= 0
+        # # or
+        # # Use Ray Casting for point-in-polygon test
+        # mask = np.array([self._is_in_polygon(x, y, shape_coords) for x, y in grid_points])
+
+        # # Filter points inside the polygon
+        # valid_points = grid_points[mask]
+
+        valid_points = []
+        for x, y in grid_points:
+            if self.validate_coordinates(x, y) and self._is_in_polygon(x, y, shape_coords):
+                valid_points.append((x, y))
+
+        if not valid_points:
+            return []
+
+        valid_points = np.array(valid_points)
+
+        # Sort points
+        sorted_indices = np.lexsort((valid_points[:, 0], valid_points[:, 1]))
+        sorted_points = valid_points[sorted_indices]
+
+        # Apply S-Pattern if needed
+        if self.fov_pattern == 'S-Pattern':
+            unique_y = np.unique(sorted_points[:, 1])
+            for i in range(1, len(unique_y), 2):
+                mask = sorted_points[:, 1] == unique_y[i]
+                sorted_points[mask] = sorted_points[mask][::-1]
+
+        # Register FOVs
+        for x, y in sorted_points:
+            self.navigationViewer.register_fov_to_image(x, y)
+
+        return sorted_points.tolist()
+
+    def _is_in_polygon(self, x, y, poly):
+        n = len(poly)
+        inside = False
+        p1x, p1y = poly[0]
+        for i in range(n + 1):
+            p2x, p2y = poly[i % n]
+            if y > min(p1y, p2y):
+                if y <= max(p1y, p2y):
+                    if x <= max(p1x, p2x):
+                        if p1y != p2y:
+                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                        if p1x == p2x or x <= xinters:
+                            inside = not inside
+            p1x, p1y = p2x, p2y
+        return inside
+
+    def _is_in_circle(self, x, y, center_x, center_y, radius_squared, fov_size_mm_half):
+        corners = [
+            (x - fov_size_mm_half, y - fov_size_mm_half),
+            (x + fov_size_mm_half, y - fov_size_mm_half),
+            (x - fov_size_mm_half, y + fov_size_mm_half),
+            (x + fov_size_mm_half, y + fov_size_mm_half)
+        ]
+        return all((cx - center_x)**2 + (cy - center_y)**2 <= radius_squared for cx, cy in corners)
+
+    def sort_coordinates(self):
+        print(f"Acquisition pattern: {self.acquisition_pattern}")
+
+        if len(self.region_centers) <= 1:
+            return
+
+        def sort_key(item):
+            key, coord = item
+            if 'manual' in key:
+                return (0, coord[1], coord[0])  # Manual coords: sort by y, then x
+            else:
+                row, col = key[0], int(key[1:])
+                return (1, ord(row), col)  # Well coords: sort by row, then column
+
+        sorted_items = sorted(self.region_centers.items(), key=sort_key)
+
+        if self.acquisition_pattern == 'S-Pattern':
+            # Group by row and reverse alternate rows
+            rows = itertools.groupby(sorted_items, key=lambda x: x[1][1] if 'manual' in x[0] else x[0][0])
+            sorted_items = []
+            for i, (_, group) in enumerate(rows):
+                row = list(group)
+                if i % 2 == 1:
+                    row.reverse()
+                sorted_items.extend(row)
+
+        # Update dictionaries efficiently
+        self.region_centers = {k: v for k, v in sorted_items}
+        self.region_fov_coordinates = {k: self.region_fov_coordinates[k]
+                                            for k, _ in sorted_items
+                                            if k in self.region_fov_coordinates}
 
 
 class LaserAutofocusController(QObject):
