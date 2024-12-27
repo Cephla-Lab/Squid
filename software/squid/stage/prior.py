@@ -12,7 +12,7 @@ class PriorStage(AbstractStage):
         self._not_impl()
 
     def _not_impl(self):
-        raise NotImplemented("The Prior Stage is not yet implemented!")
+        raise NotImplementedError("The Prior Stage is not yet implemented!")
 
     def move_x(self, rel_mm: float, blocking: bool = True):
         self._not_impl()

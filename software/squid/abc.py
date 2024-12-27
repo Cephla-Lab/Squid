@@ -13,7 +13,8 @@ class Pos(pydantic.BaseModel):
     x_mm: float
     y_mm: float
     z_mm: float
-    theta_rad: float
+    # NOTE/TODO(imo): If essentially none of our stages have a theta, this is probably fine.  But If it's a mix we probably want a better way of handling the "maybe has theta" case.
+    theta_rad: Optional[float]
 
 class StageStage(pydantic.BaseModel):
     busy: bool
@@ -81,7 +82,7 @@ class AbstractStage(metaclass=abc.ABCMeta):
         pass
 
     def get_config(self) -> StageConfig:
-        pass
+        return self._config
 
     def wait_for_idle(self, timeout_s):
         start_time = time.time()

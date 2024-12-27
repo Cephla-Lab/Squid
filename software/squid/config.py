@@ -1,5 +1,6 @@
 import enum
 import math
+from typing import Optional
 
 import pydantic
 
@@ -8,6 +9,12 @@ import control._def as _def
 class DirectionSign(enum.IntEnum):
     DIRECTION_SIGN_POSITIVE = 1
     DIRECTION_SIGN_NEGATIVE = -1
+
+class PIDConfig(pydantic.BaseModel):
+    ENABLED: bool
+    P: float
+    I: float
+    D: float
 
 class AxisConfig(pydantic.BaseModel):
     MOVEMENT_SIGN: DirectionSign
@@ -25,7 +32,7 @@ class AxisConfig(pydantic.BaseModel):
     # The number of microsteps per full step the axis uses (or should use if we can set it).
     # If MICROSTEPS_PER_STEP == 8, and SCREW_PITCH=2, then in 8 commanded steps the motor will do 1 full
     # step and so will travel a distance of 2.
-    MICROSTEPS_PER_STEP: float
+    MICROSTEPS_PER_STEP: int
 
     # The Max speed the axis is allowed to travel in denoted in its native units.  This means mm/s for
     # linear axes, and radians/s for rotary axes.
@@ -37,15 +44,18 @@ class AxisConfig(pydantic.BaseModel):
     MIN_POSITION: float
     MAX_POSITION: float
 
+    # Some axes have a PID controller.  This says whether or not to use the PID control loop, and if so what
+    # gains to use.
+    PID: Optional[PIDConfig]
+
     def convert_to_real_units(self, usteps: float):
         if self.USE_ENCODER:
-            # TODO(imo): Do we need ENCODER_SIGN here too?
-            return usteps * self.MOVEMENT_SIGN.value * self.ENCODER_STEP_SIZE
+            return usteps * self.MOVEMENT_SIGN.value * self.ENCODER_STEP_SIZE * self.ENCODER_SIGN.value
         else:
-            return usteps * self.MOVEMENT_SIGN.value * self.SCREW_PITCH / (self.MICROSTEPS_PER_STEP * self.FULLSTEPS_PER_REV)
+            return usteps * self.MOVEMENT_SIGN.value * self.SCREW_PITCH / (self.MICROSTEPS_PER_STEP * self.FULL_STEPS_PER_REV)
 
     def convert_real_units_to_ustep(self, real_unit: float):
-        return real_unit / (self.MOVEMENT_SIGN.value * self.SCREW_PITCH / (self.MICROSTEPS_PER_STEP * self.FULLSTEPS_PER_REV))
+        return round(real_unit / (self.MOVEMENT_SIGN.value * self.SCREW_PITCH / (self.MICROSTEPS_PER_STEP * self.FULL_STEPS_PER_REV)))
 
 class StageConfig(pydantic.BaseModel):
     X_AXIS: AxisConfig
@@ -66,8 +76,9 @@ _stage_config = StageConfig(
         MICROSTEPS_PER_STEP=_def.MICROSTEPPING_DEFAULT_X,
         MAX_SPEED=_def.MAX_VELOCITY_X_mm,
         MAX_ACCELERATION=_def.MAX_ACCELERATION_X_mm,
-        MIN_POSITION=0,  # NOTE(imo): Min and Max need adjusting.  They are arbitrary right now!
-        MAX_POSITION=10
+        MIN_POSITION=_def.SOFTWARE_POS_LIMIT.X_NEGATIVE,
+        MAX_POSITION=_def.SOFTWARE_POS_LIMIT.X_POSITIVE,
+        PID=None
     ),
     Y_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_Y,
@@ -79,8 +90,9 @@ _stage_config = StageConfig(
         MICROSTEPS_PER_STEP=_def.MICROSTEPPING_DEFAULT_Y,
         MAX_SPEED=_def.MAX_VELOCITY_Y_mm,
         MAX_ACCELERATION=_def.MAX_ACCELERATION_Y_mm,
-        MIN_POSITION=0,  # NOTE(imo): Min and Max need adjusting.  They are arbitrary right now!
-        MAX_POSITION=10
+        MIN_POSITION=_def.SOFTWARE_POS_LIMIT.Y_NEGATIVE,
+        MAX_POSITION=_def.SOFTWARE_POS_LIMIT.Y_POSITIVE,
+        PID=None
     ),
     Z_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_Z,
@@ -92,8 +104,9 @@ _stage_config = StageConfig(
         MICROSTEPS_PER_STEP=_def.MICROSTEPPING_DEFAULT_Z,
         MAX_SPEED=_def.MAX_VELOCITY_Z_mm,
         MAX_ACCELERATION=_def.MAX_ACCELERATION_Z_mm,
-        MIN_POSITION=0,  # NOTE(imo): Min and Max need adjusting.  They are arbitrary right now!
-        MAX_POSITION=1
+        MIN_POSITION=_def.SOFTWARE_POS_LIMIT.Z_NEGATIVE,
+        MAX_POSITION=_def.SOFTWARE_POS_LIMIT.Z_POSITIVE,
+        PID=None
     ),
     THETA_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_THETA,
@@ -106,7 +119,8 @@ _stage_config = StageConfig(
         MAX_SPEED=2.0 * math.pi / 4,  # NOTE(imo): I arbitrarily guessed this at 4 sec / rev, so it probably needs adjustment.
         MAX_ACCELERATION=_def.MAX_ACCELERATION_X_mm,
         MIN_POSITION=0,  # NOTE(imo): Min and Max need adjusting.  They are arbitrary right now!
-        MAX_POSITION=2.0 * math.pi / 4
+        MAX_POSITION=2.0 * math.pi / 4,
+        PID=None
     )
 )
 

@@ -4,7 +4,7 @@ from typing import Optional
 import control.microcontroller
 import control._def as _def
 from squid.abc import AbstractStage, Pos, StageStage
-from squid.config import StageConfig
+from squid.config import StageConfig, AxisConfig
 
 
 class CephlaStage(AbstractStage):
@@ -19,6 +19,21 @@ class CephlaStage(AbstractStage):
     def __init__(self, microcontroller: control.microcontroller.Microcontroller, stage_config: StageConfig):
         super().__init__(stage_config)
         self._microcontroller = microcontroller
+
+        # TODO(imo): configure theta here?  Do we ever have theta?
+        self._configure_axis(_def.AXIS.X, stage_config.X_AXIS)
+        self._configure_axis(_def.AXIS.Y, stage_config.Y_AXIS)
+        self._configure_axis(_def.AXIS.Z, stage_config.Z_AXIS)
+
+    def _configure_axis(self, microcontroller_axis_number: int, axis_config: AxisConfig):
+        if axis_config.USE_ENCODER:
+            # TODO(imo): The original navigationController had a "flip_direction" on configure_encoder, but it was unused in the implementation?
+            self._microcontroller.configure_stage_pid(
+                axis=microcontroller_axis_number,
+                transitions_per_revolution = axis_config.SCREW_PITCH / axis_config.ENCODER_STEP_SIZE)
+            if axis_config.PID and axis_config.PID.ENABLED:
+                self._microcontroller.set_pid_arguments(microcontroller_axis_number, axis_config.PID.P, axis_config.PID.I, axis_config.PID.D)
+                self._microcontroller.turn_on_stage_pid(microcontroller_axis_number)
 
     def move_x(self, rel_mm: float, blocking: bool = True):
         self._microcontroller.move_x_usteps(self._config.X_AXIS.convert_real_units_to_ustep(rel_mm))
@@ -42,18 +57,18 @@ class CephlaStage(AbstractStage):
         self._microcontroller.move_x_to_usteps(self._config.X_AXIS.convert_real_units_to_ustep(abs_mm))
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(
-                self._calc_move_timeout(abs_mm - self.get_pos().x, self.get_config().X_AXIS.MAX_SPEED))
+                self._calc_move_timeout(abs_mm - self.get_pos().x_mm, self.get_config().X_AXIS.MAX_SPEED))
 
     def move_y_to(self, abs_mm: float, blocking: bool = True):
         self._microcontroller.move_y_to_usteps(self._config.Y_AXIS.convert_real_units_to_ustep(abs_mm))
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(
-                self._calc_move_timeout(abs_mm - self.get_pos().y, self.get_config().Y_AXIS.MAX_SPEED))
+                self._calc_move_timeout(abs_mm - self.get_pos().y_mm, self.get_config().Y_AXIS.MAX_SPEED))
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(
-                self._calc_move_timeout(abs_mm - self.get_pos().z, self.get_config().Z_AXIS.MAX_SPEED))
+                self._calc_move_timeout(abs_mm - self.get_pos().z_mm, self.get_config().Z_AXIS.MAX_SPEED))
 
     def get_pos(self) -> Pos:
         pos_usteps = self._microcontroller.get_pos()
