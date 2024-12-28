@@ -3386,11 +3386,11 @@ class ContrastManager:
 
 
 class ScanCoordinates:
-    def __init__(self, objectiveStore, navigationViewer, navigationController):
+    def __init__(self, objectiveStore, navigationViewer, stage: AbstractStage):
         # Wellplate settings
         self.objectiveStore = objectiveStore
         self.navigationViewer = navigationViewer
-        self.navigationController = navigationController
+        self.stage = stage
         self.well_selector = None
         self.acquisition_pattern = ACQUISITION_PATTERN
         self.fov_pattern = FOV_PATTERN
@@ -3470,9 +3470,8 @@ class ScanCoordinates:
         new_region_centers = self.get_selected_wells()
 
         if self.format == 'glass slide':
-            x = self.navigationController.x_pos_mm
-            y = self.navigationController.y_pos_mm
-            self.set_live_scan_coordinates(x, y, scan_size_mm, overlap_percent, shape)
+            pos = self.stage.get_pos()
+            self.set_live_scan_coordinates(pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape)
 
         elif bool(new_region_centers):
             # Remove regions that are no longer selected
@@ -3555,7 +3554,7 @@ class ScanCoordinates:
                 scan_coordinates.append((center_x, center_y))
                 self.navigationViewer.register_fov_to_image(center_x, center_y)
 
-        self.region_centers[well_id] = [float(center_x), float(center_y), float(self.navigationController.z_pos_mm)]
+        self.region_centers[well_id] = [float(center_x), float(center_y), float(self.stage.get_pos().z_mm)]
         self.region_fov_coordinates[well_id] =  scan_coordinates
 
     def remove_region(self, well_id):
@@ -3979,8 +3978,8 @@ class LaserAutofocusController(QObject):
         else:
             um_to_move = target_um - current_displacement_um
 
-        self.navigationController.move_z(um_to_move/1000)
-        self.wait_till_operation_is_completed()
+        self.stage.move_z(um_to_move / 1000)
+
         # update the displacement measurement
         self.measure_displacement()
 
