@@ -95,7 +95,8 @@ class MovementUpdater(QObject):
     position_after_move = Signal(squid.abc.Pos)
     position = Signal(squid.abc.Pos)
 
-    def __init__(self, stage: squid.abc.AbstractStage, movement_threshhold_mm=0.0001):
+    def __init__(self, stage: squid.abc.AbstractStage, movement_threshhold_mm=0.0001, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.stage = stage
         self.movement_threshhold_mm = movement_threshhold_mm
         self.previous_pos = None
@@ -193,8 +194,6 @@ class HighContentScreeningGui(QMainWindow):
         self.stage: squid.abc.AbstractStage = squid.stage.cephla.CephlaStage(microcontroller = self.microcontroller, stage_config = squid.config.get_stage_config())
         self.slidePositionController = core.SlidePositionController(self.stage, self.liveController, is_for_wellplate=True)
         self.autofocusController = core.AutoFocusController(self.camera, self.stage, self.liveController)
-        self.scanCoordinates = core.ScanCoordinates()
-        self.multipointController = core.MultiPointController(self.camera, self.stage, self.microcontroller, self.liveController, self.autofocusController, self.configurationManager, scanCoordinates=self.scanCoordinates, parent=self)
         self.imageSaver = core.ImageSaver()
         self.imageDisplay = core.ImageDisplay()
         if ENABLE_TRACKING:
@@ -203,6 +202,8 @@ class HighContentScreeningGui(QMainWindow):
             self.navigationViewer = core.NavigationViewer(self.objectiveStore, sample='4 glass slide')
         else:
             self.navigationViewer = core.NavigationViewer(self.objectiveStore, sample=WELLPLATE_FORMAT)
+        self.scanCoordinates = core.ScanCoordinates(objectiveStore=self.objectiveStore, navigationViewer=self.navigationViewer, stage=self.stage)
+        self.multipointController = core.MultiPointController(self.camera, self.stage, self.microcontroller, self.liveController, self.autofocusController, self.configurationManager, scanCoordinates=self.scanCoordinates, parent=self)
 
         if SUPPORT_LASER_AUTOFOCUS:
             self.configurationManager_focus_camera = core.ConfigurationManager(filename='./focus_camera_configurations.xml')
@@ -706,7 +707,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self.wellSelectionWidget.signal_wellSelectedPos.connect(lambda well_x, well_y: self.stage.move_x_to(well_x) and self.stage.move_y_to(well_y))
         if ENABLE_WELLPLATE_MULTIPOINT:
-            self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.set_well_coordinates)
+            self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
             self.objectivesWidget.signal_objective_changed.connect(self.wellplateMultiPointWidget.update_coordinates)
 
         if SUPPORT_LASER_AUTOFOCUS:
@@ -724,15 +725,14 @@ class HighContentScreeningGui(QMainWindow):
 
         self.camera.set_callback(self.streamHandler.on_new_frame)
 
-    def setup_movement_updater_timer(self):
+    def setup_movement_updater(self):
         # We provide a few signals about the system's physical movement to other parts of the UI.  Ideally, they other
         # parts would register their interest (instead of us needing to know that they want to hear about the movements
         # here), but as an intermediate pumping it all from one location is better than nothing.
         self.movement_updater = MovementUpdater(self.stage)
         self.movement_update_timer = QTimer()
         self.movement_update_timer.setInterval(100)
-        self.movement_update_timer.timeout.connect(self._movement_updater.do_update)
-
+        self.movement_update_timer.timeout.connect(self.movement_updater.do_update)
 
     def makeNapariConnections(self):
         """Initialize all Napari connections in one place"""
@@ -996,7 +996,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.is_live_scan_grid_on = True
 
         # click to move off during acquisition
-        self.navigationWidget.toggle_click_to_move(acquisition_started)
+        self.navigationWidget.set_click_to_move(acquisition_started)
 
         # disable other acqusiition tabs during acquisition
         current_index = self.recordTabWidget.currentIndex()
@@ -1059,7 +1059,7 @@ class HighContentScreeningGui(QMainWindow):
         self.stitcherThread.finished_saving.connect(self.stitcherWidget.finishedSaving)
 
     def move_from_click_image(self, click_x, click_y, image_width, image_height):
-        if self.navigationViewer.get_click_to_move_enabled():
+        if self.navigationWidget.get_click_to_move_enabled():
             pixel_size_um = self.objectiveStore.get_pixel_size()
 
             pixel_sign_x = 1
@@ -1069,16 +1069,16 @@ class HighContentScreeningGui(QMainWindow):
             delta_y = pixel_sign_y * pixel_size_um * click_y / 1000.0
 
             self.log.debug(f"Click to move enabled, click at {click_x=}, {click_y=} results in relative move of {delta_x=} [mm], {delta_y=} [mm]")
-            self.move_x(delta_x)
-            self.move_y(delta_y)
+            self.stage.move_x(delta_x)
+            self.stage.move_y(delta_y)
         else:
             self.log.debug(f"Click to move disabled, ignoring click at {click_x=}, {click_y=}")
 
     def move_from_click_mm(self, x_mm, y_mm):
-        if self.navigationViewer.get_click_to_move_enabled():
+        if self.navigationWidget.get_click_to_move_enabled():
             self.log.debug(f"Click to move enabled, moving to {x_mm=}, {y_mm=}")
-            self.move_x_to(x_mm)
-            self.move_y_to(y_mm)
+            self.stage.move_x_to(x_mm)
+            self.stage.move_y_to(y_mm)
         else:
             self.log.debug(f"Click to move disabled, ignoring click request for {x_mm=}, {y_mm=}")
 

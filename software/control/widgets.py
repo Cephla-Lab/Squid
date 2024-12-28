@@ -1500,6 +1500,7 @@ class NavigationWidget(QFrame):
             grid_line3.addWidget(self.btn_home_Z, 1)
             grid_line3.addWidget(self.btn_zero_Z, 1)
 
+        self.set_click_to_move(ENABLE_CLICK_TO_MOVE_BY_DEFAULT)
         if not ENABLE_CLICK_TO_MOVE_BY_DEFAULT:
             grid_line3.addWidget(self.checkbox_clickToMove, 1)
 
@@ -1529,7 +1530,7 @@ class NavigationWidget(QFrame):
         self.btn_load_slide.clicked.connect(self.switch_position)
         self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
 
-    def toggle_click_to_move(self, enabled):
+    def set_click_to_move(self, enabled):
         self.log.info(f"Click to move enabled={enabled}")
         self.setEnabled_all(enabled)
         self.checkbox_clickToMove.setChecked(enabled)
