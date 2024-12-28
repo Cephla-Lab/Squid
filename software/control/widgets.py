@@ -3,6 +3,7 @@ import sys
 from typing import Optional
 
 import squid.logging
+from control.core.core import TrackingController
 from control.microcontroller import Microcontroller
 from squid.abc import AbstractStage
 
@@ -1370,8 +1371,6 @@ class NavigationWidget(QFrame):
         self.slidePositionController = slidePositionController
         self.widget_configuration = widget_configuration
         self.slide_position = None
-        # TODO(imo): Fix below.  Used to use NavigationController click flag tracking
-        self.flag_click_to_move = False
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
@@ -1527,24 +1526,16 @@ class NavigationWidget(QFrame):
         self.btn_zero_Y.clicked.connect(self.zero_y)
         self.btn_zero_Z.clicked.connect(self.zero_z)
 
-        # TODO(imo): I broke click to move since removing navigationController
-        # self.checkbox_clickToMove.stateChanged.connect(self.navigationController.set_flag_click_to_move)
-
         self.btn_load_slide.clicked.connect(self.switch_position)
         self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
 
-    def toggle_click_to_move(self, started):
-        if started:
-            self.flag_click_to_move = self.navigationController.get_flag_click_to_move()
-            self.setEnabled_all(False)
-            self.checkbox_clickToMove.setChecked(False) # should set navigationController.click_to_move to False
-            # self.navigationController.click_to_move = False
-            print("set click to move off")
-        else:
-            self.setEnabled_all(True)
-            self.checkbox_clickToMove.setChecked(self.flag_click_to_move)
-            # self.navigationController.click_to_move = self.flag_click_to_move
-            print("restored click to move to", "on" if self.flag_click_to_move else "off")
+    def toggle_click_to_move(self, enabled):
+        self.log.info(f"Click to move enabled={enabled}")
+        self.setEnabled_all(enabled)
+        self.checkbox_clickToMove.setChecked(enabled)
+
+    def get_click_to_move_enabled(self):
+        return self.checkbox_clickToMove.isChecked()
 
     def setEnabled_all(self, enabled):
         self.checkbox_clickToMove.setEnabled(enabled)
@@ -1804,9 +1795,6 @@ class NavigationBarWidget(QWidget):
         self.slidePositionController.signal_slide_scanning_position_reached.connect(self.slot_slide_scanning_position_reached)
 
     def connect_signals(self):
-        # TODO(imo): I broke click to move with the navigationController rip out
-        # if self.stage is not None:
-        #     self.checkbox_clickToMove.stateChanged.connect(self.navigationController.set_flag_click_to_move)
         if self.slidePositionController is not None:
             self.slidePositionController.signal_slide_loading_position_reached.connect(self.slot_slide_loading_position_reached)
             self.slidePositionController.signal_slide_scanning_position_reached.connect(self.slot_slide_scanning_position_reached)
@@ -4474,19 +4462,14 @@ class NapariLiveWidget(QWidget):
 
     def onDoubleClick(self, layer, event):
         """Handle double-click events and emit centered coordinates if within the data range."""
-        # TODO(imo): I broke click to move with the nav controller rip out
-        # if self.navigationController.get_flag_click_to_move():
-        #     coords = layer.world_to_data(event.position)
-        #     layer_shape = layer.data.shape[0:2] if len(layer.data.shape) >= 3 else layer.data.shape
-        #
-        #     if coords is not None and (0 <= int(coords[-1]) < layer_shape[-1] and (0 <= int(coords[-2]) < layer_shape[-2])):
-        #         x_centered = int(coords[-1] - layer_shape[-1] / 2)
-        #         y_centered = int(coords[-2] - layer_shape[-2] / 2)
-        #         # Emit the centered coordinates and dimensions of the layer's data array
-        #         self.signal_coordinates_clicked.emit(x_centered, y_centered, layer_shape[-1], layer_shape[-2])
-        # else:
-        #     self.resetView()
-        self.resetView()
+        coords = layer.world_to_data(event.position)
+        layer_shape = layer.data.shape[0:2] if len(layer.data.shape) >= 3 else layer.data.shape
+
+        if coords is not None and (0 <= int(coords[-1]) < layer_shape[-1] and (0 <= int(coords[-2]) < layer_shape[-2])):
+            x_centered = int(coords[-1] - layer_shape[-1] / 2)
+            y_centered = int(coords[-2] - layer_shape[-2] / 2)
+            # Emit the centered coordinates and dimensions of the layer's data array
+            self.signal_coordinates_clicked.emit(x_centered, y_centered, layer_shape[-1], layer_shape[-2])
 
     def set_live_configuration(self, live_configuration):
         self.live_configuration = live_configuration
@@ -5061,13 +5044,15 @@ class NapariMosaicDisplayWidget(QWidget):
 
 
 class TrackingControllerWidget(QFrame):
-    def __init__(self, trackingController, configurationManager, show_configurations = True, main=None, *args, **kwargs):
+    def __init__(self, trackingController: TrackingController, configurationManager, show_configurations = True, main=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.trackingController = trackingController
         self.configurationManager = configurationManager
         self.base_path_is_set = False
         self.add_components(show_configurations)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
+
+        self.trackingController.microcontroller.add_joystick_button_listener(lambda button_pressed: self.handle_button_state(button_pressed))
 
     def add_components(self,show_configurations):
         self.btn_setSavingDir = QPushButton('Browse')
@@ -5178,8 +5163,16 @@ class TrackingControllerWidget(QFrame):
         self.update_pixel_size()
         self.trackingController.update_image_resizing_factor(1) # to add: image resizing slider
 
-    def slot_joystick_button_pressed(self):
-        self.btn_track.toggle()
+    # TODO(imo): This needs testing!
+    def handle_button_pressed(self, button_state):
+        QMetaObject.invokeMethod(
+            self,
+            "slot_joystick_button_pressed",
+            Qt.AutoConnection,
+            button_state)
+
+    def slot_joystick_button_pressed(self, button_state):
+        self.btn_track.setChecked(button_state)
         if self.btn_track.isChecked():
             if self.base_path_is_set == False:
                 self.btn_track.setChecked(False)

@@ -48,6 +48,7 @@ import pandas as pd
 import scipy.signal
 import cv2
 import imageio as iio
+import squid.abc
 
 
 class ObjectiveStore:
@@ -725,91 +726,6 @@ class LiveController(QObject):
         self.microcontroller.set_strobe_delay_us(self.camera.strobe_delay_us)
 
 
-class NavigationController(QObject):
-
-    xPos = Signal(float)
-    yPos = Signal(float)
-    zPos = Signal(float)
-    thetaPos = Signal(float)
-    xyPos = Signal(float,float)
-    scanGridPos = Signal(float,float)
-    signal_joystick_button_pressed = Signal()
-
-    # x y z axis pid enable flag
-    pid_enable_flag = [False, False, False]
-
-    def __init__(self, stage: AbstractStage, objectivestore, parent=None):
-        # parent should be set to OctopiGUI instance to enable updates
-        # to camera settings, e.g. binning, that would affect click-to-move
-        QObject.__init__(self)
-        self.stage = stage
-        self.parent = parent
-        self.objectiveStore = objectivestore
-
-        self.click_to_move = ENABLE_CLICK_TO_MOVE_BY_DEFAULT # default on when acquisition not running
-        self.enable_joystick_button_action = True
-
-        # scan start position (obsolete? only for TiledDisplay)
-        self.scan_begin_position_x = 0
-        self.scan_begin_position_y = 0
-
-    def set_flag_click_to_move(self, flag):
-        self.click_to_move = flag
-
-    def get_flag_click_to_move(self):
-        return self.click_to_move
-
-    def move_from_click(self, click_x, click_y, image_width, image_height):
-        if self.click_to_move:
-            pixel_size_um = self.objectiveStore.get_pixel_size()
-
-            pixel_sign_x = 1
-            pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
-
-            delta_x = pixel_sign_x * pixel_size_um * click_x / 1000.0
-            delta_y = pixel_sign_y * pixel_size_um * click_y / 1000.0
-
-            self.stage.move_x(delta_x)
-            self.stage.move_y(delta_y)
-
-    def move_from_click_mosaic(self, x_mm, y_mm):
-        if self.click_to_move:
-            self.move_to(x_mm, y_mm)
-
-# TODO(imo): This needs to be called from a timer in the main gui.  It used to be done via micro callback.
-    def update_pos(self, microcontroller):
-        # get position from the microcontroller
-        pos = self.stage.get_pos()
-
-        # emit the updated position
-        self.xPos.emit(pos.x_mm)
-        self.yPos.emit(pos.y_mm)
-        # NOTE: The rest of the system expects um from here, so *1000
-        self.zPos.emit(1000 * pos.z_mm)
-        # NOTE: The emit is expected to be in degrees, so convert here.
-        self.thetaPos.emit(pos.theta_rad*360/(2*math.pi))
-        self.xyPos.emit(pos.x_mm, pos.y_mm)
-
-        if microcontroller.signal_joystick_button_pressed_event:
-            if self.enable_joystick_button_action:
-                self.signal_joystick_button_pressed.emit()
-            print('joystick button pressed')
-            microcontroller.signal_joystick_button_pressed_event = False
-
-    # TODO(imo): This is only called from a closeEvent.  This isn't guaranteed to run - do we need to do this?
-    def turnoff_axis_pid_control(self):
-        for i in range(len(self.pid_enable_flag)):
-            if self.pid_enable_flag[i] is True:
-                self.microcontroller.turn_off_stage_pid(i)
-
-    def get_pid_control_flag(self, axis):
-        return self.pid_enable_flag[axis]
-
-    def keep_scan_begin_position(self, x, y):
-        self.scan_begin_position_x = x
-        self.scan_begin_position_y = y
-
-
 class SlidePositionControlWorker(QObject):
 
     finished = Signal()
@@ -1158,6 +1074,7 @@ class AutoFocusController(QObject):
         self.crop_height = crop_height
 
     def autofocus(self, focus_map_override=False):
+        # TODO(imo): We used to have the joystick button wired up to autofocus, but took it out in a refactor.  It needs to be restored.
         if self.use_focus_map and (not focus_map_override):
             self.autofocus_in_progress = True
 
@@ -1476,8 +1393,7 @@ class MultiPointWorker(QObject):
 
     def run_single_time_point(self):
         start = time.time()
-        # TODO(imo): Fix joystick button enable/disable.  It is broken after stage refactor
-        # self.navigationController.enable_joystick_button_action = False
+        self.microcontroller.enable_joystick(False)
 
         self._log.debug('multipoint acquisition - time point ' + str(self.time_point+1))
 
@@ -1498,8 +1414,8 @@ class MultiPointWorker(QObject):
         # finished region scan
         self.coordinates_pd.to_csv(os.path.join(current_path,'coordinates.csv'),index=False,header=True)
         utils.create_done_file(current_path)
-        # TODO(imo): Fix joystick button enable/disable.  It is broken after stage refactor
-        # self.navigationController.enable_joystick_button_action = True
+        # TODO(imo): If anything throws above, we don't re-enable the joystick
+        self.microcontroller.enable_joystick(True)
         self._log.debug(f"Single time point took: {time.time() - start} [s]")
 
     def initialize_z_stack(self):
@@ -1989,8 +1905,7 @@ class MultiPointWorker(QObject):
 
         # Save coordinates.csv
         self.coordinates_pd.to_csv(os.path.join(current_path, 'coordinates.csv'), index=False, header=True)
-        # TODO(imo): Fix joystick handling
-        # self.navigationController.enable_joystick_button_action = True
+        self.microcontroller.enable_joystick(True)
 
     def move_z_for_stack(self):
         if self.use_piezo:
@@ -3115,12 +3030,14 @@ class NavigationViewer(QFrame):
         self.update_display_properties(sample)
         self.draw_current_fov(self.x_mm, self.y_mm)
 
-    def draw_fov_current_location(self, x_mm=None, y_mm=None):
-        if x_mm is None and y_mm is None:
+    def draw_fov_current_location(self, pos: squid.abc.Pos):
+        if not pos:
             if self.x_mm is None and self.y_mm is None:
                 return
             self.draw_current_fov(self.x_mm, self.y_mm)
         else:
+            x_mm = pos.x_mm
+            y_mm = pos.y_mm
             self.draw_current_fov(x_mm, y_mm)
             self.x_mm = x_mm
             self.y_mm = y_mm

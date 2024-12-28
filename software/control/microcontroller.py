@@ -1,6 +1,7 @@
 import struct
 import threading
 import time
+from typing import Callable
 
 import numpy as np
 import serial
@@ -147,7 +148,7 @@ class Microcontroller:
     LAST_COMMAND_ACK_TIMEOUT = 0.5
     MAX_RETRY_COUNT = 5
 
-    def __init__(self, version='Arduino Due', sn=None, existing_serial=None):
+    def __init__(self, version='Arduino Due', sn=None, existing_serial=None, reset_and_initialize=True):
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
         self.tx_buffer_length = MicrocontrollerDef.CMD_LENGTH
@@ -165,7 +166,17 @@ class Microcontroller:
         self.theta_pos = 0 # unit: microstep or encoder resolution
         self.button_and_switch_state = 0
         self.joystick_button_pressed = 0
-        self.signal_joystick_button_pressed_event = False
+        # This is used to keep track of whether or not we should emit joystick events to the joystick listeners,
+        # and can be changed with enable_joystick(...)
+        self.joystick_listener_events_enabled = False
+        # This is a list of (id, functions) to call when we get a joystick event.  The functions are called
+        # with the new state of the button (True -> pressed, False -> not pressed).
+        #
+        # The id in the tuple is an internally defined unique ID that callers to add_joystick_button_listener() get back,
+        # and which can be used to remove the listener with remove_joystick_button_listener.
+        #
+        # These are called in our busy loop, and so should return immediately!
+        self.joystick_event_listeners = []
         self.switch_state = 0
 
         self.last_command = None
@@ -203,11 +214,38 @@ class Microcontroller:
         self.terminate_reading_received_packet_thread = False
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
         self.thread_read_received_packet.start()
+
+        if reset_and_initialize:
+            self.log.debug("Resetting and initializing microcontroller.")
+            self.reset()
+            time.sleep(0.5)
+            self.initialize_drivers()
+            time.sleep(0.5)
+            self.configure_actuators()
         
     def close(self):
         self.terminate_reading_received_packet_thread = True
         self.thread_read_received_packet.join()
         self.serial.close()
+
+    def add_joystick_button_listener(self, listener: Callable[[bool], None]):
+        try:
+            next_id = max(t[0] for t in self.joystick_event_listeners) + 1
+        except ValueError as e:
+            next_id = 1
+        self.log.debug(f"Adding joystick button listener with id={next_id}")
+        self.joystick_event_listeners.append((next_id, listener))
+
+    def remove_joystick_button_listener(self, id_to_remove):
+        try:
+            idx = [t[0] for t in self.joystick_event_listeners].index(id_to_remove)
+            self.log.debug(f"Removing joystick button listener id={id_to_remove} at idx={idx}")
+            del self.joystick_event_listeners[idx]
+        except ValueError as e:
+            self.log.warning(f"Asked to remove joystick button listener {id_to_remove}, but it is not a known listener id")
+
+    def enable_joystick(self, enabled: bool):
+        self.joystick_listener_events_enabled = enabled
 
     def reset(self):
         cmd = bytearray(self.tx_buffer_length)
@@ -486,6 +524,11 @@ class Microcontroller:
         cmd[2] = axis
         self.send_command(cmd)
 
+    def turn_off_all_pid(self):
+        for primary_axis_id in [AXIS.X, AXIS.Y, AXIS.Z]:
+            self.turn_off_stage_pid(primary_axis_id)
+            self.wait_till_operation_is_completed()
+
     def set_pid_arguments(self, axis, pid_p, pid_i, pid_d):
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_PID_ARGUMENTS
@@ -745,10 +788,17 @@ class Microcontroller:
             # joystick button
             tmp = self.button_and_switch_state & (1 << BIT_POS_JOYSTICK_BUTTON)
             joystick_button_pressed = tmp > 0
-            if self.joystick_button_pressed == False and joystick_button_pressed == True:
-                self.signal_joystick_button_pressed_event = True
-                self.ack_joystick_button_pressed()
+            if self.joystick_button_pressed != joystick_button_pressed:
+                if self.joystick_listener_events_enabled:
+                    for (_, listener_fn) in self.joystick_event_listeners:
+                        listener_fn(joystick_button_pressed)
+
+                # The microcontroller wants us to send an ack back only when we see a False -> True
+                # transition. handle that here.
+                if joystick_button_pressed:
+                    self.ack_joystick_button_pressed()
             self.joystick_button_pressed = joystick_button_pressed
+
             # switch
             tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
             self.switch_state = tmp > 0

@@ -15,7 +15,7 @@ from control._def import *
 # app specific libraries
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
-from squid.abc import AbstractStage
+import squid.abc
 import squid.logging
 import squid.config
 import squid.stage.prior
@@ -91,6 +91,41 @@ if SUPPORT_LASER_AUTOFOCUS:
 
 SINGLE_WINDOW = True # set to False if use separate windows for display and control
 
+class MovementUpdater(QObject):
+    position_after_move = Signal(squid.abc.Pos)
+    position = Signal(squid.abc.Pos)
+
+    def __init__(self, stage: squid.abc.AbstractStage, movement_threshhold_mm=0.0001):
+        self.stage = stage
+        self.movement_threshhold_mm = movement_threshhold_mm
+        self.previous_pos = None
+        self.sent_after_stopped = False
+
+    def do_update(self):
+        pos = self.stage.get_pos()
+        # Doing previous_pos initialization like this means we technically miss the first real update,
+        # but that's okay since this is intended to be run frequently in the background.
+        if not self.previous_pos:
+            self.previous_pos = pos
+            return
+
+        abs_delta_x = abs(self.previous_pos.x_mm - pos.x_mm)
+        abs_delta_y = abs(self.previous_pos.y_mm - pos.y_mm)
+
+        if abs_delta_y < self.movement_threshhold_mm and abs_delta_x < self.movement_threshhold_mm and not self.stage.get_state().busy:
+            # In here, send all the signals that must be sent once per stop of movement.  AKA once per arriving at a
+            # new position for a while.
+            self.sent_after_stopped = True
+
+            self.position_after_move.emit(pos.x_mm, pos.y_mm)
+        else:
+            self.sent_after_stopped = False
+
+        # Here, emit all the signals that want higher fidelity movement updates.
+        self.position.emit(pos)
+
+        self.previous_pos = pos
+
 
 class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
@@ -108,6 +143,8 @@ class HighContentScreeningGui(QMainWindow):
         self.loadObjects(is_simulation)
 
         self.setupHardware()
+
+        self.setup_movement_updater()
 
         self.loadWidgets()
 
@@ -153,7 +190,7 @@ class HighContentScreeningGui(QMainWindow):
         self.streamHandler = core.StreamHandler(display_resolution_scaling=DEFAULT_DISPLAY_CROP/100)
         self.liveController = core.LiveController(self.camera, self.microcontroller, self.configurationManager, parent=self)
 
-        self.stage: AbstractStage = squid.stage.cephla.CephlaStage(microcontroller = self.microcontroller, stage_config = squid.config.get_stage_config())
+        self.stage: squid.abc.AbstractStage = squid.stage.cephla.CephlaStage(microcontroller = self.microcontroller, stage_config = squid.config.get_stage_config())
         self.slidePositionController = core.SlidePositionController(self.stage, self.liveController, is_for_wellplate=True)
         self.autofocusController = core.AutoFocusController(self.camera, self.stage, self.liveController)
         self.scanCoordinates = core.ScanCoordinates()
@@ -298,13 +335,6 @@ class HighContentScreeningGui(QMainWindow):
             raise ValueError("Microcontroller must be none-None for hardware setup.")
 
         try:
-            # TODO(imo): We either need to not reset() here, and instead should do so in the Microcontroller __init__, or we need a reconfigure() on AbstractStage.
-            # self.microcontroller.reset()
-            # time.sleep(0.5)
-            # self.microcontroller.initialize_drivers()
-            # time.sleep(0.5)
-            # self.microcontroller.configure_actuators()
-
             if HOMING_ENABLED_Z:
                 self.stage.home(x=False, y=False, z=True, theta=False)
             if HOMING_ENABLED_X and HOMING_ENABLED_Y:
@@ -604,12 +634,6 @@ class HighContentScreeningGui(QMainWindow):
         self.streamHandler.signal_new_frame_received.connect(self.liveController.on_new_frame)
         self.streamHandler.packet_image_to_write.connect(self.imageSaver.enqueue)
 
-        # TODO(imo): Fix joystick after removal of navigation controller
-        # if ENABLE_TRACKING:
-        #     self.navigationController.signal_joystick_button_pressed.connect(self.trackingControlWidget.slot_joystick_button_pressed)
-        # else:
-        #     self.navigationController.signal_joystick_button_pressed.connect(self.autofocusController.autofocus)
-
         if ENABLE_STITCHER:
             self.multipointController.signal_stitcher.connect(self.startStitcher)
 
@@ -635,16 +659,15 @@ class HighContentScreeningGui(QMainWindow):
 
         self.connectSlidePositionController()
 
-        # TODO(imo): Fix click to move after removal of navigation controller
-        # self.navigationViewer.signal_coordinates_clicked.connect(self.navigationController.move_from_click_mosaic)
+        self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.on_objective_changed)
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.objectivesWidget.signal_objective_changed.connect(self.flexibleMultiPointWidget.update_fov_positions)
         # TODO(imo): Fix position updates after removal of navigation controller
-        # self.navigationController.xyPos.connect(self.navigationViewer.draw_fov_current_location)
+        self.movement_updater.position_after_move.connect(self.navigationViewer.draw_fov_current_location)
         if WELLPLATE_FORMAT == 'glass slide':
-            # TODO(imo): Fix position updates after removal of navigation controller
-            #     self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
+            # TODO(imo): This well place logic is duplicated below in onWellPlateChanged.  We should change it to only exist in 1 location.
+            self.movement_updater.sent_after_stopped.connect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
             self.is_live_scan_grid_on = True
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.set_microscope_mode)
@@ -659,8 +682,7 @@ class HighContentScreeningGui(QMainWindow):
             self.autofocusController.image_to_display.connect(lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=True))
             self.streamHandler.image_to_display.connect(lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False))
             self.multipointController.image_to_display.connect(lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False))
-            # TODO(imo): Fix click to move after navigation controller removal
-            # self.napariLiveWidget.signal_coordinates_clicked.connect(self.navigationController.move_from_click)
+            self.napariLiveWidget.signal_coordinates_clicked.connect(self.move_from_click_image)
             self.liveControlWidget.signal_live_configuration.connect(self.napariLiveWidget.set_live_configuration)
 
             if USE_NAPARI_FOR_LIVE_CONTROL:
@@ -673,8 +695,7 @@ class HighContentScreeningGui(QMainWindow):
             self.autofocusController.image_to_display.connect(self.imageDisplayWindow.display_image)
             self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
             self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
-            # TODO(imo): Fix click to move after navigation controller removal
-            # self.imageDisplayWindow.image_click_coordinates.connect(self.navigationController.move_from_click)
+            self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
 
         self.makeNapariConnections()
 
@@ -703,6 +724,16 @@ class HighContentScreeningGui(QMainWindow):
 
         self.camera.set_callback(self.streamHandler.on_new_frame)
 
+    def setup_movement_updater_timer(self):
+        # We provide a few signals about the system's physical movement to other parts of the UI.  Ideally, they other
+        # parts would register their interest (instead of us needing to know that they want to hear about the movements
+        # here), but as an intermediate pumping it all from one location is better than nothing.
+        self.movement_updater = MovementUpdater(self.stage)
+        self.movement_update_timer = QTimer()
+        self.movement_update_timer.setInterval(100)
+        self.movement_update_timer.timeout.connect(self._movement_updater.do_update)
+
+
     def makeNapariConnections(self):
         """Initialize all Napari connections in one place"""
         self.napari_connections = {
@@ -721,8 +752,7 @@ class HighContentScreeningGui(QMainWindow):
                  lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False)),
                 (self.multipointController.image_to_display,
                  lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False)),
-                # TODO(imo): Fix click to move after navigation controller removal
-                # (self.napariLiveWidget.signal_coordinates_clicked, self.navigationController.move_from_click),
+                (self.napariLiveWidget.signal_coordinates_clicked, self.move_from_click_image),
                 (self.liveControlWidget.signal_live_configuration, self.napariLiveWidget.set_live_configuration)
             ]
 
@@ -739,8 +769,7 @@ class HighContentScreeningGui(QMainWindow):
             self.autofocusController.image_to_display.connect(self.imageDisplayWindow.display_image)
             self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
             self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
-            # TODO(imo): Fix click to move after navigation controller removal
-            # self.imageDisplayWindow.image_click_coordinates.connect(self.navigationController.move_from_click)
+            self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
 
         if not self.live_only_mode:
             # Setup multichannel widget connections
@@ -768,8 +797,7 @@ class HighContentScreeningGui(QMainWindow):
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napari_connections['napariMosaicDisplayWidget'] = [
                     (self.multipointController.napari_layers_update, self.napariMosaicDisplayWidget.updateMosaic),
-                    # TODO(imo): Fix click to move after navigation controller removal
-                    # (self.napariMosaicDisplayWidget.signal_coordinates_clicked, self.navigationController.move_from_click_mosaic),
+                    (self.napariMosaicDisplayWidget.signal_coordinates_clicked, self.move_from_click_mm),
                     (self.napariMosaicDisplayWidget.signal_clear_viewer, self.navigationViewer.clear_slide)
                 ]
 
@@ -882,8 +910,7 @@ class HighContentScreeningGui(QMainWindow):
             self.toggleWellSelector(False)
             self.multipointController.inverted_objective = False
             if not self.is_live_scan_grid_on: # connect live scan grid for glass slide
-                # TODO(imo): scanGridPos updates are broken
-                # self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.update_live_coordinates)
+                self.movement_updater.position_after_move.connect(self.wellplateMultiPointWidget.update_live_coordinates)
                 self.is_live_scan_grid_on = True
             self.log.debug("live scan grid connected.")
             self.setupSlidePositionController(is_for_wellplate=False)
@@ -891,8 +918,7 @@ class HighContentScreeningGui(QMainWindow):
             self.toggleWellSelector(True)
             self.multipointController.inverted_objective = True
             if self.is_live_scan_grid_on: # disconnect live scan grid for wellplate
-                # TODO(imo): scanGridPos updates are broken
-                self.navigationController.scanGridPos.disconnect(self.wellplateMultiPointWidget.update_live_coordinates)
+                self.movement_updater.position_after_move.disconnect(self.wellplateMultiPointWidget.update_live_coordinates)
                 self.is_live_scan_grid_on = False
             self.log.debug("live scan grid disconnected.")
             self.setupSlidePositionController(is_for_wellplate=True)
@@ -959,14 +985,14 @@ class HighContentScreeningGui(QMainWindow):
 
     def toggleAcquisitionStart(self, acquisition_started):
         if acquisition_started:
-            print("STARTING ACQUISITION")
+            self.log.info("STARTING ACQUISITION")
             if self.is_live_scan_grid_on: # disconnect live scan grid during acquisition
-                self.navigationController.scanGridPos.disconnect(self.wellplateMultiPointWidget.update_live_coordinates)
+                self.movement_updater.position_after_move.disconnect(self.wellplateMultiPointWidget.update_live_coordinates)
                 self.is_live_scan_grid_on = False
         else:
-            print("FINISHED ACQUISITION")
+            self.log.info("FINISHED ACQUISITION")
             if not self.is_live_scan_grid_on:  # reconnect live scan grid if was on before acqusition
-                self.navigationController.scanGridPos.connect(self.wellplateMultiPointWidget.update_live_coordinates)
+                self.movement_updater.position_after_move.connect(self.wellplateMultiPointWidget.update_live_coordinates)
                 self.is_live_scan_grid_on = True
 
         # click to move off during acquisition
@@ -1032,6 +1058,30 @@ class HighContentScreeningGui(QMainWindow):
         self.stitcherThread.starting_saving.connect(self.stitcherWidget.startingSaving)
         self.stitcherThread.finished_saving.connect(self.stitcherWidget.finishedSaving)
 
+    def move_from_click_image(self, click_x, click_y, image_width, image_height):
+        if self.navigationViewer.get_click_to_move_enabled():
+            pixel_size_um = self.objectiveStore.get_pixel_size()
+
+            pixel_sign_x = 1
+            pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
+
+            delta_x = pixel_sign_x * pixel_size_um * click_x / 1000.0
+            delta_y = pixel_sign_y * pixel_size_um * click_y / 1000.0
+
+            self.log.debug(f"Click to move enabled, click at {click_x=}, {click_y=} results in relative move of {delta_x=} [mm], {delta_y=} [mm]")
+            self.move_x(delta_x)
+            self.move_y(delta_y)
+        else:
+            self.log.debug(f"Click to move disabled, ignoring click at {click_x=}, {click_y=}")
+
+    def move_from_click_mm(self, x_mm, y_mm):
+        if self.navigationViewer.get_click_to_move_enabled():
+            self.log.debug(f"Click to move enabled, moving to {x_mm=}, {y_mm=}")
+            self.move_x_to(x_mm)
+            self.move_y_to(y_mm)
+        else:
+            self.log.debug(f"Click to move disabled, ignoring click request for {x_mm=}, {y_mm=}")
+
     def closeEvent(self, event):
         try:
             squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
@@ -1060,8 +1110,7 @@ class HighContentScreeningGui(QMainWindow):
             self.stage.move_y(0.1)
             self.stage.move_y_to(30)
 
-        # TODO(imo): We need an enable/disable on stage that can serve this function.  For now, comment out!
-        # self.navigationController.turnoff_axis_pid_control()
+        self.microcontroller.turn_off_all_pid()
 
         if ENABLE_CELLX:
             for channel in [1,2,3,4]:
