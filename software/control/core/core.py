@@ -1295,14 +1295,10 @@ class MultiPointWorker(QObject):
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
-        if self.multiPointController.coordinate_dict is not None:
-            self.coordinate_dict = self.multiPointController.coordinate_dict.copy()
-        else:
-            self.coordinate_dict = None
-        self.use_scan_coordinates = self.multiPointController.use_scan_coordinates
-        self.scan_coordinates_mm = self.multiPointController.scan_coordinates_mm
-        self.scan_coordinates_name = self.multiPointController.scan_coordinates_name
-        self.z_stacking_config = self.multiPointController.z_stacking_config
+        self.scan_region_fov_coords_mm = self.multiPointController.scan_region_fov_coords_mm.copy()
+        self.scan_region_coords_mm = self.multiPointController.scan_region_coords_mm
+        self.scan_region_names = self.multiPointController.scan_region_names
+        self.z_stacking_config = self.multiPointController.z_stacking_config  # default 'from bottom'
         self.z_range = self.multiPointController.z_range
 
         self.microscope = self.multiPointController.parent
