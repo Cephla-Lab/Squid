@@ -398,7 +398,6 @@ class HighContentScreeningGui(QMainWindow):
             self.cameraSettingWidget = widgets.CameraSettingsWidget(self.camera, include_gain_exposure_time=False, include_camera_temperature_setting=False, include_camera_auto_wb_setting=True)
         self.liveControlWidget = widgets.LiveControlWidget(self.streamHandler, self.liveController, self.configurationManager, show_display_options=True, show_autolevel=True, autolevel=True)
         self.navigationWidget = widgets.NavigationWidget(self.stage, self.slidePositionController, widget_configuration=f'{WELLPLATE_FORMAT} well plate')
-        self.navigationBarWidget = widgets.NavigationBarWidget(self.stage, self.slidePositionController, add_z_buttons=False)
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
         self.piezoWidget = widgets.PiezoWidget(self.microcontroller)
@@ -594,8 +593,6 @@ class HighContentScreeningGui(QMainWindow):
         dock_display = dock.Dock('Image Display', autoOrientation=False)
         dock_display.showTitleBar()
         dock_display.addWidget(self.imageDisplayTabs)
-        if SHOW_NAVIGATION_BAR:
-            dock_display.addWidget(self.navigationBarWidget)
         dock_display.setStretch(x=100, y=100)
         main_dockArea.addDock(dock_display)
 
@@ -941,8 +938,6 @@ class HighContentScreeningGui(QMainWindow):
         self.slidePositionController.deleteLater()
         self.slidePositionController = core.SlidePositionController(self.stage, self.liveController, is_for_wellplate=is_for_wellplate)
         self.connectSlidePositionController()
-        if SHOW_NAVIGATION_BAR:
-            self.navigationBarWidget.replace_slide_controller(self.slidePositionController)
         self.navigationWidget.replace_slide_controller(self.slidePositionController)
 
     def connectSlidePositionController(self):
