@@ -339,7 +339,8 @@ class HighContentScreeningGui(QMainWindow):
             if HOMING_ENABLED_Z:
                 self.stage.home(x=False, y=False, z=True, theta=False)
             if HOMING_ENABLED_X and HOMING_ENABLED_Y:
-                self.stage.home(x=True, y=True, z=False, theta=False)
+                self.stage.home(x=False, y=True, z=False, theta=False)
+                self.stage.home(x=True, y=False, z=False, theta=False)
                 self.slidePositionController.homing_done = True
             if USE_ZABER_EMISSION_FILTER_WHEEL:
                 self.emission_filter_wheel.wait_for_homing_complete()
