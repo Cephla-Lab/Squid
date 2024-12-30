@@ -1049,10 +1049,11 @@ class AutoFocusController(QObject):
     autofocusFinished = Signal()
     image_to_display = Signal(np.ndarray)
 
-    def __init__(self,camera, stage: AbstractStage, liveController):
+    def __init__(self,camera, stage: AbstractStage, liveController, microcontroller: Microcontroller):
         QObject.__init__(self)
         self.camera = camera
         self.stage = stage
+        self.microcontroller = microcontroller
         self.liveController = liveController
         self.N = None
         self.deltaZ = None
@@ -1206,8 +1207,8 @@ class AutoFocusController(QObject):
             self.wait_till_autofocus_has_completed()
             pos = self.stage.get_pos()
 
-            print(f"Adding coordinates ({pos.x},{pos.y},{pos.z}) to focus map")
-            self.focus_map_coords.append((pos.x, pos.y, pos.z))
+            print(f"Adding coordinates ({pos.x_mm},{pos.y_mm},{pos.z_mm}) to focus map")
+            self.focus_map_coords.append((pos.x_mm, pos.y_mm, pos.z_mm))
 
         print("Generated focus map.")
 

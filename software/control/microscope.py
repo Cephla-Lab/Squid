@@ -68,7 +68,7 @@ class Microscope(QObject):
         self.objectiveStore = core.ObjectiveStore()
         self.streamHandler = core.StreamHandler(display_resolution_scaling=DEFAULT_DISPLAY_CROP/100)
         self.liveController = core.LiveController(self.camera, self.microcontroller, self.configurationManager, self)
-        self.autofocusController = core.AutoFocusController(self.camera, self.stage, self.liveController)
+        self.autofocusController = core.AutoFocusController(self.camera, self.stage, self.liveController, self.microcontroller)
         self.slidePositionController = core.SlidePositionController(self.stage,self.liveController)
 
     def initialize_peripherals(self):
