@@ -990,7 +990,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.is_live_scan_grid_on = True
 
         # click to move off during acquisition
-        self.navigationWidget.set_click_to_move(acquisition_started)
+        self.navigationWidget.set_click_to_move(not acquisition_started)
 
         # disable other acqusiition tabs during acquisition
         current_index = self.recordTabWidget.currentIndex()
