@@ -238,13 +238,11 @@ class Camera(object):
                         self.camera.StartPullModeWithCallback(self._event_callback, self)
                     except toupcam.HRESULTException as ex:
                         self.log.error('failed to start camera, hr=0x{:x}'.format(ex.hr))
-                        # TODO(imo): Remove sys.exit and propagate+handle.
-                        sys.exit(1)
+                        raise ex
                 self._toupcam_pullmode_started = True
             else:
-                # TODO(imo): Remove sys.exit and propagate+handle.
                 self.log.error('failed to open camera')
-                sys.exit(1)
+                raise RuntimeError("Couldn't open camera")
         else:
             self.log.error('no camera found')
 
