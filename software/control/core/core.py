@@ -956,7 +956,6 @@ class AutofocusWorker(QObject):
 
         self.N = self.autofocusController.N
         self.deltaZ = self.autofocusController.deltaZ
-        self.deltaZ_usteps = self.autofocusController.deltaZ_usteps
 
         self.crop_width = self.autofocusController.crop_width
         self.crop_height = self.autofocusController.crop_height
@@ -1380,7 +1379,7 @@ class MultiPointWorker(QObject):
             self.processingHandler.upload_queue.join()
             self.processingHandler.end_processing()
 
-        self._log.info("Time taken for acquisition/processing: ", (time.perf_counter_ns() - self.start_time) / 1e9)
+        self._log.info(f"Time taken for acquisition/processing: {(time.perf_counter_ns() - self.start_time) / 1e9} [s]")
         self.finished.emit()
 
     def wait_till_operation_is_completed(self):
@@ -1912,8 +1911,7 @@ class MultiPointWorker(QObject):
             if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
                 self.signal_z_piezo_um.emit(self.z_piezo_um)
         else:
-            self.microcontroller.move_z_usteps(self.deltaZ_usteps)
-            self.wait_till_operation_is_completed()
+            self.stage.move_z(self.deltaZ)
             time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
 
     def move_z_back_after_stack(self):

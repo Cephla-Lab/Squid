@@ -2597,7 +2597,7 @@ class FlexibleMultiPointWidget(QFrame):
         x = pos.x_mm
         y = pos.y_mm
         z = pos.z_mm
-        name = f'R{len(self.location_ids)}'
+        region_id = f'R{len(self.location_ids)}'
 
         # Check for duplicates using rounded values for comparison
         if not np.any(np.all(self.location_list[:, :2] == [round(x,3), round(y,3)], axis=1)):
