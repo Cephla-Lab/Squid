@@ -3574,7 +3574,7 @@ class WellplateMultiPointWidget(QFrame):
                 self.multipointController.set_z_range(minZ, maxZ)
                 print("set z-range", (minZ, maxZ))
             else:
-                z = self.get_pos().z_mm
+                z = self.stage.get_pos().z_mm
                 dz = self.entry_deltaZ.value()
                 Nz = self.entry_NZ.value()
                 self.multipointController.set_z_range(z, z + dz * (Nz - 1))
