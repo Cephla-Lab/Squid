@@ -439,13 +439,12 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageDisplayWindow.show_ROI_selector()
             else:
                 self.imageDisplayWindow = core.ImageDisplayWindow(self.liveController, self.contrastManager, draw_crosshairs=True, show_LUT=True, autoLevels=True)
-            #self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
             self.imageDisplayTabs = self.imageDisplayWindow.widget
             self.napariMosaicDisplayWidget = None
         else:
             self.setupImageDisplayTabs()
 
-        self.flexibleMultiPointWidget = widgets.FlexibleMultiPointWidget(self.stage, self.navigationViewer, self.multipointController, self.objectiveStore, self.configurationManager, scanCoordinates=None)
+        self.flexibleMultiPointWidget = widgets.FlexibleMultiPointWidget(self.stage, self.navigationViewer, self.multipointController, self.objectiveStore, self.configurationManager, self.scanCoordinates)
         self.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(self.stage, self.navigationViewer, self.multipointController, self.objectiveStore, self.configurationManager, self.scanCoordinates, self.napariMosaicDisplayWidget)
         self.sampleSettingsWidget = widgets.SampleSettingsWidget(self.objectivesWidget, self.wellplateFormatWidget)
 
