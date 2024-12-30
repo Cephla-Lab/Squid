@@ -987,7 +987,6 @@ class AutofocusWorker(QObject):
         steps_moved = 0
         for i in range(self.N):
             self.stage.move_z(self.deltaZ)
-            self.wait_till_operation_is_completed()
             steps_moved = steps_moved + 1
             # trigger acquisition (including turning on the illumination) and read frame
             if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
@@ -996,7 +995,7 @@ class AutofocusWorker(QObject):
                 self.camera.send_trigger()
                 image = self.camera.read_frame()
             elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-                if 'Fluorescence' in config.name and ENABLE_NL5 and NL5_USE_DOUT:
+                if 'Fluorescence' in self.liveController.currentConfiguration.name and ENABLE_NL5 and NL5_USE_DOUT:
                     self.camera.image_is_ready = False # to remove
                     self.microscope.nl5.start_acquisition()
                     image = self.camera.read_frame(reset_image_ready_flag=False)
