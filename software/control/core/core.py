@@ -1660,7 +1660,7 @@ class MultiPointWorker(QObject):
                 self.wait_till_operation_is_completed()
                 time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
 
-    def acquire_camera_image(self, config, file_ID, current_path, current_round_images, i, j, k):
+    def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k):
         # update the current configuration
         self.signal_current_configuration.emit(config)
         self.wait_till_operation_is_completed()
