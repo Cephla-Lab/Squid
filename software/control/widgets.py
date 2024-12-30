@@ -1881,7 +1881,7 @@ class FlexibleMultiPointWidget(QFrame):
     signal_stitcher_z_levels = Signal(int) # live Nz
     signal_stitcher_widget = Signal(bool) # signal start stitcher
 
-    def __init__(self, stage: AbstractStage, navigationViewer, multipointController, objectiveStore, configurationManager = None, main=None, scanCoordinates=None, *args, **kwargs):
+    def __init__(self, stage: AbstractStage, navigationViewer, multipointController, objectiveStore, configurationManager = None, scanCoordinates=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.last_used_locations = None
