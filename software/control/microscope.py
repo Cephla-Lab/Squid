@@ -54,12 +54,6 @@ class Microscope(QObject):
             self.microcontroller = microcontroller.Microcontroller(existing_serial=control.microcontroller.SimSerial())
         else:
             self.microcontroller = microcontroller.Microcontroller(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)
-        
-        self.microcontroller.reset()
-        time.sleep(0.5)
-        self.microcontroller.initialize_drivers()
-        time.sleep(0.5)
-        self.microcontroller.configure_actuators()
 
         self.home_x_and_y_separately = False
 
@@ -104,60 +98,42 @@ class Microscope(QObject):
 
     def home_xyz(self):
         if HOMING_ENABLED_Z:
-            self.navigationController.home_z()
-            self.waitForMicrocontroller(10, 'z homing timeout')
+            self.stage.home(x=False, y=False, z=True, theta=False)
         if HOMING_ENABLED_X and HOMING_ENABLED_Y:
-            self.navigationController.move_x(20)
-            self.waitForMicrocontroller()
-            self.navigationController.home_y()
-            self.waitForMicrocontroller(10, 'y homing timeout')
-            self.navigationController.zero_y()
-            self.navigationController.home_x()
-            self.waitForMicrocontroller(10, 'x homing timeout')
-            self.navigationController.zero_x()
+            self.stage.move_x(20)
+            self.stage.home(x=False, y=True, z=False, theta=False)
+            self.stage.home(x=True, y=False, z=False, theta=False)
             self.slidePositionController.homing_done = True
 
     def move_x(self,distance,blocking=True):
-        self.navigationController.move_x(distance)
-        if blocking:
-            self.waitForMicrocontroller()
+        self.stage.move_x(distance, blocking=blocking)
 
     def move_y(self,distance,blocking=True):
-        self.navigationController.move_y(distance)
-        if blocking:
-            self.waitForMicrocontroller()
+        self.stage.move_y(distance, blocking=blocking)
 
     def move_x_to(self,position,blocking=True):
-        self.navigationController.move_x_to(position)
-        if blocking:
-            self.waitForMicrocontroller()
+        self.stage.move_x_to(position, blocking=blocking)
 
     def move_y_to(self,position,blocking=True):
-        self.navigationController.move_y_to(position)
-        if blocking:
-            self.waitForMicrocontroller()
+        self.stage.move_y_to(position, blocking=blocking)
 
     def get_x(self):
-        return self.navigationController.x_pos_mm
+        return self.stage.get_pos().x_mm
 
     def get_y(self):
-        return self.navigationController.y_pos_mm
+        return self.stage.get_pos().y_mm
 
     def get_z(self):
-        return self.navigationController.z_pos_mm
+        return self.stage.get_pos().z_mm
 
     def move_z_to(self,z_mm,blocking=True):
-        clear_backlash = True if (z_mm < self.navigationController.z_pos_mm and self.navigationController.get_pid_control_flag(2)==False) else False
+        self.stage.move_z_to(z_mm, blocking=blocking)
+        clear_backlash = z_mm >= self.stage.get_pos().z_mm
         # clear backlash if moving backward in open loop mode
-        self.navigationController.move_z_to(z_mm)
-        if blocking:
-            self.waitForMicrocontroller()
-            if clear_backlash:
-                _usteps_to_clear_backlash = 160
-                self.navigationController.move_z_usteps(-_usteps_to_clear_backlash)
-                self.waitForMicrocontroller()
-                self.navigationController.move_z_usteps(_usteps_to_clear_backlash)
-                self.waitForMicrocontroller()
+        if blocking and clear_backlash:
+            distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+            self.stage.move_z(-distance_to_clear_backlash)
+            self.stage.move_z(distance_to_clear_backlash)
 
     def start_live(self):
         self.camera.start_streaming()
