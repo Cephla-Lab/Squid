@@ -1,3 +1,4 @@
+import enum
 import inspect
 import pathlib
 import shutil
@@ -61,9 +62,16 @@ def unsigned_to_signed(unsigned_array, N):
     return signed
 
 
-def rotate_and_flip_image(image, rotate_image_angle, flip_image):
+class FlipVariant(enum.Enum):
+    # The mixed case is a historical artifact.
+    VERTICAL = "Vertical"
+    HORIZONTAL = "Horizontal"
+    BOTH = "Both"
+
+
+def rotate_and_flip_image(image, rotate_image_angle: Optional[float], flip_image: Optional[FlipVariant]):
     ret_image = image.copy()
-    if rotate_image_angle != 0:
+    if rotate_image_angle and rotate_image_angle != 0:
         """
         # ROTATE_90_CLOCKWISE
         # ROTATE_90_COUNTERCLOCKWISE
@@ -74,18 +82,15 @@ def rotate_and_flip_image(image, rotate_image_angle, flip_image):
             ret_image = cv2.rotate(ret_image, cv2.ROTATE_90_COUNTERCLOCKWISE)
         elif rotate_image_angle == 180:
             ret_image = cv2.rotate(ret_image, cv2.ROTATE_180)
+        else:
+            raise ValueError(f"Unhandled rotation: {rotate_image_angle}")
 
     if flip_image is not None:
-        """
-        flipcode = 0: flip vertically
-        flipcode > 0: flip horizontally
-        flipcode < 0: flip vertically and horizontally
-        """
-        if flip_image == "Vertical":
+        if flip_image == FlipVariant.VERTICAL:
             ret_image = cv2.flip(ret_image, 0)
-        elif flip_image == "Horizontal":
+        elif flip_image == FlipVariant.HORIZONTAL:
             ret_image = cv2.flip(ret_image, 1)
-        elif flip_image == "Both":
+        elif flip_image == FlipVariant.BOTH:
             ret_image = cv2.flip(ret_image, -1)
 
     return ret_image
