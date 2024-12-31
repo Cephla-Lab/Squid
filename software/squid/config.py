@@ -146,3 +146,17 @@ Returns the StageConfig that existed at process startup.
 
 def get_stage_config():
     return _stage_config
+
+class CameraType(enum.StrEnum):
+    TOUPCAM = "TOUPCAM"
+
+class CameraConfig(pydantic.BaseModel):
+    """
+    Most camera parameters are runtime configurable, so CameraConfig is more about defining what
+    camera must be available and used for a particular function in the system.
+
+    If we want to capture the settings a camera used for a particular capture, another model called
+    CameraState, or something, might be more appropriate.
+    """
+    # NOTE(imo): Not "type" because that's a python builtin and can cause confusion
+    camera_type: CameraType
