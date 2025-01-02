@@ -118,7 +118,7 @@ class MovementUpdater(QObject):
             # In here, send all the signals that must be sent once per stop of movement.  AKA once per arriving at a
             # new position for a while.
             self.sent_after_stopped = True
-            self.position_after_move.emit(pos.x_mm, pos.y_mm)
+            self.position_after_move.emit(pos)
         else:
             self.sent_after_stopped = False
 
@@ -713,7 +713,6 @@ class HighContentScreeningGui(QMainWindow):
         self.wellplateFormatWidget.signalWellplateSettings.connect(self.wellSelectionWidget.onWellplateChanged)
         self.wellplateFormatWidget.signalWellplateSettings.connect(lambda format_, *args: self.onWellplateChanged(format_))
 
-        #self.wellSelectionWidget.signal_wellSelectedPos.connect(lambda well_x, well_y: self.stage.move_x_to(well_x) and self.stage.move_y_to(well_y))
         self.wellSelectionWidget.signal_wellSelectedPos.connect(self.move_to_mm)
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
@@ -742,6 +741,7 @@ class HighContentScreeningGui(QMainWindow):
         self.movement_update_timer = QTimer()
         self.movement_update_timer.setInterval(100)
         self.movement_update_timer.timeout.connect(self.movement_updater.do_update)
+        self.movement_update_timer.start()
 
     def makeNapariConnections(self):
         """Initialize all Napari connections in one place"""
