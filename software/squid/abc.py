@@ -1,6 +1,15 @@
 from abc import ABC, abstractmethod
 from typing import Tuple
+import abc
+import time
+from typing import Optional
 
+import pydantic
+import numpy as np
+
+import squid.logging
+from squid.config import AxisConfig, StageConfig, CameraConfig
+from squid.exceptions import SquidTimeout
 class LightSource(ABC):
     """Abstract base class defining the interface for different light sources."""
     
@@ -121,16 +130,6 @@ class LightSource(ABC):
         """Safely shut down the light source."""
         pass
     
-import abc
-import time
-from typing import Optional
-
-import pydantic
-
-import squid.logging
-from squid.config import AxisConfig, StageConfig
-from squid.exceptions import SquidTimeout
-
 
 class Pos(pydantic.BaseModel):
     x_mm: float
@@ -221,12 +220,12 @@ class AbstractStage(metaclass=abc.ABCMeta):
 
         raise SquidTimeout(error_message)
 
-class CameraAcquisitionMode(enum.StrEnum):
+class CameraAcquisitionMode(enum.Enum):
     SOFTWARE_TRIGGER = "SOFTWARE_TRIGGER"
     HARDWARE_TRIGGER = "HARDWARE_TRIGGER"
     CONTINUOUS = "CONTINUOUS"
 
-class CameraPixelFormat(enum.StrEnum):
+class CameraPixelFormat(enum.Enum):
     """
     This is all known Pixel Formats in the Cephla world, but not all cameras will support
     all of these.
@@ -239,7 +238,7 @@ class CameraPixelFormat(enum.StrEnum):
     RGB32 = "RGB32"
     RGB48 = "RGB48"
 
-class CameraFrameFormat(enum.StrEnum):
+class CameraFrameFormat(enum.Enum):
     """
     This is all known camera frame formats in the Cephla world, but not all cameras will
     support all of these.

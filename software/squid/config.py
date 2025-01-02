@@ -147,7 +147,7 @@ Returns the StageConfig that existed at process startup.
 def get_stage_config():
     return _stage_config
 
-class CameraType(enum.StrEnum):
+class CameraType(enum.Enum):
     TOUPCAM = "TOUPCAM"
 
 class CameraConfig(pydantic.BaseModel):
