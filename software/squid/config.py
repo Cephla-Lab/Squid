@@ -165,6 +165,7 @@ def _old_camera_type_to_enum(old_string) -> CameraType:
         return CameraType.IDS
     raise ValueError(f"Unknown old camera type {old_string=}")
 
+
 class CameraPixelFormat(enum.Enum):
     """
     This is all known Pixel Formats in the Cephla world, but not all cameras will support
@@ -178,6 +179,7 @@ class CameraPixelFormat(enum.Enum):
     RGB24 = "RGB24"
     RGB32 = "RGB32"
     RGB48 = "RGB48"
+
 
 class CameraConfig(pydantic.BaseModel):
     """
@@ -195,10 +197,11 @@ class CameraConfig(pydantic.BaseModel):
 
     default_pixel_format: CameraPixelFormat
 
+
 _camera_config = CameraConfig(
     camera_type=_old_camera_type_to_enum(_def.CAMERA_TYPE),
     default_resolution=(_def.Acquisition.CROP_WIDTH, _def.Acquisition.CROP_HEIGHT),
-    default_pixel_format=(_def.DEFAULT_PIXEL_FORMAT)
+    default_pixel_format=(_def.DEFAULT_PIXEL_FORMAT),
 )
 
 
