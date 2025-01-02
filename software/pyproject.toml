@@ -1,0 +1,13 @@
+[tool.black]
+line-length = 120
+extend-exclude = '''
+(
+^/software/drivers and libraries/ 
+| ^/software/control/gxipy/ 
+| ^/software/control/RCM_API.py 
+| ^/software/control/TUCam.py 
+| ^/software/control/dcam.py 
+| ^/software/control/dcamapi4.py 
+| ^/software/control/toupcam.py 
+| ^/software/control/toupcam_exceptions.py
+)'''
