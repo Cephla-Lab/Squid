@@ -7,6 +7,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        # NOTE(imo): This 3.13 python version is just for black to be able to use the use_pyproject option.  We
+        # don't actually require 3.13 in our code!
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - uses: psf/black@stable
         with:
           use_pyproject: true
