@@ -10,6 +10,8 @@ import numpy as np
 import squid.logging
 from squid.config import AxisConfig, StageConfig, CameraConfig
 from squid.exceptions import SquidTimeout
+
+
 class LightSource(ABC):
     """Abstract base class defining the interface for different light sources."""
     
@@ -285,6 +287,13 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         except ValueError:
             self._log.warning(f"No callback with id={callback_id}, cannot remove it.")
 
+    def _propogate_frame(self, frame):
+        """
+        Implementations can call this to propogate a new frame to all registered callbacks.
+        """
+        for cb in self._frame_callbacks:
+            cb(frame)
+
     @abc.abstractmethod
     def set_exposure_time(self, exposure_time_ms: float):
         pass
@@ -380,6 +389,14 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
+    def get_frame_id(self) -> int:
+        """
+        Returns the frame id of the current frame.  This should increase by 1 with every frame received
+        from the camera
+        """
+        pass
+
+    @abc.abstractmethod
     def get_white_balance_gains(self) -> Tuple[float, float, float]:
         """
         Returns the (R, G, B) white balance gains
@@ -453,6 +470,8 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         If in an acquisition mode that needs triggering, send a trigger.  If in HARDWARE_TRIGGER mode, you are
         guaranteed to have a self._hw_trigger_fn and should call that.  If in CONTINUOUS mode, this can be
         a no-op.
+
+        When this returns, it does not mean it is safe to immediately send another trigger.
         """
 
     @abc.abstractmethod
@@ -467,6 +486,13 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
         """
         Set the region of interest of the camera so that returned frames only contain this subset of the full sensor image.
+        """
+        pass
+
+    @abc.abstractmethod
+    def get_region_of_interest(self) -> Tuple[int, int, int, int]:
+        """
+        Returns the region of interest as a tuple of (x corner, y corner, width, height)
         """
         pass
 
