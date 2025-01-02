@@ -14,5 +14,5 @@ jobs:
           python-version: "3.13"
       - uses: psf/black@stable
         with:
-          use_pyproject: true
+          options: "--config software/pyproject.toml"
           src: "./software/"
