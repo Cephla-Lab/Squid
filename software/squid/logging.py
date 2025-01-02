@@ -26,15 +26,18 @@ class _CustomFormatter(py_logging.Formatter):
         py_logging.INFO: GRAY + FORMAT + RESET,
         py_logging.WARNING: YELLOW + FORMAT + RESET,
         py_logging.ERROR: RED + FORMAT + RESET,
-        py_logging.CRITICAL: BOLD_RED + FORMAT + RESET
+        py_logging.CRITICAL: BOLD_RED + FORMAT + RESET,
     }
 
     # NOTE(imo): The datetime hackery is so that we can have millisecond timestamps using a period instead
     # of comma.  The default asctime + datefmt uses a comma.
-    FORMATTERS = {level: py_logging.Formatter(fmt, datefmt=_baseline_log_dateformat) for (level, fmt) in FORMATS.items()}
+    FORMATTERS = {
+        level: py_logging.Formatter(fmt, datefmt=_baseline_log_dateformat) for (level, fmt) in FORMATS.items()
+    }
 
     def format(self, record):
         return self.FORMATTERS[record.levelno].format(record)
+
 
 _COLOR_STREAM_HANDLER = py_logging.StreamHandler()
 _COLOR_STREAM_HANDLER.setFormatter(_CustomFormatter())
@@ -60,7 +63,9 @@ def get_logger(name: Optional[str] = None) -> py_logging.Logger:
 
     return logger
 
+
 log = get_logger(__name__)
+
 
 def set_stdout_log_level(level):
     """
@@ -129,7 +134,9 @@ def register_crash_handler(handler, call_existing_too=True):
         if call_existing_too:
             old_unraisable_hook(info)
 
-    logger.info(f"Registering custom excepthook, threading excepthook, and unraisable hook using handler={handler.__name__}")
+    logger.info(
+        f"Registering custom excepthook, threading excepthook, and unraisable hook using handler={handler.__name__}"
+    )
     sys.excepthook = new_excepthook
     threading.excepthook = new_thread_excepthook
     sys.unraisablehook = new_unraisable_hook
@@ -140,13 +147,16 @@ def setup_uncaught_exception_logging():
     This will make sure uncaught exceptions are sent to the root squid logger as error messages.
     """
     logger = get_logger()
+
     def uncaught_exception_logger(exception_type: Type[BaseException], value: BaseException, tb: TracebackType):
         logger.exception("Uncaught Exception!", exc_info=value)
 
     register_crash_handler(uncaught_exception_logger, call_existing_too=False)
 
+
 def get_default_log_directory():
     return platformdirs.user_log_path(_squid_root_logger_name, "cephla")
+
 
 def add_file_logging(log_filename, replace_existing=False):
     root_logger = get_logger()

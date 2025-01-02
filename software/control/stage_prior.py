@@ -3,7 +3,8 @@ import time
 import re
 import threading
 
-class PriorStage():
+
+class PriorStage:
     def __init__(self, sn, baudrate=115200, timeout=0.1, parent=None):
         port = [p.device for p in serial.tools.list_ports.comports() if sn == p.serial_number]
         self.serial = serial.Serial(port[0], baudrate=baudrate, timeout=timeout)
@@ -23,14 +24,14 @@ class PriorStage():
         self.joystick_enabled = False
 
         # Prior-specific properties
-        self.stage_microsteps_per_mm = 100000   # Stage property
+        self.stage_microsteps_per_mm = 100000  # Stage property
         self.user_unit = None
         self.stage_model = None
         self.stage_limits = None
         self.resolution = 0.1
-        self.x_direction = 1    # 1 or -1
-        self.y_direction = 1    # 1 or -1
-        self.speed = 200    # Default value
+        self.x_direction = 1  # 1 or -1
+        self.y_direction = 1  # 1 or -1
+        self.speed = 200  # Default value
         self.acceleration = 500  # Default value
 
         # Position updating callback
@@ -45,9 +46,9 @@ class PriorStage():
         self.position_updating_thread.start()
 
     def set_baudrate(self, baud):
-        allowed_baudrates = {9600: '96', 19200: '19', 38400: '38', 115200: '115'}
+        allowed_baudrates = {9600: "96", 19200: "19", 38400: "38", 115200: "115"}
         if baud not in allowed_baudrates:
-            print('Baudrate not allowed. Setting baudrate to 9600')
+            print("Baudrate not allowed. Setting baudrate to 9600")
             baud_command = "BAUD 96"
         else:
             baud_command = "BAUD " + allowed_baudrates[baud]
@@ -55,14 +56,14 @@ class PriorStage():
 
         for bd in allowed_baudrates:
             self.serial.baudrate = bd
-            self.serial.write(b'\r')
+            self.serial.write(b"\r")
             time.sleep(0.1)
             self.serial.flushInput()
 
             self.send_command(baud_command)
 
             self.serial.baudrate = baud
-        
+
             try:
                 test_response = self.send_command("$")  # Send a simple query command
                 if not test_response:
@@ -78,12 +79,12 @@ class PriorStage():
                 print(f"Failed to verify communication at new baud rate: {e}")
 
         raise Exception("Failed to set baudrate.")
-        
+
     def initialize(self):
         self.send_command("COMP 0")  # Set to standard mode
         self.send_command("BLSH 1")  # Enable backlash correction
         self.send_command("RES,S," + str(self.resolution))  # Set resolution
-        response = self.send_command("H 0")     # Joystick enabled
+        response = self.send_command("H 0")  # Joystick enabled
         self.joystick_enabled = True
         self.user_unit = self.stage_microsteps_per_mm * self.resolution
         self.get_stage_info()
@@ -94,13 +95,13 @@ class PriorStage():
         with self.serial_lock:
             self.serial.write(f"{command}\r".encode())
             response = self.serial.readline().decode().strip()
-            if response.startswith('E'):
+            if response.startswith("E"):
                 raise Exception(f"Error from controller: {response}")
             return response
 
     def get_stage_info(self):
         stage_info = self.send_command("STAGE")
-        self.stage_model = re.search(r'STAGE\s*=\s*(\S+)', stage_info).group(1)
+        self.stage_model = re.search(r"STAGE\s*=\s*(\S+)", stage_info).group(1)
         print("Stage model: ", self.stage_model)
 
     def mm_to_steps(self, mm):
@@ -152,7 +153,7 @@ class PriorStage():
         self.wait_for_stop()
         self.x_pos = 0
         self.y_pos = 0
-        print('finished homing')
+        print("finished homing")
 
     def home_x(self):
         self.move_relative(-self.x_pos, 0)
@@ -175,7 +176,7 @@ class PriorStage():
 
     def get_pos(self):
         response = self.send_command("P")
-        x, y, z = map(int, response.split(','))
+        x, y, z = map(int, response.split(","))
         self.x_pos = x
         self.y_pos = y
         return x, y, 0, 0  # Z and theta are 0
@@ -250,7 +251,7 @@ class PriorStage():
             status = int(self.send_command("$,S"))
             if status == 0:
                 self.get_pos()
-                print('xy position: ', self.x_pos, self.y_pos)
+                print("xy position: ", self.x_pos, self.y_pos)
                 break
             time.sleep(0.05)
 
@@ -262,11 +263,10 @@ class PriorStage():
         self.position_updating_event.set()
         self.position_updating_thread.join()
         self.serial.close()
-        print('Stage closed')
+        print("Stage closed")
 
     def home_z(self):
         pass
 
     def zero_z(self):
         pass
-

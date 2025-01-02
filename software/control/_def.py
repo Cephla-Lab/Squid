@@ -55,31 +55,33 @@ def populate_class_from_dict(myclass, options):
     REMEMBER TO ENCLOSE PROPERTY NAMES IN LISTS IN DOUBLE QUOTES
     """
     for key, value in options:
-        if key.startswith('_') and key.endswith('options'):
+        if key.startswith("_") and key.endswith("options"):
             continue
         actualkey = key.upper()
         actualvalue = conf_attribute_reader(value)
         setattr(myclass, actualkey, actualvalue)
 
+
 class TriggerMode:
-    SOFTWARE = 'Software Trigger'
-    HARDWARE = 'Hardware Trigger'
-    CONTINUOUS = 'Continuous Acquisition'
+    SOFTWARE = "Software Trigger"
+    HARDWARE = "Hardware Trigger"
+    CONTINUOUS = "Continuous Acquisition"
+
 
 class Acquisition:
     CROP_WIDTH = 3000
     CROP_HEIGHT = 3000
     NUMBER_OF_FOVS_PER_AF = 3
-    IMAGE_FORMAT = 'bmp'
+    IMAGE_FORMAT = "bmp"
     IMAGE_DISPLAY_SCALING_FACTOR = 0.3
     PSEUDO_COLOR = False
     MERGE_CHANNELS = False
     PSEUDO_COLOR_MAP = {
-    "405": {"hex": 0x0000FF},   # blue
-    "488": {"hex": 0x00FF00},   # green
-    "561": {"hex": 0xFFCF00},   # yellow
-    "638": {"hex": 0xFF0000},   # red
-    "730": {"hex": 0x770000}    # dark red
+        "405": {"hex": 0x0000FF},  # blue
+        "488": {"hex": 0x00FF00},  # green
+        "561": {"hex": 0xFFCF00},  # yellow
+        "638": {"hex": 0xFF0000},  # red
+        "730": {"hex": 0x770000},  # dark red
     }
     DX = 0.9
     DY = 0.9
@@ -87,15 +89,19 @@ class Acquisition:
     NX = 1
     NY = 1
 
+
 class PosUpdate:
     INTERVAL_MS = 25
+
 
 class MicrocontrollerDef:
     MSG_LENGTH = 24
     CMD_LENGTH = 8
     N_BYTES_POS = 4
 
+
 USE_SEPARATE_MCU_FOR_DAC = False
+
 
 class MCU_PINS:
     PWM1 = 5
@@ -114,6 +120,7 @@ class MCU_PINS:
     PWM15 = 24
     PWM16 = 25
     AF_LASER = 15
+
 
 class CMD_SET:
     MOVE_X = 0
@@ -153,19 +160,23 @@ class CMD_SET:
     INITIALIZE = 254
     RESET = 255
 
+
 class CMD_SET2:
     ANALOG_WRITE_DAC8050X = 0
     SET_CAMERA_TRIGGER_FREQUENCY = 1
     START_CAMERA_TRIGGERING = 2
     STOP_CAMERA_TRIGGERING = 3
 
+
 BIT_POS_JOYSTICK_BUTTON = 0
 BIT_POS_SWITCH = 1
 
+
 class HOME_OR_ZERO:
-    HOME_NEGATIVE = 1 # motor moves along the negative direction (MCU coordinates)
-    HOME_POSITIVE = 0 # motor moves along the negative direction (MCU coordinates)
+    HOME_NEGATIVE = 1  # motor moves along the negative direction (MCU coordinates)
+    HOME_POSITIVE = 0  # motor moves along the negative direction (MCU coordinates)
     ZERO = 2
+
 
 class AXIS:
     X = 0
@@ -175,6 +186,7 @@ class AXIS:
     XY = 4
     W = 5
 
+
 class LIMIT_CODE:
     X_POSITIVE = 0
     X_NEGATIVE = 1
@@ -183,13 +195,14 @@ class LIMIT_CODE:
     Z_POSITIVE = 4
     Z_NEGATIVE = 5
 
+
 class LIMIT_SWITCH_POLARITY:
     ACTIVE_LOW = 0
     ACTIVE_HIGH = 1
     DISABLED = 2
-    X_HOME= 1
-    Y_HOME= 1
-    Z_HOME= 2
+    X_HOME = 1
+    Y_HOME = 1
+    Z_HOME = 2
 
 
 class ILLUMINATION_CODE:
@@ -207,8 +220,10 @@ class ILLUMINATION_CODE:
     ILLUMINATION_SOURCE_561NM = 14
     ILLUMINATION_SOURCE_730NM = 15
 
+
 class VOLUMETRIC_IMAGING:
     NUM_PLANES_PER_VOLUME = 20
+
 
 class CMD_EXECUTION_STATUS:
     COMPLETED_WITHOUT_ERRORS = 0
@@ -218,11 +233,13 @@ class CMD_EXECUTION_STATUS:
     CMD_EXECUTION_ERROR = 4
     ERROR_CODE_EMPTYING_THE_FLUDIIC_LINE_FAILED = 100
 
+
 class CAMERA_CONFIG:
     ROI_OFFSET_X_DEFAULT = 0
     ROI_OFFSET_Y_DEFAULT = 0
     ROI_WIDTH_DEFAULT = 3104
     ROI_HEIGHT_DEFAULT = 2084
+
 
 PRINT_CAMERA_FPS = True
 
@@ -230,7 +247,7 @@ PRINT_CAMERA_FPS = True
 #### machine specific configurations - to be overridden ###
 ###########################################################
 ROTATE_IMAGE_ANGLE = None
-FLIP_IMAGE = None # 'Horizontal', 'Vertical', 'Both'
+FLIP_IMAGE = None  # 'Horizontal', 'Vertical', 'Both'
 
 CAMERA_REVERSE_X = False
 CAMERA_REVERSE_Y = False
@@ -281,14 +298,14 @@ FULLSTEPS_PER_REV_THETA = 200
 
 SCREW_PITCH_X_MM = 1
 SCREW_PITCH_Y_MM = 1
-SCREW_PITCH_Z_MM = 0.012*25.4
+SCREW_PITCH_Z_MM = 0.012 * 25.4
 SCREW_PITCH_W_MM = 1
 
 MICROSTEPPING_DEFAULT_X = 8
 MICROSTEPPING_DEFAULT_Y = 8
 MICROSTEPPING_DEFAULT_Z = 8
 MICROSTEPPING_DEFAULT_W = 64
-MICROSTEPPING_DEFAULT_THETA = 8 # not used, to be removed
+MICROSTEPPING_DEFAULT_THETA = 8  # not used, to be removed
 
 X_MOTOR_RMS_CURRENT_mA = 490
 Y_MOTOR_RMS_CURRENT_mA = 490
@@ -317,25 +334,25 @@ HAS_ENCODER_Z = False
 HAS_ENCODER_W = False
 
 # enable PID control
-ENABLE_PID_X  = False
-ENABLE_PID_Y  = False
-ENABLE_PID_Z  = False
-ENABLE_PID_W  = False
+ENABLE_PID_X = False
+ENABLE_PID_Y = False
+ENABLE_PID_Z = False
+ENABLE_PID_W = False
 
 # PID arguments
-PID_P_X = int(1<<12)
+PID_P_X = int(1 << 12)
 PID_I_X = int(0)
 PID_D_X = int(0)
 
-PID_P_Y = int(1<<12)
+PID_P_Y = int(1 << 12)
 PID_I_Y = int(0)
 PID_D_Y = int(0)
 
-PID_P_Z = int(1<<12)
+PID_P_Z = int(1 << 12)
 PID_I_Z = int(0)
 PID_D_Z = int(1)
 
-PID_P_W = int(1<<12)
+PID_P_W = int(1 << 12)
 PID_I_W = int(1)
 PID_D_W = int(1)
 
@@ -367,7 +384,8 @@ LED_MATRIX_B_FACTOR = 1
 
 DEFAULT_SAVING_PATH = str(Path.home()) + "/Downloads"
 
-DEFAULT_PIXEL_FORMAT = 'MONO12'
+DEFAULT_PIXEL_FORMAT = "MONO12"
+
 
 class PLATE_READER:
     NUMBER_OF_ROWS = 8
@@ -377,40 +395,57 @@ class PLATE_READER:
     OFFSET_COLUMN_1_MM = 20
     OFFSET_ROW_A_MM = 20
 
-DEFAULT_DISPLAY_CROP = 100 # value ranges from 1 to 100 - image display crop size 
 
-CAMERA_PIXEL_SIZE_UM = {'IMX290':2.9,'IMX178':2.4,'IMX226':1.85,'IMX250':3.45,'IMX252':3.45,'IMX273':3.45,'IMX264':3.45,'IMX265':3.45,'IMX571':3.76,'PYTHON300':4.8}
+DEFAULT_DISPLAY_CROP = 100  # value ranges from 1 to 100 - image display crop size
+
+CAMERA_PIXEL_SIZE_UM = {
+    "IMX290": 2.9,
+    "IMX178": 2.4,
+    "IMX226": 1.85,
+    "IMX250": 3.45,
+    "IMX252": 3.45,
+    "IMX273": 3.45,
+    "IMX264": 3.45,
+    "IMX265": 3.45,
+    "IMX571": 3.76,
+    "PYTHON300": 4.8,
+}
 
 TUBE_LENS_MM = 50
-CAMERA_SENSOR = 'IMX226'
-TRACKERS = ['csrt', 'kcf', 'mil', 'tld', 'medianflow','mosse','daSiamRPN']
-DEFAULT_TRACKER = 'csrt'
+CAMERA_SENSOR = "IMX226"
+TRACKERS = ["csrt", "kcf", "mil", "tld", "medianflow", "mosse", "daSiamRPN"]
+DEFAULT_TRACKER = "csrt"
 
 ENABLE_TRACKING = False
-TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS = False # set to true when doing multimodal acquisition
+TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS = False  # set to true when doing multimodal acquisition
 if ENABLE_TRACKING:
     DEFAULT_DISPLAY_CROP = 100
+
 
 class AF:
     STOP_THRESHOLD = 0.85
     CROP_WIDTH = 800
     CROP_HEIGHT = 800
 
+
 class Tracking:
-    SEARCH_AREA_RATIO = 10 #@@@ check
-    CROPPED_IMG_RATIO = 10 #@@@ check
+    SEARCH_AREA_RATIO = 10  # @@@ check
+    CROPPED_IMG_RATIO = 10  # @@@ check
     BBOX_SCALE_FACTOR = 1.2
     DEFAULT_TRACKER = "csrt"
     INIT_METHODS = ["roi"]
     DEFAULT_INIT_METHOD = "roi"
 
+
 SHOW_DAC_CONTROL = False
+
 
 class SLIDE_POSITION:
     LOADING_X_MM = 30
     LOADING_Y_MM = 55
     SCANNING_X_MM = 3
     SCANNING_Y_MM = 3
+
 
 class OUTPUT_GAINS:
     REFDIV = False
@@ -423,8 +458,10 @@ class OUTPUT_GAINS:
     CHANNEL6_GAIN = False
     CHANNEL7_GAIN = True
 
+
 SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S = 10
 SLIDE_POTISION_SWITCHING_HOME_EVERYTIME = False
+
 
 class SOFTWARE_POS_LIMIT:
     X_POSITIVE = 56
@@ -434,59 +471,58 @@ class SOFTWARE_POS_LIMIT:
     Z_POSITIVE = 7
     Z_NEGATIVE = 0.05
 
+
 SHOW_AUTOLEVEL_BTN = False
 AUTOLEVEL_DEFAULT_SETTING = False
 
-MULTIPOINT_AUTOFOCUS_CHANNEL = 'BF LED matrix full'
+MULTIPOINT_AUTOFOCUS_CHANNEL = "BF LED matrix full"
 # MULTIPOINT_AUTOFOCUS_CHANNEL = 'BF LED matrix left half'
 MULTIPOINT_AUTOFOCUS_ENABLE_BY_DEFAULT = False
-MULTIPOINT_BF_SAVING_OPTION = 'Raw'
+MULTIPOINT_BF_SAVING_OPTION = "Raw"
 # MULTIPOINT_BF_SAVING_OPTION = 'RGB2GRAY'
 # MULTIPOINT_BF_SAVING_OPTION = 'Green Channel Only'
 
-DEFAULT_MULTIPOINT_NX=1
-DEFAULT_MULTIPOINT_NY=1
+DEFAULT_MULTIPOINT_NX = 1
+DEFAULT_MULTIPOINT_NY = 1
 
 ENABLE_FLEXIBLE_MULTIPOINT = True
 USE_OVERLAP_FOR_FLEXIBLE = True
 ENABLE_WELLPLATE_MULTIPOINT = True
 ENABLE_RECORDING = False
 
-CAMERA_SN = {'ch 1':'SN1','ch 2': 'SN2'} # for multiple cameras, to be overwritten in the configuration file
+CAMERA_SN = {"ch 1": "SN1", "ch 2": "SN2"}  # for multiple cameras, to be overwritten in the configuration file
 
 ENABLE_STROBE_OUTPUT = False
 
-ACQUISITION_PATTERN = 'S-Pattern' # 'S-Pattern', 'Unidirectional'
-FOV_PATTERN = 'Unidirectional' # 'S-Pattern', 'Unidirectional'
+ACQUISITION_PATTERN = "S-Pattern"  # 'S-Pattern', 'Unidirectional'
+FOV_PATTERN = "Unidirectional"  # 'S-Pattern', 'Unidirectional'
 
-Z_STACKING_CONFIG = 'FROM BOTTOM' # 'FROM BOTTOM', 'FROM TOP'
-Z_STACKING_CONFIG_MAP = {
-    0: 'FROM BOTTOM',
-    1: 'FROM CENTER',
-    2: 'FROM TOP'
-}
+Z_STACKING_CONFIG = "FROM BOTTOM"  # 'FROM BOTTOM', 'FROM TOP'
+Z_STACKING_CONFIG_MAP = {0: "FROM BOTTOM", 1: "FROM CENTER", 2: "FROM TOP"}
 
 DEFAULT_Z_POS_MM = 2
 
-WELLPLATE_OFFSET_X_mm = 0 # x offset adjustment for using different plates
-WELLPLATE_OFFSET_Y_mm = 0 # y offset adjustment for using different plates
+WELLPLATE_OFFSET_X_mm = 0  # x offset adjustment for using different plates
+WELLPLATE_OFFSET_Y_mm = 0  # y offset adjustment for using different plates
 
 # for USB spectrometer
 N_SPECTRUM_PER_POINT = 5
 
 # focus measure operator
-FOCUS_MEASURE_OPERATOR = 'LAPE' # 'GLVA' # LAPE has worked well for bright field images; GLVA works well for darkfield/fluorescence
+FOCUS_MEASURE_OPERATOR = (
+    "LAPE"  # 'GLVA' # LAPE has worked well for bright field images; GLVA works well for darkfield/fluorescence
+)
 
 # controller version
-CONTROLLER_VERSION = 'Arduino Due' # 'Teensy'
+CONTROLLER_VERSION = "Arduino Due"  # 'Teensy'
 
-#How to read Spinnaker nodemaps, options are INDIVIDUAL or VALUE
-CHOSEN_READ = 'INDIVIDUAL'
+# How to read Spinnaker nodemaps, options are INDIVIDUAL or VALUE
+CHOSEN_READ = "INDIVIDUAL"
 
 # laser autofocus
 SUPPORT_LASER_AUTOFOCUS = True
-MAIN_CAMERA_MODEL = 'MER2-1220-32U3M'
-FOCUS_CAMERA_MODEL = 'MER2-630-60U3M'
+MAIN_CAMERA_MODEL = "MER2-1220-32U3M"
+FOCUS_CAMERA_MODEL = "MER2-630-60U3M"
 FOCUS_CAMERA_EXPOSURE_TIME_MS = 2
 FOCUS_CAMERA_ANALOG_GAIN = 0
 LASER_AF_AVERAGING_N = 5
@@ -532,11 +568,11 @@ FOCUS_CAMERA_TYPE = "Default"
 # Spinning disk confocal integration
 ENABLE_SPINNING_DISK_CONFOCAL = False
 USE_LDI_SERIAL_CONTROL = False
-LDI_INTENSITY_MODE = 'PC'
-LDI_SHUTTER_MODE = 'PC'
+LDI_INTENSITY_MODE = "PC"
+LDI_SHUTTER_MODE = "PC"
 USE_CELESTA_ETHENET_CONTROL = False
 
-XLIGHT_EMISSION_FILTER_MAPPING = {405:1,470:2,555:3,640:4,730:5}
+XLIGHT_EMISSION_FILTER_MAPPING = {405: 1, 470: 2, 555: 3, 640: 4, 730: 5}
 XLIGHT_SERIAL_NUMBER = "B00031BE"
 XLIGHT_SLEEP_TIME_FOR_WHEEL = 0.25
 XLIGHT_VALIDATE_WHEEL_POS = False
@@ -545,16 +581,11 @@ XLIGHT_VALIDATE_WHEEL_POS = False
 ENABLE_NL5 = False
 ENABLE_CELLX = False
 CELLX_SN = None
-CELLX_MODULATION = 'EXT Digital'
+CELLX_MODULATION = "EXT Digital"
 NL5_USE_AOUT = False
 NL5_USE_DOUT = True
 NL5_TRIGGER_PIN = 2
-NL5_WAVENLENGTH_MAP = {
-    405: 1,
-    470: 2, 488: 2,
-    545: 3, 555: 3, 561: 3,
-    637: 4, 638: 4, 640: 4
-}
+NL5_WAVENLENGTH_MAP = {405: 1, 470: 2, 488: 2, 545: 3, 555: 3, 561: 3, 637: 4, 638: 4, 640: 4}
 
 # Laser AF characterization mode
 LASER_AF_CHARACTERIZATION_MODE = False
@@ -576,8 +607,8 @@ SUPPORT_SCIMICROSCOPY_LED_ARRAY = False
 SCIMICROSCOPY_LED_ARRAY_SN = None
 SCIMICROSCOPY_LED_ARRAY_DISTANCE = 50
 SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA = 0.8
-SCIMICROSCOPY_LED_ARRAY_DEFAULT_COLOR = [1,1,1]
-SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY = 0.03 # time to wait before trigger the camera (in seconds)
+SCIMICROSCOPY_LED_ARRAY_DEFAULT_COLOR = [1, 1, 1]
+SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY = 0.03  # time to wait before trigger the camera (in seconds)
 
 # Navigation Settings
 ENABLE_CLICK_TO_MOVE_BY_DEFAULT = True
@@ -595,7 +626,7 @@ CHANNEL_COLORS_MAP = {
     "730": {"hex": 0x770000, "name": "dark red"},
     "R": {"hex": 0xFF0000, "name": "red"},
     "G": {"hex": 0x1FFF00, "name": "green"},
-    "B": {"hex": 0x3300FF, "name": "blue"}
+    "B": {"hex": 0x3300FF, "name": "blue"},
 }
 
 # Emission filter wheel
@@ -603,7 +634,7 @@ USE_ZABER_EMISSION_FILTER_WHEEL = False
 ZABER_EMISSION_FILTER_WHEEL_DELAY_MS = 70
 ZABER_EMISSION_FILTER_WHEEL_BLOCKING_CALL = False
 USE_OPTOSPIN_EMISSION_FILTER_WHEEL = False
-FILTER_CONTROLLER_SERIAL_NUMBER = 'A10NG007'
+FILTER_CONTROLLER_SERIAL_NUMBER = "A10NG007"
 OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ = 50
 OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS = 70
 OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER = False
@@ -624,62 +655,65 @@ PRIOR_STAGE_SN = ""
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 DEFAULT_BLACKLEVEL_VALUE = 3
 
+
 def read_objectives_csv(file_path):
     objectives = {}
-    with open(file_path, 'r') as csvfile:
+    with open(file_path, "r") as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
-            objectives[row['name']] = {
-                'magnification': float(row['magnification']),
-                'NA': float(row['NA']),
-                'tube_lens_f_mm': float(row['tube_lens_f_mm'])
+            objectives[row["name"]] = {
+                "magnification": float(row["magnification"]),
+                "NA": float(row["NA"]),
+                "tube_lens_f_mm": float(row["tube_lens_f_mm"]),
             }
     return objectives
 
+
 def read_sample_formats_csv(file_path):
     sample_formats = {}
-    with open(file_path, 'r') as csvfile:
+    with open(file_path, "r") as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
-            format_ = str(row['format'])
+            format_ = str(row["format"])
             format_key = f"{format_} well plate" if format_.isdigit() else format_
             sample_formats[format_key] = {
-                'a1_x_mm': float(row['a1_x_mm']),
-                'a1_y_mm': float(row['a1_y_mm']),
-                'a1_x_pixel': int(row['a1_x_pixel']),
-                'a1_y_pixel': int(row['a1_y_pixel']),
-                'well_size_mm': float(row['well_size_mm']),
-                'well_spacing_mm': float(row['well_spacing_mm']),
-                'number_of_skip': int(row['number_of_skip']),
-                'rows': int(row['rows']),
-                'cols': int(row['cols'])
+                "a1_x_mm": float(row["a1_x_mm"]),
+                "a1_y_mm": float(row["a1_y_mm"]),
+                "a1_x_pixel": int(row["a1_x_pixel"]),
+                "a1_y_pixel": int(row["a1_y_pixel"]),
+                "well_size_mm": float(row["well_size_mm"]),
+                "well_spacing_mm": float(row["well_spacing_mm"]),
+                "number_of_skip": int(row["number_of_skip"]),
+                "rows": int(row["rows"]),
+                "cols": int(row["cols"]),
             }
     return sample_formats
 
+
 def load_formats():
     """Load formats, prioritizing cache for sample formats."""
-    cache_path = 'cache'
-    default_path = 'objective_and_sample_formats'
+    cache_path = "cache"
+    default_path = "objective_and_sample_formats"
 
     # Load objectives (from default location)
-    objectives = read_objectives_csv(os.path.join(default_path, 'objectives.csv'))
+    objectives = read_objectives_csv(os.path.join(default_path, "objectives.csv"))
 
     # Try cache first for sample formats, fall back to default if not found
-    cached_formats_path = os.path.join(cache_path, 'sample_formats.csv')
-    default_formats_path = os.path.join(default_path, 'sample_formats.csv')
+    cached_formats_path = os.path.join(cache_path, "sample_formats.csv")
+    default_formats_path = os.path.join(default_path, "sample_formats.csv")
 
     if os.path.exists(cached_formats_path):
-        print('Using cached sample formats')
+        print("Using cached sample formats")
         sample_formats = read_sample_formats_csv(cached_formats_path)
     else:
-        print('Using default sample formats')
+        print("Using default sample formats")
         sample_formats = read_sample_formats_csv(default_formats_path)
 
     return objectives, sample_formats
 
 
-OBJECTIVES_CSV_PATH = 'objectives.csv'
-SAMPLE_FORMATS_CSV_PATH = 'sample_formats.csv'
+OBJECTIVES_CSV_PATH = "objectives.csv"
+SAMPLE_FORMATS_CSV_PATH = "sample_formats.csv"
 
 OBJECTIVES, WELLPLATE_FORMAT_SETTINGS = load_formats()
 
@@ -689,7 +723,7 @@ OBJECTIVES, WELLPLATE_FORMAT_SETTINGS = load_formats()
 CACHED_CONFIG_FILE_PATH = None
 
 # Piezo configuration items
-Z_MOTOR_CONFIG = "STEPPER" # "STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"
+Z_MOTOR_CONFIG = "STEPPER"  # "STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"
 ENABLE_OBJECTIVE_PIEZO = "PIEZO" in Z_MOTOR_CONFIG
 
 # the value of OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE is 2.5 or 5
@@ -707,24 +741,24 @@ AWB_RATIOS_G = 1
 AWB_RATIOS_B = 1.4141
 
 try:
-    with open("cache/config_file_path.txt", 'r') as file:
+    with open("cache/config_file_path.txt", "r") as file:
         for line in file:
             CACHED_CONFIG_FILE_PATH = line
             break
 except FileNotFoundError:
     CACHED_CONFIG_FILE_PATH = None
 
-config_files = glob.glob('.' + '/' + 'configuration*.ini')
+config_files = glob.glob("." + "/" + "configuration*.ini")
 if config_files:
     if len(config_files) > 1:
         if CACHED_CONFIG_FILE_PATH in config_files:
-            log.info(f'defaulting to last cached config file at \'{CACHED_CONFIG_FILE_PATH}\'')
+            log.info(f"defaulting to last cached config file at '{CACHED_CONFIG_FILE_PATH}'")
             config_files = [CACHED_CONFIG_FILE_PATH]
         else:
-            log.error('multiple machine configuration files found, the program will exit')
+            log.error("multiple machine configuration files found, the program will exit")
             sys.exit(1)
-    log.info('load machine-specific configuration')
-    #exec(open(config_files[0]).read())
+    log.info("load machine-specific configuration")
+    # exec(open(config_files[0]).read())
     cfp = ConfigParser()
     cfp.read(config_files[0])
     var_items = list(locals().keys())
@@ -734,7 +768,7 @@ if config_files:
         varnamelower = var_name.lower()
         if varnamelower not in cfp.options("GENERAL"):
             continue
-        value = cfp.get("GENERAL",varnamelower)
+        value = cfp.get("GENERAL", varnamelower)
         actualvalue = conf_attribute_reader(value)
         locals()[var_name] = actualvalue
     for classkey in var_items:
@@ -748,43 +782,47 @@ if config_files:
         if type(locals()[classkey]) is not type:
             continue
         myclass = locals()[classkey]
-        populate_class_from_dict(myclass,pop_items)
-    
-    with open("cache/config_file_path.txt", 'w') as file:
+        populate_class_from_dict(myclass, pop_items)
+
+    with open("cache/config_file_path.txt", "w") as file:
         file.write(config_files[0])
     CACHED_CONFIG_FILE_PATH = config_files[0]
 else:
-    log.warning('configuration*.ini file not found, defaulting to legacy configuration')
-    config_files = glob.glob('.' + '/' + 'configuration*.txt')
+    log.warning("configuration*.ini file not found, defaulting to legacy configuration")
+    config_files = glob.glob("." + "/" + "configuration*.txt")
     if config_files:
         if len(config_files) > 1:
-            log.error('multiple machine configuration files found, the program will exit')
+            log.error("multiple machine configuration files found, the program will exit")
             sys.exit(1)
-        log.info('load machine-specific configuration')
+        log.info("load machine-specific configuration")
         exec(open(config_files[0]).read())
     else:
-        log.error('machine-specific configuration not present, the program will exit')
+        log.error("machine-specific configuration not present, the program will exit")
         sys.exit(1)
 
 try:
-    with open("cache/objective_and_sample_format.txt", 'r') as f:
+    with open("cache/objective_and_sample_format.txt", "r") as f:
         cached_settings = json.load(f)
-        DEFAULT_OBJECTIVE = cached_settings.get('objective') if cached_settings.get('objective') in OBJECTIVES else '20x'
-        WELLPLATE_FORMAT = str(cached_settings.get('wellplate_format'))
-        WELLPLATE_FORMAT = WELLPLATE_FORMAT + ' well plate' if WELLPLATE_FORMAT.isdigit() else WELLPLATE_FORMAT
+        DEFAULT_OBJECTIVE = (
+            cached_settings.get("objective") if cached_settings.get("objective") in OBJECTIVES else "20x"
+        )
+        WELLPLATE_FORMAT = str(cached_settings.get("wellplate_format"))
+        WELLPLATE_FORMAT = WELLPLATE_FORMAT + " well plate" if WELLPLATE_FORMAT.isdigit() else WELLPLATE_FORMAT
         if WELLPLATE_FORMAT not in WELLPLATE_FORMAT_SETTINGS:
-            WELLPLATE_FORMAT = '96 well plate'
+            WELLPLATE_FORMAT = "96 well plate"
 except (FileNotFoundError, json.JSONDecodeError):
-    DEFAULT_OBJECTIVE = '20x'
-    WELLPLATE_FORMAT = '96 well plate'
+    DEFAULT_OBJECTIVE = "20x"
+    WELLPLATE_FORMAT = "96 well plate"
 
-NUMBER_OF_SKIP = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]['number_of_skip'] # num rows/cols to skip on wellplate edge
-WELL_SIZE_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]['well_size_mm']
-WELL_SPACING_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]['well_spacing_mm']
-A1_X_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]['a1_x_mm'] # measured stage position - to update
-A1_Y_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]['a1_y_mm'] # measured stage position - to update
-A1_X_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]['a1_x_pixel'] # coordinate on the png
-A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]['a1_y_pixel'] # coordinate on the png
+NUMBER_OF_SKIP = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT][
+    "number_of_skip"
+]  # num rows/cols to skip on wellplate edge
+WELL_SIZE_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["well_size_mm"]
+WELL_SPACING_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["well_spacing_mm"]
+A1_X_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_x_mm"]  # measured stage position - to update
+A1_Y_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_mm"]  # measured stage position - to update
+A1_X_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_x_pixel"]  # coordinate on the png
+A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_pixel"]  # coordinate on the png
 
 ##########################################################
 ##### end of loading machine specific configurations #####
@@ -796,7 +834,7 @@ if ENABLE_OBJECTIVE_PIEZO == False:
 
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):
-    DEFAULT_SAVING_PATH = str(Path.home())+"/"+DEFAULT_SAVING_PATH.strip("/")
+    DEFAULT_SAVING_PATH = str(Path.home()) + "/" + DEFAULT_SAVING_PATH.strip("/")
 
 # limit switch
 X_HOME_SWITCH_POLARITY = LIMIT_SWITCH_POLARITY.X_HOME
@@ -806,7 +844,7 @@ Z_HOME_SWITCH_POLARITY = LIMIT_SWITCH_POLARITY.Z_HOME
 # home safety margin with (um) unit
 X_HOME_SAFETY_MARGIN_UM = 50
 Y_HOME_SAFETY_MARGIN_UM = 50
-Z_HOME_SAFETY_MARGIN_UM = 600 
+Z_HOME_SAFETY_MARGIN_UM = 600
 
 if ENABLE_TRACKING:
     DEFAULT_DISPLAY_CROP = Tracking.DEFAULT_DISPLAY_CROP

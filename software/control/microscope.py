@@ -45,7 +45,7 @@ class Microscope(QObject):
         else:
             sn_camera_main = camera.get_sn_by_model(MAIN_CAMERA_MODEL)
             self.camera = camera.Camera(sn=sn_camera_main, rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
-        
+
         self.camera.open()
         self.camera.set_pixel_format(DEFAULT_PIXEL_FORMAT)
         self.camera.set_software_triggered_acquisition()
@@ -59,22 +59,26 @@ class Microscope(QObject):
         self.home_x_and_y_separately = False
 
     def initialize_core_components(self):
-        self.configurationManager = core.ConfigurationManager(filename='./channel_configurations.xml')
+        self.configurationManager = core.ConfigurationManager(filename="./channel_configurations.xml")
         self.objectiveStore = core.ObjectiveStore()
-        self.streamHandler = core.StreamHandler(display_resolution_scaling=DEFAULT_DISPLAY_CROP/100)
+        self.streamHandler = core.StreamHandler(display_resolution_scaling=DEFAULT_DISPLAY_CROP / 100)
         self.liveController = core.LiveController(self.camera, self.microcontroller, self.configurationManager, self)
-        self.autofocusController = core.AutoFocusController(self.camera, self.stage, self.liveController, self.microcontroller)
-        self.slidePositionController = core.SlidePositionController(self.stage,self.liveController)
+        self.autofocusController = core.AutoFocusController(
+            self.camera, self.stage, self.liveController, self.microcontroller
+        )
+        self.slidePositionController = core.SlidePositionController(self.stage, self.liveController)
 
     def initialize_peripherals(self):
         if USE_ZABER_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel = serial_peripherals.FilterController(FILTER_CONTROLLER_SERIAL_NUMBER, 115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE)
+            self.emission_filter_wheel = serial_peripherals.FilterController(
+                FILTER_CONTROLLER_SERIAL_NUMBER, 115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE
+            )
             self.emission_filter_wheel.start_homing()
         elif USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel = serial_peripherals.Optospin(SN=FILTER_CONTROLLER_SERIAL_NUMBER)
             self.emission_filter_wheel.set_speed(OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ)
 
-    def set_channel(self,channel):
+    def set_channel(self, channel):
         self.liveController.set_channel(channel)
 
     def acquire_image(self):
@@ -84,17 +88,19 @@ class Microscope(QObject):
             self.waitForMicrocontroller()
             self.camera.send_trigger()
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-            self.microcontroller.send_hardware_trigger(control_illumination=True,illumination_on_time_us=self.camera.exposure_time*1000)
-        
+            self.microcontroller.send_hardware_trigger(
+                control_illumination=True, illumination_on_time_us=self.camera.exposure_time * 1000
+            )
+
         # read a frame from camera
         image = self.camera.read_frame()
         if image is None:
-            print('self.camera.read_frame() returned None')
-        
+            print("self.camera.read_frame() returned None")
+
         # tunr off the illumination if using software trigger
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_off_illumination()
-        
+
         return image
 
     def home_xyz(self):
@@ -106,16 +112,16 @@ class Microscope(QObject):
             self.stage.home(x=True, y=False, z=False, theta=False)
             self.slidePositionController.homing_done = True
 
-    def move_x(self,distance,blocking=True):
+    def move_x(self, distance, blocking=True):
         self.stage.move_x(distance, blocking=blocking)
 
-    def move_y(self,distance,blocking=True):
+    def move_y(self, distance, blocking=True):
         self.stage.move_y(distance, blocking=blocking)
 
-    def move_x_to(self,position,blocking=True):
+    def move_x_to(self, position, blocking=True):
         self.stage.move_x_to(position, blocking=blocking)
 
-    def move_y_to(self,position,blocking=True):
+    def move_y_to(self, position, blocking=True):
         self.stage.move_y_to(position, blocking=blocking)
 
     def get_x(self):
@@ -127,12 +133,14 @@ class Microscope(QObject):
     def get_z(self):
         return self.stage.get_pos().z_mm
 
-    def move_z_to(self,z_mm,blocking=True):
+    def move_z_to(self, z_mm, blocking=True):
         self.stage.move_z_to(z_mm, blocking=blocking)
         clear_backlash = z_mm >= self.stage.get_pos().z_mm
         # clear backlash if moving backward in open loop mode
         if blocking and clear_backlash:
-            distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+            distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
+                max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
+            )
             self.stage.move_z(-distance_to_clear_backlash)
             self.stage.move_z(distance_to_clear_backlash)
 
@@ -167,16 +175,21 @@ class LightSourceType(Enum):
     VersaLase = 4
     SCI = 5
 
+
 class IntensityControlMode(Enum):
     SquidControllerDAC = 0
     Software = 1
+
 
 class ShutterControlMode(Enum):
     TTL = 0
     Software = 1
 
-class IlluminationController():
-    def __init__(self, microcontroller, intensity_control_mode, shutter_control_mode, light_source_type=None, light_source=None):
+
+class IlluminationController:
+    def __init__(
+        self, microcontroller, intensity_control_mode, shutter_control_mode, light_source_type=None, light_source=None
+    ):
         self.microcontroller = microcontroller
         self.intensity_control_mode = intensity_control_mode
         self.shutter_control_mode = shutter_control_mode
@@ -194,9 +207,9 @@ class IlluminationController():
             640: 13,
             730: 15,
             735: 15,
-            750: 15
+            750: 15,
         }
-        
+
         self.channel_mappings_software = {}
         self.is_on = {}
         self.intensity_settings = {}
@@ -245,7 +258,7 @@ class IlluminationController():
             power = self.light_source.get_intensity(self.channel_mappings_software[channel])
             intensity = power / self.pmax * 100
             self.intensity_settings[channel] = intensity
-            return intensity # 0 - 100
+            return intensity  # 0 - 100
 
     def turn_on_illumination(self, channel=None):
         if channel is None:
@@ -254,8 +267,8 @@ class IlluminationController():
         if self.shutter_control_mode == ShutterControlMode.Software:
             self.light_source.set_shutter_state(self.channel_mappings_software[channel], on=True)
         elif self.shutter_control_mode == ShutterControlMode.TTL:
-            print('TTL!!')
-            #self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], self.intensity_settings[channel])
+            print("TTL!!")
+            # self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], self.intensity_settings[channel])
             self.microcontroller.turn_on_illumination()
 
         self.is_on[channel] = True

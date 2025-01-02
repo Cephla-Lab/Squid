@@ -15,6 +15,7 @@ from qtpy.QtGui import *
 
 # control
 from control._def import *
+
 if DO_FLUORESCENCE_RTP:
     from control.processing_handler import ProcessingHandler
     from control.processing_pipeline import *
@@ -27,7 +28,8 @@ import control.serial_peripherals as serial_peripherals
 
 try:
     from control.multipoint_custom_script_entry_v2 import *
-    print('custom multipoint script found')
+
+    print("custom multipoint script found")
 except:
     pass
 
@@ -49,6 +51,7 @@ import scipy.signal
 import cv2
 import imageio as iio
 import squid.abc
+
 
 class ObjectiveStore:
     def __init__(self, objectives_dict=OBJECTIVES, default_objective=DEFAULT_OBJECTIVE, parent=None):
@@ -90,6 +93,7 @@ class ObjectiveStore:
             pixel_binning = 1
         return pixel_binning
 
+
 class StreamHandler(QObject):
 
     image_to_display = Signal(np.ndarray)
@@ -97,7 +101,9 @@ class StreamHandler(QObject):
     packet_image_for_tracking = Signal(np.ndarray, int, float)
     signal_new_frame_received = Signal()
 
-    def __init__(self,crop_width=Acquisition.CROP_WIDTH,crop_height=Acquisition.CROP_HEIGHT,display_resolution_scaling=1):
+    def __init__(
+        self, crop_width=Acquisition.CROP_WIDTH, crop_height=Acquisition.CROP_HEIGHT, display_resolution_scaling=1
+    ):
         QObject.__init__(self)
         self.fps_display = 1
         self.fps_save = 1
@@ -131,18 +137,18 @@ class StreamHandler(QObject):
     def stop_tracking(self):
         self.tracking_flag = False
 
-    def set_display_fps(self,fps):
+    def set_display_fps(self, fps):
         self.fps_display = fps
 
-    def set_save_fps(self,fps):
+    def set_save_fps(self, fps):
         self.fps_save = fps
 
-    def set_crop(self,crop_width,crop_height):
+    def set_crop(self, crop_width, crop_height):
         self.crop_width = crop_width
         self.crop_height = crop_height
 
     def set_display_resolution_scaling(self, display_resolution_scaling):
-        self.display_resolution_scaling = display_resolution_scaling/100
+        self.display_resolution_scaling = display_resolution_scaling / 100
         print(self.display_resolution_scaling)
 
     def on_new_frame(self, camera):
@@ -151,58 +157,66 @@ class StreamHandler(QObject):
 
             camera.image_locked = True
             self.handler_busy = True
-            self.signal_new_frame_received.emit() # self.liveController.turn_off_illumination()
+            self.signal_new_frame_received.emit()  # self.liveController.turn_off_illumination()
 
             # measure real fps
             timestamp_now = round(time.time())
             if timestamp_now == self.timestamp_last:
-                self.counter = self.counter+1
+                self.counter = self.counter + 1
             else:
                 self.timestamp_last = timestamp_now
                 self.fps_real = self.counter
                 self.counter = 0
                 if PRINT_CAMERA_FPS:
-                    print('real camera fps is ' + str(self.fps_real))
+                    print("real camera fps is " + str(self.fps_real))
 
             # moved down (so that it does not modify the camera.current_frame, which causes minor problems for simulation) - 1/30/2022
             # # rotate and flip - eventually these should be done in the camera
             # camera.current_frame = utils.rotate_and_flip_image(camera.current_frame,rotate_image_angle=camera.rotate_image_angle,flip_image=camera.flip_image)
 
             # crop image
-            image_cropped = utils.crop_image(camera.current_frame,self.crop_width,self.crop_height)
+            image_cropped = utils.crop_image(camera.current_frame, self.crop_width, self.crop_height)
             image_cropped = np.squeeze(image_cropped)
 
             # # rotate and flip - moved up (1/10/2022)
             # image_cropped = utils.rotate_and_flip_image(image_cropped,rotate_image_angle=ROTATE_IMAGE_ANGLE,flip_image=FLIP_IMAGE)
             # added on 1/30/2022
             # @@@ to move to camera
-            image_cropped = utils.rotate_and_flip_image(image_cropped,rotate_image_angle=camera.rotate_image_angle,flip_image=camera.flip_image)
+            image_cropped = utils.rotate_and_flip_image(
+                image_cropped, rotate_image_angle=camera.rotate_image_angle, flip_image=camera.flip_image
+            )
 
             # send image to display
             time_now = time.time()
-            if time_now-self.timestamp_last_display >= 1/self.fps_display:
+            if time_now - self.timestamp_last_display >= 1 / self.fps_display:
                 # self.image_to_display.emit(cv2.resize(image_cropped,(round(self.crop_width*self.display_resolution_scaling), round(self.crop_height*self.display_resolution_scaling)),cv2.INTER_LINEAR))
-                self.image_to_display.emit(utils.crop_image(image_cropped,round(self.crop_width*self.display_resolution_scaling), round(self.crop_height*self.display_resolution_scaling)))
+                self.image_to_display.emit(
+                    utils.crop_image(
+                        image_cropped,
+                        round(self.crop_width * self.display_resolution_scaling),
+                        round(self.crop_height * self.display_resolution_scaling),
+                    )
+                )
                 self.timestamp_last_display = time_now
 
             # send image to write
-            if self.save_image_flag and time_now-self.timestamp_last_save >= 1/self.fps_save:
+            if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
                 if camera.is_color:
-                    image_cropped = cv2.cvtColor(image_cropped,cv2.COLOR_RGB2BGR)
-                self.packet_image_to_write.emit(image_cropped,camera.frame_ID,camera.timestamp)
+                    image_cropped = cv2.cvtColor(image_cropped, cv2.COLOR_RGB2BGR)
+                self.packet_image_to_write.emit(image_cropped, camera.frame_ID, camera.timestamp)
                 self.timestamp_last_save = time_now
 
             # send image to track
-            if self.track_flag and time_now-self.timestamp_last_track >= 1/self.fps_track:
+            if self.track_flag and time_now - self.timestamp_last_track >= 1 / self.fps_track:
                 # track is a blocking operation - it needs to be
                 # @@@ will cropping before emitting the signal lead to speedup?
-                self.packet_image_for_tracking.emit(image_cropped,camera.frame_ID,camera.timestamp)
+                self.packet_image_for_tracking.emit(image_cropped, camera.frame_ID, camera.timestamp)
                 self.timestamp_last_track = time_now
 
             self.handler_busy = False
             camera.image_locked = False
 
-    '''
+    """
     def on_new_frame_from_simulation(self,image,frame_ID,timestamp):
         # check whether image is a local copy or pointer, if a pointer, needs to prevent the image being modified while this function is being executed
 
@@ -228,19 +242,20 @@ class StreamHandler(QObject):
             self.timestamp_last_track = time_now
 
         self.handler_busy = False
-    '''
+    """
+
 
 class ImageSaver(QObject):
 
     stop_recording = Signal()
 
-    def __init__(self,image_format=Acquisition.IMAGE_FORMAT):
+    def __init__(self, image_format=Acquisition.IMAGE_FORMAT):
         QObject.__init__(self)
-        self.base_path = './'
-        self.experiment_ID = ''
+        self.base_path = "./"
+        self.experiment_ID = ""
         self.image_format = image_format
         self.max_num_image_per_folder = 1000
-        self.queue = Queue(10) # max 10 items in the queue
+        self.queue = Queue(10)  # max 10 items in the queue
         self.image_lock = Lock()
         self.stop_signal_received = False
         self.thread = Thread(target=self.process_queue)
@@ -256,21 +271,28 @@ class ImageSaver(QObject):
                 return
             # process the queue
             try:
-                [image,frame_ID,timestamp] = self.queue.get(timeout=0.1)
+                [image, frame_ID, timestamp] = self.queue.get(timeout=0.1)
                 self.image_lock.acquire(True)
-                folder_ID = int(self.counter/self.max_num_image_per_folder)
-                file_ID = int(self.counter%self.max_num_image_per_folder)
+                folder_ID = int(self.counter / self.max_num_image_per_folder)
+                file_ID = int(self.counter % self.max_num_image_per_folder)
                 # create a new folder
                 if file_ID == 0:
-                    os.mkdir(os.path.join(self.base_path,self.experiment_ID,str(folder_ID)))
+                    os.mkdir(os.path.join(self.base_path, self.experiment_ID, str(folder_ID)))
 
                 if image.dtype == np.uint16:
                     # need to use tiff when saving 16 bit images
-                    saving_path = os.path.join(self.base_path,self.experiment_ID,str(folder_ID),str(file_ID) + '_' + str(frame_ID) + '.tiff')
-                    iio.imwrite(saving_path,image)
+                    saving_path = os.path.join(
+                        self.base_path, self.experiment_ID, str(folder_ID), str(file_ID) + "_" + str(frame_ID) + ".tiff"
+                    )
+                    iio.imwrite(saving_path, image)
                 else:
-                    saving_path = os.path.join(self.base_path,self.experiment_ID,str(folder_ID),str(file_ID) + '_' + str(frame_ID) + '.' + self.image_format)
-                    cv2.imwrite(saving_path,image)
+                    saving_path = os.path.join(
+                        self.base_path,
+                        self.experiment_ID,
+                        str(folder_ID),
+                        str(file_ID) + "_" + str(frame_ID) + "." + self.image_format,
+                    )
+                    cv2.imwrite(saving_path, image)
 
                 self.counter = self.counter + 1
                 self.queue.task_done()
@@ -278,31 +300,33 @@ class ImageSaver(QObject):
             except:
                 pass
 
-    def enqueue(self,image,frame_ID,timestamp):
+    def enqueue(self, image, frame_ID, timestamp):
         try:
-            self.queue.put_nowait([image,frame_ID,timestamp])
-            if ( self.recording_time_limit>0 ) and ( time.time()-self.recording_start_time >= self.recording_time_limit ):
+            self.queue.put_nowait([image, frame_ID, timestamp])
+            if (self.recording_time_limit > 0) and (
+                time.time() - self.recording_start_time >= self.recording_time_limit
+            ):
                 self.stop_recording.emit()
             # when using self.queue.put(str_), program can be slowed down despite multithreading because of the block and the GIL
         except:
-            print('imageSaver queue is full, image discarded')
+            print("imageSaver queue is full, image discarded")
 
-    def set_base_path(self,path):
+    def set_base_path(self, path):
         self.base_path = path
 
-    def set_recording_time_limit(self,time_limit):
+    def set_recording_time_limit(self, time_limit):
         self.recording_time_limit = time_limit
 
-    def start_new_experiment(self,experiment_ID,add_timestamp=True):
+    def start_new_experiment(self, experiment_ID, add_timestamp=True):
         if add_timestamp:
             # generate unique experiment ID
-            self.experiment_ID = experiment_ID + '_' + datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')
+            self.experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
         else:
             self.experiment_ID = experiment_ID
         self.recording_start_time = time.time()
         # create a new folder
         try:
-            os.mkdir(os.path.join(self.base_path,self.experiment_ID))
+            os.mkdir(os.path.join(self.base_path, self.experiment_ID))
             # to do: save configuration
         except:
             pass
@@ -316,12 +340,12 @@ class ImageSaver(QObject):
 
 
 class ImageSaver_Tracking(QObject):
-    def __init__(self,base_path,image_format='bmp'):
+    def __init__(self, base_path, image_format="bmp"):
         QObject.__init__(self)
         self.base_path = base_path
         self.image_format = image_format
         self.max_num_image_per_folder = 1000
-        self.queue = Queue(100) # max 100 items in the queue
+        self.queue = Queue(100)  # max 100 items in the queue
         self.image_lock = Lock()
         self.stop_signal_received = False
         self.thread = Thread(target=self.process_queue)
@@ -334,29 +358,37 @@ class ImageSaver_Tracking(QObject):
                 return
             # process the queue
             try:
-                [image,frame_counter,postfix] = self.queue.get(timeout=0.1)
+                [image, frame_counter, postfix] = self.queue.get(timeout=0.1)
                 self.image_lock.acquire(True)
-                folder_ID = int(frame_counter/self.max_num_image_per_folder)
-                file_ID = int(frame_counter%self.max_num_image_per_folder)
+                folder_ID = int(frame_counter / self.max_num_image_per_folder)
+                file_ID = int(frame_counter % self.max_num_image_per_folder)
                 # create a new folder
                 if file_ID == 0:
-                    os.mkdir(os.path.join(self.base_path,str(folder_ID)))
+                    os.mkdir(os.path.join(self.base_path, str(folder_ID)))
                 if image.dtype == np.uint16:
-                    saving_path = os.path.join(self.base_path,str(folder_ID),str(file_ID) + '_' + str(frame_counter) + '_' + postfix + '.tiff')
-                    iio.imwrite(saving_path,image)
+                    saving_path = os.path.join(
+                        self.base_path,
+                        str(folder_ID),
+                        str(file_ID) + "_" + str(frame_counter) + "_" + postfix + ".tiff",
+                    )
+                    iio.imwrite(saving_path, image)
                 else:
-                    saving_path = os.path.join(self.base_path,str(folder_ID),str(file_ID) + '_' + str(frame_counter) + '_' + postfix + '.' + self.image_format)
-                    cv2.imwrite(saving_path,image)
+                    saving_path = os.path.join(
+                        self.base_path,
+                        str(folder_ID),
+                        str(file_ID) + "_" + str(frame_counter) + "_" + postfix + "." + self.image_format,
+                    )
+                    cv2.imwrite(saving_path, image)
                 self.queue.task_done()
                 self.image_lock.release()
             except:
                 pass
 
-    def enqueue(self,image,frame_counter,postfix):
+    def enqueue(self, image, frame_counter, postfix):
         try:
-            self.queue.put_nowait([image,frame_counter,postfix])
+            self.queue.put_nowait([image, frame_counter, postfix])
         except:
-            print('imageSaver queue is full, image discarded')
+            print("imageSaver queue is full, image discarded")
 
     def close(self):
         self.queue.join()
@@ -370,7 +402,7 @@ class ImageDisplay(QObject):
 
     def __init__(self):
         QObject.__init__(self)
-        self.queue = Queue(10) # max 10 items in the queue
+        self.queue = Queue(10)  # max 10 items in the queue
         self.image_lock = Lock()
         self.stop_signal_received = False
         self.thread = Thread(target=self.process_queue)
@@ -383,7 +415,7 @@ class ImageDisplay(QObject):
                 return
             # process the queue
             try:
-                [image,frame_ID,timestamp] = self.queue.get(timeout=0.1)
+                [image, frame_ID, timestamp] = self.queue.get(timeout=0.1)
                 self.image_lock.acquire(True)
                 self.image_to_display.emit(image)
                 self.image_lock.release()
@@ -392,15 +424,15 @@ class ImageDisplay(QObject):
                 pass
 
     # def enqueue(self,image,frame_ID,timestamp):
-    def enqueue(self,image):
+    def enqueue(self, image):
         try:
-            self.queue.put_nowait([image,None,None])
+            self.queue.put_nowait([image, None, None])
             # when using self.queue.put(str_) instead of try + nowait, program can be slowed down despite multithreading because of the block and the GIL
             pass
         except:
-            print('imageDisplay queue is full, image discarded')
+            print("imageDisplay queue is full, image discarded")
 
-    def emit_directly(self,image):
+    def emit_directly(self, image):
         self.image_to_display.emit(image)
 
     def close(self):
@@ -408,8 +440,23 @@ class ImageDisplay(QObject):
         self.stop_signal_received = True
         self.thread.join()
 
+
 class Configuration:
-    def __init__(self,mode_id=None,name=None,color=None,camera_sn=None,exposure_time=None,analog_gain=None,illumination_source=None,illumination_intensity=None,z_offset=None,pixel_format=None,_pixel_format_options=None,emission_filter_position=None):
+    def __init__(
+        self,
+        mode_id=None,
+        name=None,
+        color=None,
+        camera_sn=None,
+        exposure_time=None,
+        analog_gain=None,
+        illumination_source=None,
+        illumination_intensity=None,
+        z_offset=None,
+        pixel_format=None,
+        _pixel_format_options=None,
+        emission_filter_position=None,
+    ):
         self.id = mode_id
         self.name = name
         self.color = color
@@ -429,23 +476,35 @@ class Configuration:
 
 
 class LiveController(QObject):
-    def __init__(self,camera,microcontroller,configurationManager,illuminationController,parent=None,control_illumination=True,use_internal_timer_for_hardware_trigger=True,for_displacement_measurement=False):
+    def __init__(
+        self,
+        camera,
+        microcontroller,
+        configurationManager,
+        illuminationController,
+        parent=None,
+        control_illumination=True,
+        use_internal_timer_for_hardware_trigger=True,
+        for_displacement_measurement=False,
+    ):
         QObject.__init__(self)
         self.microscope = parent
         self.camera = camera
         self.microcontroller = microcontroller
         self.configurationManager = configurationManager
         self.currentConfiguration = None
-        self.trigger_mode = TriggerMode.SOFTWARE # @@@ change to None
+        self.trigger_mode = TriggerMode.SOFTWARE  # @@@ change to None
         self.is_live = False
         self.control_illumination = control_illumination
         self.illumination_on = False
         self.illuminationController = illuminationController
-        self.use_internal_timer_for_hardware_trigger = use_internal_timer_for_hardware_trigger # use QTimer vs timer in the MCU
+        self.use_internal_timer_for_hardware_trigger = (
+            use_internal_timer_for_hardware_trigger  # use QTimer vs timer in the MCU
+        )
         self.for_displacement_measurement = for_displacement_measurement
 
-        self.fps_trigger = 1;
-        self.timer_trigger_interval = (1/self.fps_trigger)*1000
+        self.fps_trigger = 1
+        self.timer_trigger_interval = (1 / self.fps_trigger) * 1000
 
         self.timer_trigger = QTimer()
         self.timer_trigger.setInterval(int(self.timer_trigger_interval))
@@ -457,7 +516,7 @@ class LiveController(QObject):
         self.counter = 0
         self.timestamp_last = 0
 
-        self.display_resolution_scaling = DEFAULT_DISPLAY_CROP/100
+        self.display_resolution_scaling = DEFAULT_DISPLAY_CROP / 100
 
         self.enable_channel_auto_filter_switching = True
 
@@ -466,145 +525,186 @@ class LiveController(QObject):
 
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             # to do: add error handling
-            self.led_array = serial_peripherals.SciMicroscopyLEDArray(SCIMICROSCOPY_LED_ARRAY_SN,SCIMICROSCOPY_LED_ARRAY_DISTANCE,SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY)
+            self.led_array = serial_peripherals.SciMicroscopyLEDArray(
+                SCIMICROSCOPY_LED_ARRAY_SN, SCIMICROSCOPY_LED_ARRAY_DISTANCE, SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY
+            )
             self.led_array.set_NA(SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
 
     # illumination control
     def turn_on_illumination(self):
-        if self.illuminationController is not None and not 'LED matrix' in self.currentConfiguration.name:
-            self.illuminationController.turn_on_illumination(int(self.configurationManager.extract_wavelength(self.currentConfiguration.name)))
-        elif SUPPORT_SCIMICROSCOPY_LED_ARRAY and 'LED matrix' in self.currentConfiguration.name:
+        if self.illuminationController is not None and not "LED matrix" in self.currentConfiguration.name:
+            self.illuminationController.turn_on_illumination(
+                int(self.configurationManager.extract_wavelength(self.currentConfiguration.name))
+            )
+        elif SUPPORT_SCIMICROSCOPY_LED_ARRAY and "LED matrix" in self.currentConfiguration.name:
             self.led_array.turn_on_illumination()
         else:
             self.microcontroller.turn_on_illumination()
         self.illumination_on = True
 
     def turn_off_illumination(self):
-        if self.illuminationController is not None and not 'LED matrix' in self.currentConfiguration.name:
-            self.illuminationController.turn_off_illumination(int(self.configurationManager.extract_wavelength(self.currentConfiguration.name)))
-        elif SUPPORT_SCIMICROSCOPY_LED_ARRAY and 'LED matrix' in self.currentConfiguration.name:
+        if self.illuminationController is not None and not "LED matrix" in self.currentConfiguration.name:
+            self.illuminationController.turn_off_illumination(
+                int(self.configurationManager.extract_wavelength(self.currentConfiguration.name))
+            )
+        elif SUPPORT_SCIMICROSCOPY_LED_ARRAY and "LED matrix" in self.currentConfiguration.name:
             self.led_array.turn_off_illumination()
         else:
             self.microcontroller.turn_off_illumination()
         self.illumination_on = False
 
-    def set_illumination(self,illumination_source,intensity,update_channel_settings=True):
-        if illumination_source < 10: # LED matrix
+    def set_illumination(self, illumination_source, intensity, update_channel_settings=True):
+        if illumination_source < 10:  # LED matrix
             if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
                 # set color
-                if 'BF LED matrix full_R' in self.currentConfiguration.name:
-                    self.led_array.set_color((1,0,0))
-                elif 'BF LED matrix full_G' in self.currentConfiguration.name:
-                    self.led_array.set_color((0,1,0))
-                elif 'BF LED matrix full_B' in self.currentConfiguration.name:
-                    self.led_array.set_color((0,0,1))
+                if "BF LED matrix full_R" in self.currentConfiguration.name:
+                    self.led_array.set_color((1, 0, 0))
+                elif "BF LED matrix full_G" in self.currentConfiguration.name:
+                    self.led_array.set_color((0, 1, 0))
+                elif "BF LED matrix full_B" in self.currentConfiguration.name:
+                    self.led_array.set_color((0, 0, 1))
                 else:
                     self.led_array.set_color(SCIMICROSCOPY_LED_ARRAY_DEFAULT_COLOR)
                 # set intensity
                 self.led_array.set_brightness(intensity)
                 # set mode
-                if 'BF LED matrix left half' in self.currentConfiguration.name:
-                    self.led_array.set_illumination('dpc.l')
-                if 'BF LED matrix right half' in self.currentConfiguration.name:
-                    self.led_array.set_illumination('dpc.r')
-                if 'BF LED matrix top half' in self.currentConfiguration.name:
-                    self.led_array.set_illumination('dpc.t')
-                if 'BF LED matrix bottom half' in self.currentConfiguration.name:
-                    self.led_array.set_illumination('dpc.b')
-                if 'BF LED matrix full' in self.currentConfiguration.name:
-                    self.led_array.set_illumination('bf')
-                if 'DF LED matrix' in self.currentConfiguration.name:
-                    self.led_array.set_illumination('df')
+                if "BF LED matrix left half" in self.currentConfiguration.name:
+                    self.led_array.set_illumination("dpc.l")
+                if "BF LED matrix right half" in self.currentConfiguration.name:
+                    self.led_array.set_illumination("dpc.r")
+                if "BF LED matrix top half" in self.currentConfiguration.name:
+                    self.led_array.set_illumination("dpc.t")
+                if "BF LED matrix bottom half" in self.currentConfiguration.name:
+                    self.led_array.set_illumination("dpc.b")
+                if "BF LED matrix full" in self.currentConfiguration.name:
+                    self.led_array.set_illumination("bf")
+                if "DF LED matrix" in self.currentConfiguration.name:
+                    self.led_array.set_illumination("df")
             else:
-                if 'BF LED matrix full_R' in self.currentConfiguration.name:
-                    self.microcontroller.set_illumination_led_matrix(illumination_source,r=(intensity/100),g=0,b=0)
-                elif 'BF LED matrix full_G' in self.currentConfiguration.name:
-                    self.microcontroller.set_illumination_led_matrix(illumination_source,r=0,g=(intensity/100),b=0)
-                elif 'BF LED matrix full_B' in self.currentConfiguration.name:
-                    self.microcontroller.set_illumination_led_matrix(illumination_source,r=0,g=0,b=(intensity/100))
+                if "BF LED matrix full_R" in self.currentConfiguration.name:
+                    self.microcontroller.set_illumination_led_matrix(illumination_source, r=(intensity / 100), g=0, b=0)
+                elif "BF LED matrix full_G" in self.currentConfiguration.name:
+                    self.microcontroller.set_illumination_led_matrix(illumination_source, r=0, g=(intensity / 100), b=0)
+                elif "BF LED matrix full_B" in self.currentConfiguration.name:
+                    self.microcontroller.set_illumination_led_matrix(illumination_source, r=0, g=0, b=(intensity / 100))
                 else:
-                    self.microcontroller.set_illumination_led_matrix(illumination_source,r=(intensity/100)*LED_MATRIX_R_FACTOR,g=(intensity/100)*LED_MATRIX_G_FACTOR,b=(intensity/100)*LED_MATRIX_B_FACTOR)
+                    self.microcontroller.set_illumination_led_matrix(
+                        illumination_source,
+                        r=(intensity / 100) * LED_MATRIX_R_FACTOR,
+                        g=(intensity / 100) * LED_MATRIX_G_FACTOR,
+                        b=(intensity / 100) * LED_MATRIX_B_FACTOR,
+                    )
         else:
             # update illumination
             if self.illuminationController is not None:
-                self.illuminationController.set_intensity(int(self.configurationManager.extract_wavelength(self.currentConfiguration.name)), intensity)
-            elif ENABLE_NL5 and NL5_USE_DOUT and 'Fluorescence' in self.currentConfiguration.name:
+                self.illuminationController.set_intensity(
+                    int(self.configurationManager.extract_wavelength(self.currentConfiguration.name)), intensity
+                )
+            elif ENABLE_NL5 and NL5_USE_DOUT and "Fluorescence" in self.currentConfiguration.name:
                 wavelength = int(self.currentConfiguration.name[13:16])
                 self.microscope.nl5.set_active_channel(NL5_WAVENLENGTH_MAP[wavelength])
                 if NL5_USE_AOUT and update_channel_settings:
-                    self.microscope.nl5.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength],int(intensity))
+                    self.microscope.nl5.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
                 if ENABLE_CELLX:
-                    self.microscope.cellx.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength],int(intensity))
+                    self.microscope.cellx.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
             else:
-                self.microcontroller.set_illumination(illumination_source,intensity)
+                self.microcontroller.set_illumination(illumination_source, intensity)
 
         # set emission filter position
         if ENABLE_SPINNING_DISK_CONFOCAL:
             try:
-                self.microscope.xlight.set_emission_filter(XLIGHT_EMISSION_FILTER_MAPPING[illumination_source],extraction=False,validate=XLIGHT_VALIDATE_WHEEL_POS)
+                self.microscope.xlight.set_emission_filter(
+                    XLIGHT_EMISSION_FILTER_MAPPING[illumination_source],
+                    extraction=False,
+                    validate=XLIGHT_VALIDATE_WHEEL_POS,
+                )
             except Exception as e:
-                print('not setting emission filter position due to ' + str(e))
+                print("not setting emission filter position due to " + str(e))
 
         if USE_ZABER_EMISSION_FILTER_WHEEL and self.enable_channel_auto_filter_switching:
             try:
-                if self.currentConfiguration.emission_filter_position != self.microscope.emission_filter_wheel.current_index:
+                if (
+                    self.currentConfiguration.emission_filter_position
+                    != self.microscope.emission_filter_wheel.current_index
+                ):
                     if ZABER_EMISSION_FILTER_WHEEL_BLOCKING_CALL:
-                        self.microscope.emission_filter_wheel.set_emission_filter(self.currentConfiguration.emission_filter_position,blocking=True)
+                        self.microscope.emission_filter_wheel.set_emission_filter(
+                            self.currentConfiguration.emission_filter_position, blocking=True
+                        )
                     else:
-                        self.microscope.emission_filter_wheel.set_emission_filter(self.currentConfiguration.emission_filter_position,blocking=False)
+                        self.microscope.emission_filter_wheel.set_emission_filter(
+                            self.currentConfiguration.emission_filter_position, blocking=False
+                        )
                         if self.trigger_mode == TriggerMode.SOFTWARE:
-                            time.sleep(ZABER_EMISSION_FILTER_WHEEL_DELAY_MS/1000)
+                            time.sleep(ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000)
                         else:
-                            time.sleep(max(0,ZABER_EMISSION_FILTER_WHEEL_DELAY_MS/1000-self.camera.strobe_delay_us/1e6))
+                            time.sleep(
+                                max(0, ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.strobe_delay_us / 1e6)
+                            )
             except Exception as e:
-                print('not setting emission filter position due to ' + str(e))
+                print("not setting emission filter position due to " + str(e))
 
-        if USE_OPTOSPIN_EMISSION_FILTER_WHEEL and self.enable_channel_auto_filter_switching and OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER == False:
+        if (
+            USE_OPTOSPIN_EMISSION_FILTER_WHEEL
+            and self.enable_channel_auto_filter_switching
+            and OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER == False
+        ):
             try:
-                if self.currentConfiguration.emission_filter_position != self.microscope.emission_filter_wheel.current_index:
-                    self.microscope.emission_filter_wheel.set_emission_filter(self.currentConfiguration.emission_filter_position)
+                if (
+                    self.currentConfiguration.emission_filter_position
+                    != self.microscope.emission_filter_wheel.current_index
+                ):
+                    self.microscope.emission_filter_wheel.set_emission_filter(
+                        self.currentConfiguration.emission_filter_position
+                    )
                     if self.trigger_mode == TriggerMode.SOFTWARE:
-                        time.sleep(OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS/1000)
+                        time.sleep(OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000)
                     elif self.trigger_mode == TriggerMode.HARDWARE:
-                        time.sleep(max(0,OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS/1000-self.camera.strobe_delay_us/1e6))
+                        time.sleep(
+                            max(0, OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.strobe_delay_us / 1e6)
+                        )
             except Exception as e:
-                print('not setting emission filter position due to ' + str(e))
+                print("not setting emission filter position due to " + str(e))
 
         if USE_SQUID_FILTERWHEEL and self.enable_channel_auto_filter_switching:
             try:
                 self.microscope.squid_filter_wheel.set_emission(self.currentConfiguration.emission_filter_position)
             except Exception as e:
-                print('not setting emission filter position due to ' + str(e))
+                print("not setting emission filter position due to " + str(e))
 
     def start_live(self):
         self.is_live = True
         self.camera.is_live = True
         self.camera.start_streaming()
-        if self.trigger_mode == TriggerMode.SOFTWARE or ( self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger ):
-            self.camera.enable_callback() # in case it's disabled e.g. by the laser AF controller
+        if self.trigger_mode == TriggerMode.SOFTWARE or (
+            self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+        ):
+            self.camera.enable_callback()  # in case it's disabled e.g. by the laser AF controller
             self._start_triggerred_acquisition()
         # if controlling the laser displacement measurement camera
         if self.for_displacement_measurement:
-            self.microcontroller.set_pin_level(MCU_PINS.AF_LASER,1)
+            self.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
 
     def stop_live(self):
         if self.is_live:
             self.is_live = False
             self.camera.is_live = False
-            if hasattr(self.camera,'stop_exposure'):
+            if hasattr(self.camera, "stop_exposure"):
                 self.camera.stop_exposure()
             if self.trigger_mode == TriggerMode.SOFTWARE:
                 self._stop_triggerred_acquisition()
             # self.camera.stop_streaming() # 20210113 this line seems to cause problems when using af with multipoint
             if self.trigger_mode == TriggerMode.CONTINUOUS:
                 self.camera.stop_streaming()
-            if ( self.trigger_mode == TriggerMode.SOFTWARE ) or ( self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger ):
+            if (self.trigger_mode == TriggerMode.SOFTWARE) or (
+                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+            ):
                 self._stop_triggerred_acquisition()
             if self.control_illumination:
                 self.turn_off_illumination()
             # if controlling the laser displacement measurement camera
             if self.for_displacement_measurement:
-                self.microcontroller.set_pin_level(MCU_PINS.AF_LASER,0)
+                self.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
 
     # software trigger related
     def trigger_acquisition(self):
@@ -616,7 +716,7 @@ class LiveController(QObject):
             # measure real fps
             timestamp_now = round(time.time())
             if timestamp_now == self.timestamp_last:
-                self.counter = self.counter+1
+                self.counter = self.counter + 1
             else:
                 self.timestamp_last = timestamp_now
                 self.fps_real = self.counter
@@ -627,23 +727,27 @@ class LiveController(QObject):
             if ENABLE_NL5 and NL5_USE_DOUT:
                 self.microscope.nl5.start_acquisition()
             else:
-                self.microcontroller.send_hardware_trigger(control_illumination=True,illumination_on_time_us=self.camera.exposure_time*1000)
+                self.microcontroller.send_hardware_trigger(
+                    control_illumination=True, illumination_on_time_us=self.camera.exposure_time * 1000
+                )
 
     def _start_triggerred_acquisition(self):
         self.timer_trigger.start()
 
-    def _set_trigger_fps(self,fps_trigger):
+    def _set_trigger_fps(self, fps_trigger):
         self.fps_trigger = fps_trigger
-        self.timer_trigger_interval = (1/self.fps_trigger)*1000
+        self.timer_trigger_interval = (1 / self.fps_trigger) * 1000
         self.timer_trigger.setInterval(int(self.timer_trigger_interval))
 
     def _stop_triggerred_acquisition(self):
         self.timer_trigger.stop()
 
     # trigger mode and settings
-    def set_trigger_mode(self,mode):
+    def set_trigger_mode(self, mode):
         if mode == TriggerMode.SOFTWARE:
-            if self.is_live and ( self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger ):
+            if self.is_live and (
+                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+            ):
                 self._stop_triggerred_acquisition()
             self.camera.set_software_triggered_acquisition()
             if self.is_live:
@@ -659,18 +763,22 @@ class LiveController(QObject):
             if self.is_live and self.use_internal_timer_for_hardware_trigger:
                 self._start_triggerred_acquisition()
         if mode == TriggerMode.CONTINUOUS:
-            if ( self.trigger_mode == TriggerMode.SOFTWARE ) or ( self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger ):
+            if (self.trigger_mode == TriggerMode.SOFTWARE) or (
+                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+            ):
                 self._stop_triggerred_acquisition()
             self.camera.set_continuous_acquisition()
         self.trigger_mode = mode
 
-    def set_trigger_fps(self,fps):
-        if ( self.trigger_mode == TriggerMode.SOFTWARE ) or ( self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger ):
+    def set_trigger_fps(self, fps):
+        if (self.trigger_mode == TriggerMode.SOFTWARE) or (
+            self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+        ):
             self._set_trigger_fps(fps)
 
     # set microscope mode
     # @@@ to do: change softwareTriggerGenerator to TriggerGeneratror
-    def set_microscope_mode(self,configuration):
+    def set_microscope_mode(self, configuration):
 
         self.currentConfiguration = configuration
         print("setting microscope mode to " + self.currentConfiguration.name)
@@ -687,7 +795,9 @@ class LiveController(QObject):
 
         # set illumination
         if self.control_illumination:
-            self.set_illumination(self.currentConfiguration.illumination_source,self.currentConfiguration.illumination_intensity)
+            self.set_illumination(
+                self.currentConfiguration.illumination_source, self.currentConfiguration.illumination_intensity
+            )
 
         # restart live
         if self.is_live is True:
@@ -705,7 +815,7 @@ class LiveController(QObject):
                 self.turn_off_illumination()
 
     def set_display_resolution_scaling(self, display_resolution_scaling):
-        self.display_resolution_scaling = display_resolution_scaling/100
+        self.display_resolution_scaling = display_resolution_scaling / 100
 
     def reset_strobe_arugment(self):
         # re-calculate the strobe_delay_us value
@@ -735,11 +845,11 @@ class SlidePositionControlWorker(QObject):
             self.signal_stop_live.emit()
 
         # retract z
-        self.slidePositionController.z_pos = self.stage.get_pos().z_mm # zpos at the beginning of the scan
+        self.slidePositionController.z_pos = self.stage.get_pos().z_mm  # zpos at the beginning of the scan
         self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM, blocking=False)
         self.stage.wait_for_idle(SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
 
-        print('z retracted')
+        print("z retracted")
         self.slidePositionController.objective_retracted = True
 
         # move to position
@@ -752,11 +862,12 @@ class SlidePositionControlWorker(QObject):
                 x_pos_mm=a_large_limit_mm,
                 x_neg_mm=-a_large_limit_mm,
                 y_pos_mm=a_large_limit_mm,
-                y_neg_mm=-a_large_limit_mm)
+                y_neg_mm=-a_large_limit_mm,
+            )
 
             # home for the first time
             if self.slidePositionController.homing_done == False:
-                print('running homing first')
+                print("running homing first")
                 timestamp_start = time.time()
                 # x needs to be at > + 20 mm when homing y
                 self.stage.move_x(20)
@@ -774,7 +885,8 @@ class SlidePositionControlWorker(QObject):
                 x_pos_mm=self.stage.get_config().X_AXIS.MAX_POSITION,
                 x_neg_mm=self.stage.get_config().X_AXIS.MIN_POSITION,
                 y_pos_mm=self.stage.get_config().Y_AXIS.MAX_POSITION,
-                y_neg_mm=self.stage.get_config().Y_AXIS.MIN_POSITION)
+                y_neg_mm=self.stage.get_config().Y_AXIS.MIN_POSITION,
+            )
         else:
 
             # for glass slide
@@ -852,11 +964,13 @@ class SlidePositionControlWorker(QObject):
             # migration, we only compensated for backlash in the case that we were using PID control.  Since that
             # info isn't plumbed through yet (or ever from now on?), we just always compensate now.  It doesn't hurt
             # in the case of not needing it, except that it's a little slower because we need 2 moves.
-            mm_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(max(160, 20*self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
-            self.stage.move_z_to(self.slidePositionController.z_pos-mm_to_clear_backlash)
+            mm_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
+                max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
+            )
+            self.stage.move_z_to(self.slidePositionController.z_pos - mm_to_clear_backlash)
             self.stage.move_z_to(self.slidePositionController.z_pos)
             self.slidePositionController.objective_retracted = False
-            print('z position restored')
+            print("z position restored")
 
         if was_live:
             self.signal_resume_live.emit()
@@ -892,8 +1006,10 @@ class SlidePositionController(QObject):
         self.slidePositionControlWorker.moveToThread(self.thread)
         # connect signals and slots
         self.thread.started.connect(self.slidePositionControlWorker.move_to_slide_loading_position)
-        self.slidePositionControlWorker.signal_stop_live.connect(self.slot_stop_live,type=Qt.BlockingQueuedConnection)
-        self.slidePositionControlWorker.signal_resume_live.connect(self.slot_resume_live,type=Qt.BlockingQueuedConnection)
+        self.slidePositionControlWorker.signal_stop_live.connect(self.slot_stop_live, type=Qt.BlockingQueuedConnection)
+        self.slidePositionControlWorker.signal_resume_live.connect(
+            self.slot_resume_live, type=Qt.BlockingQueuedConnection
+        )
         self.slidePositionControlWorker.finished.connect(self.signal_slide_loading_position_reached.emit)
         self.slidePositionControlWorker.finished.connect(self.slidePositionControlWorker.deleteLater)
         self.slidePositionControlWorker.finished.connect(self.thread.quit)
@@ -903,7 +1019,7 @@ class SlidePositionController(QObject):
         self.thread.start()
 
     def move_to_slide_scanning_position(self):
-    	# create a QThread object
+        # create a QThread object
         self.thread = QThread()
         # create a worker object
         self.slidePositionControlWorker = SlidePositionControlWorker(self, self.stage)
@@ -911,15 +1027,17 @@ class SlidePositionController(QObject):
         self.slidePositionControlWorker.moveToThread(self.thread)
         # connect signals and slots
         self.thread.started.connect(self.slidePositionControlWorker.move_to_slide_scanning_position)
-        self.slidePositionControlWorker.signal_stop_live.connect(self.slot_stop_live,type=Qt.BlockingQueuedConnection)
-        self.slidePositionControlWorker.signal_resume_live.connect(self.slot_resume_live,type=Qt.BlockingQueuedConnection)
+        self.slidePositionControlWorker.signal_stop_live.connect(self.slot_stop_live, type=Qt.BlockingQueuedConnection)
+        self.slidePositionControlWorker.signal_resume_live.connect(
+            self.slot_resume_live, type=Qt.BlockingQueuedConnection
+        )
         self.slidePositionControlWorker.finished.connect(self.signal_slide_scanning_position_reached.emit)
         self.slidePositionControlWorker.finished.connect(self.slidePositionControlWorker.deleteLater)
         self.slidePositionControlWorker.finished.connect(self.thread.quit)
         self.thread.finished.connect(self.thread.quit)
         # self.slidePositionControlWorker.finished.connect(self.threadFinished,type=Qt.BlockingQueuedConnection)
         # start the thread
-        print('before thread.start()')
+        print("before thread.start()")
         self.thread.start()
         self.signal_clear_slide.emit()
 
@@ -929,13 +1047,14 @@ class SlidePositionController(QObject):
     def slot_resume_live(self):
         self.liveController.start_live()
 
+
 class AutofocusWorker(QObject):
 
     finished = Signal()
     image_to_display = Signal(np.ndarray)
     # signal_current_configuration = Signal(Configuration)
 
-    def __init__(self,autofocusController):
+    def __init__(self, autofocusController):
         QObject.__init__(self)
         self.autofocusController = autofocusController
 
@@ -961,15 +1080,16 @@ class AutofocusWorker(QObject):
     def run_autofocus(self):
         # @@@ to add: increase gain, decrease exposure time
         # @@@ can move the execution into a thread - done 08/21/2021
-        focus_measure_vs_z = [0]*self.N
+        focus_measure_vs_z = [0] * self.N
         focus_measure_max = 0
 
-        z_af_offset = self.deltaZ*round(self.N/2)
+        z_af_offset = self.deltaZ * round(self.N / 2)
 
         # maneuver for achiving uniform step size and repeatability when using open-loop control
         # can be moved to the firmware
         mm_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
-            max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+            max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
+        )
 
         self.stage.move_z(-mm_to_clear_backlash - z_af_offset)
         self.stage.move_z(mm_to_clear_backlash)
@@ -985,12 +1105,14 @@ class AutofocusWorker(QObject):
                 self.camera.send_trigger()
                 image = self.camera.read_frame()
             elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-                if 'Fluorescence' in self.liveController.currentConfiguration.name and ENABLE_NL5 and NL5_USE_DOUT:
-                    self.camera.image_is_ready = False # to remove
+                if "Fluorescence" in self.liveController.currentConfiguration.name and ENABLE_NL5 and NL5_USE_DOUT:
+                    self.camera.image_is_ready = False  # to remove
                     self.microscope.nl5.start_acquisition()
                     image = self.camera.read_frame(reset_image_ready_flag=False)
                 else:
-                    self.microcontroller.send_hardware_trigger(control_illumination=True,illumination_on_time_us=self.camera.exposure_time*1000)
+                    self.microcontroller.send_hardware_trigger(
+                        control_illumination=True, illumination_on_time_us=self.camera.exposure_time * 1000
+                    )
                     image = self.camera.read_frame()
             if image is None:
                 continue
@@ -998,27 +1120,31 @@ class AutofocusWorker(QObject):
             if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                 self.liveController.turn_off_illumination()
 
-            image = utils.crop_image(image,self.crop_width,self.crop_height)
-            image = utils.rotate_and_flip_image(image,rotate_image_angle=self.camera.rotate_image_angle,flip_image=self.camera.flip_image)
+            image = utils.crop_image(image, self.crop_width, self.crop_height)
+            image = utils.rotate_and_flip_image(
+                image, rotate_image_angle=self.camera.rotate_image_angle, flip_image=self.camera.flip_image
+            )
             self.image_to_display.emit(image)
-            #image_to_display = utils.crop_image(image,round(self.crop_width* self.liveController.display_resolution_scaling), round(self.crop_height* self.liveController.display_resolution_scaling))
+            # image_to_display = utils.crop_image(image,round(self.crop_width* self.liveController.display_resolution_scaling), round(self.crop_height* self.liveController.display_resolution_scaling))
 
             QApplication.processEvents()
             timestamp_0 = time.time()
-            focus_measure = utils.calculate_focus_measure(image,FOCUS_MEASURE_OPERATOR)
+            focus_measure = utils.calculate_focus_measure(image, FOCUS_MEASURE_OPERATOR)
             timestamp_1 = time.time()
-            print('             calculating focus measure took ' + str(timestamp_1-timestamp_0) + ' second')
+            print("             calculating focus measure took " + str(timestamp_1 - timestamp_0) + " second")
             focus_measure_vs_z[i] = focus_measure
-            print(i,focus_measure)
+            print(i, focus_measure)
             focus_measure_max = max(focus_measure, focus_measure_max)
-            if focus_measure < focus_measure_max*AF.STOP_THRESHOLD:
+            if focus_measure < focus_measure_max * AF.STOP_THRESHOLD:
                 break
 
         QApplication.processEvents()
 
         # maneuver for achiving uniform step size and repeatability when using open-loop control
         # TODO(imo): The backlash handling should be done at a lower level.  For now, do backlash compensation no matter if it makes sense to do or not (it is not harmful if it doesn't make sense)
-        mm_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(max(160, 20*self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+        mm_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
+            max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
+        )
         self.stage.move_z(-mm_to_clear_backlash - steps_moved * self.deltaZ)
         # determine the in-focus position
         idx_in_focus = focus_measure_vs_z.index(max(focus_measure_vs_z))
@@ -1028,9 +1154,10 @@ class AutofocusWorker(QObject):
 
         # move to the calculated in-focus position
         if idx_in_focus == 0:
-            print('moved to the bottom end of the AF range')
-        if idx_in_focus == self.N-1:
-            print('moved to the top end of the AF range')
+            print("moved to the bottom end of the AF range")
+        if idx_in_focus == self.N - 1:
+            print("moved to the top end of the AF range")
+
 
 class AutoFocusController(QObject):
 
@@ -1038,7 +1165,7 @@ class AutoFocusController(QObject):
     autofocusFinished = Signal()
     image_to_display = Signal(np.ndarray)
 
-    def __init__(self,camera, stage: AbstractStage, liveController, microcontroller: Microcontroller):
+    def __init__(self, camera, stage: AbstractStage, liveController, microcontroller: Microcontroller):
         QObject.__init__(self)
         self.camera = camera
         self.stage = stage
@@ -1052,13 +1179,13 @@ class AutoFocusController(QObject):
         self.focus_map_coords = []
         self.use_focus_map = False
 
-    def set_N(self,N):
+    def set_N(self, N):
         self.N = N
 
     def set_deltaZ(self, delta_z_um):
         self.deltaZ = delta_z_um / 1000
 
-    def set_crop(self,crop_width,crop_height):
+    def set_crop(self, crop_width, crop_height):
         self.crop_width = crop_width
         self.crop_height = crop_height
 
@@ -1096,10 +1223,10 @@ class AutoFocusController(QObject):
         # create a QThread object
         try:
             if self.thread.isRunning():
-                print('*** autofocus thread is still running ***')
+                print("*** autofocus thread is still running ***")
                 self.thread.terminate()
                 self.thread.wait()
-                print('*** autofocus threaded manually stopped ***')
+                print("*** autofocus threaded manually stopped ***")
         except:
             pass
         self.thread = QThread()
@@ -1129,19 +1256,19 @@ class AutoFocusController(QObject):
         # emit the autofocus finished signal to enable the UI
         self.autofocusFinished.emit()
         QApplication.processEvents()
-        print('autofocus finished')
+        print("autofocus finished")
 
         # update the state
         self.autofocus_in_progress = False
 
-    def slot_image_to_display(self,image):
+    def slot_image_to_display(self, image):
         self.image_to_display.emit(image)
 
     def wait_till_autofocus_has_completed(self):
         while self.autofocus_in_progress == True:
             QApplication.processEvents()
             time.sleep(0.005)
-        print('autofocus wait has completed, exit wait')
+        print("autofocus wait has completed, exit wait")
 
     def set_focus_map_use(self, enable):
         if not enable:
@@ -1152,9 +1279,9 @@ class AutoFocusController(QObject):
             print("Not enough coordinates (less than 3) for focus map generation, disabling focus map.")
             self.use_focus_map = False
             return
-        x1,y1,_ = self.focus_map_coords[0]
-        x2,y2,_ = self.focus_map_coords[1]
-        x3,y3,_ = self.focus_map_coords[2]
+        x1, y1, _ = self.focus_map_coords[0]
+        x2, y2, _ = self.focus_map_coords[1]
+        x3, y3, _ = self.focus_map_coords[2]
 
         detT = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
         if detT == 0:
@@ -1170,23 +1297,23 @@ class AutoFocusController(QObject):
         self.focus_map_coords = []
         self.set_focus_map_use(False)
 
-    def gen_focus_map(self, coord1,coord2,coord3):
+    def gen_focus_map(self, coord1, coord2, coord3):
         """
         Navigate to 3 coordinates and get your focus-map coordinates
         by autofocusing there and saving the z-values.
         :param coord1-3: Tuples of (x,y) values, coordinates in mm.
         :raise: ValueError if coordinates are all on the same line
         """
-        x1,y1 = coord1
-        x2,y2 = coord2
-        x3,y3 = coord3
+        x1, y1 = coord1
+        x2, y2 = coord2
+        x3, y3 = coord3
         detT = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
         if detT == 0:
             raise ValueError("Your 3 x-y coordinates are linear")
 
         self.focus_map_coords = []
 
-        for coord in [coord1,coord2,coord3]:
+        for coord in [coord1, coord2, coord3]:
             print(f"Navigating to coordinates ({coord[0]},{coord[1]}) to sample for focus map")
             self.stage.move_x_to(coord[0])
             self.stage.move_y_to(coord[1])
@@ -1213,17 +1340,19 @@ class AutoFocusController(QObject):
         y = pos.y_mm
         z = pos.z_mm
         if len(self.focus_map_coords) >= 2:
-            x1,y1,_ = self.focus_map_coords[0]
-            x2,y2,_ = self.focus_map_coords[1]
+            x1, y1, _ = self.focus_map_coords[0]
+            x2, y2, _ = self.focus_map_coords[1]
             x3 = x
             y3 = y
 
-            detT = (y2-y3) * (x1-x3) + (x3-x2) * (y1-y3)
+            detT = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
             if detT == 0:
-                raise ValueError("Your 3 x-y coordinates are linear. Navigate to a different coordinate or clear and try again.")
+                raise ValueError(
+                    "Your 3 x-y coordinates are linear. Navigate to a different coordinate or clear and try again."
+                )
         if len(self.focus_map_coords) >= 3:
             self.focus_map_coords.pop()
-        self.focus_map_coords.append((x,y,z))
+        self.focus_map_coords.append((x, y, z))
         print(f"Added triple ({x},{y},{z}) to focus map")
 
 
@@ -1232,14 +1361,14 @@ class MultiPointWorker(QObject):
     finished = Signal()
     image_to_display = Signal(np.ndarray)
     spectrum_to_display = Signal(np.ndarray)
-    image_to_display_multi = Signal(np.ndarray,int)
+    image_to_display_multi = Signal(np.ndarray, int)
     signal_current_configuration = Signal(Configuration)
-    signal_register_current_fov = Signal(float,float)
+    signal_register_current_fov = Signal(float, float)
     signal_detection_stats = Signal(object)
     signal_update_stats = Signal(object)
     signal_z_piezo_um = Signal(float)
     napari_layers_init = Signal(int, int, object)
-    napari_layers_update = Signal(np.ndarray, float, float, int, str) # image, x_mm, y_mm, k, channel
+    napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
     napari_rtp_layers_update = Signal(np.ndarray, str)
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
@@ -1268,7 +1397,7 @@ class MultiPointWorker(QObject):
         self.deltaZ = self.multiPointController.deltaZ
         self.dt = self.multiPointController.deltat
         self.do_autofocus = self.multiPointController.do_autofocus
-        self.do_reflection_af= self.multiPointController.do_reflection_af
+        self.do_reflection_af = self.multiPointController.do_reflection_af
         self.crop_width = self.multiPointController.crop_width
         self.crop_height = self.multiPointController.crop_height
         self.display_resolution_scaling = self.multiPointController.display_resolution_scaling
@@ -1316,12 +1445,14 @@ class MultiPointWorker(QObject):
         self._log.info("stats", self.count)
         for k in new_stats.keys():
             try:
-                self.detection_stats[k]+=new_stats[k]
+                self.detection_stats[k] += new_stats[k]
             except:
                 self.detection_stats[k] = 0
                 self.detection_stats[k] += new_stats[k]
         if "Total RBC" in self.detection_stats and "Total Positives" in self.detection_stats:
-            self.detection_stats["Positives per 5M RBC"] = 5e6*(self.detection_stats["Total Positives"]/self.detection_stats["Total RBC"])
+            self.detection_stats["Positives per 5M RBC"] = 5e6 * (
+                self.detection_stats["Total Positives"] / self.detection_stats["Total RBC"]
+            )
         self.signal_detection_stats.emit(self.detection_stats)
 
     def update_use_piezo(self, value):
@@ -1341,27 +1472,27 @@ class MultiPointWorker(QObject):
             self.run_single_time_point()
 
             self.time_point = self.time_point + 1
-            if self.dt == 0: # continous acquisition
+            if self.dt == 0:  # continous acquisition
                 pass
             else:  # timed acquisition
 
                 # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
-                while time.time() > self.timestamp_acquisition_started + self.time_point*self.dt:
-                    self._log.info('skip time point ' + str(self.time_point+1))
-                    self.time_point = self.time_point+1
+                while time.time() > self.timestamp_acquisition_started + self.time_point * self.dt:
+                    self._log.info("skip time point " + str(self.time_point + 1))
+                    self.time_point = self.time_point + 1
 
                 # check if it has reached Nt
                 if self.time_point == self.Nt:
-                    break # no waiting after taking the last time point
+                    break  # no waiting after taking the last time point
 
                 # wait until it's time to do the next acquisition
-                while time.time() < self.timestamp_acquisition_started + self.time_point*self.dt:
+                while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
                     if self.multiPointController.abort_acqusition_requested:
                         break
                     time.sleep(0.05)
 
         elapsed_time = time.perf_counter_ns() - self.start_time
-        self._log.info("Time taken for acquisition: " + str(elapsed_time/10**9))
+        self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
 
         # End processing using the updated method
         if DO_FLUORESCENCE_RTP:
@@ -1380,10 +1511,10 @@ class MultiPointWorker(QObject):
         start = time.time()
         self.microcontroller.enable_joystick(False)
 
-        self._log.debug('multipoint acquisition - time point ' + str(self.time_point+1))
+        self._log.debug("multipoint acquisition - time point " + str(self.time_point + 1))
 
         # for each time point, create a new folder
-        current_path = os.path.join(self.base_path,self.experiment_ID,str(self.time_point))
+        current_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point))
         os.mkdir(current_path)
 
         slide_path = os.path.join(self.base_path, self.experiment_ID)
@@ -1397,7 +1528,7 @@ class MultiPointWorker(QObject):
         self.run_coordinate_acquisition(current_path)
 
         # finished region scan
-        self.coordinates_pd.to_csv(os.path.join(current_path,'coordinates.csv'),index=False,header=True)
+        self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
         utils.create_done_file(current_path)
         # TODO(imo): If anything throws above, we don't re-enable the joystick
         self.microcontroller.enable_joystick(True)
@@ -1407,46 +1538,43 @@ class MultiPointWorker(QObject):
         self.count_rtp = 0
 
         # z stacking config
-        if self.z_stacking_config == 'FROM TOP':
+        if self.z_stacking_config == "FROM TOP":
             self.deltaZ = -abs(self.deltaZ)
             self.move_to_z_level(self.z_range[1])
         else:
             self.move_to_z_level(self.z_range[0])
 
-        self.z_pos = self.stage.get_pos().z_mm # zpos at the beginning of the scan
+        self.z_pos = self.stage.get_pos().z_mm  # zpos at the beginning of the scan
 
         # reset piezo to home position
         if self.use_piezo:
             self.z_piezo_um = OBJECTIVE_PIEZO_HOME_UM
             self.microcontroller.set_piezo_um(self.z_piezo_um)
             # TODO(imo): Not sure the wait comment below is actually correct?  Should this wait just be in the set_piezo_um helper?
-            if self.liveController.trigger_mode == TriggerMode.SOFTWARE: # for hardware trigger, delay is in waiting for the last row to start exposure
-                time.sleep(MULTIPOINT_PIEZO_DELAY_MS/1000)
+            if (
+                self.liveController.trigger_mode == TriggerMode.SOFTWARE
+            ):  # for hardware trigger, delay is in waiting for the last row to start exposure
+                time.sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
             if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
                 self.signal_z_piezo_um.emit(self.z_piezo_um)
 
     def initialize_coordinates_dataframe(self):
-        base_columns = ['z_level', 'x (mm)', 'y (mm)', 'z (um)', 'time']
-        piezo_column = ['z_piezo (um)'] if self.use_piezo else []
-        self.coordinates_pd = pd.DataFrame(columns=['region', 'fov'] + base_columns + piezo_column)
+        base_columns = ["z_level", "x (mm)", "y (mm)", "z (um)", "time"]
+        piezo_column = ["z_piezo (um)"] if self.use_piezo else []
+        self.coordinates_pd = pd.DataFrame(columns=["region", "fov"] + base_columns + piezo_column)
 
     def update_coordinates_dataframe(self, region_id, z_level, fov=None):
         pos = self.stage.get_pos()
         base_data = {
-            'z_level': [z_level],
-            'x (mm)': [pos.x_mm],
-            'y (mm)': [pos.y_mm],
-            'z (um)': [pos.z_mm * 1000],
-            'time': [datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')]
+            "z_level": [z_level],
+            "x (mm)": [pos.x_mm],
+            "y (mm)": [pos.y_mm],
+            "z (um)": [pos.z_mm * 1000],
+            "time": [datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")],
         }
-        piezo_data = {'z_piezo (um)': [self.z_piezo_um - OBJECTIVE_PIEZO_HOME_UM]} if self.use_piezo else {}
+        piezo_data = {"z_piezo (um)": [self.z_piezo_um - OBJECTIVE_PIEZO_HOME_UM]} if self.use_piezo else {}
 
-        new_row = pd.DataFrame({
-            'region': [region_id],
-            'fov': [fov],
-            **base_data,
-            **piezo_data
-        })
+        new_row = pd.DataFrame({"region": [region_id], "fov": [fov], **base_data, **piezo_data})
 
         self.coordinates_pd = pd.concat([self.coordinates_pd, new_row], ignore_index=True)
 
@@ -1454,11 +1582,11 @@ class MultiPointWorker(QObject):
         print("moving to coordinate", coordinate_mm)
         x_mm = coordinate_mm[0]
         self.stage.move_x_to(x_mm)
-        time.sleep(SCAN_STABILIZATION_TIME_MS_X/1000)
+        time.sleep(SCAN_STABILIZATION_TIME_MS_X / 1000)
 
         y_mm = coordinate_mm[1]
         self.stage.move_y_to(y_mm)
-        time.sleep(SCAN_STABILIZATION_TIME_MS_Y/1000)
+        time.sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
 
         # check if z is included in the coordinate
         if len(coordinate_mm) == 3:
@@ -1474,7 +1602,9 @@ class MultiPointWorker(QObject):
             # TODO(imo): We used to only do this if in PID control mode, but we don't expose the PID mode settings
             # yet, so for now just do this for all.
             # TODO(imo): Ideally this would be done at a lower level, and only if needed.  As is we only remove backlash in this specific case (and no other Z moves!)
-            distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+            distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
+                max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
+            )
             self.stage.move_z(-distance_to_clear_backlash)
             self.stage.move_z(distance_to_clear_backlash)
         time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
@@ -1501,7 +1631,7 @@ class MultiPointWorker(QObject):
     def acquire_at_position(self, region_id, current_path, fov):
 
         if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in globals():
-            print('run custom multipoint')
+            print("run custom multipoint")
             multipoint_custom_script_entry(self, current_path, region_id, fov)
             return
 
@@ -1524,8 +1654,8 @@ class MultiPointWorker(QObject):
             # laser af characterization mode
             if LASER_AF_CHARACTERIZATION_MODE:
                 image = self.microscope.laserAutofocusController.get_image()
-                saving_path = os.path.join(current_path, file_ID + '_laser af camera' + '.bmp')
-                iio.imwrite(saving_path,image)
+                saving_path = os.path.join(current_path, file_ID + "_laser af camera" + ".bmp")
+                iio.imwrite(saving_path, image)
 
             current_round_images = {}
             # iterate through selected modes
@@ -1534,16 +1664,21 @@ class MultiPointWorker(QObject):
                 self.handle_z_offset(config, True)
 
                 # acquire image
-                if 'USB Spectrometer' not in config.name and 'RGB' not in config.name:
+                if "USB Spectrometer" not in config.name and "RGB" not in config.name:
                     self.acquire_camera_image(config, file_ID, current_path, current_round_images, z_level)
-                elif 'RGB' in config.name:
+                elif "RGB" in config.name:
                     self.acquire_rgb_image(config, file_ID, current_path, current_round_images, z_level)
                 else:
                     self.acquire_spectrometer_data(config, file_ID, current_path, z_level)
 
                 self.handle_z_offset(config, False)
 
-                current_image = (fov * self.NZ * len(self.selected_configurations) + z_level * len(self.selected_configurations) + config_idx + 1)
+                current_image = (
+                    fov * self.NZ * len(self.selected_configurations)
+                    + z_level * len(self.selected_configurations)
+                    + config_idx
+                    + 1
+                )
                 self.signal_region_progress.emit(current_image, self.total_scans)
 
             # real time processing
@@ -1570,22 +1705,37 @@ class MultiPointWorker(QObject):
 
     def run_real_time_processing(self, current_round_images, z_level):
         acquired_image_configs = list(current_round_images.keys())
-        if 'BF LED matrix left half' in current_round_images and 'BF LED matrix right half' in current_round_images and 'Fluorescence 405 nm Ex' in current_round_images:
+        if (
+            "BF LED matrix left half" in current_round_images
+            and "BF LED matrix right half" in current_round_images
+            and "Fluorescence 405 nm Ex" in current_round_images
+        ):
             try:
                 print("real time processing", self.count_rtp)
-                if (self.microscope.model is None) or (self.microscope.device is None) or (self.microscope.classification_th is None) or (self.microscope.dataHandler is None):
-                    raise AttributeError('microscope missing model, device, classification_th, and/or dataHandler')
-                I_fluorescence = current_round_images['Fluorescence 405 nm Ex']
-                I_left = current_round_images['BF LED matrix left half']
-                I_right = current_round_images['BF LED matrix right half']
+                if (
+                    (self.microscope.model is None)
+                    or (self.microscope.device is None)
+                    or (self.microscope.classification_th is None)
+                    or (self.microscope.dataHandler is None)
+                ):
+                    raise AttributeError("microscope missing model, device, classification_th, and/or dataHandler")
+                I_fluorescence = current_round_images["Fluorescence 405 nm Ex"]
+                I_left = current_round_images["BF LED matrix left half"]
+                I_right = current_round_images["BF LED matrix right half"]
                 if len(I_left.shape) == 3:
-                    I_left = cv2.cvtColor(I_left,cv2.COLOR_RGB2GRAY)
+                    I_left = cv2.cvtColor(I_left, cv2.COLOR_RGB2GRAY)
                 if len(I_right.shape) == 3:
-                    I_right = cv2.cvtColor(I_right,cv2.COLOR_RGB2GRAY)
-                malaria_rtp(I_fluorescence, I_left, I_right, z_level, self,
-                            classification_test_mode=self.microscope.classification_test_mode,
-                            sort_during_multipoint=SORT_DURING_MULTIPOINT,
-                            disp_th_during_multipoint=DISP_TH_DURING_MULTIPOINT)
+                    I_right = cv2.cvtColor(I_right, cv2.COLOR_RGB2GRAY)
+                malaria_rtp(
+                    I_fluorescence,
+                    I_left,
+                    I_right,
+                    z_level,
+                    self,
+                    classification_test_mode=self.microscope.classification_test_mode,
+                    sort_during_multipoint=SORT_DURING_MULTIPOINT,
+                    disp_th_during_multipoint=DISP_TH_DURING_MULTIPOINT,
+                )
                 self.count_rtp += 1
             except AttributeError as e:
                 print(repr(e))
@@ -1593,23 +1743,41 @@ class MultiPointWorker(QObject):
     def perform_autofocus(self, region_id, fov):
         if self.do_reflection_af == False:
             # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
-            if ((self.NZ == 1) or self.z_stacking_config == 'FROM CENTER') and (self.do_autofocus) and (self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0):
+            if (
+                ((self.NZ == 1) or self.z_stacking_config == "FROM CENTER")
+                and (self.do_autofocus)
+                and (self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0)
+            ):
                 configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
-                config_AF = next((config for config in self.configurationManager.configurations if config.name == configuration_name_AF))
+                config_AF = next(
+                    (
+                        config
+                        for config in self.configurationManager.configurations
+                        if config.name == configuration_name_AF
+                    )
+                )
                 self.signal_current_configuration.emit(config_AF)
-                if (self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0) or self.autofocusController.use_focus_map:
+                if (
+                    self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0
+                ) or self.autofocusController.use_focus_map:
                     self.autofocusController.autofocus()
                     self.autofocusController.wait_till_autofocus_has_completed()
         else:
             # initialize laser autofocus if it has not been done
-            if self.microscope.laserAutofocusController.is_initialized==False:
+            if self.microscope.laserAutofocusController.is_initialized == False:
                 self._log.info("init reflection af")
                 # initialize the reflection AF
                 self.microscope.laserAutofocusController.initialize_auto()
                 # do contrast AF for the first FOV (if contrast AF box is checked)
-                if self.do_autofocus and ((self.NZ == 1) or self.z_stacking_config == 'FROM CENTER'):
+                if self.do_autofocus and ((self.NZ == 1) or self.z_stacking_config == "FROM CENTER"):
                     configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
-                    config_AF = next((config for config in self.configurationManager.configurations if config.name == configuration_name_AF))
+                    config_AF = next(
+                        (
+                            config
+                            for config in self.configurationManager.configurations
+                            if config.name == configuration_name_AF
+                        )
+                    )
                     self.signal_current_configuration.emit(config_AF)
                     self.autofocusController.autofocus()
                     self.autofocusController.wait_till_autofocus_has_completed()
@@ -1620,34 +1788,39 @@ class MultiPointWorker(QObject):
                 try:
                     # TODO(imo): We used to have a case here to try to fix backlash by double commanding a position.  Now, just double command it whether or not we are using PID since we don't expose that now.  But in the future, backlash handing shouldb e done at a lower level (and we can remove the double here)
                     self.microscope.laserAutofocusController.move_to_target(0)
-                    self.microscope.laserAutofocusController.move_to_target(0) # for stepper in open loop mode, repeat the operation to counter backlash.  It's harmless if any other case.
+                    self.microscope.laserAutofocusController.move_to_target(
+                        0
+                    )  # for stepper in open loop mode, repeat the operation to counter backlash.  It's harmless if any other case.
                 except:
                     file_ID = f"{region_id}_focus_camera.bmp"
                     saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
                     iio.imwrite(saving_path, self.microscope.laserAutofocusController.image)
-                    self._log.error('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+                    self._log.error(
+                        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                    )
 
     def prepare_z_stack(self):
         # move to bottom of the z stack
-        if self.z_stacking_config == 'FROM CENTER':
+        if self.z_stacking_config == "FROM CENTER":
             self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
-            time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
+            time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
         # TODO(imo): This is some sort of backlash compensation.  We should move this down to the low level, and remove it from here.
         # maneuver for achiving uniform step size and repeatability when using open-loop control
         distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
-            max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+            max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
+        )
         self.stage.move_z(-distance_to_clear_backlash)
         self.stage.move_z(distance_to_clear_backlash)
-        time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
+        time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def handle_z_offset(self, config, not_offset):
         if config.z_offset is not None:  # perform z offset for config, assume z_offset is in um
             if config.z_offset != 0.0:
                 direction = 1 if not_offset else -1
                 self._log.info("Moving Z offset" + str(config.z_offset * direction))
-                self.stage.move_z(config.z_offset/1000*direction)
+                self.stage.move_z(config.z_offset / 1000 * direction)
                 self.wait_till_operation_is_completed()
-                time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
+                time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k):
         # update the current configuration
@@ -1661,18 +1834,20 @@ class MultiPointWorker(QObject):
             self.camera.send_trigger()
             image = self.camera.read_frame()
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-            if 'Fluorescence' in config.name and ENABLE_NL5 and NL5_USE_DOUT:
-                self.camera.image_is_ready = False # to remove
+            if "Fluorescence" in config.name and ENABLE_NL5 and NL5_USE_DOUT:
+                self.camera.image_is_ready = False  # to remove
                 self.microscope.nl5.start_acquisition()
                 image = self.camera.read_frame(reset_image_ready_flag=False)
             else:
-                self.microcontroller.send_hardware_trigger(control_illumination=True,illumination_on_time_us=self.camera.exposure_time*1000)
+                self.microcontroller.send_hardware_trigger(
+                    control_illumination=True, illumination_on_time_us=self.camera.exposure_time * 1000
+                )
                 image = self.camera.read_frame()
-        else: # continuous acquisition
+        else:  # continuous acquisition
             image = self.camera.read_frame()
 
         if image is None:
-            self._log.warning('self.camera.read_frame() returned None')
+            self._log.warning("self.camera.read_frame() returned None")
             return
 
         # turn off the illumination if using software trigger
@@ -1680,11 +1855,17 @@ class MultiPointWorker(QObject):
             self.liveController.turn_off_illumination()
 
         # process the image -  @@@ to move to camera
-        image = utils.crop_image(image,self.crop_width,self.crop_height)
-        image = utils.rotate_and_flip_image(image,rotate_image_angle=self.camera.rotate_image_angle,flip_image=self.camera.flip_image)
-        image_to_display = utils.crop_image(image,round(self.crop_width*self.display_resolution_scaling), round(self.crop_height*self.display_resolution_scaling))
+        image = utils.crop_image(image, self.crop_width, self.crop_height)
+        image = utils.rotate_and_flip_image(
+            image, rotate_image_angle=self.camera.rotate_image_angle, flip_image=self.camera.flip_image
+        )
+        image_to_display = utils.crop_image(
+            image,
+            round(self.crop_width * self.display_resolution_scaling),
+            round(self.crop_height * self.display_resolution_scaling),
+        )
         self.image_to_display.emit(image_to_display)
-        self.image_to_display_multi.emit(image_to_display,config.illumination_source)
+        self.image_to_display_multi.emit(image_to_display, config.illumination_source)
 
         self.save_image(image, file_ID, config, current_path)
         self.update_napari(image, config.name, k)
@@ -1698,7 +1879,7 @@ class MultiPointWorker(QObject):
 
     def acquire_rgb_image(self, config, file_ID, current_path, current_round_images, k):
         # go through the channels
-        rgb_channels = ['BF LED matrix full_R', 'BF LED matrix full_G', 'BF LED matrix full_B']
+        rgb_channels = ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]
         images = {}
 
         for config_ in self.configurationManager.configurations:
@@ -1715,12 +1896,14 @@ class MultiPointWorker(QObject):
                     self.camera.send_trigger()
 
                 elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-                    self.microcontroller.send_hardware_trigger(control_illumination=True, illumination_on_time_us=self.camera.exposure_time * 1000)
+                    self.microcontroller.send_hardware_trigger(
+                        control_illumination=True, illumination_on_time_us=self.camera.exposure_time * 1000
+                    )
 
                 # read camera frame
                 image = self.camera.read_frame()
                 if image is None:
-                    print('self.camera.read_frame() returned None')
+                    print("self.camera.read_frame() returned None")
                     continue
 
                 # TODO(imo): use illum controller
@@ -1730,22 +1913,24 @@ class MultiPointWorker(QObject):
 
                 # process the image  -  @@@ to move to camera
                 image = utils.crop_image(image, self.crop_width, self.crop_height)
-                image = utils.rotate_and_flip_image(image, rotate_image_angle=self.camera.rotate_image_angle, flip_image=self.camera.flip_image)
+                image = utils.rotate_and_flip_image(
+                    image, rotate_image_angle=self.camera.rotate_image_angle, flip_image=self.camera.flip_image
+                )
 
                 # add the image to dictionary
                 images[config_.name] = np.copy(image)
 
         # Check if the image is RGB or monochrome
-        i_size = images['BF LED matrix full_R'].shape
-        i_dtype = images['BF LED matrix full_R'].dtype
+        i_size = images["BF LED matrix full_R"].shape
+        i_dtype = images["BF LED matrix full_R"].dtype
 
         if len(i_size) == 3:
             # If already RGB, write and emit individual channels
-            print('writing R, G, B channels')
+            print("writing R, G, B channels")
             self.handle_rgb_channels(images, file_ID, current_path, config, k)
         else:
             # If monochrome, reconstruct RGB image
-            print('constructing RGB image')
+            print("constructing RGB image")
             self.construct_rgb_image(images, file_ID, current_path, config, k)
 
     def acquire_spectrometer_data(self, config, file_ID, current_path):
@@ -1753,21 +1938,25 @@ class MultiPointWorker(QObject):
             for l in range(N_SPECTRUM_PER_POINT):
                 data = self.usb_spectrometer.read_spectrum()
                 self.spectrum_to_display.emit(data)
-                saving_path = os.path.join(current_path, file_ID + '_' + str(config.name).replace(' ','_') + '_' + str(l) + '.csv')
-                np.savetxt(saving_path,data,delimiter=',')
+                saving_path = os.path.join(
+                    current_path, file_ID + "_" + str(config.name).replace(" ", "_") + "_" + str(l) + ".csv"
+                )
+                np.savetxt(saving_path, data, delimiter=",")
 
     def save_image(self, image, file_ID, config, current_path):
         if image.dtype == np.uint16:
-            saving_path = os.path.join(current_path, file_ID + '_' + str(config.name).replace(' ','_') + '.tiff')
+            saving_path = os.path.join(current_path, file_ID + "_" + str(config.name).replace(" ", "_") + ".tiff")
         else:
-            saving_path = os.path.join(current_path, file_ID + '_' + str(config.name).replace(' ','_') + '.' + Acquisition.IMAGE_FORMAT)
+            saving_path = os.path.join(
+                current_path, file_ID + "_" + str(config.name).replace(" ", "_") + "." + Acquisition.IMAGE_FORMAT
+            )
 
         if self.camera.is_color:
-            if 'BF LED matrix' in config.name:
-                if MULTIPOINT_BF_SAVING_OPTION == 'RGB2GRAY':
-                    image = cv2.cvtColor(image,cv2.COLOR_RGB2GRAY)
-                elif MULTIPOINT_BF_SAVING_OPTION == 'Green Channel Only':
-                    image = image[:,:,1]
+            if "BF LED matrix" in config.name:
+                if MULTIPOINT_BF_SAVING_OPTION == "RGB2GRAY":
+                    image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+                elif MULTIPOINT_BF_SAVING_OPTION == "Green Channel Only":
+                    image = image[:, :, 1]
 
         if Acquisition.PSEUDO_COLOR:
             image = self.return_pseudo_colored_image(image, config)
@@ -1775,7 +1964,7 @@ class MultiPointWorker(QObject):
         if Acquisition.MERGE_CHANNELS:
             self._save_merged_image(image, file_ID, current_path)
 
-        iio.imwrite(saving_path,image)
+        iio.imwrite(saving_path, image)
 
     def _save_merged_image(self, image, file_ID, current_path):
         self.image_count += 1
@@ -1786,32 +1975,30 @@ class MultiPointWorker(QObject):
 
             if self.image_count == len(self.selected_configurations):
                 if image.dtype == np.uint16:
-                    saving_path = os.path.join(current_path, file_ID + '_merged' + '.tiff')
+                    saving_path = os.path.join(current_path, file_ID + "_merged" + ".tiff")
                 else:
-                    saving_path = os.path.join(current_path, file_ID + '_merged' + '.' + Acquisition.IMAGE_FORMAT)
+                    saving_path = os.path.join(current_path, file_ID + "_merged" + "." + Acquisition.IMAGE_FORMAT)
 
                 iio.imwrite(saving_path, self.merged_image)
                 self.image_count = 0
         return
 
     def return_pseudo_colored_image(self, image, config):
-        if '405 nm' in config.name:
+        if "405 nm" in config.name:
             image = self.grayscale_to_rgb(image, Acquisition.PSEUDO_COLOR_MAP["405"]["hex"])
-        elif '488 nm' in config.name:
+        elif "488 nm" in config.name:
             image = self.grayscale_to_rgb(image, Acquisition.PSEUDO_COLOR_MAP["488"]["hex"])
-        elif '561 nm' in config.name:
+        elif "561 nm" in config.name:
             image = self.grayscale_to_rgb(image, Acquisition.PSEUDO_COLOR_MAP["561"]["hex"])
-        elif '638 nm' in config.name:
+        elif "638 nm" in config.name:
             image = self.grayscale_to_rgb(image, Acquisition.PSEUDO_COLOR_MAP["638"]["hex"])
-        elif '730 nm' in config.name:
+        elif "730 nm" in config.name:
             image = self.grayscale_to_rgb(image, Acquisition.PSEUDO_COLOR_MAP["730"]["hex"])
 
         return image
 
     def grayscale_to_rgb(self, image, hex_color):
-        rgb_ratios = np.array([(hex_color >> 16) & 0xFF,
-                          (hex_color >> 8) & 0xFF,
-                          hex_color & 0xFF]) / 255
+        rgb_ratios = np.array([(hex_color >> 16) & 0xFF, (hex_color >> 8) & 0xFF, hex_color & 0xFF]) / 255
         rgb = np.stack([image] * 3, axis=-1) * rgb_ratios
         return rgb.astype(image.dtype)
 
@@ -1821,66 +2008,91 @@ class MultiPointWorker(QObject):
             if not self.init_napari_layers:
                 print("init napari layers")
                 self.init_napari_layers = True
-                self.napari_layers_init.emit(image.shape[0],image.shape[1], image.dtype)
+                self.napari_layers_init.emit(image.shape[0], image.shape[1], image.dtype)
             pos = self.stage.get_pos()
             self.napari_layers_update.emit(image, pos.x_mm, pos.y_mm, k, config_name)
 
     def handle_dpc_generation(self, current_round_images):
-        keys_to_check = ['BF LED matrix left half', 'BF LED matrix right half', 'BF LED matrix top half', 'BF LED matrix bottom half']
+        keys_to_check = [
+            "BF LED matrix left half",
+            "BF LED matrix right half",
+            "BF LED matrix top half",
+            "BF LED matrix bottom half",
+        ]
         if all(key in current_round_images for key in keys_to_check):
             # generate dpc
             # TODO(imo): What's the point of this?  Is it just a placeholder?
             pass
 
     def handle_rgb_generation(self, current_round_images, file_ID, current_path, k):
-        keys_to_check = ['BF LED matrix full_R', 'BF LED matrix full_G', 'BF LED matrix full_B']
+        keys_to_check = ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]
         if all(key in current_round_images for key in keys_to_check):
-            print('constructing RGB image')
-            print(current_round_images['BF LED matrix full_R'].dtype)
-            size = current_round_images['BF LED matrix full_R'].shape
-            rgb_image = np.zeros((*size, 3),dtype=current_round_images['BF LED matrix full_R'].dtype)
+            print("constructing RGB image")
+            print(current_round_images["BF LED matrix full_R"].dtype)
+            size = current_round_images["BF LED matrix full_R"].shape
+            rgb_image = np.zeros((*size, 3), dtype=current_round_images["BF LED matrix full_R"].dtype)
             print(rgb_image.shape)
-            rgb_image[:, :, 0] = current_round_images['BF LED matrix full_R']
-            rgb_image[:, :, 1] = current_round_images['BF LED matrix full_G']
-            rgb_image[:, :, 2] = current_round_images['BF LED matrix full_B']
+            rgb_image[:, :, 0] = current_round_images["BF LED matrix full_R"]
+            rgb_image[:, :, 1] = current_round_images["BF LED matrix full_G"]
+            rgb_image[:, :, 2] = current_round_images["BF LED matrix full_B"]
 
             # TODO(imo): There used to be a "display image" comment here, and then an unused cropped image.  Do we need to emit an image here?
 
             # write the image
             if len(rgb_image.shape) == 3:
-                print('writing RGB image')
+                print("writing RGB image")
                 if rgb_image.dtype == np.uint16:
-                    iio.imwrite(os.path.join(current_path, file_ID + '_BF_LED_matrix_full_RGB.tiff'), rgb_image)
+                    iio.imwrite(os.path.join(current_path, file_ID + "_BF_LED_matrix_full_RGB.tiff"), rgb_image)
                 else:
-                    iio.imwrite(os.path.join(current_path, file_ID + '_BF_LED_matrix_full_RGB.' + Acquisition.IMAGE_FORMAT),rgb_image)
+                    iio.imwrite(
+                        os.path.join(current_path, file_ID + "_BF_LED_matrix_full_RGB." + Acquisition.IMAGE_FORMAT),
+                        rgb_image,
+                    )
 
     def handle_rgb_channels(self, images, file_ID, current_path, config, k):
-        for channel in ['BF LED matrix full_R', 'BF LED matrix full_G', 'BF LED matrix full_B']:
-            image_to_display = utils.crop_image(images[channel], round(self.crop_width * self.display_resolution_scaling), round(self.crop_height * self.display_resolution_scaling))
+        for channel in ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]:
+            image_to_display = utils.crop_image(
+                images[channel],
+                round(self.crop_width * self.display_resolution_scaling),
+                round(self.crop_height * self.display_resolution_scaling),
+            )
             self.image_to_display.emit(image_to_display)
             self.image_to_display_multi.emit(image_to_display, config.illumination_source)
 
             self.update_napari(images[channel], channel, k)
 
-            file_name = file_ID + '_' + channel.replace(' ', '_') + ('.tiff' if images[channel].dtype == np.uint16 else '.' + Acquisition.IMAGE_FORMAT)
+            file_name = (
+                file_ID
+                + "_"
+                + channel.replace(" ", "_")
+                + (".tiff" if images[channel].dtype == np.uint16 else "." + Acquisition.IMAGE_FORMAT)
+            )
             iio.imwrite(os.path.join(current_path, file_name), images[channel])
 
     def construct_rgb_image(self, images, file_ID, current_path, config, k):
-        rgb_image = np.zeros((*images['BF LED matrix full_R'].shape, 3), dtype=images['BF LED matrix full_R'].dtype)
-        rgb_image[:, :, 0] = images['BF LED matrix full_R']
-        rgb_image[:, :, 1] = images['BF LED matrix full_G']
-        rgb_image[:, :, 2] = images['BF LED matrix full_B']
+        rgb_image = np.zeros((*images["BF LED matrix full_R"].shape, 3), dtype=images["BF LED matrix full_R"].dtype)
+        rgb_image[:, :, 0] = images["BF LED matrix full_R"]
+        rgb_image[:, :, 1] = images["BF LED matrix full_G"]
+        rgb_image[:, :, 2] = images["BF LED matrix full_B"]
 
         # send image to display
-        image_to_display = utils.crop_image(rgb_image, round(self.crop_width * self.display_resolution_scaling), round(self.crop_height * self.display_resolution_scaling))
+        image_to_display = utils.crop_image(
+            rgb_image,
+            round(self.crop_width * self.display_resolution_scaling),
+            round(self.crop_height * self.display_resolution_scaling),
+        )
         self.image_to_display.emit(image_to_display)
         self.image_to_display_multi.emit(image_to_display, config.illumination_source)
 
         self.update_napari(rgb_image, config.name, k)
 
         # write the RGB image
-        print('writing RGB image')
-        file_name = file_ID + '_BF_LED_matrix_full_RGB' + ('.tiff' if rgb_image.dtype == np.uint16 else '.' + Acquisition.IMAGE_FORMAT)
+        print("writing RGB image")
+        file_name = (
+            file_ID
+            + "_BF_LED_matrix_full_RGB"
+            + (".tiff" if rgb_image.dtype == np.uint16 else "." + Acquisition.IMAGE_FORMAT)
+        )
         iio.imwrite(os.path.join(current_path, file_name), rgb_image)
 
     def handle_acquisition_abort(self, current_path, region_id=0):
@@ -1889,31 +2101,37 @@ class MultiPointWorker(QObject):
         self.move_to_coordinate(region_center)
 
         # Save coordinates.csv
-        self.coordinates_pd.to_csv(os.path.join(current_path, 'coordinates.csv'), index=False, header=True)
+        self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
         self.microcontroller.enable_joystick(True)
 
     def move_z_for_stack(self):
         if self.use_piezo:
-            self.z_piezo_um += self.deltaZ*1000
+            self.z_piezo_um += self.deltaZ * 1000
             self.microcontroller.set_piezo_um(self.z_piezo_um)
-            if self.liveController.trigger_mode == TriggerMode.SOFTWARE: # for hardware trigger, delay is in waiting for the last row to start exposure
-                time.sleep(MULTIPOINT_PIEZO_DELAY_MS/1000)
+            if (
+                self.liveController.trigger_mode == TriggerMode.SOFTWARE
+            ):  # for hardware trigger, delay is in waiting for the last row to start exposure
+                time.sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
             if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
                 self.signal_z_piezo_um.emit(self.z_piezo_um)
         else:
             self.stage.move_z(self.deltaZ)
-            time.sleep(SCAN_STABILIZATION_TIME_MS_Z/1000)
+            time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def move_z_back_after_stack(self):
         if self.use_piezo:
             self.z_piezo_um = OBJECTIVE_PIEZO_HOME_UM
             self.microcontroller.set_piezo_um(self.z_piezo_um)
-            if self.liveController.trigger_mode == TriggerMode.SOFTWARE: # for hardware trigger, delay is in waiting for the last row to start exposure
-                time.sleep(MULTIPOINT_PIEZO_DELAY_MS/1000)
+            if (
+                self.liveController.trigger_mode == TriggerMode.SOFTWARE
+            ):  # for hardware trigger, delay is in waiting for the last row to start exposure
+                time.sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
             if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
                 self.signal_z_piezo_um.emit(self.z_piezo_um)
         else:
-            distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP))
+            distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
+                max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
+            )
             if self.z_stacking_config == "FROM CENTER":
                 rel_z_to_start = -self.deltaZ * (self.NZ - 1) + self.deltaZ * round((self.NZ - 1) / 2)
             else:
@@ -1928,20 +2146,31 @@ class MultiPointController(QObject):
 
     acquisitionFinished = Signal()
     image_to_display = Signal(np.ndarray)
-    image_to_display_multi = Signal(np.ndarray,int)
+    image_to_display_multi = Signal(np.ndarray, int)
     spectrum_to_display = Signal(np.ndarray)
     signal_current_configuration = Signal(Configuration)
-    signal_register_current_fov = Signal(float,float)
+    signal_register_current_fov = Signal(float, float)
     detection_stats = Signal(object)
     signal_stitcher = Signal(str)
     napari_rtp_layers_update = Signal(np.ndarray, str)
     napari_layers_init = Signal(int, int, object)
-    napari_layers_update = Signal(np.ndarray, float, float, int, str) # image, x_mm, y_mm, k, channel
+    napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
     signal_z_piezo_um = Signal(float)
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
 
-    def __init__(self, camera, stage: AbstractStage, microcontroller: Microcontroller, liveController, autofocusController, configurationManager, usb_spectrometer=None, scanCoordinates=None, parent=None):
+    def __init__(
+        self,
+        camera,
+        stage: AbstractStage,
+        microcontroller: Microcontroller,
+        liveController,
+        autofocusController,
+        configurationManager,
+        usb_spectrometer=None,
+        scanCoordinates=None,
+        parent=None,
+    ):
         QObject.__init__(self)
 
         self.camera = camera
@@ -1959,7 +2188,7 @@ class MultiPointController(QObject):
         self.deltaX = Acquisition.DX
         self.deltaY = Acquisition.DY
         # TODO(imo): Switch all to consistent mm units
-        self.deltaZ = Acquisition.DZ/1000
+        self.deltaZ = Acquisition.DZ / 1000
         self.deltat = 0
         self.do_autofocus = False
         self.do_reflection_af = False
@@ -1974,7 +2203,7 @@ class MultiPointController(QObject):
         self.counter = 0
         self.experiment_ID = None
         self.base_path = None
-        self.use_piezo = False # MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
+        self.use_piezo = False  # MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
         self.selected_configurations = []
         self.usb_spectrometer = usb_spectrometer
         self.scanCoordinates = scanCoordinates
@@ -1985,7 +2214,7 @@ class MultiPointController(QObject):
         self.start_time = 0
         self.old_images_per_page = 1
         z_mm_current = self.stage.get_pos().z_mm
-        self.z_range = [z_mm_current, z_mm_current + self.deltaZ * (self.NZ - 1)] # [start_mm, end_mm]
+        self.z_range = [z_mm_current, z_mm_current + self.deltaZ * (self.NZ - 1)]  # [start_mm, end_mm]
 
         try:
             if self.parent is not None:
@@ -1997,7 +2226,7 @@ class MultiPointController(QObject):
     def set_use_piezo(self, checked):
         print("Use Piezo:", checked)
         self.use_piezo = checked
-        if hasattr(self, 'multiPointWorker'):
+        if hasattr(self, "multiPointWorker"):
             self.multiPointWorker.update_use_piezo(checked)
 
     def set_z_stacking_config(self, z_stacking_config_index):
@@ -2008,34 +2237,34 @@ class MultiPointController(QObject):
     def set_z_range(self, minZ, maxZ):
         self.z_range = [minZ, maxZ]
 
-    def set_NX(self,N):
+    def set_NX(self, N):
         self.NX = N
 
-    def set_NY(self,N):
+    def set_NY(self, N):
         self.NY = N
 
-    def set_NZ(self,N):
+    def set_NZ(self, N):
         self.NZ = N
 
-    def set_Nt(self,N):
+    def set_Nt(self, N):
         self.Nt = N
 
-    def set_deltaX(self,delta):
+    def set_deltaX(self, delta):
         self.deltaX = delta
 
-    def set_deltaY(self,delta):
+    def set_deltaY(self, delta):
         self.deltaY = delta
 
-    def set_deltaZ(self,delta_um):
-        self.deltaZ = delta_um/1000
+    def set_deltaZ(self, delta_um):
+        self.deltaZ = delta_um / 1000
 
-    def set_deltat(self,delta):
+    def set_deltat(self, delta):
         self.deltat = delta
 
-    def set_af_flag(self,flag):
+    def set_af_flag(self, flag):
         self.do_autofocus = flag
 
-    def set_reflection_af_flag(self,flag):
+    def set_reflection_af_flag(self, flag):
         self.do_reflection_af = flag
 
     def set_gen_focus_map_flag(self, flag):
@@ -2053,69 +2282,80 @@ class MultiPointController(QObject):
         self.do_fluorescence_rtp = flag
 
     def set_focus_map(self, focusMap):
-        self.focus_map = focusMap # None if dont use focusMap
+        self.focus_map = focusMap  # None if dont use focusMap
 
-    def set_crop(self,crop_width, crop_height):
+    def set_crop(self, crop_width, crop_height):
         self.crop_width = crop_width
         self.crop_height = crop_height
 
-    def set_base_path(self,path):
+    def set_base_path(self, path):
         self.base_path = path
 
-    def start_new_experiment(self,experiment_ID): # @@@ to do: change name to prepare_folder_for_new_experiment
+    def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
-        self.experiment_ID = experiment_ID.replace(' ','_') + '_' + datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')
+        self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
         self.recording_start_time = time.time()
         # create a new folder
-        os.mkdir(os.path.join(self.base_path,self.experiment_ID))
+        os.mkdir(os.path.join(self.base_path, self.experiment_ID))
         # TODO(imo): If the config has changed since boot, is this still the correct config?
         configManagerThrowaway = ConfigurationManager(self.configurationManager.config_filename)
-        configManagerThrowaway.write_configuration_selected(self.selected_configurations,os.path.join(self.base_path,self.experiment_ID)+"/configurations.xml") # save the configuration for the experiment
+        configManagerThrowaway.write_configuration_selected(
+            self.selected_configurations, os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml"
+        )  # save the configuration for the experiment
         # Prepare acquisition parameters
         acquisition_parameters = {
-            'dx(mm)': self.deltaX, 'Nx': self.NX,
-            'dy(mm)': self.deltaY, 'Ny': self.NY,
-            'dz(um)': self.deltaZ * 1000 if self.deltaZ != 0 else 1, 'Nz': self.NZ,
-            'dt(s)': self.deltat, 'Nt': self.Nt,
-            'with AF': self.do_autofocus, 'with reflection AF': self.do_reflection_af,
+            "dx(mm)": self.deltaX,
+            "Nx": self.NX,
+            "dy(mm)": self.deltaY,
+            "Ny": self.NY,
+            "dz(um)": self.deltaZ * 1000 if self.deltaZ != 0 else 1,
+            "Nz": self.NZ,
+            "dt(s)": self.deltat,
+            "Nt": self.Nt,
+            "with AF": self.do_autofocus,
+            "with reflection AF": self.do_reflection_af,
         }
-        try: # write objective data if it is available
+        try:  # write objective data if it is available
             current_objective = self.parent.objectiveStore.current_objective
             objective_info = self.parent.objectiveStore.objectives_dict.get(current_objective, {})
-            acquisition_parameters['objective'] = {}
+            acquisition_parameters["objective"] = {}
             for k in objective_info.keys():
-                acquisition_parameters['objective'][k]=objective_info[k]
-            acquisition_parameters['objective']['name']=current_objective
+                acquisition_parameters["objective"][k] = objective_info[k]
+            acquisition_parameters["objective"]["name"] = current_objective
         except:
             try:
                 objective_info = OBJECTIVES[DEFAULT_OBJECTIVE]
-                acquisition_parameters['objective'] = {}
+                acquisition_parameters["objective"] = {}
                 for k in objective_info.keys():
-                    acquisition_parameters['objective'][k] = objective_info[k]
-                acquisition_parameters['objective']['name']=DEFAULT_OBJECTIVE
+                    acquisition_parameters["objective"][k] = objective_info[k]
+                acquisition_parameters["objective"]["name"] = DEFAULT_OBJECTIVE
             except:
                 pass
         # TODO: USE OBJECTIVE STORE DATA
-        acquisition_parameters['sensor_pixel_size_um'] = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
-        acquisition_parameters['tube_lens_mm'] = TUBE_LENS_MM
-        f = open(os.path.join(self.base_path,self.experiment_ID)+"/acquisition parameters.json","w")
+        acquisition_parameters["sensor_pixel_size_um"] = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
+        acquisition_parameters["tube_lens_mm"] = TUBE_LENS_MM
+        f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
         f.close()
 
     def set_selected_configurations(self, selected_configurations_name):
         self.selected_configurations = []
         for configuration_name in selected_configurations_name:
-            self.selected_configurations.append(next((config for config in self.configurationManager.configurations if config.name == configuration_name)))
+            self.selected_configurations.append(
+                next(
+                    (config for config in self.configurationManager.configurations if config.name == configuration_name)
+                )
+            )
 
     def run_acquisition(self):
-        print('start multipoint')
+        print("start multipoint")
 
         self.scan_region_coords_mm = list(self.scanCoordinates.region_centers.values())
         self.scan_region_names = list(self.scanCoordinates.region_centers.keys())
         self.scan_region_fov_coords_mm = self.scanCoordinates.region_fov_coordinates
 
         print("num fovs:", sum(len(coords) for coords in self.scan_region_fov_coords_mm))
-        print("num regions:",len(self.scan_region_coords_mm))
+        print("num regions:", len(self.scan_region_coords_mm))
         print("region ids:", self.scan_region_names)
         print("region centers:", self.scan_region_coords_mm)
 
@@ -2125,7 +2365,7 @@ class MultiPointController(QObject):
         # stop live
         if self.liveController.is_live:
             self.liveController_was_live_before_multipoint = True
-            self.liveController.stop_live() # @@@ to do: also uncheck the live button
+            self.liveController.stop_live()  # @@@ to do: also uncheck the live button
         else:
             self.liveController_was_live_before_multipoint = False
 
@@ -2150,7 +2390,12 @@ class MultiPointController(QObject):
         elif self.parent is not None and not self.parent.live_only_mode:
             configs = [config.name for config in self.selected_configurations]
             print(configs)
-            if DO_FLUORESCENCE_RTP and 'BF LED matrix left half' in configs and 'BF LED matrix right half' in configs and 'Fluorescence 405 nm Ex' in configs:
+            if (
+                DO_FLUORESCENCE_RTP
+                and "BF LED matrix left half" in configs
+                and "BF LED matrix right half" in configs
+                and "Fluorescence 405 nm Ex" in configs
+            ):
                 self.parent.recordTabWidget.setCurrentWidget(self.parent.statsDisplayWidget)
                 if USE_NAPARI_FOR_MULTIPOINT:
                     self.parent.imageDisplayTabs.setCurrentWidget(self.parent.napariRTPWidget)
@@ -2185,8 +2430,8 @@ class MultiPointController(QObject):
             bounds = self.scanCoordinates.get_scan_bounds()
             if not bounds:
                 return
-            x_min, x_max = bounds['x']
-            y_min, y_max = bounds['y']
+            x_min, x_max = bounds["x"]
+            y_min, y_max = bounds["y"]
 
             # Calculate scan dimensions and center
             x_span = abs(x_max - x_min)
@@ -2264,7 +2509,9 @@ class MultiPointController(QObject):
         self.multiPointWorker.image_to_display.connect(self.slot_image_to_display)
         self.multiPointWorker.image_to_display_multi.connect(self.slot_image_to_display_multi)
         self.multiPointWorker.spectrum_to_display.connect(self.slot_spectrum_to_display)
-        self.multiPointWorker.signal_current_configuration.connect(self.slot_current_configuration,type=Qt.BlockingQueuedConnection)
+        self.multiPointWorker.signal_current_configuration.connect(
+            self.slot_current_configuration, type=Qt.BlockingQueuedConnection
+        )
         self.multiPointWorker.signal_register_current_fov.connect(self.slot_register_current_fov)
         self.multiPointWorker.napari_layers_init.connect(self.slot_napari_layers_init)
         self.multiPointWorker.napari_rtp_layers_update.connect(self.slot_napari_rtp_layers_update)
@@ -2282,8 +2529,8 @@ class MultiPointController(QObject):
         # restore the previous selected mode
         if self.gen_focus_map:
             self.autofocusController.clear_focus_map()
-            for x,y,z in self.focus_map_storage:
-                self.autofocusController.focus_map_coords.append((x,y,z))
+            for x, y, z in self.focus_map_storage:
+                self.autofocusController.focus_map_coords.append((x, y, z))
             self.autofocusController.use_focus_map = self.already_using_fmap
         self.signal_current_configuration.emit(self.configuration_before_running_multipoint)
 
@@ -2304,15 +2551,15 @@ class MultiPointController(QObject):
         if self.parent is not None:
             try:
                 # self.parent.dataHandler.set_number_of_images_per_page(self.old_images_per_page)
-                self.parent.dataHandler.sort('Sort by prediction score')
+                self.parent.dataHandler.sort("Sort by prediction score")
                 self.parent.dataHandler.signal_populate_page0.emit()
             except:
                 pass
         print("total time for acquisition + processing + reset:", time.time() - self.recording_start_time)
-        utils.create_done_file(os.path.join(self.base_path,self.experiment_ID))
+        utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
         self.acquisitionFinished.emit()
         if not self.abort_acqusition_requested:
-            self.signal_stitcher.emit(os.path.join(self.base_path,self.experiment_ID))
+            self.signal_stitcher.emit(os.path.join(self.base_path, self.experiment_ID))
         QApplication.processEvents()
 
     def request_abort_aquisition(self):
@@ -2321,20 +2568,20 @@ class MultiPointController(QObject):
     def slot_detection_stats(self, stats):
         self.detection_stats.emit(stats)
 
-    def slot_image_to_display(self,image):
+    def slot_image_to_display(self, image):
         self.image_to_display.emit(image)
 
-    def slot_spectrum_to_display(self,data):
+    def slot_spectrum_to_display(self, data):
         self.spectrum_to_display.emit(data)
 
-    def slot_image_to_display_multi(self,image,illumination_source):
-        self.image_to_display_multi.emit(image,illumination_source)
+    def slot_image_to_display_multi(self, image, illumination_source):
+        self.image_to_display_multi.emit(image, illumination_source)
 
-    def slot_current_configuration(self,configuration):
+    def slot_current_configuration(self, configuration):
         self.signal_current_configuration.emit(configuration)
 
-    def slot_register_current_fov(self,x_mm,y_mm):
-        self.signal_register_current_fov.emit(x_mm,y_mm)
+    def slot_register_current_fov(self, x_mm, y_mm):
+        self.signal_register_current_fov.emit(x_mm, y_mm)
 
     def slot_napari_rtp_layers_update(self, image, channel):
         self.napari_rtp_layers_update.emit(image, channel)
@@ -2359,10 +2606,19 @@ class TrackingController(QObject):
 
     signal_tracking_stopped = Signal()
     image_to_display = Signal(np.ndarray)
-    image_to_display_multi = Signal(np.ndarray,int)
+    image_to_display_multi = Signal(np.ndarray, int)
     signal_current_configuration = Signal(Configuration)
 
-    def __init__(self, camera, microcontroller: Microcontroller, stage: AbstractStage, configurationManager, liveController: LiveController, autofocusController, imageDisplayWindow):
+    def __init__(
+        self,
+        camera,
+        microcontroller: Microcontroller,
+        stage: AbstractStage,
+        configurationManager,
+        liveController: LiveController,
+        autofocusController,
+        imageDisplayWindow,
+    ):
         QObject.__init__(self)
         self.camera = camera
         self.microcontroller = microcontroller
@@ -2394,13 +2650,13 @@ class TrackingController(QObject):
     def start_tracking(self):
 
         # save pre-tracking configuration
-        print('start tracking')
+        print("start tracking")
         self.configuration_before_running_tracking = self.liveController.currentConfiguration
 
         # stop live
         if self.liveController.is_live:
             self.was_live_before_tracking = True
-            self.liveController.stop_live() # @@@ to do: also uncheck the live button
+            self.liveController.stop_live()  # @@@ to do: also uncheck the live button
         else:
             self.was_live_before_tracking = False
 
@@ -2419,10 +2675,10 @@ class TrackingController(QObject):
         # create a QThread object
         try:
             if self.thread.isRunning():
-                print('*** previous tracking thread is still running ***')
+                print("*** previous tracking thread is still running ***")
                 self.thread.terminate()
                 self.thread.wait()
-                print('*** previous tracking threaded manually stopped ***')
+                print("*** previous tracking threaded manually stopped ***")
         except:
             pass
         self.thread = QThread()
@@ -2437,7 +2693,9 @@ class TrackingController(QObject):
         self.trackingWorker.finished.connect(self.thread.quit)
         self.trackingWorker.image_to_display.connect(self.slot_image_to_display)
         self.trackingWorker.image_to_display_multi.connect(self.slot_image_to_display_multi)
-        self.trackingWorker.signal_current_configuration.connect(self.slot_current_configuration,type=Qt.BlockingQueuedConnection)
+        self.trackingWorker.signal_current_configuration.connect(
+            self.slot_current_configuration, type=Qt.BlockingQueuedConnection
+        )
         # self.thread.finished.connect(self.thread.deleteLater)
         self.thread.finished.connect(self.thread.quit)
         # start the thread
@@ -2464,67 +2722,73 @@ class TrackingController(QObject):
         self.signal_tracking_stopped.emit()
         QApplication.processEvents()
 
-    def start_new_experiment(self,experiment_ID): # @@@ to do: change name to prepare_folder_for_new_experiment
+    def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
-        self.experiment_ID = experiment_ID + '_' + datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f')
+        self.experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
         self.recording_start_time = time.time()
         # create a new folder
         try:
-            os.mkdir(os.path.join(self.base_path,self.experiment_ID))
-            self.configurationManager.write_configuration(os.path.join(self.base_path,self.experiment_ID)+"/configurations.xml") # save the configuration for the experiment
+            os.mkdir(os.path.join(self.base_path, self.experiment_ID))
+            self.configurationManager.write_configuration(
+                os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml"
+            )  # save the configuration for the experiment
         except:
-            print('error in making a new folder')
+            print("error in making a new folder")
             pass
 
     def set_selected_configurations(self, selected_configurations_name):
         self.selected_configurations = []
         for configuration_name in selected_configurations_name:
-            self.selected_configurations.append(next((config for config in self.configurationManager.configurations if config.name == configuration_name)))
+            self.selected_configurations.append(
+                next(
+                    (config for config in self.configurationManager.configurations if config.name == configuration_name)
+                )
+            )
 
-    def toggle_stage_tracking(self,state):
+    def toggle_stage_tracking(self, state):
         self.flag_stage_tracking_enabled = state > 0
-        print('set stage tracking enabled to ' + str(self.flag_stage_tracking_enabled))
+        print("set stage tracking enabled to " + str(self.flag_stage_tracking_enabled))
 
-    def toggel_enable_af(self,state):
+    def toggel_enable_af(self, state):
         self.flag_AF_enabled = state > 0
-        print('set af enabled to ' + str(self.flag_AF_enabled))
+        print("set af enabled to " + str(self.flag_AF_enabled))
 
-    def toggel_save_images(self,state):
+    def toggel_save_images(self, state):
         self.flag_save_image = state > 0
-        print('set save images to ' + str(self.flag_save_image))
+        print("set save images to " + str(self.flag_save_image))
 
-    def set_base_path(self,path):
+    def set_base_path(self, path):
         self.base_path = path
 
     def stop_tracking(self):
         self.flag_stop_tracking_requested = True
-        print('stop tracking requested')
+        print("stop tracking requested")
 
-    def slot_image_to_display(self,image):
+    def slot_image_to_display(self, image):
         self.image_to_display.emit(image)
 
-    def slot_image_to_display_multi(self,image,illumination_source):
-        self.image_to_display_multi.emit(image,illumination_source)
+    def slot_image_to_display_multi(self, image, illumination_source):
+        self.image_to_display_multi.emit(image, illumination_source)
 
-    def slot_current_configuration(self,configuration):
+    def slot_current_configuration(self, configuration):
         self.signal_current_configuration.emit(configuration)
 
     def update_pixel_size(self, pixel_size_um):
         self.pixel_size_um = pixel_size_um
 
-    def update_tracker_selection(self,tracker_str):
+    def update_tracker_selection(self, tracker_str):
         self.tracker.update_tracker_type(tracker_str)
 
-    def set_tracking_time_interval(self,time_interval):
+    def set_tracking_time_interval(self, time_interval):
         self.tracking_time_interval_s = time_interval
 
-    def update_image_resizing_factor(self,image_resizing_factor):
+    def update_image_resizing_factor(self, image_resizing_factor):
         self.image_resizing_factor = image_resizing_factor
-        print('update tracking image resizing factor to ' + str(self.image_resizing_factor))
-        self.pixel_size_um_scaled = self.pixel_size_um/self.image_resizing_factor
+        print("update tracking image resizing factor to " + str(self.image_resizing_factor))
+        self.pixel_size_um_scaled = self.pixel_size_um / self.image_resizing_factor
 
     # PID-based tracking
-    '''
+    """
     def on_new_frame(self,image,frame_ID,timestamp):
         # initialize the tracker when a new track is started
         if self.tracking_frame_counter == 0:
@@ -2558,13 +2822,14 @@ class TrackingController(QObject):
 
     def start_a_new_track(self):
         self.tracking_frame_counter = 0
-    '''
+    """
+
 
 class TrackingWorker(QObject):
 
     finished = Signal()
     image_to_display = Signal(np.ndarray)
-    image_to_display_multi = Signal(np.ndarray,int)
+    image_to_display_multi = Signal(np.ndarray, int)
     signal_current_configuration = Signal(Configuration)
 
     def __init__(self, trackingController: TrackingController):
@@ -2589,7 +2854,9 @@ class TrackingWorker(QObject):
 
         self.number_of_selected_configurations = len(self.selected_configurations)
 
-        self.image_saver = ImageSaver_Tracking(base_path=os.path.join(self.base_path,self.experiment_ID),image_format='bmp')
+        self.image_saver = ImageSaver_Tracking(
+            base_path=os.path.join(self.base_path, self.experiment_ID), image_format="bmp"
+        )
 
     def run(self):
 
@@ -2597,14 +2864,16 @@ class TrackingWorker(QObject):
         t0 = time.time()
 
         # save metadata
-        self.txt_file = open( os.path.join(self.base_path,self.experiment_ID,"metadata.txt"), "w+")
-        self.txt_file.write('t0: ' + datetime.now().strftime('%Y-%m-%d_%H-%M-%S.%f') + '\n')
-        self.txt_file.write('objective: ' + self.trackingController.objective + '\n')
+        self.txt_file = open(os.path.join(self.base_path, self.experiment_ID, "metadata.txt"), "w+")
+        self.txt_file.write("t0: " + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f") + "\n")
+        self.txt_file.write("objective: " + self.trackingController.objective + "\n")
         self.txt_file.close()
 
         # create a file for logging
-        self.csv_file = open( os.path.join(self.base_path,self.experiment_ID,"track.csv"), "w+")
-        self.csv_file.write('dt (s), x_stage (mm), y_stage (mm), z_stage (mm), x_image (mm), y_image(mm), image_filename\n')
+        self.csv_file = open(os.path.join(self.base_path, self.experiment_ID, "track.csv"), "w+")
+        self.csv_file.write(
+            "dt (s), x_stage (mm), y_stage (mm), z_stage (mm), x_image (mm), y_image(mm), image_filename\n"
+        )
 
         # reset tracker
         self.tracker.reset()
@@ -2615,7 +2884,7 @@ class TrackingWorker(QObject):
 
         # tracking loop
         while not self.trackingController.flag_stop_tracking_requested:
-            print('tracking_frame_counter: ' + str(tracking_frame_counter) )
+            print("tracking_frame_counter: " + str(tracking_frame_counter))
             if tracking_frame_counter == 0:
                 is_first_frame = True
             else:
@@ -2631,10 +2900,10 @@ class TrackingWorker(QObject):
             # do autofocus
             if self.trackingController.flag_AF_enabled and tracking_frame_counter > 1:
                 # do autofocus
-                print('>>> autofocus')
+                print(">>> autofocus")
                 self.autofocusController.autofocus()
                 self.autofocusController.wait_till_autofocus_has_completed()
-                print('>>> autofocus completed')
+                print(">>> autofocus completed")
 
             # get current position
             pos = self.stage.get_pos()
@@ -2645,20 +2914,20 @@ class TrackingWorker(QObject):
                 self.signal_current_configuration.emit(config)
                 # TODO(imo): replace with illumination controller
                 self.microcontroller.wait_till_operation_is_completed()
-                self.liveController.turn_on_illumination()        # keep illumination on for single configuration acqusition
+                self.liveController.turn_on_illumination()  # keep illumination on for single configuration acqusition
                 self.microcontroller.wait_till_operation_is_completed()
             t = time.time()
             self.camera.send_trigger()
             image = self.camera.read_frame()
             if self.number_of_selected_configurations > 1:
-                self.liveController.turn_off_illumination()       # keep illumination on for single configuration acqusition
+                self.liveController.turn_off_illumination()  # keep illumination on for single configuration acqusition
             # image crop, rotation and flip
-            image = utils.crop_image(image,self.crop_width,self.crop_height)
+            image = utils.crop_image(image, self.crop_width, self.crop_height)
             image = np.squeeze(image)
-            image = utils.rotate_and_flip_image(image,rotate_image_angle=ROTATE_IMAGE_ANGLE,flip_image=FLIP_IMAGE)
+            image = utils.rotate_and_flip_image(image, rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
             # get image size
             image_shape = image.shape
-            image_center = np.array([image_shape[1]*0.5,image_shape[0]*0.5])
+            image_center = np.array([image_shape[1] * 0.5, image_shape[0] * 0.5])
 
             # image the rest configurations
             for config_ in self.selected_configurations[1:]:
@@ -2672,25 +2941,33 @@ class TrackingWorker(QObject):
                 image_ = self.camera.read_frame()
                 # TODO(imo): use illumination controller
                 self.liveController.turn_off_illumination()
-                image_ = utils.crop_image(image_,self.crop_width,self.crop_height)
+                image_ = utils.crop_image(image_, self.crop_width, self.crop_height)
                 image_ = np.squeeze(image_)
-                image_ = utils.rotate_and_flip_image(image_,rotate_image_angle=ROTATE_IMAGE_ANGLE,flip_image=FLIP_IMAGE)
+                image_ = utils.rotate_and_flip_image(
+                    image_, rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE
+                )
                 # display image
-                image_to_display_ = utils.crop_image(image_,round(self.crop_width*self.liveController.display_resolution_scaling), round(self.crop_height*self.liveController.display_resolution_scaling))
-                self.image_to_display_multi.emit(image_to_display_,config_.illumination_source)
+                image_to_display_ = utils.crop_image(
+                    image_,
+                    round(self.crop_width * self.liveController.display_resolution_scaling),
+                    round(self.crop_height * self.liveController.display_resolution_scaling),
+                )
+                self.image_to_display_multi.emit(image_to_display_, config_.illumination_source)
                 # save image
                 if self.trackingController.flag_save_image:
                     if self.camera.is_color:
-                        image = cv2.cvtColor(image,cv2.COLOR_RGB2BGR)
-                    self.image_saver.enqueue(image_,tracking_frame_counter,str(config_.name))
+                        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                    self.image_saver.enqueue(image_, tracking_frame_counter, str(config_.name))
 
             # track
-            object_found, centroid,rect_pts = self.tracker.track(image, None, is_first_frame = is_first_frame)
+            object_found, centroid, rect_pts = self.tracker.track(image, None, is_first_frame=is_first_frame)
             if not object_found:
-                print('tracker: object not found')
+                print("tracker: object not found")
                 break
             in_plane_position_error_pixel = image_center - centroid
-            in_plane_position_error_mm = in_plane_position_error_pixel*self.trackingController.pixel_size_um_scaled/1000
+            in_plane_position_error_mm = (
+                in_plane_position_error_pixel * self.trackingController.pixel_size_um_scaled / 1000
+            )
             x_error_mm = in_plane_position_error_mm[0]
             y_error_mm = in_plane_position_error_mm[1]
 
@@ -2706,15 +2983,30 @@ class TrackingWorker(QObject):
 
             # save image
             if self.trackingController.flag_save_image:
-                self.image_saver.enqueue(image,tracking_frame_counter,str(config.name))
+                self.image_saver.enqueue(image, tracking_frame_counter, str(config.name))
 
             # save position data
-            self.csv_file.write(str(t)+','+str(pos.x_mm)+','+str(pos.y_mm)+','+str(pos.z_mm)+','+str(x_error_mm)+','+str(y_error_mm)+','+str(tracking_frame_counter)+'\n')
-            if tracking_frame_counter%100 == 0:
+            self.csv_file.write(
+                str(t)
+                + ","
+                + str(pos.x_mm)
+                + ","
+                + str(pos.y_mm)
+                + ","
+                + str(pos.z_mm)
+                + ","
+                + str(x_error_mm)
+                + ","
+                + str(y_error_mm)
+                + ","
+                + str(tracking_frame_counter)
+                + "\n"
+            )
+            if tracking_frame_counter % 100 == 0:
                 self.csv_file.flush()
 
             # wait till tracking interval has elapsed
-            while(time.time() - timestamp_last_frame < self.trackingController.tracking_time_interval_s):
+            while time.time() - timestamp_last_frame < self.trackingController.tracking_time_interval_s:
                 time.sleep(0.005)
 
             # increament counter
@@ -2730,7 +3022,15 @@ class ImageDisplayWindow(QMainWindow):
 
     image_click_coordinates = Signal(int, int, int, int)
 
-    def __init__(self, liveController=None, contrastManager=None, window_title='', draw_crosshairs=False, show_LUT=False, autoLevels=False):
+    def __init__(
+        self,
+        liveController=None,
+        contrastManager=None,
+        window_title="",
+        draw_crosshairs=False,
+        show_LUT=False,
+        autoLevels=False,
+    ):
         super().__init__()
         self.liveController = liveController
         self.contrastManager = contrastManager
@@ -2742,7 +3042,7 @@ class ImageDisplayWindow(QMainWindow):
         self.autoLevels = autoLevels
 
         # interpret image data as row-major instead of col-major
-        pg.setConfigOptions(imageAxisOrder='row-major')
+        pg.setConfigOptions(imageAxisOrder="row-major")
 
         self.graphics_widget = pg.GraphicsLayoutWidget()
         self.graphics_widget.view = self.graphics_widget.addViewBox()
@@ -2755,23 +3055,23 @@ class ImageDisplayWindow(QMainWindow):
         if self.show_LUT:
             self.graphics_widget.view = pg.ImageView()
             self.graphics_widget.img = self.graphics_widget.view.getImageItem()
-            self.graphics_widget.img.setBorder('w')
+            self.graphics_widget.img.setBorder("w")
             self.graphics_widget.view.ui.roiBtn.hide()
             self.graphics_widget.view.ui.menuBtn.hide()
             self.LUTWidget = self.graphics_widget.view.getHistogramWidget()
             self.LUTWidget.region.sigRegionChanged.connect(self.update_contrast_limits)
             self.LUTWidget.region.sigRegionChangeFinished.connect(self.update_contrast_limits)
         else:
-            self.graphics_widget.img = pg.ImageItem(border='w')
+            self.graphics_widget.img = pg.ImageItem(border="w")
             self.graphics_widget.view.addItem(self.graphics_widget.img)
 
         ## Create ROI
-        self.roi_pos = (500,500)
-        self.roi_size = (500,500)
+        self.roi_pos = (500, 500)
+        self.roi_size = (500, 500)
         self.ROI = pg.ROI(self.roi_pos, self.roi_size, scaleSnap=True, translateSnap=True)
         self.ROI.setZValue(10)
-        self.ROI.addScaleHandle((0,0), (1,1))
-        self.ROI.addScaleHandle((1,1), (0,0))
+        self.ROI.addScaleHandle((0, 0), (1, 1))
+        self.ROI.addScaleHandle((1, 1), (0, 0))
         self.graphics_widget.view.addItem(self.ROI)
         self.ROI.hide()
         self.ROI.sigRegionChanged.connect(self.update_ROI)
@@ -2798,9 +3098,9 @@ class ImageDisplayWindow(QMainWindow):
 
         # set window size
         desktopWidget = QDesktopWidget()
-        width = min(desktopWidget.height()*0.9,1000)
+        width = min(desktopWidget.height() * 0.9, 1000)
         height = width
-        self.setFixedSize(int(width),int(height))
+        self.setFixedSize(int(width), int(height))
 
         # Connect mouse click handler
         if self.show_LUT:
@@ -2824,11 +3124,11 @@ class ImageDisplayWindow(QMainWindow):
             return
 
         if self.is_within_image(image_coord):
-            x_pixel_centered = int(image_coord.x() - self.graphics_widget.img.width()/2)
-            y_pixel_centered = int(image_coord.y() - self.graphics_widget.img.height()/2)
-            self.image_click_coordinates.emit(x_pixel_centered, y_pixel_centered, 
-                                           self.graphics_widget.img.width(), 
-                                           self.graphics_widget.img.height())
+            x_pixel_centered = int(image_coord.x() - self.graphics_widget.img.width() / 2)
+            y_pixel_centered = int(image_coord.y() - self.graphics_widget.img.height() / 2)
+            self.image_click_coordinates.emit(
+                x_pixel_centered, y_pixel_centered, self.graphics_widget.img.width(), self.graphics_widget.img.height()
+            )
 
     def is_within_image(self, coordinates):
         try:
@@ -2844,7 +3144,7 @@ class ImageDisplayWindow(QMainWindow):
             image = np.copy(image)
             self.image_height, self.image_width = image.shape[:2]
             if self.draw_rectangle:
-                cv2.rectangle(image, self.ptRect1, self.ptRect2, (255,255,255), 4)
+                cv2.rectangle(image, self.ptRect1, self.ptRect2, (255, 255, 255), 4)
                 self.draw_rectangle = False
 
         info = np.iinfo(image.dtype) if np.issubdtype(image.dtype, np.integer) else np.finfo(image.dtype)
@@ -2852,7 +3152,9 @@ class ImageDisplayWindow(QMainWindow):
 
         if self.liveController is not None and self.contrastManager is not None:
             channel_name = self.liveController.currentConfiguration.name
-            if self.contrastManager.acquisition_dtype != None and self.contrastManager.acquisition_dtype != np.dtype(image.dtype):
+            if self.contrastManager.acquisition_dtype != None and self.contrastManager.acquisition_dtype != np.dtype(
+                image.dtype
+            ):
                 self.contrastManager.scale_contrast_limits(np.dtype(image.dtype))
             min_val, max_val = self.contrastManager.get_limits(channel_name, image.dtype)
 
@@ -2883,12 +3185,12 @@ class ImageDisplayWindow(QMainWindow):
         self.ROI.hide()
 
     def get_roi(self):
-        return self.roi_pos,self.roi_size
+        return self.roi_pos, self.roi_size
 
-    def update_bounding_box(self,pts):
-        self.draw_rectangle=True
-        self.ptRect1=(pts[0][0],pts[0][1])
-        self.ptRect2=(pts[1][0],pts[1][1])
+    def update_bounding_box(self, pts):
+        self.draw_rectangle = True
+        self.ptRect1 = (pts[0][0], pts[0][1])
+        self.ptRect2 = (pts[1][0], pts[1][1])
 
     def get_roi_bounding_box(self):
         self.update_ROI()
@@ -2898,16 +3200,16 @@ class ImageDisplayWindow(QMainWindow):
         ymin = max(0, self.roi_pos[1])
         return np.array([xmin, ymin, width, height])
 
-    def set_autolevel(self,enabled):
+    def set_autolevel(self, enabled):
         self.autoLevels = enabled
-        print('set autolevel to ' + str(enabled))
+        print("set autolevel to " + str(enabled))
 
 
 class NavigationViewer(QFrame):
 
     signal_coordinates_clicked = Signal(float, float)  # Will emit x_mm, y_mm when clicked
 
-    def __init__(self, objectivestore, sample = 'glass slide', invertX = False, *args, **kwargs):
+    def __init__(self, objectivestore, sample="glass slide", invertX=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.sample = sample
@@ -2926,27 +3228,27 @@ class NavigationViewer(QFrame):
         self.x_mm = None
         self.y_mm = None
         self.image_paths = {
-            'glass slide': 'images/slide carrier_828x662.png',
-            '4 glass slide': 'images/4 slide carrier_1509x1010.png',
-            '6 well plate': 'images/6 well plate_1509x1010.png',
-            '12 well plate': 'images/12 well plate_1509x1010.png',
-            '24 well plate': 'images/24 well plate_1509x1010.png',
-            '96 well plate': 'images/96 well plate_1509x1010.png',
-            '384 well plate': 'images/384 well plate_1509x1010.png',
-            '1536 well plate': 'images/1536 well plate_1509x1010.png'
+            "glass slide": "images/slide carrier_828x662.png",
+            "4 glass slide": "images/4 slide carrier_1509x1010.png",
+            "6 well plate": "images/6 well plate_1509x1010.png",
+            "12 well plate": "images/12 well plate_1509x1010.png",
+            "24 well plate": "images/24 well plate_1509x1010.png",
+            "96 well plate": "images/96 well plate_1509x1010.png",
+            "384 well plate": "images/384 well plate_1509x1010.png",
+            "1536 well plate": "images/1536 well plate_1509x1010.png",
         }
 
         print("navigation viewer:", sample)
         self.init_ui(invertX)
 
-        self.load_background_image(self.image_paths.get(sample, 'images/slide carrier_828x662.png'))
+        self.load_background_image(self.image_paths.get(sample, "images/slide carrier_828x662.png"))
         self.create_layers()
         self.update_display_properties(sample)
         # self.update_display()
 
     def init_ui(self, invertX):
         # interpret image data as row-major instead of col-major
-        pg.setConfigOptions(imageAxisOrder='row-major')
+        pg.setConfigOptions(imageAxisOrder="row-major")
         self.graphics_widget = pg.GraphicsLayoutWidget()
         self.graphics_widget.setBackground("w")
 
@@ -2963,8 +3265,8 @@ class NavigationViewer(QFrame):
         self.view.clear()
         self.background_image = cv2.imread(image_path)
         if self.background_image is None:
-            #raise ValueError(f"Failed to load image from {image_path}")
-             self.background_image = cv2.imread(self.image_paths.get('glass slide'))
+            # raise ValueError(f"Failed to load image from {image_path}")
+            self.background_image = cv2.imread(self.image_paths.get("glass slide"))
 
         if len(self.background_image.shape) == 2:  # Grayscale image
             self.background_image = cv2.cvtColor(self.background_image, cv2.COLOR_GRAY2RGBA)
@@ -2994,15 +3296,15 @@ class NavigationViewer(QFrame):
         self.background_item.setZValue(-1)  # Background layer at the bottom
         self.scan_overlay_item.setZValue(0)  # Scan overlay in the middle
         self.fov_overlay_item.setZValue(1)  # FOV overlay next
-        self.focus_point_overlay_item.setZValue(2) # # Focus points on top
+        self.focus_point_overlay_item.setZValue(2)  # # Focus points on top
 
     def update_display_properties(self, sample):
-        if sample == 'glass slide':
+        if sample == "glass slide":
             self.location_update_threshold_mm = 0.2
             self.mm_per_pixel = 0.1453
             self.origin_x_pixel = 200
             self.origin_y_pixel = 120
-        elif sample == '4 glass slide':
+        elif sample == "4 glass slide":
             self.location_update_threshold_mm = 0.2
             self.mm_per_pixel = 0.084665
             self.origin_x_pixel = 50
@@ -3010,8 +3312,8 @@ class NavigationViewer(QFrame):
         else:
             self.location_update_threshold_mm = 0.05
             self.mm_per_pixel = 0.084665
-            self.origin_x_pixel = self.a1_x_pixel - (self.a1_x_mm)/self.mm_per_pixel
-            self.origin_y_pixel = self.a1_y_pixel - (self.a1_y_mm)/self.mm_per_pixel
+            self.origin_x_pixel = self.a1_x_pixel - (self.a1_x_mm) / self.mm_per_pixel
+            self.origin_y_pixel = self.a1_y_pixel - (self.a1_y_mm) / self.mm_per_pixel
         self.update_fov_size()
 
     def update_fov_size(self):
@@ -3023,15 +3325,27 @@ class NavigationViewer(QFrame):
         self.update_fov_size()
         self.draw_current_fov(self.x_mm, self.y_mm)
 
-    def update_wellplate_settings(self, sample_format, a1_x_mm, a1_y_mm, a1_x_pixel, a1_y_pixel, well_size_mm, well_spacing_mm, number_of_skip, rows, cols):
+    def update_wellplate_settings(
+        self,
+        sample_format,
+        a1_x_mm,
+        a1_y_mm,
+        a1_x_pixel,
+        a1_y_pixel,
+        well_size_mm,
+        well_spacing_mm,
+        number_of_skip,
+        rows,
+        cols,
+    ):
         if isinstance(sample_format, QVariant):
             sample_format = sample_format.value()
 
-        if sample_format == 'glass slide':
+        if sample_format == "glass slide":
             if IS_HCS:
-                sample = '4 glass slide'
+                sample = "4 glass slide"
             else:
-                sample = 'glass slide'
+                sample = "glass slide"
         else:
             sample = sample_format
 
@@ -3050,13 +3364,13 @@ class NavigationViewer(QFrame):
         image_path = self.image_paths.get(sample)
         if image_path is None or not os.path.exists(image_path):
             # Look for a custom wellplate image
-            custom_image_path = os.path.join('images', self.sample + '.png')
+            custom_image_path = os.path.join("images", self.sample + ".png")
             print(custom_image_path)
             if os.path.exists(custom_image_path):
                 image_path = custom_image_path
             else:
                 print(f"Warning: Image not found for {sample}. Using default image.")
-                image_path = self.image_paths.get('glass slide')  # Use a default image
+                image_path = self.image_paths.get("glass slide")  # Use a default image
 
         self.load_background_image(image_path)
         self.create_layers()
@@ -3076,36 +3390,48 @@ class NavigationViewer(QFrame):
             self.y_mm = y_mm
 
     def get_FOV_pixel_coordinates(self, x_mm, y_mm):
-        if self.sample == 'glass slide':
+        if self.sample == "glass slide":
             current_FOV_top_left = (
-                round(self.origin_x_pixel + x_mm/self.mm_per_pixel - self.fov_size_mm/2/self.mm_per_pixel),
-                round(self.image_height - (self.origin_y_pixel + y_mm/self.mm_per_pixel) - self.fov_size_mm/2/self.mm_per_pixel)
+                round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(
+                    self.image_height
+                    - (self.origin_y_pixel + y_mm / self.mm_per_pixel)
+                    - self.fov_size_mm / 2 / self.mm_per_pixel
+                ),
             )
             current_FOV_bottom_right = (
-                round(self.origin_x_pixel + x_mm/self.mm_per_pixel + self.fov_size_mm/2/self.mm_per_pixel),
-                round(self.image_height - (self.origin_y_pixel + y_mm/self.mm_per_pixel) + self.fov_size_mm/2/self.mm_per_pixel)
+                round(self.origin_x_pixel + x_mm / self.mm_per_pixel + self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(
+                    self.image_height
+                    - (self.origin_y_pixel + y_mm / self.mm_per_pixel)
+                    + self.fov_size_mm / 2 / self.mm_per_pixel
+                ),
             )
         else:
             current_FOV_top_left = (
-                round(self.origin_x_pixel + x_mm/self.mm_per_pixel - self.fov_size_mm/2/self.mm_per_pixel),
-                round((self.origin_y_pixel + y_mm/self.mm_per_pixel) - self.fov_size_mm/2/self.mm_per_pixel)
+                round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
+                round((self.origin_y_pixel + y_mm / self.mm_per_pixel) - self.fov_size_mm / 2 / self.mm_per_pixel),
             )
             current_FOV_bottom_right = (
-                round(self.origin_x_pixel + x_mm/self.mm_per_pixel + self.fov_size_mm/2/self.mm_per_pixel),
-                round((self.origin_y_pixel + y_mm/self.mm_per_pixel) + self.fov_size_mm/2/self.mm_per_pixel)
+                round(self.origin_x_pixel + x_mm / self.mm_per_pixel + self.fov_size_mm / 2 / self.mm_per_pixel),
+                round((self.origin_y_pixel + y_mm / self.mm_per_pixel) + self.fov_size_mm / 2 / self.mm_per_pixel),
             )
         return current_FOV_top_left, current_FOV_bottom_right
 
     def draw_current_fov(self, x_mm, y_mm):
         self.fov_overlay.fill(0)
         current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
-        cv2.rectangle(self.fov_overlay, current_FOV_top_left, current_FOV_bottom_right, (255, 0, 0, 255), self.box_line_thickness)
+        cv2.rectangle(
+            self.fov_overlay, current_FOV_top_left, current_FOV_bottom_right, (255, 0, 0, 255), self.box_line_thickness
+        )
         self.fov_overlay_item.setImage(self.fov_overlay)
 
     def register_fov(self, x_mm, y_mm):
         color = (0, 0, 255, 255)  # Blue RGBA
         current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
-        cv2.rectangle(self.background_image, current_FOV_top_left, current_FOV_bottom_right, color, self.box_line_thickness)
+        cv2.rectangle(
+            self.background_image, current_FOV_top_left, current_FOV_bottom_right, color, self.box_line_thickness
+        )
         self.background_item.setImage(self.background_image)
 
     def register_fov_to_image(self, x_mm, y_mm):
@@ -3116,7 +3442,9 @@ class NavigationViewer(QFrame):
 
     def deregister_fov_to_image(self, x_mm, y_mm):
         current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
-        cv2.rectangle(self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, (0, 0, 0, 0), self.box_line_thickness)
+        cv2.rectangle(
+            self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, (0, 0, 0, 0), self.box_line_thickness
+        )
         self.scan_overlay_item.setImage(self.scan_overlay)
 
     def register_focus_point(self, x_mm, y_mm):
@@ -3167,7 +3495,7 @@ class NavigationViewer(QFrame):
 
 class ImageArrayDisplayWindow(QMainWindow):
 
-    def __init__(self, window_title=''):
+    def __init__(self, window_title=""):
         super().__init__()
         self.setWindowTitle(window_title)
         self.setWindowFlags(self.windowFlags() | Qt.CustomizeWindowHint)
@@ -3175,33 +3503,33 @@ class ImageArrayDisplayWindow(QMainWindow):
         self.widget = QWidget()
 
         # interpret image data as row-major instead of col-major
-        pg.setConfigOptions(imageAxisOrder='row-major')
+        pg.setConfigOptions(imageAxisOrder="row-major")
 
         self.graphics_widget_1 = pg.GraphicsLayoutWidget()
         self.graphics_widget_1.view = self.graphics_widget_1.addViewBox()
         self.graphics_widget_1.view.setAspectLocked(True)
-        self.graphics_widget_1.img = pg.ImageItem(border='w')
+        self.graphics_widget_1.img = pg.ImageItem(border="w")
         self.graphics_widget_1.view.addItem(self.graphics_widget_1.img)
         self.graphics_widget_1.view.invertY()
 
         self.graphics_widget_2 = pg.GraphicsLayoutWidget()
         self.graphics_widget_2.view = self.graphics_widget_2.addViewBox()
         self.graphics_widget_2.view.setAspectLocked(True)
-        self.graphics_widget_2.img = pg.ImageItem(border='w')
+        self.graphics_widget_2.img = pg.ImageItem(border="w")
         self.graphics_widget_2.view.addItem(self.graphics_widget_2.img)
         self.graphics_widget_2.view.invertY()
 
         self.graphics_widget_3 = pg.GraphicsLayoutWidget()
         self.graphics_widget_3.view = self.graphics_widget_3.addViewBox()
         self.graphics_widget_3.view.setAspectLocked(True)
-        self.graphics_widget_3.img = pg.ImageItem(border='w')
+        self.graphics_widget_3.img = pg.ImageItem(border="w")
         self.graphics_widget_3.view.addItem(self.graphics_widget_3.img)
         self.graphics_widget_3.view.invertY()
 
         self.graphics_widget_4 = pg.GraphicsLayoutWidget()
         self.graphics_widget_4.view = self.graphics_widget_4.addViewBox()
         self.graphics_widget_4.view.setAspectLocked(True)
-        self.graphics_widget_4.img = pg.ImageItem(border='w')
+        self.graphics_widget_4.img = pg.ImageItem(border="w")
         self.graphics_widget_4.view.addItem(self.graphics_widget_4.img)
         self.graphics_widget_4.view.invertY()
         ## Layout
@@ -3214,24 +3542,24 @@ class ImageArrayDisplayWindow(QMainWindow):
         self.setCentralWidget(self.widget)
 
         # set window size
-        desktopWidget = QDesktopWidget();
-        width = min(desktopWidget.height()*0.9,1000) #@@@TO MOVE@@@#
+        desktopWidget = QDesktopWidget()
+        width = min(desktopWidget.height() * 0.9, 1000)  # @@@TO MOVE@@@#
         height = width
-        self.setFixedSize(int(width),int(height))
+        self.setFixedSize(int(width), int(height))
 
-    def display_image(self,image,illumination_source):
+    def display_image(self, image, illumination_source):
         if illumination_source < 11:
-            self.graphics_widget_1.img.setImage(image,autoLevels=False)
+            self.graphics_widget_1.img.setImage(image, autoLevels=False)
         elif illumination_source == 11:
-            self.graphics_widget_2.img.setImage(image,autoLevels=False)
+            self.graphics_widget_2.img.setImage(image, autoLevels=False)
         elif illumination_source == 12:
-            self.graphics_widget_3.img.setImage(image,autoLevels=False)
+            self.graphics_widget_3.img.setImage(image, autoLevels=False)
         elif illumination_source == 13:
-            self.graphics_widget_4.img.setImage(image,autoLevels=False)
+            self.graphics_widget_4.img.setImage(image, autoLevels=False)
 
 
 class ConfigurationManager(QObject):
-    def __init__(self,filename="channel_configurations.xml"):
+    def __init__(self, filename="channel_configurations.xml"):
         QObject.__init__(self)
         self.config_filename = filename
         self.configurations = []
@@ -3240,47 +3568,49 @@ class ConfigurationManager(QObject):
     def save_configurations(self):
         self.write_configuration(self.config_filename)
 
-    def write_configuration(self,filename):
+    def write_configuration(self, filename):
         self.config_xml_tree.write(filename, encoding="utf-8", xml_declaration=True, pretty_print=True)
 
     def read_configurations(self):
-        if(os.path.isfile(self.config_filename)==False):
+        if os.path.isfile(self.config_filename) == False:
             utils_config.generate_default_configuration(self.config_filename)
-            print('genenrate default config files')
+            print("genenrate default config files")
         self.config_xml_tree = etree.parse(self.config_filename)
         self.config_xml_tree_root = self.config_xml_tree.getroot()
         self.num_configurations = 0
-        for mode in self.config_xml_tree_root.iter('mode'):
+        for mode in self.config_xml_tree_root.iter("mode"):
             self.num_configurations += 1
             self.configurations.append(
                 Configuration(
-                    mode_id = mode.get('ID'),
-                    name = mode.get('Name'),
-                    color = self.get_channel_color(mode.get('Name')),
-                    exposure_time = float(mode.get('ExposureTime')),
-                    analog_gain = float(mode.get('AnalogGain')),
-                    illumination_source = int(mode.get('IlluminationSource')),
-                    illumination_intensity = float(mode.get('IlluminationIntensity')),
-                    camera_sn = mode.get('CameraSN'),
-                    z_offset = float(mode.get('ZOffset')),
-                    pixel_format = mode.get('PixelFormat'),
-                    _pixel_format_options = mode.get('_PixelFormat_options'),
-                    emission_filter_position = int(mode.get('EmissionFilterPosition', 1))
+                    mode_id=mode.get("ID"),
+                    name=mode.get("Name"),
+                    color=self.get_channel_color(mode.get("Name")),
+                    exposure_time=float(mode.get("ExposureTime")),
+                    analog_gain=float(mode.get("AnalogGain")),
+                    illumination_source=int(mode.get("IlluminationSource")),
+                    illumination_intensity=float(mode.get("IlluminationIntensity")),
+                    camera_sn=mode.get("CameraSN"),
+                    z_offset=float(mode.get("ZOffset")),
+                    pixel_format=mode.get("PixelFormat"),
+                    _pixel_format_options=mode.get("_PixelFormat_options"),
+                    emission_filter_position=int(mode.get("EmissionFilterPosition", 1)),
                 )
             )
 
-    def update_configuration(self,configuration_id,attribute_name,new_value):
+    def update_configuration(self, configuration_id, attribute_name, new_value):
         conf_list = self.config_xml_tree_root.xpath("//mode[contains(@ID," + "'" + str(configuration_id) + "')]")
         mode_to_update = conf_list[0]
-        mode_to_update.set(attribute_name,str(new_value))
+        mode_to_update.set(attribute_name, str(new_value))
         self.save_configurations()
 
     def update_configuration_without_writing(self, configuration_id, attribute_name, new_value):
         conf_list = self.config_xml_tree_root.xpath("//mode[contains(@ID," + "'" + str(configuration_id) + "')]")
         mode_to_update = conf_list[0]
-        mode_to_update.set(attribute_name,str(new_value))
+        mode_to_update.set(attribute_name, str(new_value))
 
-    def write_configuration_selected(self,selected_configurations,filename): # to be only used with a throwaway instance
+    def write_configuration_selected(
+        self, selected_configurations, filename
+    ):  # to be only used with a throwaway instance
         for conf in self.configurations:
             self.update_configuration_without_writing(conf.id, "Selected", 0)
         for conf in selected_configurations:
@@ -3290,17 +3620,17 @@ class ConfigurationManager(QObject):
             self.update_configuration_without_writing(conf.id, "Selected", 0)
 
     def get_channel_color(self, channel):
-        channel_info = CHANNEL_COLORS_MAP.get(self.extract_wavelength(channel), {'hex': 0xFFFFFF, 'name': 'gray'})
-        return channel_info['hex']
+        channel_info = CHANNEL_COLORS_MAP.get(self.extract_wavelength(channel), {"hex": 0xFFFFFF, "name": "gray"})
+        return channel_info["hex"]
 
     def extract_wavelength(self, name):
         # Split the string and find the wavelength number immediately after "Fluorescence"
         parts = name.split()
-        if 'Fluorescence' in parts:
-            index = parts.index('Fluorescence') + 1
+        if "Fluorescence" in parts:
+            index = parts.index("Fluorescence") + 1
             if index < len(parts):
                 return parts[index].split()[0]  # Assuming 'Fluorescence 488 nm Ex' and taking '488'
-        for color in ['R', 'G', 'B']:
+        for color in ["R", "G", "B"]:
             if color in parts or "full_" + color in parts:
                 return color
         return None
@@ -3341,8 +3671,12 @@ class ContrastManager:
         source_info = np.iinfo(self.acquisition_dtype)
         target_info = np.iinfo(target_dtype)
 
-        scaled_min = (min_val - source_info.min) / (source_info.max - source_info.min) * (target_info.max - target_info.min) + target_info.min
-        scaled_max = (max_val - source_info.min) / (source_info.max - source_info.min) * (target_info.max - target_info.min) + target_info.min
+        scaled_min = (min_val - source_info.min) / (source_info.max - source_info.min) * (
+            target_info.max - target_info.min
+        ) + target_info.min
+        scaled_max = (max_val - source_info.min) / (source_info.max - source_info.min) * (
+            target_info.max - target_info.min
+        ) + target_info.min
 
         return scaled_min, scaled_max
 
@@ -3385,7 +3719,9 @@ class ScanCoordinates(QObject):
     def add_well_selector(self, well_selector):
         self.well_selector = well_selector
 
-    def update_wellplate_settings(self, format_, a1_x_mm, a1_y_mm, a1_x_pixel, a1_y_pixel, size_mm, spacing_mm, number_of_skip):
+    def update_wellplate_settings(
+        self, format_, a1_x_mm, a1_y_mm, a1_x_pixel, a1_y_pixel, size_mm, spacing_mm, number_of_skip
+    ):
         self.format = format_
         self.a1_x_mm = a1_x_mm
         self.a1_y_mm = a1_y_mm
@@ -3395,19 +3731,19 @@ class ScanCoordinates(QObject):
         self.well_spacing_mm = spacing_mm
         self.number_of_skip = number_of_skip
 
-    def _index_to_row(self,index):
+    def _index_to_row(self, index):
         index += 1
         row = ""
         while index > 0:
             index -= 1
-            row = chr(index % 26 + ord('A')) + row
+            row = chr(index % 26 + ord("A")) + row
             index //= 26
         return row
 
     def get_selected_wells(self):
         # get selected wells from the widget
         print("getting selected wells for acquisition")
-        if not self.well_selector or self.format == 'glass slide':
+        if not self.well_selector or self.format == "glass slide":
             return None
 
         selected_wells = np.array(self.well_selector.get_selected_cells())
@@ -3417,32 +3753,32 @@ class ScanCoordinates(QObject):
         if len(selected_wells) == 0:
             return well_centers
         # populate the coordinates
-        rows = np.unique(selected_wells[:,0])
+        rows = np.unique(selected_wells[:, 0])
         _increasing = True
         for row in rows:
-            items = selected_wells[selected_wells[:,0]==row]
-            columns = items[:,1]
+            items = selected_wells[selected_wells[:, 0] == row]
+            columns = items[:, 1]
             columns = np.sort(columns)
             if _increasing == False:
                 columns = np.flip(columns)
             for column in columns:
                 x_mm = self.a1_x_mm + (column * self.well_spacing_mm) + self.wellplate_offset_x_mm
                 y_mm = self.a1_y_mm + (row * self.well_spacing_mm) + self.wellplate_offset_y_mm
-                well_id = self._index_to_row(row) + str(column+1)
-                well_centers[well_id] = (x_mm,y_mm)
+                well_id = self._index_to_row(row) + str(column + 1)
+                well_centers[well_id] = (x_mm, y_mm)
             _increasing = not _increasing
         return well_centers
 
     def set_live_scan_coordinates(self, x_mm, y_mm, scan_size_mm, overlap_percent, shape):
-        if shape != 'Manual' and self.format == 'glass slide':
+        if shape != "Manual" and self.format == "glass slide":
             if self.region_centers:
                 self.clear_regions()
-            self.add_region('current', x_mm, y_mm, scan_size_mm, overlap_percent, shape)
+            self.add_region("current", x_mm, y_mm, scan_size_mm, overlap_percent, shape)
 
     def set_well_coordinates(self, scan_size_mm, overlap_percent, shape):
         new_region_centers = self.get_selected_wells()
 
-        if self.format == 'glass slide':
+        if self.format == "glass slide":
             pos = self.stage.get_pos()
             self.set_live_scan_coordinates(pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape)
 
@@ -3468,9 +3804,9 @@ class ScanCoordinates(QObject):
                 scan_coordinates = self.add_manual_region(shape_coords, overlap_percent)
                 if scan_coordinates:
                     if len(manual_shapes) <= 1:
-                        region_name = f'manual'
+                        region_name = f"manual"
                     else:
-                        region_name = f'manual{i}'
+                        region_name = f"manual{i}"
                     center = np.mean(shape_coords, axis=0)
                     self.region_centers[region_name] = [center[0], center[1]]
                     self.region_fov_coordinates[region_name] = scan_coordinates
@@ -3481,19 +3817,21 @@ class ScanCoordinates(QObject):
         else:
             print("No Manual ROI found")
 
-    def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape='Square'):
+    def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
         """add region based on user inputs"""
         pixel_size_um = self.objectiveStore.get_pixel_size()
         fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         steps = math.floor(scan_size_mm / step_size_mm)
-        if shape == 'Circle':
+        if shape == "Circle":
             tile_diagonal = math.sqrt(2) * fov_size_mm
             if steps % 2 == 1:  # for odd steps
                 actual_scan_size_mm = (steps - 1) * step_size_mm + tile_diagonal
             else:  # for even steps
-                actual_scan_size_mm = math.sqrt(((steps - 1) * step_size_mm + fov_size_mm)**2 + (step_size_mm + fov_size_mm)**2)
+                actual_scan_size_mm = math.sqrt(
+                    ((steps - 1) * step_size_mm + fov_size_mm) ** 2 + (step_size_mm + fov_size_mm) ** 2
+                )
 
             if actual_scan_size_mm > scan_size_mm:
                 actual_scan_size_mm -= step_size_mm
@@ -3515,22 +3853,24 @@ class ScanCoordinates(QObject):
             y = center_y + (i - half_steps) * step_size_mm
             for j in range(steps):
                 x = center_x + (j - half_steps) * step_size_mm
-                if shape == 'Square' or (shape == 'Circle' and self._is_in_circle(x, y, center_x, center_y, radius_squared, fov_size_mm_half)):
+                if shape == "Square" or (
+                    shape == "Circle" and self._is_in_circle(x, y, center_x, center_y, radius_squared, fov_size_mm_half)
+                ):
                     if self.validate_coordinates(x, y):
                         row.append((x, y))
                         self.navigationViewer.register_fov_to_image(x, y)
 
-            if self.fov_pattern == 'S-Pattern' and i % 2 == 1:
+            if self.fov_pattern == "S-Pattern" and i % 2 == 1:
                 row.reverse()
             scan_coordinates.extend(row)
 
-        if not scan_coordinates and shape == 'Circle':
+        if not scan_coordinates and shape == "Circle":
             if self.validate_coordinates(center_x, center_y):
                 scan_coordinates.append((center_x, center_y))
                 self.navigationViewer.register_fov_to_image(center_x, center_y)
 
         self.region_centers[well_id] = [float(center_x), float(center_y), float(self.stage.get_pos().z_mm)]
-        self.region_fov_coordinates[well_id] =  scan_coordinates
+        self.region_fov_coordinates[well_id] = scan_coordinates
         self.signal_scan_coordinates_updated.emit()
         print(f"Added Region: {well_id}")
 
@@ -3556,7 +3896,7 @@ class ScanCoordinates(QObject):
     def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
         """Convert grid parameters NX, NY to FOV coordinates based on overlap"""
         fov_size_mm = (self.objectiveStore.get_pixel_size() / 1000) * Acquisition.CROP_WIDTH
-        step_size_mm = fov_size_mm * (1 - overlap_percent/100)
+        step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Calculate total grid size
         grid_width_mm = (Nx - 1) * step_size_mm
@@ -3565,14 +3905,14 @@ class ScanCoordinates(QObject):
         scan_coordinates = []
         for i in range(Ny):
             row = []
-            y = center_y - grid_height_mm/2 + i * step_size_mm
+            y = center_y - grid_height_mm / 2 + i * step_size_mm
             for j in range(Nx):
-                x = center_x - grid_width_mm/2 + j * step_size_mm
+                x = center_x - grid_width_mm / 2 + j * step_size_mm
                 if self.validate_coordinates(x, y):
                     row.append((x, y))
                     self.navigationViewer.register_fov_to_image(x, y)
 
-            if self.fov_pattern == 'S-Pattern' and i % 2 == 1:  # reverse even rows
+            if self.fov_pattern == "S-Pattern" and i % 2 == 1:  # reverse even rows
                 row.reverse()
             scan_coordinates.extend(row)
 
@@ -3591,10 +3931,8 @@ class ScanCoordinates(QObject):
         grid_height_mm = (Ny - 1) * dy
 
         # Pre-calculate step sizes and ranges
-        x_steps = [center_x - grid_width_mm/2 + j * dx
-                   for j in range(Nx)]
-        y_steps = [center_y - grid_height_mm/2 + i * dy
-                   for i in range(Ny)]
+        x_steps = [center_x - grid_width_mm / 2 + j * dx for j in range(Nx)]
+        y_steps = [center_y - grid_height_mm / 2 + i * dy for i in range(Ny)]
 
         scan_coordinates = []
         for i, y in enumerate(y_steps):
@@ -3665,7 +4003,7 @@ class ScanCoordinates(QObject):
         sorted_points = valid_points[sorted_indices]
 
         # Apply S-Pattern if needed
-        if self.fov_pattern == 'S-Pattern':
+        if self.fov_pattern == "S-Pattern":
             unique_y = np.unique(sorted_points[:, 1])
             for i in range(1, len(unique_y), 2):
                 mask = sorted_points[:, 1] == unique_y[i]
@@ -3698,9 +4036,9 @@ class ScanCoordinates(QObject):
             (x - fov_size_mm_half, y - fov_size_mm_half),
             (x + fov_size_mm_half, y - fov_size_mm_half),
             (x - fov_size_mm_half, y + fov_size_mm_half),
-            (x + fov_size_mm_half, y + fov_size_mm_half)
+            (x + fov_size_mm_half, y + fov_size_mm_half),
         ]
-        return all((cx - center_x)**2 + (cy - center_y)**2 <= radius_squared for cx, cy in corners)
+        return all((cx - center_x) ** 2 + (cy - center_y) ** 2 <= radius_squared for cx, cy in corners)
 
     def has_regions(self):
         """Check if any regions exist"""
@@ -3711,8 +4049,10 @@ class ScanCoordinates(QObject):
         return region_id in self.region_centers and region_id in self.region_fov_coordinates
 
     def validate_coordinates(self, x, y):
-        return (SOFTWARE_POS_LIMIT.X_NEGATIVE <= x <= SOFTWARE_POS_LIMIT.X_POSITIVE and
-                SOFTWARE_POS_LIMIT.Y_NEGATIVE <= y <= SOFTWARE_POS_LIMIT.Y_POSITIVE)
+        return (
+            SOFTWARE_POS_LIMIT.X_NEGATIVE <= x <= SOFTWARE_POS_LIMIT.X_POSITIVE
+            and SOFTWARE_POS_LIMIT.Y_NEGATIVE <= y <= SOFTWARE_POS_LIMIT.Y_POSITIVE
+        )
 
     def sort_coordinates(self):
         print(f"Acquisition pattern: {self.acquisition_pattern}")
@@ -3722,7 +4062,7 @@ class ScanCoordinates(QObject):
 
         def sort_key(item):
             key, coord = item
-            if 'manual' in key:
+            if "manual" in key:
                 return (0, coord[1], coord[0])  # Manual coords: sort by y, then x
             else:
                 row, col = key[0], int(key[1:])
@@ -3730,9 +4070,9 @@ class ScanCoordinates(QObject):
 
         sorted_items = sorted(self.region_centers.items(), key=sort_key)
 
-        if self.acquisition_pattern == 'S-Pattern':
+        if self.acquisition_pattern == "S-Pattern":
             # Group by row and reverse alternate rows
-            rows = itertools.groupby(sorted_items, key=lambda x: x[1][1] if 'manual' in x[0] else x[0][0])
+            rows = itertools.groupby(sorted_items, key=lambda x: x[1][1] if "manual" in x[0] else x[0][0])
             sorted_items = []
             for i, (_, group) in enumerate(rows):
                 row = list(group)
@@ -3742,9 +4082,9 @@ class ScanCoordinates(QObject):
 
         # Update dictionaries efficiently
         self.region_centers = {k: v for k, v in sorted_items}
-        self.region_fov_coordinates = {k: self.region_fov_coordinates[k]
-                                            for k, _ in sorted_items
-                                            if k in self.region_fov_coordinates}
+        self.region_fov_coordinates = {
+            k: self.region_fov_coordinates[k] for k, _ in sorted_items if k in self.region_fov_coordinates
+        }
 
     def get_region_bounds(self, region_id):
         """Get region boundaries"""
@@ -3752,10 +4092,10 @@ class ScanCoordinates(QObject):
             return None
         fovs = np.array(self.region_fov_coordinates[region_id])
         return {
-            'min_x': np.min(fovs[:,0]),
-            'max_x': np.max(fovs[:,0]),
-            'min_y': np.min(fovs[:,1]),
-            'max_y': np.max(fovs[:,1])
+            "min_x": np.min(fovs[:, 0]),
+            "max_x": np.max(fovs[:, 0]),
+            "min_y": np.min(fovs[:, 1]),
+            "max_y": np.max(fovs[:, 1]),
         }
 
     def get_scan_bounds(self):
@@ -3763,32 +4103,29 @@ class ScanCoordinates(QObject):
         if not self.has_regions():
             return None
 
-        min_x = float('inf')
-        max_x = float('-inf')
-        min_y = float('inf')
-        max_y = float('-inf')
+        min_x = float("inf")
+        max_x = float("-inf")
+        min_y = float("inf")
+        max_y = float("-inf")
 
         # Find global bounds across all regions
         for region_id in self.region_fov_coordinates.keys():
             bounds = self.get_region_bounds(region_id)
             if bounds:
-                min_x = min(min_x, bounds['min_x'])
-                max_x = max(max_x, bounds['max_x'])
-                min_y = min(min_y, bounds['min_y'])
-                max_y = max(max_y, bounds['max_y'])
+                min_x = min(min_x, bounds["min_x"])
+                max_x = max(max_x, bounds["max_x"])
+                min_y = min(min_y, bounds["min_y"])
+                max_y = max(max_y, bounds["max_y"])
 
-        if min_x == float('inf'):
+        if min_x == float("inf"):
             return None
 
         # Add margin around bounds (5% of larger dimension)
         width = max_x - min_x
         height = max_y - min_y
-        margin = max(width, height) * 0.00 # 0.05
+        margin = max(width, height) * 0.00  # 0.05
 
-        return {
-            'x': (min_x - margin, max_x + margin),
-            'y': (min_y - margin, max_y + margin)
-        }
+        return {"x": (min_x - margin, max_x + margin), "y": (min_y - margin, max_y + margin)}
 
     def update_fov_z_level(self, region_id, fov, new_z):
         """Update z-level for a specific FOV and its region center"""
@@ -3814,13 +4151,15 @@ class ScanCoordinates(QObject):
 
 
 from scipy.interpolate import SmoothBivariateSpline, RBFInterpolator
+
+
 class FocusMap:
     """Handles fitting and interpolation of slide surfaces through measured focus points"""
 
     def __init__(self, smoothing_factor=0.1):
         self.smoothing_factor = smoothing_factor
         self.surface_fit = None
-        self.method = 'spline'  # can be 'spline' or 'rbf'
+        self.method = "spline"  # can be 'spline' or 'rbf'
         self.is_fitted = False
         self.points = None
 
@@ -3830,7 +4169,7 @@ class FocusMap:
         Args:
             method (str): Either 'spline' or 'rbf' (Radial Basis Function)
         """
-        if method not in ['spline', 'rbf']:
+        if method not in ["spline", "rbf"]:
             raise ValueError("Method must be either 'spline' or 'rbf'")
         self.method = method
         self.is_fitted = False
@@ -3848,21 +4187,18 @@ class FocusMap:
             raise ValueError("Need at least 4 points to fit surface")
 
         self.points = np.array(points)
-        x = self.points[:,0]
-        y = self.points[:,1]
-        z = self.points[:,2]
+        x = self.points[:, 0]
+        y = self.points[:, 1]
+        z = self.points[:, 2]
 
-        if self.method == 'spline':
+        if self.method == "spline":
             try:
                 self.surface_fit = SmoothBivariateSpline(
-                    x, y, z,
-                    kx=3,  # cubic spline in x
-                    ky=3,  # cubic spline in y
-                    s=self.smoothing_factor
+                    x, y, z, kx=3, ky=3, s=self.smoothing_factor  # cubic spline in x  # cubic spline in y
                 )
             except Exception as e:
                 print(f"Spline fitting failed: {str(e)}, falling back to RBF")
-                self.method = 'rbf'
+                self.method = "rbf"
                 self._fit_rbf(x, y, z)
         else:
             self._fit_rbf(x, y, z)
@@ -3874,11 +4210,7 @@ class FocusMap:
     def _fit_rbf(self, x, y, z):
         """Fit using Radial Basis Function interpolation"""
         xy = np.column_stack((x, y))
-        self.surface_fit = RBFInterpolator(
-            xy, z,
-            kernel='thin_plate_spline',
-            epsilon=self.smoothing_factor
-        )
+        self.surface_fit = RBFInterpolator(xy, z, kernel="thin_plate_spline", epsilon=self.smoothing_factor)
 
     def interpolate(self, x, y):
         """Get interpolated Z value at given (x,y) coordinates
@@ -3894,14 +4226,14 @@ class FocusMap:
             raise RuntimeError("Must fit surface before interpolating")
 
         if np.isscalar(x) and np.isscalar(y):
-            if self.method == 'spline':
+            if self.method == "spline":
                 return float(self.surface_fit.ev(x, y))
             else:
                 return float(self.surface_fit([[x, y]]))
         else:
             x = np.asarray(x)
             y = np.asarray(y)
-            if self.method == 'spline':
+            if self.method == "spline":
                 return self.surface_fit.ev(x, y)
             else:
                 xy = np.column_stack((x.ravel(), y.ravel()))
@@ -3943,7 +4275,16 @@ class LaserAutofocusController(QObject):
     image_to_display = Signal(np.ndarray)
     signal_displacement_um = Signal(float)
 
-    def __init__(self, microcontroller: Microcontroller, camera, liveController, stage: AbstractStage, has_two_interfaces=True, use_glass_top=True, look_for_cache=True):
+    def __init__(
+        self,
+        microcontroller: Microcontroller,
+        camera,
+        liveController,
+        stage: AbstractStage,
+        has_two_interfaces=True,
+        use_glass_top=True,
+        look_for_cache=True,
+    ):
         QObject.__init__(self)
         self.microcontroller = microcontroller
         self.camera = camera
@@ -3958,13 +4299,13 @@ class LaserAutofocusController(QObject):
         self.x_width = 3088
         self.y_width = 2064
 
-        self.has_two_interfaces = has_two_interfaces # e.g. air-glass and glass water, set to false when (1) using oil immersion (2) using 1 mm thick slide (3) using metal coated slide or Si wafer
+        self.has_two_interfaces = has_two_interfaces  # e.g. air-glass and glass water, set to false when (1) using oil immersion (2) using 1 mm thick slide (3) using metal coated slide or Si wafer
         self.use_glass_top = use_glass_top
-        self.spot_spacing_pixels = None # spacing between the spots from the two interfaces (unit: pixel)
+        self.spot_spacing_pixels = None  # spacing between the spots from the two interfaces (unit: pixel)
 
         self.look_for_cache = look_for_cache
 
-        self.image = None # for saving the focus camera image for debugging when centroid cannot be found
+        self.image = None  # for saving the focus camera image for debugging when centroid cannot be found
 
         if look_for_cache:
             cache_path = "cache/laser_af_reference_plane.txt"
@@ -3978,27 +4319,29 @@ class LaserAutofocusController(QObject):
                         height = int(value_list[3])
                         pixel_to_um = float(value_list[4])
                         x_reference = float(value_list[5])
-                        self.initialize_manual(x_offset,y_offset,width,height,pixel_to_um,x_reference)
+                        self.initialize_manual(x_offset, y_offset, width, height, pixel_to_um, x_reference)
                         break
-            except (FileNotFoundError, ValueError,IndexError) as e:
+            except (FileNotFoundError, ValueError, IndexError) as e:
                 print("Unable to read laser AF state cache, exception below:")
                 print(e)
                 pass
 
     def initialize_manual(self, x_offset, y_offset, width, height, pixel_to_um, x_reference, write_to_cache=True):
-        cache_string = ",".join([str(x_offset),str(y_offset), str(width),str(height), str(pixel_to_um), str(x_reference)])
+        cache_string = ",".join(
+            [str(x_offset), str(y_offset), str(width), str(height), str(pixel_to_um), str(x_reference)]
+        )
         if write_to_cache:
             cache_path = Path("cache/laser_af_reference_plane.txt")
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_text(cache_string)
         # x_reference is relative to the full sensor
         self.pixel_to_um = pixel_to_um
-        self.x_offset = int((x_offset//8)*8)
-        self.y_offset = int((y_offset//2)*2)
-        self.width = int((width//8)*8)
-        self.height = int((height//2)*2)
-        self.x_reference = x_reference - self.x_offset # self.x_reference is relative to the cropped region
-        self.camera.set_ROI(self.x_offset,self.y_offset,self.width,self.height)
+        self.x_offset = int((x_offset // 8) * 8)
+        self.y_offset = int((y_offset // 2) * 2)
+        self.width = int((width // 8) * 8)
+        self.height = int((height // 2) * 2)
+        self.x_reference = x_reference - self.x_offset  # self.x_reference is relative to the cropped region
+        self.camera.set_ROI(self.x_offset, self.y_offset, self.width, self.height)
         self.is_initialized = True
 
     def initialize_auto(self):
@@ -4007,8 +4350,8 @@ class LaserAutofocusController(QObject):
         # then calculate the convert factor
 
         # set camera to use full sensor
-        self.camera.set_ROI(0,0,None,None) # set offset first
-        self.camera.set_ROI(0,0,3088,2064)
+        self.camera.set_ROI(0, 0, None, None)  # set offset first
+        self.camera.set_ROI(0, 0, 3088, 2064)
         # update camera settings
         self.camera.set_exposure_time(FOCUS_CAMERA_EXPOSURE_TIME_MS)
         self.camera.set_analog_gain(FOCUS_CAMERA_ANALOG_GAIN)
@@ -4018,15 +4361,15 @@ class LaserAutofocusController(QObject):
         self.microcontroller.wait_till_operation_is_completed()
 
         # get laser spot location
-        x,y = self._get_laser_spot_centroid()
+        x, y = self._get_laser_spot_centroid()
 
         # turn off the laser
         self.microcontroller.turn_off_AF_laser()
         self.microcontroller.wait_till_operation_is_completed()
 
-        x_offset = x - LASER_AF_CROP_WIDTH/2
-        y_offset = y - LASER_AF_CROP_HEIGHT/2
-        print('laser spot location on the full sensor is (' + str(int(x)) + ',' + str(int(y)) + ')')
+        x_offset = x - LASER_AF_CROP_WIDTH / 2
+        y_offset = y - LASER_AF_CROP_HEIGHT / 2
+        print("laser spot location on the full sensor is (" + str(int(x)) + "," + str(int(y)) + ")")
 
         # set camera crop
         self.initialize_manual(x_offset, y_offset, LASER_AF_CROP_WIDTH, LASER_AF_CROP_HEIGHT, 1, x)
@@ -4041,26 +4384,26 @@ class LaserAutofocusController(QObject):
         time.sleep(0.02)
 
         # measure
-        x0,y0 = self._get_laser_spot_centroid()
+        x0, y0 = self._get_laser_spot_centroid()
 
         # move z to 6 um
         self.stage.move_z(0.006)
         time.sleep(0.02)
 
         # measure
-        x1,y1 = self._get_laser_spot_centroid()
+        x1, y1 = self._get_laser_spot_centroid()
 
         # turn off laser
         self.microcontroller.turn_off_AF_laser()
         self.microcontroller.wait_till_operation_is_completed()
 
-        if x1-x0 == 0:
+        if x1 - x0 == 0:
             # for simulation
             self.pixel_to_um = 0.4
         else:
             # calculate the conversion factor
-            self.pixel_to_um = 6.0/(x1-x0)
-        print('pixel to um conversion factor is ' + str(self.pixel_to_um) + ' um/pixel')
+            self.pixel_to_um = 6.0 / (x1 - x0)
+        print("pixel to um conversion factor is " + str(self.pixel_to_um) + " um/pixel")
 
         # set reference
         self.x_reference = x1
@@ -4082,13 +4425,15 @@ class LaserAutofocusController(QObject):
                         width = int(value_list[2])
                         height = int(value_list[3])
                         pixel_to_um = self.pixel_to_um
-                        x_reference = self.x_reference+self.x_offset
+                        x_reference = self.x_reference + self.x_offset
                         break
-                cache_string = ",".join([str(x_offset),str(y_offset), str(width),str(height), str(pixel_to_um), str(x_reference)])
+                cache_string = ",".join(
+                    [str(x_offset), str(y_offset), str(width), str(height), str(pixel_to_um), str(x_reference)]
+                )
                 cache_path = Path("cache/laser_af_reference_plane.txt")
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(cache_string)
-            except (FileNotFoundError, ValueError,IndexError) as e:
+            except (FileNotFoundError, ValueError, IndexError) as e:
                 print("Unable to read laser AF state cache, exception below:")
                 print(e)
                 pass
@@ -4098,21 +4443,23 @@ class LaserAutofocusController(QObject):
         self.microcontroller.turn_on_AF_laser()
         self.microcontroller.wait_till_operation_is_completed()
         # get laser spot location
-        x,y = self._get_laser_spot_centroid()
+        x, y = self._get_laser_spot_centroid()
         # turn off the laser
         self.microcontroller.turn_off_AF_laser()
         self.microcontroller.wait_till_operation_is_completed()
         # calculate displacement
-        displacement_um = (x - self.x_reference)*self.pixel_to_um
+        displacement_um = (x - self.x_reference) * self.pixel_to_um
         self.signal_displacement_um.emit(displacement_um)
         return displacement_um
 
-    def move_to_target(self,target_um):
+    def move_to_target(self, target_um):
         current_displacement_um = self.measure_displacement()
         print("Laser AF displacement: ", current_displacement_um)
 
         if abs(current_displacement_um) > LASER_AF_RANGE:
-            print(f'Warning: Measured displacement ({current_displacement_um:.1f} μm) is unreasonably large, using previous z position')
+            print(
+                f"Warning: Measured displacement ({current_displacement_um:.1f} μm) is unreasonably large, using previous z position"
+            )
             um_to_move = 0
         else:
             um_to_move = target_um - current_displacement_um
@@ -4127,39 +4474,41 @@ class LaserAutofocusController(QObject):
         self.microcontroller.turn_on_AF_laser()
         self.microcontroller.wait_till_operation_is_completed()
         # get laser spot location
-        x,y = self._get_laser_spot_centroid()
+        x, y = self._get_laser_spot_centroid()
         # turn off the laser
         self.microcontroller.turn_off_AF_laser()
         self.microcontroller.wait_till_operation_is_completed()
         self.x_reference = x
         self.signal_displacement_um.emit(0)
 
-    def _caculate_centroid(self,image):
+    def _caculate_centroid(self, image):
         if self.has_two_interfaces == False:
-            h,w = image.shape
-            x,y = np.meshgrid(range(w),range(h))
+            h, w = image.shape
+            x, y = np.meshgrid(range(w), range(h))
             I = image.astype(float)
             I = I - np.amin(I)
-            I[I/np.amax(I)<0.2] = 0
-            x = np.sum(x*I)/np.sum(I)
-            y = np.sum(y*I)/np.sum(I)
-            return x,y
+            I[I / np.amax(I) < 0.2] = 0
+            x = np.sum(x * I) / np.sum(I)
+            y = np.sum(y * I) / np.sum(I)
+            return x, y
         else:
             I = image
             # get the y position of the spots
-            tmp = np.sum(I,axis=1)
+            tmp = np.sum(I, axis=1)
             y0 = np.argmax(tmp)
             # crop along the y axis
-            I = I[y0-96:y0+96,:]
+            I = I[y0 - 96 : y0 + 96, :]
             # signal along x
-            tmp = np.sum(I,axis=0)
+            tmp = np.sum(I, axis=0)
             # find peaks
-            peak_locations,_ = scipy.signal.find_peaks(tmp,distance=100)
+            peak_locations, _ = scipy.signal.find_peaks(tmp, distance=100)
             idx = np.argsort(tmp[peak_locations])
             peak_0_location = peak_locations[idx[-1]]
-            peak_1_location = peak_locations[idx[-2]] # for air-glass-water, the smaller peak corresponds to the glass-water interface
-            self.spot_spacing_pixels = peak_1_location-peak_0_location
-            '''
+            peak_1_location = peak_locations[
+                idx[-2]
+            ]  # for air-glass-water, the smaller peak corresponds to the glass-water interface
+            self.spot_spacing_pixels = peak_1_location - peak_0_location
+            """
             # find peaks - alternative
             if self.spot_spacing_pixels is not None:
                 peak_locations,_ = scipy.signal.find_peaks(tmp,distance=100)
@@ -4170,24 +4519,24 @@ class LaserAutofocusController(QObject):
             else:
                 peak_0_location = np.argmax(tmp)
                 peak_1_location = peak_0_location + self.spot_spacing_pixels
-            '''
+            """
             # choose which surface to use
             if self.use_glass_top:
                 x1 = peak_1_location
             else:
                 x1 = peak_0_location
             # find centroid
-            h,w = I.shape
-            x,y = np.meshgrid(range(w),range(h))
-            I = I[:,max(0,x1-64):min(w-1,x1+64)]
-            x = x[:,max(0,x1-64):min(w-1,x1+64)]
-            y = y[:,max(0,x1-64):min(w-1,x1+64)]
+            h, w = I.shape
+            x, y = np.meshgrid(range(w), range(h))
+            I = I[:, max(0, x1 - 64) : min(w - 1, x1 + 64)]
+            x = x[:, max(0, x1 - 64) : min(w - 1, x1 + 64)]
+            y = y[:, max(0, x1 - 64) : min(w - 1, x1 + 64)]
             I = I.astype(float)
             I = I - np.amin(I)
-            I[I/np.amax(I)<0.1] = 0
-            x1 = np.sum(x*I)/np.sum(I)
-            y1 = np.sum(y*I)/np.sum(I)
-            return x1,y0-96+y1
+            I[I / np.amax(I) < 0.1] = 0
+            x1 = np.sum(x * I) / np.sum(I)
+            y1 = np.sum(y * I) / np.sum(I)
+            return x1, y0 - 96 + y1
 
     def _get_laser_spot_centroid(self):
         # disable camera callback
@@ -4200,7 +4549,7 @@ class LaserAutofocusController(QObject):
                 self.camera.send_trigger()
             elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
                 # self.microcontroller.send_hardware_trigger(control_illumination=True,illumination_on_time_us=self.camera.exposure_time*1000)
-                pass # to edit
+                pass  # to edit
             # read camera frame
             image = self.camera.read_frame()
             self.image = image
@@ -4208,17 +4557,17 @@ class LaserAutofocusController(QObject):
             if LASER_AF_DISPLAY_SPOT_IMAGE:
                 self.image_to_display.emit(image)
             # calculate centroid
-            x,y = self._caculate_centroid(image)
+            x, y = self._caculate_centroid(image)
             tmp_x = tmp_x + x
             tmp_y = tmp_y + y
-        x = tmp_x/LASER_AF_AVERAGING_N
-        y = tmp_y/LASER_AF_AVERAGING_N
-        return x,y
+        x = tmp_x / LASER_AF_AVERAGING_N
+        y = tmp_y / LASER_AF_AVERAGING_N
+        return x, y
 
     def get_image(self):
         # turn on the laser
         self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()        # send trigger, grab image and display image
+        self.microcontroller.wait_till_operation_is_completed()  # send trigger, grab image and display image
         self.camera.send_trigger()
         image = self.camera.read_frame()
         self.image_to_display.emit(image)

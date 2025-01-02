@@ -44,10 +44,17 @@ class PriorStage(AbstractStage):
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         self._not_impl()
 
-    def set_limits(self, x_pos_mm: Optional[float] = None, x_neg_mm: Optional[float] = None,
-                   y_pos_mm: Optional[float] = None, y_neg_mm: Optional[float] = None, z_pos_mm: Optional[float] = None,
-                   z_neg_mm: Optional[float] = None, theta_pos_rad: Optional[float] = None,
-                   theta_neg_rad: Optional[float] = None):
+    def set_limits(
+        self,
+        x_pos_mm: Optional[float] = None,
+        x_neg_mm: Optional[float] = None,
+        y_pos_mm: Optional[float] = None,
+        y_neg_mm: Optional[float] = None,
+        z_pos_mm: Optional[float] = None,
+        z_neg_mm: Optional[float] = None,
+        theta_pos_rad: Optional[float] = None,
+        theta_neg_rad: Optional[float] = None,
+    ):
         self._not_impl()
 
     def get_config(self) -> StageConfig:

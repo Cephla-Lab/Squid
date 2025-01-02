@@ -3,9 +3,11 @@ import tempfile
 
 import squid.logging
 
+
 def test_root_logger():
     root_logger = squid.logging.get_logger()
     assert root_logger.name == squid.logging._squid_root_logger_name
+
 
 def test_children_loggers():
     child_a = "a"
@@ -16,6 +18,7 @@ def test_children_loggers():
 
     assert child_a_logger.name == f"{squid.logging._squid_root_logger_name}.{child_a}"
     assert child_b_logger.name == f"{squid.logging._squid_root_logger_name}.{child_a}.{child_b}"
+
 
 def test_file_loggers():
     log_file_name = tempfile.mktemp()

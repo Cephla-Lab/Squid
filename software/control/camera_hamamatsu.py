@@ -8,11 +8,12 @@ from control.dcam import Dcam, Dcamapi
 from control.dcamapi4 import *
 from control._def import *
 
+
 def get_sn_by_model(model_name):
     try:
         _, count = Dcamapi.init()
     except TypeError:
-        print('Cannot init Hamamatsu Camera.')
+        print("Cannot init Hamamatsu Camera.")
         sys.exit(1)
 
     for i in range(count):
@@ -20,15 +21,17 @@ def get_sn_by_model(model_name):
         sn = d.dev_getstring(DCAM_IDSTR.CAMERAID)
         if sn is not False:
             Dcamapi.uninit()
-            print('Hamamatsu Camera ' + sn)
+            print("Hamamatsu Camera " + sn)
             return sn
-        
+
     Dcamapi.uninit()
-    return None 
+    return None
 
 
 class Camera(object):
-    def __init__(self,sn=None, resolution=(2304,2304), is_global_shutter=False, rotate_image_angle=None, flip_image=None):
+    def __init__(
+        self, sn=None, resolution=(2304, 2304), is_global_shutter=False, rotate_image_angle=None, flip_image=None
+    ):
         self.dcam = None
         self.exposure_time = 1  # ms
         self.analog_gain = 0
@@ -55,7 +58,7 @@ class Camera(object):
         self.GAIN_STEP = 0
         self.EXPOSURE_TIME_MS_MIN = 0.017633
         self.EXPOSURE_TIME_MS_MAX = 10000.0046
-        
+
         self.rotate_image_angle = rotate_image_angle
         self.flip_image = flip_image
         self.is_global_shutter = is_global_shutter
@@ -66,7 +69,7 @@ class Camera(object):
         self.ROI_width = 2304
         self.ROI_height = 2304
 
-        self.OffsetX =  0
+        self.OffsetX = 0
         self.OffsetY = 0
         self.Width = 2304
         self.Height = 2304
@@ -80,8 +83,8 @@ class Camera(object):
         result = self.dcam.dev_open(index) and result
         if result:
             self.calculate_strobe_delay()
-        print('Hamamatsu Camera opened: ' + str(result))
-        
+        print("Hamamatsu Camera opened: " + str(result))
+
     def open_by_sn(self, sn):
         unopened = 0
         success, count = Dcamapi.init()
@@ -95,14 +98,14 @@ class Camera(object):
                 else:
                     unopened += 1
         if unopened == count or not success:
-            print('Hamamatsu Camera open_by_sn: No camera is opened.')
+            print("Hamamatsu Camera open_by_sn: No camera is opened.")
 
     def close(self):
         if self.is_streaming:
             self.stop_streaming()
         self.disable_callback()
         result = self.dcam.dev_close() and Dcamapi.uninit()
-        print('Hamamatsu Camera closed: ' + str(result))
+        print("Hamamatsu Camera closed: " + str(result))
 
     def set_callback(self, function):
         self.new_image_callback_external = function
@@ -129,20 +132,20 @@ class Camera(object):
             event = self.dcam.wait_event(DCAMWAIT_CAPEVENT.FRAMEREADY, 1000)
             if event is not False:
                 self._on_new_frame()
-        
+
     def _on_new_frame(self):
         image = self.read_frame(no_wait=True)
         if image is False:
-            print('Cannot get new frame from buffer.')
+            print("Cannot get new frame from buffer.")
             return
         if self.image_locked:
-            print('Last image is still being processed; a frame is dropped')
+            print("Last image is still being processed; a frame is dropped")
             return
 
         self.current_frame = image
 
         self.frame_ID_software += 1
-        self.frame_ID += 1 
+        self.frame_ID += 1
 
         # frame ID for hardware triggered acquisition
         if self.trigger_mode == TriggerMode.HARDWARE:
@@ -152,7 +155,7 @@ class Camera(object):
 
         self.timestamp = time.time()
         self.new_image_callback_external(self)
-        
+
     def disable_callback(self):
         if not self.callback_is_enabled:
             return
@@ -169,7 +172,7 @@ class Camera(object):
 
         if was_streaming:
             self.start_streaming()
-        
+
     def set_analog_gain(self, gain):
         pass
 
@@ -227,74 +230,74 @@ class Camera(object):
 
         self.pixel_format = pixel_format
 
-        if pixel_format == 'MONO8':
+        if pixel_format == "MONO8":
             result = self.dcam.prop_setvalue(DCAM_IDPROP.IMAGE_PIXELTYPE, DCAM_PIXELTYPE.MONO8)
-        elif pixel_format == 'MONO16':
+        elif pixel_format == "MONO16":
             result = self.dcam.prop_setvalue(DCAM_IDPROP.IMAGE_PIXELTYPE, DCAM_PIXELTYPE.MONO16)
 
         if was_streaming:
             self.start_streaming()
 
-        print('Set pixel format: ' + str(result))
+        print("Set pixel format: " + str(result))
 
     def send_trigger(self):
         if self.is_streaming:
             if not self.dcam.cap_firetrigger():
-                print('trigger not sent - firetrigger failed')
+                print("trigger not sent - firetrigger failed")
         else:
-            print('trigger not sent - camera is not streaming')
+            print("trigger not sent - camera is not streaming")
 
     def read_frame(self, no_wait=False):
         if no_wait:
             return self.dcam.buf_getlastframedata()
-       	else:
+        else:
             if self.dcam.wait_capevent_frameready(5000) is not False:
                 data = self.dcam.buf_getlastframedata()
                 return data
 
             dcamerr = self.dcam.lasterr()
             if dcamerr.is_timeout():
-                print('===: timeout')
+                print("===: timeout")
 
-            print('-NG: Dcam.wait_event() fails with error {}'.format(dcamerr))
-        
+            print("-NG: Dcam.wait_event() fails with error {}".format(dcamerr))
+
     def start_streaming(self, buffer_frame_num=5):
         if self.is_streaming:
             return
         if self.dcam.buf_alloc(buffer_frame_num):
             if self.dcam.cap_start(True):
                 self.is_streaming = True
-                print('Hamamatsu Camera starts streaming')
+                print("Hamamatsu Camera starts streaming")
                 return
             else:
                 self.dcam.buf_release()
-        print('Hamamatsu Camera cannot start streaming')
+        print("Hamamatsu Camera cannot start streaming")
 
     def stop_streaming(self):
         if self.dcam.cap_stop() and self.dcam.buf_release():
             self.is_streaming = False
-            print('Hamamatsu Camera streaming stopped')
+            print("Hamamatsu Camera streaming stopped")
         else:
-            print('Hamamatsu Camera cannot stop streaming')
+            print("Hamamatsu Camera cannot stop streaming")
 
-    def set_ROI(self,offset_x=None,offset_y=None,width=None,height=None):
+    def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
         if offset_x is not None:
-            ROI_offset_x = 2*(offset_x//2)
+            ROI_offset_x = 2 * (offset_x // 2)
         else:
             ROI_offset_x = self.ROI_offset_x
 
         if offset_y is not None:
-            ROI_offset_y = 2*(offset_y//2)
+            ROI_offset_y = 2 * (offset_y // 2)
         else:
             ROI_offset_y = self.ROI_offset_y
 
         if width is not None:
-            ROI_width = max(16,2*(width//2))
+            ROI_width = max(16, 2 * (width // 2))
         else:
             ROI_width = self.ROI_width
 
         if height is not None:
-            ROI_height = max(16,2*(height//2))
+            ROI_height = max(16, 2 * (height // 2))
         else:
             ROI_height = self.ROI_height
 
@@ -319,12 +322,15 @@ class Camera(object):
             self.start_streaming()
 
     def calculate_strobe_delay(self):
-        self.strobe_delay_us = int(self.dcam.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL) * 1000000 * 2304 + self.dcam.prop_getvalue(DCAM_IDPROP.TRIGGERDELAY) *1000000)   # s to us
+        self.strobe_delay_us = int(
+            self.dcam.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL) * 1000000 * 2304
+            + self.dcam.prop_getvalue(DCAM_IDPROP.TRIGGERDELAY) * 1000000
+        )  # s to us
 
 
 class Camera_Simulation(object):
-    
-    def __init__(self,sn=None,is_global_shutter=False,rotate_image_angle=None,flip_image=None):
+
+    def __init__(self, sn=None, is_global_shutter=False, rotate_image_angle=None, flip_image=None):
         # many to be purged
         self.sn = sn
         self.is_global_shutter = is_global_shutter
@@ -360,7 +366,7 @@ class Camera_Simulation(object):
 
         self.trigger_mode = None
 
-        self.pixel_format = 'MONO16'
+        self.pixel_format = "MONO16"
 
         self.is_live = False
 
@@ -373,11 +379,10 @@ class Camera_Simulation(object):
 
         self.new_image_callback_external = None
 
-
-    def open(self,index=0):
+    def open(self, index=0):
         pass
 
-    def set_callback(self,function):
+    def set_callback(self, function):
         self.new_image_callback_external = function
 
     def enable_callback(self):
@@ -386,16 +391,16 @@ class Camera_Simulation(object):
     def disable_callback(self):
         self.callback_is_enabled = False
 
-    def open_by_sn(self,sn):
+    def open_by_sn(self, sn):
         pass
 
     def close(self):
         pass
 
-    def set_exposure_time(self,exposure_time):
+    def set_exposure_time(self, exposure_time):
         pass
 
-    def set_analog_gain(self,analog_gain):
+    def set_analog_gain(self, analog_gain):
         pass
 
     def start_streaming(self):
@@ -404,7 +409,7 @@ class Camera_Simulation(object):
     def stop_streaming(self):
         pass
 
-    def set_pixel_format(self,pixel_format):
+    def set_pixel_format(self, pixel_format):
         self.pixel_format = pixel_format
         print(pixel_format)
         self.frame_ID = 0
@@ -419,19 +424,19 @@ class Camera_Simulation(object):
         pass
 
     def send_trigger(self):
-        print('send trigger')
+        print("send trigger")
         self.frame_ID = self.frame_ID + 1
         self.timestamp = time.time()
         if self.frame_ID == 1:
-            if self.pixel_format == 'MONO8':
-                self.current_frame = np.random.randint(255,size=(2000,2000),dtype=np.uint8)
-                self.current_frame[901:1100,901:1100] = 200
-            elif self.pixel_format == 'MONO16':
-                self.current_frame = np.random.randint(65535,size=(2000,2000),dtype=np.uint16)
-                self.current_frame[901:1100,901:1100] = 200*256
+            if self.pixel_format == "MONO8":
+                self.current_frame = np.random.randint(255, size=(2000, 2000), dtype=np.uint8)
+                self.current_frame[901:1100, 901:1100] = 200
+            elif self.pixel_format == "MONO16":
+                self.current_frame = np.random.randint(65535, size=(2000, 2000), dtype=np.uint16)
+                self.current_frame[901:1100, 901:1100] = 200 * 256
         else:
-            self.current_frame = np.roll(self.current_frame,10,axis=0)
-            pass 
+            self.current_frame = np.roll(self.current_frame, 10, axis=0)
+            pass
             # self.current_frame = np.random.randint(255,size=(768,1024),dtype=np.uint8)
         if self.new_image_callback_external is not None and self.callback_is_enabled:
             self.new_image_callback_external(self)
@@ -442,7 +447,7 @@ class Camera_Simulation(object):
     def _on_frame_callback(self, user_param, raw_image):
         pass
 
-    def set_ROI(self,offset_x=None,offset_y=None,width=None,height=None):
+    def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
         pass
 
     def set_line3_to_strobe(self):

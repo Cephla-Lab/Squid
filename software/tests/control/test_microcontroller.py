@@ -2,13 +2,16 @@ import pytest
 import control._def
 import control.microcontroller
 
+
 def assert_pos_almost_equal(expected, actual):
     assert len(actual) == len(expected)
-    for (e, a) in zip(expected, actual):
+    for e, a in zip(expected, actual):
         assert a == pytest.approx(e)
+
 
 def test_create_simulated_microcontroller():
     micro = control.microcontroller.Microcontroller(existing_serial=control.microcontroller.SimSerial())
+
 
 def test_microcontroller_simulated_positions():
     micro = control.microcontroller.Microcontroller(existing_serial=control.microcontroller.SimSerial())
@@ -94,7 +97,10 @@ def test_microcontroller_simulated_positions():
     micro.wait_till_operation_is_completed()
     assert_pos_almost_equal((0, 0, 3000, 0), micro.get_pos())
 
-@pytest.mark.skip(reason="This is likely a bug, but I'm not sure yet.  Tracking in https://linear.app/cephla/issue/S-115/microcontroller-relative-and-absolute-position-sign-mismatch")
+
+@pytest.mark.skip(
+    reason="This is likely a bug, but I'm not sure yet.  Tracking in https://linear.app/cephla/issue/S-115/microcontroller-relative-and-absolute-position-sign-mismatch"
+)
 def test_microcontroller_absolute_and_relative_match():
     micro = control.microcontroller.Microcontroller(existing_serial=control.microcontroller.SimSerial())
 

@@ -6,15 +6,18 @@ import pydantic
 
 import control._def as _def
 
+
 class DirectionSign(enum.IntEnum):
     DIRECTION_SIGN_POSITIVE = 1
     DIRECTION_SIGN_NEGATIVE = -1
+
 
 class PIDConfig(pydantic.BaseModel):
     ENABLED: bool
     P: float
     I: float
     D: float
+
 
 class AxisConfig(pydantic.BaseModel):
     MOVEMENT_SIGN: DirectionSign
@@ -52,16 +55,26 @@ class AxisConfig(pydantic.BaseModel):
         if self.USE_ENCODER:
             return usteps * self.MOVEMENT_SIGN.value * self.ENCODER_STEP_SIZE * self.ENCODER_SIGN.value
         else:
-            return usteps * self.MOVEMENT_SIGN.value * self.SCREW_PITCH / (self.MICROSTEPS_PER_STEP * self.FULL_STEPS_PER_REV)
+            return (
+                usteps
+                * self.MOVEMENT_SIGN.value
+                * self.SCREW_PITCH
+                / (self.MICROSTEPS_PER_STEP * self.FULL_STEPS_PER_REV)
+            )
 
     def convert_real_units_to_ustep(self, real_unit: float):
-        return round(real_unit / (self.MOVEMENT_SIGN.value * self.SCREW_PITCH / (self.MICROSTEPS_PER_STEP * self.FULL_STEPS_PER_REV)))
+        return round(
+            real_unit
+            / (self.MOVEMENT_SIGN.value * self.SCREW_PITCH / (self.MICROSTEPS_PER_STEP * self.FULL_STEPS_PER_REV))
+        )
+
 
 class StageConfig(pydantic.BaseModel):
     X_AXIS: AxisConfig
     Y_AXIS: AxisConfig
     Z_AXIS: AxisConfig
     THETA_AXIS: AxisConfig
+
 
 # NOTE(imo): This is temporary until we can just pass in instances of AxisConfig wherever we need it.  Having
 # this getter for the temporary singleton will help with the refactor once we can get rid of it.
@@ -78,7 +91,7 @@ _stage_config = StageConfig(
         MAX_ACCELERATION=_def.MAX_ACCELERATION_X_mm,
         MIN_POSITION=_def.SOFTWARE_POS_LIMIT.X_NEGATIVE,
         MAX_POSITION=_def.SOFTWARE_POS_LIMIT.X_POSITIVE,
-        PID=None
+        PID=None,
     ),
     Y_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_Y,
@@ -92,7 +105,7 @@ _stage_config = StageConfig(
         MAX_ACCELERATION=_def.MAX_ACCELERATION_Y_mm,
         MIN_POSITION=_def.SOFTWARE_POS_LIMIT.Y_NEGATIVE,
         MAX_POSITION=_def.SOFTWARE_POS_LIMIT.Y_POSITIVE,
-        PID=None
+        PID=None,
     ),
     Z_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_Z,
@@ -106,7 +119,7 @@ _stage_config = StageConfig(
         MAX_ACCELERATION=_def.MAX_ACCELERATION_Z_mm,
         MIN_POSITION=_def.SOFTWARE_POS_LIMIT.Z_NEGATIVE,
         MAX_POSITION=_def.SOFTWARE_POS_LIMIT.Z_POSITIVE,
-        PID=None
+        PID=None,
     ),
     THETA_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_THETA,
@@ -114,18 +127,22 @@ _stage_config = StageConfig(
         ENCODER_SIGN=_def.ENCODER_POS_SIGN_THETA,
         ENCODER_STEP_SIZE=_def.ENCODER_STEP_SIZE_THETA,
         FULL_STEPS_PER_REV=_def.FULLSTEPS_PER_REV_THETA,
-        SCREW_PITCH=2.0*math.pi/_def.FULLSTEPS_PER_REV_THETA ,
+        SCREW_PITCH=2.0 * math.pi / _def.FULLSTEPS_PER_REV_THETA,
         MICROSTEPS_PER_STEP=_def.MICROSTEPPING_DEFAULT_Y,
-        MAX_SPEED=2.0 * math.pi / 4,  # NOTE(imo): I arbitrarily guessed this at 4 sec / rev, so it probably needs adjustment.
+        MAX_SPEED=2.0
+        * math.pi
+        / 4,  # NOTE(imo): I arbitrarily guessed this at 4 sec / rev, so it probably needs adjustment.
         MAX_ACCELERATION=_def.MAX_ACCELERATION_X_mm,
         MIN_POSITION=0,  # NOTE(imo): Min and Max need adjusting.  They are arbitrary right now!
         MAX_POSITION=2.0 * math.pi / 4,
-        PID=None
-    )
+        PID=None,
+    ),
 )
 
 """
 Returns the StageConfig that existed at process startup.
 """
+
+
 def get_stage_config():
     return _stage_config
