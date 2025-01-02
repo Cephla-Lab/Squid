@@ -3,8 +3,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from squid.config import CameraConfig
-from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraPixelFormat, CameraFrameFormat
+from squid.config import CameraConfig, CameraPixelFormat
+from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrameFormat
 
 
 def get_camera(config: CameraConfig, simulated: bool = False) -> AbstractCamera:
@@ -18,14 +18,20 @@ def get_camera(config: CameraConfig, simulated: bool = False) -> AbstractCamera:
 
     raise NotImplementedError(f"Camera of type={config.camera_type} not yet supported.")
 
+
 class SimulatedCamera(AbstractCamera):
     @staticmethod
     def debug_log(method):
         import inspect
-        @functools.wraps
+
+        @functools.wraps(method)
         def _logged_method(self, *args, **kwargs):
             kwargs_pairs = tuple(f"{k}={v}" for (k, v) in kwargs.items())
-            self._log.debug(f"{inspect.currentframe().f_code.co_name}({','.join(args + kwargs_pairs)})")
+            args_str = tuple(str(a) for a in args)
+            self._log.debug(f"{inspect.currentframe().f_code.co_name}({','.join(args_str + kwargs_pairs)})")
+            return method(self, *args, **kwargs)
+
+        return _logged_method
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -33,17 +39,17 @@ class SimulatedCamera(AbstractCamera):
         self._current_frame = None
 
         self._exposure_time = None
-        self._frame_format = None
+        self._frame_format = CameraFrameFormat.RAW
         self._pixel_format = None
+        self.set_pixel_format(self._config.default_pixel_format)
         self._resolution = None
         self.set_resolution(self._config.default_resolution[0], self._config.default_resolution[1])
         self._analog_gain = None
         self._white_balance_gains = None
         self._black_level = None
         self._acquisition_mode = None
-        self._roi = (0, 0, self.get_resolution()[0], self.get_resolution[1])
+        self._roi = (0, 0, self.get_resolution()[0], self.get_resolution()[1])
         self._temperature_setpoint = None
-
 
     @debug_log
     def set_exposure_time(self, exposure_time_ms: float):
@@ -132,18 +138,22 @@ class SimulatedCamera(AbstractCamera):
     def send_trigger(self):
         (height, width) = self.get_resolution()
         if self.get_frame_id() == 1:
-            if self.get_pixel_format() == 'MONO8':
+            if self.get_pixel_format() == CameraPixelFormat.MONO8:
                 self._current_frame = np.random.randint(255, size=(height, width), dtype=np.uint8)
-                self._current_frame[height // 2-99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = 200
-            elif self.get_pixel_format() == 'MONO12':
+                self._current_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = 200
+            elif self.get_pixel_format() == CameraPixelFormat.MONO12:
                 self._current_frame = np.random.randint(4095, size=(height, width), dtype=np.uint16)
                 self._current_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = 200 * 16
                 self._current_frame = self._current_frame << 4
-            elif self.get_pixel_format() == 'MONO16':
+            elif self.get_pixel_format() == CameraPixelFormat.MONO16:
                 self._current_frame = np.random.randint(65535, size=(height, width), dtype=np.uint16)
-                self._current_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = 200 * 256
+                self._current_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = (
+                    200 * 256
+                )
+            else:
+                raise NotImplementedError(f"Simulated camera does not support pixel_format={self.get_pixel_format()}")
         else:
-            self._current_frame = np.roll(self._current_frame,10, axis=0)
+            self._current_frame = np.roll(self._current_frame, 10, axis=0)
 
         self._frame_id += 1
         self._propogate_frame(self._current_frame)
