@@ -817,6 +817,7 @@ class LiveController(QObject):
     def set_display_resolution_scaling(self, display_resolution_scaling):
         self.display_resolution_scaling = display_resolution_scaling / 100
 
+    # TODO(imo): Do we need to store this on the camera like we do now?  Or can this call a camera method directly.
     def reset_strobe_arugment(self):
         # re-calculate the strobe_delay_us value
         try:

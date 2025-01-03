@@ -197,11 +197,14 @@ class CameraConfig(pydantic.BaseModel):
 
     default_pixel_format: CameraPixelFormat
 
+    default_black_level: float
+
 
 _camera_config = CameraConfig(
     camera_type=_old_camera_type_to_enum(_def.CAMERA_TYPE),
     default_resolution=(_def.Acquisition.CROP_WIDTH, _def.Acquisition.CROP_HEIGHT),
     default_pixel_format=(_def.DEFAULT_PIXEL_FORMAT),
+    default_black_level=(_def.DEFAULT_BLACKLEVEL_VALUE)
 )
 
 

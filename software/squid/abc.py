@@ -300,6 +300,13 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
+    def set_auto_exposure(self, enabled: bool):
+        """
+        Enables or disables auto exposure.
+        """
+        pass
+
+    @abc.abstractmethod
     def set_frame_format(self, frame_format: CameraFrameFormat):
         """
         If this camera supports the given frame format, set it and make sure that
@@ -504,5 +511,12 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def get_temperature(self) -> float:
         """
         Get the current temperature of the camera in deg C.
+        """
+        pass
+
+    @abc.abstractmethod
+    def get_full_frame_time(self) -> float:
+        """
+        Returns the exposure + strobe time for the camera in [ms].  This will be >= get_exposure_time()
         """
         pass
