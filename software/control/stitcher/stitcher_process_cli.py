@@ -5,7 +5,7 @@ import sys
 import time
 from multiprocessing import Queue, Event
 from queue import Empty
-from control.stitcher.parameters import StitchingParameters
+from control.stitcher.stitcher_parameters import StitchingParameters
 from control.stitcher.stitcher_process import StitcherProcess
 
 """

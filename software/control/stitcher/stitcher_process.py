@@ -23,7 +23,7 @@ from aicsimageio.writers import OmeTiffWriter
 from aicsimageio.writers import OmeZarrWriter
 from aicsimageio import types
 from basicpy import BaSiC
-from control.stitcher.parameters import StitchingParameters
+from control.stitcher.stitcher_parameters import StitchingParameters
 
 # Cephla-Lab: Squid Microscopy Image Stitcher (soham mukherjee)
 

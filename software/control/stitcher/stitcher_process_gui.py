@@ -12,7 +12,7 @@ from PyQt5.QtCore import QTimer, Qt
 from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
 from queue import Empty
 
-from control.stitcher.parameters import StitchingParameters
+from control.stitcher.stitcher_parameters import StitchingParameters
 from control.stitcher.stitcher_process import StitcherProcess
 
 CHANNEL_COLORS_MAP = {

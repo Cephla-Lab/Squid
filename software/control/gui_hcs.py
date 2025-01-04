@@ -86,7 +86,7 @@ import control.microcontroller as microcontroller
 import control.serial_peripherals as serial_peripherals
 
 if ENABLE_STITCHER:
-    from control.stitcher.parameters import StitchingParameters
+    from control.stitcher.stitcher_parameters import StitchingParameters
 
 if SUPPORT_LASER_AUTOFOCUS:
     import control.core_displacement_measurement as core_displacement_measurement
