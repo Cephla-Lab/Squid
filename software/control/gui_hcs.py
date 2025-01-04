@@ -86,7 +86,7 @@ import control.microcontroller as microcontroller
 import control.serial_peripherals as serial_peripherals
 
 if ENABLE_STITCHER:
-    import control.stitcher as stitcher
+    from control.stitcher.parameters import StitchingParameters
 
 if SUPPORT_LASER_AUTOFOCUS:
     import control.core_displacement_measurement as core_displacement_measurement
@@ -1308,44 +1308,24 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayTabs.setCurrentIndex(0)
 
     def startStitcher(self, acquisition_path):
+        """Start the stitching process with current settings"""
         acquisitionWidget = self.recordTabWidget.currentWidget()
         if acquisitionWidget.checkbox_stitchOutput.isChecked():
-            apply_flatfield = self.stitcherWidget.applyFlatfieldCheck.isChecked()
-            use_registration = self.stitcherWidget.useRegistrationCheck.isChecked()
-            registration_channel = self.stitcherWidget.registrationChannelCombo.currentText()
-            registration_z_level = self.stitcherWidget.registrationZCombo.value()
-            overlap_percent = self.wellplateMultiPointWidget.entry_overlap.value()
-            output_name = acquisitionWidget.lineEdit_experimentID.text() or "stitched"
-            output_format = (
-                ".ome.zarr" if self.stitcherWidget.outputFormatCombo.currentText() == "OME-ZARR" else ".ome.tiff"
-            )
-
-            stitcher_class = (
-                stitcher.CoordinateStitcher
-                if self.recordTabWidget.currentIndex() == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget)
-                else stitcher.Stitcher
-            )
-            self.stitcherThread = stitcher_class(
+            # Create stitching parameters from current settings
+            params = StitchingParameters(
                 input_folder=acquisition_path,
-                output_name=output_name,
-                output_format=output_format,
-                apply_flatfield=apply_flatfield,
-                overlap_percent=overlap_percent,
-                use_registration=use_registration,
-                registration_channel=registration_channel,
-                registration_z_level=registration_z_level,
+                output_format='.' + self.stitcherWidget.outputFormatCombo.currentText().lower().replace('-', '.'),
+                apply_flatfield=self.stitcherWidget.applyFlatfieldCheck.isChecked(),
+                use_registration=self.stitcherWidget.useRegistrationCheck.isChecked(),
+                registration_channel=self.stitcherWidget.registrationChannelCombo.currentText() if self.stitcherWidget.useRegistrationCheck.isChecked() else '',
+                registration_z_level=self.stitcherWidget.registrationZCombo.value() if self.stitcherWidget.useRegistrationCheck.isChecked() else 0,
+                scan_pattern='Unidirectional',
+                merge_timepoints=False,  # Could be made configurable in the UI
+                merge_hcs_regions=False  # Could be made configurable in the UI
             )
 
-            self.stitcherWidget.setStitcherThread(self.stitcherThread)
-            self.connectStitcherSignals()
-            self.stitcherThread.start()
-
-    def connectStitcherSignals(self):
-        self.stitcherThread.update_progress.connect(self.stitcherWidget.updateProgressBar)
-        self.stitcherThread.getting_flatfields.connect(self.stitcherWidget.gettingFlatfields)
-        self.stitcherThread.starting_stitching.connect(self.stitcherWidget.startingStitching)
-        self.stitcherThread.starting_saving.connect(self.stitcherWidget.startingSaving)
-        self.stitcherThread.finished_saving.connect(self.stitcherWidget.finishedSaving)
+            # Start the stitching process
+            self.stitcherWidget.start_stitching(params)
 
     def move_from_click_image(self, click_x, click_y, image_width, image_height):
         if self.navigationWidget.get_click_to_move_enabled():

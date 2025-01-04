@@ -6,6 +6,7 @@ import squid.logging
 from control.core.core import TrackingController
 from control.microcontroller import Microcontroller
 from squid.abc import AbstractStage
+from control._def import *
 
 # set QT_API environment variable
 os.environ["QT_API"] = "pyqt5"
@@ -18,8 +19,7 @@ from qtpy.QtGui import *
 
 import pyqtgraph as pg
 import pandas as pd
-import napari
-from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
+import numpy as np
 import re
 import cv2
 import math
@@ -27,11 +27,16 @@ import locale
 import time
 from datetime import datetime
 import itertools
-import numpy as np
-from scipy.spatial import Delaunay
 import shutil
-from control._def import *
 from PIL import Image, ImageDraw, ImageFont
+
+if ENABLE_STITCHER:
+    from control.stitcher.stitcher_process import StitcherProcess
+    from control.stitcher.parameters import StitchingParameters
+    import napari
+    from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
+    from multiprocessing import Queue, Event
+    from queue import Empty
 
 
 class WrapperWindow(QMainWindow):
@@ -4087,17 +4092,67 @@ class FocusMapWidget(QFrame):
 
 
 class StitcherWidget(QFrame):
-
     def __init__(self, configurationManager, contrastManager, *args, **kwargs):
-        super(StitcherWidget, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.configurationManager = configurationManager
         self.contrastManager = contrastManager
-        self.stitcherThread = None
+
+        # Process management
+        self.stitcher_process = None
+        self.progress_queue = Queue()
+        self.status_queue = Queue()
+        self.complete_queue = Queue()
+        self.stop_event = Event()
+
+        # Create timer for checking queues
+        self.queue_timer = QTimer()
+        self.queue_timer.timeout.connect(self.check_queues)
+        self.queue_timer.start(100)  # Check every 100ms
+
         self.output_path = ""
         self.initUI()
 
+    def check_queues(self):
+        """Check for updates from the stitching process"""
+        # Check progress updates
+        try:
+            while True:
+                msg_type, data = self.progress_queue.get_nowait()
+                if msg_type == 'progress':
+                    current, total = data
+                    self.progressBar.setRange(0, total)
+                    self.progressBar.setValue(current)
+                    self.progressBar.setVisible(True)
+        except Empty:
+            pass
+
+        # Check status updates
+        try:
+            while True:
+                msg_type, data = self.status_queue.get_nowait()
+                if msg_type == 'status':
+                    status, is_saving = data
+                    self.statusLabel.setText(f"Status: {status}")
+                    if is_saving:
+                        self.progressBar.setRange(0, 0)  # Indeterminate mode
+                elif msg_type == 'error':
+                    QMessageBox.critical(self, "Error", str(data))
+                    self.stop_stitching()
+        except Empty:
+            pass
+
+
+        # Check completion updates
+        try:
+            msg_type, data = self.complete_queue.get_nowait()
+            if msg_type == 'complete':
+                output_path, dtype = data
+                self.finishedSaving(output_path, dtype)
+        except Empty:
+            pass
+
     def initUI(self):
-        self.setFrameStyle(QFrame.Panel | QFrame.Raised)  # Set frame style
+        self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.layout = QVBoxLayout(self)
         self.rowLayout1 = QHBoxLayout()
         self.rowLayout2 = QHBoxLayout()
@@ -4131,7 +4186,7 @@ class StitcherWidget(QFrame):
         self.registrationChannelCombo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.rowLayout2.addWidget(self.registrationChannelCombo)
 
-        # Select registration cz-level
+        # Select registration z-level
         self.registrationZLabel = QLabel(" Z-Level", self)
         self.registrationZLabel.setVisible(False)
         self.rowLayout2.addWidget(self.registrationZLabel)
@@ -4150,26 +4205,23 @@ class StitcherWidget(QFrame):
 
         # Button to view output in Napari
         self.viewOutputButton = QPushButton("View Output in Napari")
-        self.viewOutputButton.setEnabled(False)  # Initially disabled
+        self.viewOutputButton.setEnabled(False)
         self.viewOutputButton.setVisible(False)
         self.viewOutputButton.clicked.connect(self.viewOutputNapari)
         self.layout.addWidget(self.viewOutputButton)
 
-        # Progress bar
+        # Progress bar row
         progress_row = QHBoxLayout()
 
         # Status label
-        self.statusLabel = QLabel("Status: Image Acquisition")
+        self.statusLabel = QLabel("Status: Ready")
         progress_row.addWidget(self.statusLabel)
         self.statusLabel.setVisible(False)
 
         self.progressBar = QProgressBar()
         progress_row.addWidget(self.progressBar)
-        self.progressBar.setVisible(False)  # Initially hidden
+        self.progressBar.setVisible(False)
         self.layout.addLayout(progress_row)
-
-    def setStitcherThread(self, thread):
-        self.stitcherThread = thread
 
     def onRegistrationCheck(self, checked):
         self.registrationChannelLabel.setVisible(checked)
@@ -4178,79 +4230,94 @@ class StitcherWidget(QFrame):
         self.registrationZCombo.setVisible(checked)
 
     def updateRegistrationChannels(self, selected_channels):
-        self.registrationChannelCombo.clear()  # Clear existing items
+        self.registrationChannelCombo.clear()
         self.registrationChannelCombo.addItems(selected_channels)
 
     def updateRegistrationZLevels(self, Nz):
         self.registrationZCombo.setMinimum(0)
         self.registrationZCombo.setMaximum(Nz - 1)
 
-    def gettingFlatfields(self):
-        self.statusLabel.setText("Status: Calculating Flatfields")
-        self.viewOutputButton.setVisible(False)
-        self.viewOutputButton.setStyleSheet("")
-        self.progressBar.setValue(0)
-        self.statusLabel.setVisible(True)
-        self.progressBar.setVisible(True)
+    def start_stitching(self, params):
+        """Start the stitching process with the given parameters"""
+        # Reset state
+        self.stop_event = Event()
 
-    def startingStitching(self):
-        self.statusLabel.setText("Status: Stitching Scans")
-        self.viewOutputButton.setVisible(False)
-        self.progressBar.setValue(0)
-        self.statusLabel.setVisible(True)
-        self.progressBar.setVisible(True)
+        try:
+            self.stitcher_process = StitcherProcess(
+                params=params,
+                progress_queue=self.progress_queue,
+                status_queue=self.status_queue,
+                complete_queue=self.complete_queue,
+                stop_event=self.stop_event
+            )
+            self.stitcher_process.start()
 
-    def updateProgressBar(self, value, total):
-        self.progressBar.setMaximum(total)
-        self.progressBar.setValue(value)
-        self.progressBar.setVisible(True)
+            # Update UI state
+            self.statusLabel.setText("Status: Initializing Stitching...")
+            self.statusLabel.setVisible(True)
+            self.progressBar.setVisible(True)
+            self.viewOutputButton.setEnabled(False)
 
-    def startingSaving(self, stitch_complete=False):
-        if stitch_complete:
-            self.statusLabel.setText("Status: Saving Stitched Acquisition")
-        else:
-            self.statusLabel.setText("Status: Saving Stitched Region")
-        self.statusLabel.setVisible(True)
-        self.progressBar.setRange(0, 0)  # indeterminate mode.
-        self.progressBar.setVisible(True)
+        except Exception as e:
+            QMessageBox.critical(self, "Stitching Error", str(e))
+            self.statusLabel.setText("Status: Error Encountered")
+            self.stop_stitching()
+
+    def stop_stitching(self):
+        """Stop the stitching process if running"""
+        if self.stitcher_process and self.stitcher_process.is_alive():
+            self.stop_event.set()
+            self.stitcher_process.join(timeout=2)
+            if self.stitcher_process.is_alive():
+                self.stitcher_process.terminate()
+            self.stitcher_process = None
+
+        # Reset UI state
+        self.statusLabel.setText("Status: Ready")
+        self.progressBar.setVisible(False)
+        self.viewOutputButton.setEnabled(True)
 
     def finishedSaving(self, output_path, dtype):
-        if self.stitcherThread is not None:
-            self.stitcherThread.quit()
-            self.stitcherThread.deleteLater()
+        """Handle completion of the stitching process"""
+        # Stop the process if it's still running
+        if self.stitcher_process and self.stitcher_process.is_alive():
+            self.stop_stitching()
+
+        # Update UI state
         self.statusLabel.setVisible(False)
         self.progressBar.setVisible(False)
         self.viewOutputButton.setVisible(True)
         self.viewOutputButton.setStyleSheet("background-color: #C2C2FF")
         self.viewOutputButton.setEnabled(True)
+
+        # Reset view button connection
         try:
             self.viewOutputButton.clicked.disconnect()
         except TypeError:
             pass
         self.viewOutputButton.clicked.connect(self.viewOutputNapari)
 
+        # Store output path
         self.output_path = output_path
 
     def extractWavelength(self, name):
-        # Split the string and find the wavelength number immediately after "Fluorescence"
         parts = name.split()
         if "Fluorescence" in parts:
             index = parts.index("Fluorescence") + 1
             if index < len(parts):
-                return parts[index].split()[0]  # Assuming '488 nm Ex' and taking '488'
+                return parts[index].split()[0]
         for color in ["R", "G", "B"]:
             if color in parts or "full_" + color in parts:
                 return color
         return None
 
     def generateColormap(self, channel_info):
-        """Convert a HEX value to a normalized RGB tuple."""
         c0 = (0, 0, 0)
         c1 = (
-            ((channel_info["hex"] >> 16) & 0xFF) / 255,  # Normalize the Red component
-            ((channel_info["hex"] >> 8) & 0xFF) / 255,  # Normalize the Green component
+            ((channel_info["hex"] >> 16) & 0xFF) / 255,
+            ((channel_info["hex"] >> 8) & 0xFF) / 255,
             (channel_info["hex"] & 0xFF) / 255,
-        )  # Normalize the Blue component
+        )
         return Colormap(colors=[c0, c1], controls=[0, 1], name=channel_info["name"])
 
     def updateContrastLimits(self, channel, min_val, max_val):
@@ -4284,29 +4351,24 @@ class StitcherWidget(QFrame):
 
     def resetUI(self):
         self.output_path = ""
-
-        # Reset UI components to their default states
         self.applyFlatfieldCheck.setChecked(False)
-        self.outputFormatCombo.setCurrentIndex(0)  # Assuming the first index is the default
+        self.outputFormatCombo.setCurrentIndex(0)
         self.useRegistrationCheck.setChecked(False)
-        self.registrationChannelCombo.clear()  # Clear existing items
+        self.registrationChannelCombo.clear()
         self.registrationChannelLabel.setVisible(False)
         self.registrationChannelCombo.setVisible(False)
-
-        # Reset the visibility and state of buttons and labels
         self.viewOutputButton.setEnabled(False)
         self.viewOutputButton.setVisible(False)
         self.progressBar.setValue(0)
         self.progressBar.setVisible(False)
-        self.statusLabel.setText("Status: Image Acquisition")
+        self.statusLabel.setText("Status: Ready")
         self.statusLabel.setVisible(False)
 
     def closeEvent(self, event):
-        if self.stitcherThread is not None:
-            self.stitcherThread.quit()
-            self.stitcherThread.wait()
-            self.stitcherThread.deleteLater()
-            self.stitcherThread = None
+        """Clean up resources when closing"""
+        self.stop_stitching()
+        if hasattr(self, 'queue_timer'):
+            self.queue_timer.stop()
         super().closeEvent(event)
 
 
