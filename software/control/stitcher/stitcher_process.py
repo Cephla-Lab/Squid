@@ -131,7 +131,7 @@ class StitcherProcess(Process):
         self.flatfields = {}
         self.acquisition_metadata = {}
         self.dtype = np.uint16
-        self.chunks = (1, 1, 1, 512, 512)
+        self.chunks = (1, 1, 1, 4096, 4096)
         self.h_shift = (0, 0)
         if self.scan_pattern == 'S-Pattern':
             self.h_shift_rev = (0, 0)
