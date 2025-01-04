@@ -25,7 +25,6 @@ from aicsimageio import types
 from basicpy import BaSiC
 from control.stitcher.parameters import StitchingParameters
 
-
 # Cephla-Lab: Squid Microscopy Image Stitcher (soham mukherjee)
 
 class StitcherProcess(Process):
@@ -55,8 +54,6 @@ class StitcherProcess(Process):
         # Core attributes from parameters
         self.input_folder = params.input_folder
         self.output_folder = params.stitched_folder
-        os.makedirs(self.output_folder, exist_ok=True)
-
         self.output_format = params.output_format
 
         # Default merge parameters to False
@@ -248,8 +245,10 @@ class StitcherProcess(Process):
                 continue
 
             # Process each image file
-            image_files = sorted([f for f in os.listdir(image_folder)
-                                if f.endswith(('.bmp', '.tiff')) and 'focus_camera' not in f])
+            image_files = sorted(
+                [f for f in os.listdir(image_folder)
+                if f.endswith(('.bmp', '.tiff', 'tif', 'jpg', 'jpeg', 'png')) and 'focus_camera' not in f]
+            )
 
             for file in image_files:
                 parts = file.split('_', 3)
@@ -559,7 +558,8 @@ class StitcherProcess(Process):
         if not self.registration_channel:
             self.registration_channel = self.channel_names[0]
         elif self.registration_channel not in self.channel_names:
-            print(f"Warning: Specified registration channel '{self.registration_channel}' not found. Using {self.channel_names[0]}.")
+            print(f"Warning: Registration channel '{self.registration_channel}' not found")
+            print(f"Using {self.channel_names[0]} for registration")
             self.registration_channel = self.channel_names[0]
         self.emit_status(f"Calculating Registration Shifts...")
 
@@ -1526,6 +1526,7 @@ class StitcherProcess(Process):
             self.extract_acquisition_parameters()
             self.get_pixel_size()
             self.parse_acquisition_metadata()
+            os.makedirs(self.output_folder, exist_ok=True)
 
             if self.apply_flatfield:
                 self.get_flatfields()
@@ -1548,11 +1549,12 @@ class StitcherProcess(Process):
                     stitched_region = self.stitch_region(timepoint, region)
 
                     # Save region
-                    output_path = self.save_region_aics(timepoint, region, stitched_region)
-                    # if self.output_format.endswith('.zarr'):
-                    #     output_path = self.save_region_ome_zarr(timepoint, region, stitched_region)
-                    # else:  # .tiff
-                    #     output_path = self.save_region_aics(timepoint, region, stitched_region)
+                    if self.output_format.endswith('.zarr'):
+                        output_path = self.save_region_ome_zarr(timepoint, region, stitched_region) # zarr output
+                    else:
+                        output_path = self.save_region_aics(timepoint, region, stitched_region) # tiff output
+                    # output_path = self.save_region_aics(timepoint, region, stitched_region) # zarr or tiff output
+
                     print(f"Completed region {region} in {time.time() - rtime:.1f}s")
 
                 print(f"Completed timepoint {timepoint} in {time.time() - ttime:.1f}s")
