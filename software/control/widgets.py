@@ -32,7 +32,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 if ENABLE_STITCHER:
     from control.stitcher.stitcher_process import StitcherProcess
-    from control.stitcher.parameters import StitchingParameters
+    from control.stitcher.stitcher_parameters import StitchingParameters
     import napari
     from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
     from multiprocessing import Queue, Event
