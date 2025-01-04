@@ -3636,13 +3636,13 @@ class WellplateMultiPointWidget(QFrame):
         elif self.scanCoordinates.has_regions():
             self.scanCoordinates.clear_regions()
 
-    def update_live_coordinates(self, x, y):
+    def update_live_coordinates(self, pos: squid.abc.Pos):
         if hasattr(self.parent, "recordTabWidget") and self.parent.recordTabWidget.currentWidget() != self:
             return
         scan_size_mm = self.entry_scan_size.value()
         overlap_percent = self.entry_overlap.value()
         shape = self.combobox_shape.currentText()
-        self.scanCoordinates.set_live_scan_coordinates(x, y, scan_size_mm, overlap_percent, shape)
+        self.scanCoordinates.set_live_scan_coordinates(pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape)
 
     def toggle_acquisition(self, pressed):
         if not self.base_path_is_set:
