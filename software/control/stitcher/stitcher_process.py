@@ -130,7 +130,7 @@ class StitcherProcess(Process):
         self.flatfields = {}
         self.acquisition_metadata = {}
         self.dtype = np.uint16
-        self.chunks = (1, 1, 1, 4096, 4096)
+        self.chunks = (1, 1, 1, 2048, 2048) # (1, 1, 1, 4096, 4096)
         self.h_shift = (0, 0)
         if self.scan_pattern == 'S-Pattern':
             self.h_shift_rev = (0, 0)
@@ -186,24 +186,23 @@ class StitcherProcess(Process):
     def cleanup(self):
         """Clean up resources before termination."""
         try:
-            # Close any open file handles
+            # Clear queues
+            for queue in [self.progress_queue, self.status_queue, self.complete_queue]:
+                if queue:
+                    while not queue.empty():
+                        try:
+                            queue.get_nowait()
+                        except Empty:
+                            pass
+
             import gc
             gc.collect()  # Force garbage collection
-
-            # Clear zarr stores if any are open
-            if hasattr(self, 'zarr_stores'):
-                for store in self.zarr_stores:
-                    try:
-                        store.close()
-                    except:
-                        pass
 
             self.emit_status("Process Stopped...")
 
         except Exception as e:
             print(f"Error during cleanup: {str(e)}")
             # Continue with termination even if cleanup fails
-
 
     def get_timepoints(self):
         """Get list of timepoints from input directory.
@@ -1123,6 +1122,7 @@ class StitcherProcess(Process):
             self.output_folder, f"{timepoint}_stitched", f"{region}_stitched{self.output_format}"
         )
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        self.emit_status(f"Saving... (Timepoint:{timepoint} Region:{region})", is_saving=True)
 
         # Configure Zarr store and dataset
         store = zarr.DirectoryStore(output_path)
@@ -1224,6 +1224,7 @@ class StitcherProcess(Process):
             self.output_folder, f"{timepoint}_stitched", f"{region}_stitched{self.output_format}"
         )
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        self.emit_status(f"Saving... (Timepoint:{timepoint} Region:{region})", is_saving=True)
 
         try:
             if self.output_format.endswith('.zarr'):
@@ -1275,6 +1276,7 @@ class StitcherProcess(Process):
             self.output_folder, f"{timepoint}_stitched", f"{region}_stitched.ome.zarr"
         )
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        self.emit_status(f"Saving... (Timepoint:{timepoint} Region:{region})", is_saving=True)
 
         try:
             shapes = compute_level_shapes(stitched_region.shape, (1, 1, 1, 2, 2), self.num_pyramid_levels)
@@ -1300,8 +1302,6 @@ class StitcherProcess(Process):
         except Exception as e:
             self.status_queue.put(('error', f"Error saving region {region}: {str(e)}"))
             raise
-
-
 
     def _save_debug_slice(self, stitched_region, zarr_path):
         """Save a debug RGB image slice for verification.
