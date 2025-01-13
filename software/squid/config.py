@@ -1,6 +1,6 @@
 import enum
 import math
-from typing import Optional
+from typing import Optional, Tuple
 
 import pydantic
 
@@ -139,10 +139,74 @@ _stage_config = StageConfig(
     ),
 )
 
-"""
-Returns the StageConfig that existed at process startup.
-"""
 
-
-def get_stage_config():
+def get_stage_config() -> StageConfig:
+    """
+    Returns the StageConfig that existed at process startup.
+    """
     return _stage_config
+
+
+class CameraType(enum.Enum):
+    TOUPCAM = "TOUPCAM"
+    FLIR = "FLIR"
+    HAMAMATSU = "HAMAMATSU"
+    IDS = "IDS"
+
+
+def _old_camera_type_to_enum(old_string) -> CameraType:
+    if old_string == "Toupcam":
+        return CameraType.TOUPCAM
+    elif old_string == "FLIR":
+        return CameraType.FLIR
+    elif old_string == "Hamamatsu":
+        return CameraType.HAMAMATSU
+    elif old_string == "iDS":
+        return CameraType.IDS
+    raise ValueError(f"Unknown old camera type {old_string=}")
+
+
+class CameraPixelFormat(enum.Enum):
+    """
+    This is all known Pixel Formats in the Cephla world, but not all cameras will support
+    all of these.
+    """
+
+    MONO8 = "MONO8"
+    MONO12 = "MONO12"
+    MONO14 = "MONO14"
+    MONO16 = "MONO16"
+    RGB24 = "RGB24"
+    RGB32 = "RGB32"
+    RGB48 = "RGB48"
+
+
+class CameraConfig(pydantic.BaseModel):
+    """
+    Most camera parameters are runtime configurable, so CameraConfig is more about defining what
+    camera must be available and used for a particular function in the system.
+
+    If we want to capture the settings a camera used for a particular capture, another model called
+    CameraState, or something, might be more appropriate.
+    """
+
+    # NOTE(imo): Not "type" because that's a python builtin and can cause confusion
+    camera_type: CameraType
+
+    default_resolution: Tuple[int, int]
+
+    default_pixel_format: CameraPixelFormat
+
+
+_camera_config = CameraConfig(
+    camera_type=_old_camera_type_to_enum(_def.CAMERA_TYPE),
+    default_resolution=(_def.Acquisition.CROP_WIDTH, _def.Acquisition.CROP_HEIGHT),
+    default_pixel_format=(_def.DEFAULT_PIXEL_FORMAT),
+)
+
+
+def get_camera_config() -> CameraConfig:
+    """
+    Returns the CameraConfig that existed at process startup.
+    """
+    return _camera_config
