@@ -13,9 +13,6 @@ def test_create_simulated_stages():
     microcontroller = Microcontroller(existing_serial=SimSerial())
     cephla_stage = squid.stage.cephla.CephlaStage(microcontroller, squid.config.get_stage_config())
 
-    with pytest.raises(NotImplementedError):
-        prior_stage = squid.stage.prior.PriorStage(squid.config.get_stage_config())
-
 
 def test_simulated_cephla_stage_ops():
     microcontroller = Microcontroller(existing_serial=SimSerial())

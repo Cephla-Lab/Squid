@@ -45,6 +45,7 @@ class PriorStage(AbstractStage):
         self.acceleration = 100
 
         self.serial_lock = threading.Lock()
+        self.is_busy = False
 
         self.set_baudrate(baudrate)
 
@@ -88,15 +89,16 @@ class PriorStage(AbstractStage):
     def _initialize(self):
         self._send_command("COMP 0")  # Set to standard mode
         self._send_command("BLSH 1")  # Enable backlash correction
+        self._send_command("RES,S," + str(self.resolution))  # Set resolution
         self._send_command('XD -1')   # Set direction of X axis move
         self._send_command('YD -1')   # Set direction of Y axis move
-        self._send_command("RES,S," + str(self.resolution))  # Set resolution
-        response = self._send_command("H 0")  # Joystick enabled
+        self._send_command("H 0")  # Joystick enabled
         self.joystick_enabled = True
         self.user_unit = self.stage_microsteps_per_mm * self.resolution
-        # self.get_stage_info()
+        self.get_stage_info()
         self.set_acceleration(self.acceleration)
         self.set_max_speed(self.speed)
+        self._get_pos_poll_stage()
 
     def _send_command(self, command: str) -> str:
         with self.serial_lock:
@@ -144,7 +146,7 @@ class PriorStage(AbstractStage):
 
     def get_acceleration(self):
         """Get the current acceleration setting."""
-        response = self.send_command("SAS")
+        response = self._send_command("SAS")
         print(f"Current acceleration: {response}")
         return int(response)
 
@@ -205,25 +207,26 @@ class PriorStage(AbstractStage):
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         pass
 
-    def get_pos(self) -> Pos:
+    def _get_pos_poll_stage(self):
         response = self._send_command("P")
         x, y, z = map(int, response.split(","))
         self.x_pos = x
         self.y_pos = y
-        x_mm = self._steps_to_mm(x)
-        y_mm = self._steps_to_mm(y)
+
+    def get_pos(self) -> Pos:
+        x_mm = self._steps_to_mm(self.x_pos)
+        y_mm = self._steps_to_mm(self.y_pos)
         return Pos(x_mm=x_mm, y_mm=y_mm, z_mm=0, theta_rad=0)
 
     def get_state(self) -> StageStage:
-        if int(self._send_command("$,S")) == 0:
-            return StageStage(busy=False)
-        else:
-            return StageStage(busy=True)
+        return StageStage(busy=self.is_busy)
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         self._send_command('SIS')
         if blocking:
             self.wait_for_stop()
+        else:
+            threading.Thread(target=self.wait_for_stop, daemon=True).start()
 
         # We are not using the following for Prior stage yet
         '''
@@ -239,16 +242,21 @@ class PriorStage(AbstractStage):
         '''
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
-        self.send_command("Z")
-        self.x_pos = 0
-        self.y_pos = 0
+        if x:
+            self._send_command(f'PX 0')
+            self.x_pos = 0
+        if y:
+            self._send_command(f'PY 0')
+            self.y_pos = 0
 
     def wait_for_stop(self):
+        self.is_busy = True
         while True:
             status = int(self._send_command("$,S"))
             if status == 0:
-                self.get_pos()
-                # print("xy position: ", self.x_pos, self.y_pos)
+                self._get_pos_poll_stage()
+                #print("xy position: ", self.x_pos, self.y_pos)
+                self.is_busy = False
                 break
             time.sleep(0.05)
 
