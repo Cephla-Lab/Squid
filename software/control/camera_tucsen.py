@@ -39,6 +39,8 @@ class Camera(object):
     def __init__(self, sn=None, resolution=(3120, 2084), is_global_shutter=False, rotate_image_angle=None, flip_image=None):
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
+        # TODO: Specify camera model. FL 26BW and 400BSI V3 have different specs in max resolution, binning options, ROI setting, temperature
+
         self.sn = sn
         self.resolution = resolution
         self.is_global_shutter = is_global_shutter
@@ -80,20 +82,25 @@ class Camera(object):
         self.EXPOSURE_TIME_MS_MIN = 0.0347
         self.EXPOSURE_TIME_MS_MAX = 31640472.76
 
-        self.ROI_offset_x = 0
-        self.ROI_offset_y = 0
-        self.ROI_width = 6240
-        self.ROI_height = 4168
+        self.ROI_offset_x = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
+        self.ROI_offset_y = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
+        self.ROI_width = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
+        self.ROI_height = CAMERA_CONFIG.ROI_HEIGHT_DEFAULT
 
-        self.OffsetX = 0
-        self.OffsetY = 0
-        self.Width = resolution[0]
-        self.Height = resolution[1]
+        self.OffsetX = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
+        self.OffsetY = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
+        self.Width = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
+        self.Height = CAMERA_CONFIG.ROI_HEIGHT_DEFAULT
 
-        self.WidthMax = 6240
-        self.HeightMax = 4168
+        self.WidthMax = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
+        self.HeightMax = CAMERA_CONFIG.ROI_HEIGHT_DEFAULT
+
+        if resolution is not None:
+            self.Width = resolution[0]
+            self.Height = resolution[1]
+
         self.binning_options = {
-            (6240, 4168): 0,
+            # (6240, 4168): 0,  Not available for SenBin
             (3120, 2084): 1,
             (2080, 1388): 2,
             (1560, 1040): 3,
@@ -121,12 +128,7 @@ class Camera(object):
         else:
             self.log.info("Open Tucsen camera success!")
 
-        self.set_temperature(20)
-        self.temperature_reading_thread.start()
-        # Disable auto-exposure
-        TUCAM_Capa_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDCAPA.TUIDC_ATEXPOSURE.value, 0)
-        self.set_resolution(*self.resolution)
-        self.calculate_strobe_delay()
+        self._initialize()
 
     def open_by_sn(self, sn):
         TUCAM_Api_Init(pointer(self.TUCAMINIT))
@@ -143,19 +145,25 @@ class Camera(object):
 
             if string_at(pSN).decode("utf-8") == sn:
                 self.TUCAMOPEN = TUCAMOPEN
-                self.set_temperature(20)
-                self.temperature_reading_thread.start()
-                # Disable auto-exposure
-                TUCAM_Capa_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDCAPA.TUIDC_ATEXPOSURE.value, 0)
-                self.set_resolution(*self.resolution)
-                self.calculate_strobe_delay()
                 self.log.info(f"Open the camera success! sn={sn}")
+                self._initialize()
                 return
             else:
                 TUCAM_Dev_Close(TUCAMOPEN.hIdxTUCam)
 
         # TODO(imo): Propagate error in some way and handle
         self.log.error("No camera with the specified serial number found")
+
+    def _initialize(self):
+        self.set_temperature(20)
+        self.temperature_reading_thread.start()
+        # Disable auto-exposure
+        TUCAM_Capa_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDCAPA.TUIDC_ATEXPOSURE.value, 0)
+        # Set SenBin (max resolution 3120 x 2084)
+        TUCAM_Capa_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDCAPA.TUIDC_RESOLUTION.value, 2)
+        # Set software binning
+        self.set_resolution(*self.resolution)
+        self.calculate_strobe_delay()
 
     def close(self):
         self.disable_callback(clean_up=True)
@@ -191,7 +199,7 @@ class Camera(object):
                 if result == TUCAMRET.TUCAMRET_SUCCESS:
                     self._on_new_frame(self.m_frame)
             except:
-                pass
+                self.log.error("Error in WaitForFrame")
 
         TUCAM_Buf_AbortWait(self.TUCAMOPEN.hIdxTUCam)
         self.log.debug("End camera wait thread")
@@ -246,7 +254,7 @@ class Camera(object):
         t = temperature * 10 + 500
         result = TUCAM_Prop_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDPROP.TUIDP_TEMPERATURE.value, c_double(t), 0)
         if result != TUCAMRET.TUCAMRET_SUCCESS:
-            self.log.error("disable callback")
+            self.log.error("Set temperature failed")
 
     def get_temperature(self):
         t = c_double(0)
@@ -262,7 +270,7 @@ class Camera(object):
                 try:
                     self.temperature_reading_callback(temperature)
                 except TypeError as ex:
-                    self.log.error("Temperature read callback failed due to error: " + repr(ex))
+                    self.log.error("Temperature reading callback failed due to error: " + repr(ex))
                     # TODO(imo): Propagate error in some way and handle
                     pass
 
@@ -278,12 +286,12 @@ class Camera(object):
             return
 
         bin_value = c_int(self.binning_options[(width, height)])
-        try:
-            TUCAM_Capa_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDCAPA.TUIDC_BINNING_SUM.value, bin_value)
-
-        except Exception:
+        result = TUCAM_Capa_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDCAPA.TUIDC_BINNING_SUM.value, bin_value)
+        if result != TUCAMRET.TUCAMRET_SUCCESS:
             self.log.error("Cannot set binning.")
             # TODO(imo): Propagate error in some way and handle
+        else:
+            self.resolution = (width, height)
 
         if was_streaming:
             self.start_streaming()
@@ -354,6 +362,10 @@ class Camera(object):
             self.trigger_mode = TriggerMode.HARDWARE
 
     def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
+        # TODO: FL 26BW: The row window must be a multiple of 4, and the column window must be a multiple of 8. 
+        #                The minimum supported ROI for FL 26BW on Mosaic V3 is: 32 (columns) x 32 (rows).
+        #       400BSI V3: The row window must be a multiple of 4, and the column window must be a multiple of 8.
+        #                  The minimum supported ROI for Dhyana 400BSI V3 on Mosaic V3 is 48 (columns) × 8 (rows).
         roi_attr = TUCAM_ROI_ATTR()
         roi_attr.bEnable = 1
         roi_attr.nHOffset = offset_x if offset_x is not None else self.ROI_offset_x
@@ -380,6 +392,8 @@ class Camera(object):
 
         if was_streaming:
             self.start_streaming()
+
+        self.calculate_strobe_delay()
 
     def send_trigger(self):
         if self.trigger_mode == TriggerMode.SOFTWARE:
@@ -434,7 +448,10 @@ class Camera(object):
         return image_np.reshape((frame.usHeight, frame.usWidth))
 
     def calculate_strobe_delay(self):
-        self.strobe_delay_us = int(34.67 * self.Height)
+        # Line rate: FL 26BW: 34.67 us for standard resolution; 69.3 us for low noise; 12.58 us for SenBin
+        #            400BSI V3: 7.2 us for high speed; 11.2 us for other gain modes
+        # TODO: Calculation based on trigger delay and ROI
+        self.strobe_delay_us = int(12.58 * self.Height)
 
 
 class Camera_Simulation(object):
