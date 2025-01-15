@@ -3966,37 +3966,24 @@ class FocusMapWidget(QFrame):
     def generate_grid(self, rows=4, cols=4):
         """Generate focus point grid that spans scan bounds"""
         if self.enabled:
-
             self.point_combo.blockSignals(True)
             self.focus_points.clear()
             self.navigationViewer.clear_focus_points()
             self.status_label.hide()
             current_z = self.stage.get_pos().z_mm
-            bounds = self.scanCoordinates.get_scan_bounds()
-            if not bounds:
-                return
 
-            x_min, x_max = bounds["x"]
-            y_min, y_max = bounds["y"]
-            if self.add_margin:
-                x_step = (x_max - x_min) / (cols) if cols > 1 else 0
-                y_step = (y_max - y_min) / (rows) if rows > 1 else 0
-            else:
-                x_step = (x_max - x_min) / (cols - 1) if cols > 1 else 0
-                y_step = (y_max - y_min) / (rows - 1) if rows > 1 else 0
+            # Use FocusMap to generate coordinates
+            coordinates = self.focusMap.generate_grid_coordinates(
+                self.scanCoordinates,
+                rows=rows,
+                cols=cols,
+                add_margin=self.add_margin
+            )
 
-            for i in range(rows):
-                for j in range(cols):
-                    if self.add_margin:
-                        x = x_min + x_step / 2 + j * x_step
-                        y = y_min + y_step / 2 + i * y_step
-                    else:
-                        x = x_min + j * x_step
-                        y = y_min + i * y_step
-
-                    if self.scanCoordinates.validate_coordinates(x, y):
-                        self.focus_points.append((x, y, current_z))
-                        self.navigationViewer.register_focus_point(x, y)
+            # Add points with current z coordinate
+            for x, y in coordinates:
+                self.focus_points.append((x, y, current_z))
+                self.navigationViewer.register_focus_point(x, y)
 
             self.update_point_list()
             self.point_combo.blockSignals(False)
