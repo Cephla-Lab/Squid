@@ -53,18 +53,13 @@ def test_microcontroller_simulated_positions():
     micro.wait_till_operation_is_completed()
     assert_pos_almost_equal((1000, 2000, 3000, 4000), micro.get_pos())
 
-    # Multiply by the sign so we get a positive move.  The way these relative move helpers work right now
-    # is that they multiply by the sign, but the read back is not multiplied by the sign.  So if
-    # the movement sign is -1, doing a relative move of 100 will result in the get_pos() value being -100.
-    #
-    # NOTE(imo): This seems probably not right, so this might get fixed and this comment might be out of date.
-    micro.move_x_usteps(control._def.STAGE_MOVEMENT_SIGN_X * 1)
+    micro.move_x_usteps(1)
     micro.wait_till_operation_is_completed()
-    micro.move_y_usteps(control._def.STAGE_MOVEMENT_SIGN_Y * 2)
+    micro.move_y_usteps(2)
     micro.wait_till_operation_is_completed()
-    micro.move_z_usteps(control._def.STAGE_MOVEMENT_SIGN_Z * 3)
+    micro.move_z_usteps(3)
     micro.wait_till_operation_is_completed()
-    micro.move_theta_usteps(control._def.STAGE_MOVEMENT_SIGN_THETA * 4)
+    micro.move_theta_usteps(4)
     micro.wait_till_operation_is_completed()
     assert_pos_almost_equal((1001, 2002, 3003, 4004), micro.get_pos())
 
