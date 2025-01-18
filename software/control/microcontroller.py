@@ -573,13 +573,6 @@ class Microcontroller:
         cmd[6] = payload & 0xFF
         self.send_command(cmd)
 
-    def set_limit_switch_polarity(self, axis, polarity):
-        cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.SET_LIM_SWITCH_POLARITY
-        cmd[2] = axis
-        cmd[3] = polarity
-        self.send_command(cmd)
-
     def set_home_safety_margin(self, axis, margin):
         margin = abs(margin)
         if margin > 0xFFFF:

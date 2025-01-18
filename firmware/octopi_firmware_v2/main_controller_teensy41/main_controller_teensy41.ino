@@ -987,37 +987,6 @@ void loop() {
             }
             break;
           }
-        case SET_LIM_SWITCH_POLARITY:
-          {
-            switch (buffer_rx[2])
-            {
-              case AXIS_X:
-                {
-                  if (buffer_rx[3] != DISABLED)
-                  {
-                    LIM_SWITCH_X_ACTIVE_LOW = (buffer_rx[3] == ACTIVE_LOW);
-                  }
-                  break;
-                }
-              case AXIS_Y:
-                {
-                  if (buffer_rx[3] != DISABLED)
-                  {
-                    LIM_SWITCH_Y_ACTIVE_LOW = (buffer_rx[3] == ACTIVE_LOW);
-                  }
-                  break;
-                }
-              case AXIS_Z:
-                {
-                  if (buffer_rx[3] != DISABLED)
-                  {
-                    LIM_SWITCH_Z_ACTIVE_LOW = (buffer_rx[3] == ACTIVE_LOW);
-                  }
-                  break;
-                }
-            }
-            break;
-          }
 		case SET_HOME_SAFETY_MERGIN:
 		  {
             switch (buffer_rx[2])
