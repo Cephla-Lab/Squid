@@ -1875,6 +1875,7 @@ class FlexibleMultiPointWidget(QFrame):
     ):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.acquisition_start_time = None
         self.last_used_locations = None
         self.last_used_location_ids = None
         self.stage = stage
@@ -2426,7 +2427,7 @@ class FlexibleMultiPointWidget(QFrame):
             self.eta_timer.start(1000)  # Update every 1000 ms (1 second)
 
     def update_acquisition_progress(self, current_region, num_regions, current_time_point):
-        self.debug(f"updating acquisition progress for {current_region=}, {num_regions=}, {current_time_point=}...")
+        self._log.debug(f"updating acquisition progress for {current_region=}, {num_regions=}, {current_time_point=}...")
         self.current_region = current_region
         self.current_time_point = current_time_point
 
@@ -2526,6 +2527,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.signal_stitcher_widget.emit(checked)
 
     def toggle_acquisition(self, pressed):
+        self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
         if self.base_path_is_set == False:
             self.btn_startAcquisition.setChecked(False)
             msg = QMessageBox()
@@ -2587,9 +2589,8 @@ class FlexibleMultiPointWidget(QFrame):
             # Start coordinate-based acquisition
             self.multipointController.run_acquisition()
         else:
+            # This must eventually propagate through and call out acquisition_finished.
             self.multipointController.request_abort_aquisition()
-            self.is_current_acquisition_widget = False
-            self.setEnabled_all(True)
 
     def load_last_used_locations(self):
         if self.last_used_locations is None or len(self.last_used_locations) == 0:
@@ -2986,6 +2987,8 @@ class FlexibleMultiPointWidget(QFrame):
             self._log.debug(self.location_list)
 
     def acquisition_is_finished(self):
+        self._log.debug(f"In FlexibleMultiPointWidget, got acquisition_is_finished with {self.is_current_acquisition_widget=}")
+
         if not self.is_current_acquisition_widget:
             return  # Skip if this wasn't the widget that started acquisition
 
@@ -3057,6 +3060,7 @@ class WellplateMultiPointWidget(QFrame):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.stage = stage
         self.navigationViewer = navigationViewer
         self.multipointController = multipointController
@@ -3667,6 +3671,7 @@ class WellplateMultiPointWidget(QFrame):
         self._last_y_mm = y_mm
 
     def toggle_acquisition(self, pressed):
+        self._log.debug(f"WellplateMultiPointWidget.toggle_acquisition, {pressed=}")
         if not self.base_path_is_set:
             self.btn_startAcquisition.setChecked(False)
             QMessageBox.warning(self, "Warning", "Please choose base saving directory first")
@@ -3746,11 +3751,12 @@ class WellplateMultiPointWidget(QFrame):
             self.multipointController.run_acquisition()
 
         else:
+            # This must eventually propagate through and call our aquisition_is_finished, or else we'll be left
+            # in an odd state.
             self.multipointController.request_abort_aquisition()
-            self.is_current_acquisition_widget = False
-            self.setEnabled_all(True)
 
     def acquisition_is_finished(self):
+        self._log.debug(f"In WellMultiPointWidget, got acquisition_is_finished with {self.is_current_acquisition_widget=}")
         if not self.is_current_acquisition_widget:
             return  # Skip if this wasn't the widget that started acquisition
 

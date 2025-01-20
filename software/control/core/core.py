@@ -1491,6 +1491,7 @@ class MultiPointWorker(QObject):
                 # wait until it's time to do the next acquisition
                 while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
                     if self.multiPointController.abort_acqusition_requested:
+                        self._log.debug("In run wait loop, abort_acquisition_requested=True")
                         break
                     time.sleep(0.05)
 
@@ -2181,7 +2182,7 @@ class MultiPointController(QObject):
         parent=None,
     ):
         QObject.__init__(self)
-
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.camera = camera
         if DO_FLUORESCENCE_RTP:
             self.processingHandler = ProcessingHandler()
@@ -2535,6 +2536,7 @@ class MultiPointController(QObject):
         self.thread.start()
 
     def _on_acquisition_completed(self):
+        self._log.debug("MultiPointController._on_acquisition_completed called")
         # restore the previous selected mode
         if self.gen_focus_map:
             self.autofocusController.clear_focus_map()

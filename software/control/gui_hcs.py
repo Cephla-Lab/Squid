@@ -1251,6 +1251,7 @@ class HighContentScreeningGui(QMainWindow):
         self.wellSelectionWidget.setVisible(show)
 
     def toggleAcquisitionStart(self, acquisition_started):
+        self.log.debug(f"toggleAcquisitionStarted({acquisition_started=})")
         if acquisition_started:
             self.log.info("STARTING ACQUISITION")
             if self.is_live_scan_grid_on:  # disconnect live scan grid during acquisition
