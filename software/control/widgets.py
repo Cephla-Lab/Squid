@@ -2427,7 +2427,9 @@ class FlexibleMultiPointWidget(QFrame):
             self.eta_timer.start(1000)  # Update every 1000 ms (1 second)
 
     def update_acquisition_progress(self, current_region, num_regions, current_time_point):
-        self._log.debug(f"updating acquisition progress for {current_region=}, {num_regions=}, {current_time_point=}...")
+        self._log.debug(
+            f"updating acquisition progress for {current_region=}, {num_regions=}, {current_time_point=}..."
+        )
         self.current_region = current_region
         self.current_time_point = current_time_point
 
@@ -2987,7 +2989,9 @@ class FlexibleMultiPointWidget(QFrame):
             self._log.debug(self.location_list)
 
     def acquisition_is_finished(self):
-        self._log.debug(f"In FlexibleMultiPointWidget, got acquisition_is_finished with {self.is_current_acquisition_widget=}")
+        self._log.debug(
+            f"In FlexibleMultiPointWidget, got acquisition_is_finished with {self.is_current_acquisition_widget=}"
+        )
 
         if not self.is_current_acquisition_widget:
             return  # Skip if this wasn't the widget that started acquisition
@@ -3756,7 +3760,9 @@ class WellplateMultiPointWidget(QFrame):
             self.multipointController.request_abort_aquisition()
 
     def acquisition_is_finished(self):
-        self._log.debug(f"In WellMultiPointWidget, got acquisition_is_finished with {self.is_current_acquisition_widget=}")
+        self._log.debug(
+            f"In WellMultiPointWidget, got acquisition_is_finished with {self.is_current_acquisition_widget=}"
+        )
         if not self.is_current_acquisition_widget:
             return  # Skip if this wasn't the widget that started acquisition
 
