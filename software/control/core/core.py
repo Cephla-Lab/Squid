@@ -1459,7 +1459,7 @@ class MultiPointWorker(QObject):
 
     def update_use_piezo(self, value):
         self.use_piezo = value
-        self._log.info("MultiPointWorker: updated use_piezo to", value)
+        self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
 
     def run(self):
         self.start_time = time.perf_counter_ns()
