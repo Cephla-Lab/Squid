@@ -2397,6 +2397,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_NZ.setValue(nz)
 
     def update_region_progress(self, current_fov, num_fovs):
+        self._log.debug(f"Updating region progress for {current_fov=}, {num_fovs=}")
         self.progress_bar.setMaximum(num_fovs)
         self.progress_bar.setValue(current_fov)
 
@@ -2425,6 +2426,7 @@ class FlexibleMultiPointWidget(QFrame):
             self.eta_timer.start(1000)  # Update every 1000 ms (1 second)
 
     def update_acquisition_progress(self, current_region, num_regions, current_time_point):
+        self.debug(f"updating acquisition progress for {current_region=}, {num_regions=}, {current_time_point=}...")
         self.current_region = current_region
         self.current_time_point = current_time_point
 

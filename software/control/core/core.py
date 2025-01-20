@@ -4,6 +4,7 @@ import sys
 
 from control.microcontroller import Microcontroller
 from squid.abc import AbstractStage
+import squid.logging
 
 # qt libraries
 os.environ["QT_API"] = "pyqt5"
@@ -1468,6 +1469,7 @@ class MultiPointWorker(QObject):
         while self.time_point < self.Nt:
             # check if abort acquisition has been requested
             if self.multiPointController.abort_acqusition_requested:
+                self._log.debug("In run, abort_acquisition_requested=True")
                 break
 
             self.run_single_time_point()
@@ -3218,6 +3220,7 @@ class NavigationViewer(QFrame):
 
     def __init__(self, objectivestore, sample="glass slide", invertX=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.sample = sample
         self.objectiveStore = objectivestore
@@ -3493,6 +3496,7 @@ class NavigationViewer(QFrame):
             x_mm = (mouse_point.x() - self.origin_x_pixel) * self.mm_per_pixel
             y_mm = (mouse_point.y() - self.origin_y_pixel) * self.mm_per_pixel
 
+            self._log.debug(f"Got double click at (x_mm, y_mm) = {x_mm, y_mm}")
             self.signal_coordinates_clicked.emit(x_mm, y_mm)
 
         except Exception as e:
