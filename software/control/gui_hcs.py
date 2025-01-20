@@ -561,14 +561,9 @@ class HighContentScreeningGui(QMainWindow):
             self.displacementMeasurementWidget = widgets.DisplacementMeasurementWidget(
                 self.displacementMeasurementController, self.waveformDisplay
             )
-            self.laserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(self.laserAutofocusController)
-
+            self.laserAutofocusControlWidget: widgets.LaserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(self.laserAutofocusController)
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(draw_crosshairs=True)
-            self.waveformDisplay = widgets.WaveformDisplay(N=1000, include_x=True, include_y=False)
-            self.displacementMeasurementWidget = widgets.DisplacementMeasurementWidget(
-                self.displacementMeasurementController, self.waveformDisplay
-            )
-            self.laserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(self.laserAutofocusController)
+
 
         self.imageDisplayTabs = QTabWidget()
         if self.live_only_mode:
