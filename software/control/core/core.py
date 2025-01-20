@@ -1636,7 +1636,10 @@ class MultiPointWorker(QObject):
             multipoint_custom_script_entry(self, current_path, region_id, fov)
             return
 
-        self.perform_autofocus(region_id, fov)
+        if not self.perform_autofocus(region_id, fov):
+            self._log.error(
+                f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
+            )
 
         if self.NZ > 1:
             self.prepare_z_stack()
@@ -1742,7 +1745,7 @@ class MultiPointWorker(QObject):
                 print(repr(e))
 
     def perform_autofocus(self, region_id, fov):
-        if self.do_reflection_af == False:
+        if not self.do_reflection_af:
             # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
             if (
                 ((self.NZ == 1) or self.z_stacking_config == "FROM CENTER")
@@ -1765,7 +1768,7 @@ class MultiPointWorker(QObject):
                     self.autofocusController.wait_till_autofocus_has_completed()
         else:
             # initialize laser autofocus if it has not been done
-            if self.microscope.laserAutofocusController.is_initialized == False:
+            if not self.microscope.laserAutofocusController.is_initialized:
                 self._log.info("init reflection af")
                 # initialize the reflection AF
                 self.microscope.laserAutofocusController.initialize_auto()
@@ -1792,13 +1795,16 @@ class MultiPointWorker(QObject):
                     self.microscope.laserAutofocusController.move_to_target(
                         0
                     )  # for stepper in open loop mode, repeat the operation to counter backlash.  It's harmless if any other case.
-                except:
+                except Exception as e:
                     file_ID = f"{region_id}_focus_camera.bmp"
                     saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
                     iio.imwrite(saving_path, self.microscope.laserAutofocusController.image)
                     self._log.error(
-                        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+                        exc_info=e,
                     )
+                    return False
+        return True
 
     def prepare_z_stack(self):
         # move to bottom of the z stack
