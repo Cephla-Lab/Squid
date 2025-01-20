@@ -200,9 +200,7 @@ class HighContentScreeningGui(QMainWindow):
         )
 
         if USE_PRIOR_STAGE:
-            self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(
-                sn=PRIOR_STAGE_SN
-            )
+            self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(sn=PRIOR_STAGE_SN)
 
         else:
             self.stage: squid.abc.AbstractStage = squid.stage.cephla.CephlaStage(
@@ -561,9 +559,10 @@ class HighContentScreeningGui(QMainWindow):
             self.displacementMeasurementWidget = widgets.DisplacementMeasurementWidget(
                 self.displacementMeasurementController, self.waveformDisplay
             )
-            self.laserAutofocusControlWidget: widgets.LaserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(self.laserAutofocusController)
+            self.laserAutofocusControlWidget: widgets.LaserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(
+                self.laserAutofocusController
+            )
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(draw_crosshairs=True)
-
 
         self.imageDisplayTabs = QTabWidget()
         if self.live_only_mode:
@@ -849,9 +848,7 @@ class HighContentScreeningGui(QMainWindow):
         if WELLPLATE_FORMAT == "glass slide":
             # TODO(imo): This well place logic is duplicated below in onWellPlateChanged.  We should change it to only exist in 1 location.
             # self.movement_updater.sent_after_stopped.connect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
-            self.movement_updater.position_after_move.connect(
-                    self.wellplateMultiPointWidget.update_live_coordinates
-                )
+            self.movement_updater.position_after_move.connect(self.wellplateMultiPointWidget.update_live_coordinates)
             self.is_live_scan_grid_on = True
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.set_microscope_mode)

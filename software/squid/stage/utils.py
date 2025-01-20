@@ -36,7 +36,7 @@ Write out the current x, y, z position, in mm, so we can use it later as a cache
 
 
 def cache_position(pos: Pos, stage_config: StageConfig, cache_path=_DEFAULT_CACHE_PATH):
-    if stage_config is not None:     # StageConfig not implemented for Prior stage
+    if stage_config is not None:  # StageConfig not implemented for Prior stage
         x_min = stage_config.X_AXIS.MIN_POSITION
         x_max = stage_config.X_AXIS.MAX_POSITION
         y_min = stage_config.Y_AXIS.MIN_POSITION

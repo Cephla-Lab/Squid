@@ -8,8 +8,10 @@ from qtpy.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QPus
 from qtpy.QtCore import QThread, Signal, Qt, QObject, QMetaObject
 import sys
 import code
-if sys.platform == 'win32':
+
+if sys.platform == "win32":
     from pyreadline3 import Readline
+
     readline = Readline()
 else:
     import readline

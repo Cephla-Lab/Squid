@@ -90,8 +90,8 @@ class PriorStage(AbstractStage):
         self._send_command("COMP 0")  # Set to standard mode
         self._send_command("BLSH 1")  # Enable backlash correction
         self._send_command("RES,S," + str(self.resolution))  # Set resolution
-        self._send_command('XD -1')   # Set direction of X axis move
-        self._send_command('YD -1')   # Set direction of Y axis move
+        self._send_command("XD -1")  # Set direction of X axis move
+        self._send_command("YD -1")  # Set direction of Y axis move
         self._send_command("H 0")  # Joystick enabled
         self.joystick_enabled = True
         self.user_unit = self.stage_microsteps_per_mm * self.resolution
@@ -182,7 +182,7 @@ class PriorStage(AbstractStage):
             self.wait_for_stop()
         else:
             threading.Thread(target=self.wait_for_stop, daemon=True).start()
-        
+
     def move_z(self, rel_mm: float, blocking: bool = True):
         pass
 
@@ -222,14 +222,14 @@ class PriorStage(AbstractStage):
         return StageStage(busy=self.is_busy)
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
-        self._send_command('SIS')
+        self._send_command("SIS")
         if blocking:
             self.wait_for_stop()
         else:
             threading.Thread(target=self.wait_for_stop, daemon=True).start()
 
         # We are not using the following for Prior stage yet
-        '''
+        """
         if z:
             self._microcontroller.home_z()
         if blocking:
@@ -239,14 +239,14 @@ class PriorStage(AbstractStage):
             self._microcontroller.home_theta()
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(theta_timeout)
-        '''
+        """
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if x:
-            self._send_command(f'PX 0')
+            self._send_command(f"PX 0")
             self.x_pos = 0
         if y:
-            self._send_command(f'PY 0')
+            self._send_command(f"PY 0")
             self.y_pos = 0
 
     def wait_for_stop(self):
@@ -255,7 +255,7 @@ class PriorStage(AbstractStage):
             status = int(self._send_command("$,S"))
             if status == 0:
                 self._get_pos_poll_stage()
-                #print("xy position: ", self.x_pos, self.y_pos)
+                # print("xy position: ", self.x_pos, self.y_pos)
                 self.is_busy = False
                 break
             time.sleep(0.05)

@@ -547,6 +547,7 @@ class ObjectivesWidget(QWidget):
         self.objectiveStore.set_current_objective(objective_name)
         self.signal_objective_changed.emit()
 
+
 class CameraSettingsWidget(QFrame):
 
     def __init__(
@@ -3645,7 +3646,7 @@ class WellplateMultiPointWidget(QFrame):
     def update_live_coordinates(self, pos: squid.abc.Pos):
         if hasattr(self.parent, "recordTabWidget") and self.parent.recordTabWidget.currentWidget() != self:
             return
-        # Don't update scan coordinates if we're navigating focus points. A temporary fix for focus map with glass slide. 
+        # Don't update scan coordinates if we're navigating focus points. A temporary fix for focus map with glass slide.
         # This disables updating scanning grid when focus map is checked
         if not self.focusMapWidget and self.focusMapWidget.enabled:
             return
@@ -3978,10 +3979,7 @@ class FocusMapWidget(QFrame):
 
             # Use FocusMap to generate coordinates
             coordinates = self.focusMap.generate_grid_coordinates(
-                self.scanCoordinates,
-                rows=rows,
-                cols=cols,
-                add_margin=self.add_margin
+                self.scanCoordinates, rows=rows, cols=cols, add_margin=self.add_margin
             )
 
             # Add points with current z coordinate

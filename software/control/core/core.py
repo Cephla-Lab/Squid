@@ -4040,7 +4040,7 @@ class ScanCoordinates(QObject):
             center_x = (bounds["max_x"] + bounds["min_x"]) / 2
             center_y = (bounds["max_y"] + bounds["min_y"]) / 2
             radius = (bounds["max_x"] - bounds["min_x"]) / 2
-            if (x - center_x)**2 + (y - center_y)**2 > radius**2:
+            if (x - center_x) ** 2 + (y - center_y) ** 2 > radius**2:
                 return False
 
         return True
@@ -4198,16 +4198,18 @@ class FocusMap:
         self.is_fitted = False
         self.points_xyz = None
 
-    def generate_grid_coordinates(self, scanCoordinates: ScanCoordinates, rows: int = 4, cols: int = 4, add_margin: bool = False) -> List[Tuple[float, float]]:
+    def generate_grid_coordinates(
+        self, scanCoordinates: ScanCoordinates, rows: int = 4, cols: int = 4, add_margin: bool = False
+    ) -> List[Tuple[float, float]]:
         """
         Generate focus point grid coordinates for each scan region
-        
+
         Args:
             scanCoordinates: ScanCoordinates instance containing regions
             rows: Number of rows in focus grid
-            cols: Number of columns in focus grid 
+            cols: Number of columns in focus grid
             add_margin: If True, adds margin to avoid points at region borders
-        
+
         Returns:
             list of (x,y) coordinate tuples for focus points
         """
@@ -4230,28 +4232,29 @@ class FocusMap:
             # focus points are not located at the edges of the scaning grid.
             # TODO: set a value for margin from user input
             if add_margin:
-                x_step = (x_max - x_min) / cols if cols > 1 else 0 
+                x_step = (x_max - x_min) / cols if cols > 1 else 0
                 y_step = (y_max - y_min) / rows if rows > 1 else 0
             else:
-                x_step = (x_max - x_min) / (cols-1) if cols > 1 else 0
-                y_step = (y_max - y_min) / (rows-1) if rows > 1 else 0
-            
+                x_step = (x_max - x_min) / (cols - 1) if cols > 1 else 0
+                y_step = (y_max - y_min) / (rows - 1) if rows > 1 else 0
+
             # Generate grid points
             for i in range(rows):
                 for j in range(cols):
                     if add_margin:
-                        x = x_min + x_step/2 + j*x_step
-                        y = y_min + y_step/2 + i*y_step
+                        x = x_min + x_step / 2 + j * x_step
+                        y = y_min + y_step / 2 + i * y_step
                     else:
-                        x = x_min + j*x_step
-                        y = y_min + i*y_step
-                        
-                    # Check if point is within region bounds
-                    if scanCoordinates.validate_coordinates(x, y) and scanCoordinates.region_contains_coordinate(region_id, x, y):
-                        focus_points.append((x, y))
-                            
-        return focus_points
+                        x = x_min + j * x_step
+                        y = y_min + i * y_step
 
+                    # Check if point is within region bounds
+                    if scanCoordinates.validate_coordinates(x, y) and scanCoordinates.region_contains_coordinate(
+                        region_id, x, y
+                    ):
+                        focus_points.append((x, y))
+
+        return focus_points
 
     def set_method(self, method):
         """Set interpolation method
