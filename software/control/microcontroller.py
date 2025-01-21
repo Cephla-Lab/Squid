@@ -320,11 +320,11 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
     def reconnect(self, attempts: int) -> bool:
         self._log.debug(f"Attempting reconnect to {self._serial.port}.  With max of {attempts} attempts.")
         for i in range(attempts):
-            this_interval = MicrocontrollerSerial.exponential_backoff_time(i, MicrocontrollerSerial.INITIAL_RECONNECT_INTERVAL)
+            this_interval = MicrocontrollerSerial.exponential_backoff_time(
+                i, MicrocontrollerSerial.INITIAL_RECONNECT_INTERVAL
+            )
             if not self.is_open():
-                time.sleep(
-                    this_interval
-                )
+                time.sleep(this_interval)
                 try:
                     try:
                         self._serial.close()
@@ -335,12 +335,13 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
                     if i + 1 == attempts:
                         self._log.error(
                             f"Reconnect to {self._serial.port} failed after {attempts} attempts. Last reconnect interval was {this_interval} [s]",
-                            exc_info=se
+                            exc_info=se,
                         )
                         # This is the last time around the loop, so it'll exit and return self.is_open() as false after this.
                     else:
                         self._log.warning(
-                            f"Couldn't reconnect serial={self._serial.port} @ baud={self._serial.baudrate}.  Attempt {i + 1}/{attempts}.")
+                            f"Couldn't reconnect serial={self._serial.port} @ baud={self._serial.baudrate}.  Attempt {i + 1}/{attempts}."
+                        )
             else:
                 break
 
@@ -967,7 +968,9 @@ class Microcontroller:
 
                     if not self._serial.is_open():
                         if not self._serial.reconnect(attempts=Microcontroller.MAX_RECONNECT_COUNT):
-                            self.log.error("In read loop, serial device failed to reconnect.  Microcontroller is defunct!")
+                            self.log.error(
+                                "In read loop, serial device failed to reconnect.  Microcontroller is defunct!"
+                            )
 
                     continue
 
@@ -1063,7 +1066,6 @@ class Microcontroller:
                     self.new_packet_callback_external(self)
             except Exception as e:
                 self.log.error("Read loop failed, continuing to loop to see if anything can recover.", exc_info=e)
-
 
     def get_pos(self):
         return self.x_pos, self.y_pos, self.z_pos, self.theta_pos
