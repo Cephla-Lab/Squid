@@ -243,7 +243,7 @@ class SimSerial(AbstractCephlaMicroSerial):
 
 
 class MicrocontrollerSerial(AbstractCephlaMicroSerial):
-    INITIAL_RECONNECT_INTERVAL = 0.1
+    INITIAL_RECONNECT_INTERVAL = 0.5
 
     @staticmethod
     def exponential_backoff_time(attempt_index: int, initial_interval: float) -> float:
@@ -324,7 +324,7 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
                     self._serial.open()
                 except SerialException as se:
                     self._log.warning(
-                        f"Couldn't reconnect serial={self._serial.port} @ baud={self._serial.baudrate}.  Attempt {i + 1}/{attempts}."
+                        f"Couldn't reconnect serial={self._serial.port} @ baud={self._serial.baudrate}.  Attempt {i + 1}/{attempts}.", exc_info=se
                     )
             else:
                 break
