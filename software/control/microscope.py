@@ -51,10 +51,11 @@ class Microscope(QObject):
         self.camera.set_software_triggered_acquisition()
 
     def initialize_microcontroller(self, is_simulation):
-        if is_simulation:
-            self.microcontroller = microcontroller.Microcontroller(existing_serial=control.microcontroller.SimSerial())
-        else:
-            self.microcontroller = microcontroller.Microcontroller(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)
+        self.microcontroller = microcontroller.Microcontroller(
+            serial_device=microcontroller.get_microcontroller_serial_device(
+                version=CONTROLLER_VERSION, sn=CONTROLLER_SN, simulated=is_simulation
+            )
+        )
 
         self.home_x_and_y_separately = False
 

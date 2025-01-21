@@ -5,17 +5,17 @@ import squid.stage.cephla
 import squid.stage.prior
 import squid.stage.utils
 import squid.config
-from control.microcontroller import Microcontroller, SimSerial
 import squid.abc
+from tests.control.test_microcontroller import get_test_micro
 
 
 def test_create_simulated_stages():
-    microcontroller = Microcontroller(existing_serial=SimSerial())
+    microcontroller = get_test_micro()
     cephla_stage = squid.stage.cephla.CephlaStage(microcontroller, squid.config.get_stage_config())
 
 
 def test_simulated_cephla_stage_ops():
-    microcontroller = Microcontroller(existing_serial=SimSerial())
+    microcontroller = get_test_micro()
     stage: squid.stage.cephla.CephlaStage = squid.stage.cephla.CephlaStage(
         microcontroller, squid.config.get_stage_config()
     )

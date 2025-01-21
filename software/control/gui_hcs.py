@@ -291,7 +291,9 @@ class HighContentScreeningGui(QMainWindow):
 
     def loadSimulationObjects(self):
         self.log.debug("Loading simulated hardware objects...")
-        self.microcontroller = microcontroller.Microcontroller(existing_serial=microcontroller.SimSerial())
+        self.microcontroller = microcontroller.Microcontroller(
+            serial_device=microcontroller.get_microcontroller_serial_device(simulated=True)
+        )
         # Initialize simulation objects
         if ENABLE_SPINNING_DISK_CONFOCAL:
             self.xlight = serial_peripherals.XLight_Simulation()
@@ -322,7 +324,11 @@ class HighContentScreeningGui(QMainWindow):
     def loadHardwareObjects(self):
         # Initialize hardware objects
         try:
-            self.microcontroller = microcontroller.Microcontroller(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)
+            self.microcontroller = microcontroller.Microcontroller(
+                serial_device=microcontroller.get_microcontroller_serial_device(
+                    version=CONTROLLER_VERSION, sn=CONTROLLER_SN
+                )
+            )
         except Exception:
             self.log.error(f"Error initializing Microcontroller")
             raise

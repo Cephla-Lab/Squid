@@ -1,6 +1,14 @@
+import time
+
 import pytest
 import control._def
 import control.microcontroller
+
+
+def get_test_micro() -> control.microcontroller.Microcontroller:
+    return control.microcontroller.Microcontroller(
+        serial_device=control.microcontroller.get_microcontroller_serial_device(simulated=True)
+    )
 
 
 def assert_pos_almost_equal(expected, actual):
@@ -10,11 +18,11 @@ def assert_pos_almost_equal(expected, actual):
 
 
 def test_create_simulated_microcontroller():
-    micro = control.microcontroller.Microcontroller(existing_serial=control.microcontroller.SimSerial())
+    micro = get_test_micro()
 
 
 def test_microcontroller_simulated_positions():
-    micro = control.microcontroller.Microcontroller(existing_serial=control.microcontroller.SimSerial())
+    micro = get_test_micro()
 
     micro.move_x_to_usteps(1000)
     micro.wait_till_operation_is_completed()
@@ -97,7 +105,7 @@ def test_microcontroller_simulated_positions():
     reason="This is likely a bug, but I'm not sure yet.  Tracking in https://linear.app/cephla/issue/S-115/microcontroller-relative-and-absolute-position-sign-mismatch"
 )
 def test_microcontroller_absolute_and_relative_match():
-    micro = control.microcontroller.Microcontroller(existing_serial=control.microcontroller.SimSerial())
+    micro = get_test_micro()
 
     def wait():
         micro.wait_till_operation_is_completed()
@@ -144,3 +152,25 @@ def test_microcontroller_absolute_and_relative_match():
     micro.move_z_usteps(-abs_position)
     wait()
     assert_pos_almost_equal((0, 0, 0, 0), micro.get_pos())
+
+
+def test_microcontroller_reconnects_serial():
+    micro = get_test_micro()
+    serial = micro._serial
+
+    some_pos = 1234
+    micro.move_x_to_usteps(some_pos)
+    assert_pos_almost_equal((some_pos, 0, 0, 0), micro.get_pos())
+
+    # Force closed, then make sure the microcontroller handles reconnecting.  Both in the write and read cases
+    # For the read, sleep a bit first since we know we have a reader loop spinning that could blowup if reconnects
+    # don't work properly.
+    serial.close()
+
+    time.sleep(1)
+    micro.move_y_to_usteps(2 * some_pos)
+    assert_pos_almost_equal((some_pos, 2 * some_pos, 0, 0), micro.get_pos())
+
+    serial.close()
+    micro.move_z_usteps(3 * some_pos)
+    assert_pos_almost_equal((some_pos, 2 * some_pos, 3 * some_pos, 0), micro.get_pos())
