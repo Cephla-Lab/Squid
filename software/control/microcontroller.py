@@ -264,6 +264,8 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
 
     def __init__(self, port: str, baudrate: int):
         super().__init__()
+        self._port = port
+        self._baudrate = baudrate
         self._serial = serial.Serial(port, baudrate)
 
     def close(self) -> None:
@@ -303,6 +305,8 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
 
     def is_open(self) -> bool:
         try:
+            if not self._serial.is_open:
+                return False
             # pyserial is_open is sortof useless - it doesn't force a check to see if the device is still valid.
             # but the in_waiting does an ioctl to check for the bytes in the read buffer.  This is a system call, so
             # not the best from a performance perspective, but we are operating with 2 mega baud and a system call
@@ -321,12 +325,18 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
                     MicrocontrollerSerial.exponential_backoff_time(i, MicrocontrollerSerial.INITIAL_RECONNECT_INTERVAL)
                 )
                 try:
-                    self._serial.close()
-                    self._serial.open()
+                    try:
+                        self._serial.close()
+                    except OSError:
+                        pass
+                    self._serial = serial.Serial(port=self._port, baudrate=self._baudrate)
                 except SerialException as se:
+                    if i + 1 == attempts:
+                        exc_info = se
+                    else:
+                        exc_info = None
                     self._log.warning(
-                        f"Couldn't reconnect serial={self._serial.port} @ baud={self._serial.baudrate}.  Attempt {i + 1}/{attempts}.", exc_info=se
-                    )
+                        f"Couldn't reconnect serial={self._serial.port} @ baud={self._serial.baudrate}.  Attempt {i + 1}/{attempts}.", exc_info=exc_info)
             else:
                 break
 
