@@ -158,8 +158,12 @@ def test_microcontroller_reconnects_serial():
     micro = get_test_micro()
     serial = micro._serial
 
+    def wait():
+        micro.wait_till_operation_is_completed()
+
     some_pos = 1234
     micro.move_x_to_usteps(some_pos)
+    wait()
     assert_pos_almost_equal((some_pos, 0, 0, 0), micro.get_pos())
 
     # Force closed, then make sure the microcontroller handles reconnecting.  Both in the write and read cases
@@ -169,8 +173,10 @@ def test_microcontroller_reconnects_serial():
 
     time.sleep(1)
     micro.move_y_to_usteps(2 * some_pos)
+    wait()
     assert_pos_almost_equal((some_pos, 2 * some_pos, 0, 0), micro.get_pos())
 
     serial.close()
     micro.move_z_usteps(3 * some_pos)
+    wait()
     assert_pos_almost_equal((some_pos, 2 * some_pos, 3 * some_pos, 0), micro.get_pos())

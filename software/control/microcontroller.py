@@ -44,6 +44,9 @@ class CommandAborted(RuntimeError):
 # for now ust auto reconnect down at this level.
 class AbstractCephlaMicroSerial(abc.ABC):
 
+    def __init__(self):
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
     @abstractmethod
     def close(self) -> None:
         """
@@ -79,7 +82,7 @@ class AbstractCephlaMicroSerial(abc.ABC):
         """
         Returns the number of bytes in the read buffer ready for immediate reading.
 
-        If the device is no longer connected or is in an invalid state, this might be None.
+        If the device is no longer connected or is in an invalid state, this might be None or might throw IOError.
         """
         pass
 
@@ -123,6 +126,7 @@ class SimSerial(AbstractCephlaMicroSerial):
         return bytes(response)
 
     def __init__(self):
+        super().__init__()
         self._in_waiting = 0
         self.response_buffer = []
 
@@ -218,7 +222,7 @@ class SimSerial(AbstractCephlaMicroSerial):
 
     def bytes_available(self) -> int:
         if not self.is_open():
-            raise IOError("Closed, cannot get bytes_available")
+            return 0
         return self._in_waiting
 
     def is_open(self) -> bool:
@@ -230,6 +234,7 @@ class SimSerial(AbstractCephlaMicroSerial):
 
         if not self.is_open():
             # Clear our response buffer to simulate reopening a device
+            self._log.warning("Reconnect required, succeeded.")
             self.response_buffer.clear()
             self.closed = False
 
@@ -257,7 +262,7 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
             return initial_interval * 2**attempt_index
 
     def __init__(self, port: str, baudrate: int):
-        self._log = squid.logging.get_logger(self.__class__.__name__)
+        super().__init__()
         self._serial = serial.Serial(port, baudrate)
 
     def close(self) -> None:
@@ -917,104 +922,113 @@ class Microcontroller:
             self.abort_current_command("Resend last requested with no last command")
 
     def read_received_packet(self):
-        while self.terminate_reading_received_packet_thread == False:
-            # wait to receive data
-            if self._serial.bytes_available() == 0 or self._serial.bytes_available() % self.rx_buffer_length != 0:
-                # Sleep a negligible amount of time just to give other threads time to run.  Otherwise,
-                # we run the rise of spinning forever here and not letting progress happen elsewhere.
-                time.sleep(0.0001)
-                continue
+        while not self.terminate_reading_received_packet_thread:
+            try:
+                # wait to receive data
+                if self._serial.bytes_available() == 0 or self._serial.bytes_available() % self.rx_buffer_length != 0:
+                    # Sleep a negligible amount of time just to give other threads time to run.  Otherwise,
+                    # we run the rise of spinning forever here and not letting progress happen elsewhere.
+                    time.sleep(0.0001)
 
-            # get rid of old data
-            num_bytes_in_rx_buffer = self._serial.bytes_available()
-            if num_bytes_in_rx_buffer > self.rx_buffer_length:
-                for i in range(num_bytes_in_rx_buffer - self.rx_buffer_length):
-                    self._serial.read()
+                    if not self._serial.is_open():
+                        if not self._serial.reconnect(attempts=Microcontroller.MAX_RECONNECT_COUNT):
+                            self.log.error("In read loop, serial device failed to reconnect.  Microcontroller is defunct!")
 
-            # read the buffer
-            msg = []
-            for i in range(self.rx_buffer_length):
-                msg.append(ord(self._serial.read()))
+                    continue
 
-            # parse the message
-            """
-            - command ID (1 byte)
-            - execution status (1 byte)
-            - X pos (4 bytes)
-            - Y pos (4 bytes)
-            - Z pos (4 bytes)
-            - Theta (4 bytes)
-            - buttons and switches (1 byte)
-            - reserved (4 bytes)
-            - CRC (1 byte)
-            """
-            self._cmd_id_mcu = msg[0]
-            self._cmd_execution_status = msg[1]
-            if (self._cmd_id_mcu == self._cmd_id) and (
-                self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
-            ):
-                if self.mcu_cmd_execution_in_progress:
-                    self.mcu_cmd_execution_in_progress = False
-                    self.log.debug("mcu command " + str(self._cmd_id) + " complete")
-            elif (
-                self.mcu_cmd_execution_in_progress
-                and self._cmd_id_mcu != self._cmd_id
-                and time.time() - self.last_command_send_timestamp > self.LAST_COMMAND_ACK_TIMEOUT
-                and self.last_command is not None
-            ):
-                if self.retry > self.MAX_RETRY_COUNT:
-                    self.abort_current_command(
-                        reason=f"Command timed out without an ack after {self.LAST_COMMAND_ACK_TIMEOUT} [s], and {self.retry} retries"
-                    )
-                else:
-                    self.log.debug(
-                        f"command timed out without an ack after {self.LAST_COMMAND_ACK_TIMEOUT} [s], resending command"
-                    )
-                    self.resend_last_command()
-            elif (
-                self.mcu_cmd_execution_in_progress
-                and self._cmd_execution_status == CMD_EXECUTION_STATUS.CMD_CHECKSUM_ERROR
-            ):
-                if self.retry > self.MAX_RETRY_COUNT:
-                    self.abort_current_command(reason=f"Checksum error and 10 retries for {self._cmd_id}")
-                else:
-                    self.log.error("cmd checksum error, resending command")
-                    self.resend_last_command()
+                # get rid of old data
+                num_bytes_in_rx_buffer = self._serial.bytes_available()
+                if num_bytes_in_rx_buffer > self.rx_buffer_length:
+                    for i in range(num_bytes_in_rx_buffer - self.rx_buffer_length):
+                        self._serial.read()
 
-            self.x_pos = self._payload_to_int(
-                msg[2:6], MicrocontrollerDef.N_BYTES_POS
-            )  # unit: microstep or encoder resolution
-            self.y_pos = self._payload_to_int(
-                msg[6:10], MicrocontrollerDef.N_BYTES_POS
-            )  # unit: microstep or encoder resolution
-            self.z_pos = self._payload_to_int(
-                msg[10:14], MicrocontrollerDef.N_BYTES_POS
-            )  # unit: microstep or encoder resolution
-            self.theta_pos = self._payload_to_int(
-                msg[14:18], MicrocontrollerDef.N_BYTES_POS
-            )  # unit: microstep or encoder resolution
+                # read the buffer
+                msg = []
+                for i in range(self.rx_buffer_length):
+                    msg.append(ord(self._serial.read()))
 
-            self.button_and_switch_state = msg[18]
-            # joystick button
-            tmp = self.button_and_switch_state & (1 << BIT_POS_JOYSTICK_BUTTON)
-            joystick_button_pressed = tmp > 0
-            if self.joystick_button_pressed != joystick_button_pressed:
-                if self.joystick_listener_events_enabled:
-                    for _, listener_fn in self.joystick_event_listeners:
-                        listener_fn(joystick_button_pressed)
+                # parse the message
+                """
+                - command ID (1 byte)
+                - execution status (1 byte)
+                - X pos (4 bytes)
+                - Y pos (4 bytes)
+                - Z pos (4 bytes)
+                - Theta (4 bytes)
+                - buttons and switches (1 byte)
+                - reserved (4 bytes)
+                - CRC (1 byte)
+                """
+                self._cmd_id_mcu = msg[0]
+                self._cmd_execution_status = msg[1]
+                if (self._cmd_id_mcu == self._cmd_id) and (
+                    self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+                ):
+                    if self.mcu_cmd_execution_in_progress:
+                        self.mcu_cmd_execution_in_progress = False
+                        self.log.debug("mcu command " + str(self._cmd_id) + " complete")
+                elif (
+                    self.mcu_cmd_execution_in_progress
+                    and self._cmd_id_mcu != self._cmd_id
+                    and time.time() - self.last_command_send_timestamp > self.LAST_COMMAND_ACK_TIMEOUT
+                    and self.last_command is not None
+                ):
+                    if self.retry > self.MAX_RETRY_COUNT:
+                        self.abort_current_command(
+                            reason=f"Command timed out without an ack after {self.LAST_COMMAND_ACK_TIMEOUT} [s], and {self.retry} retries"
+                        )
+                    else:
+                        self.log.debug(
+                            f"command timed out without an ack after {self.LAST_COMMAND_ACK_TIMEOUT} [s], resending command"
+                        )
+                        self.resend_last_command()
+                elif (
+                    self.mcu_cmd_execution_in_progress
+                    and self._cmd_execution_status == CMD_EXECUTION_STATUS.CMD_CHECKSUM_ERROR
+                ):
+                    if self.retry > self.MAX_RETRY_COUNT:
+                        self.abort_current_command(reason=f"Checksum error and 10 retries for {self._cmd_id}")
+                    else:
+                        self.log.error("cmd checksum error, resending command")
+                        self.resend_last_command()
 
-                # The microcontroller wants us to send an ack back only when we see a False -> True
-                # transition. handle that here.
-                if joystick_button_pressed:
-                    self.ack_joystick_button_pressed()
-            self.joystick_button_pressed = joystick_button_pressed
+                self.x_pos = self._payload_to_int(
+                    msg[2:6], MicrocontrollerDef.N_BYTES_POS
+                )  # unit: microstep or encoder resolution
+                self.y_pos = self._payload_to_int(
+                    msg[6:10], MicrocontrollerDef.N_BYTES_POS
+                )  # unit: microstep or encoder resolution
+                self.z_pos = self._payload_to_int(
+                    msg[10:14], MicrocontrollerDef.N_BYTES_POS
+                )  # unit: microstep or encoder resolution
+                self.theta_pos = self._payload_to_int(
+                    msg[14:18], MicrocontrollerDef.N_BYTES_POS
+                )  # unit: microstep or encoder resolution
 
-            # switch
-            tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
-            self.switch_state = tmp > 0
+                self.button_and_switch_state = msg[18]
+                # joystick button
+                tmp = self.button_and_switch_state & (1 << BIT_POS_JOYSTICK_BUTTON)
+                joystick_button_pressed = tmp > 0
+                if self.joystick_button_pressed != joystick_button_pressed:
+                    if self.joystick_listener_events_enabled:
+                        for _, listener_fn in self.joystick_event_listeners:
+                            listener_fn(joystick_button_pressed)
 
-            if self.new_packet_callback_external is not None:
-                self.new_packet_callback_external(self)
+                    # The microcontroller wants us to send an ack back only when we see a False -> True
+                    # transition. handle that here.
+                    if joystick_button_pressed:
+                        self.ack_joystick_button_pressed()
+                self.joystick_button_pressed = joystick_button_pressed
+
+                # switch
+                tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
+                self.switch_state = tmp > 0
+
+                if self.new_packet_callback_external is not None:
+                    self.new_packet_callback_external(self)
+            except Exception as e:
+                self.log.error("Read loop failed, continuing to loop to see if anything can recover.", exc_info=e)
+
 
     def get_pos(self):
         return self.x_pos, self.y_pos, self.z_pos, self.theta_pos
