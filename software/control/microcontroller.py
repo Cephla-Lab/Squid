@@ -321,6 +321,7 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
                     MicrocontrollerSerial.exponential_backoff_time(i, MicrocontrollerSerial.INITIAL_RECONNECT_INTERVAL)
                 )
                 try:
+                    self._serial.close()
                     self._serial.open()
                 except SerialException as se:
                     self._log.warning(
