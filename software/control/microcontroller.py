@@ -276,7 +276,7 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
         # So we just try to write, and if we get an OS error we try to write again but without retrying
         try:
             return self._serial.write(data)
-        except (IOError, OSError) as e:
+        except (IOError, OSError, SerialException) as e:
             if reconnect_tries > 0:
                 if not self.reconnect(reconnect_tries):
                     raise
@@ -289,7 +289,7 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
         # So we just try to read, and if we get an OS error we try to read again but without retrying
         try:
             return self._serial.read(count)
-        except (IOError, OSError) as e:
+        except (IOError, OSError, SerialException) as e:
             if reconnect_tries > 0:
                 if not self.reconnect(reconnect_tries):
                     raise
@@ -320,9 +320,10 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
     def reconnect(self, attempts: int) -> bool:
         self._log.debug(f"Attempting reconnect to {self._serial.port}.  With max of {attempts} attempts.")
         for i in range(attempts):
+            this_interval = MicrocontrollerSerial.exponential_backoff_time(i, MicrocontrollerSerial.INITIAL_RECONNECT_INTERVAL)
             if not self.is_open():
                 time.sleep(
-                    MicrocontrollerSerial.exponential_backoff_time(i, MicrocontrollerSerial.INITIAL_RECONNECT_INTERVAL)
+                    this_interval
                 )
                 try:
                     try:
@@ -330,21 +331,20 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
                     except OSError:
                         pass
                     self._serial = serial.Serial(port=self._port, baudrate=self._baudrate)
-                except SerialException as se:
+                except (IOError, OSError, SerialException) as se:
                     if i + 1 == attempts:
-                        exc_info = se
+                        self._log.error(
+                            f"Reconnect to {self._serial.port} failed after {attempts} attempts. Last reconnect interval was {this_interval} [s]",
+                            exc_info=se
+                        )
+                        # This is the last time around the loop, so it'll exit and return self.is_open() as false after this.
                     else:
-                        exc_info = None
-                    self._log.warning(
-                        f"Couldn't reconnect serial={self._serial.port} @ baud={self._serial.baudrate}.  Attempt {i + 1}/{attempts}.", exc_info=exc_info)
+                        self._log.warning(
+                            f"Couldn't reconnect serial={self._serial.port} @ baud={self._serial.baudrate}.  Attempt {i + 1}/{attempts}.")
             else:
                 break
 
-        if not self.is_open():
-            self._log.error(
-                f"Reconnect to {self._serial.port} failed after {attempts} attempts. Last reconnect interval was {MicrocontrollerSerial.exponential_backoff_time(attempts - 1, MicrocontrollerSerial.INITIAL_RECONNECT_INTERVAL)}"
-            )
-
+        # We print warnings/errors in the loop above, so here we can just return the result of our best efforts!
         return self.is_open()
 
 
