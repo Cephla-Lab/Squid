@@ -1,7 +1,5 @@
 import ctypes
 from ctypes import *
-
-import squid.logging
 from control.TUCam import *
 import numpy as np
 import threading
@@ -38,10 +36,10 @@ def get_sn_by_model(model_name):
 
 
 class Camera(object):
-    def __init__(
-        self, sn=None, resolution=(6240, 4168), is_global_shutter=False, rotate_image_angle=None, flip_image=None
-    ):
+    def __init__(self, sn=None, resolution=(3120, 2084), is_global_shutter=False, rotate_image_angle=None, flip_image=None):
         self.log = squid.logging.get_logger(self.__class__.__name__)
+
+        # TODO: Specify camera model. FL 26BW and 400BSI V3 have different specs in max resolution, binning options, ROI setting, temperature
 
         self.sn = sn
         self.resolution = resolution
@@ -66,6 +64,8 @@ class Camera(object):
         self.timestamp = 0
         self.trigger_mode = None
 
+        self.strobe_delay_us = None
+
         self.image_locked = False
         self.current_frame = None
         self.callback_is_enabled = False
@@ -82,20 +82,25 @@ class Camera(object):
         self.EXPOSURE_TIME_MS_MIN = 0.0347
         self.EXPOSURE_TIME_MS_MAX = 31640472.76
 
-        self.ROI_offset_x = 0
-        self.ROI_offset_y = 0
-        self.ROI_width = 6240
-        self.ROI_height = 4168
+        self.ROI_offset_x = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
+        self.ROI_offset_y = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
+        self.ROI_width = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
+        self.ROI_height = CAMERA_CONFIG.ROI_HEIGHT_DEFAULT
 
-        self.OffsetX = 0
-        self.OffsetY = 0
-        self.Width = 6240
-        self.Height = 4168
+        self.OffsetX = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
+        self.OffsetY = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
+        self.Width = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
+        self.Height = CAMERA_CONFIG.ROI_HEIGHT_DEFAULT
 
-        self.WidthMax = 6240
-        self.HeightMax = 4168
+        self.WidthMax = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
+        self.HeightMax = CAMERA_CONFIG.ROI_HEIGHT_DEFAULT
+
+        if resolution is not None:
+            self.Width = resolution[0]
+            self.Height = resolution[1]
+
         self.binning_options = {
-            (6240, 4168): 0,
+            # (6240, 4168): 0,  Not available for SenBin
             (3120, 2084): 1,
             (2080, 1388): 2,
             (1560, 1040): 3,
@@ -123,8 +128,7 @@ class Camera(object):
         else:
             self.log.info("Open Tucsen camera success!")
 
-        self.set_temperature(20)
-        self.temperature_reading_thread.start()
+        self._initialize()
 
     def open_by_sn(self, sn):
         TUCAM_Api_Init(pointer(self.TUCAMINIT))
@@ -141,9 +145,8 @@ class Camera(object):
 
             if string_at(pSN).decode("utf-8") == sn:
                 self.TUCAMOPEN = TUCAMOPEN
-                self.set_temperature(20)
-                self.temperature_reading_thread.start()
                 self.log.info(f"Open the camera success! sn={sn}")
+                self._initialize()
                 return
             else:
                 TUCAM_Dev_Close(TUCAMOPEN.hIdxTUCam)
@@ -151,11 +154,22 @@ class Camera(object):
         # TODO(imo): Propagate error in some way and handle
         self.log.error("No camera with the specified serial number found")
 
+    def _initialize(self):
+        self.set_temperature(20)
+        self.temperature_reading_thread.start()
+        # Disable auto-exposure
+        TUCAM_Capa_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDCAPA.TUIDC_ATEXPOSURE.value, 0)
+        # Set SenBin (max resolution 3120 x 2084)
+        TUCAM_Capa_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDCAPA.TUIDC_RESOLUTION.value, 2)
+        # Set software binning
+        self.set_resolution(*self.resolution)
+        self.calculate_strobe_delay()
+
     def close(self):
-        self.disable_callback()
+        self.disable_callback(clean_up=True)
         self.terminate_read_temperature_thread = True
         self.temperature_reading_thread.join()
-        TUCAM_Buf_Release(self.TUCAMOPEN.hIdxTUCam)
+
         TUCAM_Dev_Close(self.TUCAMOPEN.hIdxTUCam)
         TUCAM_Api_Uninit()
         self.log.info("Close Tucsen camera success")
@@ -178,16 +192,17 @@ class Camera(object):
         self.log.debug("enable callback")
 
     def _wait_and_callback(self):
+        self.log.debug("Start camera wait thread")
         while not self.stop_waiting:
-            result = TUCAM_Buf_WaitForFrame(
-                self.TUCAMOPEN.hIdxTUCam, pointer(self.m_frame), int(self.exposure_time + 1000)
-            )
-            if result == TUCAMRET.TUCAMRET_SUCCESS:
-                self._on_new_frame(self.m_frame)
+            try:
+                result = TUCAM_Buf_WaitForFrame(self.TUCAMOPEN.hIdxTUCam, pointer(self.m_frame), int(self.exposure_time + 1000))
+                if result == TUCAMRET.TUCAMRET_SUCCESS:
+                    self._on_new_frame(self.m_frame)
+            except:
+                self.log.error("Error in WaitForFrame")
 
         TUCAM_Buf_AbortWait(self.TUCAMOPEN.hIdxTUCam)
-        TUCAM_Cap_Stop(self.TUCAMOPEN.hIdxTUCam)
-        TUCAM_Buf_Release(self.TUCAMOPEN.hIdxTUCam)
+        self.log.debug("End camera wait thread")
 
     def _on_new_frame(self, frame):
         # TODO(imo): Propagate error in some way and handle
@@ -212,21 +227,23 @@ class Camera(object):
         self.timestamp = time.time()
         self.new_image_callback_external(self)
 
-    def disable_callback(self):
-        if not self.callback_is_enabled:
+    def disable_callback(self, clean_up=False):
+        if not self.callback_is_enabled and not clean_up:
             return
 
         was_streaming = self.is_streaming
 
         self.stop_waiting = True
-        self.is_streaming = False
+        #self.stop_streaming()
 
         if hasattr(self, "callback_thread"):
-            self.callback_thread.join()
+            # Sometimes the thread hangs there if we do join(). Deleting the thread should be safe but we may need a better fix.
+            #self.callback_thread.join()
             del self.callback_thread
         self.callback_is_enabled = False
+        self.stop_streaming()
 
-        if was_streaming:
+        if was_streaming and not clean_up:
             self.start_streaming()
         self.log.debug("disable callback")
 
@@ -236,6 +253,8 @@ class Camera(object):
     def set_temperature(self, temperature):
         t = temperature * 10 + 500
         result = TUCAM_Prop_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDPROP.TUIDP_TEMPERATURE.value, c_double(t), 0)
+        if result != TUCAMRET.TUCAMRET_SUCCESS:
+            self.log.error("Set temperature failed")
 
     def get_temperature(self):
         t = c_double(0)
@@ -245,12 +264,13 @@ class Camera(object):
     def check_temperature(self):
         while self.terminate_read_temperature_thread == False:
             time.sleep(2)
+            self.log.info('[ camera temperature: ' + str(self.get_temperature()) + ' ]')
             temperature = self.get_temperature()
             if self.temperature_reading_callback is not None:
                 try:
                     self.temperature_reading_callback(temperature)
                 except TypeError as ex:
-                    self.log.error("Temperature read callback failed due to error: " + repr(ex))
+                    self.log.error("Temperature reading callback failed due to error: " + repr(ex))
                     # TODO(imo): Propagate error in some way and handle
                     pass
 
@@ -266,12 +286,12 @@ class Camera(object):
             return
 
         bin_value = c_int(self.binning_options[(width, height)])
-        try:
-            TUCAM_Capa_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDCAPA.TUIDC_BINNING_SUM.value, bin_value)
-
-        except Exception:
+        result = TUCAM_Capa_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDCAPA.TUIDC_BINNING_SUM.value, bin_value)
+        if result != TUCAMRET.TUCAMRET_SUCCESS:
             self.log.error("Cannot set binning.")
             # TODO(imo): Propagate error in some way and handle
+        else:
+            self.resolution = (width, height)
 
         if was_streaming:
             self.start_streaming()
@@ -286,10 +306,11 @@ class Camera(object):
             self.log.info("Auto exposure disabled")
 
     def set_exposure_time(self, exposure_time):
-        # Disable auto-exposure
-        TUCAM_Capa_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDCAPA.TUIDC_ATEXPOSURE.value, 0)
-        # Set the exposure time
-        TUCAM_Prop_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDPROP.TUIDP_EXPOSURETM.value, c_double(exposure_time), 0)
+        if self.trigger_mode == TriggerMode.SOFTWARE:
+            adjusted = exposure_time
+        elif self.trigger_mode == TriggerMode.HARDWARE:
+            adjusted = self.strobe_delay_us / 1000 + exposure_time
+        TUCAM_Prop_SetValue(self.TUCAMOPEN.hIdxTUCam, TUCAM_IDPROP.TUIDP_EXPOSURETM.value, c_double(adjusted), 0)
         self.exposure_time = exposure_time
 
     def set_analog_gain(self, gain):
@@ -315,25 +336,36 @@ class Camera(object):
         pass
 
     def set_continuous_acquisition(self):
+        TUCAM_Cap_GetTrigger(self.TUCAMOPEN.hIdxTUCam, pointer(self.trigger_attr))
         self.trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_SEQUENCE.value
         self.trigger_attr.nBufFrames = 1
         TUCAM_Cap_SetTrigger(self.TUCAMOPEN.hIdxTUCam, self.trigger_attr)
         self.trigger_mode = TriggerMode.CONTINUOUS
 
     def set_software_triggered_acquisition(self):
+        TUCAM_Cap_GetTrigger(self.TUCAMOPEN.hIdxTUCam, pointer(self.trigger_attr))
         self.trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_SOFTWARE.value
         self.trigger_attr.nBufFrames = 1
         TUCAM_Cap_SetTrigger(self.TUCAMOPEN.hIdxTUCam, self.trigger_attr)
         self.trigger_mode = TriggerMode.SOFTWARE
 
     def set_hardware_triggered_acquisition(self):
+        TUCAM_Cap_GetTrigger(self.TUCAMOPEN.hIdxTUCam, pointer(self.trigger_attr))
         self.trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_STANDARD.value
         self.trigger_attr.nBufFrames = 1
-        TUCAM_Cap_SetTrigger(self.TUCAMOPEN.hIdxTUCam, self.trigger_attr)
-        self.frame_ID_offset_hardware_trigger = None
-        self.trigger_mode = TriggerMode.HARDWARE
+
+        result = TUCAM_Cap_SetTrigger(self.TUCAMOPEN.hIdxTUCam, self.trigger_attr)
+        if result != TUCAMRET.TUCAMRET_SUCCESS:
+            self.log.error("Set hardware trigger failed.")
+        else:
+            self.frame_ID_offset_hardware_trigger = None
+            self.trigger_mode = TriggerMode.HARDWARE
 
     def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
+        # TODO: FL 26BW: The row window must be a multiple of 4, and the column window must be a multiple of 8. 
+        #                The minimum supported ROI for FL 26BW on Mosaic V3 is: 32 (columns) x 32 (rows).
+        #       400BSI V3: The row window must be a multiple of 4, and the column window must be a multiple of 8.
+        #                  The minimum supported ROI for Dhyana 400BSI V3 on Mosaic V3 is 48 (columns) × 8 (rows).
         roi_attr = TUCAM_ROI_ATTR()
         roi_attr.bEnable = 1
         roi_attr.nHOffset = offset_x if offset_x is not None else self.ROI_offset_x
@@ -360,6 +392,8 @@ class Camera(object):
 
         if was_streaming:
             self.start_streaming()
+
+        self.calculate_strobe_delay()
 
     def send_trigger(self):
         if self.trigger_mode == TriggerMode.SOFTWARE:
@@ -396,24 +430,28 @@ class Camera(object):
         self.log.info("TUCam Camera streaming stopped")
 
     def read_frame(self):
+        self.log.debug("read frame")
         result = TUCAM_Buf_WaitForFrame(self.TUCAMOPEN.hIdxTUCam, pointer(self.m_frame), int(self.exposure_time + 1000))
         if result == TUCAMRET.TUCAMRET_SUCCESS:
             self.current_frame = self._convert_frame_to_numpy(self.m_frame)
             TUCAM_Buf_AbortWait(self.TUCAMOPEN.hIdxTUCam)
+            self.log.debug("frame returned")
             return self.current_frame
-
+        self.log.debug("read frame failed")
         return None
 
     def _convert_frame_to_numpy(self, frame):
-        buf = create_string_buffer(frame.uiImgSize)
-        pointer_data = c_void_p(frame.pBuffer + frame.usHeader)
-        memmove(buf, pointer_data, frame.uiImgSize)
+        image_np = np.frombuffer(
+            (ctypes.c_uint16 * (frame.uiImgSize // 2)).from_address(frame.pBuffer + frame.usHeader),
+            dtype=np.uint16
+        ).copy()
+        return image_np.reshape((frame.usHeight, frame.usWidth))
 
-        data = bytes(buf)
-        image_np = np.frombuffer(data, dtype=np.uint16)
-        image_np = image_np.reshape((frame.usHeight, frame.usWidth))
-
-        return image_np
+    def calculate_strobe_delay(self):
+        # Line rate: FL 26BW: 34.67 us for standard resolution; 69.3 us for low noise; 12.58 us for SenBin
+        #            400BSI V3: 7.2 us for high speed; 11.2 us for other gain modes
+        # TODO: Calculation based on trigger delay and ROI
+        self.strobe_delay_us = int(12.58 * self.Height)
 
 
 class Camera_Simulation(object):
