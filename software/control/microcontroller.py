@@ -55,9 +55,9 @@ class AbstractCephlaMicroSerial(abc.ABC):
         pass
 
     @abstractmethod
-    def write(self, data: bytearray, reconnect_tries: int = 0) -> None:
+    def write(self, data: bytearray, reconnect_tries: int = 0) -> int:
         """
-        This must raise an IOError on any io issues, or ValueError if data is not sendable.
+        This must raise an IOError or OSError on any io issues, or ValueError if data is not sendable.
 
         If reconnect_tries > 0, this will attempt to reconnect if the device isn't connected (up to the number of tries
         specified, and with exponential backoff.  This means that if you specific reconnect_tries=5 and it needs to
@@ -68,7 +68,7 @@ class AbstractCephlaMicroSerial(abc.ABC):
     @abstractmethod
     def read(self, count: int = 1, reconnect_tries: int = 0) -> bytes:
         """
-        Read up to count bytes, and return them as bytes.  Can throw IOError if the device is in an invalid
+        Read up to count bytes, and return them as bytes.  Can throw IOError or OSError if the device is in an invalid
         state, or ValueError if count is not valid.
 
         If reconnect_tries > 0, this will attempt to reconnect if the device isn't connected (up to the number of tries
@@ -200,11 +200,12 @@ class SimSerial(AbstractCephlaMicroSerial):
     def close(self):
         self.closed = True
 
-    def write(self, data: bytearray, reconnect_tries: int = 0):
+    def write(self, data: bytearray, reconnect_tries: int = 0) -> int:
         if self.closed:
             if not self.reconnect(reconnect_tries):
                 raise IOError("Closed")
         self.respond_to(data)
+        return len(data)
 
     def read(self, count=1, reconnect_tries: int = 0) -> bytes:
         if self.closed:
@@ -268,17 +269,31 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
     def close(self) -> None:
         return self._serial.close()
 
-    def write(self, data: bytearray, reconnect_tries: int = 0) -> None:
-        if not self._serial.is_open:
-            self.reconnect(reconnect_tries)
-
-        self._serial.write(data)
+    def write(self, data: bytearray, reconnect_tries: int = 0) -> int:
+        # the is_open attribute is unreliable - if a device just recently dropped out, it may not be up to date.
+        # So we just try to write, and if we get an OS error we try to write again but without retrying
+        try:
+            return self._serial.write(data)
+        except (IOError, OSError) as e:
+            if reconnect_tries > 0:
+                if not self.reconnect(reconnect_tries):
+                    raise
+                return self.write(data, reconnect_tries=0)
+            else:
+                raise
 
     def read(self, count: int = 1, reconnect_tries: int = 0) -> bytes:
-        if not self._serial.is_open:
-            self.reconnect(reconnect_tries)
-
-        return self._serial.read(count)
+        # the is_open attribute is unreliable - if a device just recently dropped out, it may not be up to date.
+        # So we just try to read, and if we get an OS error we try to read again but without retrying
+        try:
+            return self._serial.read(count)
+        except (IOError, OSError) as e:
+            if reconnect_tries > 0:
+                if not self.reconnect(reconnect_tries):
+                    raise
+                self.read(count, reconnect_tries=0)
+            else:
+                raise
 
     def bytes_available(self) -> int:
         if not self.is_open():
@@ -287,7 +302,16 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
         return self._serial.in_waiting
 
     def is_open(self) -> bool:
-        return self._serial.is_open
+        try:
+            # pyserial is_open is sortof useless - it doesn't force a check to see if the device is still valid.
+            # but the in_waiting does an ioctl to check for the bytes in the read buffer.  This is a system call, so
+            # not the best from a performance perspective, but we are operating with 2 mega baud and a system call
+            # is insignificant on that timescale!
+            bytes_avail = self._serial.in_waiting
+
+            return True
+        except OSError:
+            return False
 
     def reconnect(self, attempts: int) -> bool:
         self._log.debug(f"Attempting reconnect to {self._serial.port}.  With max of {attempts} attempts.")
