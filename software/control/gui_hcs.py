@@ -108,6 +108,7 @@ class HighContentScreeningGui(QMainWindow):
         self.makeConnections()
 
         self.microscope = control.microscope.Microscope(self)
+        self.microscope.turnOnPerformanceMode = self.turnOnPerformanceMode
 
         # Move to cached position
         if HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
@@ -863,6 +864,14 @@ class HighContentScreeningGui(QMainWindow):
                     self.imageDisplayTabs.setCurrentIndex(i)
                     break
 
+    def turnOnPerformanceMode(self):
+        self.performance_mode = True
+        self.performanceModeToggle.setChecked(True)
+        self.performanceModeToggle.setText("Disable Performance Mode")
+        self.updateNapariConnections()
+        self.toggleNapariTabs()
+        print("Performance mode enabled")
+    
     def togglePerformanceMode(self):
         self.performance_mode = self.performanceModeToggle.isChecked()
         button_txt = "Disable" if self.performance_mode else "Enable"

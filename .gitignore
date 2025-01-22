@@ -3,3 +3,7 @@
 *.xml
 **/.idea/
 software/cache/config_file_path.txt
+software/cache/config_file_path.txt
+software/cache/laser_af_reference_plane.txt
+software/cache/last_coords.txt
+software/cache/objective_and_sample_format.txt

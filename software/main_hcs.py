@@ -62,6 +62,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     win = gui.HighContentScreeningGui(is_simulation=args.simulation, live_only_mode=args.live_only)
+    win.togglePerformanceMode()
 
     screen_geometry = app.desktop().screenGeometry()
     screen_width = screen_geometry.width()
