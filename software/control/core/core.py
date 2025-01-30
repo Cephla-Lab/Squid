@@ -1462,49 +1462,54 @@ class MultiPointWorker(QObject):
         self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
 
     def run(self):
-        self.start_time = time.perf_counter_ns()
-        if not self.camera.is_streaming:
-            self.camera.start_streaming()
+        try:
+            self.start_time = time.perf_counter_ns()
+            if not self.camera.is_streaming:
+                self.camera.start_streaming()
 
-        while self.time_point < self.Nt:
-            # check if abort acquisition has been requested
-            if self.multiPointController.abort_acqusition_requested:
-                self._log.debug("In run, abort_acquisition_requested=True")
-                break
+            while self.time_point < self.Nt:
+                # check if abort acquisition has been requested
+                if self.multiPointController.abort_acqusition_requested:
+                    self._log.debug("In run, abort_acquisition_requested=True")
+                    break
 
-            self.run_single_time_point()
+                self.run_single_time_point()
 
-            self.time_point = self.time_point + 1
-            if self.dt == 0:  # continous acquisition
-                pass
-            else:  # timed acquisition
+                self.time_point = self.time_point + 1
+                if self.dt == 0:  # continous acquisition
+                    pass
+                else:  # timed acquisition
 
-                # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
-                while time.time() > self.timestamp_acquisition_started + self.time_point * self.dt:
-                    self._log.info("skip time point " + str(self.time_point + 1))
-                    self.time_point = self.time_point + 1
+                    # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
+                    while time.time() > self.timestamp_acquisition_started + self.time_point * self.dt:
+                        self._log.info("skip time point " + str(self.time_point + 1))
+                        self.time_point = self.time_point + 1
 
-                # check if it has reached Nt
-                if self.time_point == self.Nt:
-                    break  # no waiting after taking the last time point
+                    # check if it has reached Nt
+                    if self.time_point == self.Nt:
+                        break  # no waiting after taking the last time point
 
-                # wait until it's time to do the next acquisition
-                while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
-                    if self.multiPointController.abort_acqusition_requested:
-                        self._log.debug("In run wait loop, abort_acquisition_requested=True")
-                        break
-                    time.sleep(0.05)
+                    # wait until it's time to do the next acquisition
+                    while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
+                        if self.multiPointController.abort_acqusition_requested:
+                            self._log.debug("In run wait loop, abort_acquisition_requested=True")
+                            break
+                        time.sleep(0.05)
 
-        elapsed_time = time.perf_counter_ns() - self.start_time
-        self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
+            elapsed_time = time.perf_counter_ns() - self.start_time
+            self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
 
-        # End processing using the updated method
-        if DO_FLUORESCENCE_RTP:
-            self.processingHandler.processing_queue.join()
-            self.processingHandler.upload_queue.join()
-            self.processingHandler.end_processing()
+            # End processing using the updated method
+            if DO_FLUORESCENCE_RTP:
+                self.processingHandler.processing_queue.join()
+                self.processingHandler.upload_queue.join()
+                self.processingHandler.end_processing()
 
-        self._log.info(f"Time taken for acquisition/processing: {(time.perf_counter_ns() - self.start_time) / 1e9} [s]")
+            self._log.info(f"Time taken for acquisition/processing: {(time.perf_counter_ns() - self.start_time) / 1e9} [s]")
+        except TimeoutError as te:
+            self._log.error(f"Operation timed out during acquisition, aborting acquisition!")
+            self._log.error(te)
+            self.multiPointController.request_abort_aquisition()
         self.finished.emit()
 
     def wait_till_operation_is_completed(self):
