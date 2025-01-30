@@ -1505,7 +1505,9 @@ class MultiPointWorker(QObject):
                 self.processingHandler.upload_queue.join()
                 self.processingHandler.end_processing()
 
-            self._log.info(f"Time taken for acquisition/processing: {(time.perf_counter_ns() - self.start_time) / 1e9} [s]")
+            self._log.info(
+                f"Time taken for acquisition/processing: {(time.perf_counter_ns() - self.start_time) / 1e9} [s]"
+            )
         except TimeoutError as te:
             self._log.error(f"Operation timed out during acquisition, aborting acquisition!")
             self._log.error(te)
