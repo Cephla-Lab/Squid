@@ -279,7 +279,7 @@ class ImageSaver(QObject):
                 file_ID = int(self.counter % self.max_num_image_per_folder)
                 # create a new folder
                 if file_ID == 0:
-                    os.mkdir(os.path.join(self.base_path, self.experiment_ID, str(folder_ID)))
+                    utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID, str(folder_ID)))
 
                 if image.dtype == np.uint16:
                     # need to use tiff when saving 16 bit images
@@ -328,7 +328,7 @@ class ImageSaver(QObject):
         self.recording_start_time = time.time()
         # create a new folder
         try:
-            os.mkdir(os.path.join(self.base_path, self.experiment_ID))
+            utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
             # to do: save configuration
         except:
             pass
@@ -366,7 +366,7 @@ class ImageSaver_Tracking(QObject):
                 file_ID = int(frame_counter % self.max_num_image_per_folder)
                 # create a new folder
                 if file_ID == 0:
-                    os.mkdir(os.path.join(self.base_path, str(folder_ID)))
+                    utils.ensure_directory_exists(os.path.join(self.base_path, str(folder_ID)))
                 if image.dtype == np.uint16:
                     saving_path = os.path.join(
                         self.base_path,
@@ -1526,7 +1526,7 @@ class MultiPointWorker(QObject):
 
         # for each time point, create a new folder
         current_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point))
-        os.mkdir(current_path)
+        utils.ensure_directory_exists(current_path)
 
         slide_path = os.path.join(self.base_path, self.experiment_ID)
 
@@ -2313,7 +2313,7 @@ class MultiPointController(QObject):
         self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
         self.recording_start_time = time.time()
         # create a new folder
-        os.mkdir(os.path.join(self.base_path, self.experiment_ID))
+        utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
         # TODO(imo): If the config has changed since boot, is this still the correct config?
         configManagerThrowaway = ConfigurationManager(self.configurationManager.config_filename)
         configManagerThrowaway.write_configuration_selected(
@@ -2746,7 +2746,7 @@ class TrackingController(QObject):
         self.recording_start_time = time.time()
         # create a new folder
         try:
-            os.mkdir(os.path.join(self.base_path, self.experiment_ID))
+            utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
             self.configurationManager.write_configuration(
                 os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml"
             )  # save the configuration for the experiment

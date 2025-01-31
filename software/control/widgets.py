@@ -5,6 +5,7 @@ from typing import Optional
 import squid.logging
 from control.core.core import TrackingController
 from control.microcontroller import Microcontroller
+import control.utils as utils
 from squid.abc import AbstractStage
 
 # set QT_API environment variable
@@ -6076,7 +6077,7 @@ class MultiCameraRecordingWidget(QFrame):
             self.btn_setSavingDir.setEnabled(False)
             experiment_ID = self.lineEdit_experimentID.text()
             experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
-            os.mkdir(os.path.join(self.save_dir_base, experiment_ID))
+            utils.ensure_directory_exists(os.path.join(self.save_dir_base, experiment_ID))
             for channel in self.channels:
                 self.imageSaver[channel].start_new_experiment(os.path.join(experiment_ID, channel), add_timestamp=False)
                 self.streamHandler[channel].start_recording()

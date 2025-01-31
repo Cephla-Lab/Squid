@@ -13,6 +13,7 @@ from glob import glob
 
 from ome_zarr.writer import write_image
 from ome_zarr.io import parse_url
+import control.utils
 
 lazy_imread = delayed(imread)
 
@@ -207,10 +208,7 @@ def create_zarr_for_single_fov(
     t_to_use=None,
     well=0,
 ):
-    try:
-        os.mkdir(saving_path)
-    except FileExistsError:
-        pass
+    control.utils.ensure_directory_exists(saving_path)
     dimension_data = get_dimensions_for_dataset(dataset_folder_path, sensor_pixel_size_um, objective_magnification)
     scale_xy = dimension_data["pixel_size_um"]
     scale_z = dimension_data["dz"]

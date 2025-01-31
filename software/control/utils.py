@@ -1,8 +1,14 @@
+import pathlib
+
 import cv2
 from numpy import std, square, mean
 import numpy as np
 from scipy.ndimage import label
 import os
+
+import squid.logging
+
+_log = squid.logging.get_logger("control.utils")
 
 
 def crop_image(image, crop_width, crop_height):
@@ -153,3 +159,9 @@ def interpolate_plane(triple1, triple2, triple3, point):
 def create_done_file(path):
     with open(os.path.join(path, ".done"), "w") as file:
         pass  # This creates an empty file
+
+
+def ensure_directory_exists(raw_string_path: str):
+    path: pathlib.Path = pathlib.Path(raw_string_path)
+    _log.debug(f"Making sure directory '{path}' exists.")
+    path.mkdir(parents=True, exist_ok=True)

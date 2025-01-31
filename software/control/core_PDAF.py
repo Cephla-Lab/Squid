@@ -176,7 +176,7 @@ class TwoCamerasPDAFCalibrationController(QObject):
         self.recording_start_time = time.time()
         # create a new folder
         try:
-            os.mkdir(os.path.join(self.base_path, self.experiment_ID))
+            utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
             if self.configurationManager:
                 self.configurationManager.write_configuration(
                     os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml"

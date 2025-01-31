@@ -105,7 +105,7 @@ class PlateReadingWorker(QObject):
 
         # for each time point, create a new folder
         current_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point))
-        os.mkdir(current_path)
+        utils.ensure_directory_exists(current_path)
 
         # run homing
         self.plateReaderNavigationController.home()

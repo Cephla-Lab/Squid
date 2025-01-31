@@ -113,7 +113,7 @@ class SpectrumSaver(QObject):
                 file_ID = int(self.counter % self.max_num_file_per_folder)
                 # create a new folder
                 if file_ID == 0:
-                    os.mkdir(os.path.join(self.base_path, self.experiment_ID, str(folder_ID)))
+                    utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID, str(folder_ID)))
 
                 saving_path = os.path.join(self.base_path, self.experiment_ID, str(folder_ID), str(file_ID) + ".csv")
                 np.savetxt(saving_path, data, delimiter=",")
