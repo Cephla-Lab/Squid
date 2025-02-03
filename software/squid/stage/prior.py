@@ -54,6 +54,7 @@ class PriorStage(AbstractStage):
             return
         self._log.info("Starting position polling timer.")
         self._pos_polling_timer = threading.Timer(0.25, self._get_pos_poll_stage)
+        self._pos_polling_timer.start()
 
     def set_baudrate(self, baud: int):
         allowed_baudrates = {9600: "96", 19200: "19", 38400: "38", 115200: "115"}
