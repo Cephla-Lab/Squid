@@ -3,7 +3,7 @@ from serial.tools import list_ports
 import time
 from typing import Tuple, Optional
 import struct
-from control.microscope import LightSourceType, IntensityControlMode, ShutterControlMode
+from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode
 from control._def import *
 from squid.abc import LightSource
 

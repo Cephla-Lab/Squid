@@ -8,7 +8,7 @@ revised HL 2/2024
 import urllib.request
 import traceback
 from squid.abc import LightSource
-from control.microscope import LightSourceType, IntensityControlMode, ShutterControlMode
+from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode
 
 import squid.logging
 

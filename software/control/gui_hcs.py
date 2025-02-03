@@ -1,6 +1,8 @@
 # set QT_API environment variable
 import os
 
+import control.lighting
+
 os.environ["QT_API"] = "pyqt5"
 import serial
 import time
@@ -21,7 +23,7 @@ import squid.logging
 import squid.config
 import squid.stage.utils
 import control.microscope
-from control.microscope import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
+from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 
 log = squid.logging.get_logger(__name__)
 
@@ -325,7 +327,7 @@ class HighContentScreeningGui(QMainWindow):
             self.camera_focus = camera_fc.Camera_Simulation()
         if USE_LDI_SERIAL_CONTROL:
             self.ldi = serial_peripherals.LDI_Simulation()
-            self.illuminationController = control.microscope.IlluminationController(
+            self.illuminationController = control.lighting.IlluminationController(
                 self.microcontroller, self.ldi.intensity_mode, self.ldi.shutter_mode, LightSourceType.LDI, self.ldi
             )
         self.camera = camera.Camera_Simulation(rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
