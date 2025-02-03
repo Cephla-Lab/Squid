@@ -10,6 +10,8 @@ if [[ -z "$SRC_ROOT" ]]; then
   readonly SRC_ROOT="$HOME/Desktop"
 fi
 echo "Using SRC_ROOT=$SRC_ROOT"
+echo "Disk space summary (before setup):"
+df -h
 
 mkdir -p "$SRC_ROOT"
 readonly SQUID_REPO_HTTP="https://github.com/Cephla-Lab/Squid.git"
