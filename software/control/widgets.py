@@ -3384,7 +3384,7 @@ class WellplateMultiPointWidget(QFrame):
         # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
     def enable_manual_ROI(self, enable):
-        self.combobox_shape.model().item(2).setEnabled(enable)
+        self.combobox_shape.model().item(3).setEnabled(enable)
         if not enable:
             self.set_default_shape()
 
