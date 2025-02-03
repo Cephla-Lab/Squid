@@ -16,12 +16,6 @@ class PriorStage(AbstractStage):
         self.serial = serial.Serial(port[0], baudrate=baudrate, timeout=0.1)
         self.current_baudrate = baudrate
 
-        # Position information
-        self.x_pos = 0
-        self.y_pos = 0
-        self.z_pos = 0  # Always 0 for Prior stage
-        self.theta_pos = 0  # Always 0 for Prior stage
-
         # Button and switch state
         self.button_and_switch_state = 0
         self.joystick_button_pressed = 0
@@ -94,7 +88,6 @@ class PriorStage(AbstractStage):
         self.get_stage_info()
         self.set_acceleration(self.acceleration)
         self.set_max_speed(self.speed)
-        self._get_pos_poll_stage()
 
     def _send_command(self, command: str) -> str:
         with self.serial_lock:
@@ -203,15 +196,11 @@ class PriorStage(AbstractStage):
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         pass
 
-    def _get_pos_poll_stage(self):
+    def get_pos(self) -> Pos:
         response = self._send_command("P")
         x, y, z = map(int, response.split(","))
-        self.x_pos = x
-        self.y_pos = y
-
-    def get_pos(self) -> Pos:
-        x_mm = self._steps_to_mm(self.x_pos)
-        y_mm = self._steps_to_mm(self.y_pos)
+        x_mm = self._steps_to_mm(x)
+        y_mm = self._steps_to_mm(y)
         return Pos(x_mm=x_mm, y_mm=y_mm, z_mm=0, theta_rad=0)
 
     def get_state(self) -> StageStage:
@@ -240,18 +229,14 @@ class PriorStage(AbstractStage):
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if x:
             self._send_command(f"PX 0")
-            self.x_pos = 0
         if y:
             self._send_command(f"PY 0")
-            self.y_pos = 0
 
     def wait_for_stop(self):
         self.is_busy = True
         while True:
             status = int(self._send_command("$,S"))
             if status == 0:
-                self._get_pos_poll_stage()
-                # print("xy position: ", self.x_pos, self.y_pos)
                 self.is_busy = False
                 break
             time.sleep(0.05)
