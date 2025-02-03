@@ -104,6 +104,7 @@ class PriorStage(AbstractStage):
         self.set_acceleration(self.acceleration)
         self.set_max_speed(self.speed)
         self._get_pos_poll_stage()
+        self._ensure_pos_polling_timer()
 
     def _send_command(self, command: str) -> str:
         with self.serial_lock:
@@ -219,6 +220,7 @@ class PriorStage(AbstractStage):
         self.y_pos = y
 
     def get_pos(self) -> Pos:
+        self._ensure_pos_polling_timer()
         x_mm = self._steps_to_mm(self.x_pos)
         y_mm = self._steps_to_mm(self.y_pos)
         return Pos(x_mm=x_mm, y_mm=y_mm, z_mm=0, theta_rad=0)
