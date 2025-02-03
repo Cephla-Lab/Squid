@@ -4059,9 +4059,10 @@ class ScanCoordinates(QObject):
             if not self.validate_coordinates(x_center, y_center):
                 self._log.debug(f"Manual coords: ignoring {x_center=},{y_center=} because it is outside our movement range.")
                 continue
-            if not all([self._is_in_polygon(x_corner, y_corner, shape_coords) for (x_corner, y_corner) in corners(x_center, y_center, fov_size_mm)]):
-                self._log.debug(f"Manual coords: ignoring {x_center=},{y_center=} because no corners are in poly.")
+            if not self._is_in_poly(x_center, y_center) and not any([self._is_in_polygon(x_corner, y_corner, shape_coords) for (x_corner, y_corner) in corners(x_center, y_center, fov_size_mm)]):
+                self._log.debug(f"Manual coords: ignoring {x_center=},{y_center=} because no corners or center are in poly. (corners={corners(x_center, y_center, fov_size_mm)}")
                 continue
+
             valid_points.append((x_center, y_center))
         if not valid_points:
             return []
