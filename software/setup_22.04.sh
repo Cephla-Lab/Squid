@@ -11,7 +11,7 @@ SQUID_REPO_PATH="$HOME/Desktop/Squid"
 for i in "$@"; do
   case $i in
     -r=*|--repo_path=*)
-      SQUID_REPO_PATH="${i#*=}"
+      SQUID_REPO_PATH="$(cd "${i#*=}" && pwd)"
       shift
       ;;
     -*|--*)
