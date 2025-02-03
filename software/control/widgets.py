@@ -5079,7 +5079,6 @@ class NapariMosaicDisplayWidget(QWidget):
         super().__init__(parent)
         self.objectiveStore = objectiveStore
         self.contrastManager = contrastManager
-        self.downsample_factor = PRVIEW_DOWNSAMPLE_FACTOR
         self.viewer = napari.Viewer(show=False)
         self.layout = QVBoxLayout()
         self.layout.addWidget(self.viewer.window._qt_window)
@@ -5222,15 +5221,16 @@ class NapariMosaicDisplayWidget(QWidget):
 
     def updateMosaic(self, image, x_mm, y_mm, k, channel_name):
         # calculate pixel size
-        image_pixel_size_um = self.objectiveStore.get_pixel_size() * self.downsample_factor
+        downsample_factor = max(1,int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / self.objectiveStore.get_pixel_size()))
+        image_pixel_size_um = self.objectiveStore.get_pixel_size() * downsample_factor
         image_pixel_size_mm = image_pixel_size_um / 1000
         image_dtype = image.dtype
 
         # downsample image
-        if self.downsample_factor != 1:
+        if downsample_factor != 1:
             image = cv2.resize(
                 image,
-                (image.shape[1] // self.downsample_factor, image.shape[0] // self.downsample_factor),
+                (image.shape[1] // downsample_factor, image.shape[0] // downsample_factor),
                 interpolation=cv2.INTER_AREA,
             )
 
