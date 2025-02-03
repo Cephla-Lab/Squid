@@ -3711,6 +3711,7 @@ class ScanCoordinates(QObject):
 
     def __init__(self, objectiveStore, navigationViewer, stage: AbstractStage):
         QObject.__init__(self)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         # Wellplate settings
         self.objectiveStore = objectiveStore
         self.navigationViewer = navigationViewer
@@ -4045,10 +4046,23 @@ class ScanCoordinates(QObject):
         # # Filter points inside the polygon
         # valid_points = grid_points[mask]
 
+        def corners(x_mm, y_mm, fov):
+            center_to_corner = fov/2
+            return (
+                (x_mm + center_to_corner, y_mm + center_to_corner),
+                (x_mm - center_to_corner, y_mm + center_to_corner),
+                (x_mm - center_to_corner, y_mm - center_to_corner),
+                (x_mm + center_to_corner, y_mm - center_to_corner)
+            )
         valid_points = []
-        for x, y in grid_points:
-            if self.validate_coordinates(x, y) and self._is_in_polygon(x, y, shape_coords):
-                valid_points.append((x, y))
+        for x_center, y_center in grid_points:
+            if not self.validate_coordinates(x_center, y_center):
+                self._log.debug(f"Manual coords: ignoring {x_center=},{y_center=} because it is outside our movement range.")
+                continue
+            if not all([self._is_in_polygon(x_corner, y_corner, shape_coords) for (x_corner, y_corner) in corners(x_center, y_center, fov_size_mm)]):
+                self._log.debug(f"Manual coords: ignoring {x_center=},{y_center=} because no corners are in poly.")
+                continue
+            valid_points.append((x_center, y_center))
         if not valid_points:
             return []
         valid_points = np.array(valid_points)
