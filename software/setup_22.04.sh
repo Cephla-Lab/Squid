@@ -49,3 +49,5 @@ sudo cp "$TOUPCAM_UDEV_RULE_PATH" /etc/udev/rules.d
 
 # enable access to serial ports without sudo
 sudo usermod -aG dialout $USER
+
+sudo apt autoremove -y
