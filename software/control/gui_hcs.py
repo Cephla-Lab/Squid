@@ -218,7 +218,7 @@ class HighContentScreeningGui(QMainWindow):
         )
 
         if USE_PRIOR_STAGE:
-            self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(sn=PRIOR_STAGE_SN)
+            self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(sn=PRIOR_STAGE_SN, stage_config=squid.config.get_stage_config())
 
         else:
             self.stage: squid.abc.AbstractStage = squid.stage.cephla.CephlaStage(

@@ -7,10 +7,6 @@ import re
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
 
-
-# NOTE/TODO(imo): We want to unblock getting the interface code implemented and in use, so to start we only
-# implemented the cephla stage.  As soon as we roll the interface out and get past the point of major refactors
-# to use it (we want to get past that point as fast as possible!), we'll come back to implement this.
 class PriorStage(AbstractStage):
     def __init__(self, sn: str, baudrate: int = 115200, stage_config: StageConfig = None):
         # We are not using StageConfig for Prior stage now. Waiting for further update/clarification of this part
