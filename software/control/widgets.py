@@ -2550,6 +2550,10 @@ class FlexibleMultiPointWidget(QFrame):
             msg.exec_()
             return
         if pressed:
+            if self.multipointController.acquisition_in_progress():
+                self._log.warn("Acquisition in progress or aborting, cannot start another yet.")
+                return
+
             # @@@ to do: add a widgetManger to enable and disable widget
             # @@@ to do: emit signal to widgetManager to disable other widgets
             self.is_current_acquisition_widget = True  # keep track of what widget started the acquisition
@@ -3696,6 +3700,9 @@ class WellplateMultiPointWidget(QFrame):
             return
 
         if pressed:
+            if self.multipointController.acquisition_in_progress():
+                self._log.warn("Acquisition in progress or aborting, cannot start another yet.")
+                return
             self.setEnabled_all(False)
             self.is_current_acquisition_widget = True
 
