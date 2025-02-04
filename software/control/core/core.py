@@ -2247,7 +2247,7 @@ class MultiPointController(QObject):
     def set_use_piezo(self, checked):
         print("Use Piezo:", checked)
         self.use_piezo = checked
-        if hasattr(self, "multiPointWorker"):
+        if self.multiPointWorker:
             self.multiPointWorker.update_use_piezo(checked)
 
     def set_z_stacking_config(self, z_stacking_config_index):
