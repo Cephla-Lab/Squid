@@ -90,7 +90,7 @@ import control.microcontroller as microcontroller
 import control.serial_peripherals as serial_peripherals
 
 if ENABLE_STITCHER:
-    import control.stitcher as stitcher
+    from control.stitcher.stitcher_parameters import StitchingParameters
 
 if SUPPORT_LASER_AUTOFOCUS:
     import control.core_displacement_measurement as core_displacement_measurement
@@ -564,7 +564,7 @@ class HighContentScreeningGui(QMainWindow):
 
         if USE_SQUID_FILTERWHEEL:
             self.squidFilterWidget = widgets.SquidFilterWidget(self)
-
+        self.acquisitionManagerWidget = widgets.AcquisitionManagerWidget(self)
         self.recordingControlWidget = widgets.RecordingWidget(self.streamHandler, self.imageSaver)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
             self.stage, self.navigationViewer, self.streamHandler, self.liveController
@@ -652,7 +652,9 @@ class HighContentScreeningGui(QMainWindow):
                 show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
             )
         if ENABLE_STITCHER:
-            self.stitcherWidget = widgets.StitcherWidget(self.configurationManager, self.contrastManager)
+            self.stitcherWidget = widgets.StitcherWidget(
+                self.configurationManager, self.contrastManager, self.acquisitionManagerWidget
+            )
 
         self.recordTabWidget = QTabWidget()
         self.setupRecordTabWidget()
@@ -699,6 +701,22 @@ class HighContentScreeningGui(QMainWindow):
                 )
                 self.imageDisplayTabs.addTab(self.napariMosaicDisplayWidget, "Mosaic View")
 
+            if ENABLE_STITCHER and USE_NAPARI_ACQUISITION_VIEWER:
+                if SINGLE_WINDOW_ACQUISITION_VIEWER:
+                    self.napariAcquisitionViewerWidget = widgets.NapariAcquisitionViewerWidget(
+                        manager_widget=self.acquisitionManagerWidget
+                    )
+                    self.acquisitionManagerWidget.signal_view_acquisition.connect(
+                        self.napariAcquisitionViewerWidget.show_acquisition
+                    )
+                else:
+                    self.napariAcquisitionViewerWidget = (
+                        widgets.NapariAcquisitionViewerWidget()
+                    )  # if acquisition manager added to recordTab
+                    self.acquisitionManagerWidget.signal_view_acquisition.connect(self.showAcquisitionViewerTab)
+
+                self.imageDisplayTabs.addTab(self.napariAcquisitionViewerWidget, "Acquisition Viewer")
+
         if SUPPORT_LASER_AUTOFOCUS:
             dock_laserfocus_image_display = dock.Dock("Focus Camera Image Display", autoOrientation=False)
             dock_laserfocus_image_display.showTitleBar()
@@ -742,6 +760,9 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
         if ENABLE_RECORDING:
             self.recordTabWidget.addTab(self.recordingControlWidget, "Simple Recording")
+        if not self.live_only_mode:
+            if ENABLE_STITCHER and USE_NAPARI_ACQUISITION_VIEWER and not SINGLE_WINDOW_ACQUISITION_VIEWER:
+                self.recordTabWidget.addTab(self.acquisitionManagerWidget, "Acquisition Manager")
         self.recordTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.recordTabWidget))
         self.resizeCurrentTab(self.recordTabWidget)
 
@@ -1153,6 +1174,13 @@ class HighContentScreeningGui(QMainWindow):
             dialog = widgets.LedMatrixSettingsDialog(self.liveController.led_array)
             dialog.exec_()
 
+    def showAcquisitionViewerTab(self, path):
+        """Show an acquisition in the viewer tab."""
+        # Show the data
+        self.napariAcquisitionViewerWidget.show_acquisition(path)
+        # Switch to viewer tab
+        self.imageDisplayTabs.setCurrentIndex(self.imageDisplayTabs.indexOf(self.napariAcquisitionViewerWidget))
+
     def onTabChanged(self, index):
         is_flexible_acquisition = (
             (index == self.recordTabWidget.indexOf(self.flexibleMultiPointWidget))
@@ -1179,10 +1207,13 @@ class HighContentScreeningGui(QMainWindow):
             self.flexibleMultiPointWidget.update_fov_positions()
 
         self.toggleWellSelector(is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide")
-        acquisitionWidget = self.recordTabWidget.widget(index)
-        if ENABLE_STITCHER:
-            self.toggleStitcherWidget(acquisitionWidget.checkbox_stitchOutput.isChecked())
-        acquisitionWidget.emit_selected_channels()
+        if is_flexible_acquisition or is_wellplate_acquisition:
+            acquisitionWidget = self.recordTabWidget.widget(index)
+            if ENABLE_STITCHER:
+                self.toggleStitcherWidget(acquisitionWidget.checkbox_stitchOutput.isChecked())
+            acquisitionWidget.emit_selected_channels()
+        else:
+            self.toggleStitcherWidget(False)
 
     def resizeCurrentTab(self, tabWidget):
         current_widget = tabWidget.currentWidget()
@@ -1345,44 +1376,32 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayTabs.setCurrentIndex(0)
 
     def startStitcher(self, acquisition_path):
+        """Start the stitching process with current settings"""
         acquisitionWidget = self.recordTabWidget.currentWidget()
         if acquisitionWidget.checkbox_stitchOutput.isChecked():
-            apply_flatfield = self.stitcherWidget.applyFlatfieldCheck.isChecked()
-            use_registration = self.stitcherWidget.useRegistrationCheck.isChecked()
-            registration_channel = self.stitcherWidget.registrationChannelCombo.currentText()
-            registration_z_level = self.stitcherWidget.registrationZCombo.value()
-            overlap_percent = self.wellplateMultiPointWidget.entry_overlap.value()
-            output_name = acquisitionWidget.lineEdit_experimentID.text() or "stitched"
-            output_format = (
-                ".ome.zarr" if self.stitcherWidget.outputFormatCombo.currentText() == "OME-ZARR" else ".ome.tiff"
-            )
-
-            stitcher_class = (
-                stitcher.CoordinateStitcher
-                if self.recordTabWidget.currentIndex() == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget)
-                else stitcher.Stitcher
-            )
-            self.stitcherThread = stitcher_class(
+            # Create stitching parameters from current settings
+            params = StitchingParameters(
                 input_folder=acquisition_path,
-                output_name=output_name,
-                output_format=output_format,
-                apply_flatfield=apply_flatfield,
-                overlap_percent=overlap_percent,
-                use_registration=use_registration,
-                registration_channel=registration_channel,
-                registration_z_level=registration_z_level,
+                output_format="." + self.stitcherWidget.outputFormatCombo.currentText().lower().replace("-", "."),
+                apply_flatfield=self.stitcherWidget.applyFlatfieldCheck.isChecked(),
+                use_registration=self.stitcherWidget.useRegistrationCheck.isChecked(),
+                registration_channel=(
+                    self.stitcherWidget.registrationChannelCombo.currentText()
+                    if self.stitcherWidget.useRegistrationCheck.isChecked()
+                    else ""
+                ),
+                registration_z_level=(
+                    self.stitcherWidget.registrationZCombo.value()
+                    if self.stitcherWidget.useRegistrationCheck.isChecked()
+                    else 0
+                ),
+                scan_pattern="Unidirectional",
+                merge_timepoints=False,  # Could be made configurable in the UI
+                merge_hcs_regions=False,  # Could be made configurable in the UI
             )
 
-            self.stitcherWidget.setStitcherThread(self.stitcherThread)
-            self.connectStitcherSignals()
-            self.stitcherThread.start()
-
-    def connectStitcherSignals(self):
-        self.stitcherThread.update_progress.connect(self.stitcherWidget.updateProgressBar)
-        self.stitcherThread.getting_flatfields.connect(self.stitcherWidget.gettingFlatfields)
-        self.stitcherThread.starting_stitching.connect(self.stitcherWidget.startingStitching)
-        self.stitcherThread.starting_saving.connect(self.stitcherWidget.startingSaving)
-        self.stitcherThread.finished_saving.connect(self.stitcherWidget.finishedSaving)
+            # Start the stitching process
+            self.stitcherWidget.start_stitching(params)
 
     def move_from_click_image(self, click_x, click_y, image_width, image_height):
         if self.navigationWidget.get_click_to_move_enabled():
