@@ -5,7 +5,6 @@ import control.lighting
 
 os.environ["QT_API"] = "pyqt5"
 import serial
-import time
 from typing import Optional
 
 # qt libraries
@@ -24,6 +23,7 @@ import squid.config
 import squid.stage.utils
 import control.microscope
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
+import squid.camera.utils
 
 log = squid.logging.get_logger(__name__)
 
@@ -33,54 +33,6 @@ if USE_PRIOR_STAGE:
     import squid.stage.prior
 else:
     import squid.stage.cephla
-
-if CAMERA_TYPE == "Toupcam":
-    try:
-        import control.camera_toupcam as camera
-    except:
-        log.warning("Problem importing Toupcam, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "FLIR":
-    try:
-        import control.camera_flir as camera
-    except:
-        log.warning("Problem importing FLIR camera, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "Hamamatsu":
-    try:
-        import control.camera_hamamatsu as camera
-    except:
-        log.warning("Problem importing Hamamatsu camera, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "iDS":
-    try:
-        import control.camera_ids as camera
-    except:
-        log.warning("Problem importing iDS camera, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "Tucsen":
-    try:
-        import control.camera_tucsen as camera
-    except:
-        log.warning("Problem importing Tucsen camera, defaulting to default camera")
-        import control.camera as camera
-else:
-    import control.camera as camera
-
-if FOCUS_CAMERA_TYPE == "Toupcam":
-    try:
-        import control.camera_toupcam as camera_fc
-    except:
-        log.warning("Problem importing Toupcam for focus, defaulting to default camera")
-        import control.camera as camera_fc
-elif FOCUS_CAMERA_TYPE == "FLIR":
-    try:
-        import control.camera_flir as camera_fc
-    except:
-        log.warning("Problem importing FLIR camera for focus, defaulting to default camera")
-        import control.camera as camera_fc
-else:
-    import control.camera as camera_fc
 
 if USE_XERYON:
     from control.objective_changer_2_pos_controller import ObjectiveChanger2PosController
@@ -167,6 +119,11 @@ class HighContentScreeningGui(QMainWindow):
         self.makeConnections()
 
         self.microscope = control.microscope.Microscope(self.stage, self, is_simulation=is_simulation)
+        self.camera: squid.abc.AbstractCamera = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=is_simulation)
+
+        self.camera_focus: Optional[squid.abc.AbstractCamera] = None
+        if SUPPORT_LASER_AUTOFOCUS:
+            self.camera_focus = squid.camera.utils.get_camera(squid.config.get_autofocus_camera_config(), simulated=is_simulated)
 
         # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
         if HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
@@ -323,15 +280,12 @@ class HighContentScreeningGui(QMainWindow):
             self.nl5 = NL5.NL5_Simulation()
         if ENABLE_CELLX:
             self.cellx = serial_peripherals.CellX_Simulation()
-        if SUPPORT_LASER_AUTOFOCUS:
-            self.camera_focus = camera_fc.Camera_Simulation()
+
         if USE_LDI_SERIAL_CONTROL:
             self.ldi = serial_peripherals.LDI_Simulation()
             self.illuminationController = control.lighting.IlluminationController(
                 self.microcontroller, self.ldi.intensity_mode, self.ldi.shutter_mode, LightSourceType.LDI, self.ldi
             )
-        self.camera = camera.Camera_Simulation(rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
-        self.camera.set_pixel_format(DEFAULT_PIXEL_FORMAT)
         if USE_ZABER_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel = serial_peripherals.FilterController_Simulation(
                 115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE
@@ -404,25 +358,6 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 self.log.error("Error initializing CELESTA")
                 raise
-
-        if SUPPORT_LASER_AUTOFOCUS:
-            try:
-                sn_camera_focus = camera_fc.get_sn_by_model(FOCUS_CAMERA_MODEL)
-                self.camera_focus = camera_fc.Camera(sn=sn_camera_focus)
-                self.camera_focus.open()
-                self.camera_focus.set_pixel_format("MONO8")
-            except Exception:
-                self.log.error(f"Error initializing Laser Autofocus Camera")
-                raise
-
-        try:
-            sn_camera_main = camera.get_sn_by_model(MAIN_CAMERA_MODEL)
-            self.camera = camera.Camera(sn=sn_camera_main, rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
-            self.camera.open()
-            self.camera.set_pixel_format(DEFAULT_PIXEL_FORMAT)
-        except Exception:
-            self.log.error("Error initializing Main Camera")
-            raise
 
         if USE_ZABER_EMISSION_FILTER_WHEEL:
             try:

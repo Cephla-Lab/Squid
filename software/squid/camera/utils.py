@@ -3,9 +3,11 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from squid.config import CameraConfig, CameraPixelFormat
+import squid.logging
+from squid.config import CameraConfig, CameraPixelFormat, CameraVariant
 from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrameFormat
 
+_log = squid.logging.get_logger("squid.camera.utils")
 
 def get_camera(config: CameraConfig, simulated: bool = False) -> AbstractCamera:
     """
@@ -15,6 +17,35 @@ def get_camera(config: CameraConfig, simulated: bool = False) -> AbstractCamera:
     """
     if simulated:
         return SimulatedCamera(config)
+
+    try:
+        if config.camera_type ==  CameraVariant.TOUPCAM:
+            import control.camera_toupcam
+            return control.camera_toupcam.Camera(config)
+        elif config.camera_type == CameraVariant.FLIR:
+            import control.camera_flir
+            return control.camera_flir.Camera(config)
+        elif config.camera_type == CameraVariant.HAMAMATSU:
+            import control.camera_hamamatsu
+            return control.camera_hamamatsu.Camera(config)
+        elif config.camera_type == CameraVariant.IDS:
+            import control.camera_ids
+            return control.camera_ids.Camera(config)
+        elif config.camera_type == CameraVariant.TUCSEN:
+            import control.camera_tucsen
+            return control.camera_ids.Camera(config)
+        elif config.camera_type == CameraVariant.TIS:
+            import control.camera_TIS
+            return control.camera_TIS.Camera(config)
+        else:
+            import control.camera
+            return control.camera.Camera(config)
+    except ImportError as e:
+        _log.warning(f"Camera of type: '{config.camera_type}' failed to import.  Falling back to default camera impl.")
+        _log.warning(e)
+
+        import control.camera as camera
+        return control.camera.Camera(config)
 
     raise NotImplementedError(f"Camera of type={config.camera_type} not yet supported.")
 

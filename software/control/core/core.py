@@ -3,16 +3,14 @@ import os
 import sys
 
 from control.microcontroller import Microcontroller
-from squid.abc import AbstractStage
+from squid.abc import AbstractStage, AbstractCamera
 import squid.logging
 
 # qt libraries
 os.environ["QT_API"] = "pyqt5"
-import qtpy
 import pyqtgraph as pg
 from qtpy.QtCore import *
 from qtpy.QtWidgets import *
-from qtpy.QtGui import *
 
 # control
 from control._def import *
@@ -22,7 +20,6 @@ if DO_FLUORESCENCE_RTP:
     from control.processing_pipeline import *
     from control.multipoint_built_in_functionalities import malaria_rtp
 
-import control.utils as utils
 import control.utils_config as utils_config
 import control.tracking as tracking
 import control.serial_peripherals as serial_peripherals
@@ -40,19 +37,15 @@ from threading import Thread, Lock
 from pathlib import Path
 from datetime import datetime
 import time
-import subprocess
-import shutil
 import itertools
 from lxml import etree
 import json
 import math
-import random
 import numpy as np
 import pandas as pd
 import scipy.signal
 import cv2
 import imageio as iio
-import squid.abc
 
 
 class ObjectiveStore:
@@ -480,7 +473,7 @@ class Configuration:
 class LiveController(QObject):
     def __init__(
         self,
-        camera,
+        camera: AbstractCamera,
         microcontroller,
         configurationManager,
         illuminationController,
@@ -491,7 +484,7 @@ class LiveController(QObject):
     ):
         QObject.__init__(self)
         self.microscope = parent
-        self.camera = camera
+        self.camera: AbstractCamera = camera
         self.microcontroller = microcontroller
         self.configurationManager = configurationManager
         self.currentConfiguration = None
@@ -1164,9 +1157,9 @@ class AutoFocusController(QObject):
     autofocusFinished = Signal()
     image_to_display = Signal(np.ndarray)
 
-    def __init__(self, camera, stage: AbstractStage, liveController, microcontroller: Microcontroller):
+    def __init__(self, camera: AbstractCamera, stage: AbstractStage, liveController, microcontroller: Microcontroller):
         QObject.__init__(self)
-        self.camera = camera
+        self.camera: AbstractCamera = camera
         self.stage = stage
         self.microcontroller = microcontroller
         self.liveController = liveController
@@ -2175,7 +2168,7 @@ class MultiPointController(QObject):
 
     def __init__(
         self,
-        camera,
+        camera: AbstractCamera,
         stage: AbstractStage,
         microcontroller: Microcontroller,
         liveController,
@@ -2187,7 +2180,7 @@ class MultiPointController(QObject):
     ):
         QObject.__init__(self)
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.camera = camera
+        self.camera: AbstractCamera = camera
         if DO_FLUORESCENCE_RTP:
             self.processingHandler = ProcessingHandler()
         self.stage = stage
@@ -2633,7 +2626,7 @@ class TrackingController(QObject):
 
     def __init__(
         self,
-        camera,
+        camera: AbstractCamera,
         microcontroller: Microcontroller,
         stage: AbstractStage,
         configurationManager,
@@ -2642,7 +2635,7 @@ class TrackingController(QObject):
         imageDisplayWindow,
     ):
         QObject.__init__(self)
-        self.camera = camera
+        self.camera: AbstractCamera = camera
         self.microcontroller = microcontroller
         self.stage = stage
         self.configurationManager = configurationManager
@@ -4440,7 +4433,7 @@ class LaserAutofocusController(QObject):
     def __init__(
         self,
         microcontroller: Microcontroller,
-        camera,
+        camera: AbstractCamera,
         liveController,
         stage: AbstractStage,
         has_two_interfaces=True,
@@ -4449,7 +4442,7 @@ class LaserAutofocusController(QObject):
     ):
         QObject.__init__(self)
         self.microcontroller = microcontroller
-        self.camera = camera
+        self.camera: AbstractCamera = camera
         self.liveController = liveController
         self.stage = stage
 
