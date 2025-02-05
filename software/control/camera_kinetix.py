@@ -1,9 +1,11 @@
 from pyvcam import pvc
-from pyvcam.camera import Camera
+from pyvcam.camera import Camera as PVCam
 from typing import Callable
 import numpy as np
 import threading
 import time
+
+from control._def import *
 
 
 def get_sn_by_model(model_name: str) -> str:
@@ -13,10 +15,10 @@ def get_sn_by_model(model_name: str) -> str:
 
 class Camera(object):
     def __init__(
-        self, sn=None, resolution=(3200, 3200), is_global_shutter=False, rotate_image_angle=None, flip_image=None
+        self, sn=None, resolution=(2760, 2760), is_global_shutter=False, rotate_image_angle=None, flip_image=None
     ):
-    	pvc.init_pvcam()
-    	self.cam = None
+        pvc.init_pvcam()
+        self.cam = None
 
         self.exposure_time = 1  # ms
         self.analog_gain = 0
@@ -54,21 +56,22 @@ class Camera(object):
 
         self.ROI_offset_x = 0
         self.ROI_offset_y = 0
-        self.ROI_width = 3200
-        self.ROI_height = 3200
+        self.ROI_width = 2760
+        self.ROI_height = 2760
 
         self.OffsetX = 0
         self.OffsetY = 0
-        self.Width = 3200
-        self.Height = 3200
+        self.Width = 2760
+        self.Height = 2760
 
-        self.WidthMax = 3200
-        self.HeightMax = 3200
+        self.WidthMax = 2760
+        self.HeightMax = 2760
 
     def open(self):
-        self.cam = next(Camera.detect_camera())
+        self.cam = next(PVCam.detect_camera())
         self.cam.open()
-        self.cam.temp = 15  # temperature range: -15 - 15 degree Celcius
+        self.set_temperature(15)  # temperature range: -15 - 15 degree Celcius
+        self.temperature_reading_thread.start()
         self.cam.readout_port = 2  # Dynamic Range Mode
         self.cam.set_roi(440,440,2760,2760)  # Crop fov to 25mm
         print("Cropped area: ", self.cam.shape(0))
@@ -84,17 +87,22 @@ class Camera(object):
         self.open()
 
     def close(self):
+        if self.is_streaming:
+            self.stop_streaming()
         self.cam.close()
+        pvc.uninit_pvcam()
 
     def set_callback(self, function: Callable):
         self.new_image_callback_external = function
 
     def enable_callback(self):
+        print("enable callback")
         if self.callback_is_enabled:
             return
+        self.start_streaming()
 
         self.stop_waiting = False
-        self.callback_thread = threading.Thread(target=self._wait_and_callback)
+        self.callback_thread = threading.Thread(target=self._wait_and_callback, daemon=True)
         self.callback_thread.start()
 
         self.callback_is_enabled = True
@@ -104,7 +112,7 @@ class Camera(object):
             if self.stop_waiting:
                 break
             data = self.read_frame()
-            if data:
+            if data is not None:
                 self._on_new_frame(data)
 
     def _on_new_frame(self, image: np.ndarray):
@@ -127,11 +135,14 @@ class Camera(object):
         self.new_image_callback_external(self)
 
     def disable_callback(self):
+        print("disable callback")
         if not self.callback_is_enabled:
             return
 
         self.stop_waiting = True
-        time.sleep(0.2)
+        time.sleep(0.02)
+        if hasattr(self, "callback_thread"):
+            self.send_trigger()
         self.callback_thread.join()
         self.callback_is_enabled = False
 
@@ -145,6 +156,7 @@ class Camera(object):
             adjusted = self.strobe_delay_us / 1000 + exposure_time
         try:
             self.cam.exp_time = adjusted  # ms or s? min, max
+            self.exposure_time = adjusted
         except Exception as e:
             print('set_exposure_time failed')
 
@@ -206,14 +218,26 @@ class Camera(object):
             print('sending trigger failed')
 
     def read_frame(self) -> np.ndarray:
-        data = self.cam.get_frame(timeout_ms=self.exposure_time + 1000)
+        print("read frame")
+        frame, _, _ = self.cam.poll_frame()
+        data = frame['pixel_data']
         return data
 
     def start_streaming(self):
-        pass
+        print("start streaming")
+        if self.is_streaming:
+            return
+        self.cam.start_live()
+        self.is_streaming = True
 
     def stop_streaming(self):
-        pass
+        print("stop streaming")
+        try:
+            self.cam.finish()
+        except Exception as e:
+            # The camera cannot stop live properly. This also happens in their example code.
+            print(e)
+        self.is_streaming = False
 
     def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
         pass
@@ -221,7 +245,7 @@ class Camera(object):
     def calculate_strobe_delay(self):
         # Line time (us) from the manual: 
         # Dynamic Range Mode: 3.75; Speed Mode: 0.625; Sensitivity Mode: 3.53125; Sub-Electron Mode: 60.1
-        self.strobe_delay_us = int(self.cam.readout_time)  # s to us
+        self.strobe_delay_us = int(3.75 * 2760)  # s to us
         # trigger delay, line delay
 
 
