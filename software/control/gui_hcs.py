@@ -332,8 +332,7 @@ class HighContentScreeningGui(QMainWindow):
             self.illuminationController = control.microscope.IlluminationController(
                 self.microcontroller, self.ldi.intensity_mode, self.ldi.shutter_mode, LightSourceType.LDI, self.ldi
             )
-        self.camera = camera.Camera(rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
-        self.camera.open()
+        self.camera = camera.Camera_Simulation(rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
         self.camera.set_pixel_format(DEFAULT_PIXEL_FORMAT)
         if USE_ZABER_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel = serial_peripherals.FilterController_Simulation(

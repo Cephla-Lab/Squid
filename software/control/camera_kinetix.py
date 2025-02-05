@@ -5,6 +5,7 @@ import numpy as np
 import threading
 import time
 
+import squid.logging
 from control._def import *
 
 
@@ -17,6 +18,8 @@ class Camera(object):
     def __init__(
         self, sn=None, resolution=(2760, 2760), is_global_shutter=False, rotate_image_angle=None, flip_image=None
     ):
+        self.log = squid.logging.get_logger(self.__class__.__name__)
+
         pvc.init_pvcam()
         self.cam = None
 
@@ -74,7 +77,7 @@ class Camera(object):
         self.temperature_reading_thread.start()
         self.cam.readout_port = 2  # Dynamic Range Mode
         self.cam.set_roi(440,440,2760,2760)  # Crop fov to 25mm
-        print("Cropped area: ", self.cam.shape(0))
+        self.log.info("Cropped area: ", self.cam.shape(0))
         """
         port_speed_gain_table:
         {'Sensitivity': {'port_value': 0, 'Speed_0': {'speed_index': 0, 'pixel_time': 10, 'bit_depth': 12, 'gain_range': [1], 'Standard': {'gain_index': 1}}}, 
@@ -89,6 +92,8 @@ class Camera(object):
     def close(self):
         if self.is_streaming:
             self.stop_streaming()
+        self.terminate_read_temperature_thread = True
+        self.temperature_reading_thread.join()
         self.cam.close()
         pvc.uninit_pvcam()
 
@@ -96,7 +101,7 @@ class Camera(object):
         self.new_image_callback_external = function
 
     def enable_callback(self):
-        print("enable callback")
+        self.log.info("enable callback")
         if self.callback_is_enabled:
             return
         self.start_streaming()
@@ -117,7 +122,7 @@ class Camera(object):
 
     def _on_new_frame(self, image: np.ndarray):
         if self.image_locked:
-            print("Last image is still being processed; a frame is dropped")
+            self.log.warning("Last image is still being processed; a frame is dropped")
             return
 
         self.current_frame = image
@@ -135,7 +140,7 @@ class Camera(object):
         self.new_image_callback_external(self)
 
     def disable_callback(self):
-        print("disable callback")
+        self.log.info("disable callback")
         if not self.callback_is_enabled:
             return
 
@@ -158,7 +163,7 @@ class Camera(object):
             self.cam.exp_time = adjusted  # ms or s? min, max
             self.exposure_time = adjusted
         except Exception as e:
-            print('set_exposure_time failed')
+            self.log.error('set_exposure_time failed')
 
     def set_temperature_reading_callback(self, func: Callable):
         self.temperature_reading_callback = func
@@ -167,13 +172,13 @@ class Camera(object):
         try:
             self.cam.temp = temperature
         except Exception as e:
-            print('set_temperature failed')
+            self.log.error('set_temperature failed')
 
     def get_temperature(self) -> float:
         try:
             return self.cam.temp
         except Exception as e:
-            print('get_temperature failed')
+            self.log.error('get_temperature failed')
 
     def check_temperature(self):
         while self.terminate_read_temperature_thread == False:
@@ -190,14 +195,14 @@ class Camera(object):
             self.cam.exp_mode = 'Internal Trigger'
             self.trigger_mode = TriggerMode.CONTINUOUS
         except Exception as e:
-            print('set_continuous_acquisition failed')
+            self.log.error('set_continuous_acquisition failed')
 
     def set_software_triggered_acquisition(self):
         try:
             self.cam.exp_mode = 'Software Trigger Edge'
             self.trigger_mode = TriggerMode.SOFTWARE
         except Exception as e:
-            print('set_software_acquisition failed')
+            self.log.error('set_software_acquisition failed')
 
     def set_hardware_triggered_acquisition(self):
         try:
@@ -205,7 +210,7 @@ class Camera(object):
             self.frame_ID_offset_hardware_trigger = None
             self.trigger_mode = TriggerMode.HARDWARE
         except Exception as e:
-            print('set_hardware_acquisition failed')
+            self.log.error('set_hardware_acquisition failed')
 
     def set_pixel_format(self, pixel_format: str):
         pass
@@ -213,30 +218,32 @@ class Camera(object):
     def send_trigger(self):
         try:
             self.cam.sw_trigger()
-            print('SW Trigger success')
+            self.log.info('SW Trigger success')
         except Exception as e:
-            print('sending trigger failed')
+            self.log.error('sending trigger failed')
 
     def read_frame(self) -> np.ndarray:
-        print("read frame")
+        self.log.info("read frame")
         frame, _, _ = self.cam.poll_frame()
         data = frame['pixel_data']
         return data
 
     def start_streaming(self):
-        print("start streaming")
+        self.log.info("start streaming")
         if self.is_streaming:
             return
         self.cam.start_live()
         self.is_streaming = True
 
     def stop_streaming(self):
-        print("stop streaming")
+        self.log.info("stop streaming")
+        """
         try:
             self.cam.finish()
         except Exception as e:
             # The camera cannot stop live properly. This also happens in their example code.
             print(e)
+        """
         self.is_streaming = False
 
     def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
@@ -246,7 +253,7 @@ class Camera(object):
         # Line time (us) from the manual: 
         # Dynamic Range Mode: 3.75; Speed Mode: 0.625; Sensitivity Mode: 3.53125; Sub-Electron Mode: 60.1
         self.strobe_delay_us = int(3.75 * 2760)  # s to us
-        # trigger delay, line delay
+        # TODO: trigger delay, line delay
 
 
 class Camera_Simulation(object):
