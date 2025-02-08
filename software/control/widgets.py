@@ -1429,7 +1429,7 @@ class NavigationWidget(QFrame):
         self.label_Zpos.setFrameStyle(QFrame.Panel | QFrame.Sunken)
         self.entry_dZ = QDoubleSpinBox()
         self.entry_dZ.setMinimum(0)
-        self.entry_dZ.setMaximum(1000)
+        self.entry_dZ.setMaximum(5000)
         self.entry_dZ.setSingleStep(0.2)
         self.entry_dZ.setValue(0)
         self.entry_dZ.setDecimals(3)
