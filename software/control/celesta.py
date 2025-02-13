@@ -3,12 +3,18 @@ Generic Lumencor laser control via HTTP (ethernet connection).
 Bogdan 3/19
 
 revised HL 2/2024
+
+You Yan 12/2024
 """
 
 import urllib.request
 import traceback
 from squid.abc import LightSource
 from control.microscope import LightSourceType, IntensityControlMode, ShutterControlMode
+
+import squid.logging
+
+log = squid.logging.get_logger(__name__)
 
 
 def lumencor_httpcommand(command="GET IP", ip="192.168.201.200"):
@@ -43,9 +49,9 @@ class CELESTA(LightSource):
             self.n_lasers = self.get_number_lasers()
             self.live = True
         except:
-            print(traceback.format_exc())
+            log.error(traceback.format_exc())
             self.live = False
-            print("Failed to connect to Lumencor Laser at ip:", ip)
+            log.error("Failed to connect to Lumencor Laser at ip: 192.168.201.200")
 
         if self.live:
             [self.pmin, self.pmax] = self.get_intensity_range()
@@ -89,7 +95,7 @@ class CELESTA(LightSource):
         """Returns the color of the current laser"""
         self.message = lumencor_httpcommand(command="GET CHMAP", ip=self.ip)
         colors = self.message["message"].split(" ")[2:]
-        print(colors)
+        log.info(colors)
         return colors[int(laser_id)]
 
     def get_IP(self):
@@ -97,9 +103,6 @@ class CELESTA(LightSource):
         return self.message
 
     def get_shutter_control_mode(self):
-        """
-        Return True/False the lasers can be controlled with TTL.
-        """
         self.message = lumencor_httpcommand(command="GET TTLENABLE", ip=self.ip)
         response = self.message["message"]
         if response[-1] == "1":
@@ -108,9 +111,6 @@ class CELESTA(LightSource):
             return ShutterControlMode.Software
 
     def set_shutter_control_mode(self, mode):
-        """
-        Turn on/off external TTL control mode.
-        """
         if mode == ShutterControlMode.TTL:
             ttl_enable = "1"
         else:
@@ -118,18 +118,12 @@ class CELESTA(LightSource):
         self.message = lumencor_httpcommand(command="SET TTLENABLE " + ttl_enable, ip=self.ip)
 
     def get_shutter_state(self, laser_id):
-        """
-        Return True/False the laser is on/off.
-        """
         self.message = lumencor_httpcommand(command="GET CH " + str(laser_id), ip=self.ip)
         response = self.message["message"]
         self.on = response[-1] == "1"
         return self.on
 
     def get_intensity_range(self):
-        """
-        Return [minimum power, maximum power].
-        """
         max_int = 1000  # default
         self.message = lumencor_httpcommand(command="GET MAXINT", ip=self.ip)
         if self.message["message"][0] == "A":
@@ -137,34 +131,25 @@ class CELESTA(LightSource):
         return [0, max_int]
 
     def get_intensity(self, laser_id):
-        """
-        Return the current laser power.
-        """
         self.message = lumencor_httpcommand(command="GET CHINT " + str(laser_id), ip=self.ip)
-        # print(command = 'GET CHINT '+str(laser_id), ip=self.ip)
+        log.debug("command = 'GET CHINT " + str(laser_id) + "'")
         response = self.message["message"]
         power = float(response.split(" ")[-1])
-        return power
+        intensity = power / self.pmax * 100
+        return intensity
 
     def set_shutter_state(self, laser_id, on):
-        """
-        Turn the laser on/off.
-        """
         if on:
             self.message = lumencor_httpcommand(command="SET CH " + str(laser_id) + " 1", ip=self.ip)
             self.on = True
         else:
             self.message = lumencor_httpcommand(command="SET CH " + str(laser_id) + " 0", ip=self.ip)
             self.on = False
-        print("Turning On/Off", self.on, self.message)
+        log.debug(f"Turning On/Off {self.on} {self.message}")
 
-    def set_intensity(self, laser_id, power_in_mw):
-        """
-        power_in_mw - The desired laser power in mW.
-        """
-        print("Setting Power", power_in_mw, self.message)
-        if power_in_mw > self.pmax:
-            power_in_mw = self.pmax
+    def set_intensity(self, laser_id, intensity):
+        log.debug(f"Setting intensity to {intensity}")
+        power_in_mw = self.pmax * intensity / 100
         self.message = lumencor_httpcommand(
             command="SET CHINT " + str(laser_id) + " " + str(int(power_in_mw)), ip=self.ip
         )
@@ -173,18 +158,12 @@ class CELESTA(LightSource):
         return False
 
     def shut_down(self):
-        """
-        Turn the laser off.
-        """
         if self.live:
             for i in range(self.n_lasers):
                 self.set_intensity(i, 0)
                 self.set_shutter_state(i, False)
 
     def get_status(self):
-        """
-        Get the status
-        """
         return self.live
 
 
