@@ -485,7 +485,7 @@ class HighContentScreeningGui(QMainWindow):
 
             self.nl5Wdiget = NL5Widget.NL5Widget(self.nl5)
 
-        if CAMERA_TYPE == "Toupcam":
+        if CAMERA_TYPE in ["Toupcam", "Tucsen"]:
             self.cameraSettingWidget = widgets.CameraSettingsWidget(
                 self.camera,
                 include_gain_exposure_time=False,
