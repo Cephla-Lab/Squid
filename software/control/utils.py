@@ -4,7 +4,10 @@ import cv2
 from numpy import std, square, mean
 import numpy as np
 from scipy.ndimage import label
+from scipy import signal
 import os
+from typing import Optional, Tuple
+from enum import Enum, auto
 
 import squid.logging
 
@@ -165,3 +168,153 @@ def ensure_directory_exists(raw_string_path: str):
     path: pathlib.Path = pathlib.Path(raw_string_path)
     _log.debug(f"Making sure directory '{path}' exists.")
     path.mkdir(parents=True, exist_ok=True)
+
+
+class SpotDetectionMode(Enum):
+    """Specifies which spot to detect when multiple spots are present.
+
+    SINGLE: Expect and detect single spot
+    DUAL_RIGHT: In dual-spot case, use rightmost spot
+    DUAL_LEFT: In dual-spot case, use leftmost spot
+    MULTI_RIGHT: In multi-spot case, use rightmost spot
+    MULTI_SECOND_RIGHT: In multi-spot case, use spot immediately left of rightmost spot
+    """
+
+    SINGLE = auto()
+    DUAL_RIGHT = auto()
+    DUAL_LEFT = auto()
+    MULTI_RIGHT = auto()
+    MULTI_SECOND_RIGHT = auto()
+
+
+def find_spot_location(
+    image: np.ndarray, mode: SpotDetectionMode = SpotDetectionMode.SINGLE, params: Optional[dict] = None
+) -> Optional[Tuple[float, float]]:
+    """Find the location of a spot in an image.
+
+    Args:
+        image: Input grayscale image as numpy array
+        mode: Which spot to detect when multiple spots are present
+        params: Dictionary of parameters for spot detection. If None, default parameters will be used.
+            Supported parameters:
+            - y_window (int): Half-height of y-axis crop (default: 96)
+            - x_window (int): Half-width of centroid window (default: 20)
+            - peak_width (int): Minimum width of peaks (default: 10)
+            - peak_distance (int): Minimum distance between peaks (default: 10)
+            - peak_prominence (float): Minimum peak prominence (default: 100)
+            - intensity_threshold (float): Threshold for intensity filtering (default: 0.1)
+            - spot_spacing (int): Expected spacing between spots for multi-spot modes (default: 100)
+
+    Returns:
+        Optional[Tuple[float, float]]: (x,y) coordinates of selected spot, or None if detection fails
+
+    Raises:
+        ValueError: If image is invalid or mode is incompatible with detected spots
+    """
+    # Input validation
+    if image is None or not isinstance(image, np.ndarray):
+        raise ValueError("Invalid input image")
+
+    # Default parameters
+    default_params = {
+        "y_window": 96,  # Half-height of y-axis crop
+        "x_window": 20,  # Half-width of centroid window
+        "min_peak_width": 10,  # Minimum width of peaks
+        "min_peak_distance": 10,  # Minimum distance between peaks
+        "min_peak_prominence": 100,  # Minimum peak prominence
+        "intensity_threshold": 0.1,  # Threshold for intensity filtering
+        "spot_spacing": 100,  # Expected spacing between spots
+    }
+
+    if params is not None:
+        default_params.update(params)
+    p = default_params
+
+    try:
+        # Get the y position of the spots
+        intensity_profile = np.sum(image, axis=1)
+        if np.all(intensity_profile == 0):
+            raise ValueError("No spots detected in image")
+
+        peak_y = np.argmax(intensity_profile)
+
+        # Validate peak_y location
+        if peak_y < p["y_window"] or peak_y > image.shape[0] - p["y_window"]:
+            raise ValueError("Spot too close to image edge")
+
+        # Crop along the y axis
+        cropped_image = image[peak_y - p["y_window"] : peak_y + p["y_window"], :]
+
+        # Get signal along x
+        intensity_profile = np.sum(cropped_image, axis=0)
+
+        # Find all peaks
+        peaks = signal.find_peaks(
+            intensity_profile,
+            width=p["min_peak_width"],
+            distance=p["min_peak_distance"],
+            prominence=p["min_peak_prominence"],
+        )
+        peak_locations = peaks[0]
+
+        if len(peak_locations) == 0:
+            raise ValueError("No peaks detected")
+
+        # Handle different spot detection modes
+        if mode == SpotDetectionMode.SINGLE:
+            if len(peak_locations) > 1:
+                raise ValueError(f"Found {len(peak_locations)} peaks but expected single peak")
+            peak_x = peak_locations[0]
+
+        elif mode == SpotDetectionMode.DUAL_RIGHT:
+            peak_x = peak_locations[-1]
+
+        elif mode == SpotDetectionMode.DUAL_LEFT:
+            peak_x = peak_locations[0]
+
+        elif mode == SpotDetectionMode.MULTI_RIGHT:
+            peak_x = peak_locations[-1]
+
+        elif mode == SpotDetectionMode.MULTI_SECOND_RIGHT:
+            peak_x = peak_locations[-2]
+            peak_x = _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
+            peak_x = peak_x - p["spot_spacing"]
+        else:
+            raise ValueError(f"Unknown spot detection mode: {mode}")
+
+        # Calculate centroid in window around selected peak
+        return _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
+
+    except Exception as e:
+        _log.error(f"Error in spot detection: {str(e)}")
+        return None
+
+
+def _calculate_spot_centroid(cropped_image: np.ndarray, peak_x: int, peak_y: int, params: dict) -> Tuple[float, float]:
+    """Calculate precise centroid location in window around peak."""
+    h, w = cropped_image.shape
+    x, y = np.meshgrid(range(w), range(h))
+
+    # Crop region around the peak
+    intensity_window = cropped_image[:, peak_x - params["x_window"] : peak_x + params["x_window"]]
+    x_coords = x[:, peak_x - params["x_window"] : peak_x + params["x_window"]]
+    y_coords = y[:, peak_x - params["x_window"] : peak_x + params["x_window"]]
+
+    # Process intensity values
+    intensity_window = intensity_window.astype(float)
+    intensity_window = intensity_window - np.amin(intensity_window)
+    if np.amax(intensity_window) > 0:  # Avoid division by zero
+        intensity_window[intensity_window / np.amax(intensity_window) < params["intensity_threshold"]] = 0
+
+    # Calculate centroid
+    sum_intensity = np.sum(intensity_window)
+    if sum_intensity == 0:
+        raise ValueError("No significant intensity in centroid window")
+
+    centroid_x = np.sum(x_coords * intensity_window) / sum_intensity
+    centroid_y = np.sum(y_coords * intensity_window) / sum_intensity
+
+    # Convert back to original image coordinates
+    centroid_y = peak_y - params["y_window"] + centroid_y
+
+    return (centroid_x, centroid_y)
