@@ -1431,7 +1431,7 @@ class MultiPointWorker(QObject):
         self.t_inf = []
         self.t_over = []
 
-        self.init_napari_layers = USE_NAPARI_FOR_MULTIPOINT
+        self.init_napari_layers = not USE_NAPARI_FOR_MULTIPOINT
 
         self.count = 0
 
