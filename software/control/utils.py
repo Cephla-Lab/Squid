@@ -1,10 +1,14 @@
+import inspect
+import os
 import pathlib
+import sys
+from typing import Optional
 
 import cv2
+import git
 from numpy import std, square, mean
 import numpy as np
 from scipy.ndimage import label
-import os
 
 import squid.logging
 
@@ -165,3 +169,22 @@ def ensure_directory_exists(raw_string_path: str):
     path: pathlib.Path = pathlib.Path(raw_string_path)
     _log.debug(f"Making sure directory '{path}' exists.")
     path.mkdir(parents=True, exist_ok=True)
+
+
+def get_squid_repo_state_description() -> Optional[str]:
+    # From here: https://stackoverflow.com/a/22881871
+    def get_script_dir(follow_symlinks=True):
+        if getattr(sys, "frozen", False):  # py2exe, PyInstaller, cx_Freeze
+            path = os.path.abspath(sys.executable)
+        else:
+            path = inspect.getabsfile(get_script_dir)
+        if follow_symlinks:
+            path = os.path.realpath(path)
+        return os.path.dirname(path)
+
+    try:
+        repo = git.Repo(get_script_dir(), search_parent_directories=True)
+        return f"{repo.head.object.hexsha} (dirty={repo.is_dirty()})"
+    except git.GitError as e:
+        _log.warning(f"Failed to get script git repo info: {e}")
+        return None
