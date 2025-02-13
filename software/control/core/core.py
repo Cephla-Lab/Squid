@@ -1419,7 +1419,7 @@ class MultiPointWorker(QObject):
         self.z_range = self.multiPointController.z_range
 
         self.microscope = self.multiPointController.parent
-        self.performance_mode = self.microscope.performance_mode
+        self.performance_mode = self.microscope and self.microscope.performance_mode
 
         try:
             self.model = self.microscope.segmentation_model
@@ -1431,8 +1431,7 @@ class MultiPointWorker(QObject):
         self.t_inf = []
         self.t_over = []
 
-        if USE_NAPARI_FOR_MULTIPOINT:
-            self.init_napari_layers = False
+        self.init_napari_layers = USE_NAPARI_FOR_MULTIPOINT
 
         self.count = 0
 
@@ -2208,6 +2207,7 @@ class MultiPointController(QObject):
         self.deltat = 0
         self.do_autofocus = False
         self.do_reflection_af = False
+        self.focus_map = None
         self.use_manual_focus_map = False
         self.gen_focus_map = False
         self.focus_map_storage = []
@@ -2410,7 +2410,7 @@ class MultiPointController(QObject):
                 self.usb_spectrometer_was_streaming = False
 
         # set current tabs
-        if self.parent.performance_mode:
+        if self.parent and self.parent.performance_mode:
             self.parent.imageDisplayTabs.setCurrentIndex(0)
 
         elif self.parent is not None and not self.parent.live_only_mode:
@@ -3860,21 +3860,21 @@ class ScanCoordinates(QObject):
             # Use scan_size_mm as height, width is 0.6 * height
             height_mm = scan_size_mm
             width_mm = scan_size_mm * 0.6
-            
+
             # Calculate steps for height and width separately
             steps_height = math.floor(height_mm / step_size_mm)
             steps_width = math.floor(width_mm / step_size_mm)
-            
+
             # Calculate actual dimensions
             actual_scan_height_mm = (steps_height - 1) * step_size_mm + fov_size_mm
             actual_scan_width_mm = (steps_width - 1) * step_size_mm + fov_size_mm
-            
+
             steps_height = max(1, steps_height)
             steps_width = max(1, steps_width)
 
             half_steps_height = (steps_height - 1) / 2
             half_steps_width = (steps_width - 1) / 2
-            
+
             for i in range(steps_height):
                 row = []
                 y = center_y + (i - half_steps_height) * step_size_mm
@@ -3916,8 +3916,13 @@ class ScanCoordinates(QObject):
                 y = center_y + (i - half_steps) * step_size_mm
                 for j in range(steps):
                     x = center_x + (j - half_steps) * step_size_mm
-                    if shape == "Square" or shape == "Rectangle" or (
-                        shape == "Circle" and self._is_in_circle(x, y, center_x, center_y, radius_squared, fov_size_mm_half)
+                    if (
+                        shape == "Square"
+                        or shape == "Rectangle"
+                        or (
+                            shape == "Circle"
+                            and self._is_in_circle(x, y, center_x, center_y, radius_squared, fov_size_mm_half)
+                        )
                     ):
                         if self.validate_coordinates(x, y):
                             row.append((x, y))
@@ -4059,20 +4064,30 @@ class ScanCoordinates(QObject):
         # valid_points = grid_points[mask]
 
         def corners(x_mm, y_mm, fov):
-            center_to_corner = fov/2
+            center_to_corner = fov / 2
             return (
                 (x_mm + center_to_corner, y_mm + center_to_corner),
                 (x_mm - center_to_corner, y_mm + center_to_corner),
                 (x_mm - center_to_corner, y_mm - center_to_corner),
-                (x_mm + center_to_corner, y_mm - center_to_corner)
+                (x_mm + center_to_corner, y_mm - center_to_corner),
             )
+
         valid_points = []
         for x_center, y_center in grid_points:
             if not self.validate_coordinates(x_center, y_center):
-                self._log.debug(f"Manual coords: ignoring {x_center=},{y_center=} because it is outside our movement range.")
+                self._log.debug(
+                    f"Manual coords: ignoring {x_center=},{y_center=} because it is outside our movement range."
+                )
                 continue
-            if not self._is_in_polygon(x_center, y_center, shape_coords) and not any([self._is_in_polygon(x_corner, y_corner, shape_coords) for (x_corner, y_corner) in corners(x_center, y_center, fov_size_mm)]):
-                self._log.debug(f"Manual coords: ignoring {x_center=},{y_center=} because no corners or center are in poly. (corners={corners(x_center, y_center, fov_size_mm)}")
+            if not self._is_in_polygon(x_center, y_center, shape_coords) and not any(
+                [
+                    self._is_in_polygon(x_corner, y_corner, shape_coords)
+                    for (x_corner, y_corner) in corners(x_center, y_center, fov_size_mm)
+                ]
+            ):
+                self._log.debug(
+                    f"Manual coords: ignoring {x_center=},{y_center=} because no corners or center are in poly. (corners={corners(x_center, y_center, fov_size_mm)}"
+                )
                 continue
 
             valid_points.append((x_center, y_center))
