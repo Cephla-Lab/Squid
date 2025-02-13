@@ -92,7 +92,7 @@ class Camera(object):
                 if sn == d.dev_getstring(DCAM_IDSTR.CAMERAID):
                     self.dcam = d
                     self.calculate_strobe_delay()
-                    print(self.dcam.dev_open(index))
+                    print(self.dcam.dev_open(i))
                 else:
                     unopened += 1
         if unopened == count or not success:

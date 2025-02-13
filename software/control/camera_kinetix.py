@@ -74,10 +74,12 @@ class Camera(object):
         self.cam = next(PVCam.detect_camera())
         self.cam.open()
         self.set_temperature(15)  # temperature range: -15 - 15 degree Celcius
-        self.temperature_reading_thread.start()
+        print(self.get_temperature())
+        #self.temperature_reading_thread.start()
         self.cam.readout_port = 2  # Dynamic Range Mode
         self.cam.set_roi(440,440,2760,2760)  # Crop fov to 25mm
-        self.log.info("Cropped area: ", self.cam.shape(0))
+        self.log.info(f"Cropped area: {self.cam.shape(0)}")
+        self.calculate_strobe_delay()  # hard coded before implementing roi
         """
         port_speed_gain_table:
         {'Sensitivity': {'port_value': 0, 'Speed_0': {'speed_index': 0, 'pixel_time': 10, 'bit_depth': 12, 'gain_range': [1], 'Standard': {'gain_index': 1}}}, 
@@ -93,6 +95,7 @@ class Camera(object):
         if self.is_streaming:
             self.stop_streaming()
         self.terminate_read_temperature_thread = True
+        self.temperature_reading_callback = None
         self.temperature_reading_thread.join()
         self.cam.close()
         pvc.uninit_pvcam()
@@ -159,9 +162,11 @@ class Camera(object):
             adjusted = exposure_time
         elif self.trigger_mode == TriggerMode.HARDWARE:
             adjusted = self.strobe_delay_us / 1000 + exposure_time
+            print(adjusted)
         try:
-            self.cam.exp_time = adjusted  # ms or s? min, max
-            self.exposure_time = adjusted
+            print("setting exposure time")
+            self.cam.exp_time = adjusted  # ms
+            self.exposure_time = exposure_time
         except Exception as e:
             self.log.error('set_exposure_time failed')
 
@@ -170,7 +175,7 @@ class Camera(object):
 
     def set_temperature(self, temperature: float):
         try:
-            self.cam.temp = temperature
+            self.cam.temp_setpoint = temperature
         except Exception as e:
             self.log.error('set_temperature failed')
 
@@ -202,7 +207,7 @@ class Camera(object):
             self.cam.exp_mode = 'Software Trigger Edge'
             self.trigger_mode = TriggerMode.SOFTWARE
         except Exception as e:
-            self.log.error('set_software_acquisition failed')
+            self.log.error('set_software_triggered_acquisition failed')
 
     def set_hardware_triggered_acquisition(self):
         try:
@@ -210,7 +215,7 @@ class Camera(object):
             self.frame_ID_offset_hardware_trigger = None
             self.trigger_mode = TriggerMode.HARDWARE
         except Exception as e:
-            self.log.error('set_hardware_acquisition failed')
+            self.log.error('set_hardware_triggered_acquisition failed')
 
     def set_pixel_format(self, pixel_format: str):
         pass
@@ -226,6 +231,7 @@ class Camera(object):
         self.log.info("read frame")
         frame, _, _ = self.cam.poll_frame()
         data = frame['pixel_data']
+        print("data returned")
         return data
 
     def start_streaming(self):
@@ -252,7 +258,7 @@ class Camera(object):
     def calculate_strobe_delay(self):
         # Line time (us) from the manual: 
         # Dynamic Range Mode: 3.75; Speed Mode: 0.625; Sensitivity Mode: 3.53125; Sub-Electron Mode: 60.1
-        self.strobe_delay_us = int(3.75 * 2760)  # s to us
+        self.strobe_delay_us = int(3.75 * 2760)  # us
         # TODO: trigger delay, line delay
 
 
