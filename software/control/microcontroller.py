@@ -127,6 +127,9 @@ class SimSerial(AbstractCephlaMicroSerial):
 
     def __init__(self):
         super().__init__()
+        # All the public methods must hold this to modify internal state.  Any _ prefixed members are
+        # assumed to be called from a context that already holds the lock
+        self._update_lock = threading.Lock()
         self._in_waiting = 0
         self.response_buffer = []
 
@@ -137,13 +140,13 @@ class SimSerial(AbstractCephlaMicroSerial):
         self.joystick_button = False
         self.switch = False
 
-        self.closed = False
+        self._closed = False
 
     @staticmethod
     def unpack_position(pos_bytes):
         return Microcontroller._payload_to_int(pos_bytes, len(pos_bytes))
 
-    def respond_to(self, write_bytes):
+    def _respond_to(self, write_bytes):
         # NOTE: As we need more and more microcontroller simulator functionality, add
         # CMD_SET handlers here.  Prefer this over adding checks for simulated mode in
         # the Microcontroller!
@@ -195,49 +198,64 @@ class SimSerial(AbstractCephlaMicroSerial):
             )
         )
 
+        self._update_internal_state()
+
+    def _update_internal_state(self):
+        if self._closed:
+            self.response_buffer.clear()
+
         self._in_waiting = len(self.response_buffer)
 
     def close(self):
-        self.closed = True
+        with self._update_lock:
+            self._closed = True
+            self._update_internal_state()
 
     def write(self, data: bytearray, reconnect_tries: int = 0) -> int:
-        if self.closed:
+        # Reconnect takes the lock and checks closed too, so let it handle locking for reconnect
+        if self._closed:
             if not self.reconnect(reconnect_tries):
                 raise IOError("Closed")
-        self.respond_to(data)
-        return len(data)
+        with self._update_lock:
+            self._respond_to(data)
+            return len(data)
 
     def read(self, count=1, reconnect_tries: int = 0) -> bytes:
-        if self.closed:
+        # Reconnect takes the lock and checks closed too, so let it handle locking for reconnect
+        if self._closed:
             if not self.reconnect(reconnect_tries):
                 raise IOError("Closed")
 
-        response = bytearray()
-        for i in range(count):
-            if not len(self.response_buffer):
-                break
-            response.append(self.response_buffer.pop(0))
+        with self._update_lock:
+            response = bytearray()
+            for i in range(count):
+                if not len(self.response_buffer):
+                    break
+                response.append(self.response_buffer.pop(0))
 
-        self._in_waiting = len(self.response_buffer)
-        return response
+            self._update_internal_state()
+            return response
 
     def bytes_available(self) -> int:
-        if not self.is_open():
-            return 0
-        return self._in_waiting
+        with self._update_lock:
+            self._update_internal_state()
+            return self._in_waiting
 
     def is_open(self) -> bool:
-        return not self.closed
+        with self._update_lock:
+            return not self._closed
 
     def reconnect(self, attempts: int) -> bool:
-        if not attempts:
-            return self.is_open()
+        with self._update_lock:
+            self._update_internal_state()
+            if not attempts:
+                # open takes the lock, so we can't use it.
+                return not self._closed
 
-        if not self.is_open():
-            # Clear our response buffer to simulate reopening a device
-            self._log.warning("Reconnect required, succeeded.")
-            self.response_buffer.clear()
-            self.closed = False
+            if self._closed:
+                self._log.warning("Reconnect required, succeeded.")
+                self._update_internal_state()
+                self._closed = False
 
         return True
 
