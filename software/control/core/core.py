@@ -3598,6 +3598,7 @@ class ImageArrayDisplayWindow(QMainWindow):
 class ConfigurationManager(QObject):
     def __init__(self, filename="channel_configurations.xml"):
         QObject.__init__(self)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config_filename = filename
         self.configurations = []
         self.read_configurations()
@@ -3606,7 +3607,12 @@ class ConfigurationManager(QObject):
         self.write_configuration(self.config_filename)
 
     def write_configuration(self, filename):
-        self.config_xml_tree.write(filename, encoding="utf-8", xml_declaration=True, pretty_print=True)
+        try:
+            self.config_xml_tree.write(filename, encoding="utf-8", xml_declaration=True, pretty_print=True)
+            return True
+        except IOError:
+            self._log.exception("Couldn't write configuration.")
+            return False
 
     def read_configurations(self):
         if os.path.isfile(self.config_filename) == False:
