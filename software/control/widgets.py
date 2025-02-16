@@ -183,7 +183,10 @@ class ConfigEditorForAcquisitions(QDialog):
             self, "Save Acquisition Config File", "", "XML Files (*.xml);;All Files (*)"
         )
         if file_path:
-            self.config.write_configuration(file_path)
+            if not self.config.write_configuration(file_path):
+                QMessageBox.warning(
+                    self, "Warning", f"Failed to write config to file '{file_path}'.  Check permissions!"
+                )
 
     def load_config_from_file(self, only_z_offset=None):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -205,7 +208,7 @@ class ConfigEditorForAcquisitions(QDialog):
 class ConfigEditor(QDialog):
     def __init__(self, config):
         super().__init__()
-
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
 
         self.scroll_area = QScrollArea()
@@ -287,12 +290,22 @@ class ConfigEditor(QDialog):
                 if old_val != self.config.get(section, option):
                     print(self.config.get(section, option))
 
+    def save_to_filename(self, filename: str):
+        try:
+            with open(filename, "w") as configfile:
+                self.config.write(configfile)
+                return True
+        except IOError:
+            self._log.exception(f"Failed to write config file to '{filename}'")
+
     def save_to_file(self):
         self.save_config()
         file_path, _ = QFileDialog.getSaveFileName(self, "Save Config File", "", "INI Files (*.ini);;All Files (*)")
         if file_path:
-            with open(file_path, "w") as configfile:
-                self.config.write(configfile)
+            if not self.save_to_filename(file_path):
+                QMessageBox.warning(
+                    self, "Warning", f"Failed to write config file to '{file_path}'.  Check permissions!"
+                )
 
     def load_config_from_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Load Config File", "", "INI Files (*.ini);;All Files (*)")
