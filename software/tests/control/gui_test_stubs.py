@@ -1,24 +1,14 @@
-import os
 import pathlib
 
 import control.core.core
 import control.microcontroller
 import control.lighting
 import control.camera
-import squid.stage.cephla
-from squid.config import get_stage_config
 import squid.abc
-import git
 
 import control._def
-
-
-def get_test_microcontroller() -> control.microcontroller.Microcontroller:
-    return control.microcontroller.Microcontroller(control.microcontroller.SimSerial(), True)
-
-
-def get_test_camera():
-    return control.camera.Camera_Simulation()
+from control.piezo import PiezoStage
+from tests.tools import get_test_microcontroller, get_test_camera, get_test_stage, get_repo_root, get_test_piezo_stage
 
 
 def get_test_live_controller(
@@ -28,17 +18,6 @@ def get_test_live_controller(
     controller.set_microscope_mode(config_manager.configurations[0])
 
     return controller
-
-
-def get_test_stage(microcontroller):
-    return squid.stage.cephla.CephlaStage(microcontroller=microcontroller, stage_config=get_stage_config())
-
-
-def get_repo_root() -> pathlib.Path:
-    git_repo = git.Repo(os.getcwd(), search_parent_directories=True)
-    git_root = git_repo.git.rev_parse("--show-toplevel")
-
-    return pathlib.Path(git_root).absolute()
 
 
 def get_test_configuration_manager_path() -> pathlib.Path:
@@ -106,6 +85,7 @@ def get_test_multi_point_controller() -> control.core.core.MultiPointController:
         autofocusController=get_test_autofocus_controller(camera, stage, live_controller, microcontroller),
         configurationManager=get_test_configuration_manager(),
         scanCoordinates=get_test_scan_coordinates(objective_store, get_test_navigation_viewer(objective_store), stage),
+        piezo=get_test_piezo_stage(microcontroller),
     )
 
     multi_point_controller.set_base_path("/tmp/")

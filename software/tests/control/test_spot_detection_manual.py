@@ -1,10 +1,11 @@
 import cv2
-import numpy as np
 import matplotlib.pyplot as plt
-from ..utils import find_spot_location, SpotDetectionMode
+
+from tests.tools import get_repo_root
+from control.utils import find_spot_location, SpotDetectionMode
 
 
-def test_image_from_disk(image_path: str):
+def check_image_from_disk(image_path: str):
     """Test spot detection on a real image file.
 
     Args:
@@ -64,5 +65,6 @@ def test_image_from_disk(image_path: str):
 
 if __name__ == "__main__":
     # Replace with path to your test image
-    image_path = "control/tests/data/laser_af_camera.png"
-    test_image_from_disk(image_path)
+    repo_root = get_repo_root()
+    image_path = repo_root / "tests/data/laser_af_camera.png"
+    check_image_from_disk(image_path)
