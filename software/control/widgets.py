@@ -297,6 +297,7 @@ class ConfigEditor(QDialog):
                 return True
         except IOError:
             self._log.exception(f"Failed to write config file to '{filename}'")
+            return False
 
     def save_to_file(self):
         self.save_config()
