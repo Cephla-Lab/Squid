@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from ..utils import find_spot_location, SpotDetectionMode
+from control.utils import find_spot_location, SpotDetectionMode
 
 
 def create_test_image(spot_positions, image_size=(480, 640), spot_size=20):
