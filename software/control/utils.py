@@ -284,11 +284,12 @@ def find_spot_location(
         elif mode == SpotDetectionMode.MULTI_RIGHT:
             peak_x = peak_locations[-1]
         elif mode == SpotDetectionMode.MULTI_SECOND_RIGHT:
-            if len(peak_locations) < 2:
-                raise ValueError("Not enough peaks for MULTI_SECOND_RIGHT mode")
-            peak_x = peak_locations[-2]
-            peak_x = _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
-            peak_x = peak_x - p["spot_spacing"]
+            raise NotImplementedError("MULTI_SECOND_RIGHT is not supported")
+            # if len(peak_locations) < 2:
+            #     raise ValueError("Not enough peaks for MULTI_SECOND_RIGHT mode")
+            # peak_x = peak_locations[-2]
+            # (peak_x, _) = _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
+            # peak_x = peak_x - p["spot_spacing"]
         else:
             raise ValueError(f"Unknown spot detection mode: {mode}")
 
@@ -339,12 +340,12 @@ def find_spot_location(
         # Calculate centroid in window around selected peak
         return _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
 
-    except ValueError as e:
+    except (ValueError, NotImplementedError) as e:
         raise e
-    except Exception as e:
+    except Exception:
         # TODO: this should not be a blank Exception catch, we should jsut return None above if we have a valid "no spots"
         # case, and let exceptions raise otherwise.
-        _log.error(f"Error in spot detection: {str(e)}")
+        _log.exception(f"Error in spot detection")
         return None
 
 

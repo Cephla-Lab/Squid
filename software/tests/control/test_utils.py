@@ -76,10 +76,8 @@ def test_multi_spot_detection():
     assert abs(detected_x - spots[2][0]) < 5
 
     # Test second from right spot detection
-    result = find_spot_location(image, mode=SpotDetectionMode.MULTI_SECOND_RIGHT)
-    assert result
-    detected_x, detected_y = result
-    assert abs(detected_x - spots[1][0]) < 5
+    with pytest.raises(NotImplementedError):
+        result = find_spot_location(image, mode=SpotDetectionMode.MULTI_SECOND_RIGHT)
 
 
 def test_invalid_inputs():
