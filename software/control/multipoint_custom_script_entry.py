@@ -190,11 +190,6 @@ def multipoint_custom_script_entry(multiPointWorker, time_point, current_path, c
                     multiPointWorker.liveController.turn_off_illumination()
                 # process the image -  @@@ to move to camera
                 image = utils.crop_image(image, multiPointWorker.crop_width, multiPointWorker.crop_height)
-                image = utils.rotate_and_flip_image(
-                    image,
-                    rotate_image_angle=multiPointWorker.camera.rotate_image_angle,
-                    flip_image=multiPointWorker.camera.flip_image,
-                )
                 # multiPointWorker.image_to_display.emit(cv2.resize(image,(round(multiPointWorker.crop_width*multiPointWorker.display_resolution_scaling), round(multiPointWorker.crop_height*multiPointWorker.display_resolution_scaling)),cv2.INTER_LINEAR))
                 image_to_display = utils.crop_image(
                     image,
