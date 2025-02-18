@@ -3,6 +3,7 @@ import inspect
 import pathlib
 import shutil
 import sys
+import shutil
 
 import cv2
 import git
@@ -69,7 +70,7 @@ class FlipVariant(enum.Enum):
     BOTH = "Both"
 
 
-def rotate_and_flip_image(image, rotate_image_angle: Optional[float], flip_image: Optional[FlipVariant]):
+def rotate_and_flip_image(image, rotate_image_angle: float, flip_image: Optional[FlipVariant]):
     ret_image = image.copy()
     if rotate_image_angle and rotate_image_angle != 0:
         """

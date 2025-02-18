@@ -9,10 +9,10 @@ import pathlib
 import git
 import matplotlib
 
-import control.camera
 import control.microcontroller
 import squid.stage
 import squid.stage.cephla
+import squid.camera.utils
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.config import get_stage_config
@@ -37,7 +37,7 @@ def get_test_microcontroller() -> control.microcontroller.Microcontroller:
 
 
 def get_test_camera():
-    return control.camera.Camera_Simulation()
+    return squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
 
 
 def get_test_stage(microcontroller):

@@ -86,7 +86,6 @@ class StreamHandler(QObject):
 
     def on_new_frame(self, camera):
 
-        camera.image_locked = True
         self.handler_busy = True
         self.signal_new_frame_received.emit()  # self.liveController.turn_off_illumination()
 
@@ -138,7 +137,6 @@ class StreamHandler(QObject):
             self.timestamp_last_track = time_now
 
         self.handler_busy = False
-        camera.image_locked = False
 
 
 class ImageArrayDisplayWindow(QMainWindow):

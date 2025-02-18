@@ -24,6 +24,7 @@ import squid.config
 import squid.stage.utils
 import control.microscope
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
+import squid.camera.utils
 
 log = squid.logging.get_logger(__name__)
 
@@ -35,60 +36,6 @@ else:
     import squid.stage.cephla
 from control.piezo import PiezoStage
 from control._def import ZStageConfig
-
-if CAMERA_TYPE == "Toupcam":
-    try:
-        import control.camera_toupcam as camera
-    except:
-        log.warning("Problem importing Toupcam, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "FLIR":
-    try:
-        import control.camera_flir as camera
-    except:
-        log.warning("Problem importing FLIR camera, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "Hamamatsu":
-    try:
-        import control.camera_hamamatsu as camera
-    except:
-        log.warning("Problem importing Hamamatsu camera, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "iDS":
-    try:
-        import control.camera_ids as camera
-    except:
-        log.warning("Problem importing iDS camera, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "Tucsen":
-    try:
-        import control.camera_tucsen as camera
-    except:
-        log.warning("Problem importing Tucsen camera, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "Kinetix":
-    try:
-        import control.camera_kinetix as camera
-    except:
-        log.warning("Problem importing Kinetix camera, defaulting to default camera")
-        import control.camera as camera
-else:
-    import control.camera as camera
-
-if FOCUS_CAMERA_TYPE == "Toupcam":
-    try:
-        import control.camera_toupcam as camera_fc
-    except:
-        log.warning("Problem importing Toupcam for focus, defaulting to default camera")
-        import control.camera as camera_fc
-elif FOCUS_CAMERA_TYPE == "FLIR":
-    try:
-        import control.camera_flir as camera_fc
-    except:
-        log.warning("Problem importing FLIR camera for focus, defaulting to default camera")
-        import control.camera as camera_fc
-else:
-    import control.camera as camera_fc
 
 if USE_XERYON:
     from control.objective_changer_2_pos_controller import (
@@ -181,7 +128,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self.makeConnections()
 
-        self.microscope = control.microscope.Microscope(self, is_simulation=is_simulation)
+        self.microscope = control.microscope.Microscope(microscope=self, is_simulation=is_simulation)
 
         # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
         if HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
@@ -242,6 +189,39 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.piezo = None
 
+        def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
+            # NOTE(imo): If this succeeds, it means means we sent the request,
+            # but we didn't necessarily get confirmation of success.
+            if ENABLE_NL5 and NL5_USE_DOUT:
+                self.nl5.start_acquisition()
+            else:
+                illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
+                self.log.debug(
+                    f"Sending hw trigger with illumination_time={illumination_time_us if illumination_time else None} [us]"
+                )
+                self.microcontroller.send_hardware_trigger(True if illumination_time else False, illumination_time_us)
+            return True
+
+        def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
+            strobe_delay_us = int(1000 * strobe_delay_ms)
+            self.log.debug(f"Setting microcontroller strobe delay to {strobe_delay_us} [us]")
+            self.microcontroller.set_strobe_delay_us(strobe_delay_us)
+            self.microcontroller.wait_till_operation_is_completed()
+
+            return True
+
+        self.camera: squid.abc.AbstractCamera = squid.camera.utils.get_camera(
+            squid.config.get_camera_config(),
+            simulated=is_simulation,
+            hw_trigger_fn=acquisition_camera_hw_trigger_fn,
+            hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
+        )
+        self.camera_focus: Optional[squid.abc.AbstractCamera] = None
+        if SUPPORT_LASER_AUTOFOCUS:
+            self.camera_focus = squid.camera.utils.get_camera(
+                squid.config.get_autofocus_camera_config(), simulated=is_simulation
+            )
+
         # Common object initialization
         self.objectiveStore = core.ObjectiveStore(parent=self)
         self.channelConfigurationManager = core.ChannelConfigurationManager()
@@ -259,6 +239,12 @@ class HighContentScreeningGui(QMainWindow):
             self.camera, self.microcontroller, self.illuminationController, parent=self
         )
 
+        self.slidePositionController = core.SlidePositionController(
+            self.stage, self.liveController, is_for_wellplate=True
+        )
+        self.autofocusController = core.AutoFocusController(
+            self.camera, self.stage, self.liveController, self.microcontroller
+        )
         self.slidePositionController = core.SlidePositionController(
             self.stage, self.liveController, is_for_wellplate=True
         )
@@ -304,7 +290,6 @@ class HighContentScreeningGui(QMainWindow):
             self.liveController_focus_camera = core.LiveController(
                 self.camera_focus,
                 self.microcontroller,
-                None,
                 self,
                 control_illumination=False,
                 for_displacement_measurement=True,
@@ -347,15 +332,12 @@ class HighContentScreeningGui(QMainWindow):
             self.nl5 = NL5.NL5_Simulation()
         if ENABLE_CELLX:
             self.cellx = serial_peripherals.CellX_Simulation()
-        if SUPPORT_LASER_AUTOFOCUS:
-            self.camera_focus = camera_fc.Camera_Simulation()
+
         if USE_LDI_SERIAL_CONTROL:
             self.ldi = serial_peripherals.LDI_Simulation()
             self.illuminationController = control.lighting.IlluminationController(
                 self.microcontroller, self.ldi.intensity_mode, self.ldi.shutter_mode, LightSourceType.LDI, self.ldi
             )
-        self.camera = camera.Camera_Simulation(rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
-        self.camera.set_pixel_format(DEFAULT_PIXEL_FORMAT)
         if USE_ZABER_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel = serial_peripherals.FilterController_Simulation(
                 115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE
@@ -449,25 +431,6 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 self.log.error("Error initializing CELESTA")
                 raise
-
-        if SUPPORT_LASER_AUTOFOCUS:
-            try:
-                sn_camera_focus = camera_fc.get_sn_by_model(FOCUS_CAMERA_MODEL)
-                self.camera_focus = camera_fc.Camera(sn=sn_camera_focus)
-                self.camera_focus.open()
-                self.camera_focus.set_pixel_format("MONO8")
-            except Exception:
-                self.log.error(f"Error initializing Laser Autofocus Camera")
-                raise
-
-        try:
-            sn_camera_main = camera.get_sn_by_model(MAIN_CAMERA_MODEL)
-            self.camera = camera.Camera(sn=sn_camera_main, rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
-            self.camera.open()
-            self.camera.set_pixel_format(DEFAULT_PIXEL_FORMAT)
-        except Exception:
-            self.log.error("Error initializing Main Camera")
-            raise
 
         if USE_ZABER_EMISSION_FILTER_WHEEL:
             try:
@@ -571,20 +534,16 @@ class HighContentScreeningGui(QMainWindow):
             self.log.error("Setup timed out, resetting microcontroller before failing gui setup")
             self.microcontroller.reset()
             raise e
-        if DEFAULT_TRIGGER_MODE == TriggerMode.HARDWARE:
-            self.camera.set_hardware_triggered_acquisition()
-        else:
-            self.camera.set_software_triggered_acquisition()
-        self.camera.set_callback(self.streamHandler.on_new_frame)
-        self.camera.enable_callback()
-
-        if CAMERA_TYPE == "Toupcam":
-            self.camera.set_reset_strobe_delay_function(self.liveController.reset_strobe_arugment)
+        self.camera.set_acquisition_mode(squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER)
+        self.camera.add_frame_callback(self.streamHandler.on_new_frame)
+        self.camera.enable_callbacks(enabled=True)
 
         if SUPPORT_LASER_AUTOFOCUS:
-            self.camera_focus.set_software_triggered_acquisition()  # self.camera.set_continuous_acquisition()
-            self.camera_focus.set_callback(self.streamHandler_focus_camera.on_new_frame)
-            self.camera_focus.enable_callback()
+            self.camera_focus.set_acquisition_mode(
+                squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER
+            )  # self.camera.set_continuous_acquisition()
+            self.camera_focus.add_frame_callback(self.streamHandler_focus_camera.on_new_frame)
+            self.camera_focus.enable_callbacks(enabled=True)
             self.camera_focus.start_streaming()
 
         if USE_SQUID_FILTERWHEEL:
@@ -1135,7 +1094,7 @@ class HighContentScreeningGui(QMainWindow):
                 )
             )
 
-        self.camera.set_callback(self.streamHandler.on_new_frame)
+        self.camera.add_frame_callback(self.streamHandler.on_new_frame)
 
     def setup_movement_updater(self):
         # We provide a few signals about the system's physical movement to other parts of the UI.  Ideally, they other
@@ -1670,12 +1629,10 @@ class HighContentScreeningGui(QMainWindow):
             self.stitcherWidget.closeEvent(event)
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveController_focus_camera.stop_live()
-            self.camera_focus.close()
             self.imageDisplayWindow_focus.close()
 
         self.liveController.stop_live()
         self.camera.stop_streaming()
-        self.camera.close()
 
         if HOMING_ENABLED_X and HOMING_ENABLED_Y:
             # TODO(imo): Why do we move forward 0.1, then move to 30? AKA why not just move to 30?

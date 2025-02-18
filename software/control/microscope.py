@@ -1,75 +1,19 @@
-import serial
-import re
 import math
+import re
+import serial
 
 from PyQt5.QtCore import QObject
 
 import control.core.core as core
 from control._def import *
-import control
-from squid.abc import AbstractStage
+import squid.camera.utils
+from control.gui_hcs import HighContentScreeningGui
+from squid.abc import CameraAcquisitionMode
 import squid.stage.cephla
 import squid.abc
 import squid.logging
 import squid.config
 import squid.stage.utils
-
-
-log = squid.logging.get_logger(__name__)
-
-if CAMERA_TYPE == "Toupcam":
-    try:
-        import control.camera_toupcam as camera
-    except:
-        log.warning("Problem importing Toupcam, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "FLIR":
-    try:
-        import control.camera_flir as camera
-    except:
-        log.warning("Problem importing FLIR camera, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "Hamamatsu":
-    try:
-        import control.camera_hamamatsu as camera
-    except:
-        log.warning("Problem importing Hamamatsu camera, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "iDS":
-    try:
-        import control.camera_ids as camera
-    except:
-        log.warning("Problem importing iDS camera, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "Tucsen":
-    try:
-        import control.camera_tucsen as camera
-    except:
-        log.warning("Problem importing Tucsen camera, defaulting to default camera")
-        import control.camera as camera
-elif CAMERA_TYPE == "Kinetix":
-    try:
-        import control.camera_kinetix as camera
-    except:
-        log.warning("Problem importing Kinetix camera, defaulting to default camera")
-        import control.camera as camera
-else:
-    import control.camera as camera
-
-if FOCUS_CAMERA_TYPE == "Toupcam":
-    try:
-        import control.camera_toupcam as camera_fc
-    except:
-        log.warning("Problem importing Toupcam for focus, defaulting to default camera")
-        import control.camera as camera_fc
-elif FOCUS_CAMERA_TYPE == "FLIR":
-    try:
-        import control.camera_flir as camera_fc
-    except:
-        log.warning("Problem importing FLIR camera for focus, defaulting to default camera")
-        import control.camera as camera_fc
-else:
-    import control.camera as camera_fc
 
 import control.microcontroller as microcontroller
 from control.piezo import PiezoStage
@@ -81,8 +25,9 @@ if SUPPORT_LASER_AUTOFOCUS:
 
 class Microscope(QObject):
 
-    def __init__(self, microscope=None, is_simulation=False):
+    def __init__(self, microscope: HighContentScreeningGui = None, is_simulation=False):
         super().__init__()
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         if microscope is None:
             self.initialize_camera(is_simulation=is_simulation)
             self.initialize_microcontroller(is_simulation=is_simulation)
@@ -92,6 +37,7 @@ class Microscope(QObject):
             self.performance_mode = True
         else:
             self.camera = microscope.camera
+            self.camera_focus = microscope.camera_focus
             self.stage = microscope.stage
             self.microcontroller = microscope.microcontroller
             self.configurationManager = microscope.configurationManager
@@ -110,29 +56,16 @@ class Microscope(QObject):
                 self.emission_filter_wheel = microscope.emission_filter_wheel
 
     def initialize_camera(self, is_simulation):
-        if is_simulation:
-            self.camera = camera.Camera_Simulation(rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
-        else:
-            sn_camera_main = camera.get_sn_by_model(MAIN_CAMERA_MODEL)
-            self.camera = camera.Camera(sn=sn_camera_main, rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
+        self.camera = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=is_simulation)
 
-        self.camera.open()
         self.camera.set_pixel_format(DEFAULT_PIXEL_FORMAT)
-        self.camera.set_software_triggered_acquisition()
+        self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
-        if SUPPORT_LASER_AUTOFOCUS:
-            if is_simulation:
-                self.camera_focus = camera_fc.Camera_Simulation(
-                    rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE
-                )
-            else:
-                sn_camera_focus = camera_fc.get_sn_by_model(FOCUS_CAMERA_MODEL)
-                self.camera_focus = camera_fc.Camera(
-                    sn=sn_camera_focus, rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE
-                )
-            self.camera_focus.open()
-            self.camera_focus.set_pixel_format("MONO8")
-            self.camera_focus.set_software_triggered_acquisition()
+        self.camera_focus = squid.camera.utils.get_camera(
+            squid.config.get_autofocus_camera_config(), simulated=is_simulation
+        )
+        self.camera_focus.set_pixel_format("MONO8")
+        self.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
     def initialize_microcontroller(self, is_simulation):
         self.microcontroller = microcontroller.Microcontroller(
@@ -213,17 +146,13 @@ class Microscope(QObject):
         )
 
     def setup_hardware(self):
-        self.camera.set_software_triggered_acquisition()
-        self.camera.set_callback(self.streamHandler.on_new_frame)
-        self.camera.enable_callback()
-
-        if CAMERA_TYPE == "Toupcam":
-            self.camera.set_reset_strobe_delay_function(self.liveController.reset_strobe_arugment)
+        self.camera.add_frame_callback(self.streamHandler.on_new_frame)
+        self.camera.enable_callbacks(True)
 
         if SUPPORT_LASER_AUTOFOCUS:
-            self.camera_focus.set_software_triggered_acquisition()  # self.camera.set_continuous_acquisition()
-            self.camera_focus.set_callback(self.streamHandler_focus_camera.on_new_frame)
-            self.camera_focus.enable_callback()
+            self.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+            self.camera_focus.add_frame_callback(self.streamHandler_focus_camera.on_new_frame)
+            self.camera_focus.enable_callbacks(True)
             self.camera_focus.start_streaming()
 
     def initialize_peripherals(self):
@@ -247,7 +176,7 @@ class Microscope(QObject):
             self.camera.send_trigger()
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
             self.microcontroller.send_hardware_trigger(
-                control_illumination=True, illumination_on_time_us=self.camera.exposure_time * 1000
+                control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
             )
 
         # read a frame from camera
@@ -314,12 +243,11 @@ class Microscope(QObject):
         try:
             self.microcontroller.wait_till_operation_is_completed(timeout)
         except TimeoutError as e:
-            self.log.error(error_message or "Microcontroller operation timed out!")
+            self._log.error(error_message or "Microcontroller operation timed out!")
             raise e
 
     def close(self):
         self.stop_live()
-        self.camera.close()
         self.microcontroller.close()
         if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel.close()
