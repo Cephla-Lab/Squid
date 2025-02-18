@@ -3,12 +3,11 @@ import serial
 from PyQt5.QtCore import QObject
 
 import control.core.core as core
+import squid.camera.utils
 from control._def import *
-import control
-from squid.abc import AbstractStage
+from squid.abc import AbstractStage, CameraAcquisitionMode, AbstractCamera
+import squid.config
 
-if CAMERA_TYPE == "Toupcam":
-    import control.camera_toupcam as camera
 import control.microcontroller as microcontroller
 import control.serial_peripherals as serial_peripherals
 
@@ -17,6 +16,7 @@ class Microscope(QObject):
 
     def __init__(self, stage: AbstractStage, microscope=None, is_simulation=False):
         super().__init__()
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.stage = stage
         if microscope is None:
             self.initialize_camera(is_simulation=is_simulation)
@@ -24,7 +24,7 @@ class Microscope(QObject):
             self.initialize_core_components()
             self.initialize_peripherals()
         else:
-            self.camera = microscope.camera
+            self.camera: AbstractCamera = microscope.camera
             self.microcontroller = microscope.microcontroller
             self.configurationManager = microscope.microcontroller
             self.objectiveStore = microscope.objectiveStore
@@ -38,15 +38,10 @@ class Microscope(QObject):
                 self.emission_filter_wheel = microscope.emission_filter_wheel
 
     def initialize_camera(self, is_simulation):
-        if is_simulation:
-            self.camera = camera.Camera_Simulation(rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
-        else:
-            sn_camera_main = camera.get_sn_by_model(MAIN_CAMERA_MODEL)
-            self.camera = camera.Camera(sn=sn_camera_main, rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
+        self.camera = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=is_simulation)
 
-        self.camera.open()
         self.camera.set_pixel_format(DEFAULT_PIXEL_FORMAT)
-        self.camera.set_software_triggered_acquisition()
+        self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
     def initialize_microcontroller(self, is_simulation):
         self.microcontroller = microcontroller.Microcontroller(
@@ -82,13 +77,14 @@ class Microscope(QObject):
 
     def acquire_image(self):
         # turn on illumination and send trigger
+
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_on_illumination()
             self.waitForMicrocontroller()
             self.camera.send_trigger()
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
             self.microcontroller.send_hardware_trigger(
-                control_illumination=True, illumination_on_time_us=self.camera.exposure_time * 1000
+                control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
             )
 
         # read a frame from camera
@@ -155,12 +151,11 @@ class Microscope(QObject):
         try:
             self.microcontroller.wait_till_operation_is_completed(timeout)
         except TimeoutError as e:
-            self.log.error(error_message or "Microcontroller operation timed out!")
+            self._log.error(error_message or "Microcontroller operation timed out!")
             raise e
 
     def close(self):
         self.stop_live()
-        self.camera.close()
         self.microcontroller.close()
         if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel.close()

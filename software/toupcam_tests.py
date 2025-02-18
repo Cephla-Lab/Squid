@@ -1,15 +1,9 @@
-import control.toupcam as toupcam
-from control.camera_toupcam import Camera, get_sn_by_model
-from control._def import *
+import squid.config
+import squid.camera.utils
 import time
 
-model = "ITR3CMOS26000KMA"
-
-sn = get_sn_by_model(model)
-
-camera = Camera(sn=sn, rotate_image_angle=ROTATE_IMAGE_ANGLE, flip_image=FLIP_IMAGE)
-
-camera.open()
+camera_config = squid.config.get_camera_config()
+camera = squid.camera.utils.get_camera(camera_config)
 
 camera.set_gain_mode("HCG")
 
