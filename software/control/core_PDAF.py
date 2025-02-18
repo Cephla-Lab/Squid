@@ -2,28 +2,24 @@
 import os
 
 os.environ["QT_API"] = "pyqt5"
-import qtpy
 
 # qt libraries
 from qtpy.QtCore import *
 from qtpy.QtWidgets import *
-from qtpy.QtGui import *
 
 import control.utils as utils
 from control._def import *
-from control.core import *
-import control.tracking as tracking
 
-from queue import Queue
-from threading import Thread, Lock
 import time
 import numpy as np
-import pyqtgraph as pg
 import cv2
 from datetime import datetime
 
 import skimage  # pip3 install -U scikit-image
 import skimage.registration
+
+import squid.camera.utils
+from squid.abc import AbstractCamera
 
 
 class PDAFController(QObject):
@@ -112,12 +108,18 @@ class TwoCamerasPDAFCalibrationController(QObject):
     z_pos = Signal(float)
 
     def __init__(
-        self, camera1, camera2, navigationController, liveController1, liveController2, configurationManager=None
+        self,
+        camera1: AbstractCamera,
+        camera2: AbstractCamera,
+        navigationController,
+        liveController1,
+        liveController2,
+        configurationManager=None,
     ):
         QObject.__init__(self)
 
-        self.camera1 = camera1
-        self.camera2 = camera2
+        self.camera1: AbstractCamera = camera1
+        self.camera2: AbstractCamera = camera2
         self.navigationController = navigationController
         self.liveController1 = liveController1
         self.liveController2 = liveController2
@@ -210,18 +212,18 @@ class TwoCamerasPDAFCalibrationController(QObject):
             self.liveController2.was_live_before_multipoint = False
 
         # disable callback
-        if self.camera1.callback_is_enabled:
+        if self.camera1.get_callbacks_enabled():
             self.camera1.callback_was_enabled_before_multipoint = True
             self.camera1.stop_streaming()
-            self.camera1.disable_callback()
+            self.camera1.enable_callbacks(False)
             self.camera1.start_streaming()  # @@@ to do: absorb stop/start streaming into enable/disable callback - add a flag is_streaming to the camera class
         else:
             self.camera1.callback_was_enabled_before_multipoint = False
         # disable callback
-        if self.camera2.callback_is_enabled:
+        if self.camera2.get_callbacks_enabled():
             self.camera2.callback_was_enabled_before_multipoint = True
             self.camera2.stop_streaming()
-            self.camera2.disable_callback()
+            self.camera2.enable_callbacks(False)
             self.camera2.start_streaming()  # @@@ to do: absorb stop/start streaming into enable/disable callback - add a flag is_streaming to the camera class
         else:
             self.camera2.callback_was_enabled_before_multipoint = False
@@ -232,13 +234,13 @@ class TwoCamerasPDAFCalibrationController(QObject):
         # re-enable callback
         if self.camera1.callback_was_enabled_before_multipoint:
             self.camera1.stop_streaming()
-            self.camera1.enable_callback()
+            self.camera1.enable_callbacks(True)
             self.camera1.start_streaming()
             self.camera1.callback_was_enabled_before_multipoint = False
         # re-enable callback
         if self.camera2.callback_was_enabled_before_multipoint:
             self.camera2.stop_streaming()
-            self.camera2.enable_callback()
+            self.camera2.enable_callbacks(True)
             self.camera2.start_streaming()
             self.camera2.callback_was_enabled_before_multipoint = False
 
