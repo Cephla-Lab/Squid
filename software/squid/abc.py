@@ -421,13 +421,16 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
-    def get_frame(self) -> np.ndarray:
+    def read_frame(self) -> np.ndarray:
         """
         If needed, send a trigger to request a frame.  Then block and wait until the next frame comes in,
         and return it.  The frame that comes back will be rotated/flipped/etc based on this cameras config,
         so the caller can assume all that is done for them.
 
         These frames will be sent to registered callbacks as well.
+
+        NOTE(imo): We might change this to get_frame to be consistent with everything else here, but
+        since cameras previously used read_frame this decreases line change noise.
         """
         raw_frame = self._get_frame()
         return control.utils.rotate_and_flip_image(
