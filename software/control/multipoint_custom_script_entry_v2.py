@@ -184,9 +184,6 @@ def capture_image_hardware_trigger(worker, config):
 
 def process_and_save_image(worker, image, file_ID, config, current_path, current_round_images, i, j, z_level):
     image = utils.crop_image(image, worker.crop_width, worker.crop_height)
-    image = utils.rotate_and_flip_image(
-        image, rotate_image_angle=worker.camera.rotate_image_angle, flip_image=worker.camera.flip_image
-    )
     image_to_display = utils.crop_image(
         image,
         round(worker.crop_width * worker.display_resolution_scaling),
@@ -234,9 +231,6 @@ def acquire_rgb_image(worker, config, file_ID, current_path, current_round_image
             image = capture_image(worker, channel_config)
             if image is not None:
                 image = utils.crop_image(image, worker.crop_width, worker.crop_height)
-                image = utils.rotate_and_flip_image(
-                    image, rotate_image_angle=worker.camera.rotate_image_angle, flip_image=worker.camera.flip_image
-                )
                 images[channel_config.name] = np.copy(image)
 
     if images:
