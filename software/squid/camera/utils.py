@@ -6,7 +6,7 @@ import numpy as np
 
 import squid.logging
 from squid.config import CameraConfig, CameraPixelFormat, CameraVariant
-from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrameFormat
+from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrameFormat, CameraFrame
 
 _log = squid.logging.get_logger("squid.camera.utils")
 
@@ -267,7 +267,16 @@ class SimulatedCamera(AbstractCamera):
             self._current_frame = np.roll(self._current_frame, 10, axis=0)
 
         self._frame_id += 1
-        self._propogate_frame(self._current_frame)
+
+        frame = CameraFrame(
+            frame_id=self._frame_id,
+            timestamp=time.time(),
+            frame=self._current_frame,
+            frame_format=self.get_frame_format(),
+            frame_pixel_format=self.get_pixel_format(),
+        )
+
+        self._propogate_frame(frame)
 
     @debug_log
     def cancel_exposure(self):

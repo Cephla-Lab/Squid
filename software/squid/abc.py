@@ -1,5 +1,6 @@
+import dataclasses
 from abc import ABC, abstractmethod
-from typing import Callable, Optional, Tuple, Sequence
+from typing import Callable, Optional, Tuple, Sequence, List
 import abc
 import enum
 import time
@@ -188,15 +189,15 @@ class AbstractStage(metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def set_limits(
-        self,
-        x_pos_mm: Optional[float] = None,
-        x_neg_mm: Optional[float] = None,
-        y_pos_mm: Optional[float] = None,
-        y_neg_mm: Optional[float] = None,
-        z_pos_mm: Optional[float] = None,
-        z_neg_mm: Optional[float] = None,
-        theta_pos_rad: Optional[float] = None,
-        theta_neg_rad: Optional[float] = None,
+            self,
+            x_pos_mm: Optional[float] = None,
+            x_neg_mm: Optional[float] = None,
+            y_pos_mm: Optional[float] = None,
+            y_neg_mm: Optional[float] = None,
+            z_pos_mm: Optional[float] = None,
+            z_neg_mm: Optional[float] = None,
+            theta_pos_rad: Optional[float] = None,
+            theta_neg_rad: Optional[float] = None,
     ):
         pass
 
@@ -233,10 +234,12 @@ class CameraFrameFormat(enum.Enum):
     RAW = "RAW"
     RGB = "RGB"
 
+
 class CameraGainRange(pydantic.BaseModel):
     min_gain: float
     max_gain: float
     gain_step: float
+
 
 # NOTE(imo): Dataclass because pydantic does not like the np.array since there's no reasonable default
 # we can provide it.
@@ -247,6 +250,7 @@ class CameraFrame:
     frame: np.array
     frame_format: CameraFrameFormat
     frame_pixel_format: CameraPixelFormat
+
 
 class AbstractCamera(metaclass=abc.ABCMeta):
     def __init__(self, camera_config: CameraConfig):
@@ -261,9 +265,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         # Frame callbacks is a list of (id, callback) managed by add_frame_callback and remove_frame_callback.
         # Your frame receiving functions should call self._send_frame_to_callbacks(frame), and doesn't need
         # to do more than that.
-        self._frame_callbacks = []
+        self._frame_callbacks: List[Tuple[int, Callable[[CameraFrame], None]]] = []
 
-    def add_frame_callback(self, frame_callback: Callable[[np.ndarray], None]) -> int:
+    def add_frame_callback(self, frame_callback: Callable[[CameraFrame], None]) -> int:
         """
         Adds a new callback that will be called with the receipt of every new frame.  This callback
         should not block for a long time because it will be called in the frame receiving hot path!
@@ -289,16 +293,17 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         except ValueError:
             self._log.warning(f"No callback with id={callback_id}, cannot remove it.")
 
-    def _propogate_frame(self, frame):
+    def _propogate_frame(self, raw_frame: CameraFrame):
         """
         Implementations can call this to propogate a new frame to all registered callbacks.  The frame
         will be rotated/cropped/etc based on our config, so the callbacks don't need to do that.
         """
-        cb_frame = control.utils.rotate_and_flip_image(
-            frame, rotate_image_angle=self._config.rotate_image_angle, flip_image=self._config.flip
-        )
-        for cb in self._frame_callbacks:
-            cb(cb_frame)
+        camera_frame = dataclasses.replace(raw_frame,
+                                           frame=control.utils.rotate_and_flip_image(
+                                               raw_frame.frame, rotate_image_angle=self._config.rotate_image_angle,
+                                               flip_image=self._config.flip))
+        for (_, cb) in self._frame_callbacks:
+            cb(camera_frame)
 
     @abc.abstractmethod
     def set_exposure_time(self, exposure_time_ms: float):
@@ -441,7 +446,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def _get_frame(self):
         """
         Camera implementations need to provide this _get_frame which should trigger, then get and return a raw
-        frame.  It is used by get_frame to grab a raw frame before doign the required flip/rotate/crop operations
+        frame.  It is used by get_frame to grab a raw frame before doing the required flip/rotate/crop operations
         based on this cameras settings.  See get_frame() above.
         """
         pass
@@ -490,7 +495,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     def set_acquisition_mode(
-        self, acquisition_mode: CameraAcquisitionMode, hw_trigger_fn: Optional[Callable[[None], None]] = None
+            self, acquisition_mode: CameraAcquisitionMode, hw_trigger_fn: Optional[Callable[[None], None]] = None
     ):
         """
         Sets the acquisition mode.  If you are specifying hardware trigger, and an external
