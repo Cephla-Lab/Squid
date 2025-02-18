@@ -6,6 +6,7 @@ import time
 
 import pydantic
 import numpy as np
+from dataclasses import dataclass
 
 import squid.logging
 from squid.config import AxisConfig, StageConfig, CameraConfig, CameraPixelFormat
@@ -236,7 +237,10 @@ class CameraGainRange(pydantic.BaseModel):
     max_gain: float
     gain_step: float
 
-class CameraFrame(pydantic.BaseModel):
+# NOTE(imo): Dataclass because pydantic does not like the np.array since there's no reasonable default
+# we can provide it.
+@dataclass
+class CameraFrame:
     frame_id: int
     timestamp: float
     frame: np.array

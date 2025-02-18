@@ -145,6 +145,14 @@ class SimulatedCamera(AbstractCamera):
         return self._exposure_time
 
     @debug_log
+    def get_strobe_time(self):
+        return 3  # Just some arbitrary non-zero number so we test code that relies on this.
+
+    @debug_log
+    def get_exposure_limits(self) -> Tuple[float, float]:
+        return 1, 1000
+
+    @debug_log
     def set_frame_format(self, frame_format: CameraFrameFormat):
         self._frame_format = frame_format
 

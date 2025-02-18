@@ -228,6 +228,7 @@ _camera_config = CameraConfig(
     default_resolution=(_def.Acquisition.CROP_WIDTH, _def.Acquisition.CROP_HEIGHT),
     default_pixel_format=_def.DEFAULT_PIXEL_FORMAT,
     rotate_image_angle=_def.ROTATE_IMAGE_ANGLE,
+    flip=None
 )
 
 
@@ -241,7 +242,8 @@ _autofocus_camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE),
     default_resolution=(_def.LASER_AF_CROP_WIDTH, _def.LASER_AF_CROP_HEIGHT),
     default_pixel_format=CameraPixelFormat.MONO8,
-    rotate_image_angle=None
+    rotate_image_angle=None,
+    flip=None
 )
 
 def get_autofocus_camera_config() -> CameraConfig:
