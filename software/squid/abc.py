@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import squid.logging
 from squid.config import AxisConfig, StageConfig, CameraConfig, CameraPixelFormat
 from squid.exceptions import SquidTimeout
+import control.utils
 
 
 class LightSource(ABC):
@@ -267,6 +268,8 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         Adds a new callback that will be called with the receipt of every new frame.  This callback
         should not block for a long time because it will be called in the frame receiving hot path!
 
+        This np.ndarray is shared with all callbacks, so you should make a copy if you need to modify it.
+
         Returns the callback ID that can be used to remove the callback later if needed.
         """
         try:
@@ -288,10 +291,14 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
     def _propogate_frame(self, frame):
         """
-        Implementations can call this to propogate a new frame to all registered callbacks.
+        Implementations can call this to propogate a new frame to all registered callbacks.  The frame
+        will be rotated/cropped/etc based on our config, so the callbacks don't need to do that.
         """
+        cb_frame = control.utils.rotate_and_flip_image(
+            frame, rotate_image_angle=self._config.rotate_image_angle, flip_image=self._config.flip
+        )
         for cb in self._frame_callbacks:
-            cb(frame)
+            cb(cb_frame)
 
     @abc.abstractmethod
     def set_exposure_time(self, exposure_time_ms: float):
@@ -414,11 +421,25 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
-    @abc.abstractmethod
     def get_frame(self) -> np.ndarray:
         """
         If needed, send a trigger to request a frame.  Then block and wait until the next frame comes in,
-        and return it.
+        and return it.  The frame that comes back will be rotated/flipped/etc based on this cameras config,
+        so the caller can assume all that is done for them.
+
+        These frames will be sent to registered callbacks as well.
+        """
+        raw_frame = self._get_frame()
+        return control.utils.rotate_and_flip_image(
+            raw_frame, rotate_image_angle=self._config.rotate_image_angle, flip_image=self._config.flip
+        )
+
+    @abc.abstractmethod
+    def _get_frame(self):
+        """
+        Camera implementations need to provide this _get_frame which should trigger, then get and return a raw
+        frame.  It is used by get_frame to grab a raw frame before doign the required flip/rotate/crop operations
+        based on this cameras settings.  See get_frame() above.
         """
         pass
 

@@ -83,7 +83,9 @@ class SimulatedCamera(AbstractCamera):
         def _logged_method(self, *args, **kwargs):
             kwargs_pairs = tuple(f"{k}={v}" for (k, v) in kwargs.items())
             args_str = tuple(str(a) for a in args)
-            self._log.debug(f"{inspect.currentframe().f_code.co_name}({','.join(args_str + kwargs_pairs)})")
+            self._log.debug(
+                f"{inspect.getouterframes(inspect.currentframe())[1][3]}({','.join(args_str + kwargs_pairs)})"
+            )
             return method(self, *args, **kwargs)
 
         return _logged_method
@@ -209,7 +211,7 @@ class SimulatedCamera(AbstractCamera):
         self._continue_streaming = False
 
     @debug_log
-    def get_frame(self) -> np.ndarray:
+    def _get_frame(self) -> np.ndarray:
         self.send_trigger()
         return self._current_frame
 
