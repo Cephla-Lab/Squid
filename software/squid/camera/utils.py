@@ -1,10 +1,14 @@
 import functools
-from typing import Optional, Tuple
+import time
+from typing import Optional, Tuple, Sequence
 
 import numpy as np
 
-from squid.config import CameraConfig, CameraPixelFormat
+import squid.logging
+from squid.config import CameraConfig, CameraPixelFormat, CameraVariant
 from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrameFormat
+
+_log = squid.logging.get_logger("squid.camera.utils")
 
 
 def get_camera(config: CameraConfig, simulated: bool = False) -> AbstractCamera:
@@ -12,9 +16,60 @@ def get_camera(config: CameraConfig, simulated: bool = False) -> AbstractCamera:
     Try to import, and then build, the requested camera.  We import on a case-by-case basis
     because some cameras require system level installations, and so in many cases camera
     driver imports will fail.
+
+    NOTE(imo): While we transition to AbstractCamera, we need to do some hacks here to make the non-transitioned
+    drivers still work.  Hence the embedded helpers here.
     """
+
+    def open_if_needed(camera):
+        try:
+            camera.open()
+        except AttributeError:
+            pass
+
     if simulated:
         return SimulatedCamera(config)
+
+    try:
+        if config.camera_type == CameraVariant.TOUPCAM:
+            import control.camera_toupcam
+
+            camera = control.camera_toupcam.Camera(config)
+        elif config.camera_type == CameraVariant.FLIR:
+            import control.camera_flir
+
+            camera = control.camera_flir.Camera(config)
+        elif config.camera_type == CameraVariant.HAMAMATSU:
+            import control.camera_hamamatsu
+
+            camera = control.camera_hamamatsu.Camera(config)
+        elif config.camera_type == CameraVariant.IDS:
+            import control.camera_ids
+
+            camera = control.camera_ids.Camera(config)
+        elif config.camera_type == CameraVariant.TUCSEN:
+            import control.camera_tucsen
+
+            camera = control.camera_ids.Camera(config)
+        elif config.camera_type == CameraVariant.TIS:
+            import control.camera_TIS
+
+            camera = control.camera_TIS.Camera(config)
+        else:
+            import control.camera
+
+            camera = control.camera.Camera(config)
+
+        # NOTE(imo): All of these things are hacks before complete migration to AbstractCamera impls.  They can
+        # be removed once all the cameras conform to the AbstractCamera interface.
+        open_if_needed(camera)
+    except ImportError as e:
+        _log.warning(f"Camera of type: '{config.camera_type}' failed to import.  Falling back to default camera impl.")
+        _log.warning(e)
+
+        import control.camera as camera
+
+        return control.camera.Camera(config)
 
     raise NotImplementedError(f"Camera of type={config.camera_type} not yet supported.")
 
@@ -50,6 +105,36 @@ class SimulatedCamera(AbstractCamera):
         self._acquisition_mode = None
         self._roi = (0, 0, self.get_resolution()[0], self.get_resolution()[1])
         self._temperature_setpoint = None
+        self._continue_streaming = False
+
+        # This is for the migration to AbstractCamera.  It helps us find methods/properties that
+        # some cameras had in the pre-AbstractCamera days.
+        self._missing_methods = {}
+
+    class MissingAttribImpl:
+        name_to_val = {}
+
+        def __init__(self, name):
+            self._log = squid.logging.get_logger(f"MissingAttribImpl({name})")
+            self._val = self.name_to_val.get(name, None)
+
+        def __get__(self, instance, owner):
+            self._log.debug("Get")
+            return self._val
+
+        def __set__(self, instance, value):
+            self._log.debug(f"Set={value}")
+            self._val = value
+
+        def __call__(self, *args, **kwargs):
+            kwarg_pairs = [f"{k}={v}" for (k, v) in kwargs.items()]
+            args_str = [str(a) for a in args]
+            self._log.debug(f"Called(*args, **kwargs) -> Called({','.join(args_str)}, {','.join(kwarg_pairs)}")
+            return self._val
+
+    def __getattr__(self, item):
+        self._log.warning(f"Creating placeholder missing method: {item}")
+        return self._missing_methods.get(item, SimulatedCamera.MissingAttribImpl(item))
 
     @debug_log
     def set_exposure_time(self, exposure_time_ms: float):
@@ -84,6 +169,10 @@ class SimulatedCamera(AbstractCamera):
         return self._resolution
 
     @debug_log
+    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
+        return [(1920, 1080), (2000, 2000), (3000, 2000)]
+
+    @debug_log
     def set_analog_gain(self, analog_gain: float):
         self._analog_gain = analog_gain
 
@@ -91,13 +180,25 @@ class SimulatedCamera(AbstractCamera):
     def get_analog_gain(self) -> float:
         return self._analog_gain
 
+    def _start_streaming_thread(self):
+        def stream_fn():
+            self._log.info("Starting streaming thread...")
+            last_frame_time = time.time()
+            while self._continue_streaming:
+                time_since = time.time() - last_frame_time
+                if self.get_exposure_time() - time_since > 0:
+                    time.sleep(self.get_exposure_time - time_since)
+                self.send_trigger()
+                last_frame_time = time.time()
+            self._log.info("Stopping streaming...")
+
     @debug_log
     def start_streaming(self):
-        raise NotImplementedError("Streaming is not implemented on the sim camera yet")
+        self._start_streaming_thread()
 
     @debug_log
     def stop_streaming(self):
-        pass
+        self._continue_streaming = False
 
     @debug_log
     def get_frame(self) -> np.ndarray:
