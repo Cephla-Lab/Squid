@@ -67,7 +67,9 @@ def get_camera(
         else:
             import control.camera
 
-            camera = control.camera.Camera(config)
+            camera = control.camera.DefaultCamera(
+                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+            )
 
         # NOTE(imo): All of these things are hacks before complete migration to AbstractCamera impls.  They can
         # be removed once all the cameras conform to the AbstractCamera interface.
@@ -76,11 +78,11 @@ def get_camera(
         _log.warning(f"Camera of type: '{config.camera_type}' failed to import.  Falling back to default camera impl.")
         _log.warning(e)
 
-        import control.camera as camera
+        import control.camera
 
-        return control.camera.Camera(config)
-
-    raise NotImplementedError(f"Camera of type={config.camera_type} not yet supported.")
+        return control.camera.DefaultCamera(
+            config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+        )
 
 
 class SimulatedCamera(AbstractCamera):
@@ -285,14 +287,16 @@ class SimulatedCamera(AbstractCamera):
         if self.get_frame_id() == 1:
             if self.get_pixel_format() == CameraPixelFormat.MONO8:
                 self._current_raw_frame = np.random.randint(255, size=(height, width), dtype=np.uint8)
-                self._current_raw_frame[height // 2 - 99: height // 2 + 100, width // 2 - 99: width // 2 + 100] = 200
+                self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = 200
             elif self.get_pixel_format() == CameraPixelFormat.MONO12:
                 self._current_raw_frame = np.random.randint(4095, size=(height, width), dtype=np.uint16)
-                self._current_raw_frame[height // 2 - 99: height // 2 + 100, width // 2 - 99: width // 2 + 100] = 200 * 16
+                self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = (
+                    200 * 16
+                )
                 self._current_raw_frame = self._current_raw_frame << 4
             elif self.get_pixel_format() == CameraPixelFormat.MONO16:
                 self._current_raw_frame = np.random.randint(65535, size=(height, width), dtype=np.uint16)
-                self._current_raw_frame[height // 2 - 99: height // 2 + 100, width // 2 - 99: width // 2 + 100] = (
+                self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = (
                     200 * 256
                 )
             else:
