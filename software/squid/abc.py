@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple, Sequence
 import abc
 import enum
 import time
@@ -8,7 +8,7 @@ import pydantic
 import numpy as np
 
 import squid.logging
-from squid.config import AxisConfig, StageConfig, CameraConfig
+from squid.config import AxisConfig, StageConfig, CameraConfig, CameraPixelFormat
 from squid.exceptions import SquidTimeout
 
 
@@ -231,6 +231,17 @@ class CameraFrameFormat(enum.Enum):
     RAW = "RAW"
     RGB = "RGB"
 
+class CameraGainRange(pydantic.BaseModel):
+    min_gain: float
+    max_gain: float
+    gain_step: float
+
+class CameraFrame(pydantic.BaseModel):
+    frame_id: int
+    timestamp: float
+    frame: np.array
+    frame_format: CameraFrameFormat
+    frame_pixel_format: CameraPixelFormat
 
 class AbstractCamera(metaclass=abc.ABCMeta):
     def __init__(self, camera_config: CameraConfig):
@@ -290,6 +301,26 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
+    def get_exposure_limits(self) -> Tuple[float, float]:
+        """
+        Return the valid range of exposure times in inclusive milliseconds.
+        """
+        pass
+
+    @abc.abstractmethod
+    def get_strobe_time(self) -> float:
+        """
+        Given the current exposure time we are using, what is the strobe time such that
+        get_strobe_time() + get_exposure_time() == total frame time.  In milliseconds.
+        """
+
+    def get_total_frame_time(self) -> float:
+        """
+        The total sensor time for a single frame.  This is strobe time + exposure time in ms.
+        """
+        return self.get_exposure_time() + self.get_strobe_time()
+
+    @abc.abstractmethod
     def set_frame_format(self, frame_format: CameraFrameFormat):
         """
         If this camera supports the given frame format, set it and make sure that
@@ -335,6 +366,13 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
+    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
+        """
+        Return all the (width, height) resolutions supported by this camera.
+        """
+        pass
+
+    @abc.abstractmethod
     def set_analog_gain(self, analog_gain: float):
         """
         Set analog gain as an input multiple.  EG 1 = no gain, 100 = 100x gain.
@@ -348,12 +386,20 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
+    def get_gain_range(self) -> CameraGainRange:
+        """
+        Returns the gain range, and minimum gain step, for this camera.
+        """
+        pass
+
     @abc.abstractmethod
     def start_streaming(self):
         """
         This starts camera frame streaming.  Whether this results in frames immediately depends
         on the current triggering mode.  If frames require triggering, no frames will come until
         triggers are sent.  If the camera is in continuous mode, frames will start immediately.
+
+        This should be a noop if the camera is already streaming.
         """
         pass
 
@@ -416,7 +462,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     def set_acquisition_mode(
-        self, acquisition_mode: CameraAcquisitionMode, hw_trigger_fn: Optional[Callable[[None], None]]
+        self, acquisition_mode: CameraAcquisitionMode, hw_trigger_fn: Optional[Callable[[None], None]] = None
     ):
         """
         Sets the acquisition mode.  If you are specifying hardware trigger, and an external
