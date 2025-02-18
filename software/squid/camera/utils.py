@@ -6,7 +6,7 @@ import numpy as np
 
 import squid.logging
 from squid.config import CameraConfig, CameraPixelFormat, CameraVariant
-from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrameFormat, CameraFrame
+from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrameFormat, CameraFrame, CameraGainRange
 
 _log = squid.logging.get_logger("squid.camera.utils")
 
@@ -184,11 +184,20 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def set_analog_gain(self, analog_gain: float):
+        valid_range = self.get_gain_range()
+        if analog_gain > valid_range.max_gain or analog_gain < valid_range.min_gain:
+            raise ValueError("Gain outside valid range.")
+
         self._analog_gain = analog_gain
 
     @debug_log
     def get_analog_gain(self) -> float:
         return self._analog_gain
+
+    @debug_log
+    def get_gain_range(self) -> CameraGainRange:
+        # Arbitrary, just something to test with
+        return CameraGainRange(min_gain=0.0, max_gain=100.0, gain_step=2.0)
 
     def _start_streaming_thread(self):
         def stream_fn():

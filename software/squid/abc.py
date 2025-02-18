@@ -402,6 +402,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
+    @abc.abstractmethod
     def get_gain_range(self) -> CameraGainRange:
         """
         Returns the gain range, and minimum gain step, for this camera.
