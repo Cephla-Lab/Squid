@@ -1,7 +1,11 @@
 import time
+from typing import Optional, Tuple, Sequence
+
 import numpy as np
 
+import control.utils
 import squid.logging
+from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraGainRange, CameraFrameFormat, CameraFrame
 from control._def import *
 
 import threading
@@ -9,6 +13,102 @@ import control.toupcam as toupcam
 from control.toupcam_exceptions import hresult_checker
 
 log = squid.logging.get_logger(__name__)
+
+
+class ToupcamCamera(AbstractCamera):
+
+    def _propogate_frame(self, raw_frame: CameraFrame):
+        super()._propogate_frame(raw_frame)
+
+    def set_exposure_time(self, exposure_time_ms: float):
+        pass
+
+    def get_exposure_time(self) -> float:
+        pass
+
+    def get_exposure_limits(self) -> Tuple[float, float]:
+        pass
+
+    def get_strobe_time(self) -> float:
+        pass
+
+    def set_frame_format(self, frame_format: CameraFrameFormat):
+        pass
+
+    def get_frame_format(self) -> CameraFrameFormat:
+        pass
+
+    def set_pixel_format(self, pixel_format: squid.config.CameraPixelFormat):
+        pass
+
+    def get_pixel_format(self) -> squid.config.CameraPixelFormat:
+        pass
+
+    def set_resolution(self, width: int, height: int):
+        pass
+
+    def get_resolution(self) -> Tuple[int, int]:
+        pass
+
+    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
+        pass
+
+    def set_analog_gain(self, analog_gain: float):
+        pass
+
+    def get_analog_gain(self) -> float:
+        pass
+
+    def get_gain_range(self) -> CameraGainRange:
+        pass
+
+    def start_streaming(self):
+        pass
+
+    def stop_streaming(self):
+        pass
+
+    def _get_frame(self):
+        pass
+
+    def get_frame_id(self) -> int:
+        pass
+
+    def get_white_balance_gains(self) -> Tuple[float, float, float]:
+        pass
+
+    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
+        pass
+
+    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
+        pass
+
+    def set_black_level(self, black_level: float):
+        pass
+
+    def get_black_level(self) -> float:
+        pass
+
+    def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
+        pass
+
+    def get_acquisition_mode(self) -> CameraAcquisitionMode:
+        pass
+
+    def send_trigger(self, illumination_time: Optional[float] = None):
+        pass
+
+    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+        pass
+
+    def get_region_of_interest(self) -> Tuple[int, int, int, int]:
+        pass
+
+    def set_temperature(self, temperature_deg_c: Optional[float]):
+        pass
+
+    def get_temperature(self) -> float:
+        pass
 
 
 def get_sn_by_model(model_name):
@@ -77,7 +177,8 @@ class Camera(object):
         if self.callback_is_enabled == True:
             self.new_image_callback_external(self)
 
-    def _TDIBWIDTHBYTES(w):
+    @staticmethod
+    def _tdib_width_bytes(w):
         return (w * 24 + 31) // 32 * 4
 
     def __init__(
@@ -473,17 +574,14 @@ class Camera(object):
 
     def _update_buffer_settings(self):
         # resize the buffer
-        xoffset, yoffset, width, height = self.camera.get_Roi()
-
-        self.Width = width
-        self.Height = height
+        _, _, width, height = self.camera.get_Roi()
 
         # calculate buffer size
-        if (self.data_format == "RGB") & (self.pixel_size_byte != 4):
-            bufsize = _TDIBWIDTHBYTES(width * self.pixel_size_byte * 8) * height
+        if self.data_format == "RGB" and self.pixel_size_byte != 4:
+            bufsize = Camera._tdib_width_bytes(width * self.pixel_size_byte * 8) * height
         else:
             bufsize = width * self.pixel_size_byte * height
-        self.log.info("image size: {} x {}, bufsize = {}".format(width, height, bufsize))
+        self.log.info(f"image size: {width=} x {height=}, {bufsize=}")
         # create the buffer
         self.buf = bytes(bufsize)
 
@@ -595,121 +693,38 @@ class Camera(object):
         self.log.error("read frame timed out")
         return None
 
-    def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
-        if offset_x is not None:
-            ROI_offset_x = 2 * (offset_x // 2)
-        else:
-            ROI_offset_x = self.ROI_offset_x
-
-        if offset_y is not None:
-            ROI_offset_y = 2 * (offset_y // 2)
-        else:
-            ROI_offset_y = self.ROI_offset_y
-
-        if width is not None:
-            ROI_width = max(16, 2 * (width // 2))
-        else:
-            ROI_width = self.ROI_width
-
-        if height is not None:
-            ROI_height = max(16, 2 * (height // 2))
-        else:
-            ROI_height = self.ROI_height
+    def set_ROI(self, offset_x: int, offset_y: int, width: int, height: int):
+        roi_offset_x = control.utils.truncate_to_interval(offset_x, 2)
+        roi_offset_y = control.utils.truncate_to_interval(offset_y, 2)
+        roi_width = control.utils.truncate_to_interval(width, 2)
+        roi_height = control.utils.truncate_to_interval(height, 2)
 
         was_streaming = False
         if self.is_streaming:
             self.stop_streaming()
             was_streaming = True
 
-        if width == 0 and height == 0:
-            self.ROI_offset_x = 0
-            self.ROI_offset_y = 0
-            self.OffsetX = 0
-            self.OffsetY = 0
-            self.ROI_height = 0
-            self.ROI_width = 0
-            self.camera.put_Roi(0, 0, 0, 0)
-            width, height = self.camera.get_Size()
-            self.Width = width
-            self.Height = height
-            self.ROI_height = height
-            self.ROI_width = width
-            self._update_buffer_settings()
+        try:
+            self.camera.put_Roi(roi_offset_x, roi_offset_y, roi_width, roi_height)
+        except toupcam.HRESULTException as ex:
+            self.log.exception("ROI bounds invalid, not changing ROI.")
 
-        else:
-            try:
-                self.camera.put_Roi(ROI_offset_x, ROI_offset_y, ROI_width, ROI_height)
-                self.ROI_height = ROI_height
-                self.Height = ROI_height
-                self.ROI_width = ROI_width
-                self.Width = ROI_width
-
-                self.ROI_offset_x = ROI_offset_x
-                self.OffsetX = ROI_offset_x
-
-                self.ROI_offset_y = ROI_offset_y
-                self.OffsetY = ROI_offset_y
-            except toupcam.HRESULTException as ex:
-                err_type = hresult_checker(ex, "E_INVALIDARG")
-                self.log.error("ROI bounds invalid, not changing ROI.")
-            self._update_buffer_settings()
+        self._update_buffer_settings()
         if was_streaming:
             self.start_streaming()
 
         if self.reset_strobe_delay is not None:
             self.reset_strobe_delay()
 
-    def reset_camera_acquisition_counter(self):
-        # TODO(imo): raise not implemented or something so this isn't a silent fail
-        # if self.camera.CounterEventSource.is_implemented() and self.camera.CounterEventSource.is_writable():
-        #     self.camera.CounterEventSource.set(gx.GxCounterEventSourceEntry.LINE2)
-        # else:
-        #     print("CounterEventSource is not implemented or not writable")
-
-        # if self.camera.CounterReset.is_implemented():
-        #     self.camera.CounterReset.send_command()
-        # else:
-        #     print("CounterReset is not implemented")
-        pass
-
-    def set_line3_to_strobe(self):
-        # TODO(imo): Make this not a silent fail
-        # # self.camera.StrobeSwitch.set(gx.GxSwitchEntry.ON)
-        # self.camera.LineSelector.set(gx.GxLineSelectorEntry.LINE3)
-        # self.camera.LineMode.set(gx.GxLineModeEntry.OUTPUT)
-        # self.camera.LineSource.set(gx.GxLineSourceEntry.STROBE)
-        pass
-
-    def set_line3_to_exposure_active(self):
-        # TODO(imo): Make this not a silent fail
-        # # self.camera.StrobeSwitch.set(gx.GxSwitchEntry.ON)
-        # self.camera.LineSelector.set(gx.GxLineSelectorEntry.LINE3)
-        # self.camera.LineMode.set(gx.GxLineModeEntry.OUTPUT)
-        # self.camera.LineSource.set(gx.GxLineSourceEntry.EXPOSURE_ACTIVE)
-        pass
-
     def calculate_hardware_trigger_arguments(self):
         # use camera arguments such as resolutuon, ROI, exposure time, set max FPS, bandwidth to calculate the trigger delay time
         resolution_width = 0
         resolution_height = 0
 
-        roi_width = 0
-        roi_height = 0
-
         pixel_bits = self.pixel_size_byte * 8
 
         line_length = 0
         low_noise = 0
-
-        row_time = 0
-
-        vheight = 0
-
-        exp_length = 0
-
-        SHR = 0
-
-        TRG_DELAY = 0
 
         try:
             resolution_width, resolution_height = self.camera.get_Size()
@@ -757,32 +772,27 @@ class Camera(object):
         row_time = line_length / 72
 
         try:
-            max_framerate = self.camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
+            max_framerate_tenths_fps = self.camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
         except toupcam.HRESULTException as ex:
             # TODO(imo): Propagate error in some way and handle
             self.log.error("get max_framerate fail, hr=0x{:x}".format(ex.hr))
 
         # need reset value, because the default value is only 90% of setting value
         try:
-            self.camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, max_framerate)
+            self.camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, max_framerate_tenths_fps)
         except toupcam.HRESULTException as ex:
             # TODO(imo): Propagate error in some way and handle
             self.log.error("put max_framerate fail, hr=0x{:x}".format(ex.hr))
 
-        max_framerate = max_framerate / 10.0
+        max_framerate_fps = max_framerate_tenths_fps / 10.0
 
-        vheight = 72000000 / (max_framerate * line_length)
+        vheight = 72000000 / (max_framerate_fps * line_length)
         if vheight < roi_height + 56:
             vheight = roi_height + 56
-
-        exp_length = 72 * self.exposure_time * 1000 / line_length
 
         frame_time = int(vheight * row_time)
 
         self.strobe_delay_us = frame_time
-
-    def set_reset_strobe_delay_function(self, function_body):
-        self.reset_strobe_delay = function_body
 
     def set_blacklevel(self, blacklevel):
         try:

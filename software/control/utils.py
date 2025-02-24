@@ -401,3 +401,7 @@ def get_squid_repo_state_description() -> Optional[str]:
     except git.GitError as e:
         _log.warning(f"Failed to get script git repo info: {e}")
         return None
+
+
+def truncate_to_interval(val, interval: int):
+    return interval * (val // interval)
