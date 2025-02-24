@@ -203,6 +203,7 @@ class StreamHandler(QObject):
         self.handler_busy = False
         camera.image_locked = False
 
+
 class ImageSaver(QObject):
 
     stop_recording = Signal()
@@ -597,7 +598,7 @@ class LiveController(QObject):
         if self.trigger_mode == TriggerMode.SOFTWARE or (
             self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
         ):
-            self.camera.enable_callback()  # in case it's disabled e.g. by the laser AF controller
+            self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
             self._start_triggerred_acquisition()
         # if controlling the laser displacement measurement camera
         if self.for_displacement_measurement:
@@ -1120,7 +1121,7 @@ class AutoFocusController(QObject):
         # temporarily disable call back -> image does not go through streamHandler
         if self.camera.callback_is_enabled:
             self.callback_was_enabled_before_autofocus = True
-            self.camera.disable_callback()
+            self.camera.enable_callbacks(False)
         else:
             self.callback_was_enabled_before_autofocus = False
 
@@ -1153,7 +1154,7 @@ class AutoFocusController(QObject):
     def _on_autofocus_completed(self):
         # re-enable callback
         if self.callback_was_enabled_before_autofocus:
-            self.camera.enable_callback()
+            self.camera.enable_callbacks(True)
 
         # re-enable live if it's previously on
         if self.was_live_before_autofocus:
@@ -2323,7 +2324,7 @@ class MultiPointController(QObject):
         # disable callback
         if self.camera.callback_is_enabled:
             self.camera_callback_was_enabled_before_multipoint = True
-            self.camera.disable_callback()
+            self.camera.enable_callbacks(False)
         else:
             self.camera_callback_was_enabled_before_multipoint = False
 
@@ -2488,7 +2489,7 @@ class MultiPointController(QObject):
 
         # re-enable callback
         if self.camera_callback_was_enabled_before_multipoint:
-            self.camera.enable_callback()
+            self.camera.enable_callbacks(True)
             self.camera_callback_was_enabled_before_multipoint = False
 
         # re-enable live if it's previously on
@@ -2617,7 +2618,7 @@ class TrackingController(QObject):
         # disable callback
         if self.camera.callback_is_enabled:
             self.camera_callback_was_enabled_before_tracking = True
-            self.camera.disable_callback()
+            self.camera.enable_callbacs(False)
         else:
             self.camera_callback_was_enabled_before_tracking = False
 
@@ -2662,7 +2663,7 @@ class TrackingController(QObject):
 
         # re-enable callback
         if self.camera_callback_was_enabled_before_tracking:
-            self.camera.enable_callback()
+            self.camera.enable_callbacks(True)
             self.camera_callback_was_enabled_before_tracking = False
 
         # re-enable live if it's previously on
@@ -4976,7 +4977,7 @@ class LaserAutofocusController(QObject):
             Optional[Tuple[float, float]]: (x,y) coordinates of spot centroid, or None if detection fails
         """
         # disable camera callback
-        self.camera.disable_callback()
+        self.camera.enable_callbacks(False)
 
         successful_detections = 0
         tmp_x = 0

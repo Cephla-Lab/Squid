@@ -2,6 +2,7 @@
 import os
 
 import control.lighting
+from squid.abc import CameraAcquisitionMode
 
 os.environ["QT_API"] = "pyqt5"
 import serial
@@ -104,8 +105,26 @@ class HighContentScreeningGui(QMainWindow):
     def __init__(self, is_simulation=False, live_only_mode=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.microcontroller: Optional[microcontroller.Microcontroller] = None
+
+        def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
+            # NOTE(imo): If this succeeds, it means means we sent the request,
+            # but we didn't necessarily get confirmation of success.
+            self.microcontroller.send_hardware_trigger(
+                True if illumination_time else False, 1000.0 * illumination_time if illumination_time else 0
+            )
+            return True
+
+        def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
+            self.microcontroller.set_strobe_delay_us(1000 * strobe_delay_ms)
+            self.microcontroller.wait_till_operation_is_completed()
+
+            return True
+
         self.camera: squid.abc.AbstractCamera = squid.camera.utils.get_camera(
-            squid.config.get_camera_config(), simulated=is_simulation
+            squid.config.get_camera_config(),
+            simulated=is_simulation,
+            hw_trigger_fn=acquisition_camera_hw_trigger_fn,
+            hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
         )
         self.camera_focus: Optional[squid.abc.AbstractCamera] = None
         if SUPPORT_LASER_AUTOFOCUS:
@@ -452,17 +471,19 @@ class HighContentScreeningGui(QMainWindow):
             self.log.error("Setup timed out, resetting microcontroller before failing gui setup")
             self.microcontroller.reset()
             raise e
-        self.camera.set_software_triggered_acquisition()
-        self.camera.set_callback(self.streamHandler.on_new_frame)
-        self.camera.enable_callback()
+        self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+        self.camera.add_frame_callback(self.streamHandler.on_new_frame)
+        self.camera.enable_callbacks(enabled=True)
 
         if CAMERA_TYPE == "Toupcam":
             self.camera.set_reset_strobe_delay_function(self.liveController.reset_strobe_arugment)
 
         if SUPPORT_LASER_AUTOFOCUS:
-            self.camera_focus.set_software_triggered_acquisition()  # self.camera.set_continuous_acquisition()
-            self.camera_focus.set_callback(self.streamHandler_focus_camera.on_new_frame)
-            self.camera_focus.enable_callback()
+            self.camera_focus.set_acquisition_mode(
+                CameraAcquisitionMode.SOFTWARE_TRIGGER
+            )  # self.camera.set_continuous_acquisition()
+            self.camera_focus.add_frame_callback(self.streamHandler_focus_camera.on_new_frame)
+            self.camera_focus.enable_callbacks(enabled=True)
             self.camera_focus.start_streaming()
 
         if USE_SQUID_FILTERWHEEL:
