@@ -586,7 +586,10 @@ class HighContentScreeningGui(QMainWindow):
         )
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
-        self.piezoWidget = widgets.PiezoWidget(self.piezo)
+        if self.piezo:
+            self.piezoWidget = widgets.PiezoWidget(self.piezo)
+        else:
+            self.piezoWidget = None
         if USE_XERYON:
             self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore, self.objective_changer)
         else:
@@ -787,7 +790,7 @@ class HighContentScreeningGui(QMainWindow):
     def setupCameraTabWidget(self):
         if not USE_NAPARI_FOR_LIVE_CONTROL or self.live_only_mode:
             self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
-        if HAS_OBJECTIVE_PIEZO:
+        if self.piezoWidget:
             self.cameraTabWidget.addTab(self.piezoWidget, "Piezo")
         if ENABLE_NL5:
             self.cameraTabWidget.addTab(self.nl5Wdiget, "NL5")
@@ -938,7 +941,8 @@ class HighContentScreeningGui(QMainWindow):
             self.is_live_scan_grid_on = True
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.set_microscope_mode)
-        self.multipointController.signal_z_piezo_um.connect(self.piezoWidget.update_displacement_um_display)
+        if self.piezoWidget:
+            self.multipointController.signal_z_piezo_um.connect(self.piezoWidget.update_displacement_um_display)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
@@ -1030,9 +1034,10 @@ class HighContentScreeningGui(QMainWindow):
             self.laserAutofocusController.image_to_display.connect(self.imageDisplayWindow_focus.display_image)
 
             # Add connection for piezo position updates
-            self.laserAutofocusController.signal_piezo_position_update.connect(
-                self.piezoWidget.update_displacement_um_display
-            )
+            if self.piezoWidget:
+                self.laserAutofocusController.signal_piezo_position_update.connect(
+                    self.piezoWidget.update_displacement_um_display
+                )
 
         self.camera.set_callback(self.streamHandler.on_new_frame)
 
