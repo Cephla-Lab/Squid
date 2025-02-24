@@ -392,9 +392,7 @@ class LaserAutofocusSettingWidget(QWidget):
         exposure_layout = QHBoxLayout()
         exposure_layout.addWidget(QLabel("Focus Camera Exposure (ms):"))
         self.exposure_spinbox = QDoubleSpinBox()
-        self.exposure_spinbox.setRange(
-            self.liveController.camera.EXPOSURE_TIME_MS_MIN, self.liveController.camera.EXPOSURE_TIME_MS_MAX
-        )
+        self.exposure_spinbox.setRange(*self.liveController.camera.get_exposure_limits())
         self.exposure_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_exposure_time_ms)
         exposure_layout.addWidget(self.exposure_spinbox)
 
