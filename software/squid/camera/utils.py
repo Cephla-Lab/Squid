@@ -1,6 +1,6 @@
 import functools
 import time
-from typing import Optional, Tuple, Sequence
+from typing import Optional, Tuple, Sequence, Callable
 
 import numpy as np
 
@@ -11,11 +11,19 @@ from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrameFormat, 
 _log = squid.logging.get_logger("squid.camera.utils")
 
 
-def get_camera(config: CameraConfig, simulated: bool = False) -> AbstractCamera:
+def get_camera(
+    config: CameraConfig,
+    simulated: bool = False,
+    hw_trigger_fn: Optional[Callable[[Optional[float]], bool]] = None,
+    hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]] = None,
+) -> AbstractCamera:
     """
     Try to import, and then build, the requested camera.  We import on a case-by-case basis
     because some cameras require system level installations, and so in many cases camera
     driver imports will fail.
+
+    If you're using a camera implementation with hardware trigger mode, you'll need to provide the functions for
+    sending a hardware trigger and setting the strobe delay.
 
     NOTE(imo): While we transition to AbstractCamera, we need to do some hacks here to make the non-transitioned
     drivers still work.  Hence the embedded helpers here.
@@ -28,7 +36,7 @@ def get_camera(config: CameraConfig, simulated: bool = False) -> AbstractCamera:
             pass
 
     if simulated:
-        return SimulatedCamera(config)
+        return SimulatedCamera(config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn)
 
     try:
         if config.camera_type == CameraVariant.TOUPCAM:

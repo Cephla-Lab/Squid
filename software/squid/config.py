@@ -177,6 +177,7 @@ class CameraPixelFormat(enum.Enum):
     def is_color_format(pixel_format):
         return pixel_format in (CameraPixelFormat.RGB24, CameraPixelFormat.RGB32, CameraPixelFormat.RGB48)
 
+
 # TODO/NOTE(imo): We may need to add a model attrib here.
 class CameraConfig(pydantic.BaseModel):
     """
@@ -223,12 +224,13 @@ def _old_camera_variant_to_enum(old_string) -> CameraVariant:
         return CameraVariant.GXIPY
     raise ValueError(f"Unknown old camera type {old_string=}")
 
+
 _camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.CAMERA_TYPE),
     default_resolution=(_def.Acquisition.CROP_WIDTH, _def.Acquisition.CROP_HEIGHT),
     default_pixel_format=_def.DEFAULT_PIXEL_FORMAT,
     rotate_image_angle=_def.ROTATE_IMAGE_ANGLE,
-    flip=None
+    flip=None,
 )
 
 
@@ -238,13 +240,15 @@ def get_camera_config() -> CameraConfig:
     """
     return _camera_config
 
+
 _autofocus_camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE),
     default_resolution=(_def.LASER_AF_CROP_WIDTH, _def.LASER_AF_CROP_HEIGHT),
     default_pixel_format=CameraPixelFormat.MONO8,
     rotate_image_angle=None,
-    flip=None
+    flip=None,
 )
+
 
 def get_autofocus_camera_config() -> CameraConfig:
     """

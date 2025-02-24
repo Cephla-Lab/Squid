@@ -189,15 +189,15 @@ class AbstractStage(metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def set_limits(
-            self,
-            x_pos_mm: Optional[float] = None,
-            x_neg_mm: Optional[float] = None,
-            y_pos_mm: Optional[float] = None,
-            y_neg_mm: Optional[float] = None,
-            z_pos_mm: Optional[float] = None,
-            z_neg_mm: Optional[float] = None,
-            theta_pos_rad: Optional[float] = None,
-            theta_neg_rad: Optional[float] = None,
+        self,
+        x_pos_mm: Optional[float] = None,
+        x_neg_mm: Optional[float] = None,
+        y_pos_mm: Optional[float] = None,
+        y_neg_mm: Optional[float] = None,
+        z_pos_mm: Optional[float] = None,
+        z_neg_mm: Optional[float] = None,
+        theta_pos_rad: Optional[float] = None,
+        theta_neg_rad: Optional[float] = None,
     ):
         pass
 
@@ -253,19 +253,46 @@ class CameraFrame:
 
 
 class AbstractCamera(metaclass=abc.ABCMeta):
-    def __init__(self, camera_config: CameraConfig):
+    def __init__(
+        self,
+        camera_config: CameraConfig,
+        hw_trigger_fn: Optional[Callable[[Optional[float]], bool]],
+        hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]],
+    ):
         """
         Init should open the camera, configure it as needed based on camera_config and reasonable
         defaults, and make it immediately available for use in grabbing frames.
+
+        The hw_trigger_fn arguments are: Optional[float] = illumination time in ms (if None, do not control illumination)
+        The hw_set_strobe_delay_ms_fn arguments are: float = hardware strobe delay in ms.
+
+        If you plan on using the HARDWARE acquisition mode, you *must* provide the hw_trigger_fn and hw_set_strobe_delay_ms_fn.
+        Not doing so will result in failure later on when trying to switch acquisition modes.
         """
         self._config = camera_config
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self._hw_trigger_fn = None
+        self._hw_trigger_fn: Optional[Callable[[Optional[float]], bool]] = hw_trigger_fn
+        self._hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]] = hw_set_strobe_delay_ms_fn
 
         # Frame callbacks is a list of (id, callback) managed by add_frame_callback and remove_frame_callback.
         # Your frame receiving functions should call self._send_frame_to_callbacks(frame), and doesn't need
         # to do more than that.
         self._frame_callbacks: List[Tuple[int, Callable[[CameraFrame], None]]] = []
+        self._frame_callbacks_enabled = True
+
+    def enable_callbacks(self, enabled: bool):
+        """
+        This enables or disables propagation of frames to all the registered callbacks.  This should be used
+        sparingly since any read_frame() with enable_callbacks = False will be lost to all callbacks.  Valid
+        use cases are things like during-acquisition auto focus (whereby we need to capture a bunch of frames
+        that aren't a part of the acquisition).  This is inherently fragile, though, so all effort should be
+        made to design a system that has enabled_callbacks(True) as the default!
+        """
+        self._log.debug(f"enable_callbacks: {enabled=}")
+        self._frame_callbacks_enabled = enabled
+
+    def get_callbacks_enabled(self) -> bool:
+        return self._frame_callbacks_enabled
 
     def add_frame_callback(self, frame_callback: Callable[[CameraFrame], None]) -> int:
         """
@@ -298,15 +325,23 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         Implementations can call this to propogate a new frame to all registered callbacks.  The frame
         will be rotated/cropped/etc based on our config, so the callbacks don't need to do that.
         """
-        camera_frame = dataclasses.replace(raw_frame,
-                                           frame=control.utils.rotate_and_flip_image(
-                                               raw_frame.frame, rotate_image_angle=self._config.rotate_image_angle,
-                                               flip_image=self._config.flip))
-        for (_, cb) in self._frame_callbacks:
+        if not self._frame_callbacks_enabled:
+            return
+        camera_frame = dataclasses.replace(
+            raw_frame,
+            frame=control.utils.rotate_and_flip_image(
+                raw_frame.frame, rotate_image_angle=self._config.rotate_image_angle, flip_image=self._config.flip
+            ),
+        )
+        for _, cb in self._frame_callbacks:
             cb(camera_frame)
 
     @abc.abstractmethod
     def set_exposure_time(self, exposure_time_ms: float):
+        """
+        Sets the exposure time in ms.  This should also take care of setting the strobe delay (if needed).  If in
+        HARDWARE acquisition mode, you're guaranteed to have a self._hw_set_strobe_delay_ms_fn to help with this.
+        """
         pass
 
     @abc.abstractmethod
@@ -495,22 +530,24 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
-    def set_acquisition_mode(
-            self, acquisition_mode: CameraAcquisitionMode, hw_trigger_fn: Optional[Callable[[None], None]] = None
-    ):
+    def set_acquisition_mode(self, acquisition_mode: CameraAcquisitionMode):
         """
         Sets the acquisition mode.  If you are specifying hardware trigger, and an external
         system needs to send the trigger, you must specify a hw_trigger_fn.  This function must be callable in such
         a way that it immediately sends a hardware trigger, and only returns when the trigger has been sent.
 
-        hw_trigger_fn must be valid for the duration of this camera's acquisition mode being set to HARDWARE
+        hw_trigger_fn and hw_set_strobe_delay_ms_fn to the __init__ must have been valid for the duration of this
+        camera's acquisition mode being set to HARDWARE
         """
         if acquisition_mode is CameraAcquisitionMode.HARDWARE_TRIGGER:
-            if not hw_trigger_fn:
-                raise ValueError("Cannot set HARDWARE_TRIGGER camera acquisition mode without a hw_trigger_fn.")
-            self._hw_trigger_fn = hw_trigger_fn
-        else:
-            self._hw_trigger_fn = None
+            if not self._hw_trigger_fn:
+                raise ValueError(
+                    "Cannot set HARDWARE_TRIGGER camera acquisition mode without a hw_trigger_fn.  You must provide one when constructing the camera."
+                )
+            if not self._hw_set_strobe_delay_ms_fn:
+                raise ValueError(
+                    "Cannot set HARDWARE_TRIGGER camera acquisition mode without a hw_set_strobe_delay_ms_fn.  You must provide one when constructing the camera."
+                )
 
         return self._set_acquisition_mode_imp(acquisition_mode=acquisition_mode)
 
