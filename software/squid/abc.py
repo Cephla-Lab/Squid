@@ -251,6 +251,9 @@ class CameraFrame:
     frame_format: CameraFrameFormat
     frame_pixel_format: CameraPixelFormat
 
+    def is_color(self):
+        return CameraPixelFormat.is_color_format(self.frame_pixel_format)
+
 
 class AbstractCamera(metaclass=abc.ABCMeta):
     def __init__(
@@ -478,6 +481,25 @@ class AbstractCamera(metaclass=abc.ABCMeta):
             raw_frame, rotate_image_angle=self._config.rotate_image_angle, flip_image=self._config.flip
         )
 
+    def read_camera_frame(self) -> CameraFrame:
+        """
+        This calls read_frame, but also fills in all the information such that you get a CameraFrame.
+        """
+
+        # TODO(imo): There is a race condition here.  If another frame is read, or formats are changed,
+        # between here and the CameraFrame() creation below then we'll have problems.  To fix this
+        # we'd need to introduce a lock, but delay doing that for now (we already have a ton of these
+        # types of problems in the codebase, and the AbstractCamera change is already huge.  So leave
+        # this as a TODO!
+        frame = self._get_frame()
+
+        return CameraFrame(
+            frame_id = self.get_frame_id(),
+            timestamp=time.time(),
+            frame=frame,
+            frame_format=self.get_frame_format(),
+            frame_pixel_format=self.get_pixel_format())
+
     @abc.abstractmethod
     def _get_frame(self):
         """
@@ -568,11 +590,15 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def send_trigger(self):
+    def send_trigger(self, illumination_time: Optional[float]=None):
         """
         If in an acquisition mode that needs triggering, send a trigger.  If in HARDWARE_TRIGGER mode, you are
         guaranteed to have a self._hw_trigger_fn and should call that.  If in CONTINUOUS mode, this can be
         a no-op.
+
+        The illumination_time argument can be used for HARDWARE_TRIGGER cases where the hardware trigger mechanism
+        knows how to control illumination (and may take into account a strobe delay).  If not using a hardware
+        trigger system that controls illumination, a non-None illumination_time is allowed (but will be ignored)
 
         When this returns, it does not mean it is safe to immediately send another trigger.
         """

@@ -214,7 +214,7 @@ class SimulatedCamera(AbstractCamera):
             while self._continue_streaming:
                 time_since = time.time() - last_frame_time
                 if self.get_exposure_time() - time_since > 0:
-                    time.sleep(self.get_exposure_time - time_since)
+                    time.sleep(self.get_exposure_time() - time_since)
                 self.send_trigger()
                 last_frame_time = time.time()
             self._log.info("Stopping streaming...")
@@ -263,7 +263,7 @@ class SimulatedCamera(AbstractCamera):
         return self._acquisition_mode
 
     @debug_log
-    def send_trigger(self):
+    def send_trigger(self, illumination_time: Optional[float] = None):
         (height, width) = self.get_resolution()
         if self.get_frame_id() == 1:
             if self.get_pixel_format() == CameraPixelFormat.MONO8:
