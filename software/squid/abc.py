@@ -494,11 +494,12 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         frame = self._get_frame()
 
         return CameraFrame(
-            frame_id = self.get_frame_id(),
+            frame_id=self.get_frame_id(),
             timestamp=time.time(),
             frame=frame,
             frame_format=self.get_frame_format(),
-            frame_pixel_format=self.get_pixel_format())
+            frame_pixel_format=self.get_pixel_format(),
+        )
 
     @abc.abstractmethod
     def _get_frame(self):
@@ -590,7 +591,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def send_trigger(self, illumination_time: Optional[float]=None):
+    def send_trigger(self, illumination_time: Optional[float] = None):
         """
         If in an acquisition mode that needs triggering, send a trigger.  If in HARDWARE_TRIGGER mode, you are
         guaranteed to have a self._hw_trigger_fn and should call that.  If in CONTINUOUS mode, this can be
