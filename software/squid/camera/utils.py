@@ -296,10 +296,6 @@ class SimulatedCamera(AbstractCamera):
         self._propogate_frame(frame)
 
     @debug_log
-    def cancel_exposure(self):
-        pass
-
-    @debug_log
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
         self._roi = (offset_x, offset_y, width, height)
 

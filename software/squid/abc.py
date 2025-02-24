@@ -609,14 +609,6 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
 
     @abc.abstractmethod
-    def cancel_exposure(self):
-        """
-        If in the middle of an exposure, cancel it.  This can be a No-Op if the camera does not support this,
-        as long as it's valid to do arbitrary operations on the camera after this call.
-        """
-        pass
-
-    @abc.abstractmethod
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
         """
         Set the region of interest of the camera so that returned frames only contain this subset of the full sensor image.
