@@ -234,7 +234,7 @@ class ImageSaver(QObject):
         self.queue = Queue(10)  # max 10 items in the queue
         self.image_lock = Lock()
         self.stop_signal_received = False
-        self.thread = Thread(target=self.process_queue)
+        self.thread = Thread(target=self.process_queue, daemon=True)
         self.thread.start()
         self.counter = 0
         self.recording_start_time = 0
@@ -324,7 +324,7 @@ class ImageSaver_Tracking(QObject):
         self.queue = Queue(100)  # max 100 items in the queue
         self.image_lock = Lock()
         self.stop_signal_received = False
-        self.thread = Thread(target=self.process_queue)
+        self.thread = Thread(target=self.process_queue, daemon=True)
         self.thread.start()
 
     def process_queue(self):
@@ -381,7 +381,7 @@ class ImageDisplay(QObject):
         self.queue = Queue(10)  # max 10 items in the queue
         self.image_lock = Lock()
         self.stop_signal_received = False
-        self.thread = Thread(target=self.process_queue)
+        self.thread = Thread(target=self.process_queue, daemon=True)
         self.thread.start()
 
     def process_queue(self):
