@@ -4,7 +4,7 @@ import sys
 
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
-from squid.abc import AbstractStage, AbstractCamera, CameraAcquisitionMode
+from squid.abc import AbstractStage, AbstractCamera, CameraAcquisitionMode, CameraFrame
 import squid.logging
 
 # qt libraries
@@ -197,7 +197,7 @@ class StreamHandler(QObject):
         if self.track_flag and time_now - self.timestamp_last_track >= 1 / self.fps_track:
             # track is a blocking operation - it needs to be
             # @@@ will cropping before emitting the signal lead to speedup?
-            self.packet_image_for_tracking.emit(image_cropped, frame.frame_ID, frame.timestamp)
+            self.packet_image_for_tracking.emit(image_cropped, frame.frame_id, frame.timestamp)
             self.timestamp_last_track = time_now
 
         self.handler_busy = False
@@ -559,7 +559,9 @@ class LiveController(QObject):
                             time.sleep(ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000)
                         else:
                             time.sleep(
-                                max(0, ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.strobe_delay_us / 1e6)
+                                max(
+                                    0, ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.get_strobe_time() / 1e3
+                                )
                             )
             except Exception as e:
                 print("not setting emission filter position due to " + str(e))
@@ -581,7 +583,7 @@ class LiveController(QObject):
                         time.sleep(OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000)
                     elif self.trigger_mode == TriggerMode.HARDWARE:
                         time.sleep(
-                            max(0, OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.strobe_delay_us / 1e6)
+                            max(0, OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.get_strobe_time() / 1e3)
                         )
             except Exception as e:
                 print("not setting emission filter position due to " + str(e))
@@ -1015,7 +1017,6 @@ class AutofocusWorker(QObject):
                 image = self.camera.read_frame()
             elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
                 if "Fluorescence" in self.liveController.currentConfiguration.name and ENABLE_NL5 and NL5_USE_DOUT:
-                    self.camera.image_is_ready = False  # to remove
                     self.microscope.nl5.start_acquisition()
                     # TODO(imo): This used to use the "reset_image_ready_flag=False" arg, but oinly the toupcam camera implementation had the
                     #  "reset_image_ready_flag" arg, so this is broken for all other cameras.
@@ -1119,7 +1120,7 @@ class AutoFocusController(QObject):
             self.was_live_before_autofocus = False
 
         # temporarily disable call back -> image does not go through streamHandler
-        if self.camera.callback_is_enabled:
+        if self.camera.get_callbacks_enabled():
             self.callback_was_enabled_before_autofocus = True
             self.camera.enable_callbacks(False)
         else:
@@ -1757,27 +1758,22 @@ class MultiPointWorker(QObject):
         self.wait_till_operation_is_completed()
 
         # trigger acquisition (including turning on the illumination) and read frame
+        camera_illumination_time = self.camera.get_exposure_time()
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_on_illumination()
             self.wait_till_operation_is_completed()
-            self.camera.send_trigger()
-            image = self.camera.read_frame()
+            camera_illumination_time = None
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
             if "Fluorescence" in config.name and ENABLE_NL5 and NL5_USE_DOUT:
-                self.camera.image_is_ready = False  # to remove
+                # TODO(imo): This used to use the "reset_image_ready_flag=False" on the read_frame, but oinly the toupcam camera implementation had the
+                #  "reset_image_ready_flag" arg, so this is broken for all other cameras.  Also this used to do some other funky stuff like setting internal camera flags.
+                #   I am pretty sure this is broken!
                 self.microscope.nl5.start_acquisition()
-                # TODO(imo): This used to use the "reset_image_ready_flag=False" arg, but oinly the toupcam camera implementation had the
-                #  "reset_image_ready_flag" arg, so this is broken for all other cameras.
-                image = self.camera.read_frame()
-            else:
-                self.microcontroller.send_hardware_trigger(
-                    control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
-                )
-                image = self.camera.read_frame()
-        else:  # continuous acquisition
-            image = self.camera.read_frame()
 
-        if image is None:
+        self.camera.send_trigger(illumination_time=camera_illumination_time)
+        camera_frame = self.camera.read_camera_frame()
+        image = camera_frame.frame
+        if not camera_frame or image is None:
             self._log.warning("self.camera.read_frame() returned None")
             return
 
@@ -1795,7 +1791,7 @@ class MultiPointWorker(QObject):
         self.image_to_display.emit(image_to_display)
         self.image_to_display_multi.emit(image_to_display, config.illumination_source)
 
-        self.save_image(image, file_ID, config, current_path)
+        self.save_image(image, file_ID, config, current_path, camera_frame.is_color())
         self.update_napari(image, config.name, k)
 
         current_round_images[config.name] = np.copy(image)
@@ -1823,14 +1819,9 @@ class MultiPointWorker(QObject):
                     # TODO(imo): use illum controller
                     self.liveController.turn_on_illumination()
                     self.wait_till_operation_is_completed()
-                    self.camera.send_trigger()
-
-                elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-                    self.microcontroller.send_hardware_trigger(
-                        control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
-                    )
 
                 # read camera frame
+                self.camera.send_trigger(illumination_time=self.camera.get_exposure_time())
                 image = self.camera.read_frame()
                 if image is None:
                     print("self.camera.read_frame() returned None")
@@ -1870,7 +1861,7 @@ class MultiPointWorker(QObject):
                 )
                 np.savetxt(saving_path, data, delimiter=",")
 
-    def save_image(self, image, file_ID, config, current_path):
+    def save_image(self, image: np.ndarray, file_ID, config, current_path, is_color: bool):
         if image.dtype == np.uint16:
             saving_path = os.path.join(current_path, file_ID + "_" + str(config.name).replace(" ", "_") + ".tiff")
         else:
@@ -1878,7 +1869,7 @@ class MultiPointWorker(QObject):
                 current_path, file_ID + "_" + str(config.name).replace(" ", "_") + "." + Acquisition.IMAGE_FORMAT
             )
 
-        if self.camera.is_color:
+        if is_color:
             if "BF LED matrix" in config.name:
                 if MULTIPOINT_BF_SAVING_OPTION == "RGB2GRAY":
                     image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
@@ -2322,7 +2313,7 @@ class MultiPointController(QObject):
             self.liveController_was_live_before_multipoint = False
 
         # disable callback
-        if self.camera.callback_is_enabled:
+        if self.camera.get_callbacks_enabled():
             self.camera_callback_was_enabled_before_multipoint = True
             self.camera.enable_callbacks(False)
         else:
@@ -2616,9 +2607,9 @@ class TrackingController(QObject):
             self.was_live_before_tracking = False
 
         # disable callback
-        if self.camera.callback_is_enabled:
+        if self.camera.get_callbacks_enabled():
             self.camera_callback_was_enabled_before_tracking = True
-            self.camera.enable_callbacs(False)
+            self.camera.enable_callbacks(False)
         else:
             self.camera_callback_was_enabled_before_tracking = False
 
@@ -2878,9 +2869,10 @@ class TrackingWorker(QObject):
                 self.microcontroller.wait_till_operation_is_completed()
                 self.liveController.turn_on_illumination()  # keep illumination on for single configuration acqusition
                 self.microcontroller.wait_till_operation_is_completed()
-            t = time.time()
             self.camera.send_trigger()
-            image = self.camera.read_frame()
+            camera_frame = self.camera.read_camera_frame()
+            image = camera_frame.frame
+            t = camera_frame.timestamp
             if self.number_of_selected_configurations > 1:
                 self.liveController.turn_off_illumination()  # keep illumination on for single configuration acqusition
             # image crop, rotation and flip
@@ -2913,7 +2905,7 @@ class TrackingWorker(QObject):
                 self.image_to_display_multi.emit(image_to_display_, config_.illumination_source)
                 # save image
                 if self.trackingController.flag_save_image:
-                    if self.camera.is_color:
+                    if camera_frame.is_color():
                         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                     self.image_saver.enqueue(image_, tracking_frame_counter, str(config_.name))
 
@@ -4928,11 +4920,9 @@ class LaserAutofocusController(QObject):
         self.microcontroller.turn_on_AF_laser()
         self.microcontroller.wait_till_operation_is_completed()
 
-        # TODO: create a function to get the current image (taking care of trigger mode checking and laser on/off switching)
-        """
         self.camera.send_trigger()
         current_image = self.camera.read_frame()
-        """
+
         self._get_laser_spot_centroid()
         current_image = self.image
 
@@ -4986,11 +4976,7 @@ class LaserAutofocusController(QObject):
         for i in range(self.laser_af_properties.laser_af_averaging_n):
             try:
                 # send camera trigger
-                if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-                    self.camera.send_trigger()
-                elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-                    # self.microcontroller.send_hardware_trigger(control_illumination=True,illumination_on_time_us=self.camera.exposure_time*1000)
-                    pass  # to edit
+                self.camera.send_trigger(illumination_time=self.camera.get_exposure_time())
 
                 # read camera frame
                 image = self.camera.read_frame()

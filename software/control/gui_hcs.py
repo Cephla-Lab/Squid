@@ -475,9 +475,6 @@ class HighContentScreeningGui(QMainWindow):
         self.camera.add_frame_callback(self.streamHandler.on_new_frame)
         self.camera.enable_callbacks(enabled=True)
 
-        if CAMERA_TYPE == "Toupcam":
-            self.camera.set_reset_strobe_delay_function(self.liveController.reset_strobe_arugment)
-
         if SUPPORT_LASER_AUTOFOCUS:
             self.camera_focus.set_acquisition_mode(
                 CameraAcquisitionMode.SOFTWARE_TRIGGER
@@ -998,7 +995,7 @@ class HighContentScreeningGui(QMainWindow):
                     self.piezoWidget.update_displacement_um_display
                 )
 
-        self.camera.set_callback(self.streamHandler.on_new_frame)
+        self.camera.add_frame_callback(self.streamHandler.on_new_frame)
 
     def setup_movement_updater(self):
         # We provide a few signals about the system's physical movement to other parts of the UI.  Ideally, they other
@@ -1460,12 +1457,10 @@ class HighContentScreeningGui(QMainWindow):
             self.stitcherWidget.closeEvent(event)
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveController_focus_camera.stop_live()
-            self.camera_focus.close()
             self.imageDisplayWindow_focus.close()
 
         self.liveController.stop_live()
         self.camera.stop_streaming()
-        self.camera.close()
 
         if HOMING_ENABLED_X and HOMING_ENABLED_Y:
             # TODO(imo): Why do we move forward 0.1, then move to 30? AKA why not just move to 30?

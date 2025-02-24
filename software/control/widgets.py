@@ -809,6 +809,7 @@ class CameraSettingsWidget(QFrame):
     ):
 
         super().__init__(*args, **kwargs)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.camera: AbstractCamera = camera
         self.add_components(
             include_gain_exposure_time, include_camera_temperature_setting, include_camera_auto_wb_setting
@@ -969,21 +970,14 @@ class CameraSettingsWidget(QFrame):
 
             self.camera_layout.addLayout(blacklevel_line)
 
-        if include_camera_auto_wb_setting:
-            is_color = False
-            try:
-                is_color = CameraPixelFormat.is_color_format(self.camera.get_pixel_format())
-            except AttributeError:
-                pass
+        if include_camera_auto_wb_setting and CameraPixelFormat.is_color_format(self.camera.get_pixel_format()):
+            # auto white balance
+            self.btn_auto_wb = QPushButton("Auto White Balance")
+            self.btn_auto_wb.setCheckable(True)
+            self.btn_auto_wb.setChecked(False)
+            self.btn_auto_wb.clicked.connect(self.toggle_auto_wb)
 
-            if is_color is True:
-                # auto white balance
-                self.btn_auto_wb = QPushButton("Auto White Balance")
-                self.btn_auto_wb.setCheckable(True)
-                self.btn_auto_wb.setChecked(False)
-                self.btn_auto_wb.clicked.connect(self.toggle_auto_wb)
-
-                self.camera_layout.addLayout(self.btn_auto_wb)
+            self.camera_layout.addLayout(self.btn_auto_wb)
 
         self.setLayout(self.camera_layout)
 
@@ -1046,7 +1040,7 @@ class CameraSettingsWidget(QFrame):
         try:
             self.camera.set_temperature(float(self.entry_temperature.value()))
         except AttributeError:
-            pass
+            self._log.warning("Cannot set temperature - not supported.")
 
     def update_measured_temperature(self, temperature):
         self.label_temperature_measured.setNum(temperature)
@@ -1086,7 +1080,7 @@ class CameraSettingsWidget(QFrame):
         try:
             self.camera.set_black_level(blacklevel)
         except AttributeError:
-            pass
+            self._log.warning("Cannot set black level - not supported.")
 
 
 class ProfileWidget(QFrame):
