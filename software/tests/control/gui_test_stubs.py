@@ -3,7 +3,6 @@ import pathlib
 import control.core.core
 import control.microcontroller
 import control.lighting
-import control.camera
 import squid.abc
 
 import control._def
