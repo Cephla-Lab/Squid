@@ -8,8 +8,8 @@ import sys
 import platformdirs
 
 _squid_root_logger_name = "squid"
-_baseline_log_format = "%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
-_baseline_log_dateformat = "%Y-%m-%d %H:%M:%S"
+_baseline_log_format = u"%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+_baseline_log_dateformat = u"%Y-%m-%d %H:%M:%S"
 
 
 # The idea for this CustomFormatter is cribbed from https://stackoverflow.com/a/56944256
@@ -177,7 +177,9 @@ def add_file_logging(log_filename, replace_existing=False):
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)
 
     # For now, don't worry about rollover after a certain size or time.  Just get a new file per call.
-    new_handler = logging.handlers.RotatingFileHandler(abs_path, maxBytes=0, backupCount=25)
+    # NOTE(imo): We had issues with windows not defaulting to utf-8, so force that here.  But also let the handler
+    # know that if it sees encoding errors, it should replace the error bytes with ? and continue.
+    new_handler = logging.handlers.RotatingFileHandler(abs_path, maxBytes=0, backupCount=25, encoding="utf-8", errors="replace")
     new_handler.setLevel(py_logging.DEBUG)
 
     formatter = py_logging.Formatter(fmt=_baseline_log_format, datefmt=_baseline_log_dateformat)
