@@ -1,13 +1,11 @@
 import enum
 import inspect
-import os
 import pathlib
 import sys
-from typing import Optional
 
 import cv2
 import git
-from numpy import std, square, mean
+from numpy import square, mean
 import numpy as np
 from scipy.ndimage import label
 from scipy import signal
