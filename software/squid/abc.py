@@ -465,6 +465,10 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
+    @abc.abstractmethod
+    def get_is_streaming(self):
+        pass
+
     def read_frame(self) -> np.ndarray:
         """
         If needed, send a trigger to request a frame.  Then block and wait until the next frame comes in,
