@@ -643,10 +643,11 @@ class LaserAutofocusSettingWidget(QWidget):
 
 
 class SpinningDiskConfocalWidget(QWidget):
-    def __init__(self, xlight, config_manager=None):
-        super(SpinningDiskConfocalWidget, self).__init__()
 
-        self.config_manager = config_manager
+    signal_toggle_confocal_widefield = Signal(bool)
+
+    def __init__(self, xlight):
+        super(SpinningDiskConfocalWidget, self).__init__()
 
         self.xlight = xlight
 
@@ -660,8 +661,7 @@ class SpinningDiskConfocalWidget(QWidget):
 
         self.disk_position_state = self.xlight.get_disk_position()
 
-        if self.config_manager:
-            self.config_manager.toggle_confocal_widefield(self.disk_position_state)
+        self.signal_toggle_confocal_widefield.emit(self.disk_position_state)  # signal initial state
 
         if self.disk_position_state == 1:
             self.btn_toggle_widefield.setText("Switch to Widefield")
@@ -780,9 +780,8 @@ class SpinningDiskConfocalWidget(QWidget):
         else:
             self.disk_position_state = self.xlight.set_disk_position(1)
             self.btn_toggle_widefield.setText("Switch to Widefield")
-        if self.config_manager is not None:
-            self.config_manager.toggle_confocal_widefield(self.disk_position_state)
         self.enable_all_buttons()
+        self.signal_toggle_confocal_widefield.emit(self.disk_position_state)
 
     def toggle_motor(self):
         self.disable_all_buttons()

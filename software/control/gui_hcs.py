@@ -572,9 +572,7 @@ class HighContentScreeningGui(QMainWindow):
     def loadWidgets(self):
         # Initialize all GUI widgets
         if ENABLE_SPINNING_DISK_CONFOCAL:
-            self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(
-                self.xlight, self.channelConfigurationManager
-            )
+            self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
         if ENABLE_NL5:
             import control.NL5Widget as NL5Widget
 
@@ -1022,7 +1020,7 @@ class HighContentScreeningGui(QMainWindow):
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
             self.objectivesWidget.signal_objective_changed.connect(self.wellplateMultiPointWidget.update_coordinates)
 
-        self.configurationManager.signal_profile_loaded.connect(
+        self.profileWidget.signal_profile_changed.connect(
             lambda: self.liveControlWidget.update_microscope_mode_by_name(
                 self.liveControlWidget.currentConfiguration.name
             )
@@ -1040,7 +1038,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.laserAutofocusControlWidget.update_init_state()
                 self.laserAutofocusSettingWidget.update_values()
 
-            self.configurationManager.signal_profile_loaded.connect(slot_settings_changed_laser_af)
+            self.profileWidget.signal_profile_changed.connect(slot_settings_changed_laser_af)
             self.objectivesWidget.signal_objective_changed.connect(slot_settings_changed_laser_af)
             self.laserAutofocusSettingWidget.signal_newExposureTime.connect(
                 self.cameraSettingWidget_focus_camera.set_exposure_time
@@ -1081,6 +1079,16 @@ class HighContentScreeningGui(QMainWindow):
                 self.laserAutofocusController.signal_piezo_position_update.connect(
                     self.piezoWidget.update_displacement_um_display
                 )
+
+        if ENABLE_SPINNING_DISK_CONFOCAL:
+            self.spinningDiskConfocalWidget.signal_toggle_confocal_widefield.connect(
+                self.channelConfigurationManager.toggle_confocal_widefield
+            )
+            self.spinningDiskConfocalWidget.signal_toggle_confocal_widefield.connect(
+                lambda: self.liveControlWidget.update_microscope_mode_by_name(
+                    self.liveControlWidget.currentConfiguration.name
+                )
+            )
 
         self.camera.set_callback(self.streamHandler.on_new_frame)
 

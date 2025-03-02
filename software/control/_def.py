@@ -74,15 +74,6 @@ class Acquisition:
     NUMBER_OF_FOVS_PER_AF = 3
     IMAGE_FORMAT = "bmp"
     IMAGE_DISPLAY_SCALING_FACTOR = 0.3
-    PSEUDO_COLOR = False
-    MERGE_CHANNELS = False
-    PSEUDO_COLOR_MAP = {
-        "405": {"hex": 0x0000FF},  # blue
-        "488": {"hex": 0x00FF00},  # green
-        "561": {"hex": 0xFFCF00},  # yellow
-        "638": {"hex": 0xFF0000},  # red
-        "730": {"hex": 0x770000},  # dark red
-    }
     DX = 0.9
     DY = 0.9
     DZ = 1.5
@@ -657,8 +648,10 @@ ENABLE_STITCHER = False
 IS_HCS = False
 DYNAMIC_REGISTRATION = False
 STITCH_COMPLETE_ACQUISITION = False
+
+# Pseudo color settings
 CHANNEL_COLORS_MAP = {
-    "405": {"hex": 0x3300FF, "name": "blue"},
+    "405": {"hex": 0x20ADF8, "name": "bop blue"},
     "488": {"hex": 0x1FFF00, "name": "green"},
     "561": {"hex": 0xFFCF00, "name": "yellow"},
     "638": {"hex": 0xFF0000, "name": "red"},
@@ -667,6 +660,8 @@ CHANNEL_COLORS_MAP = {
     "G": {"hex": 0x1FFF00, "name": "green"},
     "B": {"hex": 0x3300FF, "name": "blue"},
 }
+SAVE_IN_PSEUDO_COLOR = False
+MERGE_CHANNELS = False
 
 # Emission filter wheel
 USE_ZABER_EMISSION_FILTER_WHEEL = False
