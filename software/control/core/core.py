@@ -2545,7 +2545,6 @@ class MultiPointController(QObject):
         self.acquisitionFinished.emit()
         if not self.abort_acqusition_requested:
             self.signal_stitcher.emit(os.path.join(self.base_path, self.experiment_ID))
-        QApplication.processEvents()
 
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
