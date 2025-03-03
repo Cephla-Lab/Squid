@@ -5,7 +5,6 @@ from typing import Optional, Tuple
 import pydantic
 
 import control._def as _def
-from control.camera_toupcam import Camera
 from control.utils import FlipVariant
 
 

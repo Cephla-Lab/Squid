@@ -1,4 +1,5 @@
 import functools
+import threading
 import time
 from typing import Optional, Tuple, Sequence, Callable
 
@@ -116,6 +117,7 @@ class SimulatedCamera(AbstractCamera):
         self._roi = (0, 0, self.get_resolution()[0], self.get_resolution()[1])
         self._temperature_setpoint = None
         self._continue_streaming = False
+        self._streaming_thread: Optional[threading.Thread] = None
 
         # This is for the migration to AbstractCamera.  It helps us find methods/properties that
         # some cameras had in the pre-AbstractCamera days.
@@ -219,13 +221,21 @@ class SimulatedCamera(AbstractCamera):
                 last_frame_time = time.time()
             self._log.info("Stopping streaming...")
 
+        self._streaming_thread = threading.Thread(target=stream_fn, daemon=True)
+        self._streaming_thread.start()
+
     @debug_log
     def start_streaming(self):
+        self._continue_streaming = True
         self._start_streaming_thread()
 
     @debug_log
     def stop_streaming(self):
         self._continue_streaming = False
+
+    @debug_log
+    def get_is_streaming(self):
+        return self._streaming_thread.is_alive()
 
     @debug_log
     def _get_frame(self) -> np.ndarray:
