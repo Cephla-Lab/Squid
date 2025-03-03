@@ -23,6 +23,10 @@ jobs:
           large-packages: true
           docker-images: true
           swap-storage: true
+      # Some of our tests are headless gui tests, but we still need a proper virtual display
+      # environment.  We use xvfb for this.
+      - name: Install xvfb (for gui testing environment)
+        run: sudo apt install -y xvfb
       - name: Checkout the Squid repo
         uses: actions/checkout@v4
       - name: Run the setup script for Ubuntu 22.04
@@ -35,5 +39,5 @@ jobs:
         run: cp configurations/configuration_Squid+.ini .
         working-directory: ./software
       - name: Run the tests
-        run: python3 -m pytest
+        run: xvfb-run python3 -m pytest
         working-directory: ./software
