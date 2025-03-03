@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import time
 from typing import Optional, Tuple, Sequence
 
@@ -6,7 +7,14 @@ import pydantic
 
 import control.utils
 import squid.logging
-from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraGainRange, CameraFrameFormat, CameraFrame, CameraPixelFormat
+from squid.abc import (
+    AbstractCamera,
+    CameraAcquisitionMode,
+    CameraGainRange,
+    CameraFrameFormat,
+    CameraPixelFormat,
+    CameraFrame,
+)
 import squid.config
 from control._def import *
 
@@ -15,6 +23,7 @@ import control.toupcam as toupcam
 from control.toupcam_exceptions import hresult_checker
 
 log = squid.logging.get_logger(__name__)
+
 
 class ToupCamCapabilities(pydantic.BaseModel):
     resolutions: Sequence[Tuple[int, int]]
@@ -36,592 +45,23 @@ def get_sn_by_model(model_name):
     return None  # return None if no device with the specified model_name is connected
 
 
-
 class ToupcamCamera(AbstractCamera):
-
-    def get_exposure_time(self) -> float:
-        return self.camera.get_ExpoTime() / 1000.0  # microseconds -> milliseconds
-
-    def get_exposure_limits(self) -> Tuple[float, float]:
-        (min_exposure, max_exposure, default_exposure) = self.camera.get_ExpTimeRange()
-        return min_exposure, max_exposure
-
-    def get_strobe_time(self) -> float:
-        return self._strobe_delay_us / 1000.0
-
-    def set_frame_format(self, frame_format: CameraFrameFormat):
-        pass
-
-    def get_frame_format(self) -> CameraFrameFormat:
-        pass
-
-    def get_pixel_format(self) -> squid.config.CameraPixelFormat:
-        pass
-
-    def get_resolution(self) -> Tuple[int, int]:
-        # TODO(imo): Should this be FinalSize to account for ROI?
-        return self.camera.get_Size()
-
-    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
-        return self._capabilities.resolutions
-
-    def get_analog_gain(self) -> float:
-        return self.camera.get_ExpoAGain()
-
-    def get_gain_range(self) -> CameraGainRange:
-        (min_gain, max_gain, default_gain) = self.camera.get_ExpoAGainRange()
-        return min_gain, max_gain
-
-    def _get_frame(self):
-        pass
-
-    def get_frame_id(self) -> int:
-        pass
-
-    def get_white_balance_gains(self) -> Tuple[float, float, float]:
-        pass
-
-    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
-        pass
-
-    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
-        pass
-
-    def get_black_level(self) -> float:
-        if not self._capabilities.has_black_level:
-            raise NotImplementedError("This toupcam does not have black level setting.")
-
-        raw_black_level = self.camera.get_Option(toupcam.TOUPCAM_OPTION_BLACKLEVEL)
-
-        return raw_black_level / self._get_black_level_factor()
-
-    def set_black_level(self, black_level: float):
-        if not self._capabilities.has_black_level:
-            raise NotImplementedError("This toupcam does not have black level setting.")
-        raw_black_level = black_level * self._get_black_level_factor()
-
-        try:
-            self.camera.put_Option(toupcam.TOUPCAM_OPTION_BLACKLEVEL, raw_black_level)
-        except toupcam.HRESULTException as ex:
-            print("put blacklevel fail, hr=0x{:x}".format(ex.hr))
-
-    def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
-        if acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
-            trigger_option_value = 0
-        elif acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
-            trigger_option_value = 1
-        elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
-            trigger_option_value =2
-        else:
-            raise ValueError(f"Do not know how to handle {acquisition_mode=}")
-        self.camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, trigger_option_value)
-
-        if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
-            # select trigger source to GPIO0
-            try:
-                self.camera.IoControl(1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 1)
-            except toupcam.HRESULTException as ex:
-                error_type = hresult_checker(ex)
-                self._log.exception("Unable to select trigger source: " + error_type)
-                raise
-            # set GPIO1 to trigger wait
-            try:
-                self.camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE, 0)
-                self.camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER, 0)
-            except toupcam.HRESULTException as ex:
-                error_type = hresult_checker(ex)
-                self._log.exception("Unable to set GPIO1 for trigger ready: " + error_type)
-                raise
-
-    def get_acquisition_mode(self) -> CameraAcquisitionMode:
-        trigger_option_value = self.camera.get_Option(toupcam.TOUPCAM_OPTION_TRIGGER)
-        if trigger_option_value == 0:
-            return CameraAcquisitionMode.CONTINUOUS
-        elif trigger_option_value == 1:
-            raise CameraAcquisitionMode.SOFTWARE_TRIGGER
-        elif trigger_option_value == 2:
-            raise CameraAcquisitionMode.HARDWARE_TRIGGER
-        else:
-            raise ValueError(f"Received unknown trigger option from toupcam: {trigger_option_value}")
-
-    def get_region_of_interest(self) -> Tuple[int, int, int, int]:
-        return self.camera.get_Roi()
+    TOUPCAM_OPTION_RAW_RAW_VAL = 1
+    TOUPCAM_OPTION_RAW_RGB_VAL = 0
 
     @staticmethod
     def _event_callback(event_number, camera: ToupcamCamera):
         if event_number == toupcam.TOUPCAM_EVENT_IMAGE:
-                camera._on_frame_callback()
-
-    def _on_frame_callback(self):
-        # If we're not streaming, ignore the image
-        if not self.get_is_streaming():
-
-        # get the image from the camera
-        try:
-            self.camera.PullImageV2(
-                self.buf, self.pixel_size_byte * 8, None
-            )  # the second camera is number of bits per pixel - ignored in RAW mode
-        except toupcam.HRESULTException as ex:
-            # TODO(imo): Propagate error in some way and handle
-            self._log.error("pull image failed, hr=0x{:x}".format(ex.hr))
-
-        # increament frame ID
-        self.frame_ID += 1
-        this_frame_id = self.frame_ID
-        this_timestamp = time.time()
-
-        # right now support the raw format only
-        if self.data_format == "RGB":
-            if self.pixel_format == "RGB24":
-                # TODO(imo): Propagate error in some way and handle
-                self._log.error("convert buffer to image not yet implemented for the RGB format")
-            return
-        else:
-            if self.pixel_size_byte == 1:
-                raw_image = np.frombuffer(self.buf, dtype="uint8")
-            elif self.pixel_size_byte == 2:
-                raw_image = np.frombuffer(self.buf, dtype="uint16")
-            self.camera
-            self.current_frame = raw_image.reshape()
-
-        self.image_is_ready = True
-
-        if self.callback_is_enabled == True:
-            self.new_image_callback_external(self)
+            camera._on_frame_callback()
 
     @staticmethod
     def _tdib_width_bytes(w):
         return (w * 24 + 31) // 32 * 4
 
-    def __init__(self, config: squid.config.CameraConfig, hw_trigger_fn, hw_set_strobe_delay_ms_fn):
-        super().__init__(config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
-
-        # many to be purged
-        self.camera: Optional[toupcam.Toupcam] = None
-
-        self.analog_gain = 0
-        self.frame_ID = -1
-        self.timestamp = 0
-
-        self._pixel_format = CameraPixelFormat.MONO8
-
-        # below are values for IMX226 (MER2-1220-32U3M) - to make configurable
-        self.row_period_us = 10
-        self.row_numbers = 3036
-        self.exposure_delay_us_8bit = 650
-        self.exposure_delay_us = self.exposure_delay_us_8bit * self._pixel_size()
-
-        # just setting a default value
-        # it would be re-calculate with function calculate_hardware_trigger_arguments
-        self._strobe_delay_us = self.exposure_delay_us + self.row_period_us * self._pixel_size() * (
-            self.row_numbers - 1
-        )
-
-        self._toupcam_pullmode_started = False
-        (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
-
-        # toupcam temperature
-        self.temperature_reading_callback = None
-        self.terminate_read_temperature_thread = False
-        self.thread_read_temperature = threading.Thread(target=self.check_temperature, daemon=True)
-        self.thread_read_temperature.start()
-
-    def check_temperature(self):
-        while not self.terminate_read_temperature_thread:
-            time.sleep(2)
-            temperature = self.get_temperature()
-            if self.temperature_reading_callback is not None:
-                try:
-                    self.temperature_reading_callback(temperature)
-                except TypeError as ex:
-                    self._log.error("Temperature read callback failed due to error: " + repr(ex))
-                    pass
-
     @staticmethod
-    def _open(index=None, sn=None) -> Tuple[toupcam.ToupcamDeviceV2, ToupCamCapabilities]:
-        log = squid.logging.get_logger("ToupcamCamera._open")
-        devices = toupcam.Toupcam.EnumV2()
-        if len(devices) <= 0:
-            raise ValueError("There are no Toupcam V2 devices.  Is the camera connected and powered on?")
-
-        if index is not None and sn is not None:
-            raise ValueError("You specified both a device index and a sn, this is not allowed.")
-
-        if sn is not None:
-            sn_matches = [idx for idx in range(len(devices)) if devices[idx].id == sn]
-            if not len(sn_matches):
-                all_sn = [d.id for d in devices]
-                raise ValueError(f"Could not find camera with SN={sn}, options are: {','.join(all_sn)}")
-
-        for (idx, device) in enumerate(devices):
-            log.info(
-                "Camera {}: {}: flag = {:#x}, preview = {}, still = {}".format(
-                    idx,
-                    device.displayname,
-                    device.model.flag,
-                    device.model.preview,
-                    device.model.still,
-                )
-            )
-
-        for r in devices[index].model.res:
-            log.info("\t = [{} x {}]".format(r.width, r.height))
-
-        valid_resolutions = []
-        for r in devices[index].model.res:
-            valid_resolutions.append((r.width, r.height))
-
-        camera = toupcam.Toupcam.Open(devices[index].id)
-        capabilities = ToupCamCapabilities(
-            resolutions=valid_resolutions,
-            has_fan=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_FAN) > 0,
-            has_TEC=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_TEC_ONOFF) > 0,
-            has_low_noise_mode=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_LOW_NOISE) > 0,
-            has_black_level=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_BLACKLEVEL) > 0)
-
-
-        return camera, capabilities
-
-    def _configure_camera(self):
-        """
-        Run our initial configuration to get the camera into a know and safe starting state.
-        """
-        if self._capabilities.has_low_noise_mode:
-            self.camera.put_Option(toupcam.TOUPCAM_OPTION_LOW_NOISE, 0)
-
-        # set temperature
-        self._set_fan_speed(1)
-        self.set_temperature(20)
-
-        self.set_data_format(CameraFrameFormat.RAW)
-        self.set_pixel_format(CameraPixelFormat.MONO16)  # 'MONO8'
-        self.set_black_level(DEFAULT_BLACKLEVEL_VALUE)
-
-        # set camera resolution
-        self._update_buffer_settings()
-
-        if self.camera:
-            if self.buf:
-                try:
-                    self.camera.StartPullModeWithCallback(self._event_callback, self)
-                except toupcam.HRESULTException as ex:
-                    self._log.exception("failed to start camera, hr=0x{:x}".format(ex.hr))
-                    raise ex
-            self._toupcam_pullmode_started = True
-        else:
-            self._log.error("failed to open camera")
-            raise RuntimeError("Couldn't open camera")
-    def set_temperature_reading_callback(self, func):
-        self.temperature_reading_callback = func
-
-    def close(self):
-        self.terminate_read_temperature_thread = True
-        self.thread_read_temperature.join()
-        self._set_fan_speed(0)
-        self.camera.Close()
-        self.camera = None
-        self.buf = None
-        self.last_raw_image = None
-        self.last_converted_image = None
-        self.last_numpy_image = None
-
-    def set_exposure_time(self, exposure_time):
-        # In the calls below, we need to make sure we convert to microseconds.
-        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
-            self.camera.put_ExpoTime(int(exposure_time * 1000) + int(self._strobe_delay_us))
-        else:
-            self.camera.put_ExpoTime(int(exposure_time * 1000))
-
-    def set_analog_gain(self, analog_gain):
-        analog_gain = min(self.GAIN_MAX, analog_gain)
-        analog_gain = max(self.GAIN_MIN, analog_gain)
-        self.analog_gain = analog_gain
-        # gain_min, gain_max, gain_default = self.camera.get_ExpoAGainRange() # remove from set_analog_gain
-        # for touptek cameras gain is 100-10000 (for 1x - 100x)
-        self.camera.put_ExpoAGain(int(100 * (10 ** (analog_gain / 20))))
-        # self.camera.Gain.set(analog_gain)
-
-    def get_auto_white_balance_gains(self):
-        try:
-            self.camera.AwbInit()
-            return self.camera.get_WhiteBalanceGain()
-        except toupcam.HRESULTException as ex:
-            err_type = hresult_checker(ex, "E_NOTIMPL")
-            self._log.warning("AWB not implemented")
-            return (0, 0, 0)
-
-    def set_white_balance_gains(self, wb_r=None, wb_g=None, wb_b=None):
-        try:
-            camera.put_WhiteBalanceGain(wb_r, wb_g, wb_b)
-        except toupcam.HRESULTException as ex:
-            err_type = hresult_checker(ex, "E_NOTIMPL")
-            self._log.warning("White balance not implemented")
-
-    def start_streaming(self):
-        if self.buf and (self._toupcam_pullmode_started == False):
-            try:
-                self.camera.StartPullModeWithCallback(self._event_callback, self)
-                self._toupcam_pullmode_started = True
-            except toupcam.HRESULTException as ex:
-                self._log.exception("failed to start camera, hr: " + hresult_checker(ex))
-                self.close()
-                raise ex
-        self._log.info("start streaming")
-        self.is_streaming = True
-
-    def stop_streaming(self):
-        self.camera.Stop()
-        self.is_streaming = False
-        self._toupcam_pullmode_started = False
-
-    def get_is_streaming(self):
-        return self._toupcam_pullmode_started
-
-    _BLACK_LEVEL_MAPPING = {
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO8): 1,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO12): 16,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO14): 64,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO16): 256,
-        # TODO(imo): We didn't set a black level factor if outside of 1 of the 4 options above, but still used the factor.  Is the mapping below correct, or is black level ignored for RGB?
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO8): 1,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO12): 16,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO14): 64,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO16): 256,
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB24): 1,  # Bit depth of 8 -> same as MONO8
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB32): 1, # Bit depth of 8 -> same as MONO8
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB48): 256 # Bit depth of 16 -> same as MONO16
-    }
-    def _black_level_factor(self):
-        frame_and_format = (self.get_frame_format(), self.get_pixel_format())
-        if frame_and_format not in ToupcamCamera._BLACK_LEVEL_MAPPING:
-            raise ValueError(f"Unknown combo for black level: {frame_and_format=}")
-
-        return ToupcamCamera._BLACK_LEVEL_MAPPING[frame_and_format]
-
-    _PIXEL_SIZE_MAPPING = {
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO8): 1,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO12): 2,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO14): 2,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO16): 2,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO8): 1,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO12): 2,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO14): 2,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO16): 2,
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB24): 3,
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB32): 4,
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB48): 6
-    }
-    def _pixel_size(self):
-        frame_and_format = (self.get_frame_format(), self.get_pixel_format())
-        if frame_and_format not in ToupcamCamera._PIXEL_SIZE_MAPPING:
-            raise ValueError(f"Unknown combo for pixel size: {frame_and_format=}")
-
-        return ToupcamCamera._PIXEL_SIZE_MAPPING[frame_and_format]
-
-    def set_pixel_format(self, pixel_format: CameraPixelFormat):
-        was_streaming = False
-        if self.is_streaming:
-            was_streaming = True
-            self.stop_streaming()
-
-        if self.get_frame_format() == CameraFrameFormat.RAW:
-            if pixel_format == CameraPixelFormat.MONO8:
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
-            elif pixel_format == CameraPixelFormat.MONO12:
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-            elif pixel_format == CameraPixelFormat.MONO14:
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-            elif pixel_format == CameraPixelFormat.MONO16:
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-        else:
-            # RGB data format
-            if pixel_format == CameraPixelFormat.MONO8:
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 3)  # for monochrome camera only
-            if pixel_format == CameraPixelFormat.MONO12:
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
-            if pixel_format == CameraPixelFormat.MONO14:
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
-            if pixel_format == CameraPixelFormat.MONO16:
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
-            if pixel_format == CameraPixelFormat.RGB24:
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 0)
-            if pixel_format == CameraPixelFormat.RGB32:
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 2)
-            if pixel_format == CameraPixelFormat.RGB48:
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-                self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 1)
-
-        # NOTE(imo): Ideally we'd query pixel_format from the device instead of storing the state here, but it's
-        # impossible to do so - the settings for a particular depth are not unique.  EG MONO12 and MONO14 both
-        # have the same settings.  I'm not sure how this works?  But just store the pixel format here...
-        self._pixel_format = pixel_format
-
-        self._update_internal_settings()
-
-        if was_streaming:
-            self.start_streaming()
-
-    def _update_internal_settings(self):
-        """
-        This needs to be called when a camera side setting changes that needs a:
-          * read buffer size update
-          * strobe delay recalc
-        """
-        # resize the buffer
-        _, _, width, height = self.camera.get_Roi()
-
-        # calculate buffer size
-        if self.data_format == "RGB" and self.pixel_size_byte != 4:
-            bufsize = ToupcamCamera._tdib_width_bytes(width * self.pixel_size_byte * 8) * height
-        else:
-            bufsize = width * self.pixel_size_byte * height
-        self._log.info(f"image size: {width=} x {height=}, {bufsize=}")
-        # create the buffer
-        self.buf = bytes(bufsize)
-
-        self._strobe_delay_us = ToupcamCamera._calculate_strobe_delay_us(self.camera, self._pixel_size(), self._capabilities)
-
-    def get_pixel_format(self) -> CameraPixelFormat:
-        return self._pixel_format
-
-    def set_auto_exposure(self, enabled):
-        try:
-            self.camera.put_AutoExpoEnable(enabled)
-        except toupcam.HRESULTException as ex:
-            self._log.error("Unable to set auto exposure: " + repr(ex))
-            # TODO(imo): Propagate error in some way and handle
-
-    def set_data_format(self, data_format: CameraFrameFormat):
-        self.data_format = data_format
-        if data_format == "RGB":
-            self.camera.put_Option(toupcam.TOUPCAM_OPTION_RAW, 0)  # 0 is RGB mode, 1 is RAW mode
-        elif data_format == "RAW":
-            self.camera.put_Option(toupcam.TOUPCAM_OPTION_RAW, 1)  # 1 is RAW mode, 0 is RGB mode
-
-    def set_resolution(self, width, height):
-        was_streaming = False
-        if self.is_streaming:
-            self.stop_streaming()
-            was_streaming = True
-        try:
-            self.camera.put_Size(width, height)
-        except toupcam.HRESULTException as ex:
-            err_type = hresult_checker(ex, "E_INVALIDARG", "E_BUSY", "E_ACCESDENIED", "E_UNEXPECTED")
-            if err_type == "E_INVALIDARG":
-                self._log.error(f"Resolution ({width},{height}) not supported by camera")
-            else:
-                self._log.error(f"Resolution cannot be set due to error: " + err_type)
-                # TODO(imo): Propagate error in some way and handle
-        self._update_buffer_settings()
-        if was_streaming:
-            self.start_streaming()
-
-        if self.reset_strobe_delay is not None:
-            self.reset_strobe_delay()
-
-    def get_temperature(self):
-        try:
-            return self.camera.get_Temperature() / 10
-        except toupcam.HRESULTException as ex:
-            error_type = hresult_checker(ex)
-            self._log.debug("Could not get temperature, error: " + error_type)
-            # TODO(imo): Returning 0 temp here seems dangerous - probably indicate instead that we don't know the temp
-            return 0
-
-    def set_temperature(self, temperature):
-        try:
-            self.camera.put_Temperature(int(temperature * 10))
-        except toupcam.HRESULTException as ex:
-            error_type = hresult_checker(ex)
-            # TODO(imo): Propagate error in some way and handle
-            self._log.error("Unable to set temperature: " + error_type)
-
-    def _set_fan_speed(self, speed):
-        try:
-            self.camera.put_Option(toupcam.TOUPCAM_OPTION_FAN, speed)
-        except toupcam.HRESULTException as ex:
-            error_type = hresult_checker(ex)
-            # TODO(imo): Propagate error in some way and handle
-            self._log.exception("Unable to set fan speed: " + error_type)
-            raise
-
-    def _set_trigger_width_mode(self):
-        self.camera.IoControl(1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_PWMSOURCE, 1)  # set PWM source to GPIO0
-        self.camera.IoControl(1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 4)  # trigger source to PWM
-
-    def _set_gain_mode(self, mode):
-        if mode == "LCG":
-            self.camera.put_Option(toupcam.TOUPCAM_OPTION_CG, 0)
-        elif mode == "HCG":
-            self.camera.put_Option(toupcam.TOUPCAM_OPTION_CG, 1)
-        elif mode == "HDR":
-            self.camera.put_Option(toupcam.TOUPCAM_OPTION_CG, 2)
-
-    def send_trigger(self):
-        if self._last_software_trigger_timestamp != None:
-            if (time.time() - self._last_software_trigger_timestamp) > (1.5 * self.exposure_time / 1000 * 1.02 + 4):
-                self._log.warning("last software trigger timed out")
-                self._software_trigger_sent = False
-        if self.is_streaming and (self._software_trigger_sent == False):
-            self.camera.Trigger(1)
-            self._software_trigger_sent = True
-            self._last_software_trigger_timestamp = time.time()
-            self._log.debug(">>> trigger sent")
-        else:
-            # TODO(imo): Propagate these errors in some way and handle
-            if self.is_streaming == False:
-                self._logger.error("trigger not sent - camera is not streaming")
-            else:
-                pass
-
-    def _stop_exposure(self):
-        if self.is_streaming and self._software_trigger_sent == True:
-            self.camera.Trigger(0)
-            self._software_trigger_sent = False
-        else:
-            pass
-
-    def read_frame(self, reset_image_ready_flag=True):
-        # set reset_image_ready_flag to True when read_frame() is called immediately after triggering the acquisition
-        if reset_image_ready_flag:
-            self.image_is_ready = False
-        timestamp_t0 = time.time()
-        while (time.time() - timestamp_t0) <= (self.exposure_time / 1000) * 1.02 + 4:
-            time.sleep(0.005)
-            if self.image_is_ready:
-                self.image_is_ready = False
-                return self.current_frame
-        self._log.error("read frame timed out")
-        return None
-
-    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
-        roi_offset_x = control.utils.truncate_to_interval(offset_x, 2)
-        roi_offset_y = control.utils.truncate_to_interval(offset_y, 2)
-        roi_width = control.utils.truncate_to_interval(width, 2)
-        roi_height = control.utils.truncate_to_interval(height, 2)
-
-        was_streaming = False
-        if self.is_streaming:
-            self.stop_streaming()
-            was_streaming = True
-
-        try:
-            self.camera.put_Roi(roi_offset_x, roi_offset_y, roi_width, roi_height)
-        except toupcam.HRESULTException as ex:
-            self._log.exception("ROI bounds invalid, not changing ROI.")
-
-        self._update_buffer_settings()
-        if was_streaming:
-            self.start_streaming()
-
-    @staticmethod
-    def _calculate_strobe_delay_us(camera: toupcam.Toupcam, pixel_size: int, capabilities: ToupCamCapabilities) -> float:
+    def _calculate_strobe_delay_us(
+        camera: toupcam.Toupcam, pixel_size: int, capabilities: ToupCamCapabilities
+    ) -> float:
         log = squid.logging.get_logger("ToupcamCamera._calculate_strobe_delay")
         # use camera arguments such as resolutuon, ROI, exposure time, set max FPS, bandwidth to calculate the trigger delay time
 
@@ -695,3 +135,609 @@ class ToupcamCamera(AbstractCamera):
         strobe_time = int(vheight * row_time)
 
         return strobe_time
+
+    @staticmethod
+    def _open(index=None, sn=None) -> Tuple[toupcam.ToupcamDeviceV2, ToupCamCapabilities]:
+        log = squid.logging.get_logger("ToupcamCamera._open")
+        devices = toupcam.Toupcam.EnumV2()
+        if len(devices) <= 0:
+            raise ValueError("There are no Toupcam V2 devices.  Is the camera connected and powered on?")
+
+        if index is not None and sn is not None:
+            raise ValueError("You specified both a device index and a sn, this is not allowed.")
+
+        if sn is not None:
+            sn_matches = [idx for idx in range(len(devices)) if devices[idx].id == sn]
+            if not len(sn_matches):
+                all_sn = [d.id for d in devices]
+                raise ValueError(f"Could not find camera with SN={sn}, options are: {','.join(all_sn)}")
+
+        for idx, device in enumerate(devices):
+            log.info(
+                "Camera {}: {}: flag = {:#x}, preview = {}, still = {}".format(
+                    idx,
+                    device.displayname,
+                    device.model.flag,
+                    device.model.preview,
+                    device.model.still,
+                )
+            )
+
+        for r in devices[index].model.res:
+            log.info("\t = [{} x {}]".format(r.width, r.height))
+
+        valid_resolutions = []
+        for r in devices[index].model.res:
+            valid_resolutions.append((r.width, r.height))
+
+        camera = toupcam.Toupcam.Open(devices[index].id)
+        capabilities = ToupCamCapabilities(
+            resolutions=valid_resolutions,
+            has_fan=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_FAN) > 0,
+            has_TEC=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_TEC_ONOFF) > 0,
+            has_low_noise_mode=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_LOW_NOISE) > 0,
+            has_black_level=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_BLACKLEVEL) > 0,
+        )
+
+        return camera, capabilities
+
+    def __init__(self, config: squid.config.CameraConfig, hw_trigger_fn, hw_set_strobe_delay_ms_fn):
+        super().__init__(config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
+
+        self._current_frame: Optional[CameraFrame] = None
+        self.camera: Optional[toupcam.Toupcam] = None
+
+        # These are used only in software trigger mode.  We use them to make sure we don't send a software trigger
+        # when a frame is already in progress.  The send_trigger method should be the only one setting this to True
+        # (and setting the timestamp), and the raw frame callback can set the _software_trigger_sent to False when
+        # it receives a frame.
+        self._software_trigger_sent = False
+        self._last_software_trigger_timestamp = 0
+
+        # NOTE(imo): Ideally we'd query pixel_format from the device instead of storing the state here, but it's
+        # impossible to do so - the settings for a particular depth are not unique.  So we have to store it.
+        self._pixel_format = CameraPixelFormat.MONO8
+
+        # below are values for IMX226 (MER2-1220-32U3M) - to make configurable
+        row_period_us = 10
+        row_numbers = 3036
+        exposure_delay_us_8bit = 650
+        exposure_delay_us = exposure_delay_us_8bit * self._get_pixel_size_in_bytes()
+
+        # just setting a default value
+        # it would be re-calculate with function calculate_hardware_trigger_arguments
+        self._strobe_delay_us = exposure_delay_us + row_period_us * self._get_pixel_size_in_bytes() * (row_numbers - 1)
+
+        # _raw_camera_stream_started keeps track of the ToupcamCamera <-> hardware stream. This should always be running,
+        # because it is how we get notified by the camera that new frames are available.  Our _on_frame_callback
+        # is what the camera driver calls when a new frame is available.
+        self._raw_camera_stream_started = False
+        self._raw_frame_callback_lock = threading.Lock()
+        (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
+
+        # Since we need to set the on-camera exposure time different depending on our trigger mode
+        # (eg: sometimes we compensate for a strobe delay when hardware triggering), we can't back
+        # out our users' exposure time easily from the camera value.  To get around this, we need
+        # to store the exposure time they give to us.
+        #
+        # Because it is better than nothing, we initialize our stored value to whatever is on the
+        # camera at startup (but then set_exposure_time will modify it when a user sets exposure time)
+        self._exposure_time = self._get_raw_exposure_time()
+
+        # toupcam temperature
+        self.temperature_reading_callback = None
+        self.terminate_read_temperature_thread = False
+        self.thread_read_temperature = threading.Thread(target=self._check_temperature, daemon=True)
+        self.thread_read_temperature.start()
+
+        self._configure_with_defaults_and_start_camera()
+
+    def _start_raw_camera_stream(self):
+        """
+        Make sure the camera is setup to tell us when frames are available.
+        """
+        try:
+            self.camera.StartPullModeWithCallback(self._event_callback, self)
+            self._raw_camera_stream_started = True
+        except toupcam.HRESULTException as ex:
+            self._raw_camera_stream_started = False
+            self._log.exception("failed to start camera, hr=0x{:x}".format(ex.hr))
+            raise ex
+
+    def _on_frame_callback(self):
+        """
+        This is the callback that we have the toupcam software call when a frame is ready.  It should always be running.
+        """
+        with self._raw_frame_callback_lock:
+            # Since we are receiving a frame callback, we know things are setup properly.
+            self._raw_camera_stream_started = True
+
+            # Make sure that if this was triggered by a software trigger, or we switched to software triggering
+            # while waiting for this frame, that we allow subsequent software triggers.
+            self._software_trigger_sent = False
+
+            # get the image from the camera
+            try:
+                self.camera.PullImageV2(
+                    self._internal_read_buffer, self._get_pixel_size_in_bytes() * 8, None
+                )  # the second camera is number of bits per pixel - ignored in RAW mode
+            except toupcam.HRESULTException as ex:
+                # TODO(imo): Propagate error in some way and handle
+                self._log.error("pull image failed, hr=0x{:x}".format(ex.hr))
+
+            this_frame_id = (self._current_frame.frame_id if self._current_frame else 0) + 1
+            this_timestamp = time.time()
+            this_frame_format = self.get_frame_format()
+            this_pixel_format = self.get_pixel_format()
+
+            if this_frame_format != CameraFrameFormat.RAW:
+                self._log.error("Only RAW CameraFrameFormat are supported, cannot handle frame.")
+                return
+
+            (x_offset, y_offset, width, height) = self.get_region_of_interest()
+            if self._get_pixel_size_in_bytes() == 1:
+                raw_image = np.frombuffer(self._internal_read_buffer, dtype="uint8")
+            elif self._get_pixel_size_in_bytes() == 2:
+                raw_image = np.frombuffer(self._internal_read_buffer, dtype="uint16")
+            current_raw_image = raw_image.reshape(height, width)
+
+            current_frame = CameraFrame(
+                frame_id=this_frame_id,
+                timestamp=this_timestamp,
+                frame=current_raw_image,
+                frame_format=this_frame_format,
+                frame_pixel_format=this_pixel_format,
+            )
+
+            # Before releasing the lock, set the new current fram with the incremented frame id so other methods can
+            # see we have a new frame. This should be the only place we modify _current_frame outside of init, and
+            # since we hold a lock this whole time, we know that the frame id is still correct.
+            self._current_frame = current_frame
+
+        # Propagate the local copy so we are sure it's the correct frame that goes out.
+        self._propogate_frame(current_frame)
+
+    def _update_internal_settings(self):
+        """
+        This needs to be called when a camera side setting changes that needs a:
+          * read buffer size update
+          * strobe delay recalc
+
+        It might be called in a performance sensitive context, so you should make sure any updates here
+        are as fast as they can be.
+        """
+        # resize the buffer
+        _, _, width, height = self.camera.get_Roi()
+
+        # calculate buffer size
+        pixel_size = self._get_pixel_size_in_bytes()
+        if self.get_frame_format() == CameraFrameFormat.RGB and pixel_size != 4:
+            buffer_size = ToupcamCamera._tdib_width_bytes(width * pixel_size * 8) * height
+        else:
+            buffer_size = width * pixel_size * height
+        self._log.info(f"image size: {width=} x {height=}, {buffer_size=}")
+        # create the buffer
+        self._internal_read_buffer = bytes(buffer_size)
+
+        self._strobe_delay_us = ToupcamCamera._calculate_strobe_delay_us(
+            self.camera, self._get_pixel_size_in_bytes(), self._capabilities
+        )
+        if self._hw_set_strobe_delay_ms_fn:
+            self._hw_set_strobe_delay_ms_fn(self._strobe_delay_us / 1000.0)
+
+        # Force resending of the strobe
+        self.set_exposure_time(self.get_exposure_time())
+
+    def _check_temperature(self):
+        while not self.terminate_read_temperature_thread:
+            time.sleep(2)
+            temperature = self.get_temperature()
+            if self.temperature_reading_callback is not None:
+                try:
+                    self.temperature_reading_callback(temperature)
+                except TypeError as ex:
+                    self._log.error("Temperature read callback failed due to error: " + repr(ex))
+                    pass
+
+    def _configure_with_defaults_and_start_camera(self):
+        """
+        Run our initial configuration to get the camera into a know and safe starting state.
+        """
+        if self._capabilities.has_low_noise_mode:
+            self.camera.put_Option(toupcam.TOUPCAM_OPTION_LOW_NOISE, 0)
+
+        # set temperature
+        self._set_fan_speed(1)
+        self.set_temperature(20)
+
+        self.set_frame_format(CameraFrameFormat.RAW)
+        self.set_pixel_format(CameraPixelFormat.MONO16)  # 'MONO8'
+        self.set_black_level(DEFAULT_BLACKLEVEL_VALUE)
+
+        self._update_internal_settings()
+
+        self._start_raw_camera_stream()
+
+    def _set_temperature_reading_callback(self, func):
+        self.temperature_reading_callback = func
+
+    def _get_raw_exposure_time(self) -> float:
+        return self.camera.get_ExpoTime() / 1000.0  # microseconds -> milliseconds
+
+    def _close(self):
+        self.terminate_read_temperature_thread = True
+        self.thread_read_temperature.join()
+        self._set_fan_speed(0)
+        self.camera.Close()
+        self.camera = None
+
+    @contextmanager
+    def _pause_streaming(self):
+        was_streaming = self.get_is_streaming()
+        try:
+            if was_streaming:
+                self.stop_streaming()
+            yield
+        finally:
+            if was_streaming:
+                self.start_streaming()
+
+    def start_streaming(self):
+        if self._internal_read_buffer and (self._toupcam_pullmode_started == False):
+            try:
+                self.camera.StartPullModeWithCallback(self._event_callback, self)
+                self._toupcam_pullmode_started = True
+            except toupcam.HRESULTException as ex:
+                self._log.exception("failed to start camera, hr: " + hresult_checker(ex))
+                self._close()
+                raise ex
+        self._log.info("start streaming")
+
+    def stop_streaming(self):
+        self.camera.Stop()
+        self._toupcam_pullmode_started = False
+
+    def get_is_streaming(self):
+        return self._toupcam_pullmode_started
+
+    def set_exposure_time(self, exposure_time):
+        # Since we have to set the on-camera exposure time differently depending on the trigger mode
+        # and the calculated strobe delay, it is tricky to get the exposure time from the
+        # camera.  To get around this, we store it.
+        self._exposure_time = exposure_time
+
+        # In the calls below, we need to make sure we convert to microseconds.
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            self.camera.put_ExpoTime(int(exposure_time * 1000) + int(self._strobe_delay_us))
+        else:
+            self.camera.put_ExpoTime(int(exposure_time * 1000))
+
+    def get_exposure_time(self) -> float:
+        return self._exposure_time
+
+    def get_exposure_limits(self) -> Tuple[float, float]:
+        (min_exposure, max_exposure, default_exposure) = self.camera.get_ExpTimeRange()
+        return min_exposure, max_exposure
+
+    def set_analog_gain(self, analog_gain):
+        gain_range = self.get_gain_range()
+
+        clamped_gain = max(gain_range.min_gain, min(analog_gain, gain_range.max_gain))
+
+        if clamped_gain != analog_gain:
+            self._log.warning(
+                f"Requested {analog_gain=} is outside the range {gain_range.min_gain} to {gain_range.max_gain}"
+            )
+
+        # for touptek cameras gain is 100-10000 (for 1x - 100x)
+        self.camera.put_ExpoAGain(int(100 * (10 ** (clamped_gain / 20))))
+
+    def set_pixel_format(self, pixel_format: CameraPixelFormat):
+        with self._pause_streaming():
+            if self.get_frame_format() == CameraFrameFormat.RAW:
+                if pixel_format == CameraPixelFormat.MONO8:
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
+                elif pixel_format == CameraPixelFormat.MONO12:
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+                elif pixel_format == CameraPixelFormat.MONO14:
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+                elif pixel_format == CameraPixelFormat.MONO16:
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+            else:
+                # RGB data format
+                if pixel_format == CameraPixelFormat.MONO8:
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 3)  # for monochrome camera only
+                if pixel_format == CameraPixelFormat.MONO12:
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
+                if pixel_format == CameraPixelFormat.MONO14:
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
+                if pixel_format == CameraPixelFormat.MONO16:
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
+                if pixel_format == CameraPixelFormat.RGB24:
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 0)
+                if pixel_format == CameraPixelFormat.RGB32:
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 2)
+                if pixel_format == CameraPixelFormat.RGB48:
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+                    self.camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 1)
+
+            # NOTE(imo): Ideally we'd query pixel_format from the device instead of storing the state here, but it's
+            # impossible to do so - the settings for a particular depth are not unique.  EG MONO12 and MONO14 both
+            # have the same settings.  I'm not sure how this works?  But just store the pixel format here...
+            self._pixel_format = pixel_format
+
+            self._update_internal_settings()
+
+    def get_pixel_format(self) -> CameraPixelFormat:
+        return self._pixel_format
+
+    def set_auto_exposure(self, enabled: bool):
+        try:
+            self.camera.put_AutoExpoEnable(enabled)
+        except toupcam.HRESULTException as ex:
+            self._log.exception("Unable to set auto exposure: " + repr(ex))
+            raise
+
+    def set_frame_format(self, data_format: CameraFrameFormat):
+        if data_format == CameraFrameFormat.RGB:
+            self.camera.put_Option(
+                toupcam.TOUPCAM_OPTION_RAW, ToupcamCamera.TOUPCAM_OPTION_RAW_RGB_VAL
+            )  # 0 is RGB mode, 1 is RAW mode
+        elif data_format == CameraFrameFormat.RAW:
+            self.camera.put_Option(
+                toupcam.TOUPCAM_OPTION_RAW, ToupcamCamera.TOUPCAM_OPTION_RAW_RAW_VAL
+            )  # 1 is RAW mode, 0 is RGB mode
+
+    def get_frame_format(self) -> CameraFrameFormat:
+        camera_val = self.camera.get_Option(toupcam.TOUPCAM_OPTION_RAW)
+
+        if camera_val == ToupcamCamera.TOUPCAM_OPTION_RAW_RAW_VAL:
+            return CameraFrameFormat.RAW
+        elif camera_val == ToupcamCamera.TOUPCAM_OPTION_RAW_RGB_VAL:
+            return CameraFrameFormat.RGB
+        else:
+            raise ValueError(f"Camera returned unknown frame format: value={camera_val}")
+
+    def set_resolution(self, width, height):
+        with self._pause_streaming():
+            try:
+                self.camera.put_Size(width, height)
+            except toupcam.HRESULTException as ex:
+                err_type = hresult_checker(ex, "E_INVALIDARG", "E_BUSY", "E_ACCESDENIED", "E_UNEXPECTED")
+                if err_type == "E_INVALIDARG":
+                    self._log.exception(f"Resolution ({width},{height}) not supported by camera")
+                else:
+                    self._log.exception(f"Resolution cannot be set due to error: " + err_type)
+                raise
+            self._update_internal_settings()
+
+    def get_temperature(self):
+        try:
+            return self.camera.get_Temperature() / 10
+        except toupcam.HRESULTException as ex:
+            error_type = hresult_checker(ex)
+            self._log.exception("Could not get temperature, error: " + error_type)
+            raise
+
+    def set_temperature(self, temperature):
+        try:
+            self.camera.put_Temperature(int(temperature * 10))
+        except toupcam.HRESULTException as ex:
+            error_type = hresult_checker(ex)
+            self._log.exception("Unable to set temperature: " + error_type)
+            raise
+
+    def _set_fan_speed(self, speed):
+        try:
+            self.camera.put_Option(toupcam.TOUPCAM_OPTION_FAN, speed)
+        except toupcam.HRESULTException as ex:
+            error_type = hresult_checker(ex)
+            self._log.exception("Unable to set fan speed: " + error_type)
+            raise
+
+    def _set_trigger_width_mode(self):
+        self.camera.IoControl(1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_PWMSOURCE, 1)  # set PWM source to GPIO0
+        self.camera.IoControl(1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 4)  # trigger source to PWM
+
+    def _set_gain_mode(self, mode):
+        if mode == "LCG":
+            self.camera.put_Option(toupcam.TOUPCAM_OPTION_CG, 0)
+        elif mode == "HCG":
+            self.camera.put_Option(toupcam.TOUPCAM_OPTION_CG, 1)
+        elif mode == "HDR":
+            self.camera.put_Option(toupcam.TOUPCAM_OPTION_CG, 2)
+
+    def send_trigger(self, illumination_time: Optional[float] = None):
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
+            raise RuntimeError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
+
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            self._log.debug(f"Sending hardware trigger with {illumination_time=}")
+            self._hw_trigger_fn(illumination_time)
+        elif self.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+            # TODO(imo): Should we pass in the timeout?  This might be fine since it's calculated based on the exposure time.
+            software_trigger_timeout_s = 1.5 * self.get_exposure_time() / 1000 * 1.02 + 4
+            software_trigger_old = time.time() - self._last_software_trigger_timestamp > software_trigger_timeout_s
+            if self._software_trigger_sent and software_trigger_old:
+                self._log.warning(
+                    f"Previous software trigger timed out after {software_trigger_timeout_s} [s]. Assuming it failed and allowing re-trigger."
+                )
+            elif self._software_trigger_sent:
+                raise RuntimeError(f"Requested software trigger too early, refusing.")
+
+            self._log.debug("Sending software trigger..")
+            self.camera.Trigger(1)
+            self._last_software_trigger_timestamp = time.time()
+            self._software_trigger_sent = True
+
+    def _stop_exposure(self):
+        if self.get_is_streaming() and self._software_trigger_sent == True:
+            self.camera.Trigger(0)
+            self._software_trigger_sent = False
+        else:
+            pass
+
+    def get_strobe_time(self) -> float:
+        return self._strobe_delay_us / 1000.0
+
+    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+        roi_offset_x = control.utils.truncate_to_interval(offset_x, 2)
+        roi_offset_y = control.utils.truncate_to_interval(offset_y, 2)
+        roi_width = control.utils.truncate_to_interval(width, 2)
+        roi_height = control.utils.truncate_to_interval(height, 2)
+        with self._pause_streaming():
+            try:
+                self.camera.put_Roi(roi_offset_x, roi_offset_y, roi_width, roi_height)
+            except toupcam.HRESULTException as ex:
+                self._log.exception("ROI bounds invalid, not changing ROI.")
+
+            self._update_internal_settings()
+
+    def get_resolution(self) -> Tuple[int, int]:
+        # TODO(imo): Should this be FinalSize to account for ROI?
+        return self.camera.get_Size()
+
+    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
+        return self._capabilities.resolutions
+
+    def get_analog_gain(self) -> float:
+        return self.camera.get_ExpoAGain()
+
+    def get_gain_range(self) -> CameraGainRange:
+        (min_gain, max_gain, default_gain) = self.camera.get_ExpoAGainRange()
+        return CameraGainRange(min_gain=min_gain, max_gain=max_gain, gain_step=0.01)
+
+    def _get_frame(self):
+        # TODO(imo): Seems like the timeout should be something passed in, not hard coded.
+        timeout_s = (self.get_exposure_time() / 1000) * 1.02 + 4
+        timeout_end_time_s = time.time() + timeout_s
+        starting_frame_id = self.get_frame_id()
+
+        while time.time() < timeout_end_time_s:
+            if self.get_frame_id() != starting_frame_id:
+                return self._current_frame
+            time.sleep(0.001)
+
+        self._log.error(f"Timed out after {timeout_s} [s] waiting for a frame.")
+
+    def get_frame_id(self) -> int:
+        return self._current_frame.frame_id if self._current_frame else -1
+
+    def get_white_balance_gains(self) -> Tuple[float, float, float]:
+        return self.camera.get_WhiteBalanceGain()
+
+    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
+        self.camera.put_WhiteBalanceGain((red_gain, green_gain, blue_gain))
+
+    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
+        self.camera.AwbInit()
+        return self.get_white_balance_gains()
+
+    _BLACK_LEVEL_MAPPING = {
+        (CameraFrameFormat.RAW, CameraPixelFormat.MONO8): 1,
+        (CameraFrameFormat.RAW, CameraPixelFormat.MONO12): 16,
+        (CameraFrameFormat.RAW, CameraPixelFormat.MONO14): 64,
+        (CameraFrameFormat.RAW, CameraPixelFormat.MONO16): 256,
+        # TODO(imo): We didn't set a black level factor if outside of 1 of the 4 options above, but still used the factor.  Is the mapping below correct, or is black level ignored for RGB?
+        (CameraFrameFormat.RGB, CameraPixelFormat.MONO8): 1,
+        (CameraFrameFormat.RGB, CameraPixelFormat.MONO12): 16,
+        (CameraFrameFormat.RGB, CameraPixelFormat.MONO14): 64,
+        (CameraFrameFormat.RGB, CameraPixelFormat.MONO16): 256,
+        (CameraFrameFormat.RGB, CameraPixelFormat.RGB24): 1,  # Bit depth of 8 -> same as MONO8
+        (CameraFrameFormat.RGB, CameraPixelFormat.RGB32): 1,  # Bit depth of 8 -> same as MONO8
+        (CameraFrameFormat.RGB, CameraPixelFormat.RGB48): 256,  # Bit depth of 16 -> same as MONO16
+    }
+
+    def _get_black_level_factor(self):
+        frame_and_format = (self.get_frame_format(), self.get_pixel_format())
+        if frame_and_format not in ToupcamCamera._BLACK_LEVEL_MAPPING:
+            raise ValueError(f"Unknown combo for black level: {frame_and_format=}")
+
+        return ToupcamCamera._BLACK_LEVEL_MAPPING[frame_and_format]
+
+    _PIXEL_SIZE_MAPPING = {
+        (CameraFrameFormat.RAW, CameraPixelFormat.MONO8): 1,
+        (CameraFrameFormat.RAW, CameraPixelFormat.MONO12): 2,
+        (CameraFrameFormat.RAW, CameraPixelFormat.MONO14): 2,
+        (CameraFrameFormat.RAW, CameraPixelFormat.MONO16): 2,
+        (CameraFrameFormat.RGB, CameraPixelFormat.MONO8): 1,
+        (CameraFrameFormat.RGB, CameraPixelFormat.MONO12): 2,
+        (CameraFrameFormat.RGB, CameraPixelFormat.MONO14): 2,
+        (CameraFrameFormat.RGB, CameraPixelFormat.MONO16): 2,
+        (CameraFrameFormat.RGB, CameraPixelFormat.RGB24): 3,
+        (CameraFrameFormat.RGB, CameraPixelFormat.RGB32): 4,
+        (CameraFrameFormat.RGB, CameraPixelFormat.RGB48): 6,
+    }
+
+    def _get_pixel_size_in_bytes(self):
+        frame_and_format = (self.get_frame_format(), self.get_pixel_format())
+        if frame_and_format not in ToupcamCamera._PIXEL_SIZE_MAPPING:
+            raise ValueError(f"Unknown combo for pixel size: {frame_and_format=}")
+
+        return ToupcamCamera._PIXEL_SIZE_MAPPING[frame_and_format]
+
+    def get_black_level(self) -> float:
+        if not self._capabilities.has_black_level:
+            raise NotImplementedError("This toupcam does not have black level setting.")
+
+        raw_black_level = self.camera.get_Option(toupcam.TOUPCAM_OPTION_BLACKLEVEL)
+
+        return raw_black_level / self._get_black_level_factor()
+
+    def set_black_level(self, black_level: float):
+        if not self._capabilities.has_black_level:
+            raise NotImplementedError("This toupcam does not have black level setting.")
+        raw_black_level = black_level * self._get_black_level_factor()
+
+        try:
+            self.camera.put_Option(toupcam.TOUPCAM_OPTION_BLACKLEVEL, raw_black_level)
+        except toupcam.HRESULTException as ex:
+            print("put blacklevel fail, hr=0x{:x}".format(ex.hr))
+
+    def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
+        if acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
+            trigger_option_value = 0
+        elif acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+            trigger_option_value = 1
+        elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            trigger_option_value = 2
+        else:
+            raise ValueError(f"Do not know how to handle {acquisition_mode=}")
+        self.camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, trigger_option_value)
+
+        if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            # select trigger source to GPIO0
+            try:
+                self.camera.IoControl(1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 1)
+            except toupcam.HRESULTException as ex:
+                error_type = hresult_checker(ex)
+                self._log.exception("Unable to select trigger source: " + error_type)
+                raise
+            # set GPIO1 to trigger wait
+            try:
+                self.camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE, 0)
+                self.camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER, 0)
+            except toupcam.HRESULTException as ex:
+                error_type = hresult_checker(ex)
+                self._log.exception("Unable to set GPIO1 for trigger ready: " + error_type)
+                raise
+
+    def get_acquisition_mode(self) -> CameraAcquisitionMode:
+        trigger_option_value = self.camera.get_Option(toupcam.TOUPCAM_OPTION_TRIGGER)
+        if trigger_option_value == 0:
+            return CameraAcquisitionMode.CONTINUOUS
+        elif trigger_option_value == 1:
+            raise CameraAcquisitionMode.SOFTWARE_TRIGGER
+        elif trigger_option_value == 2:
+            raise CameraAcquisitionMode.HARDWARE_TRIGGER
+        else:
+            raise ValueError(f"Received unknown trigger option from toupcam: {trigger_option_value}")
+
+    def get_region_of_interest(self) -> Tuple[int, int, int, int]:
+        return self.camera.get_Roi()
