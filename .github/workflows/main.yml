@@ -26,7 +26,7 @@ jobs:
       # Some of our tests are headless gui tests, but we still need a proper virtual display
       # environment.  We use xvfb for this.
       - name: Install xvfb (for gui testing environment)
-        run: sudo apt install -y xvfb
+        run: sudo apt update && sudo apt install -y xvfb
       - name: Checkout the Squid repo
         uses: actions/checkout@v4
       - name: Run the setup script for Ubuntu 22.04
