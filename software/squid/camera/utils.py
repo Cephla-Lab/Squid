@@ -43,7 +43,9 @@ def get_camera(
         if config.camera_type == CameraVariant.TOUPCAM:
             import control.camera_toupcam
 
-            camera = control.camera_toupcam.Camera(config)
+            camera = control.camera_toupcam.ToupcamCamera(
+                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+            )
         elif config.camera_type == CameraVariant.FLIR:
             import control.camera_flir
 
