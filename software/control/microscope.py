@@ -58,9 +58,12 @@ class Microscope(QObject):
         self.home_x_and_y_separately = False
 
     def initialize_core_components(self):
-        self.configurationManager = core.ConfigurationManager(filename="./channel_configurations.xml")
+        self.configurationManager = core.ConfigurationManager(
+            channel_manager=core.ChannelConfigurationManager(),
+            laser_af_manager=core.LaserAFSettingManager() if SUPPORT_LASER_AUTOFOCUS else None,
+        )
         self.objectiveStore = core.ObjectiveStore()
-        self.streamHandler = core.StreamHandler(display_resolution_scaling=DEFAULT_DISPLAY_CROP / 100)
+        self.streamHandler = core.StreamHandler()
         self.liveController = core.LiveController(self.camera, self.microcontroller, self.configurationManager, self)
         self.autofocusController = core.AutoFocusController(
             self.camera, self.stage, self.liveController, self.microcontroller
