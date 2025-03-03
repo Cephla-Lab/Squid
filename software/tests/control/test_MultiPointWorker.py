@@ -1,6 +1,3 @@
-import control.core.core
-from control._def import *
-
 import tests.control.gui_test_stubs as gts
 
 

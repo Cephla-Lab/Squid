@@ -7,16 +7,15 @@ import control.camera
 import squid.abc
 
 import control._def
-from control.piezo import PiezoStage
 from tests.tools import get_test_microcontroller, get_test_camera, get_test_stage, get_repo_root, get_test_piezo_stage
 
 
 def get_test_live_controller(
-    camera, microcontroller, config_manager, illumination_controller
+    camera, microcontroller, config_manager, illumination_controller, starting_objective
 ) -> control.core.core.LiveController:
     controller = control.core.core.LiveController(camera, microcontroller, config_manager, illumination_controller)
-    controller.set_microscope_mode(config_manager.configurations[0])
 
+    controller.set_microscope_mode(config_manager.channel_manager.get_configurations(objective=starting_objective)[0])
     return controller
 
 
@@ -26,7 +25,7 @@ def get_test_configuration_manager_path() -> pathlib.Path:
 
 def get_test_configuration_manager() -> control.core.core.ConfigurationManager:
     channel_manager = control.core.core.ChannelConfigurationManager()
-    laser_af_manager = control.core.core.LaserAFManager()
+    laser_af_manager = control.core.core.LaserAFSettingManager()
     return control.core.core.ConfigurationManager(
         channel_manager=channel_manager,
         laser_af_manager=laser_af_manager,
@@ -78,10 +77,14 @@ def get_test_multi_point_controller() -> control.core.core.MultiPointController:
     camera = get_test_camera()
     stage = get_test_stage(microcontroller)
     config_manager = get_test_configuration_manager()
-    live_controller = get_test_live_controller(
-        camera, microcontroller, config_manager, get_test_illumination_controller(microcontroller)
-    )
     objective_store = get_test_objective_store()
+    live_controller = get_test_live_controller(
+        camera,
+        microcontroller,
+        config_manager,
+        get_test_illumination_controller(microcontroller),
+        objective_store.current_objective,
+    )
 
     multi_point_controller = control.core.core.MultiPointController(
         camera=camera,
@@ -89,9 +92,10 @@ def get_test_multi_point_controller() -> control.core.core.MultiPointController:
         microcontroller=microcontroller,
         liveController=live_controller,
         autofocusController=get_test_autofocus_controller(camera, stage, live_controller, microcontroller),
-        configurationManager=config_manager,
+        channelConfigurationManager=config_manager.channel_manager,
         scanCoordinates=get_test_scan_coordinates(objective_store, get_test_navigation_viewer(objective_store), stage),
         piezo=get_test_piezo_stage(microcontroller),
+        objectiveStore=objective_store,
     )
 
     multi_point_controller.set_base_path("/tmp/")
