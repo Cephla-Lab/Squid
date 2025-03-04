@@ -295,6 +295,13 @@ class HighContentScreeningGui(QMainWindow):
             parent=self,
         )
 
+        self.streamHandler_focus_camera: Optional[core.StreamHandler] = None
+        self.liveController_focus_camera: Optional[core.LiveController] = None
+        self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
+        self.displacementMeasurementController: Optional[
+            core_displacement_measurement.DisplacementMeasurementController
+        ] = None
+        self.laserAutofocusController: Optional[core.LaserAutofocusController] = None
         if SUPPORT_LASER_AUTOFOCUS:
             self.streamHandler_focus_camera = core.StreamHandler()
             self.liveController_focus_camera = core.LiveController(
