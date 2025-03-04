@@ -896,8 +896,8 @@ class CameraSettingsWidget(QFrame):
         self.entry_analogGain.setMinimum(gain_range.min_gain)
         self.entry_analogGain.setMaximum(gain_range.max_gain)
         self.entry_analogGain.setSingleStep(gain_range.gain_step)
-        self.entry_analogGain.setValue(0)
-        self.camera.set_analog_gain(0)
+        self.entry_analogGain.setValue(gain_range.min_gain)
+        self.camera.set_analog_gain(gain_range.min_gain)
 
         self.dropdown_pixelFormat = QComboBox()
         self.dropdown_pixelFormat.addItems(["MONO8", "MONO12", "MONO14", "MONO16", "BAYER_RG8", "BAYER_RG12"])

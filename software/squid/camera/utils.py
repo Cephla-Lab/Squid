@@ -74,6 +74,8 @@ def get_camera(
         # NOTE(imo): All of these things are hacks before complete migration to AbstractCamera impls.  They can
         # be removed once all the cameras conform to the AbstractCamera interface.
         open_if_needed(camera)
+
+        return camera
     except ImportError as e:
         _log.warning(f"Camera of type: '{config.camera_type}' failed to import.  Falling back to default camera impl.")
         _log.warning(e)

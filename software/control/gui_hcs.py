@@ -109,32 +109,6 @@ class HighContentScreeningGui(QMainWindow):
         super().__init__(*args, **kwargs)
         self.microcontroller: Optional[microcontroller.Microcontroller] = None
 
-        def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
-            # NOTE(imo): If this succeeds, it means means we sent the request,
-            # but we didn't necessarily get confirmation of success.
-            self.microcontroller.send_hardware_trigger(
-                True if illumination_time else False, 1000.0 * illumination_time if illumination_time else 0
-            )
-            return True
-
-        def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
-            self.microcontroller.set_strobe_delay_us(1000 * strobe_delay_ms)
-            self.microcontroller.wait_till_operation_is_completed()
-
-            return True
-
-        self.camera: squid.abc.AbstractCamera = squid.camera.utils.get_camera(
-            squid.config.get_camera_config(),
-            simulated=is_simulation,
-            hw_trigger_fn=acquisition_camera_hw_trigger_fn,
-            hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
-        )
-        self.camera_focus: Optional[squid.abc.AbstractCamera] = None
-        if SUPPORT_LASER_AUTOFOCUS:
-            self.camera_focus = squid.camera.utils.get_camera(
-                squid.config.get_autofocus_camera_config(), simulated=is_simulation
-            )
-
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.live_only_mode = live_only_mode or LIVE_ONLY_MODE
         self.is_live_scan_grid_on = False
@@ -210,6 +184,32 @@ class HighContentScreeningGui(QMainWindow):
             self.piezo.home()
         else:
             self.piezo = None
+
+        def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
+            # NOTE(imo): If this succeeds, it means means we sent the request,
+            # but we didn't necessarily get confirmation of success.
+            self.microcontroller.send_hardware_trigger(
+                True if illumination_time else False, 1000.0 * illumination_time if illumination_time else 0
+            )
+            return True
+
+        def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
+            self.microcontroller.set_strobe_delay_us(int(1000 * strobe_delay_ms))
+            self.microcontroller.wait_till_operation_is_completed()
+
+            return True
+
+        self.camera: squid.abc.AbstractCamera = squid.camera.utils.get_camera(
+            squid.config.get_camera_config(),
+            simulated=is_simulation,
+            hw_trigger_fn=acquisition_camera_hw_trigger_fn,
+            hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
+        )
+        self.camera_focus: Optional[squid.abc.AbstractCamera] = None
+        if SUPPORT_LASER_AUTOFOCUS:
+            self.camera_focus = squid.camera.utils.get_camera(
+                squid.config.get_autofocus_camera_config(), simulated=is_simulation
+            )
 
         # Common object initialization
         self.objectiveStore = core.ObjectiveStore(parent=self)

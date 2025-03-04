@@ -1,3 +1,4 @@
+import math
 from contextlib import contextmanager
 import time
 from typing import Optional, Tuple, Sequence
@@ -139,6 +140,7 @@ class ToupcamCamera(AbstractCamera):
     @staticmethod
     def _open(index=None, sn=None) -> Tuple[toupcam.Toupcam, ToupCamCapabilities]:
         log = squid.logging.get_logger("ToupcamCamera._open")
+        log.info(f"Opening toupcam with {index=}, {sn=}")
         devices = toupcam.Toupcam.EnumV2()
         if len(devices) <= 0:
             raise ValueError("There are no Toupcam V2 devices.  Is the camera connected and powered on?")
@@ -200,7 +202,6 @@ class ToupcamCamera(AbstractCamera):
         self._raw_camera_stream_started = False
         self._raw_frame_callback_lock = threading.Lock()
         (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
-        self._start_raw_camera_stream()
 
         # NOTE(imo): Ideally we'd query pixel_format from the device instead of storing the state here, but it's
         # impossible to do so - the settings for a particular depth are not unique.  So we have to store it.
@@ -232,6 +233,8 @@ class ToupcamCamera(AbstractCamera):
         self.thread_read_temperature.start()
 
         self._configure_camera()
+        self._start_raw_camera_stream()
+        self._update_internal_settings()
 
     def _start_raw_camera_stream(self):
         """
@@ -352,11 +355,9 @@ class ToupcamCamera(AbstractCamera):
         self._set_fan_speed(1)
         self.set_temperature(20)
 
-        self.set_frame_format(CameraFrameFormat.RAW)
-        self.set_pixel_format(CameraPixelFormat.MONO16)  # 'MONO8'
+        self._raw_set_frame_format(CameraFrameFormat.RAW)
+        self._raw_set_pixel_format(CameraPixelFormat.MONO16)  # 'MONO8'
         self.set_black_level(DEFAULT_BLACKLEVEL_VALUE)
-
-        self._update_internal_settings()
 
     def _set_temperature_reading_callback(self, func):
         self.temperature_reading_callback = func
@@ -413,6 +414,17 @@ class ToupcamCamera(AbstractCamera):
         (min_exposure, max_exposure, default_exposure) = self._camera.get_ExpTimeRange()
         return min_exposure, max_exposure
 
+    @staticmethod
+    def _user_gain_to_toupcam(user_gain):
+        """
+        0-40 is the valid user range.  This must map to 100-10000 in toupcam
+        """
+        return int(100 * (10 ** (user_gain / 20)))
+
+    @staticmethod
+    def _toupcam_gain_to_user(toupcam_gain):
+        return 20 * math.log10(toupcam_gain / 100)
+
     def set_analog_gain(self, analog_gain):
         gain_range = self.get_gain_range()
 
@@ -424,48 +436,51 @@ class ToupcamCamera(AbstractCamera):
             )
 
         # for touptek cameras gain is 100-10000 (for 1x - 100x)
-        self._camera.put_ExpoAGain(int(100 * (10 ** (clamped_gain / 20))))
+        self._log.info(f"Trying to set analog gain = {clamped_gain}")
+        self._camera.put_ExpoAGain(self._user_gain_to_toupcam(clamped_gain))
+
+    def _raw_set_pixel_format(self, pixel_format: CameraPixelFormat):
+        if self.get_frame_format() == CameraFrameFormat.RAW:
+            if pixel_format == CameraPixelFormat.MONO8:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
+            elif pixel_format == CameraPixelFormat.MONO12:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+            elif pixel_format == CameraPixelFormat.MONO14:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+            elif pixel_format == CameraPixelFormat.MONO16:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+        else:
+            # RGB data format
+            if pixel_format == CameraPixelFormat.MONO8:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 3)  # for monochrome camera only
+            if pixel_format == CameraPixelFormat.MONO12:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
+            if pixel_format == CameraPixelFormat.MONO14:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
+            if pixel_format == CameraPixelFormat.MONO16:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
+            if pixel_format == CameraPixelFormat.RGB24:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 0)
+            if pixel_format == CameraPixelFormat.RGB32:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 2)
+            if pixel_format == CameraPixelFormat.RGB48:
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+                self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 1)
+
+        # NOTE(imo): Ideally we'd query pixel_format from the device instead of storing the state here, but it's
+        # impossible to do so - the settings for a particular depth are not unique.  EG MONO12 and MONO14 both
+        # have the same settings.  I'm not sure how this works?  But just store the pixel format here...
+        self._pixel_format = pixel_format
 
     def set_pixel_format(self, pixel_format: CameraPixelFormat):
         with self._pause_streaming():
-            if self.get_frame_format() == CameraFrameFormat.RAW:
-                if pixel_format == CameraPixelFormat.MONO8:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
-                elif pixel_format == CameraPixelFormat.MONO12:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-                elif pixel_format == CameraPixelFormat.MONO14:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-                elif pixel_format == CameraPixelFormat.MONO16:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-            else:
-                # RGB data format
-                if pixel_format == CameraPixelFormat.MONO8:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 3)  # for monochrome camera only
-                if pixel_format == CameraPixelFormat.MONO12:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
-                if pixel_format == CameraPixelFormat.MONO14:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
-                if pixel_format == CameraPixelFormat.MONO16:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
-                if pixel_format == CameraPixelFormat.RGB24:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 0)
-                if pixel_format == CameraPixelFormat.RGB32:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 2)
-                if pixel_format == CameraPixelFormat.RGB48:
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
-                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 1)
-
-            # NOTE(imo): Ideally we'd query pixel_format from the device instead of storing the state here, but it's
-            # impossible to do so - the settings for a particular depth are not unique.  EG MONO12 and MONO14 both
-            # have the same settings.  I'm not sure how this works?  But just store the pixel format here...
-            self._pixel_format = pixel_format
-
+            self._raw_set_pixel_format(pixel_format)
             self._update_internal_settings()
 
     def get_pixel_format(self) -> CameraPixelFormat:
@@ -478,16 +493,20 @@ class ToupcamCamera(AbstractCamera):
             self._log.exception("Unable to set auto exposure: " + repr(ex))
             raise
 
+    def _raw_set_frame_format(self, data_format: CameraFrameFormat):
+        if data_format == CameraFrameFormat.RGB:
+            self._camera.put_Option(
+                toupcam.TOUPCAM_OPTION_RAW, ToupcamCamera.TOUPCAM_OPTION_RAW_RGB_VAL
+            )  # 0 is RGB mode, 1 is RAW mode
+        elif data_format == CameraFrameFormat.RAW:
+            self._camera.put_Option(
+                toupcam.TOUPCAM_OPTION_RAW, ToupcamCamera.TOUPCAM_OPTION_RAW_RAW_VAL
+            )  # 1 is RAW mode, 0 is RGB mode
+
     def set_frame_format(self, data_format: CameraFrameFormat):
         with self._pause_streaming():
-            if data_format == CameraFrameFormat.RGB:
-                self._camera.put_Option(
-                    toupcam.TOUPCAM_OPTION_RAW, ToupcamCamera.TOUPCAM_OPTION_RAW_RGB_VAL
-                )  # 0 is RGB mode, 1 is RAW mode
-            elif data_format == CameraFrameFormat.RAW:
-                self._camera.put_Option(
-                    toupcam.TOUPCAM_OPTION_RAW, ToupcamCamera.TOUPCAM_OPTION_RAW_RAW_VAL
-                )  # 1 is RAW mode, 0 is RGB mode
+            self._raw_set_frame_format(data_format)
+        self._update_internal_settings()
 
     def get_frame_format(self) -> CameraFrameFormat:
         camera_val = self._camera.get_Option(toupcam.TOUPCAM_OPTION_RAW)
@@ -602,11 +621,13 @@ class ToupcamCamera(AbstractCamera):
         return self._capabilities.resolutions
 
     def get_analog_gain(self) -> float:
-        return self._camera.get_ExpoAGain()
+        return self._toupcam_gain_to_user(self._camera.get_ExpoAGain())
 
     def get_gain_range(self) -> CameraGainRange:
         (min_gain, max_gain, default_gain) = self._camera.get_ExpoAGainRange()
-        return CameraGainRange(min_gain=min_gain, max_gain=max_gain, gain_step=0.01)
+        return CameraGainRange(
+            min_gain=self._toupcam_gain_to_user(min_gain), max_gain=self._toupcam_gain_to_user(max_gain), gain_step=0.01
+        )
 
     def _get_frame(self):
         # TODO(imo): Seems like the timeout should be something passed in, not hard coded.
@@ -728,9 +749,9 @@ class ToupcamCamera(AbstractCamera):
         if trigger_option_value == 0:
             return CameraAcquisitionMode.CONTINUOUS
         elif trigger_option_value == 1:
-            raise CameraAcquisitionMode.SOFTWARE_TRIGGER
+            return CameraAcquisitionMode.SOFTWARE_TRIGGER
         elif trigger_option_value == 2:
-            raise CameraAcquisitionMode.HARDWARE_TRIGGER
+            return CameraAcquisitionMode.HARDWARE_TRIGGER
         else:
             raise ValueError(f"Received unknown trigger option from toupcam: {trigger_option_value}")
 
