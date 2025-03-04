@@ -200,6 +200,7 @@ class ToupcamCamera(AbstractCamera):
         self._raw_camera_stream_started = False
         self._raw_frame_callback_lock = threading.Lock()
         (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
+        self._start_raw_camera_stream()
 
         # NOTE(imo): Ideally we'd query pixel_format from the device instead of storing the state here, but it's
         # impossible to do so - the settings for a particular depth are not unique.  So we have to store it.
@@ -230,7 +231,7 @@ class ToupcamCamera(AbstractCamera):
         self.thread_read_temperature = threading.Thread(target=self._check_temperature, daemon=True)
         self.thread_read_temperature.start()
 
-        self._configure_with_defaults_and_start_camera()
+        self._configure_camera()
 
     def _start_raw_camera_stream(self):
         """
@@ -340,7 +341,7 @@ class ToupcamCamera(AbstractCamera):
                     self._log.error("Temperature read callback failed due to error: " + repr(ex))
                     pass
 
-    def _configure_with_defaults_and_start_camera(self):
+    def _configure_camera(self):
         """
         Run our initial configuration to get the camera into a know and safe starting state.
         """
@@ -350,8 +351,6 @@ class ToupcamCamera(AbstractCamera):
         # set temperature
         self._set_fan_speed(1)
         self.set_temperature(20)
-
-        self._start_raw_camera_stream()
 
         self.set_frame_format(CameraFrameFormat.RAW)
         self.set_pixel_format(CameraPixelFormat.MONO16)  # 'MONO8'
