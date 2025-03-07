@@ -76,6 +76,7 @@ class Camera(object):
         self.set_temperature(15)  # temperature range: -15 - 15 degree Celcius
         print(self.get_temperature())
         #self.temperature_reading_thread.start()
+        self.cam.exp_res = 1  # Exposure resolution in microseconds
         self.cam.readout_port = 2  # Dynamic Range Mode
         self.cam.set_roi(440,440,2760,2760)  # Crop fov to 25mm
         self.log.info(f"Cropped area: {self.cam.shape(0)}")
@@ -159,13 +160,13 @@ class Camera(object):
 
     def set_exposure_time(self, exposure_time: float):
         if self.trigger_mode == TriggerMode.SOFTWARE:
-            adjusted = exposure_time
+            adjusted = exposure_time * 1000
         elif self.trigger_mode == TriggerMode.HARDWARE:
-            adjusted = self.strobe_delay_us / 1000 + exposure_time
+            adjusted = self.strobe_delay_us + exposure_time * 1000
             print(adjusted)
         try:
             print("setting exposure time")
-            self.cam.exp_time = adjusted  # ms
+            self.cam.exp_time = adjusted  # us
             self.exposure_time = exposure_time
         except Exception as e:
             self.log.error('set_exposure_time failed')
@@ -231,7 +232,6 @@ class Camera(object):
         self.log.info("read frame")
         frame, _, _ = self.cam.poll_frame()
         data = frame['pixel_data']
-        print("data returned")
         return data
 
     def start_streaming(self):
