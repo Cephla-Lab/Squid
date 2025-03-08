@@ -73,12 +73,12 @@ class Camera(object):
     def open(self):
         self.cam = next(PVCam.detect_camera())
         self.cam.open()
-        self.set_temperature(15)  # temperature range: -15 - 15 degree Celcius
         self.cam.exp_res = 1  # Exposure resolution in microseconds
         self.cam.readout_port = 2  # Dynamic Range Mode
         self.cam.set_roi(220,220,2760,2760)  # Crop fov to 25mm
         self.log.info(f"Cropped area: {self.cam.shape(0)}")
         self.calculate_strobe_delay()  # hard coded before implementing roi
+        self.set_temperature(15)  # temperature range: -15 - 15 degree Celcius
         #self.temperature_reading_thread.start()
         """
         port_speed_gain_table:
@@ -167,9 +167,17 @@ class Camera(object):
         elif self.trigger_mode == TriggerMode.HARDWARE:
             adjusted = self.strobe_delay_us + exposure_time * 1000
         try:
+            has_callback = self.callback_is_enabled
+            if has_callback:
+                self.disable_callback()
+            self.stop_streaming()
             print("setting exposure time")
             self.cam.exp_time = int(adjusted)  # us
             self.exposure_time = exposure_time  # ms
+            if has_callback:
+                self.enable_callback()
+            if not self.is_streaming:
+                self.start_streaming()
         except Exception as e:
             self.log.error('set_exposure_time failed')
             raise e
