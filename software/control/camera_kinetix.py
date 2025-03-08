@@ -74,13 +74,12 @@ class Camera(object):
         self.cam = next(PVCam.detect_camera())
         self.cam.open()
         self.set_temperature(15)  # temperature range: -15 - 15 degree Celcius
-        print(self.get_temperature())
-        #self.temperature_reading_thread.start()
         self.cam.exp_res = 1  # Exposure resolution in microseconds
         self.cam.readout_port = 2  # Dynamic Range Mode
-        self.cam.set_roi(440,440,2760,2760)  # Crop fov to 25mm
+        self.cam.set_roi(220,220,2760,2760)  # Crop fov to 25mm
         self.log.info(f"Cropped area: {self.cam.shape(0)}")
         self.calculate_strobe_delay()  # hard coded before implementing roi
+        #self.temperature_reading_thread.start()
         """
         port_speed_gain_table:
         {'Sensitivity': {'port_value': 0, 'Speed_0': {'speed_index': 0, 'pixel_time': 10, 'bit_depth': 12, 'gain_range': [1], 'Standard': {'gain_index': 1}}}, 
@@ -97,7 +96,7 @@ class Camera(object):
             self.stop_streaming()
         self.terminate_read_temperature_thread = True
         self.temperature_reading_callback = None
-        self.temperature_reading_thread.join()
+        #self.temperature_reading_thread.join()
         self.cam.close()
         pvc.uninit_pvcam()
 
@@ -180,7 +179,7 @@ class Camera(object):
 
     def set_temperature(self, temperature: float):
         try:
-            self.cam.temp_setpoint = temperature
+            self.cam.temp_setpoint = int(temperature)
         except Exception as e:
             self.log.error('set_temperature failed')
             raise e
@@ -255,12 +254,10 @@ class Camera(object):
     def send_trigger(self):
         try:
             self.cam.sw_trigger()
-            self.log.info('SW Trigger success')
         except Exception as e:
             self.log.error('sending trigger failed')
 
     def read_frame(self) -> np.ndarray:
-        self.log.info("read frame")
         try:
             frame, _, _ = self.cam.poll_frame()
             data = frame['pixel_data']
@@ -270,14 +267,12 @@ class Camera(object):
             return None
 
     def start_streaming(self):
-        self.log.info("start streaming")
         if self.is_streaming:
             return
         self.cam.start_live()
         self.is_streaming = True
 
     def stop_streaming(self):
-        self.log.info("stop streaming")
         self.cam.finish()
         if self.callback_is_enabled:
             self.disable_callback()
