@@ -151,8 +151,12 @@ class Camera(object):
         self.stop_waiting = True
         time.sleep(0.02)
         if hasattr(self, "callback_thread"):
-            self.send_trigger()
-        self.callback_thread.join()
+            try:
+                self.cam.abort()
+            except Exception as e:
+                self.log.error("abort failed")
+                raise e
+            self.callback_thread.join()
         self.callback_is_enabled = False
 
     def set_analog_gain(self, gain: float):
@@ -163,13 +167,13 @@ class Camera(object):
             adjusted = exposure_time * 1000
         elif self.trigger_mode == TriggerMode.HARDWARE:
             adjusted = self.strobe_delay_us + exposure_time * 1000
-            print(adjusted)
         try:
             print("setting exposure time")
-            self.cam.exp_time = adjusted  # us
-            self.exposure_time = exposure_time
+            self.cam.exp_time = int(adjusted)  # us
+            self.exposure_time = exposure_time  # ms
         except Exception as e:
             self.log.error('set_exposure_time failed')
+            raise e
 
     def set_temperature_reading_callback(self, func: Callable):
         self.temperature_reading_callback = func
@@ -179,6 +183,7 @@ class Camera(object):
             self.cam.temp_setpoint = temperature
         except Exception as e:
             self.log.error('set_temperature failed')
+            raise e
 
     def get_temperature(self) -> float:
         try:
@@ -198,25 +203,51 @@ class Camera(object):
 
     def set_continuous_acquisition(self):
         try:
+            has_callback = self.callback_is_enabled
+            if has_callback:
+                self.disable_callback()
+            self.stop_streaming()
             self.cam.exp_mode = 'Internal Trigger'
             self.trigger_mode = TriggerMode.CONTINUOUS
+            if has_callback:
+                self.enable_callback()
+            if not self.is_streaming:
+                self.start_streaming()
         except Exception as e:
             self.log.error('set_continuous_acquisition failed')
-
+            raise e
     def set_software_triggered_acquisition(self):
         try:
+            has_callback = self.callback_is_enabled
+            if has_callback:
+                self.disable_callback()
+            self.stop_streaming()
             self.cam.exp_mode = 'Software Trigger Edge'
             self.trigger_mode = TriggerMode.SOFTWARE
+            if has_callback:
+                self.enable_callback()
+            if not self.is_streaming:
+                self.start_streaming()
         except Exception as e:
             self.log.error('set_software_triggered_acquisition failed')
+            raise e
 
     def set_hardware_triggered_acquisition(self):
         try:
+            has_callback = self.callback_is_enabled
+            if has_callback:
+                self.disable_callback()
+            self.stop_streaming()
             self.cam.exp_mode = 'Edge Trigger'
             self.frame_ID_offset_hardware_trigger = None
             self.trigger_mode = TriggerMode.HARDWARE
+            if has_callback:
+                self.enable_callback()
+            if not self.is_streaming:
+                self.start_streaming()
         except Exception as e:
             self.log.error('set_hardware_triggered_acquisition failed')
+            raise e
 
     def set_pixel_format(self, pixel_format: str):
         pass
@@ -230,9 +261,13 @@ class Camera(object):
 
     def read_frame(self) -> np.ndarray:
         self.log.info("read frame")
-        frame, _, _ = self.cam.poll_frame()
-        data = frame['pixel_data']
-        return data
+        try:
+            frame, _, _ = self.cam.poll_frame()
+            data = frame['pixel_data']
+            return data
+        except Exception as e:
+            self.log.error('poll frame interrupted')
+            return None
 
     def start_streaming(self):
         self.log.info("start streaming")
@@ -243,13 +278,9 @@ class Camera(object):
 
     def stop_streaming(self):
         self.log.info("stop streaming")
-        """
-        try:
-            self.cam.finish()
-        except Exception as e:
-            # The camera cannot stop live properly. This also happens in their example code.
-            print(e)
-        """
+        self.cam.finish()
+        if self.callback_is_enabled:
+            self.disable_callback()
         self.is_streaming = False
 
     def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
