@@ -43,7 +43,9 @@ def get_camera(
         if config.camera_type == CameraVariant.TOUPCAM:
             import control.camera_toupcam
 
-            camera = control.camera_toupcam.Camera(config)
+            camera = control.camera_toupcam.ToupcamCamera(
+                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+            )
         elif config.camera_type == CameraVariant.FLIR:
             import control.camera_flir
 
@@ -74,6 +76,8 @@ def get_camera(
         # NOTE(imo): All of these things are hacks before complete migration to AbstractCamera impls.  They can
         # be removed once all the cameras conform to the AbstractCamera interface.
         open_if_needed(camera)
+
+        return camera
     except ImportError as e:
         _log.warning(f"Camera of type: '{config.camera_type}' failed to import.  Falling back to default camera impl.")
         _log.warning(e)
