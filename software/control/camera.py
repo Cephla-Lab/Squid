@@ -1,7 +1,12 @@
 import argparse
+from typing import Optional, Tuple, Sequence, Callable
+
 import cv2
 import time
 import numpy as np
+
+from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrame, CameraGainRange, CameraFrameFormat
+from squid.config import CameraConfig
 
 try:
     import control.gxipy as gx
@@ -31,9 +36,6 @@ class Camera(object):
         # many to be purged
         self.sn = sn
         self.is_global_shutter = is_global_shutter
-        self.device_manager = gx.DeviceManager()
-        self.device_info_list = None
-        self.device_index = 0
         self.camera = None
         self.is_color = None
         self.gamma_lut = None
@@ -446,179 +448,111 @@ class Camera(object):
         self.camera.LineMode.set(gx.GxLineModeEntry.OUTPUT)
         self.camera.LineSource.set(gx.GxLineSourceEntry.EXPOSURE_ACTIVE)
 
+class DefaultCamera(AbstractCamera):
+    @staticmethod
+    def _open(sn=None, index=None):
+        if sn is None and index is None:
+            raise ValueError("You must specify a serial number or index of camera to open.")
 
-class Camera_Simulation(object):
+        device_manager = gx.DeviceManager()
 
-    def __init__(self, sn=None, is_global_shutter=False, rotate_image_angle=None, flip_image=None):
-        # many to be purged
-        self.sn = sn
-        self.is_global_shutter = is_global_shutter
-        self.device_info_list = None
-        self.device_index = 0
-        self.camera = None
-        self.is_color = None
-        self.gamma_lut = None
-        self.contrast_lut = None
-        self.color_correction_param = None
 
-        self.rotate_image_angle = rotate_image_angle
-        self.flip_image = flip_image
+    def __init__(self, camera_config: CameraConfig, hw_trigger_fn: Optional[Callable[[Optional[float]], bool]],
+                 hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]]):
+        super().__init__(camera_config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
 
-        self.exposure_time = 0
-        self.analog_gain = 0
-        self.frame_ID = 0
-        self.frame_ID_software = -1
-        self.frame_ID_offset_hardware_trigger = 0
-        self.timestamp = 0
-
-        self.image_locked = False
-        self.current_frame = None
-
-        self.callback_is_enabled = False
-        self.is_streaming = False
-
-        self.GAIN_MAX = 24
-        self.GAIN_MIN = 0
-        self.GAIN_STEP = 1
-        self.EXPOSURE_TIME_MS_MIN = 0.01
-        self.EXPOSURE_TIME_MS_MAX = 4000
-
-        self.trigger_mode = None
-        self.pixel_size_byte = 1
-
-        # below are values for IMX226 (MER2-1220-32U3M) - to make configurable
-        self.row_period_us = 10
-        self.row_numbers = 3036
-        self.exposure_delay_us_8bit = 650
-        self.exposure_delay_us = self.exposure_delay_us_8bit * self.pixel_size_byte
-        self.strobe_delay_us = self.exposure_delay_us + self.row_period_us * self.pixel_size_byte * (
-            self.row_numbers - 1
-        )
-
-        self.pixel_format = "MONO8"
-
-        self.is_live = False
-
-        self.Width = Acquisition.CROP_WIDTH
-        self.Height = Acquisition.CROP_HEIGHT
-        # self.resolution=(self.Width,self.Height)
-        # self.res_list = [(1000,1000), (2000,2000), (3000,3000), (4000,3000)]
-        self.WidthMax = 4000
-        self.HeightMax = 3000
-        self.OffsetX = 0
-        self.OffsetY = 0
-
-        self.new_image_callback_external = None
-
-    def open(self, index=0):
+    def set_exposure_time(self, exposure_time_ms: float):
         pass
 
-    def set_callback(self, function):
-        self.new_image_callback_external = function
-
-    def enable_callback(self):
-        self.callback_is_enabled = True
-
-    def disable_callback(self):
-        self.callback_is_enabled = False
-
-    def open_by_sn(self, sn):
+    def get_exposure_time(self) -> float:
         pass
 
-    def close(self):
+    def get_exposure_limits(self) -> Tuple[float, float]:
         pass
 
-    def set_exposure_time(self, exposure_time):
+    def get_strobe_time(self) -> float:
         pass
 
-    def update_camera_exposure_time(self):
+    def set_frame_format(self, frame_format: CameraFrameFormat):
         pass
 
-    def set_analog_gain(self, analog_gain):
+    def get_frame_format(self) -> CameraFrameFormat:
         pass
 
-    def get_awb_ratios(self):
+    def set_pixel_format(self, pixel_format: squid.config.CameraPixelFormat):
         pass
 
-    def set_wb_ratios(self, wb_r=None, wb_g=None, wb_b=None):
+    def get_pixel_format(self) -> squid.config.CameraPixelFormat:
         pass
 
-    def set_balance_white_auto(self, value):
+    def set_resolution(self, width: int, height: int):
         pass
 
-    def get_balance_white_auto(self):
-        return 0
+    def get_resolution(self) -> Tuple[int, int]:
+        pass
 
-    def get_is_color(self):
-        return False
+    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
+        pass
+
+    def set_analog_gain(self, analog_gain: float):
+        pass
+
+    def get_analog_gain(self) -> float:
+        pass
+
+    def get_gain_range(self) -> CameraGainRange:
+        pass
 
     def start_streaming(self):
-        self.frame_ID_software = 0
+        pass
 
     def stop_streaming(self):
         pass
 
-    def set_pixel_format(self, pixel_format):
-        self.pixel_format = pixel_format
-        print(pixel_format)
-        self.frame_ID = 0
-
-    def set_continuous_acquisition(self):
+    def get_is_streaming(self):
         pass
 
-    def set_software_triggered_acquisition(self):
+    def read_camera_frame(self) -> CameraFrame:
         pass
 
-    def set_hardware_triggered_acquisition(self):
+    def get_frame_id(self) -> int:
         pass
 
-    def send_trigger(self):
-        self.frame_ID = self.frame_ID + 1
-        self.timestamp = time.time()
-        if self.frame_ID == 1:
-            if self.pixel_format == "MONO8":
-                self.current_frame = np.random.randint(255, size=(self.Height, self.Width), dtype=np.uint8)
-                self.current_frame[
-                    self.Height // 2 - 99 : self.Height // 2 + 100, self.Width // 2 - 99 : self.Width // 2 + 100
-                ] = 200
-            elif self.pixel_format == "MONO12":
-                self.current_frame = np.random.randint(4095, size=(self.Height, self.Width), dtype=np.uint16)
-                self.current_frame[
-                    self.Height // 2 - 99 : self.Height // 2 + 100, self.Width // 2 - 99 : self.Width // 2 + 100
-                ] = (200 * 16)
-                self.current_frame = self.current_frame << 4
-            elif self.pixel_format == "MONO16":
-                self.current_frame = np.random.randint(65535, size=(self.Height, self.Width), dtype=np.uint16)
-                self.current_frame[
-                    self.Height // 2 - 99 : self.Height // 2 + 100, self.Width // 2 - 99 : self.Width // 2 + 100
-                ] = (200 * 256)
-        else:
-            self.current_frame = np.roll(self.current_frame, 10, axis=0)
-            pass
-            # self.current_frame = np.random.randint(255,size=(768,1024),dtype=np.uint8)
-        if self.new_image_callback_external is not None and self.callback_is_enabled:
-            self.new_image_callback_external(self)
-
-    def read_frame(self):
-        return self.current_frame
-        """
-        # read from disk for laser af debugging
-        image = cv2.imread("tests/data/laser_af_camera.png")[:, :, 0]
-        height, width = image.shape
-        return image + np.random.randint(0, 10, size=(height, width), dtype=np.uint8)
-        """
-
-    def _on_frame_callback(self, user_param, raw_image):
+    def get_white_balance_gains(self) -> Tuple[float, float, float]:
         pass
 
-    def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
+    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
         pass
 
-    def reset_camera_acquisition_counter(self):
+    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
         pass
 
-    def set_line3_to_strobe(self):
+    def set_black_level(self, black_level: float):
         pass
 
-    def set_line3_to_exposure_active(self):
+    def get_black_level(self) -> float:
+        pass
+
+    def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
+        pass
+
+    def get_acquisition_mode(self) -> CameraAcquisitionMode:
+        pass
+
+    def send_trigger(self, illumination_time: Optional[float] = None):
+        pass
+
+    def get_ready_for_trigger(self) -> bool:
+        pass
+
+    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+        pass
+
+    def get_region_of_interest(self) -> Tuple[int, int, int, int]:
+        pass
+
+    def set_temperature(self, temperature_deg_c: Optional[float]):
+        pass
+
+    def get_temperature(self) -> float:
         pass
