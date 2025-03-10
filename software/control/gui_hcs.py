@@ -537,17 +537,27 @@ class HighContentScreeningGui(QMainWindow):
             if HOMING_ENABLED_Z:
                 self.log.info("Homing the Z axis...")
                 self.stage.home(x=False, y=False, z=True, theta=False)
+
             if HOMING_ENABLED_X and HOMING_ENABLED_Y:
+                # The plate clamp actuation post can get in the way of homing if we start with
+                # the stage in "just the wrong" position.  Blindly moving the Y out 20, then the
+                # x over 20, guarantees we'll clear the post for homing.  If we are <20mm from the
+                # end travel of either axis, we'll just stop at the extent without consequence.
+                #
+                # The one odd corner case is if the system gets shut down in the loading position.
+                # in that case, we drive off of the loading position and the clamp closes quickly.
+                # This doesn't seem to cause problems, and there isn't a clean way to avoid the corner
+                # case.
+                self.log.info("Moving y+20, then x+20 to make sure system is clear for homing.")
+                self.stage.move_y(20)
+                self.stage.move_x(20)
+
                 self.log.info("Homing the X and Y axes...")
                 self.stage.home(x=False, y=True, z=False, theta=False)
                 self.stage.home(x=True, y=False, z=False, theta=False)
                 self.slidePositionController.homing_done = True
             if USE_ZABER_EMISSION_FILTER_WHEEL:
                 self.emission_filter_wheel.wait_for_homing_complete()
-            # TODO(imo): Why do we move to 20 after homing here?
-            if HOMING_ENABLED_X and HOMING_ENABLED_Y:
-                self.stage.move_x(20)
-                self.stage.move_y(20)
 
             if HAS_OBJECTIVE_PIEZO:
                 OUTPUT_GAINS.CHANNEL7_GAIN = OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE == 5
