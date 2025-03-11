@@ -1,4 +1,5 @@
 import dataclasses
+from contextlib import contextmanager
 from abc import ABC, abstractmethod
 from typing import Callable, Optional, Tuple, Sequence, List
 import abc
@@ -282,6 +283,17 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         # to do more than that.
         self._frame_callbacks: List[Tuple[int, Callable[[CameraFrame], None]]] = []
         self._frame_callbacks_enabled = True
+
+    @contextmanager
+    def _pause_streaming(self):
+        was_streaming = self.get_is_streaming()
+        try:
+            if was_streaming:
+                self.stop_streaming()
+            yield
+        finally:
+            if was_streaming:
+                self.start_streaming()
 
     def enable_callbacks(self, enabled: bool):
         """
