@@ -2266,6 +2266,9 @@ class MultiPointController(QObject):
     def set_base_path(self, path):
         self.base_path = path
 
+    def set_use_fluidics(self, use_fluidics):
+        self.use_fluidics = use_fluidics
+
     def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
         self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")

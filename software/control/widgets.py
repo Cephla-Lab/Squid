@@ -2291,7 +2291,6 @@ class FlexibleMultiPointWidget(QFrame):
         self.is_current_acquisition_widget = False
         self.acquisition_in_place = False
         self.parent = self.multipointController.parent
-        self.multipointController.use_fluidics = False
 
     def add_components(self):
         self.btn_setSavingDir = QPushButton("Browse")
@@ -2969,7 +2968,7 @@ class FlexibleMultiPointWidget(QFrame):
                 z = self.stage.get_pos().z_mm
                 dz = self.entry_deltaZ.value()
                 Nz = self.entry_NZ.value()
-                self.multipointController.set_z_range(z, z + dz * (Nz - 1))
+                self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
 
             if self.checkbox_useFocusMap.isChecked():
                 self.focusMapWidget.fit_surface()
@@ -2987,6 +2986,7 @@ class FlexibleMultiPointWidget(QFrame):
             self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
             self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
             self.multipointController.set_base_path(self.lineEdit_savingDir.text())
+            self.multipointController.set_use_fluidics(False)
             self.multipointController.set_selected_configurations(
                 (item.text() for item in self.list_configurations.selectedItems())
             )
@@ -3493,7 +3493,6 @@ class WellplateMultiPointWidget(QFrame):
         self.eta_seconds = 0
         self.is_current_acquisition_widget = False
         self.parent = self.multipointController.parent
-        self.multipointController.use_fluidics = False
 
         # TODO (hl): these along with update_live_coordinates need to move out of this class
         self._last_update_time = 0
@@ -4173,6 +4172,7 @@ class WellplateMultiPointWidget(QFrame):
             self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
             self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
             self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+            self.multipointController.set_use_fluidics(False)
             self.multipointController.set_selected_configurations(
                 [item.text() for item in self.list_configurations.selectedItems()]
             )
@@ -4411,7 +4411,6 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.eta_seconds = 0
         self.is_current_acquisition_widget = False
         self.parent = self.multipointController.parent
-        self.multipointController.use_fluidics = True
 
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -4605,6 +4604,7 @@ class MultiPointWithFluidicsWidget(QFrame):
             self.multipointController.set_NZ(self.entry_NZ.value())
             self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
             self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+            self.multipointController.set_use_fluidics(True)  # may be set to False from other widgets
             self.multipointController.set_selected_configurations(
                 [item.text() for item in self.list_configurations.selectedItems()]
             )
