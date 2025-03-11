@@ -441,29 +441,33 @@ class ToupcamCamera(AbstractCamera):
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
             elif pixel_format == CameraPixelFormat.MONO16:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
+            else:
+                raise ValueError(f"Unsupported pixel format: {pixel_format=}")
         else:
             # RGB data format
             if pixel_format == CameraPixelFormat.MONO8:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 3)  # for monochrome camera only
-            if pixel_format == CameraPixelFormat.MONO12:
+            elif pixel_format == CameraPixelFormat.MONO12:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
-            if pixel_format == CameraPixelFormat.MONO14:
+            elif pixel_format == CameraPixelFormat.MONO14:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
-            if pixel_format == CameraPixelFormat.MONO16:
+            elif pixel_format == CameraPixelFormat.MONO16:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 4)  # for monochrome camera only
-            if pixel_format == CameraPixelFormat.RGB24:
+            elif pixel_format == CameraPixelFormat.RGB24:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 0)
-            if pixel_format == CameraPixelFormat.RGB32:
+            elif pixel_format == CameraPixelFormat.RGB32:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 2)
-            if pixel_format == CameraPixelFormat.RGB48:
+            elif pixel_format == CameraPixelFormat.RGB48:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1)
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_RGB, 1)
+            else:
+                raise ValueError(f"Unsupported pixel format: {pixel_format=}")
 
         # NOTE(imo): Ideally we'd query pixel_format from the device instead of storing the state here, but it's
         # impossible to do so - the settings for a particular depth are not unique.  EG MONO12 and MONO14 both
@@ -647,6 +651,8 @@ class ToupcamCamera(AbstractCamera):
             time.sleep(0.001)
 
         self._log.error(f"Timed out after {timeout_s} [s] waiting for a frame.")
+
+        return None
 
     def get_frame_id(self) -> int:
         return self._current_frame.frame_id if self._current_frame else -1
