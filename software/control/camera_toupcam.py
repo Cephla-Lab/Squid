@@ -1,5 +1,4 @@
 import math
-from contextlib import contextmanager
 import time
 from typing import Optional, Tuple, Sequence
 
@@ -363,17 +362,6 @@ class ToupcamCamera(AbstractCamera):
         self._set_fan_speed(0)
         self._camera.Close()
         self._camera = None
-
-    @contextmanager
-    def _pause_streaming(self):
-        was_streaming = self.get_is_streaming()
-        try:
-            if was_streaming:
-                self.stop_streaming()
-            yield
-        finally:
-            if was_streaming:
-                self.start_streaming()
 
     def start_streaming(self):
         self._log.info("start streaming requested")
