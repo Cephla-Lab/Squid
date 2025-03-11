@@ -1,12 +1,15 @@
 import argparse
+import threading
 from typing import Optional, Tuple, Sequence, Callable
 
 import cv2
 import time
 import numpy as np
+import pydantic
 
+from control.gxipy import RawImage
 from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrame, CameraGainRange, CameraFrameFormat
-from squid.config import CameraConfig
+from squid.config import CameraConfig, CameraPixelFormat
 
 try:
     import control.gxipy as gx
@@ -73,264 +76,13 @@ class Camera(object):
         self.exposure_delay_us_8bit = 650
         self.exposure_delay_us = self.exposure_delay_us_8bit * self.pixel_size_byte
         self.strobe_delay_us = self.exposure_delay_us + self.row_period_us * self.pixel_size_byte * (
-            self.row_numbers - 1
+                self.row_numbers - 1
         )
 
         self.pixel_format = None  # use the default pixel format
 
         self.is_live = False  # this determines whether a new frame received will be handled in the streamHandler
         # mainly for discarding the last frame received after stop_live() is called, where illumination is being turned off during exposure
-
-    def open(self, index=0):
-        (device_num, self.device_info_list) = self.device_manager.update_device_list()
-        if device_num == 0:
-            raise RuntimeError("Could not find any USB camera devices!")
-        if self.sn is None:
-            self.device_index = index
-            self.camera = self.device_manager.open_device_by_index(index + 1)
-        else:
-            self.camera = self.device_manager.open_device_by_sn(self.sn)
-        self.is_color = self.camera.PixelColorFilter.is_implemented()
-        # self._update_image_improvement_params()
-        # self.camera.register_capture_callback(self,self._on_frame_callback)
-        if self.is_color:
-            # self.set_wb_ratios(self.get_awb_ratios())
-            print(self.get_awb_ratios())
-            # self.set_wb_ratios(1.28125,1.0,2.9453125)
-            # self.set_wb_ratios(2,1,2)
-            self.set_wb_ratios(AWB_RATIOS_R, AWB_RATIOS_G, AWB_RATIOS_B)
-
-        # temporary
-        self.camera.AcquisitionFrameRate.set(1000)
-        self.camera.AcquisitionFrameRateMode.set(gx.GxSwitchEntry.ON)
-
-        # turn off device link throughput limit
-        self.camera.DeviceLinkThroughputLimitMode.set(gx.GxSwitchEntry.OFF)
-
-        # get sensor parameters
-        self.Width = self.camera.Width.get()
-        self.Height = self.camera.Height.get()
-        self.WidthMax = self.camera.WidthMax.get()
-        self.HeightMax = self.camera.HeightMax.get()
-        self.OffsetX = self.camera.OffsetX.get()
-        self.OffsetY = self.camera.OffsetY.get()
-
-    def set_callback(self, function):
-        self.new_image_callback_external = function
-
-    def enable_callback(self):
-        if self.callback_is_enabled == False:
-            # stop streaming
-            if self.is_streaming:
-                was_streaming = True
-                self.stop_streaming()
-            else:
-                was_streaming = False
-            # enable callback
-            user_param = None
-            self.camera.register_capture_callback(user_param, self._on_frame_callback)
-            self.callback_is_enabled = True
-            # resume streaming if it was on
-            if was_streaming:
-                self.start_streaming()
-            self.callback_is_enabled = True
-        else:
-            pass
-
-    def disable_callback(self):
-        if self.callback_is_enabled == True:
-            # stop streaming
-            if self.is_streaming:
-                was_streaming = True
-                self.stop_streaming()
-            else:
-                was_streaming = False
-            # disable call back
-            self.camera.unregister_capture_callback()
-            self.callback_is_enabled = False
-            # resume streaming if it was on
-            if was_streaming:
-                self.start_streaming()
-        else:
-            pass
-
-    def open_by_sn(self, sn):
-        (device_num, self.device_info_list) = self.device_manager.update_device_list()
-        if device_num == 0:
-            raise RuntimeError("Could not find any USB camera devices!")
-        self.camera = self.device_manager.open_device_by_sn(sn)
-        self.is_color = self.camera.PixelColorFilter.is_implemented()
-        self._update_image_improvement_params()
-
-        """
-        if self.is_color is True:
-            self.camera.register_capture_callback(_on_color_frame_callback)
-        else:
-            self.camera.register_capture_callback(_on_frame_callback)
-        """
-
-    def close(self):
-        self.camera.close_device()
-        self.device_info_list = None
-        self.camera = None
-        self.is_color = None
-        self.gamma_lut = None
-        self.contrast_lut = None
-        self.color_correction_param = None
-        self.last_raw_image = None
-        self.last_converted_image = None
-        self.last_numpy_image = None
-
-    def set_exposure_time(self, exposure_time):
-        use_strobe = self.trigger_mode == TriggerMode.HARDWARE  # true if using hardware trigger
-        if use_strobe == False or self.is_global_shutter:
-            self.exposure_time = exposure_time
-            self.camera.ExposureTime.set(exposure_time * 1000)
-        else:
-            # set the camera exposure time such that the active exposure time (illumination on time) is the desired value
-            self.exposure_time = exposure_time
-            # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
-            camera_exposure_time = (
-                self.exposure_delay_us
-                + self.exposure_time * 1000
-                + self.row_period_us * self.pixel_size_byte * (self.row_numbers - 1)
-                + 500
-            )  # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
-            self.camera.ExposureTime.set(camera_exposure_time)
-
-    def update_camera_exposure_time(self):
-        use_strobe = self.trigger_mode == TriggerMode.HARDWARE  # true if using hardware trigger
-        if use_strobe == False or self.is_global_shutter:
-            self.camera.ExposureTime.set(self.exposure_time * 1000)
-        else:
-            camera_exposure_time = (
-                self.exposure_delay_us
-                + self.exposure_time * 1000
-                + self.row_period_us * self.pixel_size_byte * (self.row_numbers - 1)
-                + 500
-            )  # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
-            self.camera.ExposureTime.set(camera_exposure_time)
-
-    def set_analog_gain(self, analog_gain):
-        self.analog_gain = analog_gain
-        self.camera.Gain.set(analog_gain)
-
-    def get_awb_ratios(self):
-        self.camera.BalanceWhiteAuto.set(2)
-        self.camera.BalanceRatioSelector.set(0)
-        awb_r = self.camera.BalanceRatio.get()
-        self.camera.BalanceRatioSelector.set(1)
-        awb_g = self.camera.BalanceRatio.get()
-        self.camera.BalanceRatioSelector.set(2)
-        awb_b = self.camera.BalanceRatio.get()
-        return (awb_r, awb_g, awb_b)
-
-    def set_wb_ratios(self, wb_r=None, wb_g=None, wb_b=None):
-        self.camera.BalanceWhiteAuto.set(0)
-        if wb_r is not None:
-            self.camera.BalanceRatioSelector.set(0)
-            awb_r = self.camera.BalanceRatio.set(wb_r)
-        if wb_g is not None:
-            self.camera.BalanceRatioSelector.set(1)
-            awb_g = self.camera.BalanceRatio.set(wb_g)
-        if wb_b is not None:
-            self.camera.BalanceRatioSelector.set(2)
-            awb_b = self.camera.BalanceRatio.set(wb_b)
-
-    def set_balance_white_auto(self, value):
-        if value in [0, 1, 2]:
-            if self.camera.BalanceWhiteAuto.is_implemented():
-                if self.camera.BalanceWhiteAuto.is_writable():
-                    self.camera.BalanceWhiteAuto.set(value)
-
-    def get_balance_white_auto(self):
-        if self.camera.BalanceWhiteAuto.is_implemented():
-            if self.camera.BalanceWhiteAuto.is_readable():
-                return self.camera.BalanceWhiteAuto.get()
-
-    def get_is_color(self):
-        return self.is_color
-
-    def set_reverse_x(self, value):
-        self.camera.ReverseX.set(value)
-
-    def set_reverse_y(self, value):
-        self.camera.ReverseY.set(value)
-
-    def start_streaming(self):
-        self.camera.stream_on()
-        self.is_streaming = True
-
-    def stop_streaming(self):
-        self.camera.stream_off()
-        self.is_streaming = False
-
-    def set_pixel_format(self, pixel_format):
-        if self.is_streaming == True:
-            was_streaming = True
-            self.stop_streaming()
-        else:
-            was_streaming = False
-
-        if self.camera.PixelFormat.is_implemented() and self.camera.PixelFormat.is_writable():
-            if pixel_format == "MONO8":
-                self.camera.PixelFormat.set(gx.GxPixelFormatEntry.MONO8)
-                self.pixel_size_byte = 1
-            if pixel_format == "MONO10":
-                self.camera.PixelFormat.set(gx.GxPixelFormatEntry.MONO10)
-                self.pixel_size_byte = 1
-            if pixel_format == "MONO12":
-                self.camera.PixelFormat.set(gx.GxPixelFormatEntry.MONO12)
-                self.pixel_size_byte = 2
-            if pixel_format == "MONO14":
-                self.camera.PixelFormat.set(gx.GxPixelFormatEntry.MONO14)
-                self.pixel_size_byte = 2
-            if pixel_format == "MONO16":
-                self.camera.PixelFormat.set(gx.GxPixelFormatEntry.MONO16)
-                self.pixel_size_byte = 2
-            if pixel_format == "BAYER_RG8":
-                self.camera.PixelFormat.set(gx.GxPixelFormatEntry.BAYER_RG8)
-                self.pixel_size_byte = 1
-            if pixel_format == "BAYER_RG12":
-                self.camera.PixelFormat.set(gx.GxPixelFormatEntry.BAYER_RG12)
-                self.pixel_size_byte = 2
-            self.pixel_format = pixel_format
-        else:
-            print("pixel format is not implemented or not writable")
-
-        if was_streaming:
-            self.start_streaming()
-
-        # update the exposure delay and strobe delay
-        self.exposure_delay_us = self.exposure_delay_us_8bit * self.pixel_size_byte
-        self.strobe_delay_us = self.exposure_delay_us + self.row_period_us * self.pixel_size_byte * (
-            self.row_numbers - 1
-        )
-
-    def set_continuous_acquisition(self):
-        self.camera.TriggerMode.set(gx.GxSwitchEntry.OFF)
-        self.trigger_mode = TriggerMode.CONTINUOUS
-        self.update_camera_exposure_time()
-
-    def set_software_triggered_acquisition(self):
-        self.camera.TriggerMode.set(gx.GxSwitchEntry.ON)
-        self.camera.TriggerSource.set(gx.GxTriggerSourceEntry.SOFTWARE)
-        self.trigger_mode = TriggerMode.SOFTWARE
-        self.update_camera_exposure_time()
-
-    def set_hardware_triggered_acquisition(self):
-        self.camera.TriggerMode.set(gx.GxSwitchEntry.ON)
-        self.camera.TriggerSource.set(gx.GxTriggerSourceEntry.LINE2)  # LINE0 requires 7 mA min
-        # self.camera.TriggerSource.set(gx.GxTriggerActivationEntry.RISING_EDGE)
-        self.frame_ID_offset_hardware_trigger = None
-        self.trigger_mode = TriggerMode.HARDWARE
-        self.update_camera_exposure_time()
-
-    def send_trigger(self):
-        if self.is_streaming:
-            self.camera.TriggerSoftware.send_command()
-        else:
-            print("trigger not sent - camera is not streaming")
 
     def read_frame(self):
         raw_image = self.camera.data_stream[self.device_index].get_image()
@@ -380,62 +132,6 @@ class Camera(object):
         # self.frameID = self.frameID + 1
         # print(self.frameID)
 
-    def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
-
-        # stop streaming if streaming is on
-        if self.is_streaming == True:
-            was_streaming = True
-            self.stop_streaming()
-        else:
-            was_streaming = False
-
-        if width is not None:
-            self.Width = width
-            # update the camera setting
-            if self.camera.Width.is_implemented() and self.camera.Width.is_writable():
-                self.camera.Width.set(self.Width)
-            else:
-                print("Width is not implemented or not writable")
-
-        if height is not None:
-            self.Height = height
-            # update the camera setting
-            if self.camera.Height.is_implemented() and self.camera.Height.is_writable():
-                self.camera.Height.set(self.Height)
-            else:
-                print("Height is not implemented or not writable")
-
-        if offset_x is not None:
-            self.OffsetX = offset_x
-            # update the camera setting
-            if self.camera.OffsetX.is_implemented() and self.camera.OffsetX.is_writable():
-                self.camera.OffsetX.set(self.OffsetX)
-            else:
-                print("OffsetX is not implemented or not writable")
-
-        if offset_y is not None:
-            self.OffsetY = offset_y
-            # update the camera setting
-            if self.camera.OffsetY.is_implemented() and self.camera.OffsetY.is_writable():
-                self.camera.OffsetY.set(self.OffsetY)
-            else:
-                print("OffsetY is not implemented or not writable")
-
-        # restart streaming if it was previously on
-        if was_streaming == True:
-            self.start_streaming()
-
-    def reset_camera_acquisition_counter(self):
-        if self.camera.CounterEventSource.is_implemented() and self.camera.CounterEventSource.is_writable():
-            self.camera.CounterEventSource.set(gx.GxCounterEventSourceEntry.LINE2)
-        else:
-            print("CounterEventSource is not implemented or not writable")
-
-        if self.camera.CounterReset.is_implemented():
-            self.camera.CounterReset.send_command()
-        else:
-            print("CounterReset is not implemented")
-
     def set_line3_to_strobe(self):
         # self.camera.StrobeSwitch.set(gx.GxSwitchEntry.ON)
         self.camera.LineSelector.set(gx.GxLineSelectorEntry.LINE3)
@@ -448,6 +144,17 @@ class Camera(object):
         self.camera.LineMode.set(gx.GxLineModeEntry.OUTPUT)
         self.camera.LineSource.set(gx.GxLineSourceEntry.EXPOSURE_ACTIVE)
 
+
+class DefaultCameraCapabilities(pydantic.BaseModel):
+    is_color: bool
+    gettable_pixel_format: bool
+    settable_pixel_format: bool
+    settable_roi: bool
+    black_level: bool
+    white_balance: bool
+    auto_white_balance: bool
+
+
 class DefaultCamera(AbstractCamera):
     @staticmethod
     def _open(sn=None, index=None):
@@ -456,103 +163,387 @@ class DefaultCamera(AbstractCamera):
 
         device_manager = gx.DeviceManager()
 
+        if sn:
+            camera = device_manager.open_device_by_sn(sn)
+        else:
+            # The device manager uses 1 index starting, but our convention is 0 index starting.
+            camera = device_manager.open_device_by_index(index + 1)
+
+        capabilities = DefaultCameraCapabilities(
+            is_color=camera.PixelColorFilter.is_implemented(),
+            gettable_pixel_format=camera.PixelFormat.is_readable(),
+            settable_pixel_format=camera.PixelFormat.is_writable(),
+            settable_roi=(
+                    camera.Width.is_writable() and camera.Height.is_writable()
+                    and camera.OffsetX.is_writable() and camera.OffsetY.is_writable()),
+            black_level=(camera.BlackLevel.is_implemented() and camera.BlackLevel.is_writable()),
+            white_balance=(camera.BalanceRatio.is_implemented() and camera.BalanceRatio.is_writable()
+                           and camera.BalanceRatioSelector.is_implemented() and camera.BalanceRatioSelector.is_writable()),
+            auto_white_balance=(camera.BalanceWhiteAuto.is_implemented() and camera.BalanceWhiteAuto.is_writable())
+        )
+
+        # NOTE(imo): In our previous driver, we did all these as defaults/prep to make things down the line work.
+        # We do the same here, although we can probably remove some of them.
+        camera.AcquisitionFrameRate.set(1000)
+        camera.AcquisitionFrameRateMode.set(gx.GxSwitchEntry.ON)
+        camera.DeviceLinkThroughputLimitMode.set(gx.GxSwitchEntry.OFF)
+
+        return (camera, capabilities)
 
     def __init__(self, camera_config: CameraConfig, hw_trigger_fn: Optional[Callable[[Optional[float]], bool]],
                  hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]]):
         super().__init__(camera_config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
 
+        (self._camera, self._capabilities) = DefaultCamera._open(index=0)
+
+        # TODO/NOTE(imo): Need to test if self as user_param is correct here, of it sends self for us.
+        self._camera.register_capture_callback(self, self._frame_callback)
+
+        if self._config.default_white_balance_gains is not None:
+            default_wb = self._config.default_white_balance_gains
+            self.set_white_balance_gains(default_wb.r, default_wb.g, default_wb.b)
+
+        # Since we might need to use a strobe delay, the value stored in the camera's driver can't be
+        # used to back out the requested exposure time easily.  So we keep track of it ourselves.
+        self._exposure_time_ms = 0
+
+        self._in_trigger = False
+        self._last_trigger_timestamp = 0
+
+        # To modify the current frame, you must hold the frame lock.
+        self._frame_lock = threading.Lock()
+        self._current_frame: Optional[CameraFrame] = None
+
+    def __del__(self):
+        try:
+            if self._camera:
+                self._camera.close_device()
+        except AttributeError:
+            # If init fails before we create the camera, we'll get here.  That's fine - just move along.
+            pass
+
+    def _frame_callback(self, raw_image: RawImage):
+        with self._frame_lock:
+            this_frame_id = (self._current_frame.frame_id if self._current_frame else 0) + 1
+            this_timestamp = time.time()
+            this_frame_format = self.get_frame_format()
+            this_pixel_format = self.get_pixel_format()
+
+            self._in_trigger = False
+            current_pixel_format = self.get_pixel_format()
+            if CameraPixelFormat.is_color_format(current_pixel_format):
+                rgb_image = raw_image.convert("RGB")
+                numpy_image = rgb_image.get_numpy_array()
+                if current_pixel_format == CameraPixelFormat.BAYER_RG12:
+                    numpy_image = numpy_image << 4
+            else:
+                numpy_image = raw_image.get_numpy_array()
+                if current_pixel_format == CameraPixelFormat.MONO12:
+                    numpy_image = numpy_image << 4
+
+            processed_image = self._process_raw_frame(numpy_image)
+
+            current_frame = CameraFrame(
+                frame_id = this_frame_id,
+                timestamp = this_timestamp,
+                frame = processed_image,
+                frame_format = this_frame_format,
+                frame_pixel_format = this_pixel_format
+            )
+            self._current_frame = current_frame
+
+        # Propagate the local copy so we are sure it's the correct frame that goes out.
+        self._propogate_frame(current_frame)
+
+
+
+    @staticmethod
+    def _get_pixel_size_bytes(self, pixel_format: CameraPixelFormat) -> int:
+        if pixel_format == CameraPixelFormat.MONO8:
+            return 1
+        elif pixel_format == CameraPixelFormat.MONO12:
+            return 2
+        elif pixel_format == CameraPixelFormat.MONO14:
+            return 2
+        elif pixel_format == CameraPixelFormat.MONO16:
+            return 2
+        elif pixel_format == CameraPixelFormat.BAYER_RG8:
+            return 1
+        elif pixel_format == CameraPixelFormat.BAYER_RG12:
+            return 2
+        else:
+            raise ValueError(f"No pixel byte size for format: {pixel_format=}")
+
+    def _update_strobe_time(self):
+        # NOTE(imo): This is just using defaults for the IMX226 (MER2-1220-32U3M) from the original camera
+        # driver.  It should instead be configurable!
+        exposure_delay_us_8bit = 650
+        pixel_size_bytes = self._get_pixel_size_bytes(self.get_pixel_format())
+        exposure_delay_us = pixel_size_bytes * exposure_delay_us_8bit
+        exposure_time_us = 1000.0 * self._exposure_time_ms
+        row_count = self.get_resolution()[1]
+        row_period_us = 10
+
+        self._strobe_delay_us = (
+                exposure_delay_us
+                + exposure_time_us
+                + row_period_us * pixel_size_bytes * (row_count - 1)
+                + 500
+        )
+
     def set_exposure_time(self, exposure_time_ms: float):
-        pass
+        exposure_time_calculated_us = 1000.0 * exposure_time_ms
+
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._capabilities.is_global_shutter:
+            self._update_strobe_time()
+            exposure_time_calculated_us += self._strobe_delay_us
+        self._log.debug(
+            f"Setting exposure time {exposure_time_calculated_us} [us] for exposure_time={exposure_time_ms * 1000} [us] and strobe={self._strobe_delay_us} [us]")
+        self._camera.ExposureTime.set(exposure_time_calculated_us)
+        self._exposure_time_ms = exposure_time_ms
 
     def get_exposure_time(self) -> float:
-        pass
+        return self._exposure_time_ms
 
     def get_exposure_limits(self) -> Tuple[float, float]:
-        pass
+        range_dict = self._camera.ExposureTime.get_range()
+        return range_dict["min"], range_dict["max"]
 
     def get_strobe_time(self) -> float:
-        pass
+        return self._strobe_delay_us / 1000.0
+
+    _PIXEL_FORMAT_TO_FRAME_FORMAT = {
+        CameraPixelFormat.MONO8: CameraFrameFormat.RAW,
+        CameraPixelFormat.MONO10: CameraFrameFormat.RAW,
+        CameraPixelFormat.MONO12: CameraFrameFormat.RAW,
+        CameraPixelFormat.MONO16: CameraFrameFormat.RAW,
+        CameraPixelFormat.BAYER_RG8: CameraFrameFormat.RGB,
+        CameraPixelFormat.BAYER_RG12: CameraFrameFormat.RGB
+    }
 
     def set_frame_format(self, frame_format: CameraFrameFormat):
-        pass
+        current_pixel_format = self.get_pixel_format()
+        if current_pixel_format not in DefaultCamera._PIXEL_FORMAT_TO_FRAME_FORMAT:
+            raise ValueError(
+                f"Something is really wrong, current pixel format is not mapped to a frame format: {current_pixel_format=}")
+
+        if frame_format != DefaultCamera._PIXEL_FORMAT_TO_FRAME_FORMAT[current_pixel_format]:
+            raise ValueError(
+                f"Frame format {frame_format=} not compatible with current pixel format {current_pixel_format=}")
+
+        # NOTE(imo): This is a weird one - we use an implied frame format for pixel formats in our default camera
+        # implementation, so setting frame format really isn't a thing here.  But we let it pass as long as what
+        # the caller is asking for matches the pixel format.
 
     def get_frame_format(self) -> CameraFrameFormat:
-        pass
+        current_pixel_format = self.get_pixel_format()
+        for (px, frame_format) in DefaultCamera._PIXEL_FORMAT_TO_FRAME_FORMAT.items():
+            if px == current_pixel_format:
+                return frame_format
 
-    def set_pixel_format(self, pixel_format: squid.config.CameraPixelFormat):
-        pass
+        raise ValueError(
+            f"Something is really wrong, current pixel format {current_pixel_format=} does not have a frame format.")
 
-    def get_pixel_format(self) -> squid.config.CameraPixelFormat:
-        pass
+    _PIXEL_FORMAT_TO_GX_FORMAT = {
+        CameraPixelFormat.MONO8: gx.GxPixelFormatEntry.MONO8,
+        CameraPixelFormat.MONO10: gx.GxPixelFormatEntry.MONO10,
+        CameraPixelFormat.MONO12: gx.GxPixelFormatEntry.MONO12,
+        CameraPixelFormat.MONO14: gx.GxPixelFormatEntry.MONO14,
+        CameraPixelFormat.MONO16: gx.GxPixelFormatEntry.MONO16,
+        CameraPixelFormat.BAYER_RG8: gx.GxPixelFormatEntry.BAYER_RG8,
+        CameraPixelFormat.BAYER_RG12: gx.GxPixelFormatEntry.BAYER_RG12,
+    }
+
+    @staticmethod
+    def _gx_pixel_format_for(pixel_format: CameraPixelFormat):
+        if pixel_format not in DefaultCamera._PIXEL_FORMAT_TO_GX_FORMAT:
+            raise ValueError(f"No gx pixel format for {pixel_format=}")
+
+        return DefaultCamera._PIXEL_FORMAT_TO_GX_FORMAT[pixel_format]
+
+    @staticmethod
+    def _pixel_format_for_gx_pixel(gx_pixel) -> CameraPixelFormat:
+        for (px, gx_for_px) in DefaultCamera._PIXEL_FORMAT_TO_GX_FORMAT.items():
+            if gx_for_px == gx_pixel:
+                return px
+        raise NotImplementedError(f"No pixel format for gx format {gx_pixel=}")
+
+    def set_pixel_format(self, pixel_format: CameraPixelFormat):
+        with self._pause_streaming():
+            if not self._capabilities.settable_pixel_format:
+                raise NotImplementedError("The camera does not support setting pixel format.")
+            self._camera.PixelFormat.set(self._gx_pixel_format_for(pixel_format))
+
+        self._update_strobe_time()
+        # For re-setting exposure time just in case the strobe changed.
+        self.set_exposure_time(self.get_exposure_time())
+
+    def get_pixel_format(self) -> CameraPixelFormat:
+        if not self._capabilities.gettable_pixel_format:
+            raise NotImplementedError("The camera does not support getting pixel format.")
+
+        return self._pixel_format_for_gx_pixel(self._camera.PixelFormat.get())
 
     def set_resolution(self, width: int, height: int):
-        pass
+        self._camera.Width.set(width)
+        self._camera.Height.set(height)
 
     def get_resolution(self) -> Tuple[int, int]:
-        pass
+        return self._camera.Width.get(), self._camera.Height.get()
 
     def get_resolutions(self) -> Sequence[Tuple[int, int]]:
-        pass
+        # There's a get_range on Width and Height, but I don't think cameras normally allow
+        # arbitrary resolutions?  So, just return the current and max.
+        current_w = self._camera.Width.get()
+        w_max = self._camera.WidthMax.get()
+        current_h = self._camera.Height.get()
+        h_max = self._camera.HeightMax.get()
+
+        return (current_w, current_h), (w_max, h_max)
 
     def set_analog_gain(self, analog_gain: float):
-        pass
+        self._camera.Gain.set(analog_gain)
 
     def get_analog_gain(self) -> float:
-        pass
+        return self._camera.Gain.get()
 
     def get_gain_range(self) -> CameraGainRange:
-        pass
+        gain_range = self._camera.Gain.get_range()
+
+        return CameraGainRange(min_gain=gain_range["min"], max_gain=gain_range["max"], gain_step=gain_range["inc"])
 
     def start_streaming(self):
-        pass
+        self._camera.stream_on()
 
     def stop_streaming(self):
-        pass
+        self._camera.stream_off()
 
     def get_is_streaming(self):
-        pass
+        # The gx camera implementation sets:
+        #   self.data_stream[0].acquisition_flag = True
+        # via the stream_on() and stream_off() calls, so we can check that (if it exists)
+        if len(self._camera.data_stream) < 1:
+            return False
+
+        return self._camera.data_stream[0].acquisition_flag
 
     def read_camera_frame(self) -> CameraFrame:
-        pass
+        if not self.get_is_streaming():
+            self._log.warning("Cannot read frame if not streaming.")
+            return None
+
+        total_exposure_time_ms = self._exposure_time_ms + self._strobe_delay_us / 1000.0
+
+        timeout_period_s = (4 * total_exposure_time_ms + 5) / 1000.0
+        timeout_time_s = time.time() + timeout_period_s
+        starting_frame_id = self.get_frame_id()
+        while time.time() < timeout_time_s:
+            if self.get_frame_id() != starting_frame_id:
+                return self._current_frame
+
+        self._log.warning("Timed out waiting for frame")
+        return None
 
     def get_frame_id(self) -> int:
-        pass
+        return self._current_frame.frame if self._current_frame else -1
 
     def get_white_balance_gains(self) -> Tuple[float, float, float]:
-        pass
+        if not self._capabilities.white_balance:
+            raise NotImplementedError("Camera does not support white balance!")
+
+        rgb_vals = []
+        for idx in (0, 1, 2): # r, g, b
+            self._camera.BalanceRatioSelector(idx)
+            rgb_vals.append(self._camera.BalanceRatio.get())
+
+        return rgb_vals[0], rgb_vals[1], rgb_vals[2]
 
     def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
-        pass
+        rgb_vals = (red_gain, green_gain, blue_gain)
+        for idx in (0, 1, 2): # r, g, b
+            self._camera.BalanceRatioSelector.set(idx)
+            self._camera.BalanceRatio.set(rgb_vals[idx])
 
     def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
-        pass
+        for idx in (0, 1, 2): # r, g, b
+            self._camera.BalanceWhiteAuto.set(idx)
+
+        return self.get_white_balance_gains()
 
     def set_black_level(self, black_level: float):
-        pass
+        if not self._capabilities.black_level:
+            raise NotImplementedError("Camera does not support black level")
+
+        self._camera.BlackLevel.set(black_level)
 
     def get_black_level(self) -> float:
-        pass
+        if not self._capabilities.black_level:
+            raise NotImplementedError("Camera does not support black level")
+
+        return self._camera.BlackLevel.get()
 
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
-        pass
+        if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            self._camera.TriggerMode.set(gx.GxSwitchEntry.ON)
+            self._camera.TriggerSource.set(gx.GxTriggerSourceEntry.LINE2)  # LINE0 requires 7 mA min
+        elif acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+            self._camera.TriggerMode.set(gx.GxSwitchEntry.ON)
+            self._camera.TriggerSource.set(gx.GxTriggerSourceEntry.SOFTWARE)
+        elif acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
+            self._camera.TriggerMode.set(gx.GxSwitchEntry.OFF)
+
+        # Force re-calc of exposure time to account for strobe, etc.
+        self.set_exposure_time(self.get_exposure_time())
 
     def get_acquisition_mode(self) -> CameraAcquisitionMode:
-        pass
+        (trigger_mode_val, _) = self._camera.TriggerMode.get()
+        if trigger_mode_val == gx.GxSwitchEntry.ON:
+            (trigger_source_val, _) = self._camera.TriggerSource.get()
+            if trigger_source_val == gx.GxTriggerSourceEntry.SOFTWARE:
+                return CameraAcquisitionMode.SOFTWARE_TRIGGER
+            else:
+                return CameraAcquisitionMode.HARDWARE_TRIGGER
+        else:
+            return CameraAcquisitionMode.CONTINUOUS
 
     def send_trigger(self, illumination_time: Optional[float] = None):
-        pass
+        if not self.get_is_streaming():
+            self._log.warning("Trigger requested, but not streaming. Skipping.")
+            return
+
+        current_acquisition_mode = self.get_acquisition_mode()
+        self._last_trigger_timestamp = time.time()
+        if current_acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            self._hw_trigger_fn(illumination_time)
+        elif current_acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+            self._camera.TriggerSoftware.send_command()
+        else:
+            self._log.warning(f"Current acquisition mode {current_acquisition_mode=} not triggerable.")
 
     def get_ready_for_trigger(self) -> bool:
-        pass
+        time_since_last_s = time.time() - self._last_trigger_timestamp
+        timeout_period_s = (4 * self._exposure_time_ms + 5) / 1000.0  # Arbitrary - how do we do somethigng smart here?
+        if time_since_last_s > timeout_period_s and self._in_trigger:
+            self._log.warning(f"It has been {time_since_last_s=}[s] since last trigger, timing it out.")
+            self._in_trigger = False
+
+        return self._in_trigger
 
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
-        pass
+        if not self._capabilities.settable_roi:
+            raise NotImplementedError("Camera does not implement settable region of interest.")
+
+        with self._pause_streaming():
+            self._camera.OffsetX.set(offset_x)
+            self._camera.OffsetY.set(offset_y)
+            self._camera.Width.set(width)
+            self._camera.Height.set(height)
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
-        pass
+        return self._camera.Width.get(), self._camera.Height.get(), self._camera.OffsetX.get(), self._camera.OffsetY.get()
 
     def set_temperature(self, temperature_deg_c: Optional[float]):
-        pass
+        raise NotImplementedError("DefaultCameras do not support temperature control.")
 
     def get_temperature(self) -> float:
-        pass
+        raise NotImplementedError("DefaultCameras do not support getting current temperature")

@@ -165,17 +165,25 @@ class CameraPixelFormat(enum.Enum):
     """
 
     MONO8 = "MONO8"
+    MONO10 = "MONO10"
     MONO12 = "MONO12"
     MONO14 = "MONO14"
     MONO16 = "MONO16"
     RGB24 = "RGB24"
     RGB32 = "RGB32"
     RGB48 = "RGB48"
+    BAYER_RG8 = "BAYER_RG8"
+    BAYER_RG12 = "BAYER_RG12"
 
     @staticmethod
     def is_color_format(pixel_format):
-        return pixel_format in (CameraPixelFormat.RGB24, CameraPixelFormat.RGB32, CameraPixelFormat.RGB48)
+        return pixel_format in (CameraPixelFormat.RGB24, CameraPixelFormat.RGB32, CameraPixelFormat.RGB48, CameraPixelFormat.BAYER_RG8, CameraPixelFormat.BAYER_RG12)
 
+
+class RGBValue(pydantic.BaseModel):
+    r: float
+    g: float
+    b: float
 
 # TODO/NOTE(imo): We may need to add a model attrib here.
 class CameraConfig(pydantic.BaseModel):
@@ -204,6 +212,9 @@ class CameraConfig(pydantic.BaseModel):
     #
     # NOTE(imo): As of 2025-feb-17, this feature is inconsistently implemented!
     flip: Optional[FlipVariant]
+
+    # After initialization, set the white balance gains to this once. Only valid for color cameras.
+    default_white_balance_gains: Optional[RGBValue]
 
 
 def _old_camera_variant_to_enum(old_string) -> CameraVariant:
