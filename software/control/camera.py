@@ -11,6 +11,7 @@ try:
 except:
     print("gxipy import error")
 
+
 class DefaultCameraCapabilities(pydantic.BaseModel):
     is_color: bool
     gettable_pixel_format: bool
@@ -40,12 +41,19 @@ class DefaultCamera(AbstractCamera):
             gettable_pixel_format=camera.PixelFormat.is_readable(),
             settable_pixel_format=camera.PixelFormat.is_writable(),
             settable_roi=(
-                    camera.Width.is_writable() and camera.Height.is_writable()
-                    and camera.OffsetX.is_writable() and camera.OffsetY.is_writable()),
+                camera.Width.is_writable()
+                and camera.Height.is_writable()
+                and camera.OffsetX.is_writable()
+                and camera.OffsetY.is_writable()
+            ),
             black_level=(camera.BlackLevel.is_implemented() and camera.BlackLevel.is_writable()),
-            white_balance=(camera.BalanceRatio.is_implemented() and camera.BalanceRatio.is_writable()
-                           and camera.BalanceRatioSelector.is_implemented() and camera.BalanceRatioSelector.is_writable()),
-            auto_white_balance=(camera.BalanceWhiteAuto.is_implemented() and camera.BalanceWhiteAuto.is_writable())
+            white_balance=(
+                camera.BalanceRatio.is_implemented()
+                and camera.BalanceRatio.is_writable()
+                and camera.BalanceRatioSelector.is_implemented()
+                and camera.BalanceRatioSelector.is_writable()
+            ),
+            auto_white_balance=(camera.BalanceWhiteAuto.is_implemented() and camera.BalanceWhiteAuto.is_writable()),
         )
 
         # NOTE(imo): In our previous driver, we did all these as defaults/prep to make things down the line work.
@@ -56,8 +64,12 @@ class DefaultCamera(AbstractCamera):
 
         return (camera, capabilities)
 
-    def __init__(self, camera_config: CameraConfig, hw_trigger_fn: Optional[Callable[[Optional[float]], bool]],
-                 hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]]):
+    def __init__(
+        self,
+        camera_config: CameraConfig,
+        hw_trigger_fn: Optional[Callable[[Optional[float]], bool]],
+        hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]],
+    ):
         super().__init__(camera_config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
 
         (self._camera, self._capabilities) = DefaultCamera._open(index=0)
@@ -110,18 +122,16 @@ class DefaultCamera(AbstractCamera):
             processed_image = self._process_raw_frame(numpy_image)
 
             current_frame = CameraFrame(
-                frame_id = this_frame_id,
-                timestamp = this_timestamp,
-                frame = processed_image,
-                frame_format = this_frame_format,
-                frame_pixel_format = this_pixel_format
+                frame_id=this_frame_id,
+                timestamp=this_timestamp,
+                frame=processed_image,
+                frame_format=this_frame_format,
+                frame_pixel_format=this_pixel_format,
             )
             self._current_frame = current_frame
 
         # Propagate the local copy so we are sure it's the correct frame that goes out.
         self._propogate_frame(current_frame)
-
-
 
     @staticmethod
     def _get_pixel_size_bytes(self, pixel_format: CameraPixelFormat) -> int:
@@ -151,10 +161,7 @@ class DefaultCamera(AbstractCamera):
         row_period_us = 10
 
         self._strobe_delay_us = (
-                exposure_delay_us
-                + exposure_time_us
-                + row_period_us * pixel_size_bytes * (row_count - 1)
-                + 500
+            exposure_delay_us + exposure_time_us + row_period_us * pixel_size_bytes * (row_count - 1) + 500
         )
 
         if self._hw_set_strobe_delay_ms_fn:
@@ -163,11 +170,15 @@ class DefaultCamera(AbstractCamera):
     def set_exposure_time(self, exposure_time_ms: float):
         exposure_time_calculated_us = 1000.0 * exposure_time_ms
 
-        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._capabilities.is_global_shutter:
+        if (
+            self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER
+            and not self._capabilities.is_global_shutter
+        ):
             self._update_strobe_time()
             exposure_time_calculated_us += self._strobe_delay_us
         self._log.debug(
-            f"Setting exposure time {exposure_time_calculated_us} [us] for exposure_time={exposure_time_ms * 1000} [us] and strobe={self._strobe_delay_us} [us]")
+            f"Setting exposure time {exposure_time_calculated_us} [us] for exposure_time={exposure_time_ms * 1000} [us] and strobe={self._strobe_delay_us} [us]"
+        )
         self._camera.ExposureTime.set(exposure_time_calculated_us)
         self._exposure_time_ms = exposure_time_ms
 
@@ -187,18 +198,20 @@ class DefaultCamera(AbstractCamera):
         CameraPixelFormat.MONO12: CameraFrameFormat.RAW,
         CameraPixelFormat.MONO16: CameraFrameFormat.RAW,
         CameraPixelFormat.BAYER_RG8: CameraFrameFormat.RGB,
-        CameraPixelFormat.BAYER_RG12: CameraFrameFormat.RGB
+        CameraPixelFormat.BAYER_RG12: CameraFrameFormat.RGB,
     }
 
     def set_frame_format(self, frame_format: CameraFrameFormat):
         current_pixel_format = self.get_pixel_format()
         if current_pixel_format not in DefaultCamera._PIXEL_FORMAT_TO_FRAME_FORMAT:
             raise ValueError(
-                f"Something is really wrong, current pixel format is not mapped to a frame format: {current_pixel_format=}")
+                f"Something is really wrong, current pixel format is not mapped to a frame format: {current_pixel_format=}"
+            )
 
         if frame_format != DefaultCamera._PIXEL_FORMAT_TO_FRAME_FORMAT[current_pixel_format]:
             raise ValueError(
-                f"Frame format {frame_format=} not compatible with current pixel format {current_pixel_format=}")
+                f"Frame format {frame_format=} not compatible with current pixel format {current_pixel_format=}"
+            )
 
         # NOTE(imo): This is a weird one - we use an implied frame format for pixel formats in our default camera
         # implementation, so setting frame format really isn't a thing here.  But we let it pass as long as what
@@ -206,12 +219,13 @@ class DefaultCamera(AbstractCamera):
 
     def get_frame_format(self) -> CameraFrameFormat:
         current_pixel_format = self.get_pixel_format()
-        for (px, frame_format) in DefaultCamera._PIXEL_FORMAT_TO_FRAME_FORMAT.items():
+        for px, frame_format in DefaultCamera._PIXEL_FORMAT_TO_FRAME_FORMAT.items():
             if px == current_pixel_format:
                 return frame_format
 
         raise ValueError(
-            f"Something is really wrong, current pixel format {current_pixel_format=} does not have a frame format.")
+            f"Something is really wrong, current pixel format {current_pixel_format=} does not have a frame format."
+        )
 
     _PIXEL_FORMAT_TO_GX_FORMAT = {
         CameraPixelFormat.MONO8: gx.GxPixelFormatEntry.MONO8,
@@ -232,7 +246,7 @@ class DefaultCamera(AbstractCamera):
 
     @staticmethod
     def _pixel_format_for_gx_pixel(gx_pixel) -> CameraPixelFormat:
-        for (px, gx_for_px) in DefaultCamera._PIXEL_FORMAT_TO_GX_FORMAT.items():
+        for px, gx_for_px in DefaultCamera._PIXEL_FORMAT_TO_GX_FORMAT.items():
             if gx_for_px == gx_pixel:
                 return px
         raise NotImplementedError(f"No pixel format for gx format {gx_pixel=}")
@@ -321,7 +335,7 @@ class DefaultCamera(AbstractCamera):
             raise NotImplementedError("Camera does not support white balance!")
 
         rgb_vals = []
-        for idx in (0, 1, 2): # r, g, b
+        for idx in (0, 1, 2):  # r, g, b
             self._camera.BalanceRatioSelector(idx)
             rgb_vals.append(self._camera.BalanceRatio.get())
 
@@ -329,12 +343,12 @@ class DefaultCamera(AbstractCamera):
 
     def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
         rgb_vals = (red_gain, green_gain, blue_gain)
-        for idx in (0, 1, 2): # r, g, b
+        for idx in (0, 1, 2):  # r, g, b
             self._camera.BalanceRatioSelector.set(idx)
             self._camera.BalanceRatio.set(rgb_vals[idx])
 
     def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
-        for idx in (0, 1, 2): # r, g, b
+        for idx in (0, 1, 2):  # r, g, b
             self._camera.BalanceWhiteAuto.set(idx)
 
         return self.get_white_balance_gains()
@@ -409,7 +423,12 @@ class DefaultCamera(AbstractCamera):
             self._camera.Height.set(height)
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
-        return self._camera.Width.get(), self._camera.Height.get(), self._camera.OffsetX.get(), self._camera.OffsetY.get()
+        return (
+            self._camera.Width.get(),
+            self._camera.Height.get(),
+            self._camera.OffsetX.get(),
+            self._camera.OffsetY.get(),
+        )
 
     def set_temperature(self, temperature_deg_c: Optional[float]):
         raise NotImplementedError("DefaultCameras do not support temperature control.")

@@ -177,13 +177,20 @@ class CameraPixelFormat(enum.Enum):
 
     @staticmethod
     def is_color_format(pixel_format):
-        return pixel_format in (CameraPixelFormat.RGB24, CameraPixelFormat.RGB32, CameraPixelFormat.RGB48, CameraPixelFormat.BAYER_RG8, CameraPixelFormat.BAYER_RG12)
+        return pixel_format in (
+            CameraPixelFormat.RGB24,
+            CameraPixelFormat.RGB32,
+            CameraPixelFormat.RGB48,
+            CameraPixelFormat.BAYER_RG8,
+            CameraPixelFormat.BAYER_RG12,
+        )
 
 
 class RGBValue(pydantic.BaseModel):
     r: float
     g: float
     b: float
+
 
 # TODO/NOTE(imo): We may need to add a model attrib here.
 class CameraConfig(pydantic.BaseModel):
@@ -241,7 +248,7 @@ _camera_config = CameraConfig(
     default_pixel_format=_def.DEFAULT_PIXEL_FORMAT,
     rotate_image_angle=_def.ROTATE_IMAGE_ANGLE,
     flip=None,
-    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B)
+    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B),
 )
 
 
@@ -258,7 +265,7 @@ _autofocus_camera_config = CameraConfig(
     default_pixel_format=CameraPixelFormat.MONO8,
     rotate_image_angle=None,
     flip=None,
-    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B)
+    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B),
 )
 
 
