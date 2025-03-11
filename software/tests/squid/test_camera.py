@@ -16,7 +16,7 @@ def test_simulated_camera():
     assert sim_cam.get_frame_id() != frame_id
 
     frame = sim_cam.read_frame()
-    (frame_width, frame_height, *_) = frame.shape
+    (frame_height, frame_width, *_) = frame.shape
     (res_width, res_height) = sim_cam.get_resolution()
 
     assert frame_width == res_width
