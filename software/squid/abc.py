@@ -1,4 +1,5 @@
 import dataclasses
+from contextlib import contextmanager
 from abc import ABC, abstractmethod
 from typing import Callable, Optional, Tuple, Sequence, List
 import abc
@@ -255,6 +256,10 @@ class CameraFrame:
         return CameraPixelFormat.is_color_format(self.frame_pixel_format)
 
 
+class CameraError(RuntimeError):
+    pass
+
+
 class AbstractCamera(metaclass=abc.ABCMeta):
     def __init__(
         self,
@@ -282,6 +287,17 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         # to do more than that.
         self._frame_callbacks: List[Tuple[int, Callable[[CameraFrame], None]]] = []
         self._frame_callbacks_enabled = True
+
+    @contextmanager
+    def _pause_streaming(self):
+        was_streaming = self.get_is_streaming()
+        try:
+            if was_streaming:
+                self.stop_streaming()
+            yield
+        finally:
+            if was_streaming:
+                self.start_streaming()
 
     def enable_callbacks(self, enabled: bool):
         """
@@ -323,19 +339,15 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         except ValueError:
             self._log.warning(f"No callback with id={callback_id}, cannot remove it.")
 
-    def _propogate_frame(self, raw_frame: CameraFrame):
+    def _propogate_frame(self, camera_frame: CameraFrame):
         """
-        Implementations can call this to propogate a new frame to all registered callbacks.  The frame
-        will be rotated/cropped/etc based on our config, so the callbacks don't need to do that.
+        Implementations can call this to propogate a new frame to all registered callbacks.  You should
+        have already called _process_raw_frame to generate this (aka: all cropping and rotating should be done).
+
+        Best practice is to send the same frame here as you assign to your self._current_frame (if you have one).
         """
         if not self._frame_callbacks_enabled:
             return
-        camera_frame = dataclasses.replace(
-            raw_frame,
-            frame=control.utils.rotate_and_flip_image(
-                raw_frame.frame, rotate_image_angle=self._config.rotate_image_angle, flip_image=self._config.flip
-            ),
-        )
         for _, cb in self._frame_callbacks:
             cb(camera_frame)
 
@@ -367,6 +379,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         Given the current exposure time we are using, what is the strobe time such that
         get_strobe_time() + get_exposure_time() == total frame time.  In milliseconds.
         """
+        pass
 
     def get_total_frame_time(self) -> float:
         """
