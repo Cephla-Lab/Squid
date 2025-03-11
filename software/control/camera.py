@@ -1,13 +1,8 @@
-import argparse
 import threading
 from typing import Optional, Tuple, Sequence, Callable
-
-import cv2
 import time
-import numpy as np
 import pydantic
 
-from control.gxipy import RawImage
 from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrame, CameraGainRange, CameraFrameFormat
 from squid.config import CameraConfig, CameraPixelFormat
 
@@ -15,135 +10,6 @@ try:
     import control.gxipy as gx
 except:
     print("gxipy import error")
-
-from control._def import *
-
-
-def get_sn_by_model(model_name):
-    try:
-        device_manager = gx.DeviceManager()
-        device_num, device_info_list = device_manager.update_device_list()
-    except:
-        device_num = 0
-    if device_num > 0:
-        for i in range(device_num):
-            if device_info_list[i]["model_name"] == model_name:
-                return device_info_list[i]["sn"]
-    return None  # return None if no device with the specified model_name is connected
-
-
-class Camera(object):
-
-    def __init__(self, sn=None, is_global_shutter=False, rotate_image_angle=None, flip_image=None):
-
-        # many to be purged
-        self.sn = sn
-        self.is_global_shutter = is_global_shutter
-        self.camera = None
-        self.is_color = None
-        self.gamma_lut = None
-        self.contrast_lut = None
-        self.color_correction_param = None
-
-        self.rotate_image_angle = rotate_image_angle
-        self.flip_image = flip_image
-
-        self.exposure_time = 1  # unit: ms
-        self.analog_gain = 0
-        self.frame_ID = -1
-        self.frame_ID_software = -1
-        self.frame_ID_offset_hardware_trigger = 0
-        self.timestamp = 0
-
-        self.image_locked = False
-        self.current_frame = None
-
-        self.callback_is_enabled = False
-        self.is_streaming = False
-
-        self.GAIN_MAX = 24
-        self.GAIN_MIN = 0
-        self.GAIN_STEP = 1
-        self.EXPOSURE_TIME_MS_MIN = 0.01
-        self.EXPOSURE_TIME_MS_MAX = 4000
-
-        self.trigger_mode = None
-        self.pixel_size_byte = 1
-
-        # below are values for IMX226 (MER2-1220-32U3M) - to make configurable
-        self.row_period_us = 10
-        self.row_numbers = 3036
-        self.exposure_delay_us_8bit = 650
-        self.exposure_delay_us = self.exposure_delay_us_8bit * self.pixel_size_byte
-        self.strobe_delay_us = self.exposure_delay_us + self.row_period_us * self.pixel_size_byte * (
-                self.row_numbers - 1
-        )
-
-        self.pixel_format = None  # use the default pixel format
-
-        self.is_live = False  # this determines whether a new frame received will be handled in the streamHandler
-        # mainly for discarding the last frame received after stop_live() is called, where illumination is being turned off during exposure
-
-    def read_frame(self):
-        raw_image = self.camera.data_stream[self.device_index].get_image()
-        if self.is_color:
-            rgb_image = raw_image.convert("RGB")
-            numpy_image = rgb_image.get_numpy_array()
-            if self.pixel_format == "BAYER_RG12":
-                numpy_image = numpy_image << 4
-        else:
-            numpy_image = raw_image.get_numpy_array()
-            if self.pixel_format == "MONO12":
-                numpy_image = numpy_image << 4
-        self.current_frame = numpy_image
-        return numpy_image
-
-    def _on_frame_callback(self, user_param, raw_image):
-        if raw_image is None:
-            print("Getting image failed.")
-            return
-        if raw_image.get_status() != 0:
-            print("Got an incomplete frame")
-            return
-        if self.image_locked:
-            print("last image is still being processed, a frame is dropped")
-            return
-        if self.is_color:
-            rgb_image = raw_image.convert("RGB")
-            numpy_image = rgb_image.get_numpy_array()
-            if self.pixel_format == "BAYER_RG12":
-                numpy_image = numpy_image << 4
-        else:
-            numpy_image = raw_image.get_numpy_array()
-            if self.pixel_format == "MONO12":
-                numpy_image = numpy_image << 4
-        if numpy_image is None:
-            return
-        self.current_frame = numpy_image
-        self.frame_ID_software = self.frame_ID_software + 1
-        self.frame_ID = raw_image.get_frame_id()
-        if self.trigger_mode == TriggerMode.HARDWARE:
-            if self.frame_ID_offset_hardware_trigger == None:
-                self.frame_ID_offset_hardware_trigger = self.frame_ID
-            self.frame_ID = self.frame_ID - self.frame_ID_offset_hardware_trigger
-        self.timestamp = time.time()
-        self.new_image_callback_external(self)
-
-        # self.frameID = self.frameID + 1
-        # print(self.frameID)
-
-    def set_line3_to_strobe(self):
-        # self.camera.StrobeSwitch.set(gx.GxSwitchEntry.ON)
-        self.camera.LineSelector.set(gx.GxLineSelectorEntry.LINE3)
-        self.camera.LineMode.set(gx.GxLineModeEntry.OUTPUT)
-        self.camera.LineSource.set(gx.GxLineSourceEntry.STROBE)
-
-    def set_line3_to_exposure_active(self):
-        # self.camera.StrobeSwitch.set(gx.GxSwitchEntry.ON)
-        self.camera.LineSelector.set(gx.GxLineSelectorEntry.LINE3)
-        self.camera.LineMode.set(gx.GxLineModeEntry.OUTPUT)
-        self.camera.LineSource.set(gx.GxLineSourceEntry.EXPOSURE_ACTIVE)
-
 
 class DefaultCameraCapabilities(pydantic.BaseModel):
     is_color: bool
@@ -222,7 +88,7 @@ class DefaultCamera(AbstractCamera):
             # If init fails before we create the camera, we'll get here.  That's fine - just move along.
             pass
 
-    def _frame_callback(self, raw_image: RawImage):
+    def _frame_callback(self, raw_image: gx.RawImage):
         with self._frame_lock:
             this_frame_id = (self._current_frame.frame_id if self._current_frame else 0) + 1
             this_timestamp = time.time()
@@ -290,6 +156,9 @@ class DefaultCamera(AbstractCamera):
                 + row_period_us * pixel_size_bytes * (row_count - 1)
                 + 500
         )
+
+        if self._hw_set_strobe_delay_ms_fn:
+            self._hw_set_strobe_delay_ms_fn(self._strobe_delay_us / 1000.0)
 
     def set_exposure_time(self, exposure_time_ms: float):
         exposure_time_calculated_us = 1000.0 * exposure_time_ms

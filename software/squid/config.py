@@ -241,6 +241,7 @@ _camera_config = CameraConfig(
     default_pixel_format=_def.DEFAULT_PIXEL_FORMAT,
     rotate_image_angle=_def.ROTATE_IMAGE_ANGLE,
     flip=None,
+    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B)
 )
 
 
@@ -257,6 +258,7 @@ _autofocus_camera_config = CameraConfig(
     default_pixel_format=CameraPixelFormat.MONO8,
     rotate_image_angle=None,
     flip=None,
+    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B)
 )
 
 

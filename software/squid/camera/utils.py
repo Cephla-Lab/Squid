@@ -68,8 +68,7 @@ def get_camera(
             camera = control.camera_TIS.Camera(config)
         else:
             import control.camera
-
-            camera = control.camera.Camera(config)
+            camera = control.camera.DefaultCamera(config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn)
 
         # NOTE(imo): All of these things are hacks before complete migration to AbstractCamera impls.  They can
         # be removed once all the cameras conform to the AbstractCamera interface.
@@ -80,12 +79,8 @@ def get_camera(
         _log.warning(f"Camera of type: '{config.camera_type}' failed to import.  Falling back to default camera impl.")
         _log.warning(e)
 
-        import control.camera as camera
-
-        return control.camera.Camera(config)
-
-    raise NotImplementedError(f"Camera of type={config.camera_type} not yet supported.")
-
+        import control.camera
+        return control.camera.DefaultCamera(config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn)
 
 class SimulatedCamera(AbstractCamera):
     @staticmethod
