@@ -53,7 +53,9 @@ def get_camera(
         elif config.camera_type == CameraVariant.HAMAMATSU:
             import control.camera_hamamatsu
 
-            camera = control.camera_hamamatsu.Camera(config)
+            camera = control.camera_hamamatsu.HamamatsuCamera(
+                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+            )
         elif config.camera_type == CameraVariant.IDS:
             import control.camera_ids
 

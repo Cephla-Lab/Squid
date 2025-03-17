@@ -1094,8 +1094,6 @@ class HighContentScreeningGui(QMainWindow):
                 )
             )
 
-        self.camera.add_frame_callback(self.streamHandler.on_new_frame)
-
     def setup_movement_updater(self):
         # We provide a few signals about the system's physical movement to other parts of the UI.  Ideally, they other
         # parts would register their interest (instead of us needing to know that they want to hear about the movements

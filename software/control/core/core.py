@@ -383,6 +383,7 @@ class ImageDisplay(QObject):
                 self.queue.task_done()
             except:
                 pass
+            time.sleep(0)
 
     # def enqueue(self,image,frame_ID,timestamp):
     def enqueue(self, image):
@@ -633,6 +634,7 @@ class LiveController(QObject):
             # we do the same here.  Should this warn?  I didn't add a warning because it seems like
             # we over-trigger as standard practice (eg: we trigger at our exposure time frequency, but
             # the cameras can't give us images that fast so we essentially always have at least 1 skipped trigger)
+            self._log.debug("Not ready for trigger, skipping.")
             return
         if self.trigger_mode == TriggerMode.SOFTWARE and self.control_illumination:
             if not self.illumination_on:
@@ -715,7 +717,10 @@ class LiveController(QObject):
 
         # set camera exposure time and analog gain
         self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
-        self.camera.set_analog_gain(self.currentConfiguration.analog_gain)
+        try:
+            self.camera.set_analog_gain(self.currentConfiguration.analog_gain)
+        except NotImplementedError:
+            pass
 
         # set illumination
         if self.control_illumination:
@@ -4743,7 +4748,10 @@ class LaserAutofocusController(QObject):
 
             # Update camera settings
             self.camera.set_exposure_time(config.focus_camera_exposure_time_ms)
-            self.camera.set_analog_gain(config.focus_camera_analog_gain)
+            try:
+                self.camera.set_analog_gain(config.focus_camera_analog_gain)
+            except NotImplementedError:
+                pass
 
             # Initialize with loaded config
             self.initialize_manual(config)
@@ -4763,7 +4771,10 @@ class LaserAutofocusController(QObject):
 
         # update camera settings
         self.camera.set_exposure_time(self.laser_af_properties.focus_camera_exposure_time_ms)
-        self.camera.set_analog_gain(self.laser_af_properties.focus_camera_analog_gain)
+        try:
+            self.camera.set_analog_gain(self.laser_af_properties.focus_camera_analog_gain)
+        except NotImplementedError:
+            pass
 
         # Find initial spot position
         self.microcontroller.turn_on_AF_laser()

@@ -1,338 +1,525 @@
 import time
-import numpy as np
+from typing import Optional, Callable, Sequence, Tuple
 import threading
 
+import pydantic
+
+from squid.abc import AbstractCamera, CameraError
+from squid.config import CameraConfig, CameraPixelFormat
+from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
 from control.dcam import Dcam, Dcamapi
 from control.dcamapi4 import *
-from control._def import *
 
 
-def get_sn_by_model(model_name):
-    try:
-        _, count = Dcamapi.init()
-    except TypeError:
-        print("Cannot init Hamamatsu Camera.")
-        sys.exit(1)
-
-    for i in range(count):
-        d = Dcam(i)
-        sn = d.dev_getstring(DCAM_IDSTR.CAMERAID)
-        if sn is not False:
-            Dcamapi.uninit()
-            print("Hamamatsu Camera " + sn)
-            return sn
-
-    Dcamapi.uninit()
-    return None
+class HamamatsuCapabilities(pydantic.BaseModel):
+    resolutions: Sequence[Tuple[int, int]]
 
 
-class Camera(object):
+class HamamatsuCamera(AbstractCamera):
+    @staticmethod
+    def _open(index=None, sn=None) -> Tuple[Dcam, HamamatsuCapabilities]:
+        if index is None and sn is None:
+            raise ValueError("You must specify one of either index or sn.")
+        elif index is not None and sn is not None:
+            raise ValueError("You must specify only 1 of index or sn")
+
+        dcam_init_result = Dcamapi.init()
+        if isinstance(dcam_init_result, bool):
+            if not dcam_init_result:
+                raise CameraError(
+                    f"Dcam api initialization failed: {HamamatsuCamera._last_dcam_error_string_direct(Dcamapi.lasterr())}"
+                )
+            else:
+                raise CameraError("Dcam api init gave true, which is not valid.")
+        elif isinstance(dcam_init_result, tuple):
+            dcam_init, cam_count = dcam_init_result
+        else:
+            raise CameraError("Dcam api init result is invalid.")
+
+        if cam_count < 1:
+            raise ValueError("No Dcam api cameras available - is the hardware plugged in?")
+
+        if sn is not None:
+            for idx in range(cam_count):
+                cam = Dcam(idx)
+                if sn == cam.dev_getstring(DCAM_IDSTR.CAMERAID):
+                    index = idx
+                    break
+
+            if index is None:
+                raise ValueError(f"Could not find camera with serial number: '{sn}'")
+
+        if index is None:
+            raise ValueError("Index is none after all checks, something is wrong!")
+
+        camera = Dcam(index)
+
+        if not camera.dev_open(index):
+            raise CameraError(f"Failed to open camera with index={index}")
+
+        # For now, we just support the default resolution.
+        default_width = int(camera.prop_getvalue(DCAM_IDPROP.IMAGE_WIDTH))
+        default_height = int(camera.prop_getvalue(DCAM_IDPROP.IMAGE_HEIGHT))
+
+        supported_resolutions = ((default_width, default_height),)
+
+        capabilities = HamamatsuCapabilities(resolutions=supported_resolutions)
+
+        return camera, capabilities
+
     def __init__(
-        self, sn=None, resolution=(2304, 2304), is_global_shutter=False, rotate_image_angle=None, flip_image=None
+        self,
+        camera_config: CameraConfig,
+        hw_trigger_fn: Optional[Callable[[Optional[float]], bool]],
+        hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]],
     ):
-        self.dcam = None
-        self.exposure_time = 1  # ms
-        self.analog_gain = 0
-        self.is_streaming = False
-        self.pixel_format = None
-        self.is_color = False
+        super().__init__(camera_config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
 
-        self.frame_ID = -1
-        self.frame_ID_software = -1
-        self.frame_ID_offset_hardware_trigger = 0
-        self.timestamp = 0
-        self.trigger_mode = None
+        self._read_thread_lock = threading.Lock()
+        self._read_thread: Optional[threading.Thread] = None
+        self._read_thread_keep_running = threading.Event()
+        self._read_thread_keep_running.clear()
+        self._read_thread_wait_period_s = 1.0
+        self._read_thread_running = threading.Event()
+        self._read_thread_running.clear()
 
-        self.strobe_delay_us = None
+        self._frame_lock = threading.Lock()
+        self._current_frame: Optional[CameraFrame] = None
+        self._last_trigger_timestamp = 0
+        self._trigger_sent = threading.Event()
 
-        self.image_locked = False
-        self.current_frame = None
-        self.callback_is_enabled = False
-        self.new_image_callback_external = None
-        self.stop_waiting = False  # HL: this variable needs to be renamed to something more descriptive
+        camera, capabilities = HamamatsuCamera._open(index=0)
 
-        self.GAIN_MAX = 0
-        self.GAIN_MIN = 0
-        self.GAIN_STEP = 0
-        self.EXPOSURE_TIME_MS_MIN = 0.017633
-        self.EXPOSURE_TIME_MS_MAX = 10000.0046
+        self._camera: Dcam = camera
+        self._capabilities: HamamatsuCapabilities = capabilities
+        # This lock is for any camera interactions that use the camera
+        # buffers.
+        self._camera_lock = threading.Lock()
+        self._is_streaming = threading.Event()
 
-        self.rotate_image_angle = rotate_image_angle
-        self.flip_image = flip_image
-        self.is_global_shutter = is_global_shutter
-        self.sn = sn
+        # We store exposure time so we don't need to worry about backing out strobe time from the
+        # time stored on the camera.
+        #
+        # We just set it to some sane value to start.
+        self._exposure_time_ms: int = 20
+        self.set_exposure_time(self._exposure_time_ms)
 
-        self.ROI_offset_x = 0
-        self.ROI_offset_y = 0
-        self.ROI_width = 2304
-        self.ROI_height = 2304
+    def __del__(self):
+        self._cleanup_read_thread()
 
-        self.OffsetX = 0
-        self.OffsetY = 0
-        self.Width = 2304
-        self.Height = 2304
+    def _set_prop(self, dcam_prop, prop_value):
+        with self._camera_lock:
+            if not self._camera.prop_setvalue(dcam_prop, prop_value):
+                self._log.error(f"Failed to set property {dcam_prop}={prop_value}: {self._camera.lasterr()}")
+                return False
+            return True
 
-        self.WidthMax = 2304
-        self.HeightMax = 2304
+    def _allocate_read_buffers(self, count=5):
+        # NOTE: The caller must hold the camera lock!
+        if not self._camera.buf_alloc(count):
+            self._log.error(f"Failed to allocate {count} buffers.")
+            return False
+        return True
 
-        self.trigger_sent = False
+    def _read_frames_when_available(self):
+        self._log.info("Starting Hamamatsu read thread.")
+        self._read_thread_running.set()
+        while self._read_thread_keep_running.is_set():
+            # We really, really, do not want this thread to die prematurely, so catch all exceptions and try
+            # to continue.
+            try:
+                with self._camera_lock:
+                    wait_time = int(round(self._read_thread_wait_period_s * 1000.0))
+                    frame_ready = self._camera.wait_event(DCAMWAIT_CAPEVENT.FRAMEREADY, wait_time)
 
-    def open(self, index=0):
-        result = Dcamapi.init()
-        self.dcam = Dcam(index)
-        result = self.dcam.dev_open(index) and result
-        if result:
-            self.calculate_strobe_delay()
-        print("Hamamatsu Camera opened: " + str(result))
+                    if frame_ready:
+                        # The dcam driver handles setting the correct width and height, so we can use the
+                        # np frame directly.
+                        raw_frame = self._camera.buf_getlastframedata()
+                        self._trigger_sent.clear()
 
-    def open_by_sn(self, sn):
-        unopened = 0
-        success, count = Dcamapi.init()
-        if success:
-            for i in count:
-                d = Dcam(i)
-                if sn == d.dev_getstring(DCAM_IDSTR.CAMERAID):
-                    self.dcam = d
-                    self.calculate_strobe_delay()
-                    print(self.dcam.dev_open(i))
-                else:
-                    unopened += 1
-        if unopened == count or not success:
-            print("Hamamatsu Camera open_by_sn: No camera is opened.")
+                        if isinstance(raw_frame, bool):
+                            self._log.error("Frame read resulted in boolean, must be an error.")
+                            continue
 
-    def close(self):
-        if self.is_streaming:
-            self.stop_streaming()
-        self.disable_callback()
-        result = self.dcam.dev_close() and Dcamapi.uninit()
-        print("Hamamatsu Camera closed: " + str(result))
+                if frame_ready:
+                    self._log.debug("got frame")
+                    processed_frame = self._process_raw_frame(raw_frame)
+                    with self._frame_lock:
+                        camera_frame = CameraFrame(
+                            frame_id=self._current_frame.frame_id + 1 if self._current_frame else 1,
+                            timestamp=time.time(),
+                            frame=processed_frame,
+                            frame_format=self.get_frame_format(),
+                            frame_pixel_format=self.get_pixel_format(),
+                        )
 
-    def set_callback(self, function):
-        self.new_image_callback_external = function
+                        self._current_frame = camera_frame
 
-    def enable_callback(self):
-        if self.callback_is_enabled:
-            return
+                    # Send the local copy of the frame to all the callbacks so we are sure they get this frame
+                    self._propogate_frame(camera_frame)
 
-        if not self.is_streaming:
-            self.start_streaming()
+                # NOTE(imo): I'm not sure if self._camera.wait_event actually yields to the python
+                # interpreter.
+                time.sleep(0.001)
 
-        self.stop_waiting = False
-        self.callback_thread = threading.Thread(target=self._wait_and_callback)
-        self.callback_thread.start()
+            except Exception as e:
+                self._log.exception("Exception in read loop, ignoring and trying to continue.")
+        self._read_thread_running.clear()
 
-        self.callback_is_enabled = True
+    @staticmethod
+    def _last_dcam_error_string_direct(last_error: DCAMERR):
 
-    def _wait_and_callback(self):
-        # Note: DCAM API doesn't provide a direct callback mechanism
-        # This implementation uses the wait_event method to simulate a callback
-        while True:
-            if self.stop_waiting:
-                break
-            event = self.dcam.wait_event(DCAMWAIT_CAPEVENT.FRAMEREADY, 1000)
-            self.trigger_sent = False
-            if event is not False:
-                self._on_new_frame()
+        reverse_error_map = {enum_entry.value: enum_name for (enum_name, enum_entry) in DCAMERR.__members__.items()}
 
-    def _on_new_frame(self):
-        image = self.read_frame(no_wait=True)
-        if image is False:
-            print("Cannot get new frame from buffer.")
-            return
-        if self.image_locked:
-            print("Last image is still being processed; a frame is dropped")
-            return
-
-        self.current_frame = image
-
-        self.frame_ID_software += 1
-        self.frame_ID += 1
-
-        # frame ID for hardware triggered acquisition
-        if self.trigger_mode == TriggerMode.HARDWARE:
-            if self.frame_ID_offset_hardware_trigger == None:
-                self.frame_ID_offset_hardware_trigger = self.frame_ID
-            self.frame_ID = self.frame_ID - self.frame_ID_offset_hardware_trigger
-
-        self.timestamp = time.time()
-        self.new_image_callback_external(self)
-
-    def disable_callback(self):
-        if not self.callback_is_enabled:
-            return
-
-        was_streaming = self.is_streaming
-        if self.is_streaming:
-            self.stop_streaming()
-
-        self.stop_waiting = True
-        time.sleep(0.2)
-        self.callback_thread.join()
-        del self.callback_thread
-        self.callback_is_enabled = False
-
-        if was_streaming:
-            self.start_streaming()
-
-    def set_analog_gain(self, gain):
-        pass
-
-    def set_exposure_time(self, exposure_time):
-        if self.trigger_mode == TriggerMode.SOFTWARE:
-            adjusted = exposure_time / 1000
-        elif self.trigger_mode == TriggerMode.HARDWARE:
-            adjusted = self.strobe_delay_us / 1000000 + exposure_time / 1000
-        if self.dcam.prop_setvalue(DCAM_IDPROP.EXPOSURETIME, adjusted):
-            self.exposure_time = exposure_time
-
-    def set_continuous_acquisition(self):
-        was_streaming = False
-        if self.is_streaming:
-            was_streaming = True
-            self.stop_streaming()
-
-        if self.dcam.prop_setvalue(DCAM_IDPROP.TRIGGERSOURCE, DCAMPROP.TRIGGERSOURCE.INTERNAL):
-            self.trigger_mode = TriggerMode.CONTINUOUS
-
-        if was_streaming:
-            self.start_streaming()
-
-    def set_software_triggered_acquisition(self):
-        was_streaming = False
-        if self.is_streaming:
-            was_streaming = True
-            self.stop_streaming()
-
-        if self.dcam.prop_setvalue(DCAM_IDPROP.TRIGGERSOURCE, DCAMPROP.TRIGGERSOURCE.SOFTWARE):
-            self.trigger_mode = TriggerMode.SOFTWARE
-
-        if was_streaming:
-            self.start_streaming()
-
-    def set_hardware_triggered_acquisition(self):
-        was_streaming = False
-        if self.is_streaming:
-            was_streaming = True
-            self.stop_streaming()
-
-        self.dcam.prop_setvalue(DCAM_IDPROP.TRIGGERPOLARITY, DCAMPROP.TRIGGERPOLARITY.POSITIVE)
-        if self.dcam.prop_setvalue(DCAM_IDPROP.TRIGGERSOURCE, DCAMPROP.TRIGGERSOURCE.EXTERNAL):
-            self.frame_ID_offset_hardware_trigger = None
-            self.trigger_mode = TriggerMode.HARDWARE
-
-        if was_streaming:
-            self.start_streaming()
-
-    def set_pixel_format(self, pixel_format):
-        was_streaming = False
-        if self.is_streaming:
-            was_streaming = True
-            self.stop_streaming()
-
-        self.pixel_format = pixel_format
-
-        if pixel_format == "MONO8":
-            result = self.dcam.prop_setvalue(DCAM_IDPROP.IMAGE_PIXELTYPE, DCAM_PIXELTYPE.MONO8)
-        elif pixel_format == "MONO16":
-            result = self.dcam.prop_setvalue(DCAM_IDPROP.IMAGE_PIXELTYPE, DCAM_PIXELTYPE.MONO16)
-
-        if was_streaming:
-            self.start_streaming()
-
-        print("Set pixel format: " + str(result))
-
-    def send_trigger(self):
-        if self.is_streaming:
-            if not self.dcam.cap_firetrigger():
-                print("trigger not sent - firetrigger failed")
-            """
-            if not self.trigger_sent:
-                if not self.dcam.cap_firetrigger():
-                    print("trigger not sent - firetrigger failed")
-                else:
-                    self.trigger_sent = True
-            else:
-                print("trigger not sent - processing previous trigger")
-            """
+        if last_error not in reverse_error_map:
+            return f"{last_error}:{reverse_error_map[last_error]}"
         else:
-            print("trigger not sent - camera is not streaming")
+            return f"{last_error}:UNKNOWN_ERROR"
 
-    def read_frame(self, no_wait=False):
-        if no_wait:
-            return self.dcam.buf_getlastframedata()
-        else:
-            if self.dcam.wait_capevent_frameready(5000) is not False:
-                data = self.dcam.buf_getlastframedata()
-                return data
+    def _last_dcam_error_string(self):
+        with self._camera_lock:
+            return HamamatsuCamera._last_dcam_error_string_direct(self._camera.lasterr())
 
-            dcamerr = self.dcam.lasterr()
-            if dcamerr.is_timeout():
-                print("===: timeout")
+    def set_exposure_time(self, exposure_time_ms: float):
+        camera_exposure_time_s = exposure_time_ms / 1000.0
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            strobe_time_ms = self.get_strobe_time()
+            camera_exposure_time_s += strobe_time_ms / 1000.0
+            if self._hw_set_strobe_delay_ms_fn:
+                self._hw_set_strobe_delay_ms_fn(strobe_time_ms)
 
-            print("-NG: Dcam.wait_event() fails with error {}".format(dcamerr))
+        if not self._set_prop(DCAM_IDPROP.EXPOSURETIME, camera_exposure_time_s):
+            raise CameraError(f"Failed to set exposure time to {exposure_time_ms=} ({camera_exposure_time_s=} [s])")
 
-    def start_streaming(self, buffer_frame_num=5):
-        if self.is_streaming:
-            return
-        if self.dcam.buf_alloc(buffer_frame_num):
-            if self.dcam.cap_start(True):
-                self.is_streaming = True
-                print("Hamamatsu Camera starts streaming")
-                return
-            else:
-                self.dcam.buf_release()
-        print("Hamamatsu Camera cannot start streaming")
+        self._exposure_time_ms = exposure_time_ms
+        self._trigger_sent.clear()
+        return True
+
+    def get_exposure_time(self) -> float:
+        return self._exposure_time_ms
+
+    def get_exposure_limits(self) -> Tuple[float, float]:
+        # TODO(imo): We should be able to query this from the hardware.  For now, use the hard coded
+        # values we used before.  I'm not sure where these values came from.
+        return 0.017633, 10000.0046  # Each in ms
+
+    def get_strobe_time(self) -> float:
+        with self._camera_lock:
+            line_interval_s = self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL)
+            trigger_delay_s = self._camera.prop_getvalue(DCAM_IDPROP.TRIGGERDELAY)
+
+        if isinstance(line_interval_s, bool) or isinstance(trigger_delay_s, bool):
+            raise CameraError("Failed to get strobe delay properties from camera")
+
+        return (line_interval_s + trigger_delay_s) * 1000.0
+
+    def set_frame_format(self, frame_format: CameraFrameFormat):
+        if frame_format != CameraFrameFormat.RAW:
+            raise ValueError("Only the RAW frame format is supported by this camera.")
+        return True
+
+    def get_frame_format(self) -> CameraFrameFormat:
+        return CameraFrameFormat.RAW
+
+    _PIXEL_FORMAT_TO_DCAM_FORMAT = {
+        CameraPixelFormat.MONO8: DCAM_PIXELTYPE.MONO8,
+        CameraPixelFormat.MONO16: DCAM_PIXELTYPE.MONO16,
+    }
+
+    def set_pixel_format(self, pixel_format: CameraPixelFormat):
+        # For historical, allow passing in strings as long as they are valid pixel
+        # formats.
+        if isinstance(pixel_format, str):
+            try:
+                pixel_format = CameraPixelFormat(pixel_format)
+            except ValueError:
+                raise ValueError(f"Unknown or unsupported pixel format={pixel_format}")
+        if pixel_format not in self._PIXEL_FORMAT_TO_DCAM_FORMAT:
+            raise ValueError(f"Pixel format {pixel_format} is not supported by this camera.")
+
+        with self._pause_streaming():
+            if not self._set_prop(DCAM_IDPROP.IMAGE_PIXELTYPE, self._PIXEL_FORMAT_TO_DCAM_FORMAT[pixel_format]):
+                raise CameraError(f"Failed to set pixel format to {pixel_format}")
+
+    def get_pixel_format(self) -> CameraPixelFormat:
+        with self._camera_lock:
+            raw_dcam_pixel_format = self._camera.prop_getvalue(DCAM_IDPROP.IMAGE_PIXELTYPE)
+
+        if isinstance(raw_dcam_pixel_format, bool):
+            raise CameraError("Failed to get pixel format from camera.")
+
+        dcam_pixel_format = int(raw_dcam_pixel_format)
+        _dcam_to_pixel = {v: k for (k, v) in self._PIXEL_FORMAT_TO_DCAM_FORMAT.items()}
+
+        if dcam_pixel_format not in _dcam_to_pixel:
+            raise ValueError(f"Camera returned unknown pixel format code: {dcam_pixel_format}")
+
+        return _dcam_to_pixel[dcam_pixel_format]
+
+    def set_resolution(self, width: int, height: int):
+        # We don't know how to set the resolution of this camera yet.  Allow set_resolution if what they're
+        # asking for is the default resolution.
+        if len(self._capabilities.resolutions) != 1:
+            raise ValueError(
+                "Driver only supports 1 resolution, but capabilities has more than 1.  Driver update needed."
+            )
+
+        supported_resolution = self._capabilities.resolutions[0]
+
+        requested_resolution = (width, height)
+        if requested_resolution != supported_resolution:
+            raise ValueError(
+                f"The only supported resolution is {supported_resolution}, but you asked for {requested_resolution}"
+            )
+
+        old_resolution = self.get_resolution()
+        old_roi = self.get_region_of_interest()
+
+        new_roi = AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi, requested_resolution)
+        self.set_region_of_interest(*new_roi)
+
+        # We are already using the correct resolution, so let this pass through.
+        return True
+
+    def get_resolution(self) -> Tuple[int, int]:
+        with self._camera_lock:
+            raw_width = self._camera.prop_getvalue(DCAM_IDPROP.IMAGE_WIDTH)
+            raw_height = self._camera.prop_getvalue(DCAM_IDPROP.IMAGE_HEIGHT)
+
+        if isinstance(raw_width, bool) or isinstance(raw_height, bool):
+            raise CameraError("Camera failed to report width or height.")
+
+        return int(raw_width), int(raw_height)
+
+    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
+        return self._capabilities.resolutions
+
+    def set_analog_gain(self, analog_gain: float):
+        raise NotImplementedError("Analog gain is not implemented for this camera.")
+
+    def get_analog_gain(self) -> float:
+        raise NotImplementedError("Analog gain is not implemented for this camera.")
+
+    def get_gain_range(self) -> CameraGainRange:
+        raise NotImplementedError("Analog gain is not implemented for this camera.")
+
+    def _ensure_read_thread_running(self):
+        with self._read_thread_lock:
+            if self._read_thread is not None and self._read_thread_running.is_set():
+                self._log.debug("Read thread exists and thread is marked as running.")
+                return True
+
+            elif self._read_thread is not None:
+                self._log.warning("Read thread already exists, but not marked as running.  Still attempting start.")
+
+            self._read_thread = threading.Thread(target=self._read_frames_when_available, daemon=True)
+            self._read_thread_keep_running.set()
+            self._read_thread.start()
+
+    def start_streaming(self):
+        self._ensure_read_thread_running()
+
+        if self._is_streaming.is_set():
+            self._log.debug("Already streaming, start_streaming is noop")
+            return True
+
+        with self._camera_lock:
+            if not self._allocate_read_buffers():
+                self._log.error(f"Couldn't allocate read buffers for streaming: {self._last_dcam_error_string()}")
+                return False
+            if not self._camera.cap_start():
+                self._log.error(f"Failed to start streaming: {self._last_dcam_error_string()}")
+                return False
+
+        self._trigger_sent.clear()
+        self._is_streaming.set()
+        return True
+
+    def _cleanup_read_thread(self):
+        self._log.debug("Cleaning up read thread.")
+        with self._read_thread_lock:
+            if self._read_thread is None:
+                self._log.warning("No read thread, already not running?")
+                return True
+
+            self._read_thread_keep_running.clear()
+            self._read_thread.join(1.1 * self._read_thread_wait_period_s)
+
+            success = not self._read_thread.is_alive()
+            if not success:
+                self._log.warning("Read thread refused to exit!")
+
+            self._read_thread = None
+            self._read_thread_running.clear()
 
     def stop_streaming(self):
-        if self.dcam.cap_stop() and self.dcam.buf_release():
-            self.is_streaming = False
-            print("Hamamatsu Camera streaming stopped")
+        self._log.debug("Stopping Hamamatsu streaming.")
+        success = True
+        with self._camera_lock:
+            if not self._camera.cap_stop():
+                self._log.error(f"Failed to stop camera streaming: {self._last_dcam_error_string()}")
+                success = False
+
+            if not self._camera.buf_release():
+                self._log.error(f"Failed to release camera buffers: {self._last_dcam_error_string()}")
+                success = False
+
+            self._log.debug(f"Stopped with {success=}")
+            self._trigger_sent.clear()
+            self._is_streaming.clear()
+            return success
+
+    def get_is_streaming(self):
+        return self._is_streaming.is_set()
+
+    def read_camera_frame(self) -> CameraFrame:
+        if not self.get_is_streaming():
+            raise CameraError("Cannot read camera frame when not streaming.")
+
+        if not self._read_thread_running.is_set():
+            raise CameraError("Fatal camera error: read thread not running!")
+
+        starting_id = self.get_frame_id()
+        timeout_s = (1.04 * self.get_total_frame_time() + 1000) / 1000.0
+        timeout_time_s = time.time() + timeout_s
+        while self.get_frame_id() == starting_id:
+            if time.time() > timeout_time_s:
+                raise CameraError(
+                    f"Timed out after waiting {timeout_s=}[s] for frame ({starting_id=}), total_frame_time={self.get_total_frame_time()}."
+                )
+            time.sleep(0.001)
+
+        with self._frame_lock:
+            return self._current_frame
+
+    def get_frame_id(self) -> int:
+        with self._frame_lock:
+            return self._current_frame.frame_id if self._current_frame else -1
+
+    def get_white_balance_gains(self) -> Tuple[float, float, float]:
+        raise NotImplementedError("White Balance Gains not implemented for the Hamamatsu driver.")
+
+    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
+        raise NotImplementedError("White Balance Gains not implemented for the Hamamatsu driver.")
+
+    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
+        raise NotImplementedError("White Balance Gains not implemented for the Hamamatsu driver.")
+
+    def set_black_level(self, black_level: float):
+        raise NotImplementedError("Black levels are not implemented for the Hamamatsu driver.")
+
+    def get_black_level(self) -> float:
+        raise NotImplementedError("Black levels are not implemented for the Hamamatsu driver.")
+
+    def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
+        with self._pause_streaming():
+            if acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+                dcam_trigger_source = DCAMPROP.TRIGGERSOURCE.SOFTWARE
+            elif acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
+                dcam_trigger_source = DCAMPROP.TRIGGERSOURCE.INTERNAL
+            elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                dcam_trigger_source = DCAMPROP.TRIGGERSOURCE.EXTERNAL
+                if not self._set_prop(DCAM_IDPROP.TRIGGERPOLARITY, DCAMPROP.TRIGGERPOLARITY.POSITIVE):
+                    self._log.error(f"Failed to set positive trigger polarity for hardware trigger.")
+                    return False
+            else:
+                raise ValueError(f"Unhandled {acquisition_mode=}")
+
+            if not self._set_prop(DCAM_IDPROP.TRIGGERSOURCE, dcam_trigger_source):
+                self._log.error(f"Failed to set acquisition mode to {acquisition_mode=}")
+                return False
+        return True
+
+    def get_acquisition_mode(self) -> CameraAcquisitionMode:
+        with self._camera_lock:
+            dcam_mode_raw = self._camera.prop_getvalue(DCAM_IDPROP.TRIGGERSOURCE)
+
+        if isinstance(dcam_mode_raw, bool):
+            raise CameraError("Failed to get camera trigger source prop.")
+
+        dcam_mode = int(dcam_mode_raw)
+
+        if dcam_mode == DCAMPROP.TRIGGERSOURCE.EXTERNAL:
+            return CameraAcquisitionMode.HARDWARE_TRIGGER
+        elif dcam_mode == DCAMPROP.TRIGGERSOURCE.SOFTWARE:
+            return CameraAcquisitionMode.SOFTWARE_TRIGGER
+        elif dcam_mode == DCAMPROP.TRIGGERSOURCE.INTERNAL:
+            return CameraAcquisitionMode.CONTINUOUS
         else:
-            print("Hamamatsu Camera cannot stop streaming")
+            raise ValueError(f"Unknown dcam trigger source mode {dcam_mode=}")
 
-    def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
-        if offset_x is not None:
-            ROI_offset_x = 2 * (offset_x // 2)
-        else:
-            ROI_offset_x = self.ROI_offset_x
+    def send_trigger(self, illumination_time: Optional[float] = None):
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
+            raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
 
-        if offset_y is not None:
-            ROI_offset_y = 2 * (offset_y // 2)
-        else:
-            ROI_offset_y = self.ROI_offset_y
+        if not self.get_is_streaming():
+            raise CameraError(f"Camera is not streaming, cannot send trigger.")
 
-        if width is not None:
-            ROI_width = max(16, 2 * (width // 2))
-        else:
-            ROI_width = self.ROI_width
+        if not self.get_ready_for_trigger():
+            raise CameraError(
+                f"Requested trigger too early (last trigger was {time.time() - self._last_trigger_timestamp} [s] ago), refusing."
+            )
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            self._log.debug(f"Sending hardware trigger with {illumination_time=}")
+            self._hw_trigger_fn(illumination_time)
+        elif self.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+            self._log.debug("Sending software trigger..")
+            with self._camera_lock:
+                if not self._camera.cap_firetrigger():
+                    raise CameraError(f"Failed to send software trigger: {self._last_dcam_error_string()}")
 
-        if height is not None:
-            ROI_height = max(16, 2 * (height // 2))
-        else:
-            ROI_height = self.ROI_height
+            self._last_trigger_timestamp = time.time()
+            self._trigger_sent.set()
 
-        was_streaming = False
-        if self.is_streaming:
-            was_streaming = True
-            self.stop_streaming()
+    def get_ready_for_trigger(self) -> bool:
+        if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
+            self._trigger_sent.clear()
+        return not self._trigger_sent.is_set()
 
-        result = self.dcam.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.ON)
+    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+        with self._pause_streaming():
+            with self._camera_lock:
+                roi_mode_on = self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.ON)
 
-        result = result and self.dcam.prop_setvalue(DCAM_IDPROP.SUBARRAYHPOS, ROI_offset_x)
-        result = result and self.dcam.prop_setvalue(DCAM_IDPROP.SUBARRAYHSIZE, ROI_width)
-        result = result and self.dcam.prop_setvalue(DCAM_IDPROP.SUBARRAYVPOS, ROI_offset_y)
-        result = result and self.dcam.prop_setvalue(DCAM_IDPROP.SUBARRAYVSIZE, ROI_height)
+                def fail(msg):
+                    """
+                    This is a helper for turning off roi mode if any of the sets below fail.
+                    """
+                    self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.OFF)
+                    raise ValueError(msg)
 
-        if result:
-            self.calculate_strobe_delay()
-        else:
-            print("Setting ROI failed.")
+                if not roi_mode_on:
+                    raise CameraError("Failed to turn on roi mode on camera, cannot set roi.")
 
-        if was_streaming:
-            self.start_streaming()
+                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHPOS, int(offset_x)):
+                    fail("Could not set roi x offset.")
 
-    def calculate_strobe_delay(self):
-        self.strobe_delay_us = int(
-            self.dcam.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL) * 1000000 * 2304
-            + self.dcam.prop_getvalue(DCAM_IDPROP.TRIGGERDELAY) * 1000000
-        )  # s to us
+                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHSIZE, int(width)):
+                    fail("Could not set roi width.")
+
+                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVPOS, int(offset_y)):
+                    fail("Could not set roi y offset.")
+
+                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVSIZE, int(height)):
+                    fail("Could not set roi height.")
+
+        # Force exposure + strobe delay recalculation if needed
+        self.set_exposure_time(self.get_exposure_time())
+
+    def get_region_of_interest(self) -> Tuple[int, int, int, int]:
+        with self._camera_lock:
+            return (
+                int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYHPOS)),
+                int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYVPOS)),
+                int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYHSIZE)),
+                int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYVSIZE)),
+            )
+
+    def set_temperature(self, temperature_deg_c: Optional[float]):
+        with self._camera_lock:
+            self._camera.prop_setvalue(DCAM_IDPROP.SENSORTEMPERATURETARGET, temperature_deg_c)
+
+    def get_temperature(self) -> float:
+        with self._camera_lock:
+            return self._camera.prop_getvalue(DCAM_IDPROP.SENSORTEMPERATURE)

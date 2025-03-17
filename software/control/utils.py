@@ -2,6 +2,7 @@ import enum
 import inspect
 import pathlib
 import sys
+import shutil
 
 import cv2
 import git
@@ -393,13 +394,10 @@ def get_squid_repo_state_description() -> Optional[str]:
         return None
 
 
-<<<<<<< HEAD
-=======
 def truncate_to_interval(val, interval: int):
     return int(interval * (val // interval))
 
 
->>>>>>> d7fca27e (toupcam probably: utils truncate to interval force to int)
 def get_available_disk_space(directory: pathlib.Path) -> int:
     """
     Returns the available disk space, in bytes, for files created as children of the given directory.

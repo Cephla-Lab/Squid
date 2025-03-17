@@ -968,12 +968,17 @@ class CameraSettingsWidget(QFrame):
         self.camera.set_exposure_time(20)
 
         self.entry_analogGain = QDoubleSpinBox()
-        gain_range = self.camera.get_gain_range()
-        self.entry_analogGain.setMinimum(gain_range.min_gain)
-        self.entry_analogGain.setMaximum(gain_range.max_gain)
-        self.entry_analogGain.setSingleStep(gain_range.gain_step)
-        self.entry_analogGain.setValue(gain_range.min_gain)
-        self.camera.set_analog_gain(gain_range.min_gain)
+        try:
+            gain_range = self.camera.get_gain_range()
+            self.entry_analogGain.setMinimum(gain_range.min_gain)
+            self.entry_analogGain.setMaximum(gain_range.max_gain)
+            self.entry_analogGain.setSingleStep(gain_range.gain_step)
+            self.entry_analogGain.setValue(gain_range.min_gain)
+            self.camera.set_analog_gain(gain_range.min_gain)
+        except NotImplementedError:
+            self._log.info("Camera does not support analog gain, disabling analog gain control.")
+            self.entry_analogGain.setValue(0)
+            self.entry_analogGain.setEnabled(False)
 
         self.dropdown_pixelFormat = QComboBox()
         self.dropdown_pixelFormat.addItems(["MONO8", "MONO12", "MONO14", "MONO16", "BAYER_RG8", "BAYER_RG12"])
@@ -1026,7 +1031,7 @@ class CameraSettingsWidget(QFrame):
 
         # connection
         self.entry_exposureTime.valueChanged.connect(self.camera.set_exposure_time)
-        self.entry_analogGain.valueChanged.connect(self.camera.set_analog_gain)
+        self.entry_analogGain.valueChanged.connect(self.set_analog_gain_if_supported)
         self.dropdown_pixelFormat.currentTextChanged.connect(self.camera.set_pixel_format)
         self.entry_ROI_offset_x.valueChanged.connect(self.set_ROI_offset)
         self.entry_ROI_offset_y.valueChanged.connect(self.set_ROI_offset)
@@ -1118,6 +1123,12 @@ class CameraSettingsWidget(QFrame):
             self.camera_layout.addLayout(self.btn_auto_wb)
 
         self.setLayout(self.camera_layout)
+
+    def set_analog_gain_if_supported(self, gain):
+        try:
+            self.camera.set_analog_gain(gain)
+        except NotImplementedError:
+            self._log.warning(f"Cannot set gain to {gain}, gain not supported.")
 
     def toggle_auto_wb(self, pressed):
         # 0: OFF  1:CONTINUOUS  2:ONCE
@@ -1304,6 +1315,7 @@ class LiveControlWidget(QFrame):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.liveController: LiveController = liveController
         self.streamHandler = streamHandler
         self.objectiveStore = objectiveStore
@@ -1365,13 +1377,19 @@ class LiveControlWidget(QFrame):
         self.entry_exposureTime.setSizePolicy(sizePolicy)
 
         self.entry_analogGain = QDoubleSpinBox()
-        self.entry_analogGain = QDoubleSpinBox()
         self.entry_analogGain.setMinimum(0)
         self.entry_analogGain.setMaximum(24)
         # self.entry_analogGain.setSuffix('x')
         self.entry_analogGain.setSingleStep(0.1)
         self.entry_analogGain.setValue(0)
         self.entry_analogGain.setSizePolicy(sizePolicy)
+        # Not all cameras support analog gain, so attempt to get the gain
+        # to check this
+        try:
+            self.liveController.camera.get_analog_gain()
+        except NotImplementedError:
+            self._log.info("Analog gain not supported, disabling it in live control widget.")
+            self.entry_analogGain.setEnabled(False)
 
         self.slider_illuminationIntensity = QSlider(Qt.Horizontal)
         self.slider_illuminationIntensity.setTickPosition(QSlider.TicksBelow)
