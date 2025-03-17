@@ -808,8 +808,8 @@ class SlidePositionControlWorker(QObject):
                 timestamp_start = time.time()
                 # x needs to be at > + 20 mm when homing y
                 self.stage.move_x(20)
-                self.stage.home(y=True)
-                self.stage.home(x=True)
+                self.stage.home(x=False, y=True, z=False, theta=False)
+                self.stage.home(x=True, y=False, z=False, theta=False)
 
                 self.slidePositionController.homing_done = True
             # homing done previously
@@ -829,13 +829,13 @@ class SlidePositionControlWorker(QObject):
             # for glass slide
             if self.slidePositionController.homing_done == False or SLIDE_POTISION_SWITCHING_HOME_EVERYTIME:
                 if self.home_x_and_y_separately:
-                    self.stage.home(x=True)
+                    self.stage.home(x=True, y=False, z=False, theta=False)
                     self.stage.move_x_to(SLIDE_POSITION.LOADING_X_MM)
 
-                    self.stage.home(y=True)
+                    self.stage.home(x=False, y=True, z=False, theta=False)
                     self.stage.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
                 else:
-                    self.stage.home(x=True, y=True)
+                    self.stage.home(x=True, y=True, z=False, theta=False)
 
                     self.stage.move_x_to(SLIDE_POSITION.LOADING_X_MM)
                     self.stage.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
@@ -865,9 +865,9 @@ class SlidePositionControlWorker(QObject):
                 # x needs to be at > + 20 mm when homing y
                 self.stage.move_x_to(20)
                 # home y
-                self.stage.home(y=True)
+                self.stage.home(x=False, y=True, z=False, theta=False)
                 # home x
-                self.stage.home(x=True)
+                self.stage.home(x=True, y=False, z=False, theta=False)
                 self.slidePositionController.homing_done = True
 
                 # move to scanning position
@@ -879,14 +879,14 @@ class SlidePositionControlWorker(QObject):
         else:
             if self.slidePositionController.homing_done == False or SLIDE_POTISION_SWITCHING_HOME_EVERYTIME:
                 if self.home_x_and_y_separately:
-                    self.stage.home(y=True)
+                    self.stage.home(x=False, y=True, z=False, theta=False)
 
                     self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
 
-                    self.stage.home(x=True)
+                    self.stage.home(x=True, y=False, z=False, theta=False)
                     self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
                 else:
-                    self.stage.home(x=True, y=True)
+                    self.stage.home(x=True, y=True, z=False, theta=False)
 
                     self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
                     self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
