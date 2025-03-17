@@ -113,6 +113,7 @@ static const int LASER_488nm = 4;   // to rename
 static const int LASER_561nm = 22;   // to rename
 static const int LASER_638nm = 3;  // to rename
 static const int LASER_730nm = 23;  // to rename
+static const int LIGHT_SOURCE_6 = 2; // to rename
 static const int LASER_INTERLOCK = 1;
 // PWM6 2
 // PWM7 1
@@ -410,7 +411,7 @@ static const int ILLUMINATION_SOURCE_488NM = 12;
 static const int ILLUMINATION_SOURCE_638NM = 13;
 static const int ILLUMINATION_SOURCE_561NM = 14;
 static const int ILLUMINATION_SOURCE_730NM = 15;
-
+static const int ILLUMINATION_SOURCE_6 = 16;
 #define NUM_LEDS DOTSTAR_NUM_LEDS
 #define LED_MATRIX_DATA_PIN 26
 #define LED_MATRIX_CLOCK_PIN 27
@@ -481,6 +482,9 @@ void turn_on_illumination()
       if(digitalRead(LASER_INTERLOCK) == LOW)
         digitalWrite(LASER_730nm, HIGH);
       break;
+    case ILLUMINATION_SOURCE_6:
+      digitalWrite(LIGHT_SOURCE_6, HIGH);
+      break;
   }
 }
 
@@ -532,6 +536,9 @@ void turn_off_illumination()
     case ILLUMINATION_SOURCE_730NM:
       digitalWrite(LASER_730nm, LOW);
       break;
+    case ILLUMINATION_SOURCE_6:
+      digitalWrite(LIGHT_SOURCE_6, LOW);
+      break;
   }
   illumination_is_on = false;
 }
@@ -556,6 +563,9 @@ void set_illumination(int source, uint16_t intensity)
       break;
     case ILLUMINATION_SOURCE_730NM:
       set_DAC8050x_output(4, illumination_intensity);
+      break;
+    case ILLUMINATION_SOURCE_6:
+      set_DAC8050x_output(5, illumination_intensity);
       break;
   }
   if (illumination_is_on)
