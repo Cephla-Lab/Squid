@@ -969,21 +969,21 @@ class CameraSettingsWidget(QFrame):
         format_line.addWidget(QLabel("Pixel Format"))
         format_line.addWidget(self.dropdown_pixelFormat)
         try:
-            current_res = self.camera.resolution
-            current_res_string = "x".join([str(current_res[0]), str(current_res[1])])
-            res_options = [f"{res[0]} x {res[1]}" for res in self.camera.res_list]
-            self.dropdown_res = QComboBox()
-            self.dropdown_res.addItems(res_options)
-            self.dropdown_res.setCurrentText(current_res_string)
-
-            self.dropdown_res.currentTextChanged.connect(self.change_full_res)
+            binning_options = list(self.camera.binning_res.keys())
+            
+            self.dropdown_binning = QComboBox()
+            self.dropdown_binning.addItems([f"{b[0]}x{b[1]}" for b in binning_options])
+            
+            current_binning = self.camera.binning
+            self.dropdown_binning.setCurrentText(f"{current_binning[0]}x{current_binning[1]}")
+            self.dropdown_binning.currentTextChanged.connect(self.change_binning)
         except AttributeError as ae:
             print(ae)
-            self.dropdown_res = QComboBox()
-            self.dropdown_res.setEnabled(False)
+            self.dropdown_binning = QComboBox()
+            self.dropdown_binning.setEnabled(False)
             pass
-        format_line.addWidget(QLabel(" FOV Resolution"))
-        format_line.addWidget(self.dropdown_res)
+        format_line.addWidget(QLabel(" Binning"))
+        format_line.addWidget(self.dropdown_binning)
         self.camera_layout.addLayout(format_line)
 
         if include_camera_temperature_setting:
@@ -1110,11 +1110,14 @@ class CameraSettingsWidget(QFrame):
     def update_measured_temperature(self, temperature):
         self.label_temperature_measured.setNum(temperature)
 
-    def change_full_res(self, index):
-        res_strings = self.dropdown_res.currentText().split("x")
-        res_x = int(res_strings[0])
-        res_y = int(res_strings[1])
-        self.camera.set_resolution(res_x, res_y)
+    def change_binning(self, binning_text):
+        binning_parts = binning_text.split("x")
+        binning_x = int(binning_parts[0])
+        binning_y = int(binning_parts[1])
+
+        self.camera.set_binning(binning_x, binning_y)
+
+        # Update UI elements after binning change
         self.entry_ROI_offset_x.blockSignals(True)
         self.entry_ROI_offset_y.blockSignals(True)
         self.entry_ROI_height.blockSignals(True)
