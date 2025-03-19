@@ -81,7 +81,12 @@ class Camera(object):
         return (w * 24 + 31) // 32 * 4
 
     def __init__(
-        self, sn=None, binning=CAMERA_CONFIG.BINNING_FACTOR_DEFAULT, is_global_shutter=False, rotate_image_angle=None, flip_image=None
+        self,
+        sn=None,
+        binning=CAMERA_CONFIG.BINNING_FACTOR_DEFAULT,
+        is_global_shutter=False,
+        rotate_image_angle=None,
+        flip_image=None,
     ):
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
@@ -127,6 +132,11 @@ class Camera(object):
         self.binning_res = {}
         self.res_list = []
 
+        self.image_width = CAMERA_CONFIG.CROP_WIDTH
+        self.image_height = CAMERA_CONFIG.CROP_HEIGHT
+        self.image_xOffset = None
+        self.image_yOffset = None
+
         self.trigger_mode = None
         self.pixel_size_byte = 1
 
@@ -170,14 +180,6 @@ class Camera(object):
 
         self.brand = "ToupTek"
 
-        self.OffsetX = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
-        self.OffsetY = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
-        self.Width = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
-        self.Height = CAMERA_CONFIG.ROI_HEIGHT_DEFAULT
-
-        self.WidthMax = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
-        self.HeightMax = CAMERA_CONFIG.ROI_HEIGHT_DEFAULT
-
         # when camera arguments changed, call it to update strobe_delay
         self.reset_strobe_delay = None
 
@@ -206,13 +208,13 @@ class Camera(object):
                 self.log.info("\t = [{} x {}]".format(r.width, r.height))
             if self.sn is not None:
                 index = [idx for idx in range(len(self.devices)) if self.devices[idx].id == self.sn][0]
-            
+
             for r in self.devices[index].model.res:
                 self.res_list.append((r.width, r.height))
             self.res_list.sort(key=lambda x: x[0] * x[1], reverse=True)
 
             highest_res = self.res_list[0]
-            
+
             for res in self.res_list:
                 x_binning = int(highest_res[0] / res[0])
                 y_binning = int(highest_res[1] / res[1])
@@ -239,10 +241,9 @@ class Camera(object):
 
             # set camera resolution
             if self.binning not in self.binning_res:
-                self.binning = (1,1)
+                self.binning = (1, 1)
             self.Width, self.Height = self.binning_res[self.binning]
             self.set_binning(self.binning[0], self.binning[1])  # buffer created when setting resolution
-            self._update_buffer_settings()
 
             if self.camera:
                 if self.buf:
@@ -263,6 +264,48 @@ class Camera(object):
             pass
 
         self.thread_read_temperature.start()
+
+    def crop_image(self, width, height):
+        current_width, current_height = self.binning_res[self.binning]
+
+        width = max(16, min(width, current_width))
+        height = max(16, min(height, current_height))
+
+        width = 2 * (width // 2)
+        height = 2 * (height // 2)
+        offset_x = (current_width - width) // 2
+        offset_y = (current_height - height) // 2
+        offset_x = 2 * (offset_x // 2)
+        offset_y = 2 * (offset_y // 2)
+
+        was_streaming = False
+        if self.is_streaming:
+            self.stop_streaming()
+            was_streaming = True
+
+        try:
+            self.camera.put_Roi(offset_x, offset_y, width, height)
+        except toupcam.HRESULTException as ex:
+            self.log.error(f"Failed to set crop: {ex}")
+            raise ex
+        self._update_buffer_settings()
+
+        self.image_width = width
+        self.image_height = height
+        self.image_xOffset = offset_x
+        self.image_yOffset = offset_y
+
+        # Clear ROI
+        self.ROI_offset_x = 0
+        self.ROI_offset_y = 0
+        self.ROI_height = 0
+        self.ROI_width = 0
+
+        if was_streaming:
+            self.start_streaming()
+
+        if self.reset_strobe_delay is not None:
+            self.reset_strobe_delay()
 
     def set_callback(self, function):
         self.new_image_callback_external = function
@@ -338,7 +381,7 @@ class Camera(object):
 
     def set_wb_ratios(self, wb_r=None, wb_g=None, wb_b=None):
         try:
-            camera.put_WhiteBalanceGain(wb_r, wb_g, wb_b)
+            self.camera.put_WhiteBalanceGain(wb_r, wb_g, wb_b)
         except toupcam.HRESULTException as ex:
             err_type = hresult_checker(ex, "E_NOTIMPL")
             self.log.warning("White balance not implemented")
@@ -453,12 +496,20 @@ class Camera(object):
         if self.is_streaming:
             self.stop_streaming()
             was_streaming = True
-        if (x,y) not in self.binning_res:
+
+        # Store current relative dimensions for recalculating crop
+        old_binning = self.binning
+        old_width = self.image_width
+        old_height = self.image_height
+
+        if (x, y) not in self.binning_res:
             self.log.error(f"Binning ({x},{y}) not supported by camera")
             return
-        width, height = self.binning_res[(x,y)]
+
+        width, height = self.binning_res[(x, y)]
         try:
             self.camera.put_Size(width, height)
+            self.binning = (x, y)
         except toupcam.HRESULTException as ex:
             err_type = hresult_checker(ex, "E_INVALIDARG", "E_BUSY", "E_ACCESDENIED", "E_UNEXPECTED")
             if err_type == "E_INVALIDARG":
@@ -466,7 +517,19 @@ class Camera(object):
             else:
                 self.log.error(f"Resolution cannot be set due to error: " + err_type)
                 # TODO(imo): Propagate error in some way and handle
-        self._update_buffer_settings()
+
+        if old_binning != (0, 0) and old_width > 0 and old_height > 0:
+
+            scale_x = old_binning[0] / x
+            scale_y = old_binning[1] / y
+
+            new_width = int(old_width * scale_x)
+            new_height = int(old_height * scale_y)
+
+            self.crop_image(new_width, new_height)
+        else:
+            self.crop_image(self.image_width, self.image_height)
+
         if was_streaming:
             self.start_streaming()
 
@@ -598,63 +661,65 @@ class Camera(object):
         return None
 
     def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
+        if width == 0 and height == 0:
+            self.crop_image(self.image_width, self.image_height)
+            return
+
+        # Calculate ROI parameters relative to the current center crop
         if offset_x is not None:
-            ROI_offset_x = 2 * (offset_x // 2)
+            ROI_offset_x = self.image_xOffset + 2 * (offset_x // 2)
         else:
             ROI_offset_x = self.ROI_offset_x
 
         if offset_y is not None:
-            ROI_offset_y = 2 * (offset_y // 2)
+            ROI_offset_y = self.image_yOffset + 2 * (offset_y // 2)
         else:
             ROI_offset_y = self.ROI_offset_y
 
         if width is not None:
-            ROI_width = max(16, 2 * (width // 2))
+            ROI_width = max(16, min(self.image_width, 2 * (width // 2)))
         else:
             ROI_width = self.ROI_width
 
         if height is not None:
-            ROI_height = max(16, 2 * (height // 2))
+            ROI_height = max(16, min(self.image_height, 2 * (height // 2)))
         else:
             ROI_height = self.ROI_height
+
+        if ROI_offset_x < self.image_xOffset:
+            ROI_offset_x = self.image_xOffset
+
+        if ROI_offset_y < self.image_yOffset:
+            ROI_offset_y = self.image_yOffset
+
+        if ROI_offset_x + ROI_width > self.image_xOffset + self.image_width:
+            ROI_offset_x = self.image_xOffset + self.image_width - ROI_width
+
+        if ROI_offset_y + ROI_height > self.image_yOffset + self.image_height:
+            ROI_offset_y = self.image_yOffset + self.image_height - ROI_height
+
+        ROI_offset_x = 2 * (ROI_offset_x // 2)
+        ROI_offset_y = 2 * (ROI_offset_y // 2)
 
         was_streaming = False
         if self.is_streaming:
             self.stop_streaming()
             was_streaming = True
 
-        if width == 0 and height == 0:
-            self.ROI_offset_x = 0
-            self.ROI_offset_y = 0
-            self.OffsetX = 0
-            self.OffsetY = 0
-            self.ROI_height = 0
-            self.ROI_width = 0
-            self.camera.put_Roi(0, 0, 0, 0)
-            width, height = self.camera.get_Size()
-            self.Width = width
-            self.Height = height
-            self.ROI_height = height
-            self.ROI_width = width
-            self._update_buffer_settings()
+        try:
+            self.camera.put_Roi(ROI_offset_x, ROI_offset_y, ROI_width, ROI_height)
 
-        else:
-            try:
-                self.camera.put_Roi(ROI_offset_x, ROI_offset_y, ROI_width, ROI_height)
-                self.ROI_height = ROI_height
-                self.Height = ROI_height
-                self.ROI_width = ROI_width
-                self.Width = ROI_width
+            # Store relative values for ROI dimensions and offsets
+            self.ROI_height = ROI_height
+            self.ROI_width = ROI_width
+            self.ROI_offset_x = ROI_offset_x - self.image_xOffset
+            self.ROI_offset_y = ROI_offset_y - self.image_yOffset
+        except toupcam.HRESULTException as ex:
+            err_type = hresult_checker(ex, "E_INVALIDARG")
+            self.log.error("ROI bounds invalid, not changing ROI.")
 
-                self.ROI_offset_x = ROI_offset_x
-                self.OffsetX = ROI_offset_x
+        self._update_buffer_settings()
 
-                self.ROI_offset_y = ROI_offset_y
-                self.OffsetY = ROI_offset_y
-            except toupcam.HRESULTException as ex:
-                err_type = hresult_checker(ex, "E_INVALIDARG")
-                self.log.error("ROI bounds invalid, not changing ROI.")
-            self._update_buffer_settings()
         if was_streaming:
             self.start_streaming()
 
