@@ -124,7 +124,7 @@ class Camera(object):
         self.EXPOSURE_TIME_MS_MAX = 3600000
 
         self.ROI_offset_x = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
-        self.ROI_offset_y = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
+        self.ROI_offset_y = CAMERA_CONFIG.ROI_OFFSET_Y_DEFAULT
         self.ROI_width = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
         self.ROI_height = CAMERA_CONFIG.ROI_HEIGHT_DEFAULT
 
@@ -132,6 +132,7 @@ class Camera(object):
         self.binning_res = {}
         self.res_list = []
 
+        # For cropping. This will be the full size of the image without setting ROI
         self.image_width = CAMERA_CONFIG.CROP_WIDTH
         self.image_height = CAMERA_CONFIG.CROP_HEIGHT
         self.image_xOffset = None
