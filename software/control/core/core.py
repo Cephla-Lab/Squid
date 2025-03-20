@@ -65,24 +65,25 @@ class ObjectiveStore:
         self.current_objective = default_objective
         self.tube_lens_mm = TUBE_LENS_MM
         self.sensor_pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
-        self.pixel_binning = self.get_pixel_binning()
-        self.pixel_size_um = self.calculate_pixel_size(self.current_objective)
+        self.pixel_size_um_unbinned = self._calculate_pixel_size(self.current_objective)
 
     def get_pixel_size(self):
-        return self.pixel_size_um
+        return self.pixel_size_um_unbinned * self.get_pixel_binning()
 
-    def calculate_pixel_size(self, objective_name):
+    def get_sensor_pixel_size_um(self):
+        return self.sensor_pixel_size_um * self.get_pixel_binning()
+
+    def _calculate_pixel_size(self, objective_name):
         objective = self.objectives_dict[objective_name]
         magnification = objective["magnification"]
         objective_tube_lens_mm = objective["tube_lens_f_mm"]
         pixel_size_um = self.sensor_pixel_size_um / (magnification / (objective_tube_lens_mm / self.tube_lens_mm))
-        pixel_size_um *= self.pixel_binning
         return pixel_size_um
 
     def set_current_objective(self, objective_name):
         if objective_name in self.objectives_dict:
             self.current_objective = objective_name
-            self.pixel_size_um = self.calculate_pixel_size(objective_name)
+            self.pixel_size_um_unbinned = self._calculate_pixel_size(objective_name)
         else:
             raise ValueError(f"Objective {objective_name} not found in the store.")
 
@@ -91,9 +92,7 @@ class ObjectiveStore:
 
     def get_pixel_binning(self):
         try:
-            highest_res = max(self.parent.camera.res_list, key=lambda res: res[0] * res[1])
-            resolution = self.parent.camera.resolution
-            pixel_binning = max(1, highest_res[0] / resolution[0])
+            pixel_binning = max(1, self.parent.camera.binning[0])
         except AttributeError:
             pixel_binning = 1
         return pixel_binning
@@ -2311,7 +2310,7 @@ class MultiPointController(QObject):
             except:
                 pass
         # TODO: USE OBJECTIVE STORE DATA
-        acquisition_parameters["sensor_pixel_size_um"] = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
+        acquisition_parameters["sensor_pixel_size_um"] = self.parent.objectiveStore.get_sensor_pixel_size_um()
         acquisition_parameters["tube_lens_mm"] = TUBE_LENS_MM
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))

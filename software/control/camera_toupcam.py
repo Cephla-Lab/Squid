@@ -466,6 +466,7 @@ class Camera(object):
             else:
                 self.log.error(f"Resolution cannot be set due to error: " + err_type)
                 # TODO(imo): Propagate error in some way and handle
+        self.binning = (x, y)
         self._update_buffer_settings()
         if was_streaming:
             self.start_streaming()
