@@ -231,6 +231,9 @@ class CAMERA_CONFIG:
     ROI_WIDTH_DEFAULT = 3104
     ROI_HEIGHT_DEFAULT = 2084
     BINNING_FACTOR_DEFAULT = (2, 2)
+    CAMERA_CROP_WIDTH = 4000  # In pixels without binning
+    CAMERA_CROP_HEIGHT = 4000  # In pixels without binning
+    # We will use ROI for cropping fov in the future. If CAMERA_CROP_WIDTH and CAMERA_CROP_HEIGHT are defined in the configuration file, ACQUISITION.CROP_WIDTH and ACQUISITION.CROP_HEIGHT will be ignored.
 
 
 class ZStageConfig(Enum):
@@ -780,6 +783,7 @@ AFTER_IMAGING_SEQUENCES = [4, 6]
 #### start of loading machine specific configurations ####
 ##########################################################
 CACHED_CONFIG_FILE_PATH = None
+VARS_LOADED_FROM_CONFIG = set()
 
 # Piezo configuration items
 Z_MOTOR_CONFIG = "STEPPER"  # "STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"
@@ -833,12 +837,16 @@ if config_files:
         value = cfp.get("GENERAL", varnamelower)
         actualvalue = conf_attribute_reader(value)
         locals()[var_name] = actualvalue
+        VARS_LOADED_FROM_CONFIG.add(var_name)
     for classkey in var_items:
         myclass = None
         classkeyupper = classkey.upper()
         pop_items = None
         try:
             pop_items = cfp.items(classkeyupper)
+            if pop_items and type(locals()[classkey]) is type:
+                for attr_name, _ in pop_items:
+                    VARS_LOADED_FROM_CONFIG.add(f"{classkey}.{attr_name}")
         except:
             continue
         if type(locals()[classkey]) is not type:

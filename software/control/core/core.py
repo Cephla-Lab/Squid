@@ -119,6 +119,12 @@ class StreamHandler(QObject):
 
         self.crop_width = crop_width
         self.crop_height = crop_height
+        if (
+            "CAMERA_CONFIG.CAMERA_CROP_WIDTH" in VARS_LOADED_FROM_CONFIG
+            and "CAMERA_CONFIG.CAMERA_CROP_HEIGHT" in VARS_LOADED_FROM_CONFIG
+        ):
+            self.crop_width = int(CAMERA_CONFIG.CAMERA_CROP_WIDTH / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT[0])
+            self.crop_height = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT[1])
         self.display_resolution_scaling = display_resolution_scaling
 
         self.save_image_flag = False
@@ -151,6 +157,10 @@ class StreamHandler(QObject):
     def set_crop(self, crop_width, crop_height):
         self.crop_width = crop_width
         self.crop_height = crop_height
+
+    def scale_crop(self, scale_x, scale_y):
+        self.crop_width = int(self.crop_width * scale_x)
+        self.crop_height = int(self.crop_height * scale_y)
 
     def set_display_resolution_scaling(self, display_resolution_scaling):
         self.display_resolution_scaling = display_resolution_scaling / 100

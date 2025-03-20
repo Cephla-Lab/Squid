@@ -997,6 +997,7 @@ class HighContentScreeningGui(QMainWindow):
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
         self.cameraSettingWidget.signal_binning_changed.connect(self.navigationViewer.redraw_fov)
+        self.cameraSettingWidget.signal_binning_changed.connect(self.streamHandler.scale_crop)
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.objectivesWidget.signal_objective_changed.connect(self.flexibleMultiPointWidget.update_fov_positions)
         # TODO(imo): Fix position updates after removal of navigation controller

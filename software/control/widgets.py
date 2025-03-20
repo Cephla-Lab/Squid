@@ -859,7 +859,7 @@ class ObjectivesWidget(QWidget):
 
 class CameraSettingsWidget(QFrame):
 
-    signal_binning_changed = Signal()
+    signal_binning_changed = Signal(float, float)
 
     def __init__(
         self,
@@ -1117,7 +1117,12 @@ class CameraSettingsWidget(QFrame):
         binning_x = int(binning_parts[0])
         binning_y = int(binning_parts[1])
 
+        old_binning_x, old_binning_y = self.camera.binning
+
         self.camera.set_binning(binning_x, binning_y)
+
+        scale_x = old_binning_x / binning_x
+        scale_y = old_binning_y / binning_y
 
         # Update UI elements after binning change
         self.entry_ROI_offset_x.blockSignals(True)
@@ -1141,7 +1146,7 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_height.blockSignals(False)
         self.entry_ROI_width.blockSignals(False)
 
-        self.signal_binning_changed.emit()
+        self.signal_binning_changed.emit(scale_x, scale_y)
 
     def update_blacklevel(self, blacklevel):
         try:
