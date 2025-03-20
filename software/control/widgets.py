@@ -859,6 +859,8 @@ class ObjectivesWidget(QWidget):
 
 class CameraSettingsWidget(QFrame):
 
+    signal_binning_changed = Signal()
+
     def __init__(
         self,
         camera,
@@ -1138,6 +1140,8 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_offset_y.blockSignals(False)
         self.entry_ROI_height.blockSignals(False)
         self.entry_ROI_width.blockSignals(False)
+
+        self.signal_binning_changed.emit()
 
     def update_blacklevel(self, blacklevel):
         try:

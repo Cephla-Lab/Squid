@@ -3360,7 +3360,7 @@ class NavigationViewer(QFrame):
         pixel_size_um = self.objectiveStore.get_pixel_size()
         self.fov_size_mm = self.acquisition_size * pixel_size_um / 1000
 
-    def on_objective_changed(self):
+    def redraw_fov(self):
         self.clear_overlay()
         self.update_fov_size()
         self.draw_current_fov(self.x_mm, self.y_mm)
