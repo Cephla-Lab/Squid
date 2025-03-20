@@ -60,6 +60,7 @@ import squid.abc
 
 class ObjectiveStore:
     def __init__(self, objectives_dict=OBJECTIVES, default_objective=DEFAULT_OBJECTIVE, parent=None):
+        self.parent = parent
         self.objectives_dict = objectives_dict
         self.default_objective = default_objective
         self.current_objective = default_objective
