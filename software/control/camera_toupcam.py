@@ -81,7 +81,12 @@ class Camera(object):
         return (w * 24 + 31) // 32 * 4
 
     def __init__(
-        self, sn=None, binning=CAMERA_CONFIG.BINNING_FACTOR_DEFAULT, is_global_shutter=False, rotate_image_angle=None, flip_image=None
+        self,
+        sn=None,
+        binning=CAMERA_CONFIG.BINNING_FACTOR_DEFAULT,
+        is_global_shutter=False,
+        rotate_image_angle=None,
+        flip_image=None,
     ):
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
@@ -206,13 +211,13 @@ class Camera(object):
                 self.log.info("\t = [{} x {}]".format(r.width, r.height))
             if self.sn is not None:
                 index = [idx for idx in range(len(self.devices)) if self.devices[idx].id == self.sn][0]
-            
+
             for r in self.devices[index].model.res:
                 self.res_list.append((r.width, r.height))
             self.res_list.sort(key=lambda x: x[0] * x[1], reverse=True)
 
             highest_res = self.res_list[0]
-            
+
             for res in self.res_list:
                 x_binning = int(highest_res[0] / res[0])
                 y_binning = int(highest_res[1] / res[1])
@@ -239,7 +244,7 @@ class Camera(object):
 
             # set camera resolution
             if self.binning not in self.binning_res:
-                self.binning = (1,1)
+                self.binning = (1, 1)
             self.Width, self.Height = self.binning_res[self.binning]
             self.set_binning(self.binning[0], self.binning[1])  # buffer created when setting resolution
             self._update_buffer_settings()
@@ -448,15 +453,15 @@ class Camera(object):
         elif data_format == "RAW":
             self.camera.put_Option(toupcam.TOUPCAM_OPTION_RAW, 1)  # 1 is RAW mode, 0 is RGB mode
 
-    def set_binning(self, x, y):
+    def set_binning(self, binning_factor_x, binning_factor_y):
         was_streaming = False
         if self.is_streaming:
             self.stop_streaming()
             was_streaming = True
-        if (x,y) not in self.binning_res:
-            self.log.error(f"Binning ({x},{y}) not supported by camera")
+        if (binning_factor_x, binning_factor_y) not in self.binning_res:
+            self.log.error(f"Binning ({binning_factor_x},{binning_factor_y}) not supported by camera")
             return
-        width, height = self.binning_res[(x,y)]
+        width, height = self.binning_res[(binning_factor_x, binning_factor_y)]
         try:
             self.camera.put_Size(width, height)
         except toupcam.HRESULTException as ex:
@@ -466,7 +471,7 @@ class Camera(object):
             else:
                 self.log.error(f"Resolution cannot be set due to error: " + err_type)
                 # TODO(imo): Propagate error in some way and handle
-        self.binning = (x, y)
+        self.binning = (binning_factor_x, binning_factor_y)
         self._update_buffer_settings()
         if was_streaming:
             self.start_streaming()

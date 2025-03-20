@@ -970,10 +970,10 @@ class CameraSettingsWidget(QFrame):
         format_line.addWidget(self.dropdown_pixelFormat)
         try:
             binning_options = list(self.camera.binning_res.keys())
-            
+
             self.dropdown_binning = QComboBox()
             self.dropdown_binning.addItems([f"{b[0]}x{b[1]}" for b in binning_options])
-            
+
             current_binning = self.camera.binning
             self.dropdown_binning.setCurrentText(f"{current_binning[0]}x{current_binning[1]}")
             self.dropdown_binning.currentTextChanged.connect(self.change_binning)
