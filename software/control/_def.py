@@ -231,8 +231,8 @@ class CAMERA_CONFIG:
     ROI_WIDTH_DEFAULT = 3104
     ROI_HEIGHT_DEFAULT = 2084
     BINNING_FACTOR_DEFAULT = (2, 2)
-    CAMERA_CROP_WIDTH = 4000  # In pixels without binning
-    CAMERA_CROP_HEIGHT = 4000  # In pixels without binning
+    CAMERA_CROP_WIDTH = 4168  # In pixels without binning
+    CAMERA_CROP_HEIGHT = 4168  # In pixels without binning
     # We will use ROI for cropping fov in the future. If CAMERA_CROP_WIDTH and CAMERA_CROP_HEIGHT are defined in the configuration file, ACQUISITION.CROP_WIDTH and ACQUISITION.CROP_HEIGHT will be ignored.
 
 

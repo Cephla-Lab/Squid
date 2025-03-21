@@ -158,9 +158,9 @@ class StreamHandler(QObject):
         self.crop_width = crop_width
         self.crop_height = crop_height
 
-    def scale_crop(self, scale_x, scale_y):
-        self.crop_width = int(self.crop_width * scale_x)
-        self.crop_height = int(self.crop_height * scale_y)
+    def scale_crop(self, binning_x, binning_y):
+        self.crop_width = int(self.crop_width / binning_x)
+        self.crop_height = int(self.crop_height / binning_y)
 
     def set_display_resolution_scaling(self, display_resolution_scaling):
         self.display_resolution_scaling = display_resolution_scaling / 100
