@@ -107,7 +107,10 @@ class StreamHandler(QObject):
     signal_new_frame_received = Signal()
 
     def __init__(
-        self, crop_width=Acquisition.CROP_WIDTH, crop_height=Acquisition.CROP_HEIGHT, display_resolution_scaling=1
+        self,
+        crop_width=CAMERA_CONFIG.CAMERA_CROP_WIDTH,
+        crop_height=CAMERA_CONFIG.CAMERA_CROP_HEIGHT,
+        display_resolution_scaling=1,
     ):
         QObject.__init__(self)
         self.fps_display = 1
@@ -117,14 +120,14 @@ class StreamHandler(QObject):
         self.timestamp_last_save = 0
         self.timestamp_last_track = 0
 
-        self.crop_width = crop_width
-        self.crop_height = crop_height
-        if (
-            "CAMERA_CONFIG.CAMERA_CROP_WIDTH" in VARS_LOADED_FROM_CONFIG
-            and "CAMERA_CONFIG.CAMERA_CROP_HEIGHT" in VARS_LOADED_FROM_CONFIG
-        ):
-            self.crop_width = int(CAMERA_CONFIG.CAMERA_CROP_WIDTH / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT[0])
-            self.crop_height = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT[1])
+        if crop_width is not None and crop_height is not None:
+            self.crop_width = int(crop_width / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT[0])
+            self.crop_height = int(crop_height / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT[1])
+        else:
+            raise ValueError(
+                "CAMERA_CONFIG.CAMERA_CROP_WIDTH and CAMERA_CONFIG.CAMERA_CROP_HEIGHT must be defined in the configuration file."
+            )
+
         self.display_resolution_scaling = display_resolution_scaling
 
         self.save_image_flag = False
