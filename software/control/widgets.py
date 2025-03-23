@@ -978,7 +978,7 @@ class CameraSettingsWidget(QFrame):
 
             current_binning = self.camera.binning
             self.dropdown_binning.setCurrentText(f"{current_binning[0]}x{current_binning[1]}")
-            self.dropdown_binning.currentTextChanged.connect(self.change_binning)
+            self.dropdown_binning.currentTextChanged.connect(self.set_binning)
         except AttributeError as ae:
             print(ae)
             self.dropdown_binning = QComboBox()
@@ -1112,7 +1112,7 @@ class CameraSettingsWidget(QFrame):
     def update_measured_temperature(self, temperature):
         self.label_temperature_measured.setNum(temperature)
 
-    def change_binning(self, binning_text):
+    def set_binning(self, binning_text):
         binning_parts = binning_text.split("x")
         binning_x = int(binning_parts[0])
         binning_y = int(binning_parts[1])
