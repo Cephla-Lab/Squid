@@ -281,8 +281,17 @@ class DefaultCamera(AbstractCamera):
         return self._pixel_format_for_gx_pixel(self._camera.PixelFormat.get())
 
     def set_resolution(self, width: int, height: int):
+        old_resolution = self.get_resolution()
+        old_roi = self.get_region_of_interest()
+        new_resolution = (width, height)
+        new_roi = AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi, new_resolution)
+
+        self._log.debug(f"Adjusting resolution from {old_resolution=} to {new_resolution=}")
         self._camera.Width.set(width)
         self._camera.Height.set(height)
+
+        self._log.debug(f"Adjusting roi from {old_roi=} to {new_roi=} to keep FOV the same after resolution change.")
+        self.set_region_of_interest(*new_roi)
 
     def get_resolution(self) -> Tuple[int, int]:
         return self._camera.Width.get(), self._camera.Height.get()
