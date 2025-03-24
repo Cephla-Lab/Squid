@@ -26,16 +26,16 @@ def test_simulated_camera():
 
 def test_new_roi_for_resolution():
     old_resolution = (2000, 4000)
-    old_roi_full = (0, 2000, 0, 4000)
-    old_roi_partial = (20, 200, 40, 400)
+    old_roi_full = (0, 0, 2000, 4000)
+    old_roi_partial = (20, 40, 200, 400)
 
     new_resolution_up = (4000, 6000)
     new_resolution_down = (1000, 3000)
 
-    expected_up_roi_full = (0, 4000, 0, 6000)
-    expected_up_roi_partial = (40, 400, 60, 600)
-    expected_down_roi_full = (0, 1000, 0, 3000)
-    expected_down_roi_partial = (10, 100, 30, 300)
+    expected_up_roi_full = (0, 0, 4000, 6000)
+    expected_up_roi_partial = (40, 60, 400, 600)
+    expected_down_roi_full = (0, 0, 1000, 3000)
+    expected_down_roi_partial = (10, 30, 100, 300)
 
     assert (
         AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi_full, new_resolution_up)
