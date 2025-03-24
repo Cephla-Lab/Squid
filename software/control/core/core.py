@@ -60,29 +60,31 @@ import squid.abc
 
 class ObjectiveStore:
     def __init__(self, objectives_dict=OBJECTIVES, default_objective=DEFAULT_OBJECTIVE, parent=None):
+        self.parent = parent
         self.objectives_dict = objectives_dict
         self.default_objective = default_objective
         self.current_objective = default_objective
         self.tube_lens_mm = TUBE_LENS_MM
         self.sensor_pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
-        self.pixel_binning = self.get_pixel_binning()
-        self.pixel_size_um = self.calculate_pixel_size(self.current_objective)
+        self.pixel_size_um_unbinned = self._calculate_pixel_size(self.current_objective)
 
     def get_pixel_size(self):
-        return self.pixel_size_um
+        return self.pixel_size_um_unbinned * self.get_pixel_binning()
 
-    def calculate_pixel_size(self, objective_name):
+    def get_sensor_pixel_size_um(self):
+        return self.sensor_pixel_size_um * self.get_pixel_binning()
+
+    def _calculate_pixel_size(self, objective_name):
         objective = self.objectives_dict[objective_name]
         magnification = objective["magnification"]
         objective_tube_lens_mm = objective["tube_lens_f_mm"]
         pixel_size_um = self.sensor_pixel_size_um / (magnification / (objective_tube_lens_mm / self.tube_lens_mm))
-        pixel_size_um *= self.pixel_binning
         return pixel_size_um
 
     def set_current_objective(self, objective_name):
         if objective_name in self.objectives_dict:
             self.current_objective = objective_name
-            self.pixel_size_um = self.calculate_pixel_size(objective_name)
+            self.pixel_size_um_unbinned = self._calculate_pixel_size(objective_name)
         else:
             raise ValueError(f"Objective {objective_name} not found in the store.")
 
@@ -91,9 +93,7 @@ class ObjectiveStore:
 
     def get_pixel_binning(self):
         try:
-            highest_res = max(self.parent.camera.res_list, key=lambda res: res[0] * res[1])
-            resolution = self.parent.camera.resolution
-            pixel_binning = max(1, highest_res[0] / resolution[0])
+            pixel_binning = max(1, self.parent.camera.binning[1])
         except AttributeError:
             pixel_binning = 1
         return pixel_binning
@@ -107,7 +107,8 @@ class StreamHandler(QObject):
     signal_new_frame_received = Signal()
 
     def __init__(
-        self, crop_width=Acquisition.CROP_WIDTH, crop_height=Acquisition.CROP_HEIGHT, display_resolution_scaling=1
+        self,
+        display_resolution_scaling=1,
     ):
         QObject.__init__(self)
         self.fps_display = 1
@@ -117,8 +118,14 @@ class StreamHandler(QObject):
         self.timestamp_last_save = 0
         self.timestamp_last_track = 0
 
-        self.crop_width = crop_width
-        self.crop_height = crop_height
+        if CAMERA_CONFIG.CAMERA_CROP_WIDTH is not None and CAMERA_CONFIG.CAMERA_CROP_HEIGHT is not None:
+            self.crop_width = int(CAMERA_CONFIG.CAMERA_CROP_WIDTH / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_X)
+            self.crop_height = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_Y)
+        else:
+            raise ValueError(
+                "CAMERA_CONFIG.CAMERA_CROP_WIDTH and CAMERA_CONFIG.CAMERA_CROP_HEIGHT must be defined in the configuration file."
+            )
+
         self.display_resolution_scaling = display_resolution_scaling
 
         self.save_image_flag = False
@@ -151,6 +158,10 @@ class StreamHandler(QObject):
     def set_crop(self, crop_width, crop_height):
         self.crop_width = crop_width
         self.crop_height = crop_height
+
+    def scale_crop(self, binning_x, binning_y):
+        self.crop_width = int(CAMERA_CONFIG.CAMERA_CROP_WIDTH / binning_x)
+        self.crop_height = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / binning_y)
 
     def set_display_resolution_scaling(self, display_resolution_scaling):
         self.display_resolution_scaling = display_resolution_scaling / 100
@@ -2161,8 +2172,8 @@ class MultiPointController(QObject):
         self.already_using_fmap = False
         self.do_segmentation = False
         self.do_fluorescence_rtp = DO_FLUORESCENCE_RTP
-        self.crop_width = Acquisition.CROP_WIDTH
-        self.crop_height = Acquisition.CROP_HEIGHT
+        self.crop_width = CAMERA_CONFIG.CAMERA_CROP_WIDTH
+        self.crop_height = CAMERA_CONFIG.CAMERA_CROP_HEIGHT
         self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
@@ -2263,6 +2274,10 @@ class MultiPointController(QObject):
         self.crop_width = crop_width
         self.crop_height = crop_height
 
+    def scale_crop(self, binning_x, binning_y):
+        self.crop_width = int(CAMERA_CONFIG.CAMERA_CROP_WIDTH / binning_x)
+        self.crop_height = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / binning_y)
+
     def set_base_path(self, path):
         self.base_path = path
 
@@ -2311,7 +2326,7 @@ class MultiPointController(QObject):
             except:
                 pass
         # TODO: USE OBJECTIVE STORE DATA
-        acquisition_parameters["sensor_pixel_size_um"] = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
+        acquisition_parameters["sensor_pixel_size_um"] = self.parent.objectiveStore.get_sensor_pixel_size_um()
         acquisition_parameters["tube_lens_mm"] = TUBE_LENS_MM
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
@@ -2636,8 +2651,8 @@ class TrackingController(QObject):
 
         self.tracking_time_interval_s = 0
 
-        self.crop_width = Acquisition.CROP_WIDTH
-        self.crop_height = Acquisition.CROP_HEIGHT
+        self.crop_width = int(CAMERA_CONFIG.CAMERA_CROP_WIDTH / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_X)
+        self.crop_height = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_Y)
         self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
@@ -3264,7 +3279,7 @@ class NavigationViewer(QFrame):
         self.location_update_threshold_mm = 0.2
         self.box_color = (255, 0, 0)
         self.box_line_thickness = 2
-        self.acquisition_size = Acquisition.CROP_HEIGHT
+        self.acquisition_size = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_Y)
         self.x_mm = None
         self.y_mm = None
         self.image_paths = {
@@ -3358,9 +3373,10 @@ class NavigationViewer(QFrame):
 
     def update_fov_size(self):
         pixel_size_um = self.objectiveStore.get_pixel_size()
+        self.acquisition_size = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / self.objectiveStore.get_pixel_binning())
         self.fov_size_mm = self.acquisition_size * pixel_size_um / 1000
 
-    def on_objective_changed(self):
+    def redraw_fov(self):
         self.clear_overlay()
         self.update_fov_size()
         self.draw_current_fov(self.x_mm, self.y_mm)
@@ -4038,7 +4054,9 @@ class ScanCoordinates(QObject):
     def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
         """add region based on user inputs"""
         pixel_size_um = self.objectiveStore.get_pixel_size()
-        fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
+        fov_size_mm = (pixel_size_um / 1000) * (
+            CAMERA_CONFIG.CAMERA_CROP_HEIGHT / self.objectiveStore.get_pixel_binning()
+        )
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
 
@@ -4154,7 +4172,10 @@ class ScanCoordinates(QObject):
 
     def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
         """Convert grid parameters NX, NY to FOV coordinates based on overlap"""
-        fov_size_mm = (self.objectiveStore.get_pixel_size() / 1000) * Acquisition.CROP_WIDTH
+        pixel_size_um = self.objectiveStore.get_pixel_size()
+        fov_size_mm = (pixel_size_um / 1000) * (
+            CAMERA_CONFIG.CAMERA_CROP_HEIGHT / self.objectiveStore.get_pixel_binning()
+        )
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Calculate total grid size
@@ -4218,7 +4239,9 @@ class ScanCoordinates(QObject):
             return []
 
         pixel_size_um = self.objectiveStore.get_pixel_size()
-        fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
+        fov_size_mm = (pixel_size_um / 1000) * (
+            CAMERA_CONFIG.CAMERA_CROP_HEIGHT / self.objectiveStore.get_pixel_binning()
+        )
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Ensure shape_coords is a numpy array

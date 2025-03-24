@@ -81,7 +81,12 @@ class Camera(object):
         return (w * 24 + 31) // 32 * 4
 
     def __init__(
-        self, sn=None, resolution=(3104, 2084), is_global_shutter=False, rotate_image_angle=None, flip_image=None
+        self,
+        sn=None,
+        binning=(CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_X, CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_Y),
+        is_global_shutter=False,
+        rotate_image_angle=None,
+        flip_image=None,
     ):
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
@@ -123,6 +128,10 @@ class Camera(object):
         self.ROI_width = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
         self.ROI_height = CAMERA_CONFIG.ROI_HEIGHT_DEFAULT
 
+        self.binning = binning
+        self.binning_res = {}
+        self.res_list = []
+
         self.trigger_mode = None
         self.pixel_size_byte = 1
 
@@ -147,7 +156,6 @@ class Camera(object):
         self._toupcam_pullmode_started = False
         self._software_trigger_sent = False
         self._last_software_trigger_timestamp = None
-        self.resolution = None
         # the balcklevel factor
         # 8 bits: 1
         # 10 bits: 4
@@ -156,8 +164,6 @@ class Camera(object):
         # 16 bits: 256
         self.blacklevel_factor = 1
 
-        if resolution != None:
-            self.resolution = resolution
         self.has_fan = None
         self.has_TEC = None
         self.has_low_noise_mode = None
@@ -169,8 +175,6 @@ class Camera(object):
 
         self.brand = "ToupTek"
 
-        self.res_list = []
-
         self.OffsetX = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
         self.OffsetY = CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT
         self.Width = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
@@ -178,10 +182,6 @@ class Camera(object):
 
         self.WidthMax = CAMERA_CONFIG.ROI_WIDTH_DEFAULT
         self.HeightMax = CAMERA_CONFIG.ROI_HEIGHT_DEFAULT
-
-        if resolution is not None:
-            self.Width = resolution[0]
-            self.Height = resolution[1]
 
         # when camera arguments changed, call it to update strobe_delay
         self.reset_strobe_delay = None
@@ -211,12 +211,18 @@ class Camera(object):
                 self.log.info("\t = [{} x {}]".format(r.width, r.height))
             if self.sn is not None:
                 index = [idx for idx in range(len(self.devices)) if self.devices[idx].id == self.sn][0]
-            highest_res = (0, 0)
-            self.res_list = []
+
             for r in self.devices[index].model.res:
                 self.res_list.append((r.width, r.height))
-                if r.width > highest_res[0] or r.height > highest_res[1]:
-                    highest_res = (r.width, r.height)
+            self.res_list.sort(key=lambda x: x[0] * x[1], reverse=True)
+
+            highest_res = self.res_list[0]
+
+            for res in self.res_list:
+                x_binning = int(highest_res[0] / res[0])
+                y_binning = int(highest_res[1] / res[1])
+                self.binning_res[(x_binning, y_binning)] = res
+
             self.camera = toupcam.Toupcam.Open(self.devices[index].id)
             self.has_fan = (self.devices[index].model.flag & toupcam.TOUPCAM_FLAG_FAN) > 0
             self.has_TEC = (self.devices[index].model.flag & toupcam.TOUPCAM_FLAG_TEC_ONOFF) > 0
@@ -236,14 +242,12 @@ class Camera(object):
             self.set_auto_exposure(False)
             self.set_blacklevel(DEFAULT_BLACKLEVEL_VALUE)
 
-            # set resolution to full if resolution is not specified or not in the list of supported resolutions
-            if self.resolution is None:
-                self.resolution = highest_res
-            elif self.resolution not in self.res_list:
-                self.resolution = highest_res
-
             # set camera resolution
-            self.set_resolution(self.resolution[0], self.resolution[1])  # buffer created when setting resolution
+            if self.binning not in self.binning_res:
+                self.binning = (2, 2)
+                self.log.warning("Binning not supported by camera, using default binning (2, 2)")
+            self.Width, self.Height = self.binning_res[self.binning]
+            self.set_binning(self.binning[0], self.binning[1])  # buffer created when setting resolution
             self._update_buffer_settings()
 
             if self.camera:
@@ -450,11 +454,15 @@ class Camera(object):
         elif data_format == "RAW":
             self.camera.put_Option(toupcam.TOUPCAM_OPTION_RAW, 1)  # 1 is RAW mode, 0 is RGB mode
 
-    def set_resolution(self, width, height):
+    def set_binning(self, binning_factor_x, binning_factor_y):
         was_streaming = False
         if self.is_streaming:
             self.stop_streaming()
             was_streaming = True
+        if (binning_factor_x, binning_factor_y) not in self.binning_res:
+            self.log.error(f"Binning ({binning_factor_x},{binning_factor_y}) not supported by camera")
+            return
+        width, height = self.binning_res[(binning_factor_x, binning_factor_y)]
         try:
             self.camera.put_Size(width, height)
         except toupcam.HRESULTException as ex:
@@ -464,6 +472,7 @@ class Camera(object):
             else:
                 self.log.error(f"Resolution cannot be set due to error: " + err_type)
                 # TODO(imo): Propagate error in some way and handle
+        self.binning = (binning_factor_x, binning_factor_y)
         self._update_buffer_settings()
         if was_streaming:
             self.start_streaming()
