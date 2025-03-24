@@ -3,8 +3,14 @@ from typing import Optional, Tuple, Sequence, Callable
 import time
 import pydantic
 
-from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrame, CameraGainRange, CameraFrameFormat, \
-    CameraError
+from squid.abc import (
+    AbstractCamera,
+    CameraAcquisitionMode,
+    CameraFrame,
+    CameraGainRange,
+    CameraFrameFormat,
+    CameraError,
+)
 from squid.config import CameraConfig, CameraPixelFormat
 
 try:
