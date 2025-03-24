@@ -225,6 +225,12 @@ class HamamatsuCamera(AbstractCamera):
                 f"The only supported resolution is {supported_resolution}, but you asked for {requested_resolution}"
             )
 
+        old_resolution = self.get_resolution()
+        old_roi = self.get_region_of_interest()
+
+        new_roi = AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi, requested_resolution)
+        self.set_region_of_interest(*new_roi)
+
         # We are already using the correct resolution, so let this pass through.
         return True
 
@@ -416,7 +422,12 @@ class HamamatsuCamera(AbstractCamera):
         self.set_exposure_time(self.get_exposure_time())
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
-        pass
+        return (
+            int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYHPOS)),
+            int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYVPOS)),
+            int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYHSIZE)),
+            int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYVSIZE)),
+        )
 
     def set_temperature(self, temperature_deg_c: Optional[float]):
         self._camera.prop_setvalue(DCAM_IDPROP.SENSORTEMPERATURETARGET, temperature_deg_c)
