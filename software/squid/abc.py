@@ -261,6 +261,37 @@ class CameraError(RuntimeError):
 
 
 class AbstractCamera(metaclass=abc.ABCMeta):
+    @staticmethod
+    def calculate_new_roi_for_resolution(old_resolution, old_roi, new_resolution) -> Tuple[int, int, int, int]:
+        """
+        When changing resolutions, we want the roi to change such that the FOV is the same as before the resolution
+        change.  This calculates the new roi to keep the FOV the same given we change to this new resolution.
+
+        The resolutions must be 2-tuples of (width, height).
+
+        The roi must be a 4-tuple of (offset_x, offset_y, width, height)
+
+        Returns a 4-tuple of (offset_x, offset_y, width, height)
+        """
+        if (
+            not isinstance(old_resolution, tuple)
+            or not isinstance(new_resolution, tuple)
+            or not isinstance(old_roi, tuple)
+        ):
+            raise ValueError("Need tuple args.")
+        width_scale_factor = new_resolution[0] / old_resolution[0]
+        height_scale_factor = new_resolution[1] / old_resolution[1]
+
+        def rounded_int(num) -> int:
+            return int(round(num))
+
+        return (
+            old_roi[0] * width_scale_factor,
+            old_roi[1] * height_scale_factor,
+            old_roi[2] * width_scale_factor,
+            old_roi[3] * height_scale_factor,
+        )
+
     def __init__(
         self,
         camera_config: CameraConfig,
@@ -420,6 +451,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         If the camera supports this width x height pixel format, set it and make sure
         all subsequent frames are of this resolution.
+
+        This should also adjust the roi to keep the same FOV.  You can use the calculate_new_roi_for_resolution
+        helper for this.
 
         If not, throw a ValueError.
         """
