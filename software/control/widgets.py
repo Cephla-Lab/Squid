@@ -3959,7 +3959,9 @@ class WellplateMultiPointWidget(QFrame):
     def get_effective_well_size(self):
         well_size = self.scanCoordinates.well_size_mm
         if self.combobox_shape.currentText() == "Circle":
-            fov_size_mm = (self.objectiveStore.get_pixel_size() / 1000) * Acquisition.CROP_WIDTH
+            fov_size_mm = (self.objectiveStore.get_pixel_size() / 1000) * (
+                CAMERA_CONFIG.CAMERA_CROP_HEIGHT / self.objectiveStore.get_pixel_binning()
+            )
             return well_size + fov_size_mm * (1 + math.sqrt(2))
         return well_size
 
@@ -8064,8 +8066,8 @@ class CalibrationLiveViewer(QWidget):
         self.viewbox.invertY(True)
 
         # Set appropriate panning limits based on the acquisition image or plate size
-        xmax = int(Acquisition.CROP_WIDTH * Acquisition.IMAGE_DISPLAY_SCALING_FACTOR)
-        ymax = int(Acquisition.CROP_HEIGHT * Acquisition.IMAGE_DISPLAY_SCALING_FACTOR)
+        xmax = int(CAMERA_CONFIG.CAMERA_CROP_WIDTH)
+        ymax = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT)
         self.viewbox.setLimits(xMin=0, xMax=xmax, yMin=0, yMax=ymax)
 
         self.img_item = pg.ImageItem()

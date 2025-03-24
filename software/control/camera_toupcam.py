@@ -83,7 +83,7 @@ class Camera(object):
     def __init__(
         self,
         sn=None,
-        binning=CAMERA_CONFIG.BINNING_FACTOR_DEFAULT,
+        binning=(CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_X, CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_Y),
         is_global_shutter=False,
         rotate_image_angle=None,
         flip_image=None,
@@ -244,7 +244,8 @@ class Camera(object):
 
             # set camera resolution
             if self.binning not in self.binning_res:
-                self.binning = (1, 1)
+                self.binning = (2, 2)
+                self.log.warning("Binning not supported by camera, using default binning (2, 2)")
             self.Width, self.Height = self.binning_res[self.binning]
             self.set_binning(self.binning[0], self.binning[1])  # buffer created when setting resolution
             self._update_buffer_settings()
