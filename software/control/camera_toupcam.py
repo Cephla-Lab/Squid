@@ -505,11 +505,14 @@ class ToupcamCamera(AbstractCamera):
     def set_resolution(self, width, height):
         with self._pause_streaming():
             old_resolution = self.get_resolution()
+
             old_roi = self.get_region_of_interest()
             new_resolution = (width, height)
+            self._log.debug(f"Changing resolution from {old_resolution=} to {new_resolution=}")
             self._raw_set_resolution(width, height)
 
         new_roi = AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi, new_resolution)
+        self._log.debug(f"Changing roi from {old_roi=} to {new_roi=} to keep FOV the same after resolution change.")
         self.set_region_of_interest(*new_roi)
 
         self._update_internal_settings()
