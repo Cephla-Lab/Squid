@@ -88,15 +88,16 @@ class DefaultCamera(AbstractCamera):
         (self._camera, self._capabilities) = DefaultCamera._open(self._gx_device_manager, index=0)
 
         # TODO/NOTE(imo): Need to test if self as user_param is correct here, of it sends self for us.
-        self._camera.register_capture_callback(self, self._frame_callback)
+        self._camera.register_capture_callback(None, self._frame_callback)
 
-        if self._config.default_white_balance_gains is not None:
+        if self._config.default_white_balance_gains is not None and self._capabilities.white_balance:
             default_wb = self._config.default_white_balance_gains
             self.set_white_balance_gains(default_wb.r, default_wb.g, default_wb.b)
 
         # Since we might need to use a strobe delay, the value stored in the camera's driver can't be
         # used to back out the requested exposure time easily.  So we keep track of it ourselves.
         self._exposure_time_ms = 0
+        self._strobe_delay_us = 0
 
         self._in_trigger = False
         self._last_trigger_timestamp = 0
@@ -113,7 +114,7 @@ class DefaultCamera(AbstractCamera):
             # If init fails before we create the camera, we'll get here.  That's fine - just move along.
             pass
 
-    def _frame_callback(self, raw_image: gx.RawImage):
+    def _frame_callback(self, unused_user_param, raw_image: gx.RawImage):
         with self._frame_lock:
             this_frame_id = (self._current_frame.frame_id if self._current_frame else 0) + 1
             this_timestamp = time.time()
@@ -147,7 +148,7 @@ class DefaultCamera(AbstractCamera):
         self._propogate_frame(current_frame)
 
     @staticmethod
-    def _get_pixel_size_bytes(self, pixel_format: CameraPixelFormat) -> int:
+    def _get_pixel_size_bytes(pixel_format: CameraPixelFormat) -> int:
         if pixel_format == CameraPixelFormat.MONO8:
             return 1
         elif pixel_format == CameraPixelFormat.MONO12:
@@ -182,7 +183,6 @@ class DefaultCamera(AbstractCamera):
 
     def set_exposure_time(self, exposure_time_ms: float):
         exposure_time_calculated_us = 1000.0 * exposure_time_ms
-
         if (
             self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER
             and not self._capabilities.is_global_shutter
@@ -200,7 +200,7 @@ class DefaultCamera(AbstractCamera):
 
     def get_exposure_limits(self) -> Tuple[float, float]:
         range_dict = self._camera.ExposureTime.get_range()
-        return range_dict["min"], range_dict["max"]
+        return range_dict["min"] / 1000, range_dict["max"] / 1000
 
     def get_strobe_time(self) -> float:
         return self._strobe_delay_us / 1000.0
@@ -278,7 +278,8 @@ class DefaultCamera(AbstractCamera):
         if not self._capabilities.gettable_pixel_format:
             raise NotImplementedError("The camera does not support getting pixel format.")
 
-        return self._pixel_format_for_gx_pixel(self._camera.PixelFormat.get())
+        (pixel_format_val, _) = self._camera.PixelFormat.get()
+        return self._pixel_format_for_gx_pixel(pixel_format_val)
 
     def set_resolution(self, width: int, height: int):
         old_resolution = self.get_resolution()
@@ -333,24 +334,36 @@ class DefaultCamera(AbstractCamera):
         return self._camera.data_stream[0].acquisition_flag
 
     def read_camera_frame(self) -> CameraFrame:
+        self._log.debug("Entering read_camera_frame.")
+        starting_frame_id = self.get_frame_id()
         if not self.get_is_streaming():
             self._log.warning("Cannot read frame if not streaming.")
             return None
 
         total_exposure_time_ms = self._exposure_time_ms + self._strobe_delay_us / 1000.0
 
-        timeout_period_s = (4 * total_exposure_time_ms + 5) / 1000.0
+        # If the last frame we got was from <exposure time ago, use it.
+        if self._current_frame and time.time() - self._current_frame.timestamp <= total_exposure_time_ms / 1000.0:
+            return self._current_frame
+
+        # The camera api isn't really fast, so it is easy to time out waiting for a frame and its processing.  So
+        # for the timeout, we add a flat 100 ms to account for that.
+        timeout_period_s = (4 * total_exposure_time_ms + 100) / 1000.0
         timeout_time_s = time.time() + timeout_period_s
-        starting_frame_id = self.get_frame_id()
+
         while time.time() < timeout_time_s:
             if self.get_frame_id() != starting_frame_id:
-                return self._current_frame
+                break
 
-        self._log.warning("Timed out waiting for frame")
-        return None
+        with self._frame_lock:
+            if self.get_frame_id() != starting_frame_id:
+                return self._current_frame
+            else:
+                self._log.warning("Timed out waiting for frame")
+                return None
 
     def get_frame_id(self) -> int:
-        return self._current_frame.frame if self._current_frame else -1
+        return self._current_frame.frame_id if self._current_frame else -1
 
     def get_white_balance_gains(self) -> Tuple[float, float, float]:
         if not self._capabilities.white_balance:
@@ -432,7 +445,7 @@ class DefaultCamera(AbstractCamera):
             self._log.warning(f"It has been {time_since_last_s=}[s] since last trigger, timing it out.")
             self._in_trigger = False
 
-        return self._in_trigger
+        return not self._in_trigger
 
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
         if not self._capabilities.settable_roi:
