@@ -106,15 +106,20 @@ class SimulatedCamera(AbstractCamera):
         self._current_frame = None
 
         self._exposure_time = None
+        self.set_exposure_time(20)  # Just some random sane default since that isn't specified in our config.
         self._frame_format = CameraFrameFormat.RAW
         self._pixel_format = None
         self.set_pixel_format(self._config.default_pixel_format)
         self._resolution = None
         self.set_resolution(self._config.default_resolution[0], self._config.default_resolution[1])
         self._analog_gain = None
+        self.set_analog_gain(0)
         self._white_balance_gains = None
+        self.set_white_balance_gains(1.0, 1.0, 1.0)
         self._black_level = None
+        self.set_black_level(0)
         self._acquisition_mode = None
+        self.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
         self._roi = (0, 0, self.get_resolution()[0], self.get_resolution()[1])
         self._temperature_setpoint = None
         self._continue_streaming = False
