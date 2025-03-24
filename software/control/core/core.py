@@ -4607,7 +4607,7 @@ class LaserAutofocusController(QObject):
         self,
         microcontroller: Microcontroller,
         camera: AbstractCamera,
-        liveController,
+        liveController: LiveController,
         stage: AbstractStage,
         piezo: Optional[PiezoStage] = None,
         objectiveStore: Optional[ObjectiveStore] = None,
@@ -4617,7 +4617,7 @@ class LaserAutofocusController(QObject):
         self._log = squid.logging.get_logger(__class__.__name__)
         self.microcontroller = microcontroller
         self.camera: AbstractCamera = camera
-        self.liveController = liveController
+        self.liveController: LiveController = liveController
         self.stage = stage
         self.piezo = piezo
         self.objectiveStore = objectiveStore

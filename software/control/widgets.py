@@ -355,10 +355,10 @@ class LaserAutofocusSettingWidget(QWidget):
     signal_apply_settings = Signal()
     signal_laser_spot_location = Signal(np.ndarray, float, float)
 
-    def __init__(self, streamHandler, liveController, laserAutofocusController, stretch=True):
+    def __init__(self, streamHandler, liveController: LiveController, laserAutofocusController, stretch=True):
         super().__init__()
         self.streamHandler = streamHandler
-        self.liveController = liveController
+        self.liveController: LiveController = liveController
         self.laserAutofocusController = laserAutofocusController
         self.stretch = stretch
         self.liveController.set_trigger_fps(10)
@@ -613,7 +613,7 @@ class LaserAutofocusSettingWidget(QWidget):
         mode = self.spot_mode_combo.currentData()
 
         # Get current frame from live controller
-        frame = self.liveController.camera.current_frame
+        frame = self.liveController.camera.read_frame()
         if frame is not None:
             result = utils.find_spot_location(frame, mode=mode, params=params)
             if result is not None:
