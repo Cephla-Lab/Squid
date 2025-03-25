@@ -360,6 +360,7 @@ class DefaultCamera(AbstractCamera):
         while time.time() < timeout_time_s:
             if self.get_frame_id() != starting_frame_id:
                 break
+            time.sleep(0.001)
 
         with self._frame_lock:
             if self.get_frame_id() != starting_frame_id:
