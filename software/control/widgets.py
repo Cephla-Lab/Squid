@@ -613,6 +613,7 @@ class LaserAutofocusSettingWidget(QWidget):
         mode = self.spot_mode_combo.currentData()
 
         # Get current frame from live controller
+        self.liveController.camera.send_trigger()
         frame = self.liveController.camera.read_frame()
         if frame is not None:
             result = utils.find_spot_location(frame, mode=mode, params=params)
