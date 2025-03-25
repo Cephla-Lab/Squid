@@ -600,6 +600,21 @@ class LaserAutofocusSettingWidget(QWidget):
         )
         self.layout().addWidget(self.calibration_label)
 
+    def illuminate_and_get_frame(self):
+        # Get a frame from the live controller.  We need to reach deep into the liveController here which
+        # is not ideal.
+        self.liveController.microcontroller.turn_on_AF_laser()
+        self.liveController.microcontroller.wait_till_operation_is_completed()
+        self.liveController.trigger_acquisition()
+
+        try:
+            frame = self.liveController.camera.read_frame()
+        finally:
+            self.liveController.microcontroller.turn_off_AF_laser()
+            self.liveController.microcontroller.wait_till_operation_is_completed()
+
+        return frame
+
     def run_spot_detection(self):
         """Run spot detection with current settings and emit results"""
         params = {
@@ -612,9 +627,7 @@ class LaserAutofocusSettingWidget(QWidget):
         }
         mode = self.spot_mode_combo.currentData()
 
-        # Get current frame from live controller
-        self.liveController.camera.send_trigger()
-        frame = self.liveController.camera.read_frame()
+        frame = self.illuminate_and_get_frame()
         if frame is not None:
             result = utils.find_spot_location(frame, mode=mode, params=params)
             if result is not None:
