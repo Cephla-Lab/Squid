@@ -451,18 +451,39 @@ class DefaultCamera(AbstractCamera):
         if not self._capabilities.settable_roi:
             raise NotImplementedError("Camera does not implement settable region of interest.")
 
+        # NOTE: The camera restricts offsets/widths/etc based on what the other settings currently are, so you
+        # can't just blindly set them.  If the offset is growing, you need to set the width first.  If the
+        # offset is decreasing, you need to set the offset first.
+        (existing_offset_x, existing_offset_y, existing_width, existing_height) = self.get_region_of_interest()
+
         with self._pause_streaming():
-            self._camera.OffsetX.set(offset_x)
-            self._camera.OffsetY.set(offset_y)
-            self._camera.Width.set(width)
-            self._camera.Height.set(height)
+            if existing_offset_x < offset_x:
+                self._camera.Width.set(width)
+                self._camera.OffsetX.set(offset_x)
+            else:
+                self._camera.OffsetX.set(offset_x)
+                self._camera.Width.set(width)
+
+            if existing_offset_y < offset_y:
+                self._camera.Height.set(height)
+                self._camera.OffsetY.set(offset_y)
+            else:
+                self._camera.OffsetY.set(offset_y)
+                self._camera.Height.set(height)
+
+        updated_roi = self.get_region_of_interest()
+
+        requested_roi = (offset_x, offset_y, width, height)
+
+        if updated_roi != requested_roi:
+            raise CameraError(f"After request to update roi to {requested_roi=}, new roi is {updated_roi=} instead.  Existing was {(existing_offset_x, existing_offset_y, existing_width, existing_height)}")
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
         return (
-            self._camera.Width.get(),
-            self._camera.Height.get(),
             self._camera.OffsetX.get(),
             self._camera.OffsetY.get(),
+            self._camera.Width.get(),
+            self._camera.Height.get()
         )
 
     def set_temperature(self, temperature_deg_c: Optional[float]):
