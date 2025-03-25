@@ -1,10 +1,11 @@
 import enum
 import math
-from typing import Optional
+from typing import Optional, Tuple
 
 import pydantic
 
 import control._def as _def
+from control.utils import FlipVariant
 
 
 class DirectionSign(enum.IntEnum):
@@ -139,10 +140,137 @@ _stage_config = StageConfig(
     ),
 )
 
-"""
-Returns the StageConfig that existed at process startup.
-"""
 
-
-def get_stage_config():
+def get_stage_config() -> StageConfig:
+    """
+    Returns the StageConfig that existed at process startup.
+    """
     return _stage_config
+
+
+class CameraVariant(enum.Enum):
+    TOUPCAM = "TOUPCAM"
+    FLIR = "FLIR"
+    HAMAMATSU = "HAMAMATSU"
+    IDS = "IDS"
+    TUCSEN = "TUCSEN"
+    TIS = "TIS"
+    GXIPY = "GXIPY"
+
+
+class CameraPixelFormat(enum.Enum):
+    """
+    This is all known Pixel Formats in the Cephla world, but not all cameras will support
+    all of these.
+    """
+
+    MONO8 = "MONO8"
+    MONO10 = "MONO10"
+    MONO12 = "MONO12"
+    MONO14 = "MONO14"
+    MONO16 = "MONO16"
+    RGB24 = "RGB24"
+    RGB32 = "RGB32"
+    RGB48 = "RGB48"
+    BAYER_RG8 = "BAYER_RG8"
+    BAYER_RG12 = "BAYER_RG12"
+
+    @staticmethod
+    def is_color_format(pixel_format):
+        return pixel_format in (
+            CameraPixelFormat.RGB24,
+            CameraPixelFormat.RGB32,
+            CameraPixelFormat.RGB48,
+            CameraPixelFormat.BAYER_RG8,
+            CameraPixelFormat.BAYER_RG12,
+        )
+
+
+class RGBValue(pydantic.BaseModel):
+    r: float
+    g: float
+    b: float
+
+
+# TODO/NOTE(imo): We may need to add a model attrib here.
+class CameraConfig(pydantic.BaseModel):
+    """
+    Most camera parameters are runtime configurable, so CameraConfig is more about defining what
+    camera must be available and used for a particular function in the system.
+
+    If we want to capture the settings a camera used for a particular capture, another model called
+    CameraState, or something, might be more appropriate.
+    """
+
+    # NOTE(imo): Not "type" because that's a python builtin and can cause confusion
+    camera_type: CameraVariant
+
+    default_resolution: Tuple[int, int]
+
+    default_pixel_format: CameraPixelFormat
+
+    # The angle the camera should rotate this image right as it comes off the camera,
+    # and before giving it to the rest of the system.
+    #
+    # NOTE(imo): As of 2025-feb-17, this feature is inconsistently implemented!
+    rotate_image_angle: Optional[float]
+
+    # After rotation, the flip we should do to the image.
+    #
+    # NOTE(imo): As of 2025-feb-17, this feature is inconsistently implemented!
+    flip: Optional[FlipVariant]
+
+    # After initialization, set the white balance gains to this once. Only valid for color cameras.
+    default_white_balance_gains: Optional[RGBValue]
+
+
+def _old_camera_variant_to_enum(old_string) -> CameraVariant:
+    if old_string == "Toupcam":
+        return CameraVariant.TOUPCAM
+    elif old_string == "FLIR":
+        return CameraVariant.FLIR
+    elif old_string == "Hamamatsu":
+        return CameraVariant.HAMAMATSU
+    elif old_string == "iDS":
+        return CameraVariant.IDS
+    elif old_string == "TIS":
+        return CameraVariant.TIS
+    elif old_string == "Tucsen":
+        return CameraVariant.TUCSEN
+    elif old_string == "Default":
+        return CameraVariant.GXIPY
+    raise ValueError(f"Unknown old camera type {old_string=}")
+
+
+_camera_config = CameraConfig(
+    camera_type=_old_camera_variant_to_enum(_def.CAMERA_TYPE),
+    default_resolution=(_def.CAMERA_CONFIG.ROI_WIDTH_DEFAULT, _def.CAMERA_CONFIG.ROI_HEIGHT_DEFAULT),
+    default_pixel_format=_def.DEFAULT_PIXEL_FORMAT,
+    rotate_image_angle=_def.ROTATE_IMAGE_ANGLE,
+    flip=_def.FLIP_IMAGE,
+    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B),
+)
+
+
+def get_camera_config() -> CameraConfig:
+    """
+    Returns the CameraConfig that existed at process startup.
+    """
+    return _camera_config
+
+
+_autofocus_camera_config = CameraConfig(
+    camera_type=_old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE),
+    default_resolution=(_def.LASER_AF_CROP_WIDTH, _def.LASER_AF_CROP_HEIGHT),
+    default_pixel_format=CameraPixelFormat.MONO8,
+    rotate_image_angle=None,
+    flip=None,
+    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B),
+)
+
+
+def get_autofocus_camera_config() -> CameraConfig:
+    """
+    Returns the CameraConfig that existed at startup for the laser autofocus system.
+    """
+    return _autofocus_camera_config
