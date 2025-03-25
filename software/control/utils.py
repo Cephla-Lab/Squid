@@ -1,13 +1,11 @@
 import enum
 import inspect
-import os
 import pathlib
 import sys
-from typing import Optional
 
 import cv2
 import git
-from numpy import std, square, mean
+from numpy import square, mean
 import numpy as np
 from scipy.ndimage import label
 from scipy import signal
@@ -393,3 +391,7 @@ def get_squid_repo_state_description() -> Optional[str]:
     except git.GitError as e:
         _log.warning(f"Failed to get script git repo info: {e}")
         return None
+
+
+def truncate_to_interval(val, interval: int):
+    return int(interval * (val // interval))
