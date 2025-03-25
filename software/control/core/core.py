@@ -5037,17 +5037,10 @@ class LaserAutofocusController(QObject):
 
         return True, correlation
 
-    def illuminate_and_read(self):
-        image = None
-        self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
-        # send camera trigger
+    def get_new_frame(self):
+        # IMPORTANT: This assumes that the autofocus laser is already on!
         self.camera.send_trigger(self.camera.get_exposure_time())
-
-        # read camera frame
-        image = self.camera.read_frame()
-
-        return image
+        return self.camera.read_frame()
 
     def _get_laser_spot_centroid(self, remove_background: bool = False) -> Optional[Tuple[float, float]]:
         """Get the centroid location of the laser spot.
@@ -5067,7 +5060,7 @@ class LaserAutofocusController(QObject):
 
         for i in range(self.laser_af_properties.laser_af_averaging_n):
             try:
-                image = self.illuminate_and_read()
+                image = self.get_new_frame()
                 if image is None:
                     self._log.warning(f"Failed to read frame {i+1}/{self.laser_af_properties.laser_af_averaging_n}")
                     continue
