@@ -394,4 +394,4 @@ def get_squid_repo_state_description() -> Optional[str]:
 
 
 def truncate_to_interval(val, interval: int):
-    return interval * (val // interval)
+    return int(interval * (val // interval))
