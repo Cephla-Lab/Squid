@@ -99,6 +99,9 @@ class DefaultCamera(AbstractCamera):
         self._exposure_time_ms = 0
         self._strobe_delay_us = 0
 
+        # Querying is slow on these devices, so we cache some properties.
+        self._pixel_format: Optional[CameraPixelFormat] = None
+
         self._in_trigger = False
         self._last_trigger_timestamp = 0
 
@@ -122,15 +125,14 @@ class DefaultCamera(AbstractCamera):
             this_pixel_format = self.get_pixel_format()
 
             self._in_trigger = False
-            current_pixel_format = self.get_pixel_format()
-            if CameraPixelFormat.is_color_format(current_pixel_format):
+            if CameraPixelFormat.is_color_format(this_pixel_format):
                 rgb_image = raw_image.convert("RGB")
                 numpy_image = rgb_image.get_numpy_array()
-                if current_pixel_format == CameraPixelFormat.BAYER_RG12:
+                if this_pixel_format == CameraPixelFormat.BAYER_RG12:
                     numpy_image = numpy_image << 4
             else:
                 numpy_image = raw_image.get_numpy_array()
-                if current_pixel_format == CameraPixelFormat.MONO12:
+                if this_pixel_format == CameraPixelFormat.MONO12:
                     numpy_image = numpy_image << 4
 
             processed_image = self._process_raw_frame(numpy_image)
@@ -232,13 +234,12 @@ class DefaultCamera(AbstractCamera):
 
     def get_frame_format(self) -> CameraFrameFormat:
         current_pixel_format = self.get_pixel_format()
-        for px, frame_format in DefaultCamera._PIXEL_FORMAT_TO_FRAME_FORMAT.items():
-            if px == current_pixel_format:
-                return frame_format
+        if current_pixel_format not in DefaultCamera._PIXEL_FORMAT_TO_FRAME_FORMAT:
+            raise ValueError(
+                f"Something is really wrong, current pixel format {current_pixel_format=} does not have a frame format."
+            )
 
-        raise ValueError(
-            f"Something is really wrong, current pixel format {current_pixel_format=} does not have a frame format."
-        )
+        return DefaultCamera._PIXEL_FORMAT_TO_FRAME_FORMAT[current_pixel_format]
 
     _PIXEL_FORMAT_TO_GX_FORMAT = {
         CameraPixelFormat.MONO8: gx.GxPixelFormatEntry.MONO8,
@@ -249,6 +250,7 @@ class DefaultCamera(AbstractCamera):
         CameraPixelFormat.BAYER_RG8: gx.GxPixelFormatEntry.BAYER_RG8,
         CameraPixelFormat.BAYER_RG12: gx.GxPixelFormatEntry.BAYER_RG12,
     }
+
 
     @staticmethod
     def _gx_pixel_format_for(pixel_format: CameraPixelFormat):
@@ -269,6 +271,7 @@ class DefaultCamera(AbstractCamera):
             if not self._capabilities.settable_pixel_format:
                 raise NotImplementedError("The camera does not support setting pixel format.")
             self._camera.PixelFormat.set(self._gx_pixel_format_for(pixel_format))
+            self._pixel_format = pixel_format
 
         self._update_strobe_time()
         # For re-setting exposure time just in case the strobe changed.
@@ -278,8 +281,11 @@ class DefaultCamera(AbstractCamera):
         if not self._capabilities.gettable_pixel_format:
             raise NotImplementedError("The camera does not support getting pixel format.")
 
-        (pixel_format_val, _) = self._camera.PixelFormat.get()
-        return self._pixel_format_for_gx_pixel(pixel_format_val)
+        if self._pixel_format is None:
+            (pixel_format_val, _) = self._camera.PixelFormat.get()
+            self._pixel_format = self._pixel_format_for_gx_pixel(pixel_format_val)
+
+        return self._pixel_format
 
     def set_resolution(self, width: int, height: int):
         old_resolution = self.get_resolution()
