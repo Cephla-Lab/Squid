@@ -112,7 +112,7 @@ void loop()
   if(input_sensitivity_z>8)
     input_sensitivity_z = 8;
     
-  encoder_step_size = min(pow(2,input_sensitivity_z),256); // cap the max z_step_size
+  encoder_step_size = min(pow(2,input_sensitivity_z),128); // cap the max z_step_size
 
   // display input sensitivity
   display_str[0] = '0' + input_sensitivity_xy;
@@ -131,9 +131,7 @@ void loop()
   // debouncing to be added
 
   // send to controller
-  encoder_pos = encoder_pos;
-  int32_t encoder_pos_ = encoder_pos/4; // artificially descrease the resolution to make it less sensitive
-  encoder_pos_ = (encoder_pos_/16)*16;  // make the number integer multiple of 16 (16 microstepping)
+  int32_t encoder_pos_ = encoder_pos/16; // artificially descrease the resolution to make it less sensitive
   tmp_uint32 = twos_complement(encoder_pos_,4); 
   packet[0] = byte(tmp_uint32>>24);
   packet[1] = byte((tmp_uint32>>16)%256);
@@ -188,21 +186,21 @@ void onPacketReceived(const uint8_t* buffer, size_t size)
 void ISR_encoder_1_A()
 {
   if(digitalRead(pin_encoder_1_B)==0 && digitalRead(pin_encoder_1_A)==1)
-    encoder_pos = encoder_pos + encoder_step_size;
-  else if (digitalRead(pin_encoder_1_B)==1 && digitalRead(pin_encoder_1_A)==0)
-    encoder_pos = encoder_pos + encoder_step_size;
-  else
     encoder_pos = encoder_pos - encoder_step_size;
+  else if (digitalRead(pin_encoder_1_B)==1 && digitalRead(pin_encoder_1_A)==0)
+    encoder_pos = encoder_pos - encoder_step_size;
+  else
+    encoder_pos = encoder_pos + encoder_step_size;
 }
 
 void ISR_encoder_1_B()
 {
   if(digitalRead(pin_encoder_1_B)==0 && digitalRead(pin_encoder_1_A)==1 )
-    encoder_pos = encoder_pos - encoder_step_size;
-  else if (digitalRead(pin_encoder_1_B)==1 && digitalRead(pin_encoder_1_A)==0)
-    encoder_pos = encoder_pos - encoder_step_size;
-  else
     encoder_pos = encoder_pos + encoder_step_size;
+  else if (digitalRead(pin_encoder_1_B)==1 && digitalRead(pin_encoder_1_A)==0)
+    encoder_pos = encoder_pos + encoder_step_size;
+  else
+    encoder_pos = encoder_pos - encoder_step_size;
 }
 
 // utils
