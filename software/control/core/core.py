@@ -1,7 +1,9 @@
 # set QT_API environment variable
 import os
 import sys
+import tempfile
 
+import control._def
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import AbstractStage
@@ -24,6 +26,7 @@ if DO_FLUORESCENCE_RTP:
     from control.multipoint_built_in_functionalities import malaria_rtp
 
 import control.utils as utils
+import control.utils_acquisition as utils_acquisition
 import control.utils_channel as utils_channel
 import control.utils_config as utils_config
 import control.tracking as tracking
@@ -157,68 +160,65 @@ class StreamHandler(QObject):
         print(self.display_resolution_scaling)
 
     def on_new_frame(self, camera):
+        camera.image_locked = True
+        self.handler_busy = True
+        self.signal_new_frame_received.emit()  # self.liveController.turn_off_illumination()
 
-        if camera.is_live:
+        # measure real fps
+        timestamp_now = round(time.time())
+        if timestamp_now == self.timestamp_last:
+            self.counter = self.counter + 1
+        else:
+            self.timestamp_last = timestamp_now
+            self.fps_real = self.counter
+            self.counter = 0
+            if PRINT_CAMERA_FPS:
+                print("real camera fps is " + str(self.fps_real))
 
-            camera.image_locked = True
-            self.handler_busy = True
-            self.signal_new_frame_received.emit()  # self.liveController.turn_off_illumination()
+        # moved down (so that it does not modify the camera.current_frame, which causes minor problems for simulation) - 1/30/2022
+        # # rotate and flip - eventually these should be done in the camera
+        # camera.current_frame = utils.rotate_and_flip_image(camera.current_frame,rotate_image_angle=camera.rotate_image_angle,flip_image=camera.flip_image)
 
-            # measure real fps
-            timestamp_now = round(time.time())
-            if timestamp_now == self.timestamp_last:
-                self.counter = self.counter + 1
-            else:
-                self.timestamp_last = timestamp_now
-                self.fps_real = self.counter
-                self.counter = 0
-                if PRINT_CAMERA_FPS:
-                    print("real camera fps is " + str(self.fps_real))
+        # crop image
+        image_cropped = utils.crop_image(camera.current_frame, self.crop_width, self.crop_height)
+        image_cropped = np.squeeze(image_cropped)
 
-            # moved down (so that it does not modify the camera.current_frame, which causes minor problems for simulation) - 1/30/2022
-            # # rotate and flip - eventually these should be done in the camera
-            # camera.current_frame = utils.rotate_and_flip_image(camera.current_frame,rotate_image_angle=camera.rotate_image_angle,flip_image=camera.flip_image)
+        # # rotate and flip - moved up (1/10/2022)
+        # image_cropped = utils.rotate_and_flip_image(image_cropped,rotate_image_angle=ROTATE_IMAGE_ANGLE,flip_image=FLIP_IMAGE)
+        # added on 1/30/2022
+        # @@@ to move to camera
+        image_cropped = utils.rotate_and_flip_image(
+            image_cropped, rotate_image_angle=camera.rotate_image_angle, flip_image=camera.flip_image
+        )
 
-            # crop image
-            image_cropped = utils.crop_image(camera.current_frame, self.crop_width, self.crop_height)
-            image_cropped = np.squeeze(image_cropped)
-
-            # # rotate and flip - moved up (1/10/2022)
-            # image_cropped = utils.rotate_and_flip_image(image_cropped,rotate_image_angle=ROTATE_IMAGE_ANGLE,flip_image=FLIP_IMAGE)
-            # added on 1/30/2022
-            # @@@ to move to camera
-            image_cropped = utils.rotate_and_flip_image(
-                image_cropped, rotate_image_angle=camera.rotate_image_angle, flip_image=camera.flip_image
-            )
-
-            # send image to display
-            time_now = time.time()
-            if time_now - self.timestamp_last_display >= 1 / self.fps_display:
-                self.image_to_display.emit(
-                    utils.crop_image(
-                        image_cropped,
-                        round(self.crop_width * self.display_resolution_scaling),
-                        round(self.crop_height * self.display_resolution_scaling),
-                    )
+        # send image to display
+        time_now = time.time()
+        if time_now - self.timestamp_last_display >= 1 / self.fps_display:
+            self.image_to_display.emit(
+                utils.crop_image(
+                    image_cropped,
+                    round(self.crop_width * self.display_resolution_scaling),
+                    round(self.crop_height * self.display_resolution_scaling),
                 )
-                self.timestamp_last_display = time_now
+            )
+            self.timestamp_last_display = time_now
 
-            # send image to write
-            if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
-                if camera.is_color:
-                    image_cropped = cv2.cvtColor(image_cropped, cv2.COLOR_RGB2BGR)
-                self.packet_image_to_write.emit(image_cropped, camera.frame_ID, camera.timestamp)
-                self.timestamp_last_save = time_now
+        # send image to write
+        if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
+            if camera.is_color:
+                image_cropped = cv2.cvtColor(image_cropped, cv2.COLOR_RGB2BGR)
+            self.packet_image_to_write.emit(image_cropped, camera.frame_ID, camera.timestamp)
+            self.timestamp_last_save = time_now
 
-            # send image to track
-            if self.track_flag and time_now - self.timestamp_last_track >= 1 / self.fps_track:
-                # track is a blocking operation - it needs to be
-                # @@@ will cropping before emitting the signal lead to speedup?
-                self.packet_image_for_tracking.emit(image_cropped, camera.frame_ID, camera.timestamp)
-                self.timestamp_last_track = time_now
+        # send image to track
+        if self.track_flag and time_now - self.timestamp_last_track >= 1 / self.fps_track:
+            # track is a blocking operation - it needs to be
+            # @@@ will cropping before emitting the signal lead to speedup?
+            self.packet_image_for_tracking.emit(image_cropped, camera.frame_ID, camera.timestamp)
+            self.timestamp_last_track = time_now
 
-            self.handler_busy = False
-            camera.image_locked = False
+        self.handler_busy = False
+        camera.image_locked = False
 
 
 class ImageSaver(QObject):
@@ -611,7 +611,6 @@ class LiveController(QObject):
 
     def start_live(self):
         self.is_live = True
-        self.camera.is_live = True
         self.camera.start_streaming()
         if self.trigger_mode == TriggerMode.SOFTWARE or (
             self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
@@ -625,7 +624,6 @@ class LiveController(QObject):
     def stop_live(self):
         if self.is_live:
             self.is_live = False
-            self.camera.is_live = False
             if hasattr(self.camera, "stop_exposure"):
                 self.camera.stop_exposure()
             if self.trigger_mode == TriggerMode.SOFTWARE:
@@ -1893,30 +1891,15 @@ class MultiPointWorker(QObject):
                 )
                 np.savetxt(saving_path, data, delimiter=",")
 
-    def save_image(self, image, file_ID, config, current_path):
-        if image.dtype == np.uint16:
-            saving_path = os.path.join(current_path, file_ID + "_" + str(config.name).replace(" ", "_") + ".tiff")
-        else:
-            saving_path = os.path.join(
-                current_path, file_ID + "_" + str(config.name).replace(" ", "_") + "." + Acquisition.IMAGE_FORMAT
-            )
-
-        if self.camera.is_color:
-            if "BF LED matrix" in config.name:
-                if MULTIPOINT_BF_SAVING_OPTION == "RGB2GRAY":
-                    image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-                elif MULTIPOINT_BF_SAVING_OPTION == "Green Channel Only":
-                    image = image[:, :, 1]
-
-        if SAVE_IN_PSEUDO_COLOR:
-            image = self.return_pseudo_colored_image(image, config)
+    def save_image(self, image: np.array, file_ID: str, config: ChannelMode, current_path: str):
+        saved_image = utils_acquisition.save_image(
+            image=image, file_id=file_ID, save_directory=current_path, config=config, is_color=self.camera.is_color
+        )
 
         if MERGE_CHANNELS:
-            self._save_merged_image(image, file_ID, current_path)
+            self._save_merged_image(saved_image, file_ID, current_path)
 
-        iio.imwrite(saving_path, image)
-
-    def _save_merged_image(self, image, file_ID, current_path):
+    def _save_merged_image(self, image: np.array, file_ID: str, current_path: str):
         self.image_count += 1
 
         if self.image_count == 1:
@@ -1934,27 +1917,6 @@ class MultiPointWorker(QObject):
                 self.image_count = 0
 
         return
-
-    def return_pseudo_colored_image(self, image, config):
-        if "405 nm" in config.name:
-            image = self.grayscale_to_rgb(image, CHANNEL_COLORS_MAP["405"]["hex"])
-        elif "488 nm" in config.name:
-            image = self.grayscale_to_rgb(image, CHANNEL_COLORS_MAP["488"]["hex"])
-        elif "561 nm" in config.name:
-            image = self.grayscale_to_rgb(image, CHANNEL_COLORS_MAP["561"]["hex"])
-        elif "638 nm" in config.name:
-            image = self.grayscale_to_rgb(image, CHANNEL_COLORS_MAP["638"]["hex"])
-        elif "730 nm" in config.name:
-            image = self.grayscale_to_rgb(image, CHANNEL_COLORS_MAP["730"]["hex"])
-        else:
-            image = np.stack([image] * 3, axis=-1)
-
-        return image
-
-    def grayscale_to_rgb(self, image, hex_color):
-        rgb_ratios = np.array([(hex_color >> 16) & 0xFF, (hex_color >> 8) & 0xFF, hex_color & 0xFF]) / 255
-        rgb = np.stack([image] * 3, axis=-1) * rgb_ratios
-        return rgb.astype(image.dtype)
 
     def update_napari(self, image, config_name, k):
         if not self.performance_mode and (USE_NAPARI_FOR_MOSAIC_DISPLAY or USE_NAPARI_FOR_MULTIPOINT):
@@ -2331,6 +2293,118 @@ class MultiPointController(QObject):
                     )
                 )
             )
+
+    def get_acquisition_image_count(self):
+        """
+        Given the current settings on this controller, return how many images an acquisition will
+        capture and save to disk.
+
+        NOTE: This does not cover debug images (eg: auto focus) or user created images (eg: custom scripts).
+
+        NOTE: This does attempt to include the "merged" image if that config is enabled.
+
+        Raises a ValueError if the class is not configured for a valid acquisition.
+        """
+        try:
+            # We have Nt timepoints.  For each timepoint, we capture images at all the regions.  Each
+            # region has a list of coordinates that we capture at, and at each coordinate we need to
+            # do a capture for each requested camera + lighting + other configuration selected.  So
+            # total image count is:
+            coords_per_region = [
+                len(region_coords) for (region_id, region_coords) in self.scanCoordinates.region_fov_coordinates.items()
+            ]
+            all_regions_coord_count = sum(coords_per_region)
+
+            non_merged_images = self.Nt * self.NZ * all_regions_coord_count * len(self.selected_configurations)
+            # When capturing merged images, we capture 1 per fov (where all the configurations are merged)
+            merged_images = self.Nt * self.NZ * all_regions_coord_count if control._def.MERGE_CHANNELS else 0
+
+            return non_merged_images + merged_images
+        except AttributeError:
+            # We don't init all fields in __init__, so it's easy to get attribute errors.  We consider
+            # this "not configured" and want it to be a ValueError.
+            raise ValueError("Not properly configured for an acquisition, cannot calculate image count.")
+
+    def _temporary_get_an_image_hack(self):
+        # TODO(imo): Replace with send_trigger() only once AbstractCamera lands!
+        was_streaming = self.camera.is_streaming
+        callbacks_were_enabled = self.camera.callback_is_enabled
+        test_image = None
+        self.camera.disable_callback()
+        if not was_streaming:
+            self.camera.start_streaming()
+        try:
+            config = self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)[0]
+            if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                self.liveController.turn_on_illumination()
+                self.microcontroller.wait_till_operation_is_completed()
+                self.camera.send_trigger()
+                test_image = self.camera.read_frame()
+            elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
+                if "Fluorescence" in config.name and ENABLE_NL5 and NL5_USE_DOUT:
+                    self.camera.image_is_ready = False  # to remove
+                    self.microscope.nl5.start_acquisition()
+                    test_image = self.camera.read_frame(reset_image_ready_flag=False)
+                else:
+                    self.microcontroller.send_hardware_trigger(
+                        control_illumination=True, illumination_on_time_us=self.camera.exposure_time * 1000
+                    )
+                    test_image = self.camera.read_frame()
+            else:  # continuous acquisition
+                test_image = self.camera.read_frame()
+        finally:
+            if not was_streaming:
+                self.camera.stop_streaming()
+            if callbacks_were_enabled:
+                self.camera.enable_callback()
+        return test_image
+
+    def get_estimated_acquisition_disk_storage(self):
+        """
+        This does its best to return the number of bytes needed to store the settings for the currently
+        configured acquisition on disk.  If you don't have at least this amount of disk space available
+        when starting this acquisition, it is likely it will fail with an "out of disk space" error.
+        """
+        # TODO(imo): This needs updating for AbstractCamera
+        is_color = self.camera.is_color
+        if not len(self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)):
+            raise ValueError("Cannot calculate disk space requirements without any valid configurations.")
+        first_config = self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)[0]
+
+        # Our best bet is to grab an image, and use that for our size estimate.
+        test_image = None
+        try:
+            test_image = self._temporary_get_an_image_hack()
+        except Exception as e:
+            self._log.exception("Couldn't capture image from camera for size estimate, using worst cast image.")
+            # Not ideal that we need to catch Exception, but the camera implementations vary wildly...
+            pass
+
+        if test_image is None:
+            # Do our best to create a fake image with the correct properties.
+            # TODO(imo): It'd be better to pull this from our camera but need to wait for AbstractCamera for a consistent way to do that.
+            width = self.crop_width
+            height = self.crop_height
+            bytes_per_pixel = 3 if is_color else 2  # Worst case assumptions: 24 bit color, 16 bit grayscale
+
+            test_image = np.random.randint(2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
+
+        # Depending on settings, we modify the image before saving.  This means we need to actually save an image
+        # to see how much disk space it takes up.  This can be very wrong (eg: if we compress during saving, then
+        # it is dependent on the data), but is better than just guessing based on raw image size.
+        with tempfile.TemporaryDirectory() as temp_save_dir:
+            file_id = "test_id"
+            test_config = first_config
+            size_before = utils.get_directory_disk_usage(temp_save_dir)
+            saved_image = utils_acquisition.save_image(test_image, file_id, temp_save_dir, test_config, is_color)
+            size_after = utils.get_directory_disk_usage(temp_save_dir)
+
+            size_per_image = size_after - size_before
+
+        # Add in 100kB for non-image files.  This is normally more like 10k total, so this gives us extra.
+        non_image_file_size = 100 * 1024
+
+        return size_per_image * self.get_acquisition_image_count() + non_image_file_size
 
     def run_acquisition(self):
 
