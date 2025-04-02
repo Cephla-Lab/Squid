@@ -1433,6 +1433,7 @@ class HighContentScreeningGui(QMainWindow):
             # replace and reconnect new well selector
             if format_ == "1536 well plate":
                 self.replaceWellSelectionWidget(widgets.Well1536SelectionWidget())
+                self.connectWellSelectionWidget()
             elif isinstance(self.wellSelectionWidget, widgets.Well1536SelectionWidget):
                 self.replaceWellSelectionWidget(widgets.WellSelectionWidget(format_, self.wellplateFormatWidget))
                 self.connectWellSelectionWidget()

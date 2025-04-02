@@ -4370,8 +4370,14 @@ class ScanCoordinates(QObject):
             if "manual" in key:
                 return (0, coord[1], coord[0])  # Manual coords: sort by y, then x
             else:
-                row, col = key[0], int(key[1:])
-                return (1, ord(row), col)  # Well coords: sort by row, then column
+                letters = "".join(c for c in key if c.isalpha())
+                numbers = "".join(c for c in key if c.isdigit())
+
+                letter_value = 0
+                for i, letter in enumerate(reversed(letters)):
+                    letter_value += (ord(letter) - ord("A")) * (26**i)
+
+                return (1, letter_value, int(numbers))  # Well coords: sort by letter value, then number
 
         sorted_items = sorted(self.region_centers.items(), key=sort_key)
 
