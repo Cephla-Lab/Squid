@@ -2549,6 +2549,14 @@ class MultiPointController(QObject):
                 pass
         print("total time for acquisition + processing + reset:", time.time() - self.recording_start_time)
         utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
+
+        # move back to the center of the current region if using "glass slide"
+        if "current" in self.scanCoordinates.region_centers:
+            region_center = self.scanCoordinates.region_centers["current"]
+            self.stage.move_x_to(region_center[0])
+            self.stage.move_y_to(region_center[1])
+            self.stage.move_z_to(region_center[2])
+
         self.acquisitionFinished.emit()
         if not self.abort_acqusition_requested:
             self.signal_stitcher.emit(os.path.join(self.base_path, self.experiment_ID))
