@@ -1316,8 +1316,8 @@ class HighContentScreeningGui(QMainWindow):
     def toggleNapariTabs(self):
         # Enable/disable Napari tabs based on performance mode
         for i in range(1, self.imageDisplayTabs.count()):
-            widget = self.imageDisplayTabs.widget(i)
-            self.imageDisplayTabs.setTabEnabled(i, not self.performance_mode)
+            if self.imageDisplayTabs.tabText(i) != "Laser-Based Focus":
+                self.imageDisplayTabs.setTabEnabled(i, not self.performance_mode)
 
         if self.performance_mode:
             # Switch to the NapariLiveWidget tab if it exists
