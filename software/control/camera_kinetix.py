@@ -154,7 +154,6 @@ class Camera(object):
                 self.cam.abort()
             except Exception as e:
                 self.log.error("abort failed")
-                raise e
             self.callback_thread.join()
         self.callback_is_enabled = False
 
@@ -188,7 +187,14 @@ class Camera(object):
 
     def set_temperature(self, temperature: float):
         try:
+            has_callback = self.callback_is_enabled
+            self.stop_streaming()
+            print("setting temperature")
             self.cam.temp_setpoint = int(temperature)
+            if has_callback:
+                self.enable_callback()
+            if not self.is_streaming:
+                self.start_streaming()
         except Exception as e:
             self.log.error("set_temperature failed")
             raise e
@@ -256,14 +262,12 @@ class Camera(object):
         pass
 
     def send_trigger(self):
-        print("sending trigger")
         try:
             self.cam.sw_trigger()
         except Exception as e:
             self.log.error(f"sending trigger failed: {e}")
 
     def read_frame(self) -> np.ndarray:
-        print("reading frame")
         try:
             frame, _, _ = self.cam.poll_frame()
             data = frame["pixel_data"]
@@ -273,17 +277,16 @@ class Camera(object):
             return None
 
     def start_streaming(self):
-        print("starting streaming")
         if self.is_streaming:
             return
         self.cam.start_live()
         self.is_streaming = True
 
     def stop_streaming(self):
+        self.is_streaming = False
         if self.callback_is_enabled:
             self.disable_callback()
         self.cam.finish()
-        self.is_streaming = False
 
     def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
         pass
