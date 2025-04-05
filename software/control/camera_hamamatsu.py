@@ -51,7 +51,7 @@ class Camera(object):
         self.current_frame = None
         self.callback_is_enabled = False
         self.new_image_callback_external = None
-        self.stop_waiting = False
+        self.stop_waiting = False  # HL: this variable needs to be renamed to something more descriptive
 
         self.GAIN_MAX = 0
         self.GAIN_MIN = 0
@@ -76,6 +76,8 @@ class Camera(object):
 
         self.WidthMax = 2304
         self.HeightMax = 2304
+
+        self.trigger_sent = False
 
     def open(self, index=0):
         result = Dcamapi.init()
@@ -130,6 +132,7 @@ class Camera(object):
             if self.stop_waiting:
                 break
             event = self.dcam.wait_event(DCAMWAIT_CAPEVENT.FRAMEREADY, 1000)
+            self.trigger_sent = False
             if event is not False:
                 self._on_new_frame()
 
@@ -242,8 +245,13 @@ class Camera(object):
 
     def send_trigger(self):
         if self.is_streaming:
-            if not self.dcam.cap_firetrigger():
-                print("trigger not sent - firetrigger failed")
+            if not self.trigger_sent:
+                if not self.dcam.cap_firetrigger():
+                    print("trigger not sent - firetrigger failed")
+                else:
+                    self.trigger_sent = True
+            else:
+                print("trigger not sent - processing previous trigger")
         else:
             print("trigger not sent - camera is not streaming")
 
