@@ -10,7 +10,7 @@ from control._def import *
 
 
 def get_sn_by_model(model_name: str) -> str:
-	# We don't need this for kinetix camera
+    # We don't need this for kinetix camera
     return None
 
 
@@ -75,11 +75,11 @@ class Camera(object):
         self.cam.open()
         self.cam.exp_res = 1  # Exposure resolution in microseconds
         self.cam.readout_port = 2  # Dynamic Range Mode
-        self.cam.set_roi(220,220,2760,2760)  # Crop fov to 25mm
+        self.cam.set_roi(220, 220, 2760, 2760)  # Crop fov to 25mm
         self.log.info(f"Cropped area: {self.cam.shape(0)}")
         self.calculate_strobe_delay()  # hard coded before implementing roi
         self.set_temperature(15)  # temperature range: -15 - 15 degree Celcius
-        #self.temperature_reading_thread.start()
+        # self.temperature_reading_thread.start()
         """
         port_speed_gain_table:
         {'Sensitivity': {'port_value': 0, 'Speed_0': {'speed_index': 0, 'pixel_time': 10, 'bit_depth': 12, 'gain_range': [1], 'Standard': {'gain_index': 1}}}, 
@@ -96,7 +96,7 @@ class Camera(object):
             self.stop_streaming()
         self.terminate_read_temperature_thread = True
         self.temperature_reading_callback = None
-        #self.temperature_reading_thread.join()
+        # self.temperature_reading_thread.join()
         self.cam.close()
         pvc.uninit_pvcam()
 
@@ -158,6 +158,9 @@ class Camera(object):
             self.callback_thread.join()
         self.callback_is_enabled = False
 
+        if self.is_streaming:
+            self.cam.start_live()
+
     def set_analog_gain(self, gain: float):
         pass
 
@@ -168,8 +171,6 @@ class Camera(object):
             adjusted = self.strobe_delay_us + exposure_time * 1000
         try:
             has_callback = self.callback_is_enabled
-            if has_callback:
-                self.disable_callback()
             self.stop_streaming()
             print("setting exposure time")
             self.cam.exp_time = int(adjusted)  # us
@@ -179,7 +180,7 @@ class Camera(object):
             if not self.is_streaming:
                 self.start_streaming()
         except Exception as e:
-            self.log.error('set_exposure_time failed')
+            self.log.error("set_exposure_time failed")
             raise e
 
     def set_temperature_reading_callback(self, func: Callable):
@@ -189,14 +190,14 @@ class Camera(object):
         try:
             self.cam.temp_setpoint = int(temperature)
         except Exception as e:
-            self.log.error('set_temperature failed')
+            self.log.error("set_temperature failed")
             raise e
 
     def get_temperature(self) -> float:
         try:
             return self.cam.temp
         except Exception as e:
-            self.log.error('get_temperature failed')
+            self.log.error("get_temperature failed")
 
     def check_temperature(self):
         while self.terminate_read_temperature_thread == False:
@@ -211,41 +212,36 @@ class Camera(object):
     def set_continuous_acquisition(self):
         try:
             has_callback = self.callback_is_enabled
-            if has_callback:
-                self.disable_callback()
             self.stop_streaming()
-            self.cam.exp_mode = 'Internal Trigger'
+            self.cam.exp_mode = "Internal Trigger"
             self.trigger_mode = TriggerMode.CONTINUOUS
             if has_callback:
                 self.enable_callback()
             if not self.is_streaming:
                 self.start_streaming()
         except Exception as e:
-            self.log.error('set_continuous_acquisition failed')
+            self.log.error("set_continuous_acquisition failed")
             raise e
+
     def set_software_triggered_acquisition(self):
         try:
             has_callback = self.callback_is_enabled
-            if has_callback:
-                self.disable_callback()
             self.stop_streaming()
-            self.cam.exp_mode = 'Software Trigger Edge'
+            self.cam.exp_mode = "Software Trigger Edge"
             self.trigger_mode = TriggerMode.SOFTWARE
             if has_callback:
                 self.enable_callback()
             if not self.is_streaming:
                 self.start_streaming()
         except Exception as e:
-            self.log.error('set_software_triggered_acquisition failed')
+            self.log.error("set_software_triggered_acquisition failed")
             raise e
 
     def set_hardware_triggered_acquisition(self):
         try:
             has_callback = self.callback_is_enabled
-            if has_callback:
-                self.disable_callback()
             self.stop_streaming()
-            self.cam.exp_mode = 'Edge Trigger'
+            self.cam.exp_mode = "Edge Trigger"
             self.frame_ID_offset_hardware_trigger = None
             self.trigger_mode = TriggerMode.HARDWARE
             if has_callback:
@@ -253,44 +249,47 @@ class Camera(object):
             if not self.is_streaming:
                 self.start_streaming()
         except Exception as e:
-            self.log.error('set_hardware_triggered_acquisition failed')
+            self.log.error("set_hardware_triggered_acquisition failed")
             raise e
 
     def set_pixel_format(self, pixel_format: str):
         pass
 
     def send_trigger(self):
+        print("sending trigger")
         try:
             self.cam.sw_trigger()
         except Exception as e:
-            self.log.error('sending trigger failed')
+            self.log.error(f"sending trigger failed: {e}")
 
     def read_frame(self) -> np.ndarray:
+        print("reading frame")
         try:
             frame, _, _ = self.cam.poll_frame()
-            data = frame['pixel_data']
+            data = frame["pixel_data"]
             return data
         except Exception as e:
-            self.log.error('poll frame interrupted')
+            self.log.error(f"poll frame interrupted: {e}")
             return None
 
     def start_streaming(self):
+        print("starting streaming")
         if self.is_streaming:
             return
         self.cam.start_live()
         self.is_streaming = True
 
     def stop_streaming(self):
-        self.cam.finish()
         if self.callback_is_enabled:
             self.disable_callback()
+        self.cam.finish()
         self.is_streaming = False
 
     def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
         pass
 
     def calculate_strobe_delay(self):
-        # Line time (us) from the manual: 
+        # Line time (us) from the manual:
         # Dynamic Range Mode: 3.75; Speed Mode: 0.625; Sensitivity Mode: 3.53125; Sub-Electron Mode: 60.1
         self.strobe_delay_us = int(3.75 * 2760)  # us
         # TODO: trigger delay, line delay
