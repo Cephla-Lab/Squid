@@ -4864,6 +4864,13 @@ class LaserAutofocusController(QObject):
         self.laser_af_properties = self.laser_af_properties.model_copy(update=updates)
         self.is_initialized = False
 
+    def update_threshold_properties(self, updates: dict) -> None:
+        """Update threshold properties. Save settings without re-initializing."""
+        self.laser_af_properties = self.laser_af_properties.model_copy(update=updates)
+        self.laserAFSettingManager.update_laser_af_settings(self.objectiveStore.current_objective, updates)
+        self.laserAFSettingManager.save_configurations(self.objectiveStore.current_objective)
+        self._log.info("Updated threshold properties")
+
     def measure_displacement(self) -> float:
         """Measure the displacement of the laser spot from the reference position.
 
