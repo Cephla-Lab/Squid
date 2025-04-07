@@ -1,23 +1,30 @@
+from zipfile import error
+
+from control.toupcam import HRESULTException
+
+
 def signed_to_unsigned(n, num_bits):
     """
     Helper function to do 2s complement conversion on returned error codes.
     Returns function as a string representation in hexadecimal form.
     """
-    return hex(n & ((1 << num_bits) -1))
+    return hex(n & ((1 << num_bits) - 1))
+
 
 hresult_error_lookup = {
-        'E_ACCESSDENIED':"0x80070005",
-        'E_INVALIDARG':"0x80070057",
-        'E_NOTIMPL':"0x80004001",
-        'E_POINTER':"0x80004003",
-        'E_UNEXPECTED':"0x8000ffff",
-        'E_WRONG_THREAD':"0x8001010e",
-        'E_GEN_FAILURE':"0x8007001f",
-        'E_BUSY':"0x800700aa",
-        'E_PENDING':"0x8000000a",
-        'E_TIMEOUT':"0x8001011f",
-        'E_FAIL':"0x80004005"
-        }
+    "E_ACCESSDENIED": "0x80070005",
+    "E_INVALIDARG": "0x80070057",
+    "E_NOTIMPL": "0x80004001",
+    "E_POINTER": "0x80004003",
+    "E_UNEXPECTED": "0x8000ffff",
+    "E_WRONG_THREAD": "0x8001010e",
+    "E_GEN_FAILURE": "0x8007001f",
+    "E_BUSY": "0x800700aa",
+    "E_PENDING": "0x8000000a",
+    "E_TIMEOUT": "0x8001011f",
+    "E_FAIL": "0x80004005",
+}
+
 
 def hresult_checker(exception, *error_names):
     """
@@ -45,3 +52,12 @@ def hresult_checker(exception, *error_names):
             else:
                 return k
     raise exception
+
+
+def explain(exception: HRESULTException):
+    try:
+        error_type = hresult_checker(exception, *hresult_error_lookup.keys())
+    except Exception:
+        error_type = "UNKNOWN"
+
+    return f"{exception} with error type={error_type}"
