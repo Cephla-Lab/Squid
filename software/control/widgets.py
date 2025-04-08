@@ -909,31 +909,31 @@ class CameraSettingsWidget(QFrame):
         # to do: load and save pixel format in configurations
 
         self.entry_ROI_offset_x = QSpinBox()
-        self.entry_ROI_offset_x.setValue(self.camera.OffsetX)
+        self.entry_ROI_offset_x.setValue(self.camera.ROI_offset_x)
         self.entry_ROI_offset_x.setSingleStep(8)
         self.entry_ROI_offset_x.setFixedWidth(60)
         self.entry_ROI_offset_x.setMinimum(0)
-        self.entry_ROI_offset_x.setMaximum(self.camera.WidthMax)
+        self.entry_ROI_offset_x.setMaximum(self.camera.image_width)
         self.entry_ROI_offset_x.setKeyboardTracking(False)
         self.entry_ROI_offset_y = QSpinBox()
-        self.entry_ROI_offset_y.setValue(self.camera.OffsetY)
+        self.entry_ROI_offset_y.setValue(self.camera.ROI_offset_y)
         self.entry_ROI_offset_y.setSingleStep(8)
         self.entry_ROI_offset_y.setFixedWidth(60)
         self.entry_ROI_offset_y.setMinimum(0)
-        self.entry_ROI_offset_y.setMaximum(self.camera.HeightMax)
+        self.entry_ROI_offset_y.setMaximum(self.camera.image_height)
         self.entry_ROI_offset_y.setKeyboardTracking(False)
         self.entry_ROI_width = QSpinBox()
         self.entry_ROI_width.setMinimum(16)
-        self.entry_ROI_width.setMaximum(self.camera.WidthMax)
-        self.entry_ROI_width.setValue(self.camera.Width)
+        self.entry_ROI_width.setMaximum(self.camera.image_width)
+        self.entry_ROI_width.setValue(self.camera.ROI_width)
         self.entry_ROI_width.setSingleStep(8)
         self.entry_ROI_width.setFixedWidth(60)
         self.entry_ROI_width.setKeyboardTracking(False)
         self.entry_ROI_height = QSpinBox()
         self.entry_ROI_height.setSingleStep(8)
         self.entry_ROI_height.setMinimum(16)
-        self.entry_ROI_height.setMaximum(self.camera.HeightMax)
-        self.entry_ROI_height.setValue(self.camera.Height)
+        self.entry_ROI_height.setMaximum(self.camera.image_height)
+        self.entry_ROI_height.setValue(self.camera.ROI_height)
         self.entry_ROI_height.setFixedWidth(60)
         self.entry_ROI_height.setKeyboardTracking(False)
         self.entry_temperature = QDoubleSpinBox()
@@ -969,21 +969,21 @@ class CameraSettingsWidget(QFrame):
         format_line.addWidget(QLabel("Pixel Format"))
         format_line.addWidget(self.dropdown_pixelFormat)
         try:
-            current_res = self.camera.resolution
-            current_res_string = "x".join([str(current_res[0]), str(current_res[1])])
-            res_options = [f"{res[0]} x {res[1]}" for res in self.camera.res_list]
-            self.dropdown_res = QComboBox()
-            self.dropdown_res.addItems(res_options)
-            self.dropdown_res.setCurrentText(current_res_string)
+            binning_options = list(self.camera.binning_res.keys())
 
-            self.dropdown_res.currentTextChanged.connect(self.change_full_res)
+            self.dropdown_binning = QComboBox()
+            self.dropdown_binning.addItems([f"{b[0]}x{b[1]}" for b in binning_options])
+
+            current_binning = self.camera.binning
+            self.dropdown_binning.setCurrentText(f"{current_binning[0]}x{current_binning[1]}")
+            self.dropdown_binning.currentTextChanged.connect(self.change_binning)
         except AttributeError as ae:
             print(ae)
-            self.dropdown_res = QComboBox()
-            self.dropdown_res.setEnabled(False)
+            self.dropdown_binning = QComboBox()
+            self.dropdown_binning.setEnabled(False)
             pass
-        format_line.addWidget(QLabel(" FOV Resolution"))
-        format_line.addWidget(self.dropdown_res)
+        format_line.addWidget(QLabel(" Binning"))
+        format_line.addWidget(self.dropdown_binning)
         self.camera_layout.addLayout(format_line)
 
         if include_camera_temperature_setting:
@@ -1064,11 +1064,6 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_width.blockSignals(True)
         self.entry_ROI_width.setValue(width)
         self.entry_ROI_width.blockSignals(False)
-        offset_x = (self.camera.WidthMax - self.entry_ROI_width.value()) / 2
-        offset_x = int(offset_x // 8) * 8
-        self.entry_ROI_offset_x.blockSignals(True)
-        self.entry_ROI_offset_x.setValue(offset_x)
-        self.entry_ROI_offset_x.blockSignals(False)
         self.camera.set_ROI(
             self.entry_ROI_offset_x.value(),
             self.entry_ROI_offset_y.value(),
@@ -1081,11 +1076,6 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_height.blockSignals(True)
         self.entry_ROI_height.setValue(height)
         self.entry_ROI_height.blockSignals(False)
-        offset_y = (self.camera.HeightMax - self.entry_ROI_height.value()) / 2
-        offset_y = int(offset_y // 8) * 8
-        self.entry_ROI_offset_y.blockSignals(True)
-        self.entry_ROI_offset_y.setValue(offset_y)
-        self.entry_ROI_offset_y.blockSignals(False)
         self.camera.set_ROI(
             self.entry_ROI_offset_x.value(),
             self.entry_ROI_offset_y.value(),
@@ -1110,26 +1100,28 @@ class CameraSettingsWidget(QFrame):
     def update_measured_temperature(self, temperature):
         self.label_temperature_measured.setNum(temperature)
 
-    def change_full_res(self, index):
-        res_strings = self.dropdown_res.currentText().split("x")
-        res_x = int(res_strings[0])
-        res_y = int(res_strings[1])
-        self.camera.set_resolution(res_x, res_y)
+    def change_binning(self, binning_text):
+        binning_parts = binning_text.split("x")
+        binning_x = int(binning_parts[0])
+        binning_y = int(binning_parts[1])
+
+        self.camera.set_binning(binning_x, binning_y)
+
         self.entry_ROI_offset_x.blockSignals(True)
         self.entry_ROI_offset_y.blockSignals(True)
         self.entry_ROI_height.blockSignals(True)
         self.entry_ROI_width.blockSignals(True)
 
-        self.entry_ROI_height.setMaximum(self.camera.HeightMax)
-        self.entry_ROI_width.setMaximum(self.camera.WidthMax)
+        self.entry_ROI_height.setMaximum(self.camera.image_height)
+        self.entry_ROI_width.setMaximum(self.camera.image_width)
 
-        self.entry_ROI_offset_x.setMaximum(self.camera.WidthMax)
-        self.entry_ROI_offset_y.setMaximum(self.camera.HeightMax)
+        self.entry_ROI_offset_x.setMaximum(self.camera.image_width)
+        self.entry_ROI_offset_y.setMaximum(self.camera.image_height)
 
-        self.entry_ROI_offset_x.setValue(int(8 * self.camera.OffsetX // 8))
-        self.entry_ROI_offset_y.setValue(int(8 * self.camera.OffsetY // 8))
-        self.entry_ROI_height.setValue(int(8 * self.camera.Height // 8))
-        self.entry_ROI_width.setValue(int(8 * self.camera.Width // 8))
+        self.entry_ROI_offset_x.setValue(0)
+        self.entry_ROI_offset_y.setValue(0)
+        self.entry_ROI_height.setValue(0)
+        self.entry_ROI_width.setValue(0)
 
         self.entry_ROI_offset_x.blockSignals(False)
         self.entry_ROI_offset_y.blockSignals(False)
