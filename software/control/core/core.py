@@ -1472,7 +1472,7 @@ class MultiPointWorker(QObject):
         self._log.debug("multipoint acquisition - time point " + str(self.time_point + 1))
 
         # for each time point, create a new folder
-        current_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point))
+        current_path = os.path.join(self.base_path, self.experiment_ID, f"{self.time_point:0{FILE_ID_PADDING}}")
         utils.ensure_directory_exists(current_path)
 
         slide_path = os.path.join(self.base_path, self.experiment_ID)
@@ -1606,7 +1606,7 @@ class MultiPointWorker(QObject):
         y_mm = pos.y_mm
 
         for z_level in range(self.NZ):
-            file_ID = f"{region_id}_{fov}_{z_level}"
+            file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
 
             acquire_pos = self.stage.get_pos()
             metadata = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
