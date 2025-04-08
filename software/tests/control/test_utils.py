@@ -1,5 +1,7 @@
 import control.utils
 import tests.tools
+import pathlib
+import tempfile
 
 
 def test_squid_repo_info():
@@ -9,7 +11,7 @@ def test_squid_repo_info():
 
 import numpy as np
 import pytest
-from control.utils import find_spot_location, SpotDetectionMode
+from control.utils import find_spot_location, SpotDetectionMode, get_available_disk_space
 
 
 def create_test_image(spot_positions, image_size=(480, 640), spot_size=20):
@@ -117,3 +119,20 @@ def test_debug_plot(tmp_path):
         image = create_test_image([(320, 240)])
         # This should create plots but not raise any errors
         find_spot_location(image, debug_plot=True)
+
+
+def test_get_available_disk_space():
+    temp_dir = pathlib.Path(tempfile.mkdtemp())
+
+    assert get_available_disk_space(temp_dir) > 0
+
+    some_non_dir_file = temp_dir / "test_file"
+    some_non_dir_file.touch()
+
+    with pytest.raises(ValueError):
+        get_available_disk_space(some_non_dir_file)
+
+    some_non_dir_file.unlink(missing_ok=True)
+    temp_dir.rmdir()
+    with pytest.raises(ValueError):
+        get_available_disk_space(temp_dir)

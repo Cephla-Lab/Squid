@@ -1,9 +1,8 @@
 import os
-import sys
-from typing import Optional
+import logging
 
 import squid.logging
-from control.core.core import TrackingController
+from control.core.core import TrackingController, MultiPointController
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 import control.utils as utils
@@ -34,6 +33,43 @@ from scipy.spatial import Delaunay
 import shutil
 from control._def import *
 from PIL import Image, ImageDraw, ImageFont
+
+
+def error_dialog(message: str, title: str = "Error"):
+    msg = QMessageBox()
+    msg.setIcon(QMessageBox.Warning)
+    msg.setText(message)
+    msg.setWindowTitle(title)
+    msg.setStandardButtons(QMessageBox.Ok)
+    msg.setDefaultButton(QMessageBox.Ok)
+    retval = msg.exec_()
+    return
+
+
+def check_space_available_with_error_dialog(
+    multi_point_controller: MultiPointController, logger: logging.Logger, factor_of_safecty: float = 1.03
+) -> bool:
+    # To check how much disk space is required, we need to have the MultiPointController all configured.  That is
+    # a precondition of this function.
+    save_directory = multi_point_controller.base_path
+    available_disk_space = utils.get_available_disk_space(save_directory)
+    space_required = factor_of_safecty * multi_point_controller.get_estimated_acquisition_disk_storage()
+    image_count = multi_point_controller.get_acquisition_image_count()
+
+    logger.info(
+        f"Checking space available: {space_required=}, {available_disk_space=}, {image_count=}, {save_directory=}"
+    )
+    if space_required > available_disk_space:
+        megabytes_required = int(space_required / 1024 / 1024)
+        megabytes_available = int(available_disk_space / 1024 / 1024)
+        error_message = (
+            f"This acquisition will capture {image_count:,} images, which will"
+            f" require {megabytes_required:,} [MB], but '{save_directory}' only has {megabytes_available:,} [MB] available."
+        )
+        logger.error(error_message)
+        error_dialog(error_message, title="Not Enough Disk Space")
+        return False
+    return True
 
 
 class WrapperWindow(QMainWindow):
@@ -2934,25 +2970,17 @@ class FlexibleMultiPointWidget(QFrame):
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
         if self.base_path_is_set == False:
             self.btn_startAcquisition.setChecked(False)
-            msg = QMessageBox()
-            msg.setText("Please choose base saving directory first")
-            msg.exec_()
+            error_dialog("Please choose base saving directory first")
             return
         if not self.list_configurations.selectedItems():  # no channel selected
             self.btn_startAcquisition.setChecked(False)
-            msg = QMessageBox()
-            msg.setText("Please select at least one imaging channel first")
-            msg.exec_()
+            error_dialog("Please select at least one imaging channel first")
             return
         if pressed:
             if self.multipointController.acquisition_in_progress():
                 self._log.warning("Acquisition in progress or aborting, cannot start another yet.")
                 self.btn_startAcquisition.setChecked(False)
                 return
-
-            # @@@ to do: add a widgetManger to enable and disable widget
-            # @@@ to do: emit signal to widgetManager to disable other widgets
-            self.is_current_acquisition_widget = True  # keep track of what widget started the acquisition
 
             # add the current location to the location list if the list is empty
             if len(self.location_list) == 0:
@@ -2976,7 +3004,6 @@ class FlexibleMultiPointWidget(QFrame):
             else:
                 self.multipointController.set_focus_map(None)
 
-            self.setEnabled_all(False)
             # Set acquisition parameters
             self.multipointController.set_deltaZ(self.entry_deltaZ.value())
             self.multipointController.set_NZ(self.entry_NZ.value())
@@ -2991,6 +3018,16 @@ class FlexibleMultiPointWidget(QFrame):
                 (item.text() for item in self.list_configurations.selectedItems())
             )
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
+
+            if not check_space_available_with_error_dialog(self.multipointController, self._log):
+                self._log.error("Failed to start acquisition.  Not enough disk space available.")
+                self.btn_startAcquisition.setChecked(False)
+                return
+
+            # @@@ to do: add a widgetManger to enable and disable widget
+            # @@@ to do: emit signal to widgetManager to disable other widgets
+            self.is_current_acquisition_widget = True  # keep track of what widget started the acquisition
+            self.setEnabled_all(False)
 
             # emit signals
             self.signal_acquisition_started.emit(True)
@@ -4117,8 +4154,6 @@ class WellplateMultiPointWidget(QFrame):
                 self._log.warning("Acquisition in progress or aborting, cannot start another yet.")
                 self.btn_startAcquisition.setChecked(False)
                 return
-            self.setEnabled_all(False)
-            self.is_current_acquisition_widget = True
 
             scan_size_mm = self.entry_scan_size.value()
             overlap_percent = self.entry_overlap.value()
@@ -4177,6 +4212,14 @@ class WellplateMultiPointWidget(QFrame):
                 [item.text() for item in self.list_configurations.selectedItems()]
             )
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
+
+            if not check_space_available_with_error_dialog(self.multipointController, self._log):
+                self.btn_startAcquisition.setChecked(False)
+                self._log.error("Failed to start acquisition.  Not enough disk space available.")
+                return
+
+            self.setEnabled_all(False)
+            self.is_current_acquisition_widget = True
 
             # Emit signals
             self.signal_acquisition_started.emit(True)
