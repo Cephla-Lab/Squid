@@ -66,6 +66,12 @@ elif CAMERA_TYPE == "Tucsen":
     except:
         log.warning("Problem importing Tucsen camera, defaulting to default camera")
         import control.camera as camera
+elif CAMERA_TYPE == "Kinetix":
+    try:
+        import control.camera_kinetix as camera
+    except:
+        log.warning("Problem importing Kinetix camera, defaulting to default camera")
+        import control.camera as camera
 else:
     import control.camera as camera
 
@@ -612,7 +618,7 @@ class HighContentScreeningGui(QMainWindow):
 
             self.nl5Wdiget = NL5Widget.NL5Widget(self.nl5)
 
-        if CAMERA_TYPE == "Toupcam":
+        if CAMERA_TYPE in ["Toupcam", "Tucsen", "Kinetix"]:
             self.cameraSettingWidget = widgets.CameraSettingsWidget(
                 self.camera,
                 include_gain_exposure_time=False,

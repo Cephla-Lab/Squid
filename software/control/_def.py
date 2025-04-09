@@ -279,6 +279,8 @@ CAMERA_REVERSE_Y = False
 
 DEFAULT_TRIGGER_MODE = TriggerMode.SOFTWARE
 
+BUFFER_SIZE_LIMIT = 4095
+
 # note: XY are the in-plane axes, Z is the focus axis
 
 # change the following so that "backward" is "backward" - towards the single sided hall effect sensor
