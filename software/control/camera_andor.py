@@ -48,7 +48,7 @@ class Camera(object):
         self.GAIN_MIN = 0
         self.GAIN_STEP = 0
         self.EXPOSURE_TIME_MS_MIN = 0.01
-        self.EXPOSURE_TIME_MS_MAX = 10000.0
+        self.EXPOSURE_TIME_MS_MAX = 30000.0
         
         self.rotate_image_angle = rotate_image_angle
         self.flip_image = flip_image
@@ -98,11 +98,13 @@ class Camera(object):
         try:
             self.EXPOSURE_TIME_MS_MIN = self.cam.min_ExposureTime * 1000  # convert to ms
             self.EXPOSURE_TIME_MS_MAX = self.cam.max_ExposureTime * 1000  # convert to ms
+            print(f"exposure min: {self.EXPOSURE_TIME_MS_MIN}, max: {self.EXPOSURE_TIME_MS_MAX}")
         except:
             print("Could not determine exposure time limits")
 
         try:
-            self.line_rate = self.cam.LineScanSpeed
+            self.line_rate = 1 / self.cam.LineScanSpeed * 1000000
+            print(f"line rate: {self.line_rate} us")
         except:
             print("Could not determine line rate")
             raise
@@ -177,15 +179,12 @@ class Camera(object):
         pass
 
     def set_exposure_time(self, exposure_time):
-        try:
-            # Convert ms to seconds for Andor SDK
+        if self.trigger_mode == TriggerMode.SOFTWARE:
             exposure_time_s = exposure_time / 1000.0
-            
-            # Limit to valid range
-            limited_exposure = max(min(exposure_time_s, self.EXPOSURE_TIME_MS_MAX/1000), 
-                                self.EXPOSURE_TIME_MS_MIN/1000)
-            
-            self.cam.ExposureTime = limited_exposure
+        elif self.trigger_mode == TriggerMode.HARDWARE:
+            exposure_time_s = self.strobe_delay_us / 1000000 + exposure_time / 1000
+        try:
+            self.cam.ExposureTime = exposure_time_s
             self.exposure_time = exposure_time
         except Exception as e:
             print(f"Error setting exposure time: {e}")
