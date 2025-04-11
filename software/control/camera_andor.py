@@ -28,7 +28,7 @@ class Camera(object):
         self.is_streaming = False
         self.pixel_format = None
         self.is_color = False
-        
+
         self.frame_ID = -1
         self.frame_ID_software = -1
         self.frame_ID_offset_hardware_trigger = 0
@@ -37,19 +37,19 @@ class Camera(object):
 
         self.strobe_delay_us = None
         self.line_rate = None  # in us
-        
+
         self.image_locked = False
         self.current_frame = None
         self.callback_is_enabled = False
         self.new_image_callback_external = None
         self.stop_waiting = False
-        
+
         self.GAIN_MAX = 0
         self.GAIN_MIN = 0
         self.GAIN_STEP = 0
         self.EXPOSURE_TIME_MS_MIN = 0.01
         self.EXPOSURE_TIME_MS_MAX = 30000.0
-        
+
         self.rotate_image_angle = rotate_image_angle
         self.flip_image = flip_image
         self.is_global_shutter = is_global_shutter
@@ -58,12 +58,12 @@ class Camera(object):
         self.ROI_offset_y = 0
         self.ROI_width = resolution[0]
         self.ROI_height = resolution[1]
-        
+
         self.OffsetX = 0
         self.OffsetY = 0
         self.Width = resolution[0]
         self.Height = resolution[1]
-        
+
         self.WidthMax = resolution[0]
         self.HeightMax = resolution[1]
 
@@ -81,15 +81,14 @@ class Camera(object):
     def close(self):
         if self.is_streaming:
             self.stop_streaming()
-        
+
         self.disable_callback()
-        
+
         if self.cam is not None:
             self.cam.close()
             self.cam = None
             return True
         return False
-        
 
     def _initialize_camera(self):
         if self.cam is None:
@@ -166,7 +165,7 @@ class Camera(object):
 
         self.stop_waiting = True
         time.sleep(0.2)
-        if hasattr(self, 'callback_thread'):
+        if hasattr(self, "callback_thread"):
             self.callback_thread.join()
             del self.callback_thread
         self.callback_is_enabled = False
@@ -270,6 +269,7 @@ class Camera(object):
     def read_frame(self):
         try:
             acq = self.cam.wait_buffer(2000)
+            self.cam.queue(acq._np_data, self.cam.ImageSizeBytes)
             return acq._np_data
         except Exception as e:
             print(f"Error reading frame: {e}")
@@ -278,15 +278,15 @@ class Camera(object):
     def start_streaming(self, buffer_frame_num=5):
         if self.is_streaming:
             return
-        
+
         try:
             # Queue buffers based on ImageSizeBytes
             img_size = self.cam.ImageSizeBytes
             for _ in range(buffer_frame_num):
-                buf = np.empty((img_size,), dtype='B')
+                buf = np.empty((img_size,), dtype="B")
                 self.cam.queue(buf, img_size)
                 self.buffer_queue.append(buf)  # Keep reference to avoid garbage collection
-            
+
             # Start acquisition
             self.cam.AcquisitionStart()
             self.is_streaming = True
