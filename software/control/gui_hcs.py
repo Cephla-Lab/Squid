@@ -66,6 +66,12 @@ elif CAMERA_TYPE == "Tucsen":
     except:
         log.warning("Problem importing Tucsen camera, defaulting to default camera")
         import control.camera as camera
+elif CAMERA_TYPE == "Andor":
+    try:
+        import control.camera_andor as camera
+    except:
+        log.warning("Problem importing Andor camera, defaulting to default camera")
+        import control.camera as camera
 else:
     import control.camera as camera
 
