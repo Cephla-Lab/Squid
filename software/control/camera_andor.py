@@ -130,13 +130,12 @@ class Camera(object):
             if self.stop_waiting:
                 break
             try:
-                # Wait for a new frame with a timeout
                 image = self.read_frame()
                 if image is not False:
                     self._on_new_frame(image)
             except Exception as e:
                 print(f"Error waiting for frame: {e}")
-                time.sleep(0.01)  # Prevent tight loop on error
+                time.sleep(0.01)
 
     def _on_new_frame(self, image):
         if self.image_locked:
@@ -248,7 +247,6 @@ class Camera(object):
             self.stop_streaming()
 
         try:
-            result = False
             if pixel_format == "MONO12":
                 self.cam.PixelEncoding = "Mono12"
                 self.pixel_format = pixel_format
@@ -269,10 +267,10 @@ class Camera(object):
         except Exception as e:
             print(f"Trigger not sent - error: {e}")
 
-    def read_frame(self, no_wait=False):
+    def read_frame(self):
         try:
-            acq = self.cam.wait_buffer(1000)
-            return acq.image
+            acq = self.cam.wait_buffer(2000)
+            return acq._np_data
         except Exception as e:
             print(f"Error reading frame: {e}")
             return False
@@ -301,14 +299,12 @@ class Camera(object):
 
     def stop_streaming(self):
         try:
-            if self.cam.AcquisitionStop() and self.cam.flush():
-                self.buffer_queue = []  # Clear buffer references
-                self.is_streaming = False
-                print("Andor Camera streaming stopped")
-                return True
-            else:
-                print("Andor Camera cannot stop streaming")
-                return False
+            self.cam.AcquisitionStop()
+            self.cam.flush()
+            self.is_streaming = False
+            self.buffer_queue = []
+            print("Andor Camera streaming stopped")
+            return True
         except Exception as e:
             print(f"Error stopping streaming: {e}")
             return False
