@@ -1729,7 +1729,7 @@ class MultiPointWorker(QObject):
             self._log.info("laser reflection af")
             try:
                 if HAS_OBJECTIVE_PIEZO:  # when piezo is available, one move is sufficient as piezo is closed loop
-                    self.microscope.laserAutofocusController.move_to_target(0)
+                    self.z_piezo_um += self.microscope.laserAutofocusController.move_to_target(0)
                 else:
                     # TODO(imo): We used to have a case here to try to fix backlash by double commanding a position.  Now, just double command it whether or not we are using PID since we don't expose that now.  But in the future, backlash handing shouldb e done at a lower level (and we can remove the double here)
                     self.microscope.laserAutofocusController.move_to_target(0)
@@ -4892,31 +4892,31 @@ class LaserAutofocusController(QObject):
         self.signal_displacement_um.emit(displacement_um)
         return displacement_um
 
-    def move_to_target(self, target_um: float) -> bool:
+    def move_to_target(self, target_um: float) -> float:
         """Move the stage to reach a target displacement from reference position.
 
         Args:
             target_um: Target displacement in micrometers
 
         Returns:
-            bool: True if move was successful, False if measurement failed or displacement was out of range
+            float: Displacement in micrometers, or 0 if measurement failed or displacement was out of range
         """
         if not self.laser_af_properties.has_reference:
             self._log.warning("Cannot move to target - reference not set")
-            return False
+            return 0
 
         current_displacement_um = self.measure_displacement()
         self._log.info(f"Current laser AF displacement: {current_displacement_um:.1f} μm")
 
         if math.isnan(current_displacement_um):
             self._log.error("Cannot move to target: failed to measure current displacement")
-            return False
+            return 0
 
         if abs(current_displacement_um) > self.laser_af_properties.laser_af_range:
             self._log.warning(
                 f"Measured displacement ({current_displacement_um:.1f} μm) is unreasonably large, using previous z position"
             )
-            return False
+            return 0
 
         um_to_move = target_um - current_displacement_um
         self._move_z(um_to_move)
@@ -4928,10 +4928,10 @@ class LaserAutofocusController(QObject):
             self._log.warning("Cross correlation check failed - spots not well aligned")
             # move back to the current position
             self._move_z(-um_to_move)
-            return False
+            return 0
         else:
             self._log.info("Cross correlation check passed - spots are well aligned")
-            return True
+            return um_to_move
 
         """
         # Verify we reached the target
