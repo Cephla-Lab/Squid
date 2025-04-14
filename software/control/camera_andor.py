@@ -43,6 +43,7 @@ class Camera(object):
         self.callback_is_enabled = False
         self.new_image_callback_external = None
         self.stop_waiting = False
+        self.buffer_queue = []
 
         self.GAIN_MAX = 0
         self.GAIN_MIN = 0
@@ -211,8 +212,7 @@ class Camera(object):
             self.stop_streaming()
 
         try:
-            self.cam.CycleMode = "Fixed"
-            self.cam.FrameCount = 1
+            self.cam.CycleMode = "Continuous"
             self.cam.TriggerMode = "Software"
             self.trigger_mode = TriggerMode.SOFTWARE
         except Exception as e:
@@ -228,8 +228,7 @@ class Camera(object):
             self.stop_streaming()
 
         try:
-            self.cam.CycleMode = "Fixed"
-            self.cam.FrameCount = 1
+            self.cam.CycleMode = "Continuous"
             self.cam.TriggerMode = "External"
             self.frame_ID_offset_hardware_trigger = None
             self.trigger_mode = TriggerMode.HARDWARE
@@ -262,6 +261,7 @@ class Camera(object):
 
     def send_trigger(self):
         try:
+            print("send trigger")
             self.cam.SoftwareTrigger()
         except Exception as e:
             print(f"Trigger not sent - error: {e}")
@@ -270,10 +270,13 @@ class Camera(object):
         try:
             acq = self.cam.wait_buffer(2000)
             self.cam.queue(acq._np_data, self.cam.ImageSizeBytes)
-            return acq._np_data
+            raw = np.asarray(acq._np_data, dtype=np.uint8)
+            img16 = raw.view('<u2')
+            img16 = img16.reshape(2048, 2048)
+            return img16
         except Exception as e:
             print(f"Error reading frame: {e}")
-            return False
+            return None
 
     def start_streaming(self, buffer_frame_num=5):
         if self.is_streaming:
