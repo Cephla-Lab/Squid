@@ -896,11 +896,21 @@ class HighContentScreeningGui(QMainWindow):
 
         # Add performance mode toggle button
         if not self.live_only_mode:
+
+            buttons = QHBoxLayout()
+            self.wellSelectorToggle = QPushButton("Toggle Well Selector")
+            self.wellSelectorToggle.setCheckable(True)
+            self.wellSelectorToggle.setChecked(ENABLE_WELLPLATE_MULTIPOINT)
+            self.wellSelectorToggle.clicked.connect(self.toggleWellSelector)
+            buttons.addWidget(self.wellSelectorToggle)
+
             self.performanceModeToggle = QPushButton("Enable Performance Mode")
             self.performanceModeToggle.setCheckable(True)
             self.performanceModeToggle.setChecked(self.performance_mode)
             self.performanceModeToggle.clicked.connect(self.togglePerformanceMode)
-            layout.addWidget(self.performanceModeToggle)
+            buttons.addWidget(self.performanceModeToggle)
+
+            layout.addLayout(buttons)
 
         self.centralWidget = QWidget()
         self.centralWidget.setLayout(layout)
@@ -1503,12 +1513,18 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
 
-    def toggleWellSelector(self, show):
+    def toggleWellSelector(self, show=None):
+        if show is None:
+            show = not self.wellSelectionWidget.isVisible()
+
         if USE_NAPARI_WELL_SELECTION and not self.performance_mode and not self.live_only_mode:
             self.napariLiveWidget.toggle_well_selector(show)
         else:
             self.dock_wellSelection.setVisible(show)
         self.wellSelectionWidget.setVisible(show)
+
+        self.wellSelectorToggle.setChecked(show)
+        self.wellSelectorToggle.setText("Hide Well Selector" if show else "Show Well Selector")
 
     def toggleAcquisitionStart(self, acquisition_started):
         self.log.debug(f"toggleAcquisitionStarted({acquisition_started=})")
