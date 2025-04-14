@@ -696,7 +696,7 @@ class LaserAutofocusSettingWidget(QWidget):
                     self.signal_laser_spot_location.emit(frame, x, y)
                 else:
                     raise Exception("No spot detection result returned")
-            except Exception as e:
+            except Exception:
                 # Show error message
                 # Clear previous error label if it exists
                 if hasattr(self, "spot_detection_error_label"):

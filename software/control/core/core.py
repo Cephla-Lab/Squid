@@ -47,28 +47,24 @@ from datetime import datetime
 from enum import Enum
 from control.utils_config import ChannelConfig, ChannelMode, LaserAFConfig
 import time
-import subprocess
-import shutil
 import itertools
 import json
 import math
-import random
 import numpy as np
 import pandas as pd
-import scipy.signal
 import cv2
 import imageio as iio
 import squid.abc
 
 
 class ObjectiveStore:
-    def __init__(self, objectives_dict=OBJECTIVES, default_objective=DEFAULT_OBJECTIVE, parent=None):
+    def __init__(self, objectives_dict=OBJECTIVES, default_objective=DEFAULT_OBJECTIVE):
         self.objectives_dict = objectives_dict
         self.default_objective = default_objective
         self.current_objective = default_objective
         self.tube_lens_mm = TUBE_LENS_MM
         self.sensor_pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
-        self.pixel_binning = self.get_pixel_binning()
+        self.pixel_binning = 1
         self.pixel_size_um = self.calculate_pixel_size(self.current_objective)
 
     def get_pixel_size(self):
@@ -91,15 +87,6 @@ class ObjectiveStore:
 
     def get_current_objective_info(self):
         return self.objectives_dict[self.current_objective]
-
-    def get_pixel_binning(self):
-        try:
-            highest_res = max(self.parent.camera.res_list, key=lambda res: res[0] * res[1])
-            resolution = self.parent.camera.resolution
-            pixel_binning = max(1, highest_res[0] / resolution[0])
-        except AttributeError:
-            pixel_binning = 1
-        return pixel_binning
 
 
 class StreamHandler(QObject):
@@ -129,7 +116,6 @@ class StreamHandler(QObject):
         self.display_resolution_scaling = display_resolution_scaling
 
         self.save_image_flag = False
-        self.track_flag = False
         self.handler_busy = False
 
         # for fps measurement
@@ -145,12 +131,6 @@ class StreamHandler(QObject):
 
     def stop_recording(self):
         self.save_image_flag = False
-
-    def start_tracking(self):
-        self.tracking_flag = True
-
-    def stop_tracking(self):
-        self.tracking_flag = False
 
     def set_display_fps(self, fps):
         self.fps_display = fps
@@ -206,13 +186,6 @@ class StreamHandler(QObject):
                 image_cropped = cv2.cvtColor(image_cropped, cv2.COLOR_RGB2BGR)
             self.packet_image_to_write.emit(image_cropped, frame.frame_id, frame.timestamp)
             self.timestamp_last_save = time_now
-
-        # send image to track
-        if self.track_flag and time_now - self.timestamp_last_track >= 1 / self.fps_track:
-            # track is a blocking operation - it needs to be
-            # @@@ will cropping before emitting the signal lead to speedup?
-            self.packet_image_for_tracking.emit(image_cropped, frame.frame_id, frame.timestamp)
-            self.timestamp_last_track = time_now
 
         self.handler_busy = False
 
@@ -653,21 +626,7 @@ class LiveController(QObject):
 
         self.trigger_ID = self.trigger_ID + 1
 
-        # One final check to make sure we are actually live
-        # Even if we aren't live, continue on so illumination gets handled.
-        if self.is_live:
-            self.camera.send_trigger(self.camera.get_exposure_time())
-
-            # TODO(imo): Looks like this is dead code since the print is commented out?
-            # measure real fps
-            timestamp_now = round(time.time())
-            if timestamp_now == self.timestamp_last:
-                self.counter = self.counter + 1
-            else:
-                self.timestamp_last = timestamp_now
-                self.fps_real = self.counter
-                self.counter = 0
-                # print('real trigger fps is ' + str(self.fps_real))
+        self.camera.send_trigger(self.camera.get_exposure_time())
 
         if self.trigger_mode == TriggerMode.SOFTWARE:
             if self.control_illumination and self.illumination_on == False:
@@ -803,7 +762,7 @@ class SlidePositionControlWorker(QObject):
             )
 
             # home for the first time
-            if self.slidePositionController.homing_done == False:
+            if not self.slidePositionController.homing_done:
                 print("running homing first")
                 timestamp_start = time.time()
                 # x needs to be at > + 20 mm when homing y
@@ -859,7 +818,7 @@ class SlidePositionControlWorker(QObject):
         # for well plate
         if self.slidePositionController.is_for_wellplate:
             # home for the first time
-            if self.slidePositionController.homing_done == False:
+            if not self.slidePositionController.homing_done:
                 timestamp_start = time.time()
 
                 # x needs to be at > + 20 mm when homing y
@@ -1199,7 +1158,7 @@ class AutoFocusController(QObject):
         self.image_to_display.emit(image)
 
     def wait_till_autofocus_has_completed(self):
-        while self.autofocus_in_progress == True:
+        while self.autofocus_in_progress:
             QApplication.processEvents()
             time.sleep(0.005)
         print("autofocus wait has completed, exit wait")
@@ -1604,8 +1563,6 @@ class MultiPointWorker(QObject):
             self.prepare_z_stack()
 
         pos = self.stage.get_pos()
-        x_mm = pos.x_mm
-        y_mm = pos.y_mm
         if self.use_piezo:
             self.z_piezo_um = self.piezo.position
 
@@ -1614,7 +1571,7 @@ class MultiPointWorker(QObject):
 
             acquire_pos = self.stage.get_pos()
             metadata = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
-            print(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
+            self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
 
             # laser af characterization mode
             if self.do_reflection_af and self.microscope.laserAutofocusController.characterization_mode:
@@ -1667,7 +1624,6 @@ class MultiPointWorker(QObject):
             self.move_z_back_after_stack()
 
     def run_real_time_processing(self, current_round_images, z_level):
-        acquired_image_configs = list(current_round_images.keys())
         if (
             "BF LED matrix left half" in current_round_images
             and "BF LED matrix right half" in current_round_images
@@ -1825,8 +1781,7 @@ class MultiPointWorker(QObject):
 
         current_round_images[config.name] = np.copy(image)
 
-        self.handle_dpc_generation(current_round_images)
-        self.handle_rgb_generation(current_round_images, file_ID, current_path, k)
+        MultiPointWorker.handle_rgb_generation(current_round_images, file_ID, current_path, k)
 
         if not self.headless:
             QApplication.processEvents()
@@ -1878,7 +1833,6 @@ class MultiPointWorker(QObject):
 
         # Check if the image is RGB or monochrome
         i_size = images["BF LED matrix full_R"].shape
-        i_dtype = images["BF LED matrix full_R"].dtype
 
         if len(i_size) == 3:
             # If already RGB, write and emit individual channels
@@ -1890,7 +1844,7 @@ class MultiPointWorker(QObject):
             self.construct_rgb_image(images, file_ID, current_path, config, k)
 
     def acquire_spectrometer_data(self, config, file_ID, current_path):
-        if self.usb_spectrometer != None:
+        if self.usb_spectrometer is not None:
             for l in range(N_SPECTRUM_PER_POINT):
                 data = self.usb_spectrometer.read_spectrum()
                 self.spectrum_to_display.emit(data)
@@ -1937,19 +1891,8 @@ class MultiPointWorker(QObject):
             objective_magnification = str(int(self.objectiveStore.get_current_objective_info()["magnification"]))
             self.napari_layers_update.emit(image, pos.x_mm, pos.y_mm, k, objective_magnification + "x " + config_name)
 
-    def handle_dpc_generation(self, current_round_images):
-        keys_to_check = [
-            "BF LED matrix left half",
-            "BF LED matrix right half",
-            "BF LED matrix top half",
-            "BF LED matrix bottom half",
-        ]
-        if all(key in current_round_images for key in keys_to_check):
-            # generate dpc
-            # TODO(imo): What's the point of this?  Is it just a placeholder?
-            pass
-
-    def handle_rgb_generation(self, current_round_images, file_ID, current_path, k):
+    @staticmethod
+    def handle_rgb_generation(current_round_images, file_ID, current_path, k):
         keys_to_check = ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]
         if all(key in current_round_images for key in keys_to_check):
             print("constructing RGB image")
@@ -2406,13 +2349,12 @@ class MultiPointController(QObject):
         return size_per_image * self.get_acquisition_image_count() + non_image_file_size
 
     def run_acquisition(self):
-
         if not self.validate_acquisition_settings():
             # emit acquisition finished signal to re-enable the UI
             self.acquisitionFinished.emit()
             return
 
-        print("start multipoint")
+        self._log.info("start multipoint")
 
         self.scan_region_coords_mm = list(self.scanCoordinates.region_centers.values())
         self.scan_region_names = list(self.scanCoordinates.region_centers.keys())
@@ -2429,10 +2371,10 @@ class MultiPointController(QObject):
                 coordinates_df = pd.concat([coordinates_df, pd.DataFrame([row])], ignore_index=True)
         coordinates_df.to_csv(os.path.join(self.base_path, self.experiment_ID, "coordinates.csv"), index=False)
 
-        print("num fovs:", sum(len(coords) for coords in self.scan_region_fov_coords_mm))
-        print("num regions:", len(self.scan_region_coords_mm))
-        print("region ids:", self.scan_region_names)
-        print("region centers:", self.scan_region_coords_mm)
+        self._log.info(f"num fovs: {sum(len(coords) for coords in self.scan_region_fov_coords_mm)}")
+        self._log.info(f"num regions: {len(self.scan_region_coords_mm)}")
+        self._log.info(f"region ids: {self.scan_region_names}")
+        self._log.info(f"region centers: {self.scan_region_coords_mm}")
 
         self.abort_acqusition_requested = False
 
@@ -2465,7 +2407,7 @@ class MultiPointController(QObject):
         self.timestamp_acquisition_started = time.time()
 
         if self.focus_map:
-            print("Using focus surface for Z interpolation")
+            self._log.info("Using focus surface for Z interpolation")
             for region_id in self.scan_region_names:
                 region_fov_coords = self.scan_region_fov_coords_mm[region_id]
                 # Convert each tuple to list for modification
@@ -2477,7 +2419,7 @@ class MultiPointController(QObject):
                     self.scanCoordinates.update_fov_z_level(region_id, i, z)
 
         elif self.gen_focus_map and not self.do_reflection_af:
-            print("Generating autofocus plane for multipoint grid")
+            self._log.info("Generating autofocus plane for multipoint grid")
             bounds = self.scanCoordinates.get_scan_bounds()
             if not bounds:
                 return
@@ -2521,9 +2463,9 @@ class MultiPointController(QObject):
                 coord2 = (starting_x_mm + (fmap_Nx - 1) * fmap_dx, starting_y_mm)  # X-axis corner
                 coord3 = (starting_x_mm, starting_y_mm + (fmap_Ny - 1) * fmap_dy)  # Y-axis corner
 
-                print(f"Generating AF Map: Nx={fmap_Nx}, Ny={fmap_Ny}")
-                print(f"Spacing: dx={fmap_dx:.3f}mm, dy={fmap_dy:.3f}mm")
-                print(f"Center:  x=({x_center:.3f}mm, y={y_center:.3f}mm)")
+                self._log.info(f"Generating AF Map: Nx={fmap_Nx}, Ny={fmap_Ny}")
+                self._log.info(f"Spacing: dx={fmap_dx:.3f}mm, dy={fmap_dy:.3f}mm")
+                self._log.info(f"Center:  x=({x_center:.3f}mm, y={y_center:.3f}mm)")
 
                 # Generate and enable the AF map
                 self.autofocusController.gen_focus_map(coord1, coord2, coord3)
@@ -2534,7 +2476,7 @@ class MultiPointController(QObject):
                 self.stage.move_y_to(y_center)
 
             except ValueError:
-                print("Invalid coordinates for autofocus plane, aborting.")
+                self._log.exception("Invalid coordinates for autofocus plane, aborting.")
                 return
 
         self.multiPointWorker = MultiPointWorker(self)
@@ -2598,12 +2540,11 @@ class MultiPointController(QObject):
         # emit the acquisition finished signal to enable the UI
         if self.parent is not None:
             try:
-                # self.parent.dataHandler.set_number_of_images_per_page(self.old_images_per_page)
                 self.parent.dataHandler.sort("Sort by prediction score")
                 self.parent.dataHandler.signal_populate_page0.emit()
             except:
                 pass
-        print("total time for acquisition + processing + reset:", time.time() - self.recording_start_time)
+        self._log.info(f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}")
         utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
 
         # move back to the center of the current region if using "glass slide"
@@ -2693,6 +2634,7 @@ class TrackingController(QObject):
         imageDisplayWindow,
     ):
         QObject.__init__(self)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.camera: AbstractCamera = camera
         self.microcontroller = microcontroller
         self.stage = stage
@@ -2724,7 +2666,7 @@ class TrackingController(QObject):
     def start_tracking(self):
 
         # save pre-tracking configuration
-        print("start tracking")
+        self._log.info("start tracking")
         self.configuration_before_running_tracking = self.liveController.currentConfiguration
 
         # stop live
@@ -2749,10 +2691,10 @@ class TrackingController(QObject):
         # create a QThread object
         try:
             if self.thread.isRunning():
-                print("*** previous tracking thread is still running ***")
+                self._log.info("*** previous tracking thread is still running ***")
                 self.thread.terminate()
                 self.thread.wait()
-                print("*** previous tracking threaded manually stopped ***")
+                self._log.info("*** previous tracking threaded manually stopped ***")
         except:
             pass
         self.thread = QThread()
@@ -2808,7 +2750,7 @@ class TrackingController(QObject):
                 os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml",
             )  # save the configuration for the experiment
         except:
-            print("error in making a new folder")
+            self._log.info("error in making a new folder")
             pass
 
     def set_selected_configurations(self, selected_configurations_name):
@@ -2828,22 +2770,22 @@ class TrackingController(QObject):
 
     def toggle_stage_tracking(self, state):
         self.flag_stage_tracking_enabled = state > 0
-        print("set stage tracking enabled to " + str(self.flag_stage_tracking_enabled))
+        self._log.info("set stage tracking enabled to " + str(self.flag_stage_tracking_enabled))
 
     def toggel_enable_af(self, state):
         self.flag_AF_enabled = state > 0
-        print("set af enabled to " + str(self.flag_AF_enabled))
+        self._log.info("set af enabled to " + str(self.flag_AF_enabled))
 
     def toggel_save_images(self, state):
         self.flag_save_image = state > 0
-        print("set save images to " + str(self.flag_save_image))
+        self._log.info("set save images to " + str(self.flag_save_image))
 
     def set_base_path(self, path):
         self.base_path = path
 
     def stop_tracking(self):
         self.flag_stop_tracking_requested = True
-        print("stop tracking requested")
+        self._log.info("stop tracking requested")
 
     def slot_image_to_display(self, image):
         self.image_to_display.emit(image)
@@ -2865,45 +2807,8 @@ class TrackingController(QObject):
 
     def update_image_resizing_factor(self, image_resizing_factor):
         self.image_resizing_factor = image_resizing_factor
-        print("update tracking image resizing factor to " + str(self.image_resizing_factor))
+        self._log.info("update tracking image resizing factor to " + str(self.image_resizing_factor))
         self.pixel_size_um_scaled = self.pixel_size_um / self.image_resizing_factor
-
-    # PID-based tracking
-    """
-    def on_new_frame(self,image,frame_ID,timestamp):
-        # initialize the tracker when a new track is started
-        if self.tracking_frame_counter == 0:
-            # initialize the tracker
-            # initialize the PID controller
-            pass
-
-        # crop the image, resize the image
-        # [to fill]
-
-        # get the location
-        [x,y] = self.tracker_xy.track(image)
-        z = self.track_z.track(image)
-
-        # get motion commands
-        dx = self.pid_controller_x.get_actuation(x)
-        dy = self.pid_controller_y.get_actuation(y)
-        dz = self.pid_controller_z.get_actuation(z)
-
-        # read current location from the microcontroller
-        current_stage_position = self.microcontroller.read_received_packet()
-
-        # save the coordinate information (possibly enqueue image for saving here to if a separate ImageSaver object is being used) before the next movement
-        # [to fill]
-
-        # generate motion commands
-        motion_commands = self.generate_motion_commands(self,dx,dy,dz)
-
-        # send motion commands
-        self.microcontroller.send_command(motion_commands)
-
-    def start_a_new_track(self):
-        self.tracking_frame_counter = 0
-    """
 
 
 class TrackingWorker(QObject):
@@ -2915,6 +2820,7 @@ class TrackingWorker(QObject):
 
     def __init__(self, trackingController: TrackingController):
         QObject.__init__(self)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.trackingController = trackingController
 
         self.camera: AbstractCamera = self.trackingController.camera
@@ -2965,7 +2871,7 @@ class TrackingWorker(QObject):
 
         # tracking loop
         while not self.trackingController.flag_stop_tracking_requested:
-            print("tracking_frame_counter: " + str(tracking_frame_counter))
+            self._log.info("tracking_frame_counter: " + str(tracking_frame_counter))
             if tracking_frame_counter == 0:
                 is_first_frame = True
             else:
@@ -2981,10 +2887,10 @@ class TrackingWorker(QObject):
             # do autofocus
             if self.trackingController.flag_AF_enabled and tracking_frame_counter > 1:
                 # do autofocus
-                print(">>> autofocus")
+                self._log.info(">>> autofocus")
                 self.autofocusController.autofocus()
                 self.autofocusController.wait_till_autofocus_has_completed()
-                print(">>> autofocus completed")
+                self._log.info(">>> autofocus completed")
 
             # get current position
             pos = self.stage.get_pos()
@@ -3040,7 +2946,7 @@ class TrackingWorker(QObject):
             # track
             object_found, centroid, rect_pts = self.tracker.track(image, None, is_first_frame=is_first_frame)
             if not object_found:
-                print("tracker: object not found")
+                self._log.error("tracker: object not found")
                 break
             in_plane_position_error_pixel = image_center - centroid
             in_plane_position_error_mm = (
@@ -3109,6 +3015,7 @@ class ImageDisplayWindow(QMainWindow):
         autoLevels=False,
     ):
         super().__init__()
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.liveController = liveController
         self.contrastManager = contrastManager
         self.setWindowTitle(window_title)
@@ -3307,7 +3214,7 @@ class ImageDisplayWindow(QMainWindow):
 
     def set_autolevel(self, enabled):
         self.autoLevels = enabled
-        print("set autolevel to " + str(enabled))
+        self._log.info("set autolevel to " + str(enabled))
 
 
 class NavigationViewer(QFrame):
@@ -3471,11 +3378,11 @@ class NavigationViewer(QFrame):
         if image_path is None or not os.path.exists(image_path):
             # Look for a custom wellplate image
             custom_image_path = os.path.join("images", self.sample + ".png")
-            print(custom_image_path)
+            self._log.info(custom_image_path)
             if os.path.exists(custom_image_path):
                 image_path = custom_image_path
             else:
-                print(f"Warning: Image not found for {sample}. Using default image.")
+                self._log.warning(f"Image not found for {sample}. Using default image.")
                 image_path = self.image_paths.get("glass slide")  # Use a default image
 
         self.load_background_image(image_path)
@@ -4025,7 +3932,7 @@ class ScanCoordinates(QObject):
 
     def get_selected_wells(self):
         # get selected wells from the widget
-        print("getting selected wells for acquisition")
+        self._log.info("getting selected wells for acquisition")
         if not self.well_selector or self.format == "glass slide":
             return None
 
@@ -4095,11 +4002,11 @@ class ScanCoordinates(QObject):
                     self.region_shapes[region_name] = "Manual"
                     self.region_fov_coordinates[region_name] = scan_coordinates
                     manual_region_added = True
-                    print(f"Added Manual Region: {region_name}")
+                    self._log.info(f"Added Manual Region: {region_name}")
             if manual_region_added:
                 self.signal_scan_coordinates_updated.emit()
         else:
-            print("No Manual ROI found")
+            self._log.info("No Manual ROI found")
 
     def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
         """add region based on user inputs"""
@@ -4193,7 +4100,7 @@ class ScanCoordinates(QObject):
         self.region_centers[well_id] = [float(center_x), float(center_y), float(self.stage.get_pos().z_mm)]
         self.region_fov_coordinates[well_id] = scan_coordinates
         self.signal_scan_coordinates_updated.emit()
-        print(f"Added Region: {well_id}")
+        self._log.info(f"Added Region: {well_id}")
 
     def remove_region(self, well_id):
         if well_id in self.region_centers:
@@ -4207,7 +4114,7 @@ class ScanCoordinates(QObject):
                 for coord in region_scan_coordinates:
                     self.navigationViewer.deregister_fov_to_image(coord[0], coord[1])
 
-            print(f"Removed Region: {well_id}")
+            self._log.info(f"Removed Region: {well_id}")
             self.signal_scan_coordinates_updated.emit()
 
     def clear_regions(self):
@@ -4216,7 +4123,7 @@ class ScanCoordinates(QObject):
         self.region_fov_coordinates.clear()
         self.navigationViewer.clear_overlay()
         self.signal_scan_coordinates_updated.emit()
-        print("Cleared All Regions")
+        self._log.info("Cleared All Regions")
 
     def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
         """Convert grid parameters NX, NY to FOV coordinates based on overlap"""
@@ -4243,12 +4150,12 @@ class ScanCoordinates(QObject):
 
         # Region coordinates are already centered since center_x, center_y is grid center
         if scan_coordinates:  # Only add region if there are valid coordinates
-            print(f"Added Flexible Region: {region_id}")
+            self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
             self.region_fov_coordinates[region_id] = scan_coordinates
             self.signal_scan_coordinates_updated.emit()
         else:
-            print(f"Region Out of Bounds: {region_id}")
+            self._log.info(f"Region Out of Bounds: {region_id}")
 
     def add_flexible_region_with_step_size(self, region_id, center_x, center_y, center_z, Nx, Ny, dx, dy):
         """Convert grid parameters NX, NY to FOV coordinates based on dx, dy"""
@@ -4270,7 +4177,7 @@ class ScanCoordinates(QObject):
             scan_coordinates.extend(row)
 
         if scan_coordinates:  # Only add region if there are valid coordinates
-            print(f"Added Flexible Region: {region_id}")
+            self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
             self.region_fov_coordinates[region_id] = scan_coordinates
             self.signal_scan_coordinates_updated.emit()
@@ -4280,7 +4187,7 @@ class ScanCoordinates(QObject):
     def add_manual_region(self, shape_coords, overlap_percent):
         """Add region from manually drawn polygon shape"""
         if shape_coords is None or len(shape_coords) < 3:
-            print("Invalid manual ROI data")
+            self._log.error("Invalid manual ROI data")
             return []
 
         pixel_size_um = self.objectiveStore.get_pixel_size()
@@ -4292,7 +4199,7 @@ class ScanCoordinates(QObject):
         if shape_coords.ndim == 1:
             shape_coords = shape_coords.reshape(-1, 2)
         elif shape_coords.ndim > 2:
-            print(f"Unexpected shape of manual_shape: {shape_coords.shape}")
+            self._log.error(f"Unexpected shape of manual_shape: {shape_coords.shape}")
             return []
 
         # Calculate bounding box
@@ -4426,7 +4333,7 @@ class ScanCoordinates(QObject):
         )
 
     def sort_coordinates(self):
-        print(f"Acquisition pattern: {self.acquisition_pattern}")
+        self._log.info(f"Acquisition pattern: {self.acquisition_pattern}")
 
         if len(self.region_centers) <= 1:
             return
@@ -4529,7 +4436,7 @@ class ScanCoordinates(QObject):
             else:
                 self.region_centers[region_id].append(new_z)
 
-        print(f"Updated z-level to {new_z} for region:{region_id}, fov:{fov}")
+        self._log.info(f"Updated z-level to {new_z} for region:{region_id}, fov:{fov}")
 
 
 from scipy.interpolate import SmoothBivariateSpline, RBFInterpolator
@@ -4539,6 +4446,7 @@ class FocusMap:
     """Handles fitting and interpolation of slide surfaces through measured focus points"""
 
     def __init__(self, smoothing_factor=0.1):
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.smoothing_factor = smoothing_factor
         self.surface_fit = None
         self.method = "spline"  # can be 'spline' or 'rbf'
@@ -4637,7 +4545,7 @@ class FocusMap:
                     x, y, z, kx=3, ky=3, s=self.smoothing_factor  # cubic spline in x  # cubic spline in y
                 )
             except Exception as e:
-                print(f"Spline fitting failed: {str(e)}, falling back to RBF")
+                self._log.exception(f"Spline fitting failed: {str(e)}, falling back to RBF")
                 self.method = "rbf"
                 self._fit_rbf(x, y, z)
         else:
@@ -4869,8 +4777,12 @@ class LaserAutofocusController(QObject):
             bool: True if calibration successful, False otherwise
         """
         # Calibrate pixel-to-um conversion
-        self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_on_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Faield to turn on AF laser before pixel to um calibration, cannot continue!")
+            return False
 
         # Move to first position and measure
         if self.piezo is not None:
@@ -4884,8 +4796,12 @@ class LaserAutofocusController(QObject):
         result = self._get_laser_spot_centroid()
         if result is None:
             self._log.error("Failed to find laser spot during calibration (position 1)")
-            self.microcontroller.turn_off_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            try:
+                self.microcontroller.turn_off_AF_laser()
+                self.microcontroller.wait_till_operation_is_completed()
+            except TimeoutError:
+                self._log.exception("Error turning off AF laser after spot calibration failure (position 1)")
+                # Just fall through since we are already on a failure path.
             return False
         x0, y0 = result
 
@@ -4896,13 +4812,22 @@ class LaserAutofocusController(QObject):
         result = self._get_laser_spot_centroid()
         if result is None:
             self._log.error("Failed to find laser spot during calibration (position 2)")
-            self.microcontroller.turn_off_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            try:
+                self.microcontroller.turn_off_AF_laser()
+                self.microcontroller.wait_till_operation_is_completed()
+            except TimeoutError:
+                self._log.exception("Error turning off AF laser after spot calibration failure (position 2)")
+                # Just fall through since we are already on a failure path.
             return False
         x1, y1 = result
 
-        self.microcontroller.turn_off_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_off_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception(
+                "Error turning off AF laser after spot calibration acquisition.  Continuing in unknown state"
+            )
 
         # move back to initial position
         if self.piezo is not None:
@@ -4953,27 +4878,39 @@ class LaserAutofocusController(QObject):
         Returns:
             float: Displacement in micrometers, or float('nan') if measurement fails
         """
-        # turn on the laser
-        self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+
+        def finish_with(um: float) -> float:
+            self.signal_displacement_um.emit(um)
+            return um
+
+        try:
+            # turn on the laser
+            self.microcontroller.turn_on_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Turning on AF laser timed out, failed to measure displacement.")
+            return finish_with(float("nan"))
 
         # get laser spot location
         result = self._get_laser_spot_centroid()
 
         # turn off the laser
-        self.microcontroller.turn_off_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_off_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Turning off AF laser timed out!  We got a displacement but laser may still be on.")
+            # Continue with the measurement, but we're essentially in an unknown / weird state here.  It's not clear
+            # what we should do.
 
         if result is None:
             self._log.error("Failed to detect laser spot during displacement measurement")
-            self.signal_displacement_um.emit(float("nan"))  # Signal invalid measurement
-            return float("nan")
+            return finish_with(float("nan"))  # Signal invalid measurement
 
         x, y = result
         # calculate displacement
         displacement_um = (x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
-        self.signal_displacement_um.emit(displacement_um)
-        return displacement_um
+        return finish_with(displacement_um)
 
     def move_to_target(self, target_um: float) -> bool:
         """Move the stage to reach a target displacement from reference position.
@@ -5016,23 +4953,6 @@ class LaserAutofocusController(QObject):
             self._log.info("Cross correlation check passed - spots are well aligned")
             return True
 
-        """
-        # Verify we reached the target
-        final_displacement = self.measure_displacement()
-        if math.isnan(final_displacement):
-            self._log.error("Failed to verify final position")
-            # move back to the current position
-            self.stage.move_z(-um_to_move / 1000)
-            return False
-        if abs(final_displacement - target_um) > self.DISPLACEMENT_SUCCESS_WINDOW_UM:
-            self._log.warning(f"Final displacement ({final_displacement:.1f} μm) is out of the success window ({self.DISPLACEMENT_SUCCESS_WINDOW_UM:.1f} μm)")
-            # move back to the current position
-            self.stage.move_z(-um_to_move / 1000)
-            return False
-        else:
-            self._log.info(f"Final displacement ({final_displacement:.1f} μm) is within the success window ({self.DISPLACEMENT_SUCCESS_WINDOW_UM:.1f} μm)")
-            return True
-        """
 
     def _move_z(self, um_to_move: float) -> None:
         if self.piezo is not None:
@@ -5052,16 +4972,24 @@ class LaserAutofocusController(QObject):
             bool: True if reference was set successfully, False if spot detection failed
         """
         # turn on the laser
-        self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_on_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Failed to turn on AF laser for reference setting!")
+            return False
 
         # get laser spot location and image
         result = self._get_laser_spot_centroid()
         reference_image = self.image
 
         # turn off the laser
-        self.microcontroller.turn_off_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_off_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Failed to turn off AF laser after setting reference, laser is in an unknown state!")
+            # Continue on since we got our reading, but the system is potentially in a weird state!
 
         if result is None or reference_image is None:
             self._log.error("Failed to detect laser spot while setting reference")
@@ -5107,7 +5035,7 @@ class LaserAutofocusController(QObject):
         self.is_initialized = False
         self.load_cached_configuration()
 
-    def _verify_spot_alignment(self) -> Tuple[bool, float]:
+    def _verify_spot_alignment(self) -> Tuple[bool, np.array]:
         """Verify laser spot alignment using cross-correlation with reference image.
 
         Captures current laser spot image and compares it with the reference image
@@ -5117,9 +5045,15 @@ class LaserAutofocusController(QObject):
         Returns:
             bool: True if spots are well aligned (correlation > CORRELATION_THRESHOLD), False otherwise
         """
+        failure_return_value = False, np.array([0.0, 0.0])
+
         # Get current spot image
-        self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_on_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Failed to turn on AF laser for verifying spot alignment.")
+            return failure_return_value
 
         # TODO: create a function to get the current image (taking care of trigger mode checking and laser on/off switching)
         """
@@ -5129,16 +5063,20 @@ class LaserAutofocusController(QObject):
         self._get_laser_spot_centroid()
         current_image = self.image
 
-        self.microcontroller.turn_off_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_off_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Failed to turn off AF laser after verifying spot alignment, laser in unknown state!")
+            # Continue on because we got a reading, but the system is in a potentially weird and unknown state here.
 
         if self.reference_crop is None:
             self._log.warning("No reference crop stored")
-            return False, 0.0
+            return failure_return_value
 
         if current_image is None:
             self._log.error("Failed to get images for cross-correlation check")
-            return False, 0.0
+            return failure_return_value
 
         # Crop and normalize current image
         center_x = int(self.laser_af_properties.x_reference)
@@ -5253,8 +5191,12 @@ class LaserAutofocusController(QObject):
             Optional[np.ndarray]: The captured image, or None if capture failed
         """
         # turn on the laser
-        self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_on_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Failed to turn on laser AF laser before get_image, cannot get image.")
+            return None
 
         try:
             # send trigger, grab image and display image
@@ -5274,8 +5216,11 @@ class LaserAutofocusController(QObject):
 
         finally:
             # turn off the laser
-            self.microcontroller.turn_off_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            try:
+                self.microcontroller.turn_off_AF_laser()
+                self.microcontroller.wait_till_operation_is_completed()
+            except TimeoutError:
+                self._log.exception("Failed to turn off AF laser after get_image!")
 
     def clear_reference(self):
         """Clear reference position"""
