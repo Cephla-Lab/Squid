@@ -12,16 +12,20 @@ def main(args):
     end_time = time.time() + args.runtime
 
     loop_count = 0
+    start_time = time.time()
+    last_loop_end = time.time()
     while time.time() < end_time:
-        loop_count += 1
-        if loop_count % args.report_interval == 0:
-            log.info(f"Loop count {loop_count}")
         if args.laser_af:
             micro.turn_on_AF_laser()
             micro.wait_till_operation_is_completed()
             micro.turn_off_AF_laser()
             micro.wait_till_operation_is_completed()
         time.sleep(0)
+
+        loop_count += 1
+        if loop_count % args.report_interval == 0:
+            log.info(f"Loop count {loop_count}, last loop time [s]: {time.time() - last_loop_end}, avg time per loop [s]: {(time.time() - start_time) / loop_count}")
+        last_loop_end = time.time()
 
 if __name__ == "__main__":
     import argparse
