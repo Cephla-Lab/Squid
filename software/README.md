@@ -73,6 +73,7 @@ sh ./install_hamamatsu.sh
 
 <details>
 <summary>Installing drivers and libraries for iDS camera support</summary>
+
 - Software:
 
 Go to iDS's page for downloading their software (https://en.ids-imaging.com/download-details/1009877.html?os=linux&version=&bus=64&floatcalc=). Register and log in.
@@ -122,6 +123,17 @@ After installation, run the following to log out
 ```
 exit
 ```
+
+</details>
+
+<details>
+<summary>Installing drivers and libraries for Kinetix camera support</summary>
+
+Open the `software/drivers and libraries/photometrics` folder in terminal and run the following command
+```
+sh ./install_photometrics.sh
+```
+Follow the instructions during the installation.
 
 </details>
 

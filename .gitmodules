@@ -1,0 +1,3 @@
+[submodule "software/fluidics_v2"]
+	path = software/fluidics_v2
+	url = https://github.com/Alpaca233/fluidics_v2.git

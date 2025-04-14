@@ -571,7 +571,7 @@ class Camera(object):
         else:
             # TODO(imo): Propagate these errors in some way and handle
             if self.is_streaming == False:
-                self.logger.error("trigger not sent - camera is not streaming")
+                self.log.error("trigger not sent - camera is not streaming")
             else:
                 pass
 
