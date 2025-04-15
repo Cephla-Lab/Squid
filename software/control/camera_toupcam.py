@@ -83,7 +83,7 @@ class Camera(object):
     def __init__(
         self,
         sn=None,
-        binning=(CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_X, CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_Y),
+        binning=(CAMERA_CONFIG.BINNING_FACTOR_DEFAULT, CAMERA_CONFIG.BINNING_FACTOR_DEFAULT),
         is_global_shutter=False,
         rotate_image_angle=None,
         flip_image=None,
@@ -811,7 +811,14 @@ class Camera(object):
 
 class Camera_Simulation(object):
 
-    def __init__(self, sn=None, is_global_shutter=False, rotate_image_angle=None, flip_image=None):
+    def __init__(
+        self,
+        sn=None,
+        binning=(CAMERA_CONFIG.BINNING_FACTOR_DEFAULT, CAMERA_CONFIG.BINNING_FACTOR_DEFAULT),
+        is_global_shutter=False,
+        rotate_image_angle=None,
+        flip_image=None,
+    ):
         self.log = squid.logging.get_logger(self.__class__.__name__)
         # many to be purged
         self.sn = sn
@@ -862,6 +869,12 @@ class Camera_Simulation(object):
         )
 
         self.pixel_format = "MONO16"
+        self.binning = binning
+        self.binning_res = {
+            (1, 1): (6224, 4168),
+            (2, 2): (3104, 2084),
+            (3, 3): (2064, 1386),
+        }
 
         self.Width = Acquisition.CROP_WIDTH
         self.Height = Acquisition.CROP_HEIGHT
@@ -929,6 +942,12 @@ class Camera_Simulation(object):
         self.pixel_format = pixel_format
         self.log.debug(f"Pixel format: {pixel_format}")
         self.frame_ID = 0
+
+    def set_binning(self, binning_factor_x, binning_factor_y):
+        if (binning_factor_x, binning_factor_y) not in [(1, 1), (2, 2), (3, 3)]:
+            raise ValueError(f"Invalid binning factor: {binning_factor_x}, {binning_factor_y}")
+        else:
+            self.binning = (binning_factor_x, binning_factor_y)
 
     def get_temperature(self):
         return 0

@@ -228,7 +228,7 @@ class CAMERA_CONFIG:
     ROI_OFFSET_Y_DEFAULT = 0
     ROI_WIDTH_DEFAULT = 3104
     ROI_HEIGHT_DEFAULT = 2084
-    BINNING_FACTOR_DEFAULT = (1, 1)
+    BINNING_FACTOR_DEFAULT = 1
     CAMERA_CROP_WIDTH = None  # In pixels without binning
     CAMERA_CROP_HEIGHT = None  # In pixels without binning
     # We will use ROI for cropping fov in the future. Right now it's handled by StreamHandler.
