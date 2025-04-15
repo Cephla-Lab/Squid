@@ -4878,8 +4878,12 @@ class LaserAutofocusController(QObject):
             bool: True if calibration successful, False otherwise
         """
         # Calibrate pixel-to-um conversion
-        self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_on_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Faield to turn on AF laser before pixel to um calibration, cannot continue!")
+            return False
 
         # Move to first position and measure
         if self.piezo is not None:
@@ -4893,8 +4897,12 @@ class LaserAutofocusController(QObject):
         result = self._get_laser_spot_centroid()
         if result is None:
             self._log.error("Failed to find laser spot during calibration (position 1)")
-            self.microcontroller.turn_off_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            try:
+                self.microcontroller.turn_off_AF_laser()
+                self.microcontroller.wait_till_operation_is_completed()
+            except TimeoutError:
+                self._log.exception("Error turning off AF laser after spot calibration failure (position 1)")
+                # Just fall through since we are already on a failure path.
             return False
         x0, y0 = result
 
@@ -4905,13 +4913,22 @@ class LaserAutofocusController(QObject):
         result = self._get_laser_spot_centroid()
         if result is None:
             self._log.error("Failed to find laser spot during calibration (position 2)")
-            self.microcontroller.turn_off_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            try:
+                self.microcontroller.turn_off_AF_laser()
+                self.microcontroller.wait_till_operation_is_completed()
+            except TimeoutError:
+                self._log.exception("Error turning off AF laser after spot calibration failure (position 2)")
+                # Just fall through since we are already on a failure path.
             return False
         x1, y1 = result
 
-        self.microcontroller.turn_off_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_off_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception(
+                "Error turning off AF laser after spot calibration acquisition.  Continuing in unknown state"
+            )
 
         # move back to initial position
         if self.piezo is not None:
@@ -4962,27 +4979,39 @@ class LaserAutofocusController(QObject):
         Returns:
             float: Displacement in micrometers, or float('nan') if measurement fails
         """
-        # turn on the laser
-        self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+
+        def finish_with(um: float) -> float:
+            self.signal_displacement_um(um)
+            return um
+
+        try:
+            # turn on the laser
+            self.microcontroller.turn_on_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Turning on AF laser timed out, failed to measure displacement.")
+            return finish_with(float("nan"))
 
         # get laser spot location
         result = self._get_laser_spot_centroid()
 
         # turn off the laser
-        self.microcontroller.turn_off_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_off_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Turning off AF laser timed out!  We got a displacement but laser may still be on.")
+            # Continue with the measurement, but we're essentially in an unknown / weird state here.  It's not clear
+            # what we should do.
 
         if result is None:
             self._log.error("Failed to detect laser spot during displacement measurement")
-            self.signal_displacement_um.emit(float("nan"))  # Signal invalid measurement
-            return float("nan")
+            return finish_with(float("nan"))  # Signal invalid measurement
 
         x, y = result
         # calculate displacement
         displacement_um = (x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
-        self.signal_displacement_um.emit(displacement_um)
-        return displacement_um
+        return finish_with(displacement_um)
 
     def move_to_target(self, target_um: float) -> bool:
         """Move the stage to reach a target displacement from reference position.
@@ -5061,16 +5090,24 @@ class LaserAutofocusController(QObject):
             bool: True if reference was set successfully, False if spot detection failed
         """
         # turn on the laser
-        self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_on_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Failed to turn on AF laser for reference setting!")
+            return False
 
         # get laser spot location and image
         result = self._get_laser_spot_centroid()
         reference_image = self.image
 
         # turn off the laser
-        self.microcontroller.turn_off_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_off_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Failed to turn off AF laser after setting reference, laser is in an unknown state!")
+            # Continue on since we got our reading, but the system is potentially in a weird state!
 
         if result is None or reference_image is None:
             self._log.error("Failed to detect laser spot while setting reference")
@@ -5126,9 +5163,15 @@ class LaserAutofocusController(QObject):
         Returns:
             bool: True if spots are well aligned (correlation > CORRELATION_THRESHOLD), False otherwise
         """
+        failure_return_value = False, 0.0
+
         # Get current spot image
-        self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_on_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Failed to turn on AF laser for verifying spot alignment.")
+            return failure_return_value
 
         # TODO: create a function to get the current image (taking care of trigger mode checking and laser on/off switching)
         """
@@ -5138,16 +5181,20 @@ class LaserAutofocusController(QObject):
         self._get_laser_spot_centroid()
         current_image = self.image
 
-        self.microcontroller.turn_off_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_off_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Failed to turn off AF laser after verifying spot alignment, laser in unknown state!")
+            # Continue on because we got a reading, but the system is in a potentially weird and unknown state here.
 
         if self.reference_crop is None:
             self._log.warning("No reference crop stored")
-            return False, 0.0
+            return failure_return_value
 
         if current_image is None:
             self._log.error("Failed to get images for cross-correlation check")
-            return False, 0.0
+            return failure_return_value
 
         # Crop and normalize current image
         center_x = int(self.laser_af_properties.x_reference)
@@ -5265,8 +5312,12 @@ class LaserAutofocusController(QObject):
             Optional[np.ndarray]: The captured image, or None if capture failed
         """
         # turn on the laser
-        self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        try:
+            self.microcontroller.turn_on_AF_laser()
+            self.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.exception("Failed to turn on laser AF laser before get_image, cannot get image.")
+            return None
 
         try:
             # send trigger, grab image and display image
@@ -5286,8 +5337,11 @@ class LaserAutofocusController(QObject):
 
         finally:
             # turn off the laser
-            self.microcontroller.turn_off_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            try:
+                self.microcontroller.turn_off_AF_laser()
+                self.microcontroller.wait_till_operation_is_completed()
+            except TimeoutError:
+                self._log.exception("Failed to turn off AF laser after get_image!")
 
     def clear_reference(self):
         """Clear reference position"""
