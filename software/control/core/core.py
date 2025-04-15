@@ -4926,7 +4926,9 @@ class LaserAutofocusController(QObject):
             self.microcontroller.turn_off_AF_laser()
             self.microcontroller.wait_till_operation_is_completed()
         except TimeoutError:
-            self._log.exception("Error turning off AF laser after spot calibration acquisition.  Continuing in unknown state")
+            self._log.exception(
+                "Error turning off AF laser after spot calibration acquisition.  Continuing in unknown state"
+            )
 
         # move back to initial position
         if self.piezo is not None:
@@ -4977,6 +4979,7 @@ class LaserAutofocusController(QObject):
         Returns:
             float: Displacement in micrometers, or float('nan') if measurement fails
         """
+
         def finish_with(um: float) -> float:
             self.signal_displacement_um(um)
             return um
@@ -5003,7 +5006,7 @@ class LaserAutofocusController(QObject):
 
         if result is None:
             self._log.error("Failed to detect laser spot during displacement measurement")
-            return finish_with(float("nan")) # Signal invalid measurement
+            return finish_with(float("nan"))  # Signal invalid measurement
 
         x, y = result
         # calculate displacement
