@@ -2651,8 +2651,8 @@ class TrackingController(QObject):
 
         self.tracking_time_interval_s = 0
 
-        self.crop_width = int(CAMERA_CONFIG.CAMERA_CROP_WIDTH / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_X)
-        self.crop_height = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_Y)
+        self.crop_width = int(CAMERA_CONFIG.CAMERA_CROP_WIDTH / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT)
+        self.crop_height = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT)
         self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
@@ -3279,7 +3279,7 @@ class NavigationViewer(QFrame):
         self.location_update_threshold_mm = 0.2
         self.box_color = (255, 0, 0)
         self.box_line_thickness = 2
-        self.acquisition_size = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_Y)
+        self.acquisition_size = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT)
         self.x_mm = None
         self.y_mm = None
         self.image_paths = {
