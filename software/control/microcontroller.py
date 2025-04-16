@@ -75,6 +75,13 @@ class AbstractCephlaMicroSerial(abc.ABC):
         pass
 
     @abstractmethod
+    def reset_input_buffer(self) -> bool:
+        """
+        Reset the input buffer of the serial port.
+        """
+        pass
+
+    @abstractmethod
     def write(self, data: bytearray, reconnect_tries: int = 0) -> int:
         """
         This must raise an IOError or OSError on any io issues, or ValueError if data is not sendable.
@@ -220,8 +227,8 @@ class SimSerial(AbstractCephlaMicroSerial):
 
         self._update_internal_state()
 
-    def _update_internal_state(self):
-        if self._closed:
+    def _update_internal_state(self, clear_buffer: bool = False):
+        if clear_buffer:
             self.response_buffer.clear()
 
         self._in_waiting = len(self.response_buffer)
@@ -229,7 +236,12 @@ class SimSerial(AbstractCephlaMicroSerial):
     def close(self):
         with self._update_lock:
             self._closed = True
-            self._update_internal_state()
+            self._update_internal_state(clear_buffer=True)
+
+    def reset_input_buffer(self) -> bool:
+        with self._update_lock:
+            self._update_internal_state(clear_buffer=True)
+            return True
 
     def write(self, data: bytearray, reconnect_tries: int = 0) -> int:
         # Reconnect takes the lock and checks closed too, so let it handle locking for reconnect
@@ -274,7 +286,7 @@ class SimSerial(AbstractCephlaMicroSerial):
 
             if self._closed:
                 self._log.warning("Reconnect required, succeeded.")
-                self._update_internal_state()
+                self._update_internal_state(clear_buffer=True)
                 self._closed = False
 
         return True
@@ -308,6 +320,14 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
 
     def close(self) -> None:
         return self._serial.close()
+
+    def reset_input_buffer(self) -> bool:
+        try:
+            self._serial.reset_input_buffer()
+            return True
+        except Exception as e:
+            self._log.exception(f"Failed to clear input buffer: {e}")
+            return False
 
     def write(self, data: bytearray, reconnect_tries: int = 0) -> int:
         # the is_open attribute is unreliable - if a device just recently dropped out, it may not be up to date.
@@ -1008,7 +1028,8 @@ class Microcontroller:
                     # Sleep a negligible amount of time just to give other threads time to run.  Otherwise,
                     # we run the rise of spinning forever here and not letting progress happen elsewhere.
                     time.sleep(0.0001)
-
+                    if self._serial.bytes_available() == BUFFER_SIZE_LIMIT:
+                        self._serial.reset_input_buffer()
                     if not self._serial.is_open():
                         if not self._serial.reconnect(attempts=Microcontroller.MAX_RECONNECT_COUNT):
                             self.log.error(

@@ -1,7 +1,9 @@
 # set QT_API environment variable
 import os
 import sys
+import tempfile
 
+import control._def
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import AbstractStage
@@ -24,6 +26,7 @@ if DO_FLUORESCENCE_RTP:
     from control.multipoint_built_in_functionalities import malaria_rtp
 
 import control.utils as utils
+import control.utils_acquisition as utils_acquisition
 import control.utils_channel as utils_channel
 import control.utils_config as utils_config
 import control.tracking as tracking
@@ -157,68 +160,65 @@ class StreamHandler(QObject):
         print(self.display_resolution_scaling)
 
     def on_new_frame(self, camera):
+        camera.image_locked = True
+        self.handler_busy = True
+        self.signal_new_frame_received.emit()  # self.liveController.turn_off_illumination()
 
-        if camera.is_live:
+        # measure real fps
+        timestamp_now = round(time.time())
+        if timestamp_now == self.timestamp_last:
+            self.counter = self.counter + 1
+        else:
+            self.timestamp_last = timestamp_now
+            self.fps_real = self.counter
+            self.counter = 0
+            if PRINT_CAMERA_FPS:
+                print("real camera fps is " + str(self.fps_real))
 
-            camera.image_locked = True
-            self.handler_busy = True
-            self.signal_new_frame_received.emit()  # self.liveController.turn_off_illumination()
+        # moved down (so that it does not modify the camera.current_frame, which causes minor problems for simulation) - 1/30/2022
+        # # rotate and flip - eventually these should be done in the camera
+        # camera.current_frame = utils.rotate_and_flip_image(camera.current_frame,rotate_image_angle=camera.rotate_image_angle,flip_image=camera.flip_image)
 
-            # measure real fps
-            timestamp_now = round(time.time())
-            if timestamp_now == self.timestamp_last:
-                self.counter = self.counter + 1
-            else:
-                self.timestamp_last = timestamp_now
-                self.fps_real = self.counter
-                self.counter = 0
-                if PRINT_CAMERA_FPS:
-                    print("real camera fps is " + str(self.fps_real))
+        # crop image
+        image_cropped = utils.crop_image(camera.current_frame, self.crop_width, self.crop_height)
+        image_cropped = np.squeeze(image_cropped)
 
-            # moved down (so that it does not modify the camera.current_frame, which causes minor problems for simulation) - 1/30/2022
-            # # rotate and flip - eventually these should be done in the camera
-            # camera.current_frame = utils.rotate_and_flip_image(camera.current_frame,rotate_image_angle=camera.rotate_image_angle,flip_image=camera.flip_image)
+        # # rotate and flip - moved up (1/10/2022)
+        # image_cropped = utils.rotate_and_flip_image(image_cropped,rotate_image_angle=ROTATE_IMAGE_ANGLE,flip_image=FLIP_IMAGE)
+        # added on 1/30/2022
+        # @@@ to move to camera
+        image_cropped = utils.rotate_and_flip_image(
+            image_cropped, rotate_image_angle=camera.rotate_image_angle, flip_image=camera.flip_image
+        )
 
-            # crop image
-            image_cropped = utils.crop_image(camera.current_frame, self.crop_width, self.crop_height)
-            image_cropped = np.squeeze(image_cropped)
-
-            # # rotate and flip - moved up (1/10/2022)
-            # image_cropped = utils.rotate_and_flip_image(image_cropped,rotate_image_angle=ROTATE_IMAGE_ANGLE,flip_image=FLIP_IMAGE)
-            # added on 1/30/2022
-            # @@@ to move to camera
-            image_cropped = utils.rotate_and_flip_image(
-                image_cropped, rotate_image_angle=camera.rotate_image_angle, flip_image=camera.flip_image
-            )
-
-            # send image to display
-            time_now = time.time()
-            if time_now - self.timestamp_last_display >= 1 / self.fps_display:
-                self.image_to_display.emit(
-                    utils.crop_image(
-                        image_cropped,
-                        round(self.crop_width * self.display_resolution_scaling),
-                        round(self.crop_height * self.display_resolution_scaling),
-                    )
+        # send image to display
+        time_now = time.time()
+        if time_now - self.timestamp_last_display >= 1 / self.fps_display:
+            self.image_to_display.emit(
+                utils.crop_image(
+                    image_cropped,
+                    round(self.crop_width * self.display_resolution_scaling),
+                    round(self.crop_height * self.display_resolution_scaling),
                 )
-                self.timestamp_last_display = time_now
+            )
+            self.timestamp_last_display = time_now
 
-            # send image to write
-            if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
-                if camera.is_color:
-                    image_cropped = cv2.cvtColor(image_cropped, cv2.COLOR_RGB2BGR)
-                self.packet_image_to_write.emit(image_cropped, camera.frame_ID, camera.timestamp)
-                self.timestamp_last_save = time_now
+        # send image to write
+        if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
+            if camera.is_color:
+                image_cropped = cv2.cvtColor(image_cropped, cv2.COLOR_RGB2BGR)
+            self.packet_image_to_write.emit(image_cropped, camera.frame_ID, camera.timestamp)
+            self.timestamp_last_save = time_now
 
-            # send image to track
-            if self.track_flag and time_now - self.timestamp_last_track >= 1 / self.fps_track:
-                # track is a blocking operation - it needs to be
-                # @@@ will cropping before emitting the signal lead to speedup?
-                self.packet_image_for_tracking.emit(image_cropped, camera.frame_ID, camera.timestamp)
-                self.timestamp_last_track = time_now
+        # send image to track
+        if self.track_flag and time_now - self.timestamp_last_track >= 1 / self.fps_track:
+            # track is a blocking operation - it needs to be
+            # @@@ will cropping before emitting the signal lead to speedup?
+            self.packet_image_for_tracking.emit(image_cropped, camera.frame_ID, camera.timestamp)
+            self.timestamp_last_track = time_now
 
-            self.handler_busy = False
-            camera.image_locked = False
+        self.handler_busy = False
+        camera.image_locked = False
 
 
 class ImageSaver(QObject):
@@ -611,7 +611,6 @@ class LiveController(QObject):
 
     def start_live(self):
         self.is_live = True
-        self.camera.is_live = True
         self.camera.start_streaming()
         if self.trigger_mode == TriggerMode.SOFTWARE or (
             self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
@@ -625,7 +624,6 @@ class LiveController(QObject):
     def stop_live(self):
         if self.is_live:
             self.is_live = False
-            self.camera.is_live = False
             if hasattr(self.camera, "stop_exposure"):
                 self.camera.stop_exposure()
             if self.trigger_mode == TriggerMode.SOFTWARE:
@@ -808,8 +806,8 @@ class SlidePositionControlWorker(QObject):
                 timestamp_start = time.time()
                 # x needs to be at > + 20 mm when homing y
                 self.stage.move_x(20)
-                self.stage.home(y=True)
-                self.stage.home(x=True)
+                self.stage.home(x=False, y=True, z=False, theta=False)
+                self.stage.home(x=True, y=False, z=False, theta=False)
 
                 self.slidePositionController.homing_done = True
             # homing done previously
@@ -829,13 +827,13 @@ class SlidePositionControlWorker(QObject):
             # for glass slide
             if self.slidePositionController.homing_done == False or SLIDE_POTISION_SWITCHING_HOME_EVERYTIME:
                 if self.home_x_and_y_separately:
-                    self.stage.home(x=True)
+                    self.stage.home(x=True, y=False, z=False, theta=False)
                     self.stage.move_x_to(SLIDE_POSITION.LOADING_X_MM)
 
-                    self.stage.home(y=True)
+                    self.stage.home(x=False, y=True, z=False, theta=False)
                     self.stage.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
                 else:
-                    self.stage.home(x=True, y=True)
+                    self.stage.home(x=True, y=True, z=False, theta=False)
 
                     self.stage.move_x_to(SLIDE_POSITION.LOADING_X_MM)
                     self.stage.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
@@ -865,9 +863,9 @@ class SlidePositionControlWorker(QObject):
                 # x needs to be at > + 20 mm when homing y
                 self.stage.move_x_to(20)
                 # home y
-                self.stage.home(y=True)
+                self.stage.home(x=False, y=True, z=False, theta=False)
                 # home x
-                self.stage.home(x=True)
+                self.stage.home(x=True, y=False, z=False, theta=False)
                 self.slidePositionController.homing_done = True
 
                 # move to scanning position
@@ -879,14 +877,14 @@ class SlidePositionControlWorker(QObject):
         else:
             if self.slidePositionController.homing_done == False or SLIDE_POTISION_SWITCHING_HOME_EVERYTIME:
                 if self.home_x_and_y_separately:
-                    self.stage.home(y=True)
+                    self.stage.home(x=False, y=True, z=False, theta=False)
 
                     self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
 
-                    self.stage.home(x=True)
+                    self.stage.home(x=True, y=False, z=False, theta=False)
                     self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
                 else:
-                    self.stage.home(x=True, y=True)
+                    self.stage.home(x=True, y=True, z=False, theta=False)
 
                     self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
                     self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
@@ -1358,6 +1356,7 @@ class MultiPointWorker(QObject):
         self.z_range = self.multiPointController.z_range
         self.fluidics = self.multiPointController.fluidics
 
+        self.headless = self.multiPointController.headless
         self.microscope = self.multiPointController.parent
         self.performance_mode = self.microscope and self.microscope.performance_mode
 
@@ -1412,14 +1411,14 @@ class MultiPointWorker(QObject):
                 if self.fluidics and self.multiPointController.use_fluidics:
                     self.fluidics.update_port(self.time_point)  # use the port in PORT_LIST
                     # For MERFISH, before imaging, run the first 3 sequences (Add probe, wash buffer, imaging buffer)
-                    self.fluidics.run_sequences(section=BEFORE_IMAGING_SEQUENCES)
+                    self.fluidics.run_before_imaging()
                     self.fluidics.wait_for_completion()
 
                 self.run_single_time_point()
 
                 if self.fluidics and self.multiPointController.use_fluidics:
                     # For MERFISH, after imaging, run the following 2 sequences (Cleavage buffer, SSC rinse)
-                    self.fluidics.run_sequences(section=AFTER_IMAGING_SEQUENCES)
+                    self.fluidics.run_after_imaging()
                     self.fluidics.wait_for_completion()
 
                 self.time_point = self.time_point + 1
@@ -1459,7 +1458,8 @@ class MultiPointWorker(QObject):
             self._log.error(f"Operation timed out during acquisition, aborting acquisition!")
             self._log.error(te)
             self.multiPointController.request_abort_aquisition()
-        self.finished.emit()
+        if not self.headless:
+            self.finished.emit()
 
     def wait_till_operation_is_completed(self):
         while self.microcontroller.is_busy():
@@ -1472,7 +1472,7 @@ class MultiPointWorker(QObject):
         self._log.debug("multipoint acquisition - time point " + str(self.time_point + 1))
 
         # for each time point, create a new folder
-        current_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point))
+        current_path = os.path.join(self.base_path, self.experiment_ID, f"{self.time_point:0{FILE_ID_PADDING}}")
         utils.ensure_directory_exists(current_path)
 
         slide_path = os.path.join(self.base_path, self.experiment_ID)
@@ -1504,18 +1504,6 @@ class MultiPointWorker(QObject):
 
         self.z_pos = self.stage.get_pos().z_mm  # zpos at the beginning of the scan
 
-        # reset piezo to home position
-        if self.use_piezo:
-            self.z_piezo_um = OBJECTIVE_PIEZO_HOME_UM
-            self.piezo.move_to(self.z_piezo_um)
-            # TODO(imo): Not sure the wait comment below is actually correct?  Should this wait just be in the set_piezo_um helper?
-            if (
-                self.liveController.trigger_mode == TriggerMode.SOFTWARE
-            ):  # for hardware trigger, delay is in waiting for the last row to start exposure
-                time.sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-            if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
-                self.signal_z_piezo_um.emit(self.z_piezo_um)
-
     def initialize_coordinates_dataframe(self):
         base_columns = ["z_level", "x (mm)", "y (mm)", "z (um)", "time"]
         piezo_column = ["z_piezo (um)"] if self.use_piezo else []
@@ -1530,7 +1518,7 @@ class MultiPointWorker(QObject):
             "z (um)": [pos.z_mm * 1000],
             "time": [datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")],
         }
-        piezo_data = {"z_piezo (um)": [self.z_piezo_um - OBJECTIVE_PIEZO_HOME_UM]} if self.use_piezo else {}
+        piezo_data = {"z_piezo (um)": [self.z_piezo_um]} if self.use_piezo else {}
 
         new_row = pd.DataFrame({"region": [region_id], "fov": [fov], **base_data, **piezo_data})
 
@@ -1604,9 +1592,10 @@ class MultiPointWorker(QObject):
         pos = self.stage.get_pos()
         x_mm = pos.x_mm
         y_mm = pos.y_mm
+        self.z_piezo_um = self.piezo.position
 
         for z_level in range(self.NZ):
-            file_ID = f"{region_id}_{fov}_{z_level}"
+            file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
 
             acquire_pos = self.stage.get_pos()
             metadata = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
@@ -1622,7 +1611,8 @@ class MultiPointWorker(QObject):
             # iterate through selected modes
             for config_idx, config in enumerate(self.selected_configurations):
 
-                self.handle_z_offset(config, True)
+                if self.NZ == 1:  # TODO: handle z offset for z stack
+                    self.handle_z_offset(config, True)
 
                 # acquire image
                 if "USB Spectrometer" not in config.name and "RGB" not in config.name:
@@ -1632,7 +1622,8 @@ class MultiPointWorker(QObject):
                 else:
                     self.acquire_spectrometer_data(config, file_ID, current_path, z_level)
 
-                self.handle_z_offset(config, False)
+                if self.NZ == 1:  # TODO: handle z offset for z stack
+                    self.handle_z_offset(config, False)
 
                 current_image = (
                     fov * self.NZ * len(self.selected_configurations)
@@ -1641,10 +1632,6 @@ class MultiPointWorker(QObject):
                     + 1
                 )
                 self.signal_region_progress.emit(current_image, self.total_scans)
-
-            # real time processing
-            if self.multiPointController.do_fluorescence_rtp:
-                self.run_real_time_processing(current_round_images, z_level)
 
             # updates coordinates df
             self.update_coordinates_dataframe(region_id, z_level, fov)
@@ -1772,8 +1759,16 @@ class MultiPointWorker(QObject):
 
     def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k):
         # update the current configuration
-        self.signal_current_configuration.emit(config)
-        self.wait_till_operation_is_completed()
+        if not self.performance_mode:
+            self.signal_current_configuration.emit(config)
+            self.wait_till_operation_is_completed()
+        else:
+            # set channel mode directly if in performance mode
+            self.liveController.set_microscope_mode(config)
+            self.liveController.camera.set_exposure_time(config.exposure_time)
+            self.liveController.camera.set_analog_gain(config.analog_gain)
+            self.liveController.set_illumination(config.illumination_source, config.illumination_intensity)
+            self.wait_till_operation_is_completed()
 
         # trigger acquisition (including turning on the illumination) and read frame
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
@@ -1823,7 +1818,8 @@ class MultiPointWorker(QObject):
         self.handle_dpc_generation(current_round_images)
         self.handle_rgb_generation(current_round_images, file_ID, current_path, k)
 
-        QApplication.processEvents()
+        if not self.headless:
+            QApplication.processEvents()
 
     def acquire_rgb_image(self, config, file_ID, current_path, current_round_images, k):
         # go through the channels
@@ -1835,8 +1831,16 @@ class MultiPointWorker(QObject):
         ):
             if config_.name in rgb_channels:
                 # update the current configuration
-                self.signal_current_configuration.emit(config_)
-                self.wait_till_operation_is_completed()
+                if not self.performance_mode:
+                    self.signal_current_configuration.emit(config)
+                    self.wait_till_operation_is_completed()
+                else:
+                    # set channel mode directly if in performance mode
+                    self.liveController.set_microscope_mode(config)
+                    self.liveController.camera.set_exposure_time(config.exposure_time)
+                    self.liveController.camera.set_analog_gain(config.analog_gain)
+                    self.liveController.set_illumination(config.illumination_source, config.illumination_intensity)
+                    self.wait_till_operation_is_completed()
 
                 # trigger acquisition (including turning on the illumination)
                 if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
@@ -1893,30 +1897,15 @@ class MultiPointWorker(QObject):
                 )
                 np.savetxt(saving_path, data, delimiter=",")
 
-    def save_image(self, image, file_ID, config, current_path):
-        if image.dtype == np.uint16:
-            saving_path = os.path.join(current_path, file_ID + "_" + str(config.name).replace(" ", "_") + ".tiff")
-        else:
-            saving_path = os.path.join(
-                current_path, file_ID + "_" + str(config.name).replace(" ", "_") + "." + Acquisition.IMAGE_FORMAT
-            )
-
-        if self.camera.is_color:
-            if "BF LED matrix" in config.name:
-                if MULTIPOINT_BF_SAVING_OPTION == "RGB2GRAY":
-                    image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-                elif MULTIPOINT_BF_SAVING_OPTION == "Green Channel Only":
-                    image = image[:, :, 1]
-
-        if SAVE_IN_PSEUDO_COLOR:
-            image = self.return_pseudo_colored_image(image, config)
+    def save_image(self, image: np.array, file_ID: str, config: ChannelMode, current_path: str):
+        saved_image = utils_acquisition.save_image(
+            image=image, file_id=file_ID, save_directory=current_path, config=config, is_color=self.camera.is_color
+        )
 
         if MERGE_CHANNELS:
-            self._save_merged_image(image, file_ID, current_path)
+            self._save_merged_image(saved_image, file_ID, current_path)
 
-        iio.imwrite(saving_path, image)
-
-    def _save_merged_image(self, image, file_ID, current_path):
+    def _save_merged_image(self, image: np.array, file_ID: str, current_path: str):
         self.image_count += 1
 
         if self.image_count == 1:
@@ -1934,27 +1923,6 @@ class MultiPointWorker(QObject):
                 self.image_count = 0
 
         return
-
-    def return_pseudo_colored_image(self, image, config):
-        if "405 nm" in config.name:
-            image = self.grayscale_to_rgb(image, CHANNEL_COLORS_MAP["405"]["hex"])
-        elif "488 nm" in config.name:
-            image = self.grayscale_to_rgb(image, CHANNEL_COLORS_MAP["488"]["hex"])
-        elif "561 nm" in config.name:
-            image = self.grayscale_to_rgb(image, CHANNEL_COLORS_MAP["561"]["hex"])
-        elif "638 nm" in config.name:
-            image = self.grayscale_to_rgb(image, CHANNEL_COLORS_MAP["638"]["hex"])
-        elif "730 nm" in config.name:
-            image = self.grayscale_to_rgb(image, CHANNEL_COLORS_MAP["730"]["hex"])
-        else:
-            image = np.stack([image] * 3, axis=-1)
-
-        return image
-
-    def grayscale_to_rgb(self, image, hex_color):
-        rgb_ratios = np.array([(hex_color >> 16) & 0xFF, (hex_color >> 8) & 0xFF, hex_color & 0xFF]) / 255
-        rgb = np.stack([image] * 3, axis=-1) * rgb_ratios
-        return rgb.astype(image.dtype)
 
     def update_napari(self, image, config_name, k):
         if not self.performance_mode and (USE_NAPARI_FOR_MOSAIC_DISPLAY or USE_NAPARI_FOR_MULTIPOINT):
@@ -2075,7 +2043,7 @@ class MultiPointWorker(QObject):
 
     def move_z_back_after_stack(self):
         if self.use_piezo:
-            self.z_piezo_um = OBJECTIVE_PIEZO_HOME_UM
+            self.z_piezo_um = self.z_piezo_um - self.deltaZ * 1000 * (self.NZ - 1)
             self.piezo.move_to(self.z_piezo_um)
             if (
                 self.liveController.trigger_mode == TriggerMode.SOFTWARE
@@ -2110,6 +2078,7 @@ class MultiPointController(QObject):
     napari_rtp_layers_update = Signal(np.ndarray, str)
     napari_layers_init = Signal(int, int, object)
     napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
+    signal_set_display_tabs = Signal(list, int)
     signal_z_piezo_um = Signal(float)
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
@@ -2128,6 +2097,7 @@ class MultiPointController(QObject):
         scanCoordinates=None,
         fluidics=None,
         parent=None,
+        headless=False,
     ):
         QObject.__init__(self)
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -2182,6 +2152,7 @@ class MultiPointController(QObject):
         self.use_fluidics = False
         self.fluidics = fluidics
 
+        self.headless = headless
         try:
             if self.parent is not None:
                 self.old_images_per_page = self.parent.dataHandler.n_images_per_page
@@ -2332,6 +2303,118 @@ class MultiPointController(QObject):
                 )
             )
 
+    def get_acquisition_image_count(self):
+        """
+        Given the current settings on this controller, return how many images an acquisition will
+        capture and save to disk.
+
+        NOTE: This does not cover debug images (eg: auto focus) or user created images (eg: custom scripts).
+
+        NOTE: This does attempt to include the "merged" image if that config is enabled.
+
+        Raises a ValueError if the class is not configured for a valid acquisition.
+        """
+        try:
+            # We have Nt timepoints.  For each timepoint, we capture images at all the regions.  Each
+            # region has a list of coordinates that we capture at, and at each coordinate we need to
+            # do a capture for each requested camera + lighting + other configuration selected.  So
+            # total image count is:
+            coords_per_region = [
+                len(region_coords) for (region_id, region_coords) in self.scanCoordinates.region_fov_coordinates.items()
+            ]
+            all_regions_coord_count = sum(coords_per_region)
+
+            non_merged_images = self.Nt * self.NZ * all_regions_coord_count * len(self.selected_configurations)
+            # When capturing merged images, we capture 1 per fov (where all the configurations are merged)
+            merged_images = self.Nt * self.NZ * all_regions_coord_count if control._def.MERGE_CHANNELS else 0
+
+            return non_merged_images + merged_images
+        except AttributeError:
+            # We don't init all fields in __init__, so it's easy to get attribute errors.  We consider
+            # this "not configured" and want it to be a ValueError.
+            raise ValueError("Not properly configured for an acquisition, cannot calculate image count.")
+
+    def _temporary_get_an_image_hack(self):
+        # TODO(imo): Replace with send_trigger() only once AbstractCamera lands!
+        was_streaming = self.camera.is_streaming
+        callbacks_were_enabled = self.camera.callback_is_enabled
+        test_image = None
+        self.camera.disable_callback()
+        if not was_streaming:
+            self.camera.start_streaming()
+        try:
+            config = self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)[0]
+            if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                self.liveController.turn_on_illumination()
+                self.microcontroller.wait_till_operation_is_completed()
+                self.camera.send_trigger()
+                test_image = self.camera.read_frame()
+            elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
+                if "Fluorescence" in config.name and ENABLE_NL5 and NL5_USE_DOUT:
+                    self.camera.image_is_ready = False  # to remove
+                    self.microscope.nl5.start_acquisition()
+                    test_image = self.camera.read_frame(reset_image_ready_flag=False)
+                else:
+                    self.microcontroller.send_hardware_trigger(
+                        control_illumination=True, illumination_on_time_us=self.camera.exposure_time * 1000
+                    )
+                    test_image = self.camera.read_frame()
+            else:  # continuous acquisition
+                test_image = self.camera.read_frame()
+        finally:
+            if not was_streaming:
+                self.camera.stop_streaming()
+            if callbacks_were_enabled:
+                self.camera.enable_callback()
+        return test_image
+
+    def get_estimated_acquisition_disk_storage(self):
+        """
+        This does its best to return the number of bytes needed to store the settings for the currently
+        configured acquisition on disk.  If you don't have at least this amount of disk space available
+        when starting this acquisition, it is likely it will fail with an "out of disk space" error.
+        """
+        # TODO(imo): This needs updating for AbstractCamera
+        is_color = self.camera.is_color
+        if not len(self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)):
+            raise ValueError("Cannot calculate disk space requirements without any valid configurations.")
+        first_config = self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)[0]
+
+        # Our best bet is to grab an image, and use that for our size estimate.
+        test_image = None
+        try:
+            test_image = self._temporary_get_an_image_hack()
+        except Exception as e:
+            self._log.exception("Couldn't capture image from camera for size estimate, using worst cast image.")
+            # Not ideal that we need to catch Exception, but the camera implementations vary wildly...
+            pass
+
+        if test_image is None:
+            # Do our best to create a fake image with the correct properties.
+            # TODO(imo): It'd be better to pull this from our camera but need to wait for AbstractCamera for a consistent way to do that.
+            width = self.crop_width
+            height = self.crop_height
+            bytes_per_pixel = 3 if is_color else 2  # Worst case assumptions: 24 bit color, 16 bit grayscale
+
+            test_image = np.random.randint(2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
+
+        # Depending on settings, we modify the image before saving.  This means we need to actually save an image
+        # to see how much disk space it takes up.  This can be very wrong (eg: if we compress during saving, then
+        # it is dependent on the data), but is better than just guessing based on raw image size.
+        with tempfile.TemporaryDirectory() as temp_save_dir:
+            file_id = "test_id"
+            test_config = first_config
+            size_before = utils.get_directory_disk_usage(temp_save_dir)
+            saved_image = utils_acquisition.save_image(test_image, file_id, temp_save_dir, test_config, is_color)
+            size_after = utils.get_directory_disk_usage(temp_save_dir)
+
+            size_per_image = size_after - size_before
+
+        # Add in 100kB for non-image files.  This is normally more like 10k total, so this gives us extra.
+        non_image_file_size = 100 * 1024
+
+        return size_per_image * self.get_acquisition_image_count() + non_image_file_size
+
     def run_acquisition(self):
 
         if not self.validate_acquisition_settings():
@@ -2375,31 +2458,7 @@ class MultiPointController(QObject):
                 self.usb_spectrometer_was_streaming = False
 
         # set current tabs
-        if self.parent and self.parent.performance_mode:
-            self.parent.imageDisplayTabs.setCurrentIndex(0)
-
-        elif self.parent is not None and not self.parent.live_only_mode:
-            configs = [config.name for config in self.selected_configurations]
-            print(configs)
-            if (
-                DO_FLUORESCENCE_RTP
-                and "BF LED matrix left half" in configs
-                and "BF LED matrix right half" in configs
-                and "Fluorescence 405 nm Ex" in configs
-            ):
-                self.parent.recordTabWidget.setCurrentWidget(self.parent.statsDisplayWidget)
-                if USE_NAPARI_FOR_MULTIPOINT:
-                    self.parent.imageDisplayTabs.setCurrentWidget(self.parent.napariRTPWidget)
-                else:
-                    self.parent.imageDisplayTabs.setCurrentWidget(self.parent.imageArrayDisplayWindow.widget)
-
-            elif USE_NAPARI_FOR_MOSAIC_DISPLAY and self.NZ == 1:
-                self.parent.imageDisplayTabs.setCurrentWidget(self.parent.napariMosaicDisplayWidget)
-
-            elif USE_NAPARI_FOR_MULTIPOINT:
-                self.parent.imageDisplayTabs.setCurrentWidget(self.parent.napariMultiChannelWidget)
-            else:
-                self.parent.imageDisplayTabs.setCurrentIndex(0)
+        self.signal_set_display_tabs.emit(self.selected_configurations, self.NZ)
 
         # run the acquisition
         self.timestamp_acquisition_started = time.time()
@@ -2477,44 +2536,40 @@ class MultiPointController(QObject):
                 print("Invalid coordinates for autofocus plane, aborting.")
                 return
 
-        # create a QThread object
-        self.thread = QThread()
-        # create a worker object
-        if DO_FLUORESCENCE_RTP:
-            self.processingHandler.start_processing()
-            self.processingHandler.start_uploading()
         self.multiPointWorker = MultiPointWorker(self)
         self.multiPointWorker.use_piezo = self.use_piezo
-        # move the worker to the thread
-        self.multiPointWorker.moveToThread(self.thread)
-        # connect signals and slots
-        self.thread.started.connect(self.multiPointWorker.run)
-        self.multiPointWorker.signal_detection_stats.connect(self.slot_detection_stats)
-        self.multiPointWorker.finished.connect(self._on_acquisition_completed)
-        if DO_FLUORESCENCE_RTP:
-            self.processingHandler.finished.connect(self.multiPointWorker.deleteLater)
-            self.processingHandler.finished.connect(self.thread.quit)
-        else:
+
+        if not self.headless:
+            # create a QThread object
+            self.thread = QThread()
+            # move the worker to the thread
+            self.multiPointWorker.moveToThread(self.thread)
+            # connect signals and slots
+            self.thread.started.connect(self.multiPointWorker.run)
+            self.multiPointWorker.signal_detection_stats.connect(self.slot_detection_stats)
+            self.multiPointWorker.finished.connect(self._on_acquisition_completed)
             self.multiPointWorker.finished.connect(self.multiPointWorker.deleteLater)
             self.multiPointWorker.finished.connect(self.thread.quit)
-        self.multiPointWorker.image_to_display.connect(self.slot_image_to_display)
-        self.multiPointWorker.image_to_display_multi.connect(self.slot_image_to_display_multi)
-        self.multiPointWorker.spectrum_to_display.connect(self.slot_spectrum_to_display)
-        self.multiPointWorker.signal_current_configuration.connect(
-            self.slot_current_configuration, type=Qt.BlockingQueuedConnection
-        )
-        self.multiPointWorker.signal_register_current_fov.connect(self.slot_register_current_fov)
-        self.multiPointWorker.napari_layers_init.connect(self.slot_napari_layers_init)
-        self.multiPointWorker.napari_rtp_layers_update.connect(self.slot_napari_rtp_layers_update)
-        self.multiPointWorker.napari_layers_update.connect(self.slot_napari_layers_update)
-        self.multiPointWorker.signal_z_piezo_um.connect(self.slot_z_piezo_um)
-        self.multiPointWorker.signal_acquisition_progress.connect(self.slot_acquisition_progress)
-        self.multiPointWorker.signal_region_progress.connect(self.slot_region_progress)
+            self.multiPointWorker.image_to_display.connect(self.slot_image_to_display)
+            self.multiPointWorker.image_to_display_multi.connect(self.slot_image_to_display_multi)
+            self.multiPointWorker.spectrum_to_display.connect(self.slot_spectrum_to_display)
+            self.multiPointWorker.signal_current_configuration.connect(
+                self.slot_current_configuration, type=Qt.BlockingQueuedConnection
+            )
+            self.multiPointWorker.signal_register_current_fov.connect(self.slot_register_current_fov)
+            self.multiPointWorker.napari_layers_init.connect(self.slot_napari_layers_init)
+            self.multiPointWorker.napari_layers_update.connect(self.slot_napari_layers_update)
+            self.multiPointWorker.signal_z_piezo_um.connect(self.slot_z_piezo_um)
+            self.multiPointWorker.signal_acquisition_progress.connect(self.slot_acquisition_progress)
+            self.multiPointWorker.signal_region_progress.connect(self.slot_region_progress)
 
-        # self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.finished.connect(self.thread.quit)
-        # start the thread
-        self.thread.start()
+            # self.thread.finished.connect(self.thread.deleteLater)
+            self.thread.finished.connect(self.thread.quit)
+            # start the thread
+            self.thread.start()
+        else:
+            # for headless mode
+            self.multiPointWorker.run()
 
     def _on_acquisition_completed(self):
         self._log.debug("MultiPointController._on_acquisition_completed called")
@@ -2549,10 +2604,23 @@ class MultiPointController(QObject):
                 pass
         print("total time for acquisition + processing + reset:", time.time() - self.recording_start_time)
         utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
+
+        # move back to the center of the current region if using "glass slide"
+        if "current" in self.scanCoordinates.region_centers:
+            region_center = self.scanCoordinates.region_centers["current"]
+            try:
+                self.stage.move_x_to(region_center[0])
+                self.stage.move_y_to(region_center[1])
+                self.stage.move_z_to(region_center[2])
+            except:
+                self._log.error("Failed to move to center of current region")
+
         self.acquisitionFinished.emit()
         if not self.abort_acqusition_requested:
             self.signal_stitcher.emit(os.path.join(self.base_path, self.experiment_ID))
-        QApplication.processEvents()
+
+        if not self.headless:
+            QApplication.processEvents()
 
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
@@ -4863,6 +4931,13 @@ class LaserAutofocusController(QObject):
         """Update laser autofocus properties. Used for updating settings from GUI."""
         self.laser_af_properties = self.laser_af_properties.model_copy(update=updates)
         self.is_initialized = False
+
+    def update_threshold_properties(self, updates: dict) -> None:
+        """Update threshold properties. Save settings without re-initializing."""
+        self.laser_af_properties = self.laser_af_properties.model_copy(update=updates)
+        self.laserAFSettingManager.update_laser_af_settings(self.objectiveStore.current_objective, updates)
+        self.laserAFSettingManager.save_configurations(self.objectiveStore.current_objective)
+        self._log.info("Updated threshold properties")
 
     def measure_displacement(self) -> float:
         """Measure the displacement of the laser spot from the reference position.

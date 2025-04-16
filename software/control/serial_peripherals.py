@@ -534,35 +534,36 @@ class LDI_Simulation(LightSource):
     def initialize(self):
         pass
 
-    def set_shutter_mode(self, mode):
-        if mode == ShutterControlMode.TTL:
-            self.serial_connection.write_and_check("SH_MODE=EXT\r", "ok")
-        elif mode == ShutterControlMode.Software:
-            self.serial_connection.write_and_check("SH_MODE=PC\r", "ok")
+    def set_shutter_control_mode(self, mode):
         self.shutter_mode = mode
 
-    def set_intensity_mode(self, mode):
-        if mode == IntensityControlMode.SquidControllerDAC:
-            self.serial_connection.write_and_check("INT_MODE=EXT\r", "ok")
-        elif mode == IntensityControlMode.Software:
-            self.serial_connection.write_and_check("INT_MODE=PC\r", "ok")
+    def get_shutter_control_mode(self):
+        pass
+
+    def set_intensity_control_mode(self, mode):
         self.intensity_mode = mode
+
+    def get_intensity_control_mode(self):
+        pass
 
     def set_intensity(self, channel, intensity):
         channel = str(channel)
         intensity = "{:.2f}".format(intensity)
         self.log.debug("set:" + channel + "=" + intensity + "\r")
-        self.log.debug("active channel: " + str(self.active_channel))
 
     def get_intensity(self, channel):
-        return 0
+        return 100
 
     def set_shutter_state(self, channel, on):
         channel = str(channel)
         state = str(on)
+        if self.active_channel is not None and channel != self.active_channel:
+            self.set_active_channel_shutter(False)
+        if on:
+            self.active_channel = channel
 
     def get_shutter_state(self, channel):
-        return 0
+        return 1
 
     def set_active_channel_shutter(self, state):
         channel = str(self.active_channel)
@@ -570,7 +571,9 @@ class LDI_Simulation(LightSource):
         self.log.debug("shutter:" + channel + "=" + state + "\r")
 
     def shut_down(self):
-        pass
+        for ch in list(set(self.channel_mappings.values())):
+            self.set_intensity(ch, 0)
+            self.set_shutter_state(ch, False)
 
 
 class SciMicroscopyLEDArray:

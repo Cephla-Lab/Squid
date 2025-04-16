@@ -279,6 +279,8 @@ CAMERA_REVERSE_Y = False
 
 DEFAULT_TRIGGER_MODE = TriggerMode.SOFTWARE
 
+BUFFER_SIZE_LIMIT = 4095
+
 # note: XY are the in-plane axes, Z is the focus axis
 
 # change the following so that "backward" is "backward" - towards the single sided hall effect sensor
@@ -408,6 +410,7 @@ LED_MATRIX_G_FACTOR = 0
 LED_MATRIX_B_FACTOR = 1
 
 DEFAULT_SAVING_PATH = str(Path.home()) + "/Downloads"
+FILE_ID_PADDING = 0
 
 DEFAULT_PIXEL_FORMAT = "MONO12"
 
@@ -676,7 +679,7 @@ OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER = False
 USE_SQUID_FILTERWHEEL = False
 SQUID_FILTERWHEEL_MAX_INDEX = 8
 SQUID_FILTERWHEEL_MIN_INDEX = 1
-SQUID_FILTERWHEEL_OFFSET = 0.01
+SQUID_FILTERWHEEL_OFFSET = 0.008
 SQUID_FILTERWHEEL_HOMING_ENABLED = True
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
@@ -771,9 +774,6 @@ XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM = 2
 # fluidics
 RUN_FLUIDICS = False
 FLUIDICS_CONFIG_PATH = "./merfish_config/MERFISH_config.json"
-FLUIDICS_SEQUENCE_PATH = "./merfish_config/merfish-imaging.csv"
-BEFORE_IMAGING_SEQUENCES = [0, 4]
-AFTER_IMAGING_SEQUENCES = [4, 6]
 
 ##########################################################
 #### start of loading machine specific configurations ####
@@ -790,7 +790,6 @@ OBJECTIVE_PIEZO_RANGE_UM = 300
 OBJECTIVE_PIEZO_HOME_UM = 20
 OBJECTIVE_PIEZO_FLIP_DIR = False
 
-MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
 MULTIPOINT_PIEZO_DELAY_MS = 20
 MULTIPOINT_PIEZO_UPDATE_DISPLAY = True
 
@@ -890,8 +889,7 @@ A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_pixel"]  # coordi
 ##########################################################
 
 # objective piezo
-if HAS_OBJECTIVE_PIEZO == False:
-    MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = False
+MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
 
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):

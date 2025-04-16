@@ -1,9 +1,8 @@
 import os
-import sys
-from typing import Optional
+import logging
 
 import squid.logging
-from control.core.core import TrackingController
+from control.core.core import TrackingController, MultiPointController
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 import control.utils as utils
@@ -34,6 +33,43 @@ from scipy.spatial import Delaunay
 import shutil
 from control._def import *
 from PIL import Image, ImageDraw, ImageFont
+
+
+def error_dialog(message: str, title: str = "Error"):
+    msg = QMessageBox()
+    msg.setIcon(QMessageBox.Warning)
+    msg.setText(message)
+    msg.setWindowTitle(title)
+    msg.setStandardButtons(QMessageBox.Ok)
+    msg.setDefaultButton(QMessageBox.Ok)
+    retval = msg.exec_()
+    return
+
+
+def check_space_available_with_error_dialog(
+    multi_point_controller: MultiPointController, logger: logging.Logger, factor_of_safecty: float = 1.03
+) -> bool:
+    # To check how much disk space is required, we need to have the MultiPointController all configured.  That is
+    # a precondition of this function.
+    save_directory = multi_point_controller.base_path
+    available_disk_space = utils.get_available_disk_space(save_directory)
+    space_required = factor_of_safecty * multi_point_controller.get_estimated_acquisition_disk_storage()
+    image_count = multi_point_controller.get_acquisition_image_count()
+
+    logger.info(
+        f"Checking space available: {space_required=}, {available_disk_space=}, {image_count=}, {save_directory=}"
+    )
+    if space_required > available_disk_space:
+        megabytes_required = int(space_required / 1024 / 1024)
+        megabytes_available = int(available_disk_space / 1024 / 1024)
+        error_message = (
+            f"This acquisition will capture {image_count:,} images, which will"
+            f" require {megabytes_required:,} [MB], but '{save_directory}' only has {megabytes_available:,} [MB] available."
+        )
+        logger.error(error_message)
+        error_dialog(error_message, title="Not Enough Disk Space")
+        return False
+    return True
 
 
 class WrapperWindow(QMainWindow):
@@ -393,6 +429,7 @@ class LaserAutofocusSettingWidget(QWidget):
         exposure_layout = QHBoxLayout()
         exposure_layout.addWidget(QLabel("Focus Camera Exposure (ms):"))
         self.exposure_spinbox = QDoubleSpinBox()
+        self.exposure_spinbox.setSingleStep(0.1)
         self.exposure_spinbox.setRange(
             self.liveController.camera.EXPOSURE_TIME_MS_MIN, self.liveController.camera.EXPOSURE_TIME_MS_MAX
         )
@@ -413,33 +450,37 @@ class LaserAutofocusSettingWidget(QWidget):
         live_layout.addLayout(analog_gain_layout)
         live_group.setLayout(live_layout)
 
+        # Non-threshold property group
+        non_threshold_group = QFrame()
+        non_threshold_group.setFrameStyle(QFrame.Panel | QFrame.Raised)
+        non_threshold_layout = QVBoxLayout()
+
+        # Add non-threshold property spinboxes
+        self._add_spinbox(non_threshold_layout, "Spot Crop Size (pixels):", "spot_crop_size", 1, 500, 0)
+        self._add_spinbox(
+            non_threshold_layout, "Calibration Distance (μm):", "pixel_to_um_calibration_distance", 0.1, 20.0, 2
+        )
+        non_threshold_group.setLayout(non_threshold_layout)
+
         # Settings group
         settings_group = QFrame()
         settings_group.setFrameStyle(QFrame.Panel | QFrame.Raised)
         settings_layout = QVBoxLayout()
 
-        # Create spinboxes for numerical parameters
-        self.spinboxes = {}
-
-        # Add non-spot detection related spinboxes
+        # Add threshold property spinboxes
         self._add_spinbox(settings_layout, "Laser AF Averaging N:", "laser_af_averaging_n", 1, 100, 0)
         self._add_spinbox(
             settings_layout, "Displacement Success Window (μm):", "displacement_success_window_um", 0.1, 10.0, 2
         )
-        self._add_spinbox(settings_layout, "Spot Crop Size (pixels):", "spot_crop_size", 1, 500, 0)
-        self._add_spinbox(settings_layout, "Correlation Threshold:", "correlation_threshold", 0.1, 1.0, 2)
-        self._add_spinbox(
-            settings_layout, "Calibration Distance (μm):", "pixel_to_um_calibration_distance", 0.1, 20.0, 2
-        )
+        self._add_spinbox(settings_layout, "Correlation Threshold:", "correlation_threshold", 0.1, 1.0, 2, 0.1)
         self._add_spinbox(settings_layout, "Laser AF Range (μm):", "laser_af_range", 1, 1000, 1)
+        self.update_threshold_button = QPushButton("Apply without Re-initialization")
+        settings_layout.addWidget(self.update_threshold_button)
+        settings_group.setLayout(settings_layout)
 
         # Create spot detection group
         spot_detection_group = QFrame()
-        spot_detection_group.setFrameStyle(QFrame.StyledPanel | QFrame.Plain)
-        spot_detection_group.setAutoFillBackground(True)
-        palette = spot_detection_group.palette()
-        palette.setColor(spot_detection_group.backgroundRole(), QColor("#ffffff"))
-        spot_detection_group.setPalette(palette)
+        spot_detection_group.setFrameStyle(QFrame.Panel | QFrame.Raised)
         spot_detection_layout = QVBoxLayout()
 
         # Add spot detection related spinboxes
@@ -447,7 +488,7 @@ class LaserAutofocusSettingWidget(QWidget):
         self._add_spinbox(spot_detection_layout, "X Window (pixels):", "x_window", 1, 500, 0)
         self._add_spinbox(spot_detection_layout, "Min Peak Width:", "min_peak_width", 1, 100, 1)
         self._add_spinbox(spot_detection_layout, "Min Peak Distance:", "min_peak_distance", 1, 100, 1)
-        self._add_spinbox(spot_detection_layout, "Min Peak Prominence:", "min_peak_prominence", 0.01, 1.0, 2)
+        self._add_spinbox(spot_detection_layout, "Min Peak Prominence:", "min_peak_prominence", 0.01, 1.0, 2, 0.1)
         self._add_spinbox(spot_detection_layout, "Spot Spacing (pixels):", "spot_spacing", 1, 1000, 1)
 
         # Spot detection mode combo box
@@ -467,14 +508,15 @@ class LaserAutofocusSettingWidget(QWidget):
         self.run_spot_detection_button = QPushButton("Run Spot Detection")
         self.run_spot_detection_button.setEnabled(False)  # Disabled by default
         spot_detection_layout.addWidget(self.run_spot_detection_button)
-
         spot_detection_group.setLayout(spot_detection_layout)
-        settings_layout.addWidget(spot_detection_group)
 
-        # Apply button
-        self.apply_button = QPushButton("Apply and Initialize")
-        settings_layout.addWidget(self.apply_button)
-        settings_group.setLayout(settings_layout)
+        # Initialize button
+        initialize_group = QFrame()
+        initialize_layout = QVBoxLayout()
+        self.initialize_button = QPushButton("Initialize")
+        self.initialize_button.setStyleSheet("background-color: #C2C2FF")
+        initialize_layout.addWidget(self.initialize_button)
+        initialize_group.setLayout(initialize_layout)
 
         # Add Laser AF Characterization Mode checkbox
         characterization_group = QFrame()
@@ -486,7 +528,10 @@ class LaserAutofocusSettingWidget(QWidget):
 
         # Add to main layout
         layout.addWidget(live_group)
+        layout.addWidget(non_threshold_group)
         layout.addWidget(settings_group)
+        layout.addWidget(spot_detection_group)
+        layout.addWidget(initialize_group)
         layout.addWidget(characterization_group)
         self.setLayout(layout)
 
@@ -497,12 +542,13 @@ class LaserAutofocusSettingWidget(QWidget):
         self.btn_live.clicked.connect(self.toggle_live)
         self.exposure_spinbox.valueChanged.connect(self.update_exposure_time)
         self.analog_gain_spinbox.valueChanged.connect(self.update_analog_gain)
-        self.apply_button.clicked.connect(self.apply_settings)
+        self.update_threshold_button.clicked.connect(self.update_threshold_settings)
         self.run_spot_detection_button.clicked.connect(self.run_spot_detection)
+        self.initialize_button.clicked.connect(self.apply_and_initialize)
         self.characterization_checkbox.toggled.connect(self.toggle_characterization_mode)
 
     def _add_spinbox(
-        self, layout, label: str, property_name: str, min_val: float, max_val: float, decimals: int
+        self, layout, label: str, property_name: str, min_val: float, max_val: float, decimals: int, step: float = 1
     ) -> None:
         """Helper method to add a labeled spinbox to the layout."""
         box_layout = QHBoxLayout()
@@ -511,6 +557,7 @@ class LaserAutofocusSettingWidget(QWidget):
         spinbox = QDoubleSpinBox()
         spinbox.setRange(min_val, max_val)
         spinbox.setDecimals(decimals)
+        spinbox.setSingleStep(step)
         # Get initial value from laser_af_properties
         current_value = getattr(self.laserAutofocusController.laser_af_properties, property_name)
         spinbox.setValue(current_value)
@@ -562,9 +609,10 @@ class LaserAutofocusSettingWidget(QWidget):
         if index >= 0:
             self.spot_mode_combo.setCurrentIndex(index)
 
+        self.update_threshold_button.setEnabled(self.laserAutofocusController.is_initialized)
         self.update_calibration_label()
 
-    def apply_settings(self):
+    def apply_and_initialize(self):
         updates = {
             "laser_af_averaging_n": int(self.spinboxes["laser_af_averaging_n"].value()),
             "displacement_success_window_um": self.spinboxes["displacement_success_window_um"].value(),
@@ -586,7 +634,17 @@ class LaserAutofocusSettingWidget(QWidget):
         self.laserAutofocusController.set_laser_af_properties(updates)
         self.laserAutofocusController.initialize_auto()
         self.signal_apply_settings.emit()
+        self.update_threshold_button.setEnabled(True)
         self.update_calibration_label()
+
+    def update_threshold_settings(self):
+        updates = {
+            "laser_af_averaging_n": int(self.spinboxes["laser_af_averaging_n"].value()),
+            "displacement_success_window_um": self.spinboxes["displacement_success_window_um"].value(),
+            "correlation_threshold": self.spinboxes["correlation_threshold"].value(),
+            "laser_af_range": self.spinboxes["laser_af_range"].value(),
+        }
+        self.laserAutofocusController.update_threshold_properties(updates)
 
     def update_calibration_label(self):
         # Show calibration result
@@ -616,19 +674,21 @@ class LaserAutofocusSettingWidget(QWidget):
         # Get current frame from live controller
         frame = self.liveController.camera.current_frame
         if frame is not None:
-            result = utils.find_spot_location(frame, mode=mode, params=params)
-            if result is not None:
-                x, y = result
-                self.signal_laser_spot_location.emit(frame, x, y)
-            else:
+            try:
+                result = utils.find_spot_location(frame, mode=mode, params=params, debug_plot=True)
+                if result is not None:
+                    x, y = result
+                    self.signal_laser_spot_location.emit(frame, x, y)
+                else:
+                    raise Exception("No spot detection result returned")
+            except Exception as e:
                 # Show error message
-                # Clear previous error label if it exists
-                if hasattr(self, "spot_detection_error_label"):
-                    self.spot_detection_error_label.deleteLater()
-
-                # Create and add new error label
-                self.spot_detection_error_label = QLabel("Spot detection failed!")
-                self.layout().addWidget(self.spot_detection_error_label)
+                error_box = QMessageBox()
+                error_box.setIcon(QMessageBox.Critical)
+                error_box.setText("Spot Detection Failed!")
+                error_box.setInformativeText(str(e))
+                error_box.setWindowTitle("Error")
+                error_box.exec_()
 
     def show_cross_correlation_result(self, value):
         """Show cross-correlation value from validating laser af images"""
@@ -2934,25 +2994,17 @@ class FlexibleMultiPointWidget(QFrame):
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
         if self.base_path_is_set == False:
             self.btn_startAcquisition.setChecked(False)
-            msg = QMessageBox()
-            msg.setText("Please choose base saving directory first")
-            msg.exec_()
+            error_dialog("Please choose base saving directory first")
             return
         if not self.list_configurations.selectedItems():  # no channel selected
             self.btn_startAcquisition.setChecked(False)
-            msg = QMessageBox()
-            msg.setText("Please select at least one imaging channel first")
-            msg.exec_()
+            error_dialog("Please select at least one imaging channel first")
             return
         if pressed:
             if self.multipointController.acquisition_in_progress():
                 self._log.warning("Acquisition in progress or aborting, cannot start another yet.")
                 self.btn_startAcquisition.setChecked(False)
                 return
-
-            # @@@ to do: add a widgetManger to enable and disable widget
-            # @@@ to do: emit signal to widgetManager to disable other widgets
-            self.is_current_acquisition_widget = True  # keep track of what widget started the acquisition
 
             # add the current location to the location list if the list is empty
             if len(self.location_list) == 0:
@@ -2976,7 +3028,6 @@ class FlexibleMultiPointWidget(QFrame):
             else:
                 self.multipointController.set_focus_map(None)
 
-            self.setEnabled_all(False)
             # Set acquisition parameters
             self.multipointController.set_deltaZ(self.entry_deltaZ.value())
             self.multipointController.set_NZ(self.entry_NZ.value())
@@ -2991,6 +3042,16 @@ class FlexibleMultiPointWidget(QFrame):
                 (item.text() for item in self.list_configurations.selectedItems())
             )
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
+
+            if not check_space_available_with_error_dialog(self.multipointController, self._log):
+                self._log.error("Failed to start acquisition.  Not enough disk space available.")
+                self.btn_startAcquisition.setChecked(False)
+                return
+
+            # @@@ to do: add a widgetManger to enable and disable widget
+            # @@@ to do: emit signal to widgetManager to disable other widgets
+            self.is_current_acquisition_widget = True  # keep track of what widget started the acquisition
+            self.setEnabled_all(False)
 
             # emit signals
             self.signal_acquisition_started.emit(True)
@@ -4117,8 +4178,6 @@ class WellplateMultiPointWidget(QFrame):
                 self._log.warning("Acquisition in progress or aborting, cannot start another yet.")
                 self.btn_startAcquisition.setChecked(False)
                 return
-            self.setEnabled_all(False)
-            self.is_current_acquisition_widget = True
 
             scan_size_mm = self.entry_scan_size.value()
             overlap_percent = self.entry_overlap.value()
@@ -4177,6 +4236,14 @@ class WellplateMultiPointWidget(QFrame):
                 [item.text() for item in self.list_configurations.selectedItems()]
             )
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
+
+            if not check_space_available_with_error_dialog(self.multipointController, self._log):
+                self.btn_startAcquisition.setChecked(False)
+                self._log.error("Failed to start acquisition.  Not enough disk space available.")
+                return
+
+            self.setEnabled_all(False)
+            self.is_current_acquisition_widget = True
 
             # Emit signals
             self.signal_acquisition_started.emit(True)
@@ -4301,8 +4368,6 @@ class WellplateMultiPointWidget(QFrame):
         """
         try:
             # Read coordinates from CSV
-            import pandas as pd
-
             df = pd.read_csv(file_path)
 
             # Validate CSV format
@@ -4361,8 +4426,6 @@ class WellplateMultiPointWidget(QFrame):
                         coordinates.append([region_id, x, y])
 
                 # Save to CSV with headers
-                import pandas as pd
-
                 df = pd.DataFrame(coordinates, columns=["Region", "X_mm", "Y_mm"])
                 df.to_csv(file_path, index=False)
 
@@ -4409,6 +4472,7 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.base_path_is_set = False
         self.acquisition_start_time = None
         self.eta_seconds = 0
+        self.nRound = 0
         self.is_current_acquisition_widget = False
         self.parent = self.multipointController.parent
 
@@ -4468,7 +4532,7 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.btn_startAcquisition.setEnabled(False)
 
         # Progress indicators
-        self.progress_label = QLabel("Region -/-")
+        self.progress_label = QLabel("Round -/-")
         self.progress_bar = QProgressBar()
         self.eta_label = QLabel("--:--:--")
         self.progress_bar.setVisible(False)
@@ -4496,7 +4560,7 @@ class MultiPointWithFluidicsWidget(QFrame):
         exp_id_layout.addWidget(self.btn_load_coordinates)
 
         self.btn_init_fluidics = QPushButton("Init Fluidics")
-        exp_id_layout.addWidget(self.btn_init_fluidics)
+        # exp_id_layout.addWidget(self.btn_init_fluidics)
 
         main_layout.addLayout(exp_id_layout)
 
@@ -4561,7 +4625,7 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.btn_load_coordinates.clicked.connect(self.on_load_coordinates_clicked)
-        self.btn_init_fluidics.clicked.connect(self.init_fluidics)
+        # self.btn_init_fluidics.clicked.connect(self.init_fluidics)
         self.entry_deltaZ.valueChanged.connect(self.set_deltaZ)
         self.entry_NZ.valueChanged.connect(self.multipointController.set_NZ)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
@@ -4689,14 +4753,20 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.btn_startAcquisition.setEnabled(True)
 
     def update_region_progress(self, current_fov, num_fovs):
-        """Update progress bar and ETA for current region"""
         self.progress_bar.setMaximum(num_fovs)
         self.progress_bar.setValue(current_fov)
 
         if self.acquisition_start_time is not None and current_fov > 0:
             elapsed_time = time.time() - self.acquisition_start_time
-            processed_fovs = current_fov
-            total_fovs = num_fovs
+            Nt = self.nRound
+
+            # Calculate total processed FOVs and total FOVs
+            processed_fovs = (
+                (self.current_region - 1) * num_fovs
+                + current_fov
+                + self.current_time_point * self.num_regions * num_fovs
+            )
+            total_fovs = self.num_regions * num_fovs * Nt
             remaining_fovs = total_fovs - processed_fovs
 
             # Calculate ETA
@@ -4708,12 +4778,25 @@ class MultiPointWithFluidicsWidget(QFrame):
             self.eta_timer.start(1000)  # Update every 1000 ms (1 second)
 
     def update_acquisition_progress(self, current_region, num_regions, current_time_point):
-        """Update progress display for current acquisition"""
-        if current_region == 1:  # First region
-            self.acquisition_start_time = time.time()
+        self.current_region = current_region
+        self.current_time_point = current_time_point
 
-        # Set the progress label text
-        self.progress_label.setText(f"Region {current_region}/{num_regions}")
+        if self.current_region == 1 and self.current_time_point == 0:  # First region
+            self.acquisition_start_time = time.time()
+            self.num_regions = num_regions
+
+        progress_parts = []
+        # Update timepoint progress if there are multiple timepoints and the timepoint has changed
+        if self.nRound > 1:
+            progress_parts.append(f"Round {current_time_point + 1}/{self.nRound}")
+
+        # Update region progress if there are multiple regions
+        if num_regions > 1:
+            progress_parts.append(f"Region {current_region}/{num_regions}")
+
+        # Set the progress label text, ensuring it's not empty
+        progress_text = "  ".join(progress_parts)
+        self.progress_label.setText(progress_text if progress_text else "Progress")
         self.progress_bar.setValue(0)
 
     def update_eta_display(self):
@@ -4738,7 +4821,7 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.eta_label.setVisible(show)
         if show:
             self.progress_bar.setValue(0)
-            self.progress_label.setText("Region 0/0")
+            self.progress_label.setText("Round 0/0")
             self.eta_label.setText("--:--")
             self.acquisition_start_time = None
         else:
@@ -4762,8 +4845,6 @@ class MultiPointWithFluidicsWidget(QFrame):
         """
         try:
             # Read coordinates from CSV
-            import pandas as pd
-
             df = pd.read_csv(file_path)
 
             # Validate CSV format
@@ -4797,7 +4878,7 @@ class MultiPointWithFluidicsWidget(QFrame):
 
     def init_fluidics(self):
         """Initialize the fluidics system"""
-        self.multipointController.fluidics.initialize()
+        # self.multipointController.fluidics.initialize()
         self.btn_startAcquisition.setEnabled(True)
 
     def get_rounds(self) -> list:
@@ -4836,6 +4917,8 @@ class MultiPointWithFluidicsWidget(QFrame):
                         raise ValueError(f"Invalid number {num}: Must be between 1 and 24")
                     rounds.append(num)
 
+            self.nRound = len(rounds)
+
             return rounds
 
         except ValueError as e:
@@ -4844,6 +4927,410 @@ class MultiPointWithFluidicsWidget(QFrame):
         except Exception as e:
             QMessageBox.warning(self, "Invalid Input", "Please enter valid round numbers (e.g., '1-3,5,7-10')")
             return []
+
+
+class FluidicsWidget(QWidget):
+
+    log_message_signal = Signal(str)
+    fluidics_initialized_signal = Signal()
+
+    def __init__(self, fluidics, parent=None):
+        super().__init__(parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+        # Initialize data structures
+        self.fluidics = fluidics
+        self.fluidics.log_callback = self.log_message_signal.emit
+        self.set_sequence_callbacks()
+
+        # Set up the UI
+        self.setup_ui()
+        self.log_message_signal.connect(self.log_status)
+
+    def setup_ui(self):
+        # Main layout
+        main_layout = QHBoxLayout()
+        self.setLayout(main_layout)
+
+        # Left side - Control panels
+        left_panel = QVBoxLayout()
+
+        # Fluidics Control panel
+        fluidics_control_group = QGroupBox("Fluidics Control")
+        fluidics_control_layout = QVBoxLayout()
+
+        # First row - Initialize and Load Sequences
+        init_row = QHBoxLayout()
+        self.btn_initialize = QPushButton("Initialize")
+        self.btn_load_sequences = QPushButton("Load Sequences")
+        init_row.addWidget(self.btn_initialize)
+        init_row.addWidget(self.btn_load_sequences)
+        fluidics_control_layout.addLayout(init_row)
+
+        # Second row - Prime Ports
+        prime_row = QHBoxLayout()
+        prime_row.addWidget(QLabel("Prime Ports:"))
+        prime_row.addWidget(QLabel("Ports"))
+        self.txt_prime_ports = QLineEdit()
+        prime_row.addWidget(self.txt_prime_ports)
+        prime_row.addWidget(QLabel("Fill Tubing With"))
+        self.prime_fill_combo = QComboBox()
+        self.prime_fill_combo.addItems(self.fluidics.available_port_names)
+        self.prime_fill_combo.setCurrentIndex(25 - 1)  # Usually Port 25 should be the common wash buffer port
+        prime_row.addWidget(self.prime_fill_combo)
+        prime_row.addWidget(QLabel("Volume (µL)"))
+        self.txt_prime_volume = QLineEdit()
+        self.txt_prime_volume.setText("2000")
+        prime_row.addWidget(self.txt_prime_volume)
+        self.btn_prime_start = QPushButton("Start")
+        prime_row.addWidget(self.btn_prime_start)
+        fluidics_control_layout.addLayout(prime_row)
+
+        # Third row - Clean Up
+        cleanup_row = QHBoxLayout()
+        cleanup_row.addWidget(QLabel("Clean Up:"))
+        cleanup_row.addWidget(QLabel("Ports"))
+        self.txt_cleanup_ports = QLineEdit()
+        cleanup_row.addWidget(self.txt_cleanup_ports)
+        cleanup_row.addWidget(QLabel("Fill Tubing With"))
+        self.cleanup_fill_combo = QComboBox()
+        self.cleanup_fill_combo.addItems(self.fluidics.available_port_names)
+        self.cleanup_fill_combo.setCurrentIndex(25 - 1)
+        cleanup_row.addWidget(self.cleanup_fill_combo)
+        cleanup_row.addWidget(QLabel("Volume (µL)"))
+        self.txt_cleanup_volume = QLineEdit()
+        self.txt_cleanup_volume.setText("2000")
+        cleanup_row.addWidget(self.txt_cleanup_volume)
+        cleanup_row.addWidget(QLabel("Repeat"))
+        self.txt_cleanup_repeat = QLineEdit()
+        self.txt_cleanup_repeat.setText("3")
+        cleanup_row.addWidget(self.txt_cleanup_repeat)
+        self.btn_cleanup_start = QPushButton("Start")
+        cleanup_row.addWidget(self.btn_cleanup_start)
+        fluidics_control_layout.addLayout(cleanup_row)
+
+        fluidics_control_group.setLayout(fluidics_control_layout)
+        left_panel.addWidget(fluidics_control_group)
+
+        # Manual Control panel
+        manual_control_group = QGroupBox("Manual Control")
+        manual_control_layout = QVBoxLayout()
+
+        # First row - Port, Flow Rate, Volume, Flow button
+        manual_row1 = QHBoxLayout()
+        manual_row1.addWidget(QLabel("Port"))
+        self.manual_port_combo = QComboBox()
+        self.manual_port_combo.addItems(self.fluidics.available_port_names)
+        manual_row1.addWidget(self.manual_port_combo)
+        manual_row1.addWidget(QLabel("Flow Rate (µL/min)"))
+        self.txt_manual_flow_rate = QLineEdit()
+        self.txt_manual_flow_rate.setText("500")
+        manual_row1.addWidget(self.txt_manual_flow_rate)
+        manual_row1.addWidget(QLabel("Volume (µL)"))
+        self.txt_manual_volume = QLineEdit()
+        manual_row1.addWidget(self.txt_manual_volume)
+        self.btn_manual_flow = QPushButton("Flow")
+        manual_row1.addWidget(self.btn_manual_flow)
+        manual_control_layout.addLayout(manual_row1)
+
+        # Second row - Empty Syringe Pump button
+        manual_row2 = QHBoxLayout()
+        self.btn_empty_syringe_pump = QPushButton("Empty Syringe Pump To Waste")
+        manual_row2.addWidget(self.btn_empty_syringe_pump)
+        manual_control_layout.addLayout(manual_row2)
+
+        manual_control_group.setLayout(manual_control_layout)
+        left_panel.addWidget(manual_control_group)
+
+        # Status panel
+        status_group = QGroupBox("Status")
+        status_layout = QVBoxLayout()
+
+        self.status_text = QTextEdit()
+        self.status_text.setReadOnly(True)
+        status_layout.addWidget(self.status_text)
+
+        status_group.setLayout(status_layout)
+        left_panel.addWidget(status_group)
+
+        # Add left panel to main layout
+        main_layout.addLayout(left_panel, 1)
+
+        # Right side - Sequences panel
+        right_panel = QVBoxLayout()
+
+        sequences_group = QGroupBox("Sequences")
+        sequences_layout = QVBoxLayout()
+
+        # Table for sequences
+        self.sequences_table = QTableView()
+        sequences_layout.addWidget(self.sequences_table)
+
+        # Emergency Stop button
+        self.btn_emergency_stop = QPushButton("Emergency Stop")
+        self.btn_emergency_stop.setStyleSheet("background-color: red; color: white; font-weight: bold;")
+        sequences_layout.addWidget(self.btn_emergency_stop)
+
+        sequences_group.setLayout(sequences_layout)
+        right_panel.addWidget(sequences_group)
+
+        # Add right panel to main layout
+        main_layout.addLayout(right_panel, 1)
+
+        # Connect signals
+        self.btn_initialize.clicked.connect(self.initialize_fluidics)
+        self.btn_load_sequences.clicked.connect(self.load_sequences)
+        self.btn_prime_start.clicked.connect(self.start_prime)
+        self.btn_cleanup_start.clicked.connect(self.start_cleanup)
+        self.btn_manual_flow.clicked.connect(self.start_manual_flow)
+        self.btn_empty_syringe_pump.clicked.connect(self.empty_syringe_pump)
+        self.btn_emergency_stop.clicked.connect(self.emergency_stop)
+
+        self.enable_controls(False)
+        self.btn_emergency_stop.setEnabled(False)
+
+    def initialize_fluidics(self):
+        """Initialize the fluidics system"""
+        self.log_status("Initializing fluidics system...")
+        self.fluidics.initialize()
+        self.btn_initialize.setEnabled(False)
+        self.enable_controls(True)
+        self.btn_emergency_stop.setEnabled(True)
+        self.fluidics_initialized_signal.emit()
+
+    def set_sequence_callbacks(self):
+        callbacks = {
+            "on_finished": self.on_finish,
+            "on_error": self.on_finish,
+            "on_estimate": self.on_estimate,
+            "update_progress": self.update_progress,
+        }
+        self.fluidics.worker_callbacks = callbacks
+
+    def set_manual_control_callbacks(self):
+        # TODO: use better logging description
+        callbacks = {
+            "on_finished": lambda: self.on_finish("Operation completed"),
+            "on_error": self.on_finish,
+            "on_estimate": None,
+            "update_progress": None,
+        }
+        self.fluidics.worker_callbacks = callbacks
+
+    def load_sequences(self):
+        """Open file dialog to load sequences from CSV"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Fluidics Sequences", "", "CSV Files (*.csv);;All Files (*)"
+        )
+
+        if file_path:
+            self.log_status(f"Loading sequences from {file_path}")
+            try:
+                self.sequence_df = self.fluidics.load_sequences(file_path)
+                self.sequence_df.drop("include", axis=1, inplace=True)
+                model = PandasTableModel(self.sequence_df, self.fluidics.available_port_names)
+                self.sequences_table.setModel(model)
+                self.sequences_table.resizeColumnsToContents()
+                self.sequences_table.horizontalHeader().setStretchLastSection(True)
+                self.log_status(f"Loaded {len(self.sequence_df)} sequences")
+            except Exception as e:
+                self.log_status(f"Error loading sequences: {str(e)}")
+
+    def start_prime(self):
+        self.set_manual_control_callbacks()
+        ports = self.get_port_list(self.txt_prime_ports.text())
+        fill_port = self.prime_fill_combo.currentIndex() + 1
+        volume = int(self.txt_prime_volume.text())
+
+        if not ports or not fill_port or not volume:
+            return
+
+        self.log_status(f"Starting prime: Ports {ports}, Fill with {fill_port}, Volume {volume}µL")
+        self.fluidics.priming(ports, fill_port, volume)
+        self.enable_controls(False)
+        self.set_sequence_callbacks()
+
+    def start_cleanup(self):
+        self.set_manual_control_callbacks()
+        ports = self.get_port_list(self.txt_cleanup_ports.text())
+        fill_port = self.cleanup_fill_combo.currentIndex() + 1
+        volume = int(self.txt_cleanup_volume.text())
+        repeat = int(self.txt_cleanup_repeat.text())
+
+        if not ports or not fill_port or not volume or not repeat:
+            return
+
+        self.log_status(f"Starting cleanup: Ports {ports}, Fill with {fill_port}, Volume {volume}µL, Repeat {repeat}x")
+        self.fluidics.clean_up(ports, fill_port, volume, repeat)
+        self.enable_controls(False)
+        self.set_sequence_callbacks()
+
+    def start_manual_flow(self):
+        self.set_manual_control_callbacks()
+        port = self.manual_port_combo.currentIndex() + 1
+        flow_rate = int(self.txt_manual_flow_rate.text())
+        volume = int(self.txt_manual_volume.text())
+
+        if not port or not flow_rate or not volume:
+            return
+
+        self.log_status(f"Flow reagent: Port {port}, Flow rate {flow_rate}µL/min, Volume {volume}µL")
+        self.fluidics.manual_flow(port, flow_rate, volume)
+        self.enable_controls(False)
+        self.set_sequence_callbacks()
+
+    def empty_syringe_pump(self):
+        self.log_status("Empty syringe pump to waste")
+        self.enable_controls(False)
+        self.fluidics.empty_syringe_pump()
+        self.log_status("Operation completed")
+        self.enable_controls(True)
+
+    def emergency_stop(self):
+        self.fluidics.emergency_stop()
+
+    def get_port_list(self, text: str) -> list:
+        """Parse ports input string into a list of numbers.
+
+        Accepts formats like:
+        - Single numbers: "1,3,5"
+        - Ranges: "1-3,5,7-10"
+
+        Returns:
+            List of integers representing rounds, sorted without duplicates.
+            Empty list if input is invalid.
+        """
+        try:
+            ports_str = text.strip()
+            if not ports_str:
+                return [i for i in range(1, len(self.fluidics.available_port_names) + 1)]
+
+            port_list = []
+
+            # Split by comma and process each part
+            for part in ports_str.split(","):
+                part = part.strip()
+                if "-" in part:
+                    # Handle range (e.g., "1-3")
+                    start, end = map(int, part.split("-"))
+                    if start < 1 or end > 28 or start > end:
+                        raise ValueError(
+                            f"Invalid range {part}: Numbers must be between 1 and 28, and start must be <= end"
+                        )
+                    port_list.extend(range(start, end + 1))
+                else:
+                    # Handle single number
+                    num = int(part)
+                    if num < 1 or num > 28:
+                        raise ValueError(f"Invalid number {num}: Must be between 1 and 28")
+                    port_list.append(num)
+
+            return port_list
+
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid Input", str(e))
+            return []
+        except Exception as e:
+            QMessageBox.warning(self, "Invalid Input", "Please enter valid port numbers (e.g., '1-3,5,7-10')")
+            return []
+
+    def update_progress(self, idx, seq_num, status):
+        self.sequences_table.model().set_current_row(idx)
+        self.log_message_signal.emit(f"Sequence {self.sequence_df.iloc[idx]['sequence_name']} {status}")
+
+    def on_finish(self, status=None):
+        self.enable_controls(True)
+        try:
+            self.sequences_table.model().set_current_row(-1)
+        except:
+            pass
+        if status is None:
+            status = "Sequence section completed"
+        self.fluidics.reset_abort()
+        self.log_message_signal.emit(status)
+
+    def on_estimate(self, time, n):
+        self.log_message_signal.emit(f"Estimated time: {time}s, Sequences: {n}")
+
+    def enable_controls(self, enabled: bool):
+        self.btn_load_sequences.setEnabled(enabled)
+        self.btn_prime_start.setEnabled(enabled)
+        self.btn_cleanup_start.setEnabled(enabled)
+        self.btn_manual_flow.setEnabled(enabled)
+        self.btn_empty_syringe_pump.setEnabled(enabled)
+
+    def log_status(self, message):
+        current_time = QDateTime.currentDateTime().toString("hh:mm:ss")
+        self.status_text.append(f"[{current_time}] {message}")
+        # Scroll to bottom
+        scrollbar = self.status_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+        # Also log to console
+        self._log.info(message)
+
+
+class PandasTableModel(QAbstractTableModel):
+    """Model for displaying pandas DataFrame in a QTableView"""
+
+    def __init__(self, data, port_names=None):
+        super().__init__()
+        self._data = data
+        self._current_row = -1
+        self._port_names = port_names or []
+        self._column_name_map = {
+            "sequence_name": "Sequence Name",
+            "fluidic_port": "Fluidic Port",
+            "fill_tubing_with": "Fill Tubing With",
+            "flow_rate": "Flow Rate (µL/min)",
+            "volume": "Volume (µL)",
+            "incubation_time": "Incubation (min)",
+            "repeat": "Repeat",
+        }
+
+    def rowCount(self, parent=None):
+        return len(self._data)
+
+    def columnCount(self, parent=None):
+        return len(self._data.columns)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if role == Qt.DisplayRole:
+            value = self._data.iloc[index.row(), index.column()]
+            if pd.isna(value):
+                return ""
+
+            # Map port numbers to names for specific columns
+            column_name = self._data.columns[index.column()]
+            if column_name in ["fluidic_port", "fill_tubing_with"] and self._port_names:
+                try:
+                    # Convert value to integer and get corresponding name
+                    port_num = int(value)
+                    if 1 <= port_num <= len(self._port_names):
+                        return self._port_names[port_num - 1]
+                except (ValueError, TypeError):
+                    pass
+
+            return str(value)
+
+        elif role == Qt.BackgroundRole:
+            # Highlight the current row
+            if index.row() == self._current_row:
+                return QBrush(QColor(173, 216, 230))  # Light blue
+            else:
+                return QBrush(QColor(255, 255, 255))  # White
+        return None
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+            original_name = str(self._data.columns[section])
+            return self._column_name_map.get(original_name, original_name)
+        if orientation == Qt.Vertical and role == Qt.DisplayRole:
+            return str(section + 1)
+        return None
+
+    def set_current_row(self, row_index):
+        self._current_row = row_index
+        self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount() - 1, self.columnCount() - 1))
 
 
 class FocusMapWidget(QFrame):
@@ -7323,11 +7810,6 @@ class LaserAutofocusControlWidget(QFrame):
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
     def add_components(self):
-        self.btn_initialize = QPushButton("Initialize")
-        self.btn_initialize.setCheckable(False)
-        self.btn_initialize.setChecked(False)
-        self.btn_initialize.setDefault(False)
-
         self.btn_set_reference = QPushButton(" Set Reference ")
         self.btn_set_reference.setCheckable(False)
         self.btn_set_reference.setChecked(False)
@@ -7362,8 +7844,7 @@ class LaserAutofocusControlWidget(QFrame):
 
         self.grid = QGridLayout()
 
-        self.grid.addWidget(self.btn_initialize, 0, 0, 1, 2)
-        self.grid.addWidget(self.btn_set_reference, 0, 2, 1, 2)
+        self.grid.addWidget(self.btn_set_reference, 0, 0, 1, 4)
 
         self.grid.addWidget(QLabel("Displacement (um)"), 1, 0)
         self.grid.addWidget(self.label_displacement, 1, 1)
@@ -7375,21 +7856,12 @@ class LaserAutofocusControlWidget(QFrame):
         self.setLayout(self.grid)
 
         # make connections
-        self.btn_initialize.clicked.connect(self.init_controller)
         self.btn_set_reference.clicked.connect(self.on_set_reference_clicked)
         self.btn_measure_displacement.clicked.connect(self.laserAutofocusController.measure_displacement)
         self.btn_move_to_target.clicked.connect(self.move_to_target)
         self.laserAutofocusController.signal_displacement_um.connect(self.label_displacement.setNum)
 
-    def init_controller(self):
-        self.laserAutofocusController.initialize_auto()
-        if self.laserAutofocusController.is_initialized:
-            self.btn_set_reference.setEnabled(True)
-            self.btn_measure_displacement.setEnabled(False)
-            self.btn_move_to_target.setEnabled(False)
-
     def update_init_state(self):
-        self.btn_initialize.setChecked(self.laserAutofocusController.is_initialized)
         self.btn_set_reference.setEnabled(self.laserAutofocusController.is_initialized)
         self.btn_measure_displacement.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)
         self.btn_move_to_target.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)

@@ -1,12 +1,11 @@
 import inspect
-import os
 import pathlib
+import shutil
 import sys
-from typing import Optional
 
 import cv2
 import git
-from numpy import std, square, mean
+from numpy import square, mean
 import numpy as np
 from scipy.ndimage import label
 from scipy import signal
@@ -388,3 +387,42 @@ def get_squid_repo_state_description() -> Optional[str]:
     except git.GitError as e:
         _log.warning(f"Failed to get script git repo info: {e}")
         return None
+
+
+def get_available_disk_space(directory: pathlib.Path) -> int:
+    """
+    Returns the available disk space, in bytes, for files created as children of the given directory.
+
+    Raises: ValueError if directory is not a directory, or doesn't exist.  PermissionError if you do not have access.
+    """
+    if not isinstance(directory, pathlib.Path):
+        directory = pathlib.Path(directory)
+
+    if not directory.exists():
+        raise ValueError(f"Cannot check for free space in '{directory}' because it does not exist.")
+
+    if not directory.is_dir():
+        raise ValueError(f"Path must be a directory, but '{directory}' is not.")
+
+    (total, used, free) = shutil.disk_usage(directory)
+
+    return free
+
+
+def get_directory_disk_usage(directory: pathlib.Path) -> int:
+    """
+    Returns the total disk size used by the contents of this directory in bytes.
+
+    Cribbed from the interwebs here: https://stackoverflow.com/a/1392549
+    """
+    total_size = 0
+    if isinstance(directory, str):
+        directory = pathlib.Path(directory)
+    for dirpath, _, filenames in os.walk(directory.absolute()):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            # skip if it is symbolic link
+            if not os.path.islink(fp):
+                total_size += os.path.getsize(fp)
+
+    return total_size
