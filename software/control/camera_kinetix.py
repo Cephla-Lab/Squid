@@ -76,7 +76,6 @@ class Camera(object):
         self.cam.exp_res = 1  # Exposure resolution in microseconds
         self.cam.set_roi(240, 240, 2720, 2720)  # Crop fov to 25mm
         self.log.info(f"Cropped area: {self.cam.shape(0)}")
-        self.calculate_strobe_delay()  # hard coded before implementing roi
         self.set_temperature(15)  # temperature range: -15 - 15 degree Celcius
         # self.temperature_reading_thread.start()
 
@@ -155,8 +154,8 @@ class Camera(object):
     def set_analog_gain(self, gain: float):
         pass
 
-    def set_exposure_time(self, exposure_time: float):
-        if exposure_time == self.exposure_time:
+    def set_exposure_time(self, exposure_time: float, force_update: bool = False):
+        if exposure_time == self.exposure_time and not force_update:
             return
         if self.trigger_mode == TriggerMode.SOFTWARE:
             adjusted = exposure_time * 1000
@@ -272,6 +271,11 @@ class Camera(object):
                 self.cam.readout_port = 2
             else:
                 raise ValueError(f"Invalid pixel format: {pixel_format}")
+
+            self.calculate_strobe_delay()
+            if self.trigger_mode == TriggerMode.HARDWARE:
+                self.set_exposure_time(self.exposure_time, force_update=True)
+
             if has_callback:
                 self.enable_callback()
             if not self.is_streaming:
@@ -313,7 +317,13 @@ class Camera(object):
     def calculate_strobe_delay(self):
         # Line time (us) from the manual:
         # Dynamic Range Mode: 3.75; Speed Mode: 0.625; Sensitivity Mode: 3.53125; Sub-Electron Mode: 60.1
-        self.strobe_delay_us = int(3.75 * 2760)  # us
+        # hard coded before implementing roi
+        if self.pixel_format == "MONO8":
+            self.strobe_delay_us = int(0.625 * 2720)  # us
+        elif self.pixel_format == "MONO12":
+            self.strobe_delay_us = int(3.53125 * 2720)  # us
+        elif self.pixel_format == "MONO16":
+            self.strobe_delay_us = int(3.75 * 2720)  # us
         # TODO: trigger delay, line delay
 
 
