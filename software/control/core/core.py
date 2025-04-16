@@ -119,8 +119,8 @@ class StreamHandler(QObject):
         self.timestamp_last_track = 0
 
         if CAMERA_CONFIG.CAMERA_CROP_WIDTH is not None and CAMERA_CONFIG.CAMERA_CROP_HEIGHT is not None:
-            self.crop_width = int(CAMERA_CONFIG.CAMERA_CROP_WIDTH / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_X)
-            self.crop_height = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT_Y)
+            self.crop_width = int(CAMERA_CONFIG.CAMERA_CROP_WIDTH / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT)
+            self.crop_height = int(CAMERA_CONFIG.CAMERA_CROP_HEIGHT / CAMERA_CONFIG.BINNING_FACTOR_DEFAULT)
         else:
             raise ValueError(
                 "CAMERA_CONFIG.CAMERA_CROP_WIDTH and CAMERA_CONFIG.CAMERA_CROP_HEIGHT must be defined in the configuration file."
