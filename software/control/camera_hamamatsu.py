@@ -179,6 +179,7 @@ class HamamatsuCamera(AbstractCamera):
             strobe_time_ms = self.get_strobe_time()
             camera_exposure_time_s += strobe_time_ms / 1000.0
             if self._hw_set_strobe_delay_ms_fn:
+                self._log.debug(f"Setting hw strobe time to {strobe_time_ms} [ms]")
                 self._hw_set_strobe_delay_ms_fn(strobe_time_ms)
 
         if not self._set_prop(DCAM_IDPROP.EXPOSURETIME, camera_exposure_time_s):
@@ -197,7 +198,8 @@ class HamamatsuCamera(AbstractCamera):
         return 0.017633, 10000.0046  # Each in ms
 
     def get_strobe_time(self) -> float:
-        line_interval_s = self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL)
+        resolution = self.get_resolution()
+        line_interval_s = self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL) * resolution[1]
         trigger_delay_s = self._camera.prop_getvalue(DCAM_IDPROP.TRIGGERDELAY)
 
         if isinstance(line_interval_s, bool) or isinstance(trigger_delay_s, bool):
