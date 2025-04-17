@@ -1869,9 +1869,9 @@ class MultiPointWorker(QObject):
                 )
                 np.savetxt(saving_path, data, delimiter=",")
 
-    def save_image(self, image: np.array, file_ID: str, config: ChannelMode, current_path: str):
+    def save_image(self, image: np.array, file_ID: str, config: ChannelMode, current_path: str, is_color: bool):
         saved_image = utils_acquisition.save_image(
-            image=image, file_id=file_ID, save_directory=current_path, config=config, is_color=self.camera.is_color
+            image=image, file_id=file_ID, save_directory=current_path, config=config, is_color=is_color
         )
 
         if MERGE_CHANNELS:
