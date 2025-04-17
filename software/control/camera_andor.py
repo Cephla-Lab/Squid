@@ -6,6 +6,7 @@ import os
 import pyAndorSDK3
 from pyAndorSDK3 import AndorSDK3
 from control._def import *
+import squid.logging
 
 
 # For using in Windows only
@@ -22,12 +23,14 @@ class Camera(object):
     def __init__(
         self, sn=None, resolution=(2048, 2048), is_global_shutter=False, rotate_image_angle=None, flip_image=None
     ):
+        self.log = squid.logging.get_logger(self.__class__.__name__)
         self.cam = None
         self.exposure_time = 1  # ms
         self.analog_gain = 0
         self.is_streaming = False
         self.pixel_format = None
         self.is_color = False
+        self.available_pixel_formats = ["MONO12", "MONO16"]
 
         self.frame_ID = -1
         self.frame_ID_software = -1
@@ -73,7 +76,7 @@ class Camera(object):
         self.cam = sdk3.GetCamera(index)
         self.cam.open()
         self._initialize_camera()
-        print(f"Andor Camera opened. SN: {self.cam.SerialNumber}")
+        self.log.info(f"Andor Camera opened. SN: {self.cam.SerialNumber}")
         return True
 
     def open_by_sn(self, sn):
@@ -98,15 +101,15 @@ class Camera(object):
         try:
             self.EXPOSURE_TIME_MS_MIN = self.cam.min_ExposureTime * 1000  # convert to ms
             self.EXPOSURE_TIME_MS_MAX = self.cam.max_ExposureTime * 1000  # convert to ms
-            print(f"exposure min: {self.EXPOSURE_TIME_MS_MIN}, max: {self.EXPOSURE_TIME_MS_MAX}")
+            self.log.info(f"exposure min: {self.EXPOSURE_TIME_MS_MIN}, max: {self.EXPOSURE_TIME_MS_MAX}")
         except:
-            print("Could not determine exposure time limits")
+            self.log.error("Could not determine exposure time limits")
 
         try:
             self.line_rate = 1 / self.cam.LineScanSpeed * 1000000
-            print(f"line rate: {self.line_rate} us")
+            self.log.info(f"line rate: {self.line_rate} us")
         except:
-            print("Could not determine line rate")
+            self.log.error("Could not determine line rate")
             raise
 
     def set_callback(self, function):
@@ -134,12 +137,12 @@ class Camera(object):
                 if image is not False:
                     self._on_new_frame(image)
             except Exception as e:
-                print(f"Error waiting for frame: {e}")
+                self.log.warning(f"Error waiting for frame: {e}")
                 time.sleep(0.01)
 
     def _on_new_frame(self, image):
         if self.image_locked:
-            print("Last image is still being processed; a frame is dropped")
+            self.log.warning("Last image is still being processed; a frame is dropped")
             return
 
         self.current_frame = image
@@ -186,7 +189,7 @@ class Camera(object):
             self.cam.ExposureTime = exposure_time_s
             self.exposure_time = exposure_time
         except Exception as e:
-            print(f"Error setting exposure time: {e}")
+            self.log.error(f"Error setting exposure time: {e}")
             raise e
 
     def set_continuous_acquisition(self):
@@ -200,7 +203,7 @@ class Camera(object):
             self.cam.TriggerMode = "Internal"
             self.trigger_mode = TriggerMode.CONTINUOUS
         except Exception as e:
-            print(f"Error setting continuous acquisition: {e}")
+            self.log.error(f"Error setting continuous acquisition: {e}")
 
         if was_streaming:
             self.start_streaming()
@@ -216,7 +219,7 @@ class Camera(object):
             self.cam.TriggerMode = "Software"
             self.trigger_mode = TriggerMode.SOFTWARE
         except Exception as e:
-            print(f"Error setting software triggered acquisition: {e}")
+            self.log.error(f"Error setting software triggered acquisition: {e}")
 
         if was_streaming:
             self.start_streaming()
@@ -233,7 +236,7 @@ class Camera(object):
             self.frame_ID_offset_hardware_trigger = None
             self.trigger_mode = TriggerMode.HARDWARE
         except Exception as e:
-            print(f"Error setting hardware triggered acquisition: {e}")
+            self.log.error(f"Error setting hardware triggered acquisition: {e}")
 
         if was_streaming:
             self.start_streaming()
@@ -253,29 +256,34 @@ class Camera(object):
                 self.pixel_format = pixel_format
             else:
                 raise ValueError(f"Invalid pixel format: {pixel_format}")
+
+            self.line_rate = 1 / self.cam.LineScanSpeed * 1000000
+            self.calculate_strobe_delay()
+            if self.trigger_mode == TriggerMode.HARDWARE:
+                self.set_exposure_time(self.exposure_time)
+
         except Exception as e:
-            print(f"Error setting pixel format: {e}")
+            self.log.error(f"Error setting pixel format: {e}")
 
         if was_streaming:
             self.start_streaming()
 
     def send_trigger(self):
         try:
-            print("send trigger")
             self.cam.SoftwareTrigger()
         except Exception as e:
-            print(f"Trigger not sent - error: {e}")
+            self.log.error(f"Trigger not sent - error: {e}")
 
     def read_frame(self):
         try:
             acq = self.cam.wait_buffer(2000)
             self.cam.queue(acq._np_data, self.cam.ImageSizeBytes)
             raw = np.asarray(acq._np_data, dtype=np.uint8)
-            img16 = raw.view('<u2')
+            img16 = raw.view("<u2")
             img16 = img16.reshape(2048, 2048)
             return img16
         except Exception as e:
-            print(f"Error reading frame: {e}")
+            self.log.error(f"Error reading frame: {e}")
             return None
 
     def start_streaming(self, buffer_frame_num=2):
@@ -293,12 +301,10 @@ class Camera(object):
             # Start acquisition
             self.cam.AcquisitionStart()
             self.is_streaming = True
-            print("Andor Camera starts streaming")
-            return True
+            self.log.info("Andor Camera starts streaming")
         except Exception as e:
-            print(f"Andor Camera cannot start streaming: {e}")
+            self.log.error(f"Andor Camera cannot start streaming: {e}")
             self.is_streaming = False
-            return False
 
     def stop_streaming(self):
         try:
@@ -306,11 +312,9 @@ class Camera(object):
             self.cam.flush()
             self.is_streaming = False
             self.buffer_queue = []
-            print("Andor Camera streaming stopped")
-            return True
+            self.log.info("Andor Camera streaming stopped")
         except Exception as e:
-            print(f"Error stopping streaming: {e}")
-            return False
+            self.log.error(f"Error stopping streaming: {e}")
 
     def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
         pass
