@@ -137,8 +137,6 @@ class HamamatsuCamera(AbstractCamera):
                         self._log.error("Frame read resulted in boolean, must be an error.")
                         continue
 
-                if frame_ready:
-                    self._log.debug("got frame")
                     processed_frame = self._process_raw_frame(raw_frame)
                     with self._frame_lock:
                         camera_frame = CameraFrame(
@@ -449,10 +447,8 @@ class HamamatsuCamera(AbstractCamera):
                 f"Requested trigger too early (last trigger was {time.time() - self._last_trigger_timestamp} [s] ago), refusing."
             )
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
-            self._log.debug(f"Sending hardware trigger with {illumination_time=}")
             self._hw_trigger_fn(illumination_time)
         elif self.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER:
-            self._log.debug("Sending software trigger..")
             if not self._camera.cap_firetrigger():
                 raise CameraError(f"Failed to send software trigger: {self._last_dcam_error_string()}")
 
