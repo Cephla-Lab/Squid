@@ -7,7 +7,6 @@ from PyQt5.QtCore import QObject
 import control.core.core as core
 from control._def import *
 import squid.camera.utils
-from control.gui_hcs import HighContentScreeningGui
 from squid.abc import CameraAcquisitionMode
 import squid.stage.cephla
 import squid.abc
@@ -25,7 +24,7 @@ if SUPPORT_LASER_AUTOFOCUS:
 
 class Microscope(QObject):
 
-    def __init__(self, microscope: HighContentScreeningGui = None, is_simulation=False):
+    def __init__(self, microscope = None, is_simulation=False):
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
         if microscope is None:
