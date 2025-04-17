@@ -77,7 +77,6 @@ class Camera(object):
         self.cam.open()
         self._initialize_camera()
         self.log.info(f"Andor Camera opened. SN: {self.cam.SerialNumber}")
-        return True
 
     def open_by_sn(self, sn):
         self.open()
@@ -91,8 +90,6 @@ class Camera(object):
         if self.cam is not None:
             self.cam.close()
             self.cam = None
-            return True
-        return False
 
     def _initialize_camera(self):
         if self.cam is None:
