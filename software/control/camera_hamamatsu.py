@@ -92,9 +92,6 @@ class HamamatsuCamera(AbstractCamera):
 
         self._camera: Dcam = camera
         self._capabilities: HamamatsuCapabilities = capabilities
-        # This lock is for any camera interactions that use the camera
-        # buffers.
-        self._camera_lock = threading.Lock()
         self._is_streaming = threading.Event()
 
         # We store exposure time so we don't need to worry about backing out strobe time from the
@@ -108,11 +105,10 @@ class HamamatsuCamera(AbstractCamera):
         self._cleanup_read_thread()
 
     def _set_prop(self, dcam_prop, prop_value):
-        with self._camera_lock:
-            if not self._camera.prop_setvalue(dcam_prop, prop_value):
-                self._log.error(f"Failed to set property {dcam_prop}={prop_value}: {self._camera.lasterr()}")
-                return False
-            return True
+        if not self._camera.prop_setvalue(dcam_prop, prop_value):
+            self._log.error(f"Failed to set property {dcam_prop}={prop_value}: {self._camera.lasterr()}")
+            return False
+        return True
 
     def _allocate_read_buffers(self, count=5):
         # NOTE: The caller must hold the camera lock!
@@ -128,19 +124,18 @@ class HamamatsuCamera(AbstractCamera):
             # We really, really, do not want this thread to die prematurely, so catch all exceptions and try
             # to continue.
             try:
-                with self._camera_lock:
-                    wait_time = int(round(self._read_thread_wait_period_s * 1000.0))
-                    frame_ready = self._camera.wait_event(DCAMWAIT_CAPEVENT.FRAMEREADY, wait_time)
+                wait_time = int(round(self._read_thread_wait_period_s * 1000.0))
+                frame_ready = self._camera.wait_event(DCAMWAIT_CAPEVENT.FRAMEREADY, wait_time)
 
-                    if frame_ready:
-                        # The dcam driver handles setting the correct width and height, so we can use the
-                        # np frame directly.
-                        raw_frame = self._camera.buf_getlastframedata()
-                        self._trigger_sent.clear()
+                if frame_ready:
+                    # The dcam driver handles setting the correct width and height, so we can use the
+                    # np frame directly.
+                    raw_frame = self._camera.buf_getlastframedata()
+                    self._trigger_sent.clear()
 
-                        if isinstance(raw_frame, bool):
-                            self._log.error("Frame read resulted in boolean, must be an error.")
-                            continue
+                    if isinstance(raw_frame, bool):
+                        self._log.error("Frame read resulted in boolean, must be an error.")
+                        continue
 
                 if frame_ready:
                     self._log.debug("got frame")
@@ -178,8 +173,7 @@ class HamamatsuCamera(AbstractCamera):
             return f"{last_error}:UNKNOWN_ERROR"
 
     def _last_dcam_error_string(self):
-        with self._camera_lock:
-            return HamamatsuCamera._last_dcam_error_string_direct(self._camera.lasterr())
+        return HamamatsuCamera._last_dcam_error_string_direct(self._camera.lasterr())
 
     def set_exposure_time(self, exposure_time_ms: float):
         camera_exposure_time_s = exposure_time_ms / 1000.0
@@ -205,9 +199,8 @@ class HamamatsuCamera(AbstractCamera):
         return 0.017633, 10000.0046  # Each in ms
 
     def get_strobe_time(self) -> float:
-        with self._camera_lock:
-            line_interval_s = self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL)
-            trigger_delay_s = self._camera.prop_getvalue(DCAM_IDPROP.TRIGGERDELAY)
+        line_interval_s = self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL)
+        trigger_delay_s = self._camera.prop_getvalue(DCAM_IDPROP.TRIGGERDELAY)
 
         if isinstance(line_interval_s, bool) or isinstance(trigger_delay_s, bool):
             raise CameraError("Failed to get strobe delay properties from camera")
@@ -243,8 +236,7 @@ class HamamatsuCamera(AbstractCamera):
                 raise CameraError(f"Failed to set pixel format to {pixel_format}")
 
     def get_pixel_format(self) -> CameraPixelFormat:
-        with self._camera_lock:
-            raw_dcam_pixel_format = self._camera.prop_getvalue(DCAM_IDPROP.IMAGE_PIXELTYPE)
+        raw_dcam_pixel_format = self._camera.prop_getvalue(DCAM_IDPROP.IMAGE_PIXELTYPE)
 
         if isinstance(raw_dcam_pixel_format, bool):
             raise CameraError("Failed to get pixel format from camera.")
@@ -283,9 +275,8 @@ class HamamatsuCamera(AbstractCamera):
         return True
 
     def get_resolution(self) -> Tuple[int, int]:
-        with self._camera_lock:
-            raw_width = self._camera.prop_getvalue(DCAM_IDPROP.IMAGE_WIDTH)
-            raw_height = self._camera.prop_getvalue(DCAM_IDPROP.IMAGE_HEIGHT)
+        raw_width = self._camera.prop_getvalue(DCAM_IDPROP.IMAGE_WIDTH)
+        raw_height = self._camera.prop_getvalue(DCAM_IDPROP.IMAGE_HEIGHT)
 
         if isinstance(raw_width, bool) or isinstance(raw_height, bool):
             raise CameraError("Camera failed to report width or height.")
@@ -324,13 +315,12 @@ class HamamatsuCamera(AbstractCamera):
             self._log.debug("Already streaming, start_streaming is noop")
             return True
 
-        with self._camera_lock:
-            if not self._allocate_read_buffers():
-                self._log.error(f"Couldn't allocate read buffers for streaming: {self._last_dcam_error_string()}")
-                return False
-            if not self._camera.cap_start():
-                self._log.error(f"Failed to start streaming: {self._last_dcam_error_string()}")
-                return False
+        if not self._allocate_read_buffers():
+            self._log.error(f"Couldn't allocate read buffers for streaming: {self._last_dcam_error_string()}")
+            return False
+        if not self._camera.cap_start():
+            self._log.error(f"Failed to start streaming: {self._last_dcam_error_string()}")
+            return False
 
         self._trigger_sent.clear()
         self._is_streaming.set()
@@ -356,19 +346,18 @@ class HamamatsuCamera(AbstractCamera):
     def stop_streaming(self):
         self._log.debug("Stopping Hamamatsu streaming.")
         success = True
-        with self._camera_lock:
-            if not self._camera.cap_stop():
-                self._log.error(f"Failed to stop camera streaming: {self._last_dcam_error_string()}")
-                success = False
+        if not self._camera.cap_stop():
+            self._log.error(f"Failed to stop camera streaming: {self._last_dcam_error_string()}")
+            success = False
 
-            if not self._camera.buf_release():
-                self._log.error(f"Failed to release camera buffers: {self._last_dcam_error_string()}")
-                success = False
+        if not self._camera.buf_release():
+            self._log.error(f"Failed to release camera buffers: {self._last_dcam_error_string()}")
+            success = False
 
-            self._log.debug(f"Stopped with {success=}")
-            self._trigger_sent.clear()
-            self._is_streaming.clear()
-            return success
+        self._log.debug(f"Stopped with {success=}")
+        self._trigger_sent.clear()
+        self._is_streaming.clear()
+        return success
 
     def get_is_streaming(self):
         return self._is_streaming.is_set()
@@ -432,8 +421,7 @@ class HamamatsuCamera(AbstractCamera):
         return True
 
     def get_acquisition_mode(self) -> CameraAcquisitionMode:
-        with self._camera_lock:
-            dcam_mode_raw = self._camera.prop_getvalue(DCAM_IDPROP.TRIGGERSOURCE)
+        dcam_mode_raw = self._camera.prop_getvalue(DCAM_IDPROP.TRIGGERSOURCE)
 
         if isinstance(dcam_mode_raw, bool):
             raise CameraError("Failed to get camera trigger source prop.")
@@ -465,9 +453,8 @@ class HamamatsuCamera(AbstractCamera):
             self._hw_trigger_fn(illumination_time)
         elif self.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER:
             self._log.debug("Sending software trigger..")
-            with self._camera_lock:
-                if not self._camera.cap_firetrigger():
-                    raise CameraError(f"Failed to send software trigger: {self._last_dcam_error_string()}")
+            if not self._camera.cap_firetrigger():
+                raise CameraError(f"Failed to send software trigger: {self._last_dcam_error_string()}")
 
             self._last_trigger_timestamp = time.time()
             self._trigger_sent.set()
@@ -479,47 +466,43 @@ class HamamatsuCamera(AbstractCamera):
 
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
         with self._pause_streaming():
-            with self._camera_lock:
-                roi_mode_on = self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.ON)
+            roi_mode_on = self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.ON)
 
-                def fail(msg):
-                    """
-                    This is a helper for turning off roi mode if any of the sets below fail.
-                    """
-                    self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.OFF)
-                    raise ValueError(msg)
+            def fail(msg):
+                """
+                This is a helper for turning off roi mode if any of the sets below fail.
+                """
+                self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.OFF)
+                raise ValueError(msg)
 
-                if not roi_mode_on:
-                    raise CameraError("Failed to turn on roi mode on camera, cannot set roi.")
+            if not roi_mode_on:
+                raise CameraError("Failed to turn on roi mode on camera, cannot set roi.")
 
-                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHPOS, int(offset_x)):
-                    fail("Could not set roi x offset.")
+            if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHPOS, int(offset_x)):
+                fail("Could not set roi x offset.")
 
-                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHSIZE, int(width)):
-                    fail("Could not set roi width.")
+            if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHSIZE, int(width)):
+                fail("Could not set roi width.")
 
-                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVPOS, int(offset_y)):
-                    fail("Could not set roi y offset.")
+            if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVPOS, int(offset_y)):
+                fail("Could not set roi y offset.")
 
-                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVSIZE, int(height)):
-                    fail("Could not set roi height.")
+            if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVSIZE, int(height)):
+                fail("Could not set roi height.")
 
         # Force exposure + strobe delay recalculation if needed
         self.set_exposure_time(self.get_exposure_time())
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
-        with self._camera_lock:
-            return (
-                int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYHPOS)),
-                int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYVPOS)),
-                int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYHSIZE)),
-                int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYVSIZE)),
-            )
+        return (
+            int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYHPOS)),
+            int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYVPOS)),
+            int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYHSIZE)),
+            int(self._camera.prop_getvalue(DCAM_IDPROP.SUBARRAYVSIZE)),
+        )
 
     def set_temperature(self, temperature_deg_c: Optional[float]):
-        with self._camera_lock:
-            self._camera.prop_setvalue(DCAM_IDPROP.SENSORTEMPERATURETARGET, temperature_deg_c)
+        self._camera.prop_setvalue(DCAM_IDPROP.SENSORTEMPERATURETARGET, temperature_deg_c)
 
     def get_temperature(self) -> float:
-        with self._camera_lock:
-            return self._camera.prop_getvalue(DCAM_IDPROP.SENSORTEMPERATURE)
+        return self._camera.prop_getvalue(DCAM_IDPROP.SENSORTEMPERATURE)
