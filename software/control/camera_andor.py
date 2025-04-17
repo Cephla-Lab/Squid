@@ -278,7 +278,7 @@ class Camera(object):
             print(f"Error reading frame: {e}")
             return None
 
-    def start_streaming(self, buffer_frame_num=5):
+    def start_streaming(self, buffer_frame_num=2):
         if self.is_streaming:
             return
 
@@ -316,7 +316,7 @@ class Camera(object):
         pass
 
     def calculate_strobe_delay(self):
-        self.strobe_delay_us = int(self.line_rate * 2760)
+        self.strobe_delay_us = int(self.line_rate * 2048)
 
 
 class Camera_Simulation(object):
