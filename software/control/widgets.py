@@ -1339,7 +1339,7 @@ class LiveControlWidget(QFrame):
         # line 0: trigger mode
         self.dropdown_triggerManu = QComboBox()
         self.dropdown_triggerManu.addItems([TriggerMode.SOFTWARE, TriggerMode.HARDWARE, TriggerMode.CONTINUOUS])
-        self.dropdown_triggerManu.setCurrentText(self.liveController.camera.trigger_mode)
+        self.dropdown_triggerManu.setCurrentText(self.liveController.camera.get_acquisition_mode().value)
         sizePolicy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.dropdown_triggerManu.setSizePolicy(sizePolicy)
 

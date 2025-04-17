@@ -6,7 +6,7 @@ import tempfile
 import control._def
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
-from squid.abc import AbstractStage, AbstractCamera
+from squid.abc import AbstractStage, AbstractCamera, CameraAcquisitionMode
 import squid.logging
 
 # qt libraries
