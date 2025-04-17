@@ -28,6 +28,7 @@ class Camera(object):
         self.is_streaming = False
         self.pixel_format = None
         self.is_color = False
+        self.available_pixel_formats = ["MONO8", "MONO12", "MONO16"]
 
         self.frame_ID = -1
         self.frame_ID_software = -1
@@ -271,6 +272,7 @@ class Camera(object):
                 self.cam.readout_port = 2
             else:
                 raise ValueError(f"Invalid pixel format: {pixel_format}")
+            self.pixel_format = pixel_format
 
             self.calculate_strobe_delay()
             if self.trigger_mode == TriggerMode.HARDWARE:
@@ -324,6 +326,11 @@ class Camera(object):
             self.strobe_delay_us = int(3.53125 * 2720)  # us
         elif self.pixel_format == "MONO16":
             self.strobe_delay_us = int(3.75 * 2720)  # us
+        else:
+            self.log.warning(
+                f"Invalid pixel format: {self.pixel_format}, using sensitivity mode for strobe delay calculation"
+            )
+            self.strobe_delay_us = int(3.53125 * 2720)  # default mode is sensitivity mode
         # TODO: trigger delay, line delay
 
 
@@ -337,6 +344,7 @@ class Camera_Simulation(object):
         self.is_streaming = False
         self.pixel_format = None
         self.is_color = False
+        self.available_pixel_formats = ["MONO8", "MONO12", "MONO16"]
 
         self.frame_ID = -1
         self.frame_ID_software = -1
