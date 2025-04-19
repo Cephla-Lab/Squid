@@ -233,11 +233,11 @@ class HighContentScreeningGui(QMainWindow):
             channel_manager=self.channelConfigurationManager, laser_af_manager=self.laserAFSettingManager
         )
         self.contrastManager = core.ContrastManager()
-        self.streamHandler = core.StreamHandler()
 
         self.liveController = core.LiveController(
             self.camera, self.microcontroller, self.illuminationController, parent=self
         )
+        self.streamHandler = core.StreamHandler(accept_new_frame_fn=lambda: self.liveController.is_live)
 
         self.slidePositionController = core.SlidePositionController(
             self.stage, self.liveController, is_for_wellplate=True
@@ -286,7 +286,6 @@ class HighContentScreeningGui(QMainWindow):
         )
 
         if SUPPORT_LASER_AUTOFOCUS:
-            self.streamHandler_focus_camera = core.StreamHandler()
             self.liveController_focus_camera = core.LiveController(
                 self.camera_focus,
                 self.microcontroller,
@@ -294,6 +293,7 @@ class HighContentScreeningGui(QMainWindow):
                 control_illumination=False,
                 for_displacement_measurement=True,
             )
+            self.streamHandler_focus_camera = core.StreamHandler(accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live)
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(show_LUT=False, autoLevels=False)
             self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
             self.laserAutofocusController = core.LaserAutofocusController(

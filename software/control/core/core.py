@@ -39,7 +39,7 @@ try:
 except:
     pass
 
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Callable
 from queue import Queue
 from threading import Thread, Lock
 from pathlib import Path
@@ -110,7 +110,7 @@ class StreamHandler(QObject):
     signal_new_frame_received = Signal()
 
     def __init__(
-        self, crop_width=Acquisition.CROP_WIDTH, crop_height=Acquisition.CROP_HEIGHT, display_resolution_scaling=1
+        self, crop_width=Acquisition.CROP_WIDTH, crop_height=Acquisition.CROP_HEIGHT, display_resolution_scaling=1, accept_new_frame_fn: Callable[[], bool] = lambda: True
     ):
         QObject.__init__(self)
         self.fps_display = 1
@@ -132,6 +132,9 @@ class StreamHandler(QObject):
         self.timestamp_last = 0
         self.counter = 0
         self.fps_real = 0
+
+        # Only accept new frames if this user defined function returns true
+        self._accept_new_frames_fn = accept_new_frame_fn
 
     def start_recording(self):
         self.save_image_flag = True
@@ -160,6 +163,10 @@ class StreamHandler(QObject):
         print(self.display_resolution_scaling)
 
     def on_new_frame(self, frame: squid.abc.CameraFrame):
+        if not self._accept_new_frames_fn():
+            return
+
+        self.handler_busy = True
         self.signal_new_frame_received.emit()
 
         # measure real fps
@@ -616,7 +623,7 @@ class LiveController(QObject):
             if self.trigger_mode == TriggerMode.SOFTWARE:
                 self._stop_triggerred_acquisition()
             if self.trigger_mode == TriggerMode.CONTINUOUS:
-                pass # Stop streaming is called below
+                self.camera.stop_streaming()
             if (self.trigger_mode == TriggerMode.SOFTWARE) or (
                 self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
             ):
@@ -626,7 +633,6 @@ class LiveController(QObject):
             # if controlling the laser displacement measurement camera
             if self.for_displacement_measurement:
                 self.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
-            self.camera.stop_streaming()
 
     # software trigger related
     def trigger_acquisition(self):

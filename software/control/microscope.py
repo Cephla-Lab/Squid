@@ -103,12 +103,11 @@ class Microscope(QObject):
             self.channelConfigurationManager, self.laserAFSettingManager
         )
 
-        self.streamHandler = core.StreamHandler()
         self.liveController = core.LiveController(self.camera, self.microcontroller, None, self)
+        self.streamHandler = core.StreamHandler(accept_new_frame_fn=lambda: self.liveController.is_live)
         self.slidePositionController = core.SlidePositionController(self.stage, self.liveController)
 
         if SUPPORT_LASER_AUTOFOCUS:
-            self.streamHandler_focus_camera = core.StreamHandler()
             self.liveController_focus_camera = core.LiveController(
                 self.camera_focus,
                 self.microcontroller,
@@ -117,6 +116,7 @@ class Microscope(QObject):
                 control_illumination=False,
                 for_displacement_measurement=True,
             )
+            self.streamHandler_focus_camera = core.StreamHandler(accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live)
             self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
             self.laserAutofocusController = core.LaserAutofocusController(
                 self.microcontroller,

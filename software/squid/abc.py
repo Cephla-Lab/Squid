@@ -379,9 +379,6 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         if not self._frame_callbacks_enabled:
             return
-        if not self.get_is_streaming():
-            self._log.debug("Received propagate frame after streaming stopped, not propagating.")
-            return
         for _, cb in self._frame_callbacks:
             cb(camera_frame)
 
