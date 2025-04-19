@@ -4304,7 +4304,11 @@ class WellplateMultiPointWidget(QFrame):
         self.signal_acquisition_started.emit(False)
         self.is_current_acquisition_widget = False
         self.btn_startAcquisition.setChecked(False)
+        if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
+            self.focusMapWidget.disable_updating_focus_points_on_signal()
         self.reset_coordinates()
+        if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
+            self.focusMapWidget.enable_updating_focus_points_on_signal()
         self.setEnabled_all(True)
 
     def setEnabled_all(self, enabled):
@@ -5423,12 +5427,12 @@ class FocusMapWidget(QFrame):
         settings_layout = QHBoxLayout()
         settings_layout.addWidget(QLabel("Focus Grid:"))
         self.rows_spin = QSpinBox()
-        self.rows_spin.setRange(2, 10)
+        self.rows_spin.setRange(1, 10)
         self.rows_spin.setValue(4)
         settings_layout.addWidget(self.rows_spin)
         settings_layout.addWidget(QLabel("×"))
         self.cols_spin = QSpinBox()
-        self.cols_spin.setRange(2, 10)
+        self.cols_spin.setRange(1, 10)
         self.cols_spin.setValue(4)
         settings_layout.addWidget(self.cols_spin)
         settings_layout.addStretch()
@@ -5614,9 +5618,8 @@ class FocusMapWidget(QFrame):
 
     def fit_surface(self):
         if len(self.focus_points) < 4:
-            self.status_label.setText("Need at least 4 points to fit surface")
+            self.status_label.setText("It's recommended to use at least 4 points to fit surface")
             self.status_label.show()
-            return False
 
         try:
             self.focusMap.set_method(self.fit_method_combo.currentText())
@@ -5635,7 +5638,13 @@ class FocusMapWidget(QFrame):
 
     def on_regions_updated(self):
         if self.scanCoordinates.has_regions():
-            self.generate_grid()
+            self.generate_grid(self.rows_spin.value(), self.cols_spin.value())
+
+    def disable_updating_focus_points_on_signal(self):
+        self.scanCoordinates.signal_scan_coordinates_updated.disconnect(self.on_regions_updated)
+
+    def enable_updating_focus_points_on_signal(self):
+        self.scanCoordinates.signal_scan_coordinates_updated.connect(self.on_regions_updated)
 
     def setEnabled(self, enabled):
         self.enabled = enabled

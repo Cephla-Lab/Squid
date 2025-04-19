@@ -4545,23 +4545,31 @@ class FocusMap:
             # For add_margin we are using one more row and col, taking the middle points on the grid so that the
             # focus points are not located at the edges of the scaning grid.
             # TODO: set a value for margin from user input
+            # Calculate x and y positions
             if add_margin:
-                x_step = (x_max - x_min) / cols if cols > 1 else 0
-                y_step = (y_max - y_min) / rows if rows > 1 else 0
+                # With margin, divide the area into equal cells and use cell centers
+                x_step = (x_max - x_min) / cols
+                y_step = (y_max - y_min) / rows
+
+                x_positions = [x_min + (j + 0.5) * x_step for j in range(cols)]
+                y_positions = [y_min + (i + 0.5) * y_step for i in range(rows)]
             else:
-                x_step = (x_max - x_min) / (cols - 1) if cols > 1 else 0
-                y_step = (y_max - y_min) / (rows - 1) if rows > 1 else 0
+                # Without margin, handle special cases for rows=1 or cols=1
+                if rows == 1:
+                    y_positions = [y_min + (y_max - y_min) / 2]  # Center point
+                else:
+                    y_step = (y_max - y_min) / (rows - 1)
+                    y_positions = [y_min + i * y_step for i in range(rows)]
 
-            # Generate grid points
-            for i in range(rows):
-                for j in range(cols):
-                    if add_margin:
-                        x = x_min + x_step / 2 + j * x_step
-                        y = y_min + y_step / 2 + i * y_step
-                    else:
-                        x = x_min + j * x_step
-                        y = y_min + i * y_step
+                if cols == 1:
+                    x_positions = [x_min + (x_max - x_min) / 2]  # Center point
+                else:
+                    x_step = (x_max - x_min) / (cols - 1)
+                    x_positions = [x_min + j * x_step for j in range(cols)]
 
+            # Generate grid points by combining x and y positions
+            for y in y_positions:
+                for x in x_positions:
                     # Check if point is within region bounds
                     if scanCoordinates.validate_coordinates(x, y) and scanCoordinates.region_contains_coordinate(
                         region_id, x, y
@@ -4590,25 +4598,38 @@ class FocusMap:
         Returns:
             tuple: (mean_error, std_error) in mm
         """
-        if len(points) < 4:
-            raise ValueError("Need at least 4 points to fit surface")
+        if len(points) < 1:
+            raise ValueError("No focus points provided")
 
         self.points = np.array(points)
         x = self.points[:, 0]
         y = self.points[:, 1]
         z = self.points[:, 2]
 
-        if self.method == "spline":
-            try:
-                self.surface_fit = SmoothBivariateSpline(
-                    x, y, z, kx=3, ky=3, s=self.smoothing_factor  # cubic spline in x  # cubic spline in y
-                )
-            except Exception as e:
-                print(f"Spline fitting failed: {str(e)}, falling back to RBF")
-                self.method = "rbf"
-                self._fit_rbf(x, y, z)
-        else:
+        if len(points) == 1:
+            # For single point, create a flat plane at that z-height
+            self._fit_constant_plane(z[0])
+            errors = np.array([0.0])  # No error for a single point
+
+        elif len(points) == 2 or len(points) == 3:
+            # For two or three points, use RBF interpolation
+            print("Using RBF interpolation for 2 or 3 points")
+            self.method = "rbf"
             self._fit_rbf(x, y, z)
+            errors = self._calculate_fitting_errors()
+
+        else:
+            if self.method == "spline":
+                try:
+                    self.surface_fit = SmoothBivariateSpline(
+                        x, y, z, kx=3, ky=3, s=self.smoothing_factor  # cubic spline in x  # cubic spline in y
+                    )
+                except Exception as e:
+                    print(f"Spline fitting failed: {str(e)}, falling back to RBF")
+                    self.method = "rbf"
+                    self._fit_rbf(x, y, z)
+            else:
+                self._fit_rbf(x, y, z)
 
         self.is_fitted = True
         errors = self._calculate_fitting_errors()
@@ -4618,6 +4639,17 @@ class FocusMap:
         """Fit using Radial Basis Function interpolation"""
         xy = np.column_stack((x, y))
         self.surface_fit = RBFInterpolator(xy, z, kernel="thin_plate_spline", epsilon=self.smoothing_factor)
+
+    def _fit_constant_plane(self, z_value):
+        """Create a constant height plane"""
+
+        def constant_plane(x, y):
+            if isinstance(x, np.ndarray):
+                return np.full_like(x, z_value)
+            else:
+                return z_value
+
+        self.surface_fit = constant_plane
 
     def interpolate(self, x, y):
         """Get interpolated Z value at given (x,y) coordinates
