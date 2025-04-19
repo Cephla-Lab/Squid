@@ -616,7 +616,7 @@ class LiveController(QObject):
             if self.trigger_mode == TriggerMode.SOFTWARE:
                 self._stop_triggerred_acquisition()
             if self.trigger_mode == TriggerMode.CONTINUOUS:
-                self.camera.stop_streaming()
+                pass # Stop streaming is called below
             if (self.trigger_mode == TriggerMode.SOFTWARE) or (
                 self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
             ):
@@ -626,6 +626,7 @@ class LiveController(QObject):
             # if controlling the laser displacement measurement camera
             if self.for_displacement_measurement:
                 self.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
+            self.camera.stop_streaming()
 
     # software trigger related
     def trigger_acquisition(self):
@@ -641,22 +642,26 @@ class LiveController(QObject):
                 self.turn_on_illumination()
 
         self.trigger_ID = self.trigger_ID + 1
-        self.camera.send_trigger(self.camera.get_exposure_time())
+
+        # One final check to make sure we are actually live
+        # Even if we aren't live, continue on so illumination gets handled.
+        if self.is_live:
+            self.camera.send_trigger(self.camera.get_exposure_time())
+
+            # TODO(imo): Looks like this is dead code since the print is commented out?
+            # measure real fps
+            timestamp_now = round(time.time())
+            if timestamp_now == self.timestamp_last:
+                self.counter = self.counter + 1
+            else:
+                self.timestamp_last = timestamp_now
+                self.fps_real = self.counter
+                self.counter = 0
+                # print('real trigger fps is ' + str(self.fps_real))
 
         if self.trigger_mode == TriggerMode.SOFTWARE:
             if self.control_illumination and self.illumination_on == False:
                 self.turn_on_illumination()
-
-        # TODO(imo): Looks like this is dead code since the print is commented out?
-        # measure real fps
-        timestamp_now = round(time.time())
-        if timestamp_now == self.timestamp_last:
-            self.counter = self.counter + 1
-        else:
-            self.timestamp_last = timestamp_now
-            self.fps_real = self.counter
-            self.counter = 0
-            # print('real trigger fps is ' + str(self.fps_real))
 
     def _start_triggerred_acquisition(self):
         if not self.timer_trigger.isActive():
