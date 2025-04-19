@@ -110,7 +110,11 @@ class StreamHandler(QObject):
     signal_new_frame_received = Signal()
 
     def __init__(
-        self, crop_width=Acquisition.CROP_WIDTH, crop_height=Acquisition.CROP_HEIGHT, display_resolution_scaling=1, accept_new_frame_fn: Callable[[], bool] = lambda: True
+        self,
+        crop_width=Acquisition.CROP_WIDTH,
+        crop_height=Acquisition.CROP_HEIGHT,
+        display_resolution_scaling=1,
+        accept_new_frame_fn: Callable[[], bool] = lambda: True,
     ):
         QObject.__init__(self)
         self.fps_display = 1

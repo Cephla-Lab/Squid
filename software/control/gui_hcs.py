@@ -293,7 +293,9 @@ class HighContentScreeningGui(QMainWindow):
                 control_illumination=False,
                 for_displacement_measurement=True,
             )
-            self.streamHandler_focus_camera = core.StreamHandler(accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live)
+            self.streamHandler_focus_camera = core.StreamHandler(
+                accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live
+            )
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(show_LUT=False, autoLevels=False)
             self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
             self.laserAutofocusController = core.LaserAutofocusController(

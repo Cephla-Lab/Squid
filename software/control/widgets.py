@@ -1032,7 +1032,9 @@ class CameraSettingsWidget(QFrame):
         # connection
         self.entry_exposureTime.valueChanged.connect(self.camera.set_exposure_time)
         self.entry_analogGain.valueChanged.connect(self.set_analog_gain_if_supported)
-        self.dropdown_pixelFormat.currentTextChanged.connect(lambda s: self.camera.set_pixel_format(CameraPixelFormat.from_string(s)))
+        self.dropdown_pixelFormat.currentTextChanged.connect(
+            lambda s: self.camera.set_pixel_format(CameraPixelFormat.from_string(s))
+        )
         self.entry_ROI_offset_x.valueChanged.connect(self.set_ROI_offset)
         self.entry_ROI_offset_y.valueChanged.connect(self.set_ROI_offset)
         self.entry_ROI_height.valueChanged.connect(self.set_Height)

@@ -33,6 +33,6 @@ while True:
         log.info(f"Frame ready, {time.time() - last_trigger} since trigger.")
         frame = camera.buf_getlastframedata()
         trigger_sent = False
-        frame_count+=1
+        frame_count += 1
     time.sleep(exposure_time_s)
     log.info(f"Current frame id: {frame_count}")

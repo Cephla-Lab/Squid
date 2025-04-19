@@ -24,7 +24,7 @@ if SUPPORT_LASER_AUTOFOCUS:
 
 class Microscope(QObject):
 
-    def __init__(self, microscope = None, is_simulation=False):
+    def __init__(self, microscope=None, is_simulation=False):
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
         if microscope is None:
@@ -116,7 +116,9 @@ class Microscope(QObject):
                 control_illumination=False,
                 for_displacement_measurement=True,
             )
-            self.streamHandler_focus_camera = core.StreamHandler(accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live)
+            self.streamHandler_focus_camera = core.StreamHandler(
+                accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live
+            )
             self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
             self.laserAutofocusController = core.LaserAutofocusController(
                 self.microcontroller,

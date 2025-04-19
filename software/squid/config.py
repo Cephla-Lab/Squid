@@ -189,6 +189,7 @@ class CameraPixelFormat(enum.Enum):
     def from_string(pixel_format_string):
         return CameraPixelFormat[pixel_format_string]
 
+
 class RGBValue(pydantic.BaseModel):
     r: float
     g: float
