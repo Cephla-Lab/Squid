@@ -186,11 +186,21 @@ class XLight_Simulation:
     def set_illumination_iris(self, value):
         # value: 0 - 100
         self.illumination_iris = value
+        print("illumination_iris", self.illumination_iris)
+        return self.illumination_iris
+
+    def get_illumination_iris(self):
+        self.illumination_iris = 100
         return self.illumination_iris
 
     def set_emission_iris(self, value):
         # value: 0 - 100
         self.emission_iris = value
+        print("emission_iris", self.emission_iris)
+        return self.emission_iris
+
+    def get_emission_iris(self):
+        self.emission_iris = 100
         return self.emission_iris
 
     def set_filter_slider(self, position):
@@ -246,6 +256,11 @@ class XLight:
 
         self.parse_idc_response(self.serial_connection.write_and_read("idc\r"))
         self.print_config()
+
+        if self.has_illumination_iris_diaphragm:
+            self.set_illumination_iris(XLIGHT_ILLUMINATION_IRIS_DEFAULT)
+        if self.has_emission_iris_diaphragm:
+            self.set_emission_iris(XLIGHT_EMISSION_IRIS_DEFAULT)
 
     def parse_idc_response(self, response):
         # Convert hexadecimal response to integer
@@ -349,11 +364,21 @@ class XLight:
         self.serial_connection.write_and_check("J" + value + "\r", "J" + value, read_delay=3)
         return self.illumination_iris
 
+    def get_illumination_iris(self):
+        current_pos = self.serial_connection.write_and_check("rJ\r", "rJ", read_delay=0.01)
+        self.illumination_iris = int(int(current_pos[2:]) / 10)
+        return self.illumination_iris
+
     def set_emission_iris(self, value):
         # value: 0 - 100
         self.emission_iris = value
         value = str(int(10 * value))
         self.serial_connection.write_and_check("V" + value + "\r", "V" + value, read_delay=3)
+        return self.emission_iris
+
+    def get_emission_iris(self):
+        current_pos = self.serial_connection.write_and_check("rV\r", "rV", read_delay=0.01)
+        self.emission_iris = int(int(current_pos[2:]) / 10)
         return self.emission_iris
 
     def set_filter_slider(self, position):
