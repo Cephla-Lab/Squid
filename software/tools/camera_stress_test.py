@@ -85,11 +85,16 @@ def main(args):
         hw_trigger = None
         strobe_delay_fn = None
 
+    camera_type = squid.config.CameraVariant.from_string(args.camera)
+    if not camera_type:
+        log.error("Invalid camera type '{}'", args.camera)
+        return 1
+
     default_config = squid.config.get_camera_config()
-    forced_hamamatsu_config = default_config.model_copy(update={"camera_type": squid.config.CameraVariant.HAMAMATSU})
+    force_this_camera_config = default_config.model_copy(update={"camera_type": camera_type})
 
     cam = squid.camera.utils.get_camera(
-        forced_hamamatsu_config, False, hw_trigger_fn=hw_trigger, hw_set_strobe_delay_ms_fn=strobe_delay_fn
+        force_this_camera_config, False, hw_trigger_fn=hw_trigger, hw_set_strobe_delay_ms_fn=strobe_delay_fn
     )
 
     stats = Stats()
@@ -116,6 +121,7 @@ def main(args):
     log.info(
         (
             f"Camera Info:\n"
+            f"  Type: {args.camera}\n"
             f"  Resolution: {cam.get_resolution()}\n"
             f"  Exposure Time: {cam.get_exposure_time()} [ms]\n"
             f"  Strobe Time: {cam.get_strobe_time()} [ms]\n"
@@ -138,13 +144,14 @@ def main(args):
     finally:
         log.info("Stopping streaming...")
         cam.stop_streaming()
+        return 0
 
 
 if __name__ == "__main__":
     import argparse
     import sys
 
-    ap = argparse.ArgumentParser(description="hammer a hamamatsu camera to test it.")
+    ap = argparse.ArgumentParser(description="hammer a camera to test it.")
 
     ap.add_argument("--runtime", type=float, help="Time, in s, to run the test for.", default=60)
     ap.add_argument(
@@ -158,6 +165,7 @@ if __name__ == "__main__":
     ap.add_argument("--exposure", type=float, help="The exposure time in ms", default=1)
     ap.add_argument("--report_interval", type=int, help="Report every this many frames captured.", default=100)
     ap.add_argument("--verbose", action="store_true", help="Turn on debug logging")
+    ap.add_argument("--camera", type=str, choices=["Hamamatsu", "Toupcam", "Default"], help="The type of camera to create and use for this test.")
 
     args = ap.parse_args()
 

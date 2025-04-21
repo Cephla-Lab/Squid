@@ -157,6 +157,16 @@ class CameraVariant(enum.Enum):
     TIS = "TIS"
     GXIPY = "GXIPY"
 
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["CameraVariant"]:
+        """
+        Attempts to convert the given string to a camera variant.  This ignores all letter cases.
+        """
+        try:
+            return CameraVariant[cam_string.upper()]
+        except KeyError:
+            return None
+
 
 class CameraPixelFormat(enum.Enum):
     """
