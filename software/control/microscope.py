@@ -93,7 +93,7 @@ class Microscope(QObject):
         else:
             self.piezo = None
 
-        self.objectiveStore = core.ObjectiveStore(parent=self)
+        self.objectiveStore = core.ObjectiveStore()
         self.channelConfigurationManager = core.ChannelConfigurationManager()
         if SUPPORT_LASER_AUTOFOCUS:
             self.laserAFSettingManager = core.LaserAFSettingManager()
