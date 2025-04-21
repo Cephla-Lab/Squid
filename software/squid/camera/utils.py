@@ -109,7 +109,7 @@ class SimulatedCamera(AbstractCamera):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._frame_id = 1
+        self._frame_id = 0
         self._current_raw_frame = None
         self._current_frame = None
 
@@ -290,7 +290,7 @@ class SimulatedCamera(AbstractCamera):
     @debug_log
     def send_trigger(self, illumination_time: Optional[float] = None):
         (height, width) = self.get_resolution()
-        if self.get_frame_id() == 1:
+        if self.get_frame_id() == 0:
             if self.get_pixel_format() == CameraPixelFormat.MONO8:
                 self._current_raw_frame = np.random.randint(255, size=(height, width), dtype=np.uint8)
                 self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = 200
