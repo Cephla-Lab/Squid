@@ -4953,7 +4953,6 @@ class LaserAutofocusController(QObject):
             self._log.info("Cross correlation check passed - spots are well aligned")
             return True
 
-
     def _move_z(self, um_to_move: float) -> None:
         if self.piezo is not None:
             # TODO: check if um_to_move is in the range of the piezo
