@@ -338,7 +338,7 @@ class DefaultCamera(AbstractCamera):
 
         return self._camera.data_stream[0].acquisition_flag
 
-    def read_camera_frame(self) -> CameraFrame:
+    def read_camera_frame(self) -> Optional[CameraFrame]:
         self._log.debug("Entering read_camera_frame.")
         starting_frame_id = self.get_frame_id()
         if not self.get_is_streaming():

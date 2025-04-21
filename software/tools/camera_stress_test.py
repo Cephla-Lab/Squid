@@ -87,7 +87,7 @@ def main(args):
 
     camera_type = squid.config.CameraVariant.from_string(args.camera)
     if not camera_type:
-        log.error("Invalid camera type '{}'", args.camera)
+        log.error(f"Invalid camera type '{args.camera}'")
         return 1
 
     default_config = squid.config.get_camera_config()
@@ -165,7 +165,13 @@ if __name__ == "__main__":
     ap.add_argument("--exposure", type=float, help="The exposure time in ms", default=1)
     ap.add_argument("--report_interval", type=int, help="Report every this many frames captured.", default=100)
     ap.add_argument("--verbose", action="store_true", help="Turn on debug logging")
-    ap.add_argument("--camera", type=str, choices=["Hamamatsu", "Toupcam", "Default"], help="The type of camera to create and use for this test.")
+    ap.add_argument(
+        "--camera",
+        type=str,
+        required=True,
+        choices=["hamamatsu", "toupcam", "gxipy"],
+        help="The type of camera to create and use for this test.",
+    )
 
     args = ap.parse_args()
 

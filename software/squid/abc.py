@@ -528,7 +528,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
             raw_frame, rotate_image_angle=self._config.rotate_image_angle, flip_image=self._config.flip
         )
 
-    def read_frame(self) -> np.ndarray:
+    def read_frame(self) -> Optional[np.ndarray]:
         """
         If needed, send a trigger to request a frame.  Then block and wait until the next frame comes in,
         and return it.  The frame that comes back will be rotated/flipped/etc based on this cameras config,
@@ -538,14 +538,21 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
         NOTE(imo): We might change this to get_frame to be consistent with everything else here, but
         since cameras previously used read_frame this decreases line change noise.
+
+        Might return None if getting a frame timed out, or another error occurred.
         """
-        return self.read_camera_frame().frame
+        full_frame = self.read_camera_frame()
+
+        # read_camera_frame will have already printed an error, so just pass on the none.
+        return full_frame.frame if full_frame else None
 
     @abc.abstractmethod
-    def read_camera_frame(self) -> CameraFrame:
+    def read_camera_frame(self) -> Optional[CameraFrame]:
         """
         This calls read_frame, but also fills in all the information such that you get a CameraFrame.  The
         frame in the CameraFrame will have had _process_raw_frame called on it already.
+
+        Might return None if getting a frame timed out, or another error occurred.
         """
         pass
 

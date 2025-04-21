@@ -362,21 +362,24 @@ class HamamatsuCamera(AbstractCamera):
     def get_is_streaming(self):
         return self._is_streaming.is_set()
 
-    def read_camera_frame(self) -> CameraFrame:
+    def read_camera_frame(self) -> Optional[CameraFrame]:
         if not self.get_is_streaming():
-            raise CameraError("Cannot read camera frame when not streaming.")
+            self._log.error("Cannot read camera frame when not streaming.")
+            return None
 
         if not self._read_thread_running.is_set():
-            raise CameraError("Fatal camera error: read thread not running!")
+            self._log.error("Fatal camera error: read thread not running!")
+            return None
 
         starting_id = self.get_frame_id()
         timeout_s = (1.04 * self.get_total_frame_time() + 1000) / 1000.0
         timeout_time_s = time.time() + timeout_s
         while self.get_frame_id() == starting_id:
             if time.time() > timeout_time_s:
-                raise CameraError(
+                self._log.warning(
                     f"Timed out after waiting {timeout_s=}[s] for frame ({starting_id=}), total_frame_time={self.get_total_frame_time()}."
                 )
+                return None
             time.sleep(0.001)
 
         with self._frame_lock:
