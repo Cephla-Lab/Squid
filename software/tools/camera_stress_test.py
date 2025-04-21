@@ -8,7 +8,7 @@ import squid.config
 import squid.logging
 from squid.abc import CameraFrame, CameraAcquisitionMode
 
-log = squid.logging.get_logger("hamamatsu test")
+log = squid.logging.get_logger("camera stress test")
 
 
 class Stats:
@@ -177,7 +177,7 @@ if __name__ == "__main__":
         "--camera",
         type=str,
         required=True,
-        choices=["hamamatsu", "toupcam", "gxipy"],
+        choices=["hamamatsu", "toupcam", "gxipy", "simulated"],
         help="The type of camera to create and use for this test.",
     )
 
