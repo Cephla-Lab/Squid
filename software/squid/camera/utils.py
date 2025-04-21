@@ -7,7 +7,14 @@ import numpy as np
 
 import squid.logging
 from squid.config import CameraConfig, CameraPixelFormat, CameraVariant
-from squid.abc import AbstractCamera, CameraAcquisitionMode, CameraFrameFormat, CameraFrame, CameraGainRange
+from squid.abc import (
+    AbstractCamera,
+    CameraAcquisitionMode,
+    CameraFrameFormat,
+    CameraFrame,
+    CameraGainRange,
+    CameraError,
+)
 
 _log = squid.logging.get_logger("squid.camera.utils")
 
@@ -100,8 +107,9 @@ class SimulatedCamera(AbstractCamera):
         def _logged_method(self, *args, **kwargs):
             kwargs_pairs = tuple(f"{k}={v}" for (k, v) in kwargs.items())
             args_str = tuple(str(a) for a in args)
+            current_frame = inspect.currentframe()
             self._log.debug(
-                f"{inspect.getouterframes(inspect.currentframe())[1][3]}({','.join(args_str + kwargs_pairs)})"
+                f"{inspect.getouterframes(current_frame)[1][3]} -> {method.__name__}({','.join(args_str + kwargs_pairs)})"
             )
             return method(self, *args, **kwargs)
 
@@ -113,7 +121,7 @@ class SimulatedCamera(AbstractCamera):
         self._current_raw_frame = None
         self._current_frame = None
 
-        self._exposure_time = None
+        self._exposure_time_ms = None
         self.set_exposure_time(20)  # Just some random sane default since that isn't specified in our config.
         self._frame_format = CameraFrameFormat.RAW
         self._pixel_format = None
@@ -165,11 +173,11 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def set_exposure_time(self, exposure_time_ms: float):
-        self._exposure_time = exposure_time_ms
+        self._exposure_time_ms = exposure_time_ms
 
     @debug_log
     def get_exposure_time(self) -> float:
-        return self._exposure_time
+        return self._exposure_time_ms
 
     @debug_log
     def get_strobe_time(self):
@@ -230,10 +238,14 @@ class SimulatedCamera(AbstractCamera):
             last_frame_time = time.time()
             while self._continue_streaming:
                 time_since = time.time() - last_frame_time
-                if self.get_exposure_time() - time_since > 0:
-                    time.sleep(self.get_exposure_time() - time_since)
-                self.send_trigger()
-                last_frame_time = time.time()
+                # use self._exposure_time and _acquisition_mode so as not to spam the logs,
+                # but this could case issues if subclassed for testing.
+                if (
+                    self._exposure_time_ms / 1000.0
+                ) - time_since <= 0 and self._acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
+                    self._next_frame()
+                    last_frame_time = time.time()
+                time.sleep(0.001)
             self._log.info("Stopping streaming...")
 
         self._streaming_thread = threading.Thread(target=stream_fn, daemon=True)
@@ -241,20 +253,33 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def start_streaming(self):
+        if self._streaming_thread:
+            if self._streaming_thread.is_alive() and self._continue_streaming:
+                self._log.info("Already streaming, not starting again.")
+                return
+            elif self._streaming_thread.is_alive() and not self._continue_streaming:
+                self._log.info("Looks like streaming is shutting down, waiting before restarting.")
+                timeout_time = time.time() + 1
+                while self._streaming_thread.is_alive() and timeout_time < time.time():
+                    time.sleep(0.001)
+                if self._streaming_thread.is_alive():
+                    raise CameraError("Cannot start streaming, camera is inconsisten state")
+
         self._continue_streaming = True
         self._start_streaming_thread()
 
     @debug_log
     def stop_streaming(self):
         self._continue_streaming = False
+        if self._streaming_thread:
+            self._streaming_thread.join()
 
     @debug_log
     def get_is_streaming(self):
-        return self._streaming_thread.is_alive()
+        return self._streaming_thread and self._streaming_thread.is_alive()
 
     @debug_log
     def read_camera_frame(self) -> CameraFrame:
-        self.send_trigger()
         return self._current_frame
 
     @debug_log
@@ -289,6 +314,13 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def send_trigger(self, illumination_time: Optional[float] = None):
+        if self._acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
+            self._log.warning("Sending triggers in continuous acquisition mode is not allowed.")
+            return
+        self._next_frame()
+
+    @debug_log
+    def _next_frame(self):
         (height, width) = self.get_resolution()
         if self.get_frame_id() == 0:
             if self.get_pixel_format() == CameraPixelFormat.MONO8:

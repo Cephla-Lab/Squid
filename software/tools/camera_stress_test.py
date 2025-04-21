@@ -85,7 +85,15 @@ def main(args):
         hw_trigger = None
         strobe_delay_fn = None
 
-    camera_type = squid.config.CameraVariant.from_string(args.camera)
+    # Special case for simulated camera
+    if args.camera.lower() == "simulated":
+        log.info("Using simulated camera!")
+        camera_type = squid.config.CameraVariant.GXIPY  # Not actually used
+        simulated = True
+    else:
+        camera_type = squid.config.CameraVariant.from_string(args.camera)
+        simulated = False
+
     if not camera_type:
         log.error(f"Invalid camera type '{args.camera}'")
         return 1
@@ -94,7 +102,7 @@ def main(args):
     force_this_camera_config = default_config.model_copy(update={"camera_type": camera_type})
 
     cam = squid.camera.utils.get_camera(
-        force_this_camera_config, False, hw_trigger_fn=hw_trigger, hw_set_strobe_delay_ms_fn=strobe_delay_fn
+        force_this_camera_config, simulated, hw_trigger_fn=hw_trigger, hw_set_strobe_delay_ms_fn=strobe_delay_fn
     )
 
     stats = Stats()
