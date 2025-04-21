@@ -57,6 +57,7 @@ def test_new_roi_for_resolution():
         == expected_down_roi_partial
     )
 
+
 class SimulatedWithTimeouts(SimulatedCamera):
     def __init__(self, timeout_ids: Sequence[int], *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -70,8 +71,14 @@ class SimulatedWithTimeouts(SimulatedCamera):
             return None
         return frame
 
+
 def test_read_frame_on_timeout():
-    sim_cam = SimulatedWithTimeouts(timeout_ids = [3,5,8], camera_config=squid.config.get_camera_config(), hw_trigger_fn=None, hw_set_strobe_delay_ms_fn=None)
+    sim_cam = SimulatedWithTimeouts(
+        timeout_ids=[3, 5, 8],
+        camera_config=squid.config.get_camera_config(),
+        hw_trigger_fn=None,
+        hw_set_strobe_delay_ms_fn=None,
+    )
 
     frames = [sim_cam.read_frame() for _ in range(10)]
 
