@@ -1592,7 +1592,8 @@ class MultiPointWorker(QObject):
         pos = self.stage.get_pos()
         x_mm = pos.x_mm
         y_mm = pos.y_mm
-        self.z_piezo_um = self.piezo.position
+        if self.use_piezo:
+            self.z_piezo_um = self.piezo.position
 
         for z_level in range(self.NZ):
             file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"

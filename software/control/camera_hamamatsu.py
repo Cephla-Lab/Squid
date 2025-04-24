@@ -243,6 +243,9 @@ class Camera(object):
 
     def send_trigger(self):
         if self.is_streaming:
+            if not self.dcam.cap_firetrigger():
+                print("trigger not sent - firetrigger failed")
+            """
             if not self.trigger_sent:
                 if not self.dcam.cap_firetrigger():
                     print("trigger not sent - firetrigger failed")
@@ -250,6 +253,7 @@ class Camera(object):
                     self.trigger_sent = True
             else:
                 print("trigger not sent - processing previous trigger")
+            """
         else:
             print("trigger not sent - camera is not streaming")
 
