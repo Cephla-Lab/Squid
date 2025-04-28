@@ -113,6 +113,7 @@ def test_spot_detection_parameters():
     assert result is not None
 
 
+@pytest.mark.skip("Test debug plot backend conflicts with qt.")
 def test_debug_plot(tmp_path):
     """Test that debug plotting doesn't error."""
     with tests.tools.NonInteractiveMatplotlib():
