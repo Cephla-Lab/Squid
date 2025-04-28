@@ -24,9 +24,14 @@ def main(args):
     stage = None
     if args.stage:
         stage = squid.stage.cephla.CephlaStage(micro, stage_config=squid.config.get_stage_config())
+        # stage.home(x=False, y=False, z=True, theta=False)
+        log.info("Moving z to 0.1")
         stage.move_z(0.1)
+        log.info("Moving x to 20")
         stage.move_x(20)
+        log.info("Homing y")
         stage.home(x=False, y=True, z=False, theta=False)
+        log.info("Homing x")
         stage.home(x=True, y=False, z=False, theta=False)
     end_time = time.time() + args.runtime
     start_time = time.time()
