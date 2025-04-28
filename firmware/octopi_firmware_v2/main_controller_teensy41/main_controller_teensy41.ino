@@ -2181,6 +2181,10 @@ void loop() {
     buffer_tx[18] &= ~ (1 << BIT_POS_JOYSTICK_BUTTON); // clear the joystick button bit
     buffer_tx[18] = buffer_tx[18] | joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON;
 
+   // Calculate and fill out the checksum.  NOTE: This must be after all other buffer_tx modifications are done!
+   uint8_t checksum = crc8ccitt(buffer_tx, MSG_LENGTH - 1);
+   buffer_tx[MSG_LENGTH - 1] = checksum;
+
     if(!DEBUG_MODE)
       SerialUSB.write(buffer_tx,MSG_LENGTH);
     else
