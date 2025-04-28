@@ -32,20 +32,21 @@ def main(args):
         loop_count = 0
         last_loop_end = time.time()
         while time.time() < end_time and keep_running.is_set():
+            next_pos = next(stage_positions)
+            # The stage moves are split so they bracket other micro commands.
             if stage:
-                next_pos = next(stage_positions)
-                log.info(f"Moving to {next_pos} [mm]")
+                log.debug(f"Moving to {next_pos} [mm]")
                 stage.move_x_to(next_pos[0])
-                stage.move_y_to(next_pos[1])
             if args.laser_af:
-                log.info("Turning af laser on then off.")
+                log.debug("Turning af laser on then off.")
                 micro.turn_on_AF_laser()
                 micro.wait_till_operation_is_completed()
                 micro.turn_off_AF_laser()
                 micro.wait_till_operation_is_completed()
+            if stage:
+                stage.move_y_to(next_pos[1])
             if not args.no_loop_sleep:
-                log.info("Sleeping to yield main test thread")
-                time.sleep(0)
+                time.sleep(0.0001)
 
             loop_count += 1
             if loop_count % args.report_interval == 0:

@@ -1021,33 +1021,56 @@ class Microcontroller:
             self.abort_current_command("Resend last requested with no last command")
 
     def read_received_packet(self):
+        crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
         while not self.terminate_reading_received_packet_thread:
             try:
-                # wait to receive data
-                if self._serial.bytes_available() == 0 or self._serial.bytes_available() % self.rx_buffer_length != 0:
+                # If anything hangs, we may fall way behind reading the serial buffer.  In that case, toss everything
+                # in the read buffer and start over.  This should always be safe to do because the micro sends updates
+                # periodically without prompting, and so we'll always get more updates on the current micro state.
+                if self._serial.bytes_available() >= BUFFER_SIZE_LIMIT:
+                    self._serial.reset_input_buffer()
+                    continue
+
+                # If we don't at least have enough bytes for a full packet (rx_buffer_length), there's no reason to
+                # waste our time looking for a valid message.  So wait here until we have at least that many bytes.
+                if self._serial.bytes_available() < self.rx_buffer_length:
                     # Sleep a negligible amount of time just to give other threads time to run.  Otherwise,
                     # we run the rise of spinning forever here and not letting progress happen elsewhere.
                     time.sleep(0.0001)
-                    if self._serial.bytes_available() == BUFFER_SIZE_LIMIT:
-                        self._serial.reset_input_buffer()
                     if not self._serial.is_open():
                         if not self._serial.reconnect(attempts=Microcontroller.MAX_RECONNECT_COUNT):
                             self.log.error(
                                 "In read loop, serial device failed to reconnect.  Microcontroller is defunct!"
                             )
-
                     continue
 
-                # get rid of old data
-                num_bytes_in_rx_buffer = self._serial.bytes_available()
-                if num_bytes_in_rx_buffer > self.rx_buffer_length:
-                    for i in range(num_bytes_in_rx_buffer - self.rx_buffer_length):
-                        self._serial.read()
+                # This helper reads bytes in the order received by serial, and checks that packet-sized chunks
+                # have valid checksums.  IF the first packet size chunk does not have a valid checksum, it tosses
+                # the first byte and keeps going until it either finds a valid checksum packet or runs out of bytes.
+                def get_msg_with_good_checksum():
+                    maybe_msg = []
+                    while self._serial.bytes_available() > 0:
+                        maybe_msg.append(ord(self._serial.read()))
+                        if len(maybe_msg) < self.rx_buffer_length:
+                            continue
 
-                # read the buffer
-                msg = []
-                for i in range(self.rx_buffer_length):
-                    msg.append(ord(self._serial.read()))
+                        checksum = crc_calculator.calculate_checksum(maybe_msg[:-1])
+                        # NOTE(imo): Before April 2025, we didn't send the crc from the micro.  This is
+                        # here to support firmware that still sends 0 as the checksum.  This means for
+                        # the firmware that does support checksums, we can get fooled by zeros!
+                        if checksum == maybe_msg[-1] or checksum == 0:
+                            return maybe_msg
+                        else:
+                            self.log.warning(f"Bad checksum {checksum} for packet '{maybe_msg}, tossing first byte'")
+                            maybe_msg.pop(0)
+                    return None
+
+                msg = get_msg_with_good_checksum()
+
+                if msg is None:
+                    self.log.warning("Back checksums found, skipping.")
+                    continue
 
                 # parse the message
                 """
