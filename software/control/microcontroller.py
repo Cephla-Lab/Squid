@@ -1038,6 +1038,8 @@ class Microcontroller:
 
     def read_received_packet(self):
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+        last_watchdog_fail_report = time.time()
+        watchdog_fail_report_period = 5.0
 
         while not self.terminate_reading_received_packet_thread:
             try:
@@ -1051,6 +1053,9 @@ class Microcontroller:
                 # If we don't at least have enough bytes for a full packet (rx_buffer_length), there's no reason to
                 # waste our time looking for a valid message.  So wait here until we have at least that many bytes.
                 if self._serial.bytes_available() < self.rx_buffer_length:
+                    if time.time() - last_watchdog_fail_report > watchdog_fail_report_period:
+                        last_watchdog_fail_report = time.time()
+                        self._warn_if_reads_stale()
                     # Sleep a negligible amount of time just to give other threads time to run.  Otherwise,
                     # we run the rise of spinning forever here and not letting progress happen elsewhere.
                     time.sleep(0.0001)
