@@ -1,3 +1,4 @@
+import logging
 import time
 from itertools import cycle
 import threading
@@ -11,12 +12,15 @@ log = squid.logging.get_logger("mst")
 
 
 def main(args):
+    if args.verbose:
+        squid.logging.set_stdout_log_level(logging.DEBUG)
+
     log.info("Creating microcontroller...")
     micro = control.microcontroller.Microcontroller(
         serial_device=control.microcontroller.get_microcontroller_serial_device(simulated=False)
     )
 
-    stage_positions = cycle([(10, 10), (10.05, 10), (10.05, 10.05), (10, 10.05)])
+    stage_positions = cycle([(10, 10), (10.001, 10), (10.001, 10.001), (10, 10.001)])
     stage = None
     if args.stage:
         stage = squid.stage.cephla.CephlaStage(micro, stage_config=squid.config.get_stage_config())
@@ -31,20 +35,29 @@ def main(args):
     def run_test():
         loop_count = 0
         last_loop_end = time.time()
+
+        def wait_if_needed():
+            if not args.no_wait:
+                log.debug("Waiting...")
+                micro.wait_till_operation_is_completed()
+
+        blocking_moves = not args.no_wait
+
         while time.time() < end_time and keep_running.is_set():
             next_pos = next(stage_positions)
             # The stage moves are split so they bracket other micro commands.
             if stage:
-                log.debug(f"Moving to {next_pos} [mm]")
-                stage.move_x_to(next_pos[0])
+                log.debug(f"Moving x to {next_pos[0]} [mm]")
+                stage.move_x_to(next_pos[0], blocking=blocking_moves)
             if args.laser_af:
                 log.debug("Turning af laser on then off.")
                 micro.turn_on_AF_laser()
-                micro.wait_till_operation_is_completed()
+                wait_if_needed()
                 micro.turn_off_AF_laser()
-                micro.wait_till_operation_is_completed()
+                wait_if_needed()
             if stage:
-                stage.move_y_to(next_pos[1])
+                log.debug(f"Moving y to {next_pos[1]} [mm]")
+                stage.move_y_to(next_pos[1], blocking=blocking_moves)
             if not args.no_loop_sleep:
                 time.sleep(0.0001)
 
@@ -90,7 +103,8 @@ if __name__ == "__main__":
     ap.add_argument(
         "--on_thread", action="store_true", help="Run the test on a daemon thread while the main thread spins"
     )
-
+    ap.add_argument("--verbose", action="store_true", help="Turn on debug logging.")
+    ap.add_argument("--no_wait", action="store_true", help="Turn off waiting for micro to complete commands.")
     args = ap.parse_args()
 
     sys.exit(main(args))
