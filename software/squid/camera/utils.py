@@ -321,7 +321,7 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def _next_frame(self):
-        (height, width) = self.get_resolution()
+        (width, height) = self.get_resolution()
         if self.get_frame_id() == 0:
             if self.get_pixel_format() == CameraPixelFormat.MONO8:
                 self._current_raw_frame = np.random.randint(255, size=(height, width), dtype=np.uint8)
