@@ -37,6 +37,9 @@ if __name__ == "__main__":
     parser.add_argument("--live-only", help="Run the GUI only the live viewer.", action='store_true')
     parser.add_argument("--verbose", help="Turn on verbose logging (DEBUG level)", action="store_true")
     args = parser.parse_args()
+    
+    if args.simulation:
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
     log = squid.logging.get_logger("main_hcs")
 
