@@ -497,6 +497,7 @@ class Microcontroller:
 
         self.new_packet_callback_external = None
         self.terminate_reading_received_packet_thread = False
+        self._received_packet_cv = threading.Condition()
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
         self.thread_read_received_packet.start()
 
@@ -1175,6 +1176,9 @@ class Microcontroller:
                 tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
                 self.switch_state = tmp > 0
 
+                with self._received_packet_cv:
+                    self._received_packet_cv.notify_all()
+
                 if self.new_packet_callback_external is not None:
                     self.new_packet_callback_external(self)
             except Exception as e:
@@ -1197,14 +1201,18 @@ class Microcontroller:
         Wait for the current command to complete.  If the wait times out, the current command isn't touched.  To
         abort it, you should call the abort_current_command(...) method.
         """
-        timestamp_start = time.time()
-        while self.is_busy() and self.last_command_aborted_error is None:
-            time.sleep(0.02)
-            if time.time() - timestamp_start > timeout_limit_s:
+        with self._received_packet_cv:
+
+            def still_busy():
+                return self.is_busy() and self.last_command_aborted_error is None
+
+            self._received_packet_cv.wait_for(lambda: not still_busy(), timeout=timeout_limit_s)
+
+            if still_busy():
                 raise TimeoutError(f"Current mcu operation timed out after {timeout_limit_s} [s].")
 
-        if self.last_command_aborted_error is not None:
-            raise self.last_command_aborted_error
+            if self.last_command_aborted_error is not None:
+                raise self.last_command_aborted_error
 
     @staticmethod
     def _int_to_payload(signed_int, number_of_bytes):
