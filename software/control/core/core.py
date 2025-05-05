@@ -856,14 +856,6 @@ class SlidePositionControlWorker(QObject):
 
         # restore z
         if self.slidePositionController.objective_retracted:
-            # NOTE(imo): We want to move backlash compensation down to the firmware level.  Also, before the Stage
-            # migration, we only compensated for backlash in the case that we were using PID control.  Since that
-            # info isn't plumbed through yet (or ever from now on?), we just always compensate now.  It doesn't hurt
-            # in the case of not needing it, except that it's a little slower because we need 2 moves.
-            mm_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
-                max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
-            )
-            self.stage.move_z_to(self.slidePositionController.z_pos - mm_to_clear_backlash)
             self.stage.move_z_to(self.slidePositionController.z_pos)
             self.slidePositionController.objective_retracted = False
             print("z position restored")
@@ -981,14 +973,7 @@ class AutofocusWorker(QObject):
 
         z_af_offset = self.deltaZ * round(self.N / 2)
 
-        # maneuver for achiving uniform step size and repeatability when using open-loop control
-        # can be moved to the firmware
-        mm_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
-            max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
-        )
-
-        self.stage.move_z(-mm_to_clear_backlash - z_af_offset)
-        self.stage.move_z(mm_to_clear_backlash)
+        self.stage.move_z(-z_af_offset)
 
         steps_moved = 0
         for i in range(self.N):
@@ -1034,14 +1019,10 @@ class AutofocusWorker(QObject):
         QApplication.processEvents()
 
         # maneuver for achiving uniform step size and repeatability when using open-loop control
-        # TODO(imo): The backlash handling should be done at a lower level.  For now, do backlash compensation no matter if it makes sense to do or not (it is not harmful if it doesn't make sense)
-        mm_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
-            max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
-        )
-        self.stage.move_z(-mm_to_clear_backlash - steps_moved * self.deltaZ)
+        self.stage.move_z(-steps_moved * self.deltaZ)
         # determine the in-focus position
         idx_in_focus = focus_measure_vs_z.index(max(focus_measure_vs_z))
-        self.stage.move_z(mm_to_clear_backlash + (idx_in_focus + 1) * self.deltaZ)
+        self.stage.move_z((idx_in_focus + 1) * self.deltaZ)
 
         QApplication.processEvents()
 
@@ -1544,17 +1525,6 @@ class MultiPointWorker(QObject):
     def move_to_z_level(self, z_mm):
         print("moving z")
         self.stage.move_z_to(z_mm)
-        # TODO(imo): If we are moving to a more +z position, we'll approach the position from the negative side.  But then our backlash elimination goes negative and positive.  This seems like the final move is in the same direction as the original full move?  Does that actually eliminate backlash?
-        if z_mm >= self.stage.get_pos().z_mm:
-            # Attempt to remove backlash.
-            # TODO(imo): We used to only do this if in PID control mode, but we don't expose the PID mode settings
-            # yet, so for now just do this for all.
-            # TODO(imo): Ideally this would be done at a lower level, and only if needed.  As is we only remove backlash in this specific case (and no other Z moves!)
-            distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
-                max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
-            )
-            self.stage.move_z(-distance_to_clear_backlash)
-            self.stage.move_z(distance_to_clear_backlash)
         time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def run_coordinate_acquisition(self, current_path):
@@ -1709,14 +1679,7 @@ class MultiPointWorker(QObject):
         else:
             self._log.info("laser reflection af")
             try:
-                if HAS_OBJECTIVE_PIEZO:  # when piezo is available, one move is sufficient as piezo is closed loop
-                    self.microscope.laserAutofocusController.move_to_target(0)
-                else:
-                    # TODO(imo): We used to have a case here to try to fix backlash by double commanding a position.  Now, just double command it whether or not we are using PID since we don't expose that now.  But in the future, backlash handing shouldb e done at a lower level (and we can remove the double here)
-                    self.microscope.laserAutofocusController.move_to_target(0)
-                    self.microscope.laserAutofocusController.move_to_target(
-                        0
-                    )  # for stepper in open loop mode, repeat the operation to counter backlash.  It's harmless if any other case.
+                self.microscope.laserAutofocusController.move_to_target(0)
             except Exception as e:
                 file_ID = f"{region_id}_focus_camera.bmp"
                 saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
@@ -1733,13 +1696,6 @@ class MultiPointWorker(QObject):
         if self.z_stacking_config == "FROM CENTER":
             self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
             time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
-        # TODO(imo): This is some sort of backlash compensation.  We should move this down to the low level, and remove it from here.
-        # maneuver for achiving uniform step size and repeatability when using open-loop control
-        distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
-            max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
-        )
-        self.stage.move_z(-distance_to_clear_backlash)
-        self.stage.move_z(distance_to_clear_backlash)
         time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def handle_z_offset(self, config, not_offset):
@@ -2014,17 +1970,12 @@ class MultiPointWorker(QObject):
             if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
                 self.signal_z_piezo_um.emit(self.z_piezo_um)
         else:
-            distance_to_clear_backlash = self.stage.get_config().Z_AXIS.convert_to_real_units(
-                max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
-            )
             if self.z_stacking_config == "FROM CENTER":
                 rel_z_to_start = -self.deltaZ * (self.NZ - 1) + self.deltaZ * round((self.NZ - 1) / 2)
             else:
                 rel_z_to_start = -self.deltaZ * (self.NZ - 1)
 
-            # TODO(imo): backlash should be handled at a lower level.  For now, we do it here no matter what control scheme is being used below.
-            self.stage.move_z(rel_z_to_start - distance_to_clear_backlash)
-            self.stage.move_z(distance_to_clear_backlash)
+            self.stage.move_z(rel_z_to_start)
 
 
 class MultiPointController(QObject):
@@ -4814,13 +4765,9 @@ class LaserAutofocusController(QObject):
             return False
 
         # Move to first position and measure
+        self._move_z(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
         if self.piezo is not None:
-            self._move_z(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
             time.sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-        else:
-            # TODO: change to _move_z after backlash correction is absorbed into firmware
-            self.stage.move_z(-1.5 * self.laser_af_properties.pixel_to_um_calibration_distance / 1000)
-            self.stage.move_z(self.laser_af_properties.pixel_to_um_calibration_distance / 1000)
 
         result = self._get_laser_spot_centroid()
         if result is None:
@@ -4859,13 +4806,9 @@ class LaserAutofocusController(QObject):
             )
 
         # move back to initial position
+        self._move_z(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
         if self.piezo is not None:
-            self._move_z(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
             time.sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-        else:
-            # TODO: change to _move_z after backlash correction is absorbed into firmware
-            self.stage.move_z(-1.5 * self.laser_af_properties.pixel_to_um_calibration_distance / 1000)
-            self.stage.move_z(self.laser_af_properties.pixel_to_um_calibration_distance / 1000)
 
         # Calculate conversion factor
         if x1 - x0 == 0:

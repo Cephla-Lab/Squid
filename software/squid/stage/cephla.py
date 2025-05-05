@@ -62,10 +62,36 @@ class CephlaStage(AbstractStage):
             )
 
     def move_z(self, rel_mm: float, blocking: bool = True):
-        self._microcontroller.move_z_usteps(self._config.Z_AXIS.convert_real_units_to_ustep(rel_mm))
+        # From Hongquan, we want the z axis to rest on the "up" (wrt gravity) direction of gravity. So if we
+        # are moving in the negative (down) z direction, we need to move past our mark a bit then
+        # back up.  If we are already moving in the "up" position, we can move straight there.
+        need_clear_backlash = rel_mm < 0
+
+        # NOTE(imo): It seems really tricky to only clear backlash if via the blocking call?
+        final_rel_move_mm = rel_mm
+        if blocking and need_clear_backlash:
+            backlash_offset = -abs(
+                self.get_config().Z_AXIS.convert_to_real_units(
+                    max(160, 20 * self.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
+                )
+            )
+            final_rel_move_mm = -backlash_offset
+            # Move past our final position, so we can move up to the final position and
+            # rest on the downside of the drive mechanism.  But make sure we don't drive past the min position
+            # to do this.
+            rel_move_with_backlash_offset_mm = rel_mm + backlash_offset
+            rel_move_with_backlash_offset_usteps = self._config.Z_AXIS.convert_real_units_to_ustep(rel_move_with_backlash_offset_mm)
+            self._microcontroller.move_z_usteps(rel_move_with_backlash_offset_usteps)
+            if blocking:
+                self._microcontroller.wait_till_operation_is_completed(
+                    self._calc_move_timeout(rel_move_with_backlash_offset_mm,
+                                            self.get_config().Z_AXIS.MAX_SPEED)
+                )
+
+        self._microcontroller.move_z_usteps(self._config.Z_AXIS.convert_real_units_to_ustep(final_rel_move_mm))
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(
-                self._calc_move_timeout(rel_mm, self.get_config().Z_AXIS.MAX_SPEED)
+                self._calc_move_timeout(final_rel_move_mm, self.get_config().Z_AXIS.MAX_SPEED)
             )
 
     def move_x_to(self, abs_mm: float, blocking: bool = True):
@@ -83,6 +109,29 @@ class CephlaStage(AbstractStage):
             )
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
+        # From Hongquan, we want the z axis to rest on the "up" (wrt gravity) direction of gravity. So if we
+        # are moving in the negative (down) z direction, we need to move past our mark a bit then
+        # back up.  If we are already moving in the "up" position, we can move straight there.
+        need_clear_backlash = abs_mm < self.get_pos().z_mm
+
+        # NOTE(imo): It seems really tricky to only clear backlash if via the blocking call?
+        if blocking and need_clear_backlash:
+            backlash_offset = -abs(
+                self.get_config().Z_AXIS.convert_to_real_units(
+                    max(160, 20 * self.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
+                )
+            )
+            # Move past our final position, so we can move up to the final position and
+            # rest on the downside of the drive mechanism.  But make sure we don't drive past the min position
+            # to do this.
+            clamped_z_backlash_pos = max(abs_mm + backlash_offset, self.get_config().Z_AXIS.MIN_POSITION)
+            clamped_z_backlash_pos_usteps = self._config.Z_AXIS.convert_real_units_to_ustep(clamped_z_backlash_pos)
+            self._microcontroller.move_z_to_usteps(clamped_z_backlash_pos_usteps)
+            if blocking:
+                self._microcontroller.wait_till_operation_is_completed(
+                    self._calc_move_timeout(clamped_z_backlash_pos - self.get_pos().z_mm, self.get_config().Z_AXIS.MAX_SPEED)
+                )
+
         self._microcontroller.move_z_to_usteps(self._config.Z_AXIS.convert_real_units_to_ustep(abs_mm))
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(

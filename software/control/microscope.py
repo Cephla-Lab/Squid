@@ -385,24 +385,6 @@ class Microscope(QObject):
         return self.stage.get_pos().z_mm
 
     def move_z_to(self, z_mm, blocking=True):
-        # From Hongquan, we want the z axis to rest on the "up" (wrt gravity) direction of gravity. So if we
-        # are moving in the negative (down) z direction, we need to move past our mark a bit then
-        # back up.  If we are already moving in the "up" position, we can move straight there.
-        need_clear_backlash = z_mm < self.stage.get_pos().z_mm
-
-        # NOTE(imo): It seems really tricky to only clear backlash if via the blocking call?
-        if blocking and need_clear_backlash:
-            backlash_offset = -abs(
-                self.stage.get_config().Z_AXIS.convert_to_real_units(
-                    max(160, 20 * self.stage.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
-                )
-            )
-            # Move past our final position, so we can move up to the final position and
-            # rest on the downside of the drive mechanism.  But make sure we don't drive past the min position
-            # to do this.
-            clamped_z_backlash_pos = max(z_mm + backlash_offset, self.stage.get_config().Z_AXIS.MIN_POSITION)
-            self.stage.move_z_to(clamped_z_backlash_pos, blocking=blocking)
-
         self.stage.move_z_to(z_mm)
 
     def start_live(self):
