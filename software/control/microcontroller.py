@@ -1059,7 +1059,7 @@ class Microcontroller:
                         # NOTE(imo): Before April 2025, we didn't send the crc from the micro.  This is
                         # here to support firmware that still sends 0 as the checksum.  This means for
                         # the firmware that does support checksums, we can get fooled by zeros!
-                        if checksum == maybe_msg[-1] or checksum == 0:
+                        if checksum == maybe_msg[-1] or maybe_msg[-1] == 0:
                             return maybe_msg
                         else:
                             self.log.warning(f"Bad checksum {checksum} for packet '{maybe_msg}, tossing first byte'")
