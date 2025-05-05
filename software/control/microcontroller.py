@@ -516,9 +516,13 @@ class Microcontroller:
 
     def _warn_if_reads_stale(self):
         now = time.time()
-        last_read = float(self._last_successful_read_time)  # Just in case it gets update, capture it for printing below.
+        last_read = float(
+            self._last_successful_read_time
+        )  # Just in case it gets update, capture it for printing below.
         if now - last_read > Microcontroller.STALE_READ_TIMEOUT:
-            self.log.warning(f"Read thread is stale, it has been {now - last_read} [s] since a valid packet. Last cmd id from the mcu was {self._cmd_id_mcu}, our last sent cmd id was {self._cmd_id}")
+            self.log.warning(
+                f"Read thread is stale, it has been {now - last_read} [s] since a valid packet. Last cmd id from the mcu was {self._cmd_id_mcu}, our last sent cmd id was {self._cmd_id}"
+            )
 
     def close(self):
         self.terminate_reading_received_packet_thread = True
