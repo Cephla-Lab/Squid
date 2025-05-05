@@ -116,11 +116,14 @@ class Microscope(QObject):
         self.camera.set_pixel_format(squid.config.CameraPixelFormat.from_string(DEFAULT_PIXEL_FORMAT))
         self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
-        self.camera_focus = squid.camera.utils.get_camera(
-            squid.config.get_autofocus_camera_config(), simulated=is_simulation
-        )
-        self.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
-        self.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+        if SUPPORT_LASER_AUTOFOCUS:
+            self.camera_focus = squid.camera.utils.get_camera(
+                squid.config.get_autofocus_camera_config(), simulated=is_simulation
+            )
+            self.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
+            self.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+        else:
+            self.camera_focus = None
 
     def initialize_microcontroller(self, is_simulation):
         self.microcontroller = microcontroller.Microcontroller(
