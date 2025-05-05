@@ -6,6 +6,7 @@ import time
 
 log = squid.logging.get_logger("stage timing")
 
+
 def get_move_fn(scope: Microscope, axis: str):
     match axis.lower():
         case "z":
@@ -17,11 +18,13 @@ def get_move_fn(scope: Microscope, axis: str):
         case _:
             raise ValueError(f"Unknown axis {axis}")
 
+
 def home(scope: Microscope):
     scope.stage.home(x=False, y=False, z=True, theta=False)
     scope.stage.move_x(20)
     scope.stage.home(x=False, y=True, z=False, theta=False)
     scope.stage.home(x=True, y=False, z=False, theta=False)
+
 
 def main(args):
     if args.verbose:
@@ -66,7 +69,9 @@ if __name__ == "__main__":
     ap.add_argument("--count", type=int, default=25, help="The number of moves to execute.")
     ap.add_argument("--axis", type=str, choices=["x", "y", "z"], default="z", help="The axis to do a timing test with.")
     ap.add_argument("--start", type=float, default=0.1, help="The starting position to use in mm.")
-    ap.add_argument("--step", type=float, default=0.001, help="The step size to use in mm.  This should be small!  EG 0.001")
+    ap.add_argument(
+        "--step", type=float, default=0.001, help="The step size to use in mm.  This should be small!  EG 0.001"
+    )
     ap.add_argument("--no_home", dest="home", action="store_false", help="Do not home zxy before running.")
 
     sys.exit(main(ap.parse_args()))
