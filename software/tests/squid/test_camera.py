@@ -4,6 +4,7 @@ import squid.camera.utils
 import squid.config
 from squid.abc import AbstractCamera, CameraFrame
 from squid.camera.utils import SimulatedCamera
+from squid.config import CameraConfig
 
 
 def test_create_simulated_camera():
@@ -11,7 +12,10 @@ def test_create_simulated_camera():
 
 
 def test_simulated_camera():
-    sim_cam = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+    sim_cam_config: CameraConfig = squid.config.get_camera_config().model_copy(
+        update={"rotate_image_angle": None, "flip": None}
+    )
+    sim_cam = squid.camera.utils.get_camera(sim_cam_config, simulated=True)
 
     # Really basic tests to make sure the simulated camera does what is expected.
     sim_cam.send_trigger()
