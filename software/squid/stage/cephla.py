@@ -8,6 +8,8 @@ from squid.config import StageConfig, AxisConfig
 
 
 class CephlaStage(AbstractStage):
+    _BACKLASH_COMPENSATION_DISTANCE_MM = 0.005
+
     @staticmethod
     def _calc_move_timeout(distance, max_speed):
         # We arbitrarily guess that if a move takes 3x the naive "infinite acceleration" time, then it
@@ -70,11 +72,7 @@ class CephlaStage(AbstractStage):
         # NOTE(imo): It seems really tricky to only clear backlash if via the blocking call?
         final_rel_move_mm = rel_mm
         if blocking and need_clear_backlash:
-            backlash_offset = -abs(
-                self.get_config().Z_AXIS.convert_to_real_units(
-                    max(160, 20 * self.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
-                )
-            )
+            backlash_offset = -CephlaStage._BACKLASH_COMPENSATION_DISTANCE_MM
             final_rel_move_mm = -backlash_offset
             # Move past our final position, so we can move up to the final position and
             # rest on the downside of the drive mechanism.  But make sure we don't drive past the min position
@@ -117,11 +115,7 @@ class CephlaStage(AbstractStage):
 
         # NOTE(imo): It seems really tricky to only clear backlash if via the blocking call?
         if blocking and need_clear_backlash:
-            backlash_offset = -abs(
-                self.get_config().Z_AXIS.convert_to_real_units(
-                    max(160, 20 * self.get_config().Z_AXIS.MICROSTEPS_PER_STEP)
-                )
-            )
+            backlash_offset = -CephlaStage._BACKLASH_COMPENSATION_DISTANCE_MM
             # Move past our final position, so we can move up to the final position and
             # rest on the downside of the drive mechanism.  But make sure we don't drive past the min position
             # to do this.
