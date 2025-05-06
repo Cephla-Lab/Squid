@@ -219,9 +219,10 @@ class CameraConfig(pydantic.BaseModel):
     # NOTE(imo): Not "type" because that's a python builtin and can cause confusion
     camera_type: CameraVariant
 
-    default_resolution: Tuple[int, int]
-
     default_pixel_format: CameraPixelFormat
+
+    # The binning factor of the camera.  If None, the camera is not using binning, or use 1x1 as default.
+    default_binning: Optional[Tuple[int, int]]
 
     # The angle the camera should rotate this image right as it comes off the camera,
     # and before giving it to the rest of the system.
@@ -233,6 +234,15 @@ class CameraConfig(pydantic.BaseModel):
     #
     # NOTE(imo): As of 2025-feb-17, this feature is inconsistently implemented!
     flip: Optional[FlipVariant]
+
+    # The width of the crop region of the camera. This will be used for cropping the image in software. Value should be relative to the unbinned image size.
+    crop_width: Optional[int]
+
+    # The height of the crop region of the camera. This will be used for cropping the image in software. Value should be relative to the unbinned image size.
+    crop_height: Optional[int]
+
+    # Set the temperature of the camera to this value once on initialization.
+    default_temperature: Optional[float]
 
     # After initialization, set the white balance gains to this once. Only valid for color cameras.
     default_white_balance_gains: Optional[RGBValue]
@@ -258,10 +268,13 @@ def _old_camera_variant_to_enum(old_string) -> CameraVariant:
 
 _camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.CAMERA_TYPE),
-    default_resolution=(_def.CAMERA_CONFIG.ROI_WIDTH_DEFAULT, _def.CAMERA_CONFIG.ROI_HEIGHT_DEFAULT),
     default_pixel_format=_def.DEFAULT_PIXEL_FORMAT,
+    default_binning=(_def.CAMERA_CONFIG.DEFAULT_BINNING_FACTOR, _def.CAMERA_CONFIG.DEFAULT_BINNING_FACTOR),
     rotate_image_angle=_def.ROTATE_IMAGE_ANGLE,
     flip=_def.FLIP_IMAGE,
+    crop_width=_def.CAMERA_CONFIG.CROP_WIDTH,
+    crop_height=_def.CAMERA_CONFIG.CROP_HEIGHT,
+    default_temperature=_def.CAMERA_CONFIG.DEFAULT_TEMPERATURE,
     default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B),
 )
 
@@ -275,11 +288,9 @@ def get_camera_config() -> CameraConfig:
 
 _autofocus_camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE),
-    default_resolution=(_def.LASER_AF_CROP_WIDTH, _def.LASER_AF_CROP_HEIGHT),
     default_pixel_format=CameraPixelFormat.MONO8,
     rotate_image_angle=None,
     flip=None,
-    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B),
 )
 
 
