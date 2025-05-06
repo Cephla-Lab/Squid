@@ -1,20 +1,21 @@
 import logging
 
 from control.microscope import Microscope
+import squid.abc
 import squid.logging
 import time
 
 log = squid.logging.get_logger("stage timing")
 
 
-def get_move_fn(scope: Microscope, axis: str):
+def get_move_fn(scope: Microscope, stage: squid.abc.AbstractStage, axis: str, relative):
     match axis.lower():
         case "z":
-            return scope.move_z_to
+            return stage.move_z if relative else scope.move_z_to
         case "y":
-            return scope.move_y_to
+            return stage.move_y if relative else scope.move_y_to
         case "x":
-            return scope.move_x_to
+            return stage.move_x if relative else scope.move_x_to
         case _:
             raise ValueError(f"Unknown axis {axis}")
 
@@ -35,7 +36,7 @@ def main(args):
     if args.home:
         home(scope)
 
-    axis_move_fn = get_move_fn(scope, args.axis)
+    axis_move_fn = get_move_fn(scope, scope.stage, args.axis, args.relative)
     axis_move_fn(args.start)
 
     t0 = time.time()
@@ -52,7 +53,8 @@ def main(args):
     start_pos = args.start
     for i in range(total_moves):
         this_move_num = i + 1
-        axis_move_fn(start_pos + step * this_move_num)
+        move_pos = step if args.relative else start_pos + step * this_move_num
+        axis_move_fn(move_pos)
         if this_move_num % args.report_interval == 0:
             report(this_move_num)
     report(total_moves)
@@ -73,5 +75,6 @@ if __name__ == "__main__":
         "--step", type=float, default=0.001, help="The step size to use in mm.  This should be small!  EG 0.001"
     )
     ap.add_argument("--no_home", dest="home", action="store_false", help="Do not home zxy before running.")
+    ap.add_argument("--relative", action="store_true", help="Use relative moves instead of absolute.")
 
     sys.exit(main(ap.parse_args()))
