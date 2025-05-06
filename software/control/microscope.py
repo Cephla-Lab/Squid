@@ -92,7 +92,7 @@ class Microscope(QObject):
                 self.nl5.start_acquisition()
             else:
                 illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
-                self.log.debug(
+                self._log.debug(
                     f"Sending hw trigger with illumination_time={illumination_time_us if illumination_time else None} [us]"
                 )
                 self.microcontroller.send_hardware_trigger(True if illumination_time else False, illumination_time_us)
@@ -100,7 +100,7 @@ class Microscope(QObject):
 
         def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
             strobe_delay_us = int(1000 * strobe_delay_ms)
-            self.log.debug(f"Setting microcontroller strobe delay to {strobe_delay_us} [us]")
+            self._log.debug(f"Setting microcontroller strobe delay to {strobe_delay_us} [us]")
             self.microcontroller.set_strobe_delay_us(strobe_delay_us)
             self.microcontroller.wait_till_operation_is_completed()
 
@@ -226,7 +226,7 @@ class Microscope(QObject):
             try:
                 self.xlight = serial_peripherals.XLight(XLIGHT_SERIAL_NUMBER, XLIGHT_SLEEP_TIME_FOR_WHEEL)
             except Exception:
-                self.log.error("Error initializing Spinning Disk Confocal")
+                self._log.error("Error initializing Spinning Disk Confocal")
                 raise
 
         if ENABLE_NL5:
@@ -235,7 +235,7 @@ class Microscope(QObject):
 
                 self.nl5 = NL5.NL5()
             except Exception:
-                self.log.error("Error initializing NL5")
+                self._log.error("Error initializing NL5")
                 raise
 
         if ENABLE_CELLX:
@@ -245,7 +245,7 @@ class Microscope(QObject):
                     self.cellx.set_modulation(channel, CELLX_MODULATION)
                     self.cellx.turn_on(channel)
             except Exception:
-                self.log.error("Error initializing CellX")
+                self._log.error("Error initializing CellX")
                 raise
 
         if USE_LDI_SERIAL_CONTROL:
@@ -255,7 +255,7 @@ class Microscope(QObject):
                     self.microcontroller, self.ldi.intensity_mode, self.ldi.shutter_mode, LightSourceType.LDI, self.ldi
                 )
             except Exception:
-                self.log.error("Error initializing LDI")
+                self._log.error("Error initializing LDI")
                 raise
 
         if USE_CELESTA_ETHENET_CONTROL:
@@ -271,7 +271,7 @@ class Microscope(QObject):
                     self.celesta,
                 )
             except Exception:
-                self.log.error("Error initializing CELESTA")
+                self._log.error("Error initializing CELESTA")
                 raise
 
         if USE_ZABER_EMISSION_FILTER_WHEEL:
@@ -281,14 +281,14 @@ class Microscope(QObject):
                 )
                 self.emission_filter_wheel.start_homing()
             except Exception:
-                self.log.error("Error initializing Zaber Emission Filter Wheel")
+                self._log.error("Error initializing Zaber Emission Filter Wheel")
                 raise
         if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             try:
                 self.emission_filter_wheel = serial_peripherals.Optospin(SN=FILTER_CONTROLLER_SERIAL_NUMBER)
                 self.emission_filter_wheel.set_speed(OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ)
             except Exception:
-                self.log.error("Error initializing Optospin Emission Filter Wheel")
+                self._log.error("Error initializing Optospin Emission Filter Wheel")
                 raise
 
         if USE_SQUID_FILTERWHEEL:
@@ -298,7 +298,7 @@ class Microscope(QObject):
             try:
                 self.objective_changer = ObjectiveChanger2PosController(sn=XERYON_SERIAL_NUMBER, stage=self.stage)
             except Exception:
-                self.log.error("Error initializing Xeryon objective switcher")
+                self._log.error("Error initializing Xeryon objective switcher")
                 raise
 
     def initialize_simulation_objects(self):
