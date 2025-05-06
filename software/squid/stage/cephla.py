@@ -80,12 +80,13 @@ class CephlaStage(AbstractStage):
             # rest on the downside of the drive mechanism.  But make sure we don't drive past the min position
             # to do this.
             rel_move_with_backlash_offset_mm = rel_mm + backlash_offset
-            rel_move_with_backlash_offset_usteps = self._config.Z_AXIS.convert_real_units_to_ustep(rel_move_with_backlash_offset_mm)
+            rel_move_with_backlash_offset_usteps = self._config.Z_AXIS.convert_real_units_to_ustep(
+                rel_move_with_backlash_offset_mm
+            )
             self._microcontroller.move_z_usteps(rel_move_with_backlash_offset_usteps)
             if blocking:
                 self._microcontroller.wait_till_operation_is_completed(
-                    self._calc_move_timeout(rel_move_with_backlash_offset_mm,
-                                            self.get_config().Z_AXIS.MAX_SPEED)
+                    self._calc_move_timeout(rel_move_with_backlash_offset_mm, self.get_config().Z_AXIS.MAX_SPEED)
                 )
 
         self._microcontroller.move_z_usteps(self._config.Z_AXIS.convert_real_units_to_ustep(final_rel_move_mm))
@@ -129,7 +130,9 @@ class CephlaStage(AbstractStage):
             self._microcontroller.move_z_to_usteps(clamped_z_backlash_pos_usteps)
             if blocking:
                 self._microcontroller.wait_till_operation_is_completed(
-                    self._calc_move_timeout(clamped_z_backlash_pos - self.get_pos().z_mm, self.get_config().Z_AXIS.MAX_SPEED)
+                    self._calc_move_timeout(
+                        clamped_z_backlash_pos - self.get_pos().z_mm, self.get_config().Z_AXIS.MAX_SPEED
+                    )
                 )
 
         self._microcontroller.move_z_to_usteps(self._config.Z_AXIS.convert_real_units_to_ustep(abs_mm))
