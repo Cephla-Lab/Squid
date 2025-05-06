@@ -37,8 +37,8 @@ class Microscope(QObject):
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
         if microscope is None:
-            self.initialize_camera(is_simulation=is_simulation)
             self.initialize_microcontroller(is_simulation=is_simulation)
+            self.initialize_camera(is_simulation=is_simulation)
             self.initialize_core_components()
             if not is_simulation:
                 self.initialize_peripherals()
