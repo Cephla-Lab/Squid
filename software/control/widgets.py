@@ -1213,11 +1213,13 @@ class CameraSettingsWidget(QFrame):
     def update_measured_temperature(self, temperature):
         self.label_temperature_measured.setNum(temperature)
 
-    def change_full_res(self, index):
-        res_strings = self.dropdown_res.currentText().split("x")
-        res_x = int(res_strings[0])
-        res_y = int(res_strings[1])
-        self.camera.set_resolution(res_x, res_y)
+    def set_binning(self, binning_text):
+        binning_parts = binning_text.split("x")
+        binning_x = int(binning_parts[0])
+        binning_y = int(binning_parts[1])
+
+        self.camera.set_binning(binning_x, binning_y)
+
         self.entry_ROI_offset_x.blockSignals(True)
         self.entry_ROI_offset_y.blockSignals(True)
         self.entry_ROI_height.blockSignals(True)
@@ -1227,7 +1229,7 @@ class CameraSettingsWidget(QFrame):
             return int(8 * val // 8)
 
         (x_offset, y_offset, width, height) = self.camera.get_region_of_interest()
-        (x_max, y_max) = self.camera.get_resolution()
+        (x_max, y_max) = self.camera.get_max_size()
         self.entry_ROI_height.setMaximum(y_max)
         self.entry_ROI_width.setMaximum(x_max)
 
