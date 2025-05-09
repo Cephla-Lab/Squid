@@ -967,6 +967,8 @@ class ObjectivesWidget(QWidget):
 
 class CameraSettingsWidget(QFrame):
 
+    signal_binning_changed = Signal()
+
     def __init__(
         self,
         camera: AbstractCamera,
@@ -1088,21 +1090,21 @@ class CameraSettingsWidget(QFrame):
         format_line.addWidget(QLabel("Pixel Format"))
         format_line.addWidget(self.dropdown_pixelFormat)
         try:
-            current_res = self.camera.get_resolution()
-            current_res_string = "x".join([str(current_res[0]), str(current_res[1])])
-            res_options = [f"{res[0]}x{res[1]}" for res in self.camera.get_resolutions()]
-            self.dropdown_res = QComboBox()
-            self.dropdown_res.addItems(res_options)
-            self.dropdown_res.setCurrentText(current_res_string)
+            current_binning = self.camera.get_binning()
+            current_binning_string = "x".join([str(current_binning[0]), str(current_binning[1])])
+            binning_options = [f"{binning[0]}x{binning[1]}" for binning in self.camera.get_binning_options()]
+            self.dropdown_binning = QComboBox()
+            self.dropdown_binning.addItems(binning_options)
+            self.dropdown_binning.setCurrentText(current_binning_string)
 
-            self.dropdown_res.currentTextChanged.connect(self.change_full_res)
+            self.dropdown_binning.currentTextChanged.connect(self.set_binning)
         except AttributeError as ae:
             print(ae)
-            self.dropdown_res = QComboBox()
-            self.dropdown_res.setEnabled(False)
+            self.dropdown_binning = QComboBox()
+            self.dropdown_binning.setEnabled(False)
             pass
-        format_line.addWidget(QLabel(" FOV Resolution"))
-        format_line.addWidget(self.dropdown_res)
+        format_line.addWidget(QLabel("Binning Factor"))
+        format_line.addWidget(self.dropdown_binning)
         self.camera_layout.addLayout(format_line)
 
         if include_camera_temperature_setting:
@@ -1228,11 +1230,13 @@ class CameraSettingsWidget(QFrame):
     def update_measured_temperature(self, temperature):
         self.label_temperature_measured.setNum(temperature)
 
-    def change_full_res(self, index):
-        res_strings = self.dropdown_res.currentText().split("x")
-        res_x = int(res_strings[0])
-        res_y = int(res_strings[1])
-        self.camera.set_resolution(res_x, res_y)
+    def set_binning(self, binning_text):
+        binning_parts = binning_text.split("x")
+        binning_x = int(binning_parts[0])
+        binning_y = int(binning_parts[1])
+
+        self.camera.set_binning(binning_x, binning_y)
+
         self.entry_ROI_offset_x.blockSignals(True)
         self.entry_ROI_offset_y.blockSignals(True)
         self.entry_ROI_height.blockSignals(True)
@@ -1242,7 +1246,7 @@ class CameraSettingsWidget(QFrame):
             return int(8 * val // 8)
 
         (x_offset, y_offset, width, height) = self.camera.get_region_of_interest()
-        (x_max, y_max) = self.camera.get_resolution()
+        (x_max, y_max) = self.camera.get_max_size()
         self.entry_ROI_height.setMaximum(y_max)
         self.entry_ROI_width.setMaximum(x_max)
 
@@ -1258,6 +1262,8 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_offset_y.blockSignals(False)
         self.entry_ROI_height.blockSignals(False)
         self.entry_ROI_width.blockSignals(False)
+
+        self.signal_binning_changed.emit()
 
     def update_blacklevel(self, blacklevel):
         try:
