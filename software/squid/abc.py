@@ -264,7 +264,10 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     @staticmethod
     def calculate_new_roi_for_binning(old_binning, old_roi, new_binning) -> Tuple[int, int, int, int]:
         """
-        When changing binning, we may want the roi to change such that the FOV is the same as before the binning factors change.  This calculates the new roi to keep the FOV the same given we change to this new resolution.
+        When changing binning, we may want the roi to change such that the FOV is the same as before the binning
+        factors change. This calculates the new roi to keep the FOV the same given we change to this new resolution.
+
+        This only needs to be done for some of the cameras. In other cameras the roi might be updated automatically.
 
         The binning factors must be 2-tuples of (binning_factor_x, binning_factor_y).
 

@@ -1,6 +1,6 @@
 import math
 import time
-from typing import Optional, Tuple, Sequence
+from typing import Optional, Tuple, Sequence, Dict
 
 import numpy as np
 import pydantic
@@ -26,7 +26,8 @@ log = squid.logging.get_logger(__name__)
 
 
 class ToupCamCapabilities(pydantic.BaseModel):
-    resolutions: Sequence[Tuple[int, int]]
+    pixel_size: float  # um
+    binning_resolution_map: Dict[Tuple[int, int], Tuple[int, int]]
     has_fan: bool
     has_TEC: bool
     has_low_noise_mode: bool
@@ -167,13 +168,22 @@ class ToupcamCamera(AbstractCamera):
         for r in devices[index].model.res:
             log.info("\t = [{} x {}]".format(r.width, r.height))
 
-        valid_resolutions = []
+        resolution_list = []
         for r in devices[index].model.res:
-            valid_resolutions.append((r.width, r.height))
+            resolution_list[(r.width, r.height)] = r
+        resolution_list.sort(key=lambda x: x[0] * x[1], reverse=True)
+
+        highest_res = resolution_list[0]
+
+        binning_res = {}
+        for res in resolution_list:
+            x_binning = int(highest_res[0] / res[0])
+            y_binning = int(highest_res[1] / res[1])
+            binning_res[(x_binning, y_binning)] = res
 
         camera = toupcam.Toupcam.Open(devices[index].id)
         capabilities = ToupCamCapabilities(
-            resolutions=valid_resolutions,
+            binning_resolution_map=binning_res,
             has_fan=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_FAN) > 0,
             has_TEC=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_TEC_ONOFF) > 0,
             has_low_noise_mode=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_LOW_NOISE) > 0,
@@ -202,6 +212,7 @@ class ToupcamCamera(AbstractCamera):
         self._raw_frame_callback_lock = threading.Lock()
         (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
         self._pixel_format = self._config.default_pixel_format
+        self._binning = self._config.default_binning
 
         # Since we need to set the on-camera exposure time different depending on our trigger mode
         # (eg: sometimes we compensate for a strobe delay when hardware triggering), we can't back
@@ -338,17 +349,17 @@ class ToupcamCamera(AbstractCamera):
             self._camera.put_Option(toupcam.TOUPCAM_OPTION_LOW_NOISE, 0)
 
         # set temperature
-        self._set_fan_speed(1)
-        self.set_temperature(20)
+        self._set_fan_speed(self._config.default_fan_speed)
+        self.set_temperature(self._config.default_temperature)
 
         self._raw_set_frame_format(CameraFrameFormat.RAW)
         self._raw_set_pixel_format(self._pixel_format)  # 'MONO8'
-        self.set_black_level(DEFAULT_BLACKLEVEL_VALUE)
+        self.set_black_level(self._config.default_black_level)
 
         # We can't trigger update_internal_settings yet, because the strobe calc will fail.  So set the res
         # using the raw helper.
-        (default_width, default_height) = self._config.default_resolution
-        self._raw_set_resolution(default_width, default_height)
+        (width, height) = self._capabilities.binning_resolution_map[self._binning]
+        self._raw_set_resolution(width, height)
 
     def _set_temperature_reading_callback(self, func):
         self.temperature_reading_callback = func
@@ -465,6 +476,7 @@ class ToupcamCamera(AbstractCamera):
     def set_pixel_format(self, pixel_format: CameraPixelFormat):
         with self._pause_streaming():
             self._raw_set_pixel_format(pixel_format)
+            self.set_black_level(self._config.default_black_level)
         self._update_internal_settings()
 
     def get_pixel_format(self) -> CameraPixelFormat:
@@ -502,16 +514,18 @@ class ToupcamCamera(AbstractCamera):
         else:
             raise ValueError(f"Camera returned unknown frame format: value={camera_val}")
 
-    def set_resolution(self, width, height):
+    def set_binning(self, binning_factor_x: int, binning_factor_y: int):
         with self._pause_streaming():
-            old_resolution = self.get_resolution()
-
-            old_roi = self.get_region_of_interest()
-            new_resolution = (width, height)
-            self._log.debug(f"Changing resolution from {old_resolution=} to {new_resolution=}")
+            if (binning_factor_x, binning_factor_y) not in self._capabilities.binning_resolution_map:
+                self._log.error(f"Binning ({binning_factor_x},{binning_factor_y}) not supported by camera")
+                return
+            width, height = self._capabilities.binning_resolution_map[(binning_factor_x, binning_factor_y)]
             self._raw_set_resolution(width, height)
+            old_binning = self._binning
+            self._binning = (binning_factor_x, binning_factor_y)
+            old_roi = self.get_region_of_interest()
 
-        new_roi = AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi, new_resolution)
+        new_roi = AbstractCamera.calculate_new_roi_for_binning(old_binning, old_roi, self._binning)
         self._log.debug(f"Changing roi from {old_roi=} to {new_roi=} to keep FOV the same after resolution change.")
         self.set_region_of_interest(*new_roi)
 
@@ -621,12 +635,12 @@ class ToupcamCamera(AbstractCamera):
 
         self._update_internal_settings()
 
-    def get_resolution(self) -> Tuple[int, int]:
+    def get_binning(self) -> Tuple[int, int]:
         # TODO(imo): Should this be FinalSize to account for ROI?
-        return self._camera.get_Size()
+        return self._binning
 
     def get_resolutions(self) -> Sequence[Tuple[int, int]]:
-        return self._capabilities.resolutions
+        return self._capabilities.binning_resolution_map.values()
 
     def get_analog_gain(self) -> float:
         return self._toupcam_gain_to_user(self._camera.get_ExpoAGain())

@@ -244,6 +244,12 @@ class CameraConfig(pydantic.BaseModel):
     # Set the temperature of the camera to this value once on initialization.
     default_temperature: Optional[float]
 
+    # Set the fan speed of the camera to this value once on initialization.
+    default_fan_speed: Optional[int]
+
+    # Set the black level of the camera to this value once on initialization.
+    default_black_level: Optional[int]
+
     # After initialization, set the white balance gains to this once. Only valid for color cameras.
     default_white_balance_gains: Optional[RGBValue]
 
@@ -268,14 +274,18 @@ def _old_camera_variant_to_enum(old_string) -> CameraVariant:
 
 _camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.CAMERA_TYPE),
-    default_pixel_format=_def.DEFAULT_PIXEL_FORMAT,
-    default_binning=(_def.CAMERA_CONFIG.DEFAULT_BINNING_FACTOR, _def.CAMERA_CONFIG.DEFAULT_BINNING_FACTOR),
-    rotate_image_angle=_def.ROTATE_IMAGE_ANGLE,
-    flip=_def.FLIP_IMAGE,
+    default_pixel_format=_def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT,
+    default_binning=(_def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT, _def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT),
+    rotate_image_angle=_def.CAMERA_CONFIG.ROTATE_IMAGE_ANGLE,
+    flip=_def.CAMERA_CONFIG.FLIP_IMAGE,
     crop_width=_def.CAMERA_CONFIG.CROP_WIDTH,
     crop_height=_def.CAMERA_CONFIG.CROP_HEIGHT,
-    default_temperature=_def.CAMERA_CONFIG.DEFAULT_TEMPERATURE,
-    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B),
+    default_temperature=_def.CAMERA_CONFIG.TEMPERATURE_DEFAULT,
+    default_fan_speed=_def.CAMERA_CONFIG.FAN_SPEED_DEFAULT,
+    default_black_level=_def.CAMERA_CONFIG.BLACKLEVEL_VALUE_DEFAULT,
+    default_white_balance_gains=RGBValue(
+        r=_def.CAMERA_CONFIG.AWB_RATIOS_R, g=_def.CAMERA_CONFIG.AWB_RATIOS_G, b=_def.CAMERA_CONFIG.AWB_RATIOS_B
+    ),
 )
 
 
