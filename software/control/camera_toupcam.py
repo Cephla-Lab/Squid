@@ -49,6 +49,7 @@ def get_sn_by_model(model_name):
 class ToupcamCamera(AbstractCamera):
     TOUPCAM_OPTION_RAW_RAW_VAL = 1
     TOUPCAM_OPTION_RAW_RGB_VAL = 0
+    PIXEL_SIZE_UM = 3.76
 
     @staticmethod
     def _event_callback(event_number, camera):
@@ -360,6 +361,9 @@ class ToupcamCamera(AbstractCamera):
         # using the raw helper.
         (width, height) = self._capabilities.binning_resolution_map[self._binning]
         self._raw_set_resolution(width, height)
+
+        # Do hardware cropping here (use default ROI)
+        self.set_region_of_interest(*self._config.default_roi)
 
     def _set_temperature_reading_callback(self, func):
         self.temperature_reading_callback = func
