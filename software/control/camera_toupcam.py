@@ -639,8 +639,8 @@ class ToupcamCamera(AbstractCamera):
         # TODO(imo): Should this be FinalSize to account for ROI?
         return self._binning
 
-    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
-        return self._capabilities.binning_resolution_map.values()
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
+        return self._capabilities.binning_resolution_map.keys()
 
     def get_analog_gain(self) -> float:
         return self._toupcam_gain_to_user(self._camera.get_ExpoAGain())

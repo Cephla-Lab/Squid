@@ -1073,21 +1073,21 @@ class CameraSettingsWidget(QFrame):
         format_line.addWidget(QLabel("Pixel Format"))
         format_line.addWidget(self.dropdown_pixelFormat)
         try:
-            current_res = self.camera.get_resolution()
-            current_res_string = "x".join([str(current_res[0]), str(current_res[1])])
-            res_options = [f"{res[0]}x{res[1]}" for res in self.camera.get_resolutions()]
-            self.dropdown_res = QComboBox()
-            self.dropdown_res.addItems(res_options)
-            self.dropdown_res.setCurrentText(current_res_string)
+            current_binning = self.camera.get_binning()
+            current_binning_string = "x".join([str(current_binning[0]), str(current_binning[1])])
+            binning_options = [f"{binning[0]}x{binning[1]}" for binning in self.camera.get_binning_options()]
+            self.dropdown_binning = QComboBox()
+            self.dropdown_binning.addItems(binning_options)
+            self.dropdown_binning.setCurrentText(current_binning_string)
 
-            self.dropdown_res.currentTextChanged.connect(self.change_full_res)
+            self.dropdown_binning.currentTextChanged.connect(self.set_binning)
         except AttributeError as ae:
             print(ae)
-            self.dropdown_res = QComboBox()
-            self.dropdown_res.setEnabled(False)
+            self.dropdown_binning = QComboBox()
+            self.dropdown_binning.setEnabled(False)
             pass
-        format_line.addWidget(QLabel(" FOV Resolution"))
-        format_line.addWidget(self.dropdown_res)
+        format_line.addWidget(QLabel("Binning Factor"))
+        format_line.addWidget(self.dropdown_binning)
         self.camera_layout.addLayout(format_line)
 
         if include_camera_temperature_setting:

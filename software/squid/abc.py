@@ -458,6 +458,13 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
+        """
+        Return the list of binning options supported by the camera.
+        """
+        pass
+
+    @abc.abstractmethod
     def set_analog_gain(self, analog_gain: float):
         """
         Set analog gain as an input multiple.  EG 1 = no gain, 100 = 100x gain.
