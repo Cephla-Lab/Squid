@@ -1619,9 +1619,7 @@ class LiveControlWidget(QFrame):
             self.channelConfigurationManager.update_configuration(
                 self.objectiveStore.current_objective, self.currentConfiguration.id, "IlluminationIntensity", new_value
             )
-            self.liveController.set_illumination(
-                self.currentConfiguration.illumination_source, self.currentConfiguration.illumination_intensity
-            )
+            self.liveController.set_illumination()
 
     def set_microscope_mode(self, config):
         # self.liveController.set_microscope_mode(config)
@@ -4290,8 +4288,6 @@ class WellplateMultiPointWidget(QFrame):
                     # If fit successful, set the surface fitter in controller
                     self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
                 else:
-                    # If fit failed, uncheck the box and show warning
-                    self.checkbox_useFocusMap.setChecked(False)
                     QMessageBox.warning(self, "Warning", "Failed to fit focus surface")
                     self.btn_startAcquisition.setChecked(False)
                     return
@@ -5525,12 +5521,15 @@ class FocusMapWidget(QFrame):
         self.export_btn.clicked.connect(self.export_focus_points)
         self.import_btn.clicked.connect(self.import_focus_points)
 
+        # Connect fitting method change
+        self.fit_method_combo.currentTextChanged.connect(self._match_by_region_box)
+
         # Connect to scan coordinates changes
         self.scanCoordinates.signal_scan_coordinates_updated.connect(self.on_regions_updated)
 
     def update_point_list(self):
         """Update point selection combo showing grid coordinates for points"""
-        # self.point_combo.blockSignals(True)
+        self.point_combo.blockSignals(True)
         curr_focus_point = self.point_combo.currentIndex()
         self.point_combo.clear()
         for idx, (region_id, x, y, z) in enumerate(self.focus_points):
@@ -5546,7 +5545,7 @@ class FocusMapWidget(QFrame):
             )
             self.point_combo.addItem(point_text)
         self.point_combo.setCurrentIndex(max(0, min(curr_focus_point, len(self.focus_points) - 1)))
-        # self.point_combo.blockSignals(False)
+        self.point_combo.blockSignals(False)
 
     def edit_current_point(self):
         """Edit coordinates of current point in a popup dialog"""
@@ -5742,6 +5741,7 @@ class FocusMapWidget(QFrame):
                     "Confirm Your Configuration",
                     "For 'constant' method, grid size should be 1×1.\nUse 'constant' with 'By Region' checked to define a Z value for each region.",
                 )
+                return False
 
             if method != "constant" and (rows < 2 or cols < 2):
                 QMessageBox.warning(
@@ -5749,6 +5749,7 @@ class FocusMapWidget(QFrame):
                     "Confirm Your Configuration",
                     "For surface fitting methods ('spline' or 'rbf'), a grid size of at least 2×2 is recommended.\nAlternatively, use 1x1 grid and 'constant' with 'By Region' checked to define a Z value for each region.",
                 )
+                return False
 
             self.focusMap.set_method(method)
             self.focusMap.set_fit_by_region(by_region)
@@ -5762,6 +5763,10 @@ class FocusMapWidget(QFrame):
         except Exception as e:
             self.status_label.setText(f"Fitting failed: {str(e)}")
             return False
+
+    def _match_by_region_box(self):
+        if self.fit_method_combo.currentText() == "constant":
+            self.by_region_checkbox.setChecked(True)
 
     def export_focus_points(self):
         """Export focus points to a CSV file"""
@@ -6492,7 +6497,7 @@ class NapariLiveWidget(QWidget):
         self.channelConfigurationManager.update_configuration(
             self.objectiveStore.current_objective, self.live_configuration.id, "IlluminationIntensity", new_value
         )
-        self.liveController.set_illumination(self.live_configuration.illumination_source, new_value)
+        self.liveController.set_illumination()
 
     def update_resolution_scaling(self, value):
         self.streamHandler.set_display_resolution_scaling(value)

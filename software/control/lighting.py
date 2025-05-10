@@ -195,6 +195,10 @@ class IlluminationController:
             if intensity != self.intensity_settings[channel]:
                 self.light_source.set_intensity(self.channel_mappings_software[channel], intensity)
                 self.intensity_settings[channel] = intensity
+            if self.shutter_control_mode == ShutterControlMode.TTL:
+                # This is needed, because we select the channel in microcontroller set_illumination().
+                # Otherwise, the wrong channel will be opened when turn_on_illumination() is called.
+                self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], intensity)
         else:
             if int(100 * intensity) != int(100 * self.intensity_settings[channel]):
                 if channel in self.intensity_luts:

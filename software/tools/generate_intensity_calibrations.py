@@ -2,25 +2,13 @@ import time
 import pandas as pd
 import numpy as np
 from pathlib import Path
-import sys
-import os
 from typing import List
 import matplotlib.pyplot as plt
 
-# Add the project root directory to Python path
-project_root = Path(__file__).parent.parent.parent
-sys.path.append(str(project_root))
-# Add software directory to Python path
-software_dir = project_root / "software"
-sys.path.append(str(software_dir))
-
-# Set working directory to software directory
-os.chdir(str(software_dir))
-
-from software.tools.PM16 import PM16
-from software.control.lighting import IlluminationController, IntensityControlMode, ShutterControlMode
-import software.control.microcontroller as microcontroller
-from software.control._def import *
+from tools.PM16 import PM16
+from control.lighting import IlluminationController, IntensityControlMode, ShutterControlMode
+import control.microcontroller as microcontroller
+from control._def import *
 
 
 def plot_calibration(data: pd.DataFrame, wavelength: int, output_dir: Path):

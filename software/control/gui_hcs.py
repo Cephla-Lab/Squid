@@ -1674,13 +1674,6 @@ class HighContentScreeningGui(QMainWindow):
         self.liveController.stop_live()
         self.camera.stop_streaming()
 
-        if HOMING_ENABLED_X and HOMING_ENABLED_Y:
-            # TODO(imo): Why do we move forward 0.1, then move to 30? AKA why not just move to 30?
-            self.stage.move_x(0.1)
-            self.stage.move_x_to(30)
-            self.stage.move_y(0.1)
-            self.stage.move_y_to(30)
-
         self.microcontroller.turn_off_all_pid()
 
         if ENABLE_CELLX:

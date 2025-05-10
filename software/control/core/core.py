@@ -463,7 +463,7 @@ class LiveController(QObject):
             self.microcontroller.turn_off_illumination()  # to wrap microcontroller in Squid_led_array
         self.illumination_on = False
 
-    def _set_illumination(self):
+    def set_illumination(self):
         illumination_source = self.currentConfiguration.illumination_source
         intensity = self.currentConfiguration.illumination_intensity
         if illumination_source < 10:  # LED matrix
@@ -697,7 +697,7 @@ class LiveController(QObject):
 
         # set illumination
         if self.control_illumination:
-            self._set_illumination()
+            self.set_illumination()
 
         # restart live
         if self.is_live is True:
