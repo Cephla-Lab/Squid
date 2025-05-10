@@ -303,10 +303,10 @@ static const int TIMER_PERIOD = 500; // in us
 volatile int counter_send_pos_update = 0;
 volatile bool flag_send_pos_update = false;
 
-static const int interval_send_pos_update = 10000; // in us
+static const int interval_send_pos_update = 5000; // in us
 elapsedMicros us_since_last_pos_update;
 
-static const int interval_check_position = 10000; // in us
+static const int interval_check_position = 5000; // in us
 elapsedMicros us_since_last_check_position;
 
 static const int interval_send_joystick_update = 30000; // in us
