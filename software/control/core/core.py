@@ -69,7 +69,7 @@ class ObjectiveStore:
         return self.pixel_size_factor
 
     def calculate_pixel_size_factor(self, objective_name):
-        """ pixel_size_um = sensor_pixel_size * binning_factor * lens_factor """
+        """pixel_size_um = sensor_pixel_size * binning_factor * lens_factor"""
         objective = self.objectives_dict[objective_name]
         magnification = objective["magnification"]
         objective_tube_lens_mm = objective["tube_lens_f_mm"]
@@ -96,8 +96,6 @@ class StreamHandler(QObject):
 
     def __init__(
         self,
-        crop_width=Acquisition.CROP_WIDTH,
-        crop_height=Acquisition.CROP_HEIGHT,
         display_resolution_scaling=1,
         accept_new_frame_fn: Callable[[], bool] = lambda: True,
     ):
@@ -109,8 +107,6 @@ class StreamHandler(QObject):
         self.timestamp_last_save = 0
         self.timestamp_last_track = 0
 
-        self.crop_width = crop_width
-        self.crop_height = crop_height
         self.display_resolution_scaling = display_resolution_scaling
 
         self.save_image_flag = False
@@ -136,10 +132,6 @@ class StreamHandler(QObject):
     def set_save_fps(self, fps):
         self.fps_save = fps
 
-    def set_crop(self, crop_width, crop_height):
-        self.crop_width = crop_width
-        self.crop_height = crop_height
-
     def set_display_resolution_scaling(self, display_resolution_scaling):
         self.display_resolution_scaling = display_resolution_scaling / 100
         print(self.display_resolution_scaling)
@@ -163,17 +155,16 @@ class StreamHandler(QObject):
                 print("real camera fps is " + str(self.fps_real))
 
         # crop image
-        image_cropped = utils.crop_image(frame.frame, self.crop_width, self.crop_height)
-        image_cropped = np.squeeze(image_cropped)
+        image = np.squeeze(frame.frame)
 
         # send image to display
         time_now = time.time()
         if time_now - self.timestamp_last_display >= 1 / self.fps_display:
             self.image_to_display.emit(
                 utils.crop_image(
-                    image_cropped,
-                    round(self.crop_width * self.display_resolution_scaling),
-                    round(self.crop_height * self.display_resolution_scaling),
+                    image,
+                    round(image.shape[1] * self.display_resolution_scaling),
+                    round(image.shape[0] * self.display_resolution_scaling),
                 )
             )
             self.timestamp_last_display = time_now
@@ -181,8 +172,8 @@ class StreamHandler(QObject):
         # send image to write
         if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
             if frame.is_color():
-                image_cropped = cv2.cvtColor(image_cropped, cv2.COLOR_RGB2BGR)
-            self.packet_image_to_write.emit(image_cropped, frame.frame_id, frame.timestamp)
+                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            self.packet_image_to_write.emit(image, frame.frame_id, frame.timestamp)
             self.timestamp_last_save = time_now
 
         self.handler_busy = False
