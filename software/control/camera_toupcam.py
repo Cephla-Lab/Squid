@@ -26,7 +26,6 @@ log = squid.logging.get_logger(__name__)
 
 
 class ToupCamCapabilities(pydantic.BaseModel):
-    pixel_size: float  # um
     binning_resolution_map: Dict[Tuple[int, int], Tuple[int, int]]
     has_fan: bool
     has_TEC: bool
@@ -645,6 +644,11 @@ class ToupcamCamera(AbstractCamera):
 
     def get_binning_options(self) -> Sequence[Tuple[int, int]]:
         return self._capabilities.binning_resolution_map.keys()
+
+    def get_pixel_size_um(self) -> float:
+        return (
+            self.PIXEL_SIZE_UM * self.get_binning()[0]
+        )  # We will use the same binning factor in width and height for now
 
     def get_analog_gain(self) -> float:
         return self._toupcam_gain_to_user(self._camera.get_ExpoAGain())

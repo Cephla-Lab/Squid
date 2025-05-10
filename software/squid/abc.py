@@ -465,6 +465,13 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
+    def get_pixel_size_um(self) -> float:
+        """
+        Returns the pixel size after binning in microns.
+        """
+        pass
+
+    @abc.abstractmethod
     def set_analog_gain(self, analog_gain: float):
         """
         Set analog gain as an input multiple.  EG 1 = no gain, 100 = 100x gain.

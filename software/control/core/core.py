@@ -2205,7 +2205,7 @@ class MultiPointController(QObject):
             except:
                 pass
         # TODO: USE OBJECTIVE STORE DATA
-        acquisition_parameters["sensor_pixel_size_um"] = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
+        acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_um()
         acquisition_parameters["tube_lens_mm"] = TUBE_LENS_MM
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
@@ -2618,8 +2618,6 @@ class TrackingController(QObject):
 
         self.tracking_time_interval_s = 0
 
-        self.crop_width = Acquisition.CROP_WIDTH
-        self.crop_height = Acquisition.CROP_HEIGHT
         self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
