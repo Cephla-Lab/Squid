@@ -267,9 +267,13 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageDisplayWindow,
             )
         if WELLPLATE_FORMAT == "glass slide":
-            self.navigationViewer = core.NavigationViewer(self.objectiveStore, sample="4 glass slide")
+            self.navigationViewer = core.NavigationViewer(
+                self.objectiveStore, self.camera.get_pixel_size_um(), sample="4 glass slide"
+            )
         else:
-            self.navigationViewer = core.NavigationViewer(self.objectiveStore, sample=WELLPLATE_FORMAT)
+            self.navigationViewer = core.NavigationViewer(
+                self.objectiveStore, self.camera.get_pixel_size_um(), sample=WELLPLATE_FORMAT
+            )
         self.scanCoordinates = core.ScanCoordinates(
             objectiveStore=self.objectiveStore, navigationViewer=self.navigationViewer, stage=self.stage
         )
@@ -1002,7 +1006,8 @@ class HighContentScreeningGui(QMainWindow):
         self.connectSlidePositionController()
 
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
-        self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.on_objective_changed)
+        self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
+        self.cameraSettingWidget.signal_binning_changed.connect(self.navigationViewer.redraw_fov)
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.objectivesWidget.signal_objective_changed.connect(self.flexibleMultiPointWidget.update_fov_positions)
         # TODO(imo): Fix position updates after removal of navigation controller
