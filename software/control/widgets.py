@@ -1086,7 +1086,7 @@ class CameraSettingsWidget(QFrame):
             self.dropdown_binning = QComboBox()
             self.dropdown_binning.setEnabled(False)
             pass
-        format_line.addWidget(QLabel("Binning Factor"))
+        format_line.addWidget(QLabel("Binning"))
         format_line.addWidget(self.dropdown_binning)
         self.camera_layout.addLayout(format_line)
 
@@ -1225,6 +1225,7 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_height.blockSignals(True)
         self.entry_ROI_width.blockSignals(True)
 
+        # TODO: move these calculations to camera class as they can be different for different cameras
         def round_to_8(val):
             return int(8 * val // 8)
 
@@ -8586,8 +8587,8 @@ class CalibrationLiveViewer(QWidget):
         self.viewbox.invertY(True)
 
         # Set appropriate panning limits based on the acquisition image or plate size
-        xmax = int(Acquisition.CROP_WIDTH * Acquisition.IMAGE_DISPLAY_SCALING_FACTOR)
-        ymax = int(Acquisition.CROP_HEIGHT * Acquisition.IMAGE_DISPLAY_SCALING_FACTOR)
+        xmax = int(CAMERA_CONFIG.CROP_WIDTH)
+        ymax = int(CAMERA_CONFIG.CROP_HEIGHT)
         self.viewbox.setLimits(xMin=0, xMax=xmax, yMin=0, yMax=ymax)
 
         self.img_item = pg.ImageItem()

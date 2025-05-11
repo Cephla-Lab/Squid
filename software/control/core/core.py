@@ -65,7 +65,7 @@ class ObjectiveStore:
         self.tube_lens_mm = TUBE_LENS_MM
         self.pixel_size_factor = self.calculate_pixel_size_factor(self.current_objective)
 
-    def get_pixel_size(self):
+    def get_pixel_size_factor(self):
         return self.pixel_size_factor
 
     def calculate_pixel_size_factor(self, objective_name):
@@ -3184,12 +3184,13 @@ class NavigationViewer(QFrame):
 
     signal_coordinates_clicked = Signal(float, float)  # Will emit x_mm, y_mm when clicked
 
-    def __init__(self, objectivestore, sample="glass slide", invertX=False, *args, **kwargs):
+    def __init__(self, objectivestore, camera_pixel_size, sample="glass slide", invertX=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.sample = sample
         self.objectiveStore = objectivestore
+        self.camera_sensor_pixel_size_um = camera_pixel_size  # unbinned pixel size
         self.well_size_mm = WELL_SIZE_MM
         self.well_spacing_mm = WELL_SPACING_MM
         self.number_of_skip = NUMBER_OF_SKIP
@@ -3200,7 +3201,6 @@ class NavigationViewer(QFrame):
         self.location_update_threshold_mm = 0.2
         self.box_color = (255, 0, 0)
         self.box_line_thickness = 2
-        self.acquisition_size = Acquisition.CROP_HEIGHT
         self.x_mm = None
         self.y_mm = None
         self.image_paths = {
@@ -3293,8 +3293,8 @@ class NavigationViewer(QFrame):
         self.update_fov_size()
 
     def update_fov_size(self):
-        pixel_size_um = self.objectiveStore.get_pixel_size()
-        self.fov_size_mm = self.acquisition_size * pixel_size_um / 1000
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
+        self.fov_size_mm = CAMERA_CONFIG.CROP_HEIGHT * pixel_size_um / 1000
 
     def redraw_fov(self):
         self.clear_overlay()
@@ -3977,8 +3977,8 @@ class ScanCoordinates(QObject):
 
     def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
         """add region based on user inputs"""
-        pixel_size_um = self.objectiveStore.get_pixel_size()
-        fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
+        fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
 
@@ -4094,7 +4094,8 @@ class ScanCoordinates(QObject):
 
     def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
         """Convert grid parameters NX, NY to FOV coordinates based on overlap"""
-        fov_size_mm = (self.objectiveStore.get_pixel_size() / 1000) * Acquisition.CROP_WIDTH
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
+        fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Calculate total grid size
@@ -4157,8 +4158,8 @@ class ScanCoordinates(QObject):
             self._log.error("Invalid manual ROI data")
             return []
 
-        pixel_size_um = self.objectiveStore.get_pixel_size()
-        fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
+        fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Ensure shape_coords is a numpy array
