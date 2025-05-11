@@ -465,7 +465,14 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def get_pixel_size_um(self) -> float:
+    def get_pixel_size_unbinned_um(self) -> float:
+        """
+        Returns the pixel size without binning in microns.
+        """
+        pass
+
+    @abc.abstractmethod
+    def get_pixel_size_binned_um(self) -> float:
         """
         Returns the pixel size after binning in microns.
         """

@@ -2205,7 +2205,7 @@ class MultiPointController(QObject):
             except:
                 pass
         # TODO: USE OBJECTIVE STORE DATA
-        acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_um()
+        acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
         acquisition_parameters["tube_lens_mm"] = TUBE_LENS_MM
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
@@ -3294,7 +3294,7 @@ class NavigationViewer(QFrame):
 
     def update_fov_size(self):
         pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
-        self.fov_size_mm = CAMERA_CONFIG.CROP_HEIGHT * pixel_size_um / 1000
+        self.fov_size_mm = CAMERA_CONFIG.CROP_WIDTH * pixel_size_um / 1000
 
     def redraw_fov(self):
         self.clear_overlay()
