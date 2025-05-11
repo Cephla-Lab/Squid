@@ -113,7 +113,7 @@ class Microscope(QObject):
             hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
         )
 
-        self.camera.set_pixel_format(squid.config.CameraPixelFormat.from_string(DEFAULT_PIXEL_FORMAT))
+        self.camera.set_pixel_format(squid.config.CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
         self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
         self.camera_focus = squid.camera.utils.get_camera(

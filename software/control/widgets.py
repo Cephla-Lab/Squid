@@ -1003,8 +1003,8 @@ class CameraSettingsWidget(QFrame):
             self.dropdown_pixelFormat.setCurrentText(self.camera.get_pixel_format().name)
         else:
             print("setting camera's default pixel format")
-            self.camera.set_pixel_format(CameraPixelFormat.from_string(DEFAULT_PIXEL_FORMAT))
-            self.dropdown_pixelFormat.setCurrentText(DEFAULT_PIXEL_FORMAT)
+            self.camera.set_pixel_format(CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
+            self.dropdown_pixelFormat.setCurrentText(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
         self.dropdown_pixelFormat.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
         # to do: load and save pixel format in configurations
 

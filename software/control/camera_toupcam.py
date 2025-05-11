@@ -361,8 +361,7 @@ class ToupcamCamera(AbstractCamera):
         (width, height) = self._capabilities.binning_resolution_map[self._binning]
         self._raw_set_resolution(width, height)
 
-        # Do hardware cropping here (use default ROI)
-        self.set_region_of_interest(*self._config.default_roi)
+        # TODO: Do hardware cropping here (set ROI)
 
     def _set_temperature_reading_callback(self, func):
         self.temperature_reading_callback = func

@@ -223,25 +223,6 @@ class CMD_EXECUTION_STATUS:
     ERROR_CODE_EMPTYING_THE_FLUDIIC_LINE_FAILED = 100
 
 
-class CAMERA_CONFIG:
-    ROI_OFFSET_X_DEFAULT = 0
-    ROI_OFFSET_Y_DEFAULT = 0
-    ROI_WIDTH_DEFAULT = 3104
-    ROI_HEIGHT_DEFAULT = 2084
-    ROTATE_IMAGE_ANGLE = None
-    FLIP_IMAGE = None  # 'Horizontal', 'Vertical', 'Both'
-    CROP_WIDTH = 4168
-    CROP_HEIGHT = 4168
-    BINNING_FACTOR_DEFAULT = 2
-    PIXEL_FORMAT_DEFAULT = "MONO12"
-    TEMPERATURE_DEFAULT = 20
-    FAN_SPEED_DEFAULT = 1
-    BLACKLEVEL_VALUE_DEFAULT = 3
-    AWB_RATIOS_R = 1.375
-    AWB_RATIOS_G = 1
-    AWB_RATIOS_B = 1.4141
-
-
 class ZStageConfig(Enum):
     STEPPER_ONLY = auto()
     PIEZO_ONLY = auto()
@@ -281,9 +262,6 @@ PRINT_CAMERA_FPS = True
 ###########################################################
 #### machine specific configurations - to be overridden ###
 ###########################################################
-CAMERA_REVERSE_X = False
-CAMERA_REVERSE_Y = False
-
 DEFAULT_TRIGGER_MODE = TriggerMode.SOFTWARE
 
 BUFFER_SIZE_LIMIT = 4095
@@ -449,6 +427,25 @@ DEFAULT_TRACKER = "csrt"
 
 ENABLE_TRACKING = False
 TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS = False  # set to true when doing multimodal acquisition
+
+
+class CAMERA_CONFIG:
+    ROI_OFFSET_X_DEFAULT = 0
+    ROI_OFFSET_Y_DEFAULT = 0
+    ROI_WIDTH_DEFAULT = 3104
+    ROI_HEIGHT_DEFAULT = 2084
+    ROTATE_IMAGE_ANGLE = None
+    FLIP_IMAGE = None  # 'Horizontal', 'Vertical', 'Both'
+    CROP_WIDTH = 4168
+    CROP_HEIGHT = 4168
+    BINNING_FACTOR_DEFAULT = 2
+    PIXEL_FORMAT_DEFAULT = "MONO12"
+    TEMPERATURE_DEFAULT = 20
+    FAN_SPEED_DEFAULT = 1
+    BLACKLEVEL_VALUE_DEFAULT = 3
+    AWB_RATIOS_R = 1.375
+    AWB_RATIOS_G = 1
+    AWB_RATIOS_B = 1.4141
 
 
 class AF:
