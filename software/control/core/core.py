@@ -1962,7 +1962,7 @@ class MultiPointController(QObject):
         channel_configuration_manager: ChannelConfigurationManager,
         usb_spectrometer=None,
         scan_coordinates: Optional[ScanCoordinates] = None,
-        fluidics = None,
+        fluidics=None,
         parent=None,
         headless=False,
     ):
