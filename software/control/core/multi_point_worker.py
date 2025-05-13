@@ -25,6 +25,7 @@ try:
 except:
     pass
 
+
 class MultiPointWorker(QObject):
 
     finished = Signal()
