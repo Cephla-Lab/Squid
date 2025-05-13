@@ -4,7 +4,6 @@ import sys
 import tempfile
 
 import control._def
-from control.fluidics import Fluidics
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import AbstractStage, AbstractCamera, CameraAcquisitionMode
@@ -1963,7 +1962,7 @@ class MultiPointController(QObject):
         channel_configuration_manager: ChannelConfigurationManager,
         usb_spectrometer=None,
         scan_coordinates: Optional[ScanCoordinates] = None,
-        fluidics: Optional[Fluidics] = None,
+        fluidics = None,
         parent=None,
         headless=False,
     ):
@@ -2261,7 +2260,7 @@ class MultiPointController(QObject):
     def run_acquisition(self):
         if not self.validate_acquisition_settings():
             # emit acquisition finished signal to re-enable the UI
-            self.acquisitionFinished.emit()
+            self.acquisition_finished.emit()
             return
 
         self._log.info("start multipoint")
@@ -2466,7 +2465,7 @@ class MultiPointController(QObject):
             except:
                 self._log.error("Failed to move to center of current region")
 
-        self.acquisitionFinished.emit()
+        self.acquisition_finished.emit()
         if not self.abort_acqusition_requested:
             self.signal_stitcher.emit(os.path.join(self.base_path, self.experiment_ID))
 
