@@ -26,7 +26,7 @@ log = squid.logging.get_logger(__name__)
 
 
 class ToupCamCapabilities(pydantic.BaseModel):
-    binning_resolution_map: Dict[Tuple[int, int], Tuple[int, int]]
+    binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
     has_fan: bool
     has_TEC: bool
     has_low_noise_mode: bool
@@ -183,7 +183,7 @@ class ToupcamCamera(AbstractCamera):
 
         camera = toupcam.Toupcam.Open(devices[index].id)
         capabilities = ToupCamCapabilities(
-            binning_resolution_map=binning_res,
+            binning_to_resolution=binning_res,
             has_fan=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_FAN) > 0,
             has_TEC=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_TEC_ONOFF) > 0,
             has_low_noise_mode=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_LOW_NOISE) > 0,
@@ -358,7 +358,7 @@ class ToupcamCamera(AbstractCamera):
 
         # We can't trigger update_internal_settings yet, because the strobe calc will fail.  So set the res
         # using the raw helper.
-        (width, height) = self._capabilities.binning_resolution_map[self._binning]
+        (width, height) = self._capabilities.binning_to_resolution[self._binning]
         self._raw_set_resolution(width, height)
 
         # TODO: Do hardware cropping here (set ROI)
@@ -518,11 +518,11 @@ class ToupcamCamera(AbstractCamera):
 
     def set_binning(self, binning_factor_x: int, binning_factor_y: int):
         with self._pause_streaming():
-            if (binning_factor_x, binning_factor_y) not in self._capabilities.binning_resolution_map:
-                self._log.error(f"Binning ({binning_factor_x},{binning_factor_y}) not supported by camera")
-                return
-            width, height = self._capabilities.binning_resolution_map[(binning_factor_x, binning_factor_y)]
+            if (binning_factor_x, binning_factor_y) not in self._capabilities.binning_to_resolution:
+                raise ValueError(f"Binning ({binning_factor_x},{binning_factor_y}) not supported by camera")
+            width, height = self._capabilities.binning_to_resolution[(binning_factor_x, binning_factor_y)]
             self._raw_set_resolution(width, height)
+            self._log.debug(f"Setting binning to {binning_factor_x},{binning_factor_y} -> {width},{height}")
             old_binning = self._binning
             self._binning = (binning_factor_x, binning_factor_y)
             old_roi = self.get_region_of_interest()
@@ -642,10 +642,10 @@ class ToupcamCamera(AbstractCamera):
         return self._binning
 
     def get_binning_options(self) -> Sequence[Tuple[int, int]]:
-        return self._capabilities.binning_resolution_map.keys()
+        return self._capabilities.binning_to_resolution.keys()
 
     def get_resolution(self) -> Tuple[int, int]:
-        return self._capabilities.binning_resolution_map[self._binning]
+        return self._capabilities.binning_to_resolution[self._binning]
 
     def get_pixel_size_unbinned_um(self) -> float:
         return self.PIXEL_SIZE_UM

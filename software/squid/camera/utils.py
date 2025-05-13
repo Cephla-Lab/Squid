@@ -101,7 +101,7 @@ def get_camera(
 class SimulatedCamera(AbstractCamera):
 
     PIXEL_SIZE_UM = 3.76
-    BINNING_RESOLUTION_MAP = {
+    BINNING_TO_RESOLUTION = {
         (1, 1): (1920, 1080),
         (2, 2): (960, 540),
         (3, 3): (640, 360),
@@ -144,7 +144,7 @@ class SimulatedCamera(AbstractCamera):
         self.set_black_level(0)
         self._acquisition_mode = None
         self.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
-        width, height = self.BINNING_RESOLUTION_MAP[(1, 1)]
+        width, height = self.BINNING_TO_RESOLUTION[(1, 1)]
         self._roi = (0, 0, width, height)
         self._temperature_setpoint = None
         self._continue_streaming = False
@@ -226,7 +226,7 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def get_resolution(self) -> Tuple[int, int]:
-        return self.BINNING_RESOLUTION_MAP[self._binning]
+        return self.BINNING_TO_RESOLUTION[self._binning]
 
     @debug_log
     def get_pixel_size_unbinned_um(self) -> float:
@@ -343,7 +343,7 @@ class SimulatedCamera(AbstractCamera):
     @debug_log
     def _next_frame(self):
         (binning_x, binning_y) = self.get_binning()
-        width, height = self.BINNING_RESOLUTION_MAP[(binning_x, binning_y)]
+        width, height = self.BINNING_TO_RESOLUTION[(binning_x, binning_y)]
 
         if self.get_frame_id() == 0:
             if self.get_pixel_format() == CameraPixelFormat.MONO8:

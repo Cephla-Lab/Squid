@@ -224,7 +224,7 @@ class CameraConfig(pydantic.BaseModel):
     # The binning factor of the camera.  If None, the camera is not using binning, or use 1x1 as default.
     default_binning: Optional[Tuple[int, int]]
 
-    # The default ROI of the camera.
+    # The default ROI of the camera for hardware cropping. Input should be: offset_x, offset_y, width, height
     default_roi: Optional[Tuple[int, int, int, int]]
 
     # The angle the camera should rotate this image right as it comes off the camera,
