@@ -343,7 +343,10 @@ class ToupcamCamera(AbstractCamera):
 
         self._raw_set_frame_format(CameraFrameFormat.RAW)
         self._raw_set_pixel_format(self._pixel_format)  # 'MONO8'
-        self.set_black_level(DEFAULT_BLACKLEVEL_VALUE)
+        try:
+            self.set_black_level(DEFAULT_BLACKLEVEL_VALUE)
+        except NotImplementedError:
+            self._log.warning("Black level is not supported by this toupcam model, ignoring default black level value")
 
         # We can't trigger update_internal_settings yet, because the strobe calc will fail.  So set the res
         # using the raw helper.
