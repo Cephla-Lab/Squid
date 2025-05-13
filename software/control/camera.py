@@ -286,31 +286,8 @@ class DefaultCamera(AbstractCamera):
 
         return self._pixel_format
 
-    def set_resolution(self, width: int, height: int):
-        old_resolution = self.get_resolution()
-        old_roi = self.get_region_of_interest()
-        new_resolution = (width, height)
-        new_roi = AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi, new_resolution)
-
-        self._log.debug(f"Adjusting resolution from {old_resolution=} to {new_resolution=}")
-        self._camera.Width.set(width)
-        self._camera.Height.set(height)
-
-        self._log.debug(f"Adjusting roi from {old_roi=} to {new_roi=} to keep FOV the same after resolution change.")
-        self.set_region_of_interest(*new_roi)
-
     def get_resolution(self) -> Tuple[int, int]:
-        return self._camera.Width.get(), self._camera.Height.get()
-
-    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
-        # There's a get_range on Width and Height, but I don't think cameras normally allow
-        # arbitrary resolutions?  So, just return the current and max.
-        current_w = self._camera.Width.get()
-        w_max = self._camera.WidthMax.get()
-        current_h = self._camera.Height.get()
-        h_max = self._camera.HeightMax.get()
-
-        return (current_w, current_h), (w_max, h_max)
+        return self._camera.WidthMax.get(), self._camera.HeightMax.get()
 
     def set_analog_gain(self, analog_gain: float):
         self._camera.Gain.set(analog_gain)

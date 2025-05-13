@@ -1230,7 +1230,7 @@ class CameraSettingsWidget(QFrame):
             return int(8 * val // 8)
 
         (x_offset, y_offset, width, height) = self.camera.get_region_of_interest()
-        (x_max, y_max) = self.camera.get_max_size()
+        (x_max, y_max) = self.camera.get_resolution()
         self.entry_ROI_height.setMaximum(y_max)
         self.entry_ROI_width.setMaximum(x_max)
 
