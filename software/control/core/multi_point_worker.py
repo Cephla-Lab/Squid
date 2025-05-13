@@ -25,6 +25,10 @@ try:
 except:
     pass
 
+if DO_FLUORESCENCE_RTP:
+    from control.processing_handler import ProcessingHandler
+    from control.processing_pipeline import *
+    from control.multipoint_built_in_functionalities import malaria_rtp
 
 class MultiPointWorker(QObject):
 
