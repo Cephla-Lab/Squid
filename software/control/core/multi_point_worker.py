@@ -25,11 +25,6 @@ try:
 except:
     pass
 
-if DO_FLUORESCENCE_RTP:
-    from control.processing_handler import ProcessingHandler
-    from control.processing_pipeline import *
-    from control.multipoint_built_in_functionalities import malaria_rtp
-
 class MultiPointWorker(QObject):
 
     finished = Signal()
@@ -38,12 +33,9 @@ class MultiPointWorker(QObject):
     image_to_display_multi = Signal(np.ndarray, int)
     signal_current_configuration = Signal(ChannelMode)
     signal_register_current_fov = Signal(float, float)
-    signal_detection_stats = Signal(object)
-    signal_update_stats = Signal(object)
     signal_z_piezo_um = Signal(float)
     napari_layers_init = Signal(int, int, object)
     napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
-    napari_rtp_layers_update = Signal(np.ndarray, str)
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
 
@@ -51,10 +43,7 @@ class MultiPointWorker(QObject):
         QObject.__init__(self)
         self.multiPointController = multiPointController
         self._log = squid.logging.get_logger(__class__.__name__)
-        self.signal_update_stats.connect(self.update_stats)
         self.start_time = 0
-        if DO_FLUORESCENCE_RTP:
-            self.processingHandler = multiPointController.processingHandler
         self.camera: AbstractCamera = self.multiPointController.camera
         self.microcontroller = self.multiPointController.microcontroller
         self.usb_spectrometer = self.multiPointController.usb_spectrometer
@@ -77,13 +66,10 @@ class MultiPointWorker(QObject):
         self.crop_width = self.multiPointController.crop_width
         self.crop_height = self.multiPointController.crop_height
         self.display_resolution_scaling = self.multiPointController.display_resolution_scaling
-        self.counter = self.multiPointController.counter
         self.experiment_ID = self.multiPointController.experiment_ID
         self.base_path = self.multiPointController.base_path
         self.selected_configurations = self.multiPointController.selected_configurations
         self.use_piezo = self.multiPointController.use_piezo
-        self.detection_stats = {}
-        self.async_detection_stats = {}
         self.timestamp_acquisition_started = self.multiPointController.timestamp_acquisition_started
         self.time_point = 0
         self.af_fov_count = 0
@@ -100,10 +86,6 @@ class MultiPointWorker(QObject):
         self.microscope = self.multiPointController.parent
         self.performance_mode = self.microscope and self.microscope.performance_mode
 
-        try:
-            self.model = self.microscope.segmentation_model
-        except:
-            pass
         self.crop = SEGMENTATION_CROP
 
         self.t_dpc = []
@@ -116,21 +98,6 @@ class MultiPointWorker(QObject):
 
         self.merged_image = None
         self.image_count = 0
-
-    def update_stats(self, new_stats):
-        self.count += 1
-        self._log.info("stats", self.count)
-        for k in new_stats.keys():
-            try:
-                self.detection_stats[k] += new_stats[k]
-            except:
-                self.detection_stats[k] = 0
-                self.detection_stats[k] += new_stats[k]
-        if "Total RBC" in self.detection_stats and "Total Positives" in self.detection_stats:
-            self.detection_stats["Positives per 5M RBC"] = 5e6 * (
-                self.detection_stats["Total Positives"] / self.detection_stats["Total RBC"]
-            )
-        self.signal_detection_stats.emit(self.detection_stats)
 
     def update_use_piezo(self, value):
         self.use_piezo = value
@@ -183,12 +150,6 @@ class MultiPointWorker(QObject):
 
             elapsed_time = time.perf_counter_ns() - self.start_time
             self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
-
-            # End processing using the updated method
-            if DO_FLUORESCENCE_RTP:
-                self.processingHandler.processing_queue.join()
-                self.processingHandler.upload_queue.join()
-                self.processingHandler.end_processing()
 
             self._log.info(
                 f"Time taken for acquisition/processing: {(time.perf_counter_ns() - self.start_time) / 1e9} [s]"
@@ -276,8 +237,6 @@ class MultiPointWorker(QObject):
         self._log.debug(f"Single time point took: {time.time() - start} [s]")
 
     def initialize_z_stack(self):
-        self.count_rtp = 0
-
         # z stacking config
         if self.z_stacking_config == "FROM TOP":
             self.deltaZ = -abs(self.deltaZ)
@@ -421,42 +380,6 @@ class MultiPointWorker(QObject):
 
         if self.NZ > 1:
             self.move_z_back_after_stack()
-
-    def run_real_time_processing(self, current_round_images, z_level):
-        if (
-            "BF LED matrix left half" in current_round_images
-            and "BF LED matrix right half" in current_round_images
-            and "Fluorescence 405 nm Ex" in current_round_images
-        ):
-            try:
-                print("real time processing", self.count_rtp)
-                if (
-                    (self.microscope.model is None)
-                    or (self.microscope.device is None)
-                    or (self.microscope.classification_th is None)
-                    or (self.microscope.dataHandler is None)
-                ):
-                    raise AttributeError("microscope missing model, device, classification_th, and/or dataHandler")
-                I_fluorescence = current_round_images["Fluorescence 405 nm Ex"]
-                I_left = current_round_images["BF LED matrix left half"]
-                I_right = current_round_images["BF LED matrix right half"]
-                if len(I_left.shape) == 3:
-                    I_left = cv2.cvtColor(I_left, cv2.COLOR_RGB2GRAY)
-                if len(I_right.shape) == 3:
-                    I_right = cv2.cvtColor(I_right, cv2.COLOR_RGB2GRAY)
-                malaria_rtp(
-                    I_fluorescence,
-                    I_left,
-                    I_right,
-                    z_level,
-                    self,
-                    classification_test_mode=self.microscope.classification_test_mode,
-                    sort_during_multipoint=SORT_DURING_MULTIPOINT,
-                    disp_th_during_multipoint=DISP_TH_DURING_MULTIPOINT,
-                )
-                self.count_rtp += 1
-            except AttributeError as e:
-                print(repr(e))
 
     def perform_autofocus(self, region_id, fov):
         if not self.do_reflection_af:

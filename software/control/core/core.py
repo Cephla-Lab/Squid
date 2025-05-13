@@ -21,11 +21,6 @@ from qtpy.QtGui import *
 from control._def import *
 from control.core.multi_point_worker import MultiPointWorker
 
-if DO_FLUORESCENCE_RTP:
-    from control.processing_handler import ProcessingHandler
-    from control.processing_pipeline import *
-    from control.multipoint_built_in_functionalities import malaria_rtp
-
 import control.utils as utils
 import control.utils_acquisition as utils_acquisition
 import control.utils_channel as utils_channel
@@ -1236,9 +1231,7 @@ class MultiPointController(QObject):
     spectrum_to_display = Signal(np.ndarray)
     signal_current_configuration = Signal(ChannelMode)
     signal_register_current_fov = Signal(float, float)
-    detection_stats = Signal(object)
     signal_stitcher = Signal(str)
-    napari_rtp_layers_update = Signal(np.ndarray, str)
     napari_layers_init = Signal(int, int, object)
     napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
     signal_set_display_tabs = Signal(list, int)
@@ -1266,8 +1259,6 @@ class MultiPointController(QObject):
         QObject.__init__(self)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.camera: AbstractCamera = camera
-        if DO_FLUORESCENCE_RTP:
-            self.processingHandler = ProcessingHandler()
         self.stage = stage
         self.piezo = piezo
         self.microcontroller = microcontroller
@@ -1294,7 +1285,6 @@ class MultiPointController(QObject):
         self.focus_map_storage = []
         self.already_using_fmap = False
         self.do_segmentation = False
-        self.do_fluorescence_rtp = DO_FLUORESCENCE_RTP
         self.crop_width = Acquisition.CROP_WIDTH
         self.crop_height = Acquisition.CROP_HEIGHT
         self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
@@ -1387,9 +1377,6 @@ class MultiPointController(QObject):
 
     def set_segmentation_flag(self, flag):
         self.do_segmentation = flag
-
-    def set_fluorescence_rtp_flag(self, flag):
-        self.do_fluorescence_rtp = flag
 
     def set_focus_map(self, focusMap):
         self.focus_map = focusMap  # None if dont use focusMap
@@ -1701,7 +1688,6 @@ class MultiPointController(QObject):
             self.multiPointWorker.moveToThread(self.thread)
             # connect signals and slots
             self.thread.started.connect(self.multiPointWorker.run)
-            self.multiPointWorker.signal_detection_stats.connect(self.slot_detection_stats)
             self.multiPointWorker.finished.connect(self._on_acquisition_completed)
             self.multiPointWorker.finished.connect(self.multiPointWorker.deleteLater)
             self.multiPointWorker.finished.connect(self.thread.quit)
@@ -1779,9 +1765,6 @@ class MultiPointController(QObject):
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
 
-    def slot_detection_stats(self, stats):
-        self.detection_stats.emit(stats)
-
     def slot_image_to_display(self, image):
         self.image_to_display.emit(image)
 
@@ -1796,9 +1779,6 @@ class MultiPointController(QObject):
 
     def slot_register_current_fov(self, x_mm, y_mm):
         self.signal_register_current_fov.emit(x_mm, y_mm)
-
-    def slot_napari_rtp_layers_update(self, image, channel):
-        self.napari_rtp_layers_update.emit(image, channel)
 
     def slot_napari_layers_init(self, image_height, image_width, dtype):
         self.napari_layers_init.emit(image_height, image_width, dtype)

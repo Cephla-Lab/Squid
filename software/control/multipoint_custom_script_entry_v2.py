@@ -120,9 +120,6 @@ def acquire_single_z_plane(worker, current_path, region_id, fov, i, j, z_level, 
         current_image = (fov * total_images) + (z_level * len(worker.selected_configurations)) + config_idx + 1
         worker.signal_region_progress.emit(current_image, worker.total_scans)
 
-    if worker.multiPointController.do_fluorescence_rtp:
-        run_real_time_processing(worker, current_round_images, i, j, z_level)
-
     update_coordinates_dataframe(worker, region_id, z_level, fov, i, j)
 
     # Check for abort after each z-plane
@@ -295,46 +292,6 @@ def update_coordinates_dataframe(worker, region_id, z_level, fov, i, j):
     else:
         worker.update_coordinates_dataframe(region_id, z_level, i=i, j=j)
     worker.signal_register_current_fov.emit(worker.navigationController.x_pos_mm, worker.navigationController.y_pos_mm)
-
-
-def run_real_time_processing(worker, current_round_images, i, j, z_level):
-    acquired_image_configs = list(current_round_images.keys())
-    if (
-        "BF LED matrix left half" in current_round_images
-        and "BF LED matrix right half" in current_round_images
-        and "Fluorescence 405 nm Ex" in current_round_images
-    ):
-        try:
-            print("real time processing", worker.count_rtp)
-            if (
-                (worker.microscope.model is None)
-                or (worker.microscope.device is None)
-                or (worker.microscope.classification_th is None)
-                or (worker.microscope.dataHandler is None)
-            ):
-                raise AttributeError("microscope missing model, device, classification_th, and/or dataHandler")
-            I_fluorescence = current_round_images["Fluorescence 405 nm Ex"]
-            I_left = current_round_images["BF LED matrix left half"]
-            I_right = current_round_images["BF LED matrix right half"]
-            if len(I_left.shape) == 3:
-                I_left = cv2.cvtColor(I_left, cv2.COLOR_RGB2GRAY)
-            if len(I_right.shape) == 3:
-                I_right = cv2.cvtColor(I_right, cv2.COLOR_RGB2GRAY)
-            malaria_rtp(
-                I_fluorescence,
-                I_left,
-                I_right,
-                i,
-                j,
-                z_level,
-                worker,
-                classification_test_mode=worker.microscope.classification_test_mode,
-                sort_during_multipoint=SORT_DURING_MULTIPOINT,
-                disp_th_during_multipoint=DISP_TH_DURING_MULTIPOINT,
-            )
-            worker.count_rtp += 1
-        except AttributeError as e:
-            print(repr(e))
 
 
 def move_to_next_z_plane(worker):

@@ -6819,50 +6819,6 @@ class NapariMultiChannelWidget(QWidget):
             for layer in self.viewer.layers:
                 layer.refresh()
 
-    def updateRTPLayers(self, image, channel_name):
-        """Updates the appropriate slice of the canvas with the new image data."""
-        # Check if the layer exists and has a different dtype
-        if self.dtype != image.dtype:  # or self.viewer.layers[channel_name].data.dtype != image.dtype:
-            # Remove the existing layer
-            self.layers_initialized = False
-            self.acquisition_initialized = False
-
-        if not self.layers_initialized:
-            self.initLayers(image.shape[0], image.shape[1], image.dtype)
-
-        rgb = len(image.shape) == 3
-        if channel_name not in self.viewer.layers:
-            self.channels.add(channel_name)
-            if rgb:
-                color = None  # RGB images do not need a colormap
-                canvas = np.zeros((self.image_height, self.image_width, 3), dtype=self.dtype)
-            else:
-                channel_info = CHANNEL_COLORS_MAP.get(
-                    self.extractWavelength(channel_name), {"hex": 0xFFFFFF, "name": "gray"}
-                )
-                if channel_info["name"] in AVAILABLE_COLORMAPS:
-                    color = AVAILABLE_COLORMAPS[channel_info["name"]]
-                else:
-                    color = self.generateColormap(channel_info)
-                canvas = np.zeros((self.image_height, self.image_width), dtype=self.dtype)
-
-            layer = self.viewer.add_image(
-                canvas,
-                name=channel_name,
-                visible=True,
-                rgb=rgb,
-                colormap=color,
-                blending="additive",
-                contrast_limits=self.getContrastLimits(self.dtype),
-            )
-            layer.events.contrast_limits.connect(self.signalContrastLimits)
-            self.resetView()
-
-        layer = self.viewer.layers[channel_name]
-        layer.data = image
-        layer.contrast_limits = self.contrastManager.get_limits(channel_name)
-        layer.refresh()
-
     def signalContrastLimits(self, event):
         layer = event.source
         min_val, max_val = map(float, layer.contrast_limits)
