@@ -1223,6 +1223,7 @@ class AutoFocusController(QObject):
         self.focus_map_coords.append((x, y, z))
         print(f"Added triple ({x},{y},{z}) to focus map")
 
+
 class ConfigType(Enum):
     CHANNEL = "channel"
     CONFOCAL = "confocal"
@@ -1932,6 +1933,7 @@ class ScanCoordinates(QObject):
 
         self._log.info(f"Updated z-level to {new_z} for region:{region_id}, fov:{fov}")
 
+
 class MultiPointController(QObject):
 
     acquisitionFinished = Signal()
@@ -1960,8 +1962,8 @@ class MultiPointController(QObject):
         objective_store: ObjectiveStore,
         channel_configuration_manager: ChannelConfigurationManager,
         usb_spectrometer=None,
-        scan_coordinates: Optional[ScanCoordinates] =None,
-        fluidics: Optional[Fluidics]=None,
+        scan_coordinates: Optional[ScanCoordinates] = None,
+        fluidics: Optional[Fluidics] = None,
         parent=None,
         headless=False,
     ):
