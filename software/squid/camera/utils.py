@@ -225,6 +225,10 @@ class SimulatedCamera(AbstractCamera):
         return [(1, 1), (2, 2), (3, 3)]
 
     @debug_log
+    def get_resolution(self) -> Tuple[int, int]:
+        return self.BINNING_RESOLUTION_MAP[self._binning]
+
+    @debug_log
     def get_pixel_size_unbinned_um(self) -> float:
         return self.PIXEL_SIZE_UM
 

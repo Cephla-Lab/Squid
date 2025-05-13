@@ -644,6 +644,9 @@ class ToupcamCamera(AbstractCamera):
     def get_binning_options(self) -> Sequence[Tuple[int, int]]:
         return self._capabilities.binning_resolution_map.keys()
 
+    def get_resolution(self) -> Tuple[int, int]:
+        return self._capabilities.binning_resolution_map[self._binning]
+
     def get_pixel_size_unbinned_um(self) -> float:
         return self.PIXEL_SIZE_UM
 

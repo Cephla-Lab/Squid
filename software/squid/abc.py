@@ -465,6 +465,13 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
+    def get_resolution(self) -> Tuple[int, int]:
+        """
+        Returns the maximum resolution of the camera under the current binning setting.
+        """
+        pass
+
+    @abc.abstractmethod
     def get_pixel_size_unbinned_um(self) -> float:
         """
         Returns the pixel size without binning in microns.
