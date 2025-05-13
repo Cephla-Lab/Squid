@@ -201,7 +201,7 @@ class Microscope(QObject):
             self.laserAutofocusController,
             self.objectiveStore,
             self.channelConfigurationManager,
-            scanCoordinates=None,
+            scan_coordinates=None,
             parent=self,
             headless=True,
         )

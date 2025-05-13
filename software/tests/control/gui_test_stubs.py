@@ -89,12 +89,12 @@ def get_test_multi_point_controller() -> control.core.core.MultiPointController:
         camera=camera,
         stage=stage,
         microcontroller=microcontroller,
-        liveController=live_controller,
-        autofocusController=get_test_autofocus_controller(camera, stage, live_controller, microcontroller),
-        channelConfigurationManager=config_manager.channel_manager,
-        scanCoordinates=get_test_scan_coordinates(objective_store, get_test_navigation_viewer(objective_store), stage),
+        live_controller=live_controller,
+        autofocus_controller=get_test_autofocus_controller(camera, stage, live_controller, microcontroller),
+        channel_configuration_manager=config_manager.channel_manager,
+        scan_coordinates=get_test_scan_coordinates(objective_store, get_test_navigation_viewer(objective_store), stage),
         piezo=get_test_piezo_stage(microcontroller),
-        objectiveStore=objective_store,
+        objective_store=objective_store,
     )
 
     multi_point_controller.set_base_path("/tmp/")
