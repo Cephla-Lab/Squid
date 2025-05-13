@@ -1936,7 +1936,7 @@ class ScanCoordinates(QObject):
 
 class MultiPointController(QObject):
 
-    acquisitionFinished = Signal()
+    acquisition_finished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
     spectrum_to_display = Signal(np.ndarray)
