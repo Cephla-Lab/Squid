@@ -20,6 +20,7 @@ from qtpy.QtGui import *
 # control
 from control._def import *
 from control.core.multi_point_worker import MultiPointWorker
+import control.core.multi_point_worker as multi_point_worker
 
 import control.utils as utils
 import control.utils_acquisition as utils_acquisition

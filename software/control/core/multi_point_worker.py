@@ -1,18 +1,17 @@
 import os
 import time
 from datetime import datetime
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import cv2
 import imageio as iio
 import numpy as np
+from numpy.typing import NDArray
 import pandas as pd
 
-os.environ["QT_API"] = "pyqt5"
-from qtpy.QtCore import Signal, QObject
-from PyQt5.QtWidgets import QApplication
-
 from control._def import *
-from control import utils, utils_acquisition
+from control import utils_acquisition
 from control.piezo import PiezoStage
 from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera
@@ -25,66 +24,97 @@ try:
 except:
     pass
 
+@dataclass
+class CaptureInfo:
+    image: np.array
+    position: squid.abc.Pos
+    z_level: int
+    channel_mode: ChannelMode
+    label: str
 
-class MultiPointWorker(QObject):
+@dataclass
+class AcquisitionProgress:
+    current_region: int
+    total_regions: int
+    time_point: int
 
-    finished = Signal()
-    image_to_display = Signal(np.ndarray)
-    spectrum_to_display = Signal(np.ndarray)
-    image_to_display_multi = Signal(np.ndarray, int)
-    signal_current_configuration = Signal(ChannelMode)
-    signal_register_current_fov = Signal(float, float)
-    signal_z_piezo_um = Signal(float)
-    napari_layers_init = Signal(int, int, object)
-    napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
-    signal_acquisition_progress = Signal(int, int, int)
-    signal_region_progress = Signal(int, int)
+@dataclass
+class RegionProgress:
+    current_image: int
+    total_images: int
 
-    def __init__(self, multiPointController):
-        QObject.__init__(self)
-        self.multiPointController = multiPointController
+@dataclass
+class MultiPointWorkerInteractionFunctions:
+    # Call when the acquisition is completed
+    finished: Callable
+    # Current image, total images in acquisition
+    acquisition_progress: Callable[[AcquisitionProgress], Any]
+    region_progress: Callable[[RegionProgress], Any]
+
+    # Call whenever a new image is captured that is a part of the acquisition (not AF images, etc)
+    new_capture: Callable[[CaptureInfo], Any]
+    # Call whenever we switch ChannelMode
+    new_channel_mode: Callable[[ChannelMode], Any]
+
+    # TODO(imo): Do we need this, or is the 10 Hz update in the ui okay?
+    # Call whenever we settle at a new FOV
+    new_fov_position: Callable[[squid.abc.Pos], Any]
+    # If using Piezo z axis, send piezo position updates via this
+    new_piezo_z_position: Callable[[float], Any]
+
+    # Call to check if something has requested an abort
+    abort_requested: Callable[[], bool]
+
+    # Call if we abort, or finish aborting upon request.
+    aborted: Callable
+
+    # TODO(imo): Are our spectrometers still supported?
+    new_spectrum_capture: Callable[[NDArray[np.float_]], Any]
+
+
+class MultiPointWorker:
+    def __init__(self, multiPointController, interaction_fn: MultiPointWorkerInteractionFunctions):
+        self._interaction_fn = interaction_fn
         self._log = squid.logging.get_logger(__class__.__name__)
-        self.start_time = 0
-        self.camera: AbstractCamera = self.multiPointController.camera
-        self.microcontroller = self.multiPointController.microcontroller
-        self.usb_spectrometer = self.multiPointController.usb_spectrometer
-        self.stage: squid.abc.AbstractStage = self.multiPointController.stage
-        self.piezo: PiezoStage = self.multiPointController.piezo
-        self.liveController = self.multiPointController.liveController
-        self.autofocusController = self.multiPointController.autofocusController
-        self.objectiveStore = self.multiPointController.objectiveStore
-        self.channelConfigurationManager = self.multiPointController.channelConfigurationManager
-        self.NX = self.multiPointController.NX
-        self.NY = self.multiPointController.NY
-        self.NZ = self.multiPointController.NZ
-        self.Nt = self.multiPointController.Nt
-        self.deltaX = self.multiPointController.deltaX
-        self.deltaY = self.multiPointController.deltaY
-        self.deltaZ = self.multiPointController.deltaZ
-        self.dt = self.multiPointController.deltat
-        self.do_autofocus = self.multiPointController.do_autofocus
-        self.do_reflection_af = self.multiPointController.do_reflection_af
-        self.crop_width = self.multiPointController.crop_width
-        self.crop_height = self.multiPointController.crop_height
-        self.display_resolution_scaling = self.multiPointController.display_resolution_scaling
-        self.experiment_ID = self.multiPointController.experiment_ID
-        self.base_path = self.multiPointController.base_path
-        self.selected_configurations = self.multiPointController.selected_configurations
-        self.use_piezo = self.multiPointController.use_piezo
-        self.timestamp_acquisition_started = self.multiPointController.timestamp_acquisition_started
+        self.camera: AbstractCamera = multiPointController.camera
+        self.microcontroller = multiPointController.microcontroller
+        self.usb_spectrometer = multiPointController.usb_spectrometer
+        self.stage: squid.abc.AbstractStage = multiPointController.stage
+        self.piezo: PiezoStage = multiPointController.piezo
+        self.liveController = multiPointController.liveController
+        self.autofocusController = multiPointController.autofocusController
+        self.objectiveStore = multiPointController.objectiveStore
+        self.channelConfigurationManager = multiPointController.channelConfigurationManager
+        self.NX = multiPointController.NX
+        self.NY = multiPointController.NY
+        self.NZ = multiPointController.NZ
+        self.Nt = multiPointController.Nt
+        self.deltaX = multiPointController.deltaX
+        self.deltaY = multiPointController.deltaY
+        self.deltaZ = multiPointController.deltaZ
+        self.dt = multiPointController.deltat
+        self.do_autofocus = multiPointController.do_autofocus
+        self.do_reflection_af = multiPointController.do_reflection_af
+        self.crop_width = multiPointController.crop_width
+        self.crop_height = multiPointController.crop_height
+        self.display_resolution_scaling = multiPointController.display_resolution_scaling
+        self.experiment_ID = multiPointController.experiment_ID
+        self.base_path = multiPointController.base_path
+        self.selected_configurations = multiPointController.selected_configurations
+        self.use_piezo = multiPointController.use_piezo
+        self.timestamp_acquisition_started = multiPointController.timestamp_acquisition_started
         self.time_point = 0
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
-        self.scan_region_fov_coords_mm = self.multiPointController.scan_region_fov_coords_mm.copy()
-        self.scan_region_coords_mm = self.multiPointController.scan_region_coords_mm
-        self.scan_region_names = self.multiPointController.scan_region_names
-        self.z_stacking_config = self.multiPointController.z_stacking_config  # default 'from bottom'
-        self.z_range = self.multiPointController.z_range
-        self.fluidics = self.multiPointController.fluidics
+        self.scan_region_fov_coords_mm = multiPointController.scan_region_fov_coords_mm.copy()
+        self.scan_region_coords_mm = multiPointController.scan_region_coords_mm
+        self.scan_region_names = multiPointController.scan_region_names
+        self.z_stacking_config = multiPointController.z_stacking_config  # default 'from bottom'
+        self.z_range = multiPointController.z_range
+        self.fluidics = multiPointController.fluidics
 
-        self.headless = self.multiPointController.headless
-        self.microscope = self.multiPointController.parent
+        self.microscope = multiPointController.parent
         self.performance_mode = self.microscope and self.microscope.performance_mode
 
         self.crop = SEGMENTATION_CROP
@@ -106,12 +136,12 @@ class MultiPointWorker(QObject):
 
     def run(self):
         try:
-            self.start_time = time.perf_counter_ns()
+            start_time = time.perf_counter_ns()
             self.camera.start_streaming()
 
             while self.time_point < self.Nt:
                 # check if abort acquisition has been requested
-                if self.multiPointController.abort_acqusition_requested:
+                if self._interaction_fn.abort_requested():
                     self._log.debug("In run, abort_acquisition_requested=True")
                     break
 
@@ -144,23 +174,22 @@ class MultiPointWorker(QObject):
 
                     # wait until it's time to do the next acquisition
                     while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
-                        if self.multiPointController.abort_acqusition_requested:
+                        if self._interaction_fn.abort_requested():
                             self._log.debug("In run wait loop, abort_acquisition_requested=True")
                             break
                         time.sleep(0.05)
 
-            elapsed_time = time.perf_counter_ns() - self.start_time
+            elapsed_time = time.perf_counter_ns() - start_time
             self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
 
             self._log.info(
-                f"Time taken for acquisition/processing: {(time.perf_counter_ns() - self.start_time) / 1e9} [s]"
+                f"Time taken for acquisition/processing: {(time.perf_counter_ns() - start_time) / 1e9} [s]"
             )
         except TimeoutError as te:
             self._log.error(f"Operation timed out during acquisition, aborting acquisition!")
             self._log.error(te)
-            self.multiPointController.request_abort_aquisition()
-        if not self.headless:
-            self.finished.emit()
+            self._interaction_fn.aborted()
+        self._interaction_fn.finished()
 
     def wait_till_operation_is_completed(self):
         while self.microcontroller.is_busy():
@@ -230,7 +259,8 @@ class MultiPointWorker(QObject):
             x = np.array(x).astype(float)
             y = np.array(y).astype(float)
             z = np.array(z).astype(float)
-            self.multiPointController.signal_coordinates.emit(x, y, z, region)
+            # TODO(imo): signal_coordinates functionality here
+
 
         utils.create_done_file(current_path)
         # TODO(imo): If anything throws above, we don't re-enable the joystick
@@ -289,10 +319,11 @@ class MultiPointWorker(QObject):
 
     def run_coordinate_acquisition(self, current_path):
         n_regions = len(self.scan_region_coords_mm)
-
         for region_index, (region_id, coordinates) in enumerate(self.scan_region_fov_coords_mm.items()):
-
-            self.signal_acquisition_progress.emit(region_index + 1, n_regions, self.time_point)
+            self._interaction_fn.acquisition_progress(AcquisitionProgress(
+                current_region=region_index + 1,
+                total_regions=n_regions,
+                time_point=self.time_point))
 
             self.num_fovs = len(coordinates)
             self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
@@ -302,7 +333,7 @@ class MultiPointWorker(QObject):
                 self.move_to_coordinate(coordinate_mm)
                 self.acquire_at_position(region_id, current_path, fov_count)
 
-                if self.multiPointController.abort_acqusition_requested:
+                if self._interaction_fn.abort_requested():
                     self.handle_acquisition_abort(current_path, region_id)
                     return
 
@@ -321,7 +352,6 @@ class MultiPointWorker(QObject):
         if self.NZ > 1:
             self.prepare_z_stack()
 
-        pos = self.stage.get_pos()
         if self.use_piezo:
             self.z_piezo_um = self.piezo.position
 
@@ -362,11 +392,11 @@ class MultiPointWorker(QObject):
                     + config_idx
                     + 1
                 )
-                self.signal_region_progress.emit(current_image, self.total_scans)
+                self._interaction_fn.region_progress(RegionProgress(current_image=current_image, total_images=self.total_scans))
 
             # updates coordinates df
             self.update_coordinates_dataframe(region_id, z_level, fov)
-            self.signal_register_current_fov.emit(self.stage.get_pos().x_mm, self.stage.get_pos().y_mm)
+            self._interaction_fn.new_fov_position(acquire_pos)
 
             # check if the acquisition should be aborted
             if self.multiPointController.abort_acqusition_requested:
@@ -382,6 +412,12 @@ class MultiPointWorker(QObject):
         if self.NZ > 1:
             self.move_z_back_after_stack()
 
+    def _switch_config(self, config: ChannelMode):
+        self._interaction_fn.new_channel_mode(config)
+        # TODO(IMO): Do \/ fast.  Also make ^ only ui.
+        # self.liveController.set_microscope_mode(config)
+        # self.wait_till_operation_is_completed()
+
     def perform_autofocus(self, region_id, fov):
         if not self.do_reflection_af:
             # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
@@ -394,7 +430,7 @@ class MultiPointWorker(QObject):
                 config_AF = self.channelConfigurationManager.get_channel_configuration_by_name(
                     self.objectiveStore.current_objective, configuration_name_AF
                 )
-                self.signal_current_configuration.emit(config_AF)
+                self._switch_config(config_AF)
                 if (
                     self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0
                 ) or self.autofocusController.use_focus_map:
@@ -433,13 +469,7 @@ class MultiPointWorker(QObject):
 
     def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k):
         # update the current configuration
-        if not self.performance_mode:
-            self.signal_current_configuration.emit(config)
-            self.wait_till_operation_is_completed()
-        else:
-            # set channel mode directly if in performance mode
-            self.liveController.set_microscope_mode(config)
-            self.wait_till_operation_is_completed()
+        self._switch_config(config)
 
         # trigger acquisition (including turning on the illumination) and read frame
         camera_illumination_time = self.camera.get_exposure_time()
@@ -466,24 +496,20 @@ class MultiPointWorker(QObject):
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_off_illumination()
 
-        height, width = image.shape[:2]
-        image_to_display = utils.crop_image(
-            image,
-            round(width * self.display_resolution_scaling),
-            round(height * self.display_resolution_scaling),
+        capture_info = CaptureInfo(
+            image=image,
+            position=self.stage.get_pos(),
+            z_level=k,
+            channel_mode=config,
+            label=self.capture_label(self.objectiveStore.get_current_objective_info()["magnification"], config.name)
         )
-        self.image_to_display.emit(image_to_display)
-        self.image_to_display_multi.emit(image_to_display, config.illumination_source)
+        self._interaction_fn.new_capture(capture_info)
 
         self.save_image(image, file_ID, config, current_path, camera_frame.is_color())
-        self.update_napari(image, config.name, k)
 
         current_round_images[config.name] = np.copy(image)
 
         MultiPointWorker.handle_rgb_generation(current_round_images, file_ID, current_path, k)
-
-        if not self.headless:
-            QApplication.processEvents()
 
     def acquire_rgb_image(self, config, file_ID, current_path, current_round_images, k):
         # go through the channels
@@ -495,13 +521,7 @@ class MultiPointWorker(QObject):
         ):
             if config_.name in rgb_channels:
                 # update the current configuration
-                if not self.performance_mode:
-                    self.signal_current_configuration.emit(config)
-                    self.wait_till_operation_is_completed()
-                else:
-                    # set channel mode directly if in performance mode
-                    self.liveController.set_microscope_mode(config)
-                    self.wait_till_operation_is_completed()
+                self._switch_config(config_)
 
                 # trigger acquisition (including turning on the illumination)
                 if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
@@ -540,7 +560,7 @@ class MultiPointWorker(QObject):
         if self.usb_spectrometer is not None:
             for l in range(N_SPECTRUM_PER_POINT):
                 data = self.usb_spectrometer.read_spectrum()
-                self.spectrum_to_display.emit(data)
+                self._interaction_fn.new_spectrum_capture(data)
                 saving_path = os.path.join(
                     current_path, file_ID + "_" + str(config.name).replace(" ", "_") + "_" + str(l) + ".csv"
                 )
@@ -573,16 +593,10 @@ class MultiPointWorker(QObject):
 
         return
 
-    def update_napari(self, image, config_name, k):
-        if not self.performance_mode and (USE_NAPARI_FOR_MOSAIC_DISPLAY or USE_NAPARI_FOR_MULTIPOINT):
-
-            if not self.init_napari_layers:
-                print("init napari layers")
-                self.init_napari_layers = True
-                self.napari_layers_init.emit(image.shape[0], image.shape[1], image.dtype)
-            pos = self.stage.get_pos()
-            objective_magnification = str(int(self.objectiveStore.get_current_objective_info()["magnification"]))
-            self.napari_layers_update.emit(image, pos.x_mm, pos.y_mm, k, objective_magnification + "x " + config_name)
+    @staticmethod
+    def capture_label(magnification: int, config_name: str):
+        magnification_string = str(int(magnification))
+        return magnification_string + "x " + config_name
 
     @staticmethod
     def handle_rgb_generation(current_round_images, file_ID, current_path, k):
@@ -611,16 +625,16 @@ class MultiPointWorker(QObject):
                     )
 
     def handle_rgb_channels(self, images, file_ID, current_path, config, k):
+        pos = self.stage.get_pos()
         for channel in ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]:
-            image_to_display = utils.crop_image(
-                images[channel],
-                round(images[channel].shape[1] * self.display_resolution_scaling),
-                round(images[channel].shape[0] * self.display_resolution_scaling),
+            capture_info = CaptureInfo(
+                image=images[channel],
+                position=pos,
+                z_level=k,
+                channel_mode=config,
+                label=self.capture_label(self.objectiveStore.get_current_objective_info()["magnification"], config.name)
             )
-            self.image_to_display.emit(image_to_display)
-            self.image_to_display_multi.emit(image_to_display, config.illumination_source)
-
-            self.update_napari(images[channel], channel, k)
+            self._interaction_fn.new_capture(capture_info)
 
             file_name = (
                 file_ID
@@ -631,22 +645,19 @@ class MultiPointWorker(QObject):
             iio.imwrite(os.path.join(current_path, file_name), images[channel])
 
     def construct_rgb_image(self, images, file_ID, current_path, config, k):
+        pos = self.stage.get_pos()
         rgb_image = np.zeros((*images["BF LED matrix full_R"].shape, 3), dtype=images["BF LED matrix full_R"].dtype)
         rgb_image[:, :, 0] = images["BF LED matrix full_R"]
         rgb_image[:, :, 1] = images["BF LED matrix full_G"]
         rgb_image[:, :, 2] = images["BF LED matrix full_B"]
-
-        # send image to display
-        height, width = rgb_image.shape[:2]
-        image_to_display = utils.crop_image(
-            rgb_image,
-            round(width * self.display_resolution_scaling),
-            round(height * self.display_resolution_scaling),
+        capture_info = CaptureInfo(
+            image=rgb_image,
+            position=pos,
+            z_level=k,
+            channel_mode=config,
+            label=self.capture_label(self.objectiveStore.get_current_objective_info()["magnification"], config.name)
         )
-        self.image_to_display.emit(image_to_display)
-        self.image_to_display_multi.emit(image_to_display, config.illumination_source)
-
-        self.update_napari(rgb_image, config.name, k)
+        self._interaction_fn.new_capture(capture_info)
 
         # write the RGB image
         print("writing RGB image")
