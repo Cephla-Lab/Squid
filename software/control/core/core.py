@@ -1282,8 +1282,6 @@ class MultiPointWorker(QObject):
         self.dt = self.multiPointController.deltat
         self.do_autofocus = self.multiPointController.do_autofocus
         self.do_reflection_af = self.multiPointController.do_reflection_af
-        self.crop_width = self.multiPointController.crop_width
-        self.crop_height = self.multiPointController.crop_height
         self.display_resolution_scaling = self.multiPointController.display_resolution_scaling
         self.counter = self.multiPointController.counter
         self.experiment_ID = self.multiPointController.experiment_ID
@@ -1746,12 +1744,11 @@ class MultiPointWorker(QObject):
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_off_illumination()
 
-        # process the image -  @@@ to move to camera
-        image = utils.crop_image(image, self.crop_width, self.crop_height)
+        height, width = image.shape[:2]
         image_to_display = utils.crop_image(
             image,
-            round(self.crop_width * self.display_resolution_scaling),
-            round(self.crop_height * self.display_resolution_scaling),
+            round(width * self.display_resolution_scaling),
+            round(height * self.display_resolution_scaling),
         )
         self.image_to_display.emit(image_to_display)
         self.image_to_display_multi.emit(image_to_display, config.illumination_source)
@@ -1801,9 +1798,6 @@ class MultiPointWorker(QObject):
                 # turn off the illumination if using software trigger
                 if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                     self.liveController.turn_off_illumination()
-
-                # process the image  -  @@@ to move to camera
-                image = utils.crop_image(image, self.crop_width, self.crop_height)
 
                 # add the image to dictionary
                 images[config_.name] = np.copy(image)
@@ -1898,8 +1892,8 @@ class MultiPointWorker(QObject):
         for channel in ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]:
             image_to_display = utils.crop_image(
                 images[channel],
-                round(self.crop_width * self.display_resolution_scaling),
-                round(self.crop_height * self.display_resolution_scaling),
+                round(images[channel].shape[1] * self.display_resolution_scaling),
+                round(images[channel].shape[0] * self.display_resolution_scaling),
             )
             self.image_to_display.emit(image_to_display)
             self.image_to_display_multi.emit(image_to_display, config.illumination_source)
@@ -1921,10 +1915,11 @@ class MultiPointWorker(QObject):
         rgb_image[:, :, 2] = images["BF LED matrix full_B"]
 
         # send image to display
+        height, width = rgb_image.shape[:2]
         image_to_display = utils.crop_image(
             rgb_image,
-            round(self.crop_width * self.display_resolution_scaling),
-            round(self.crop_height * self.display_resolution_scaling),
+            round(width * self.display_resolution_scaling),
+            round(height * self.display_resolution_scaling),
         )
         self.image_to_display.emit(image_to_display)
         self.image_to_display_multi.emit(image_to_display, config.illumination_source)
@@ -2054,8 +2049,6 @@ class MultiPointController(QObject):
         self.already_using_fmap = False
         self.do_segmentation = False
         self.do_fluorescence_rtp = DO_FLUORESCENCE_RTP
-        self.crop_width = Acquisition.CROP_WIDTH
-        self.crop_height = Acquisition.CROP_HEIGHT
         self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
@@ -2152,10 +2145,6 @@ class MultiPointController(QObject):
 
     def set_focus_map(self, focusMap):
         self.focus_map = focusMap  # None if dont use focusMap
-
-    def set_crop(self, crop_width, crop_height):
-        self.crop_width = crop_width
-        self.crop_height = crop_height
 
     def set_base_path(self, path):
         self.base_path = path
@@ -2296,8 +2285,7 @@ class MultiPointController(QObject):
             is_color = squid.abc.CameraPixelFormat.is_color_format(self.camera.get_pixel_format())
             # Do our best to create a fake image with the correct properties.
             # TODO(imo): It'd be better to pull this from our camera but need to wait for AbstractCamera for a consistent way to do that.
-            width = self.crop_width
-            height = self.crop_height
+            width, height = self.camera.get_crop_size()
             bytes_per_pixel = 3 if is_color else 2  # Worst case assumptions: 24 bit color, 16 bit grayscale
 
             test_image = np.random.randint(2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
@@ -2793,8 +2781,6 @@ class TrackingWorker(QObject):
         self.autofocusController = self.trackingController.autofocusController
         self.channelConfigurationManager = self.trackingController.channelConfigurationManager
         self.imageDisplayWindow = self.trackingController.imageDisplayWindow
-        self.crop_width = self.trackingController.crop_width
-        self.crop_height = self.trackingController.crop_height
         self.display_resolution_scaling = self.trackingController.display_resolution_scaling
         self.counter = self.trackingController.counter
         self.experiment_ID = self.trackingController.experiment_ID
@@ -2872,8 +2858,6 @@ class TrackingWorker(QObject):
             t = camera_frame.timestamp
             if self.number_of_selected_configurations > 1:
                 self.liveController.turn_off_illumination()  # keep illumination on for single configuration acqusition
-            # image crop, rotation and flip
-            image = utils.crop_image(image, self.crop_width, self.crop_height)
             image = np.squeeze(image)
             # get image size
             image_shape = image.shape
@@ -2891,13 +2875,12 @@ class TrackingWorker(QObject):
                 image_ = self.camera.read_frame()
                 # TODO(imo): use illumination controller
                 self.liveController.turn_off_illumination()
-                image_ = utils.crop_image(image_, self.crop_width, self.crop_height)
                 image_ = np.squeeze(image_)
                 # display image
                 image_to_display_ = utils.crop_image(
                     image_,
-                    round(self.crop_width * self.liveController.display_resolution_scaling),
-                    round(self.crop_height * self.liveController.display_resolution_scaling),
+                    round(image_.shape[1] * self.liveController.display_resolution_scaling),
+                    round(image_.shape[0] * self.liveController.display_resolution_scaling),
                 )
                 self.image_to_display_multi.emit(image_to_display_, config_.illumination_source)
                 # save image
@@ -3977,7 +3960,7 @@ class ScanCoordinates(QObject):
 
     def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
         """add region based on user inputs"""
-        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
         fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
@@ -4094,7 +4077,7 @@ class ScanCoordinates(QObject):
 
     def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
         """Convert grid parameters NX, NY to FOV coordinates based on overlap"""
-        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
         fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
@@ -4158,7 +4141,7 @@ class ScanCoordinates(QObject):
             self._log.error("Invalid manual ROI data")
             return []
 
-        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
         fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 

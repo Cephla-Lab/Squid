@@ -543,12 +543,19 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
         # Apply software crop
         # Crop size should be scaled wrt the binning factor as the crop_width and crop_height are defined wrt the unbinned image size.
-        binning_x, binning_y = self.get_binning()
-        crop_width = int(self._config.crop_width / binning_x)
-        crop_height = int(self._config.crop_height / binning_y)
+        crop_width, crop_height = self.get_crop_size()
         image = control.utils.crop_image(image, crop_width, crop_height)
 
         return image
+
+    def get_crop_size(self) -> Tuple[int, int]:
+        """
+        Returns the final crop size of the image.
+        """
+        binning_x, binning_y = self.get_binning()
+        crop_width = int(self._config.crop_width / binning_x)
+        crop_height = int(self._config.crop_height / binning_y)
+        return crop_width, crop_height
 
     def read_frame(self) -> Optional[np.ndarray]:
         """
