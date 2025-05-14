@@ -1,6 +1,8 @@
 import os
 import time
 from datetime import datetime
+from dataclasses import dataclass
+from typings import Callable
 
 import cv2
 import imageio as iio
@@ -24,6 +26,33 @@ try:
     print("custom multipoint script found")
 except:
     pass
+
+@dataclass
+class CaptureInfo:
+    image: np.array
+    position: squid.abc.Pos
+    channel_mode: ChannelMode
+    label: str
+
+@dataclass
+class MultiPointWorkerInteractionFunctions:
+    # Call when the acquisition is completed
+    finished: Callable
+    # Current image, total images in acquisition
+    acquisition_progress: Callable[[int, int]]
+    # Current region, and total regions in acquisition
+    region_progress: Callable[[int, int]]
+    # Call whenever a new image is captured that is a part of the acquisition (not AF images, etc)
+    new_capture_image: Callable[[np.array]]
+    # Call whenever we switch ChannelMode
+    new_channel_mode: Callable[[ChannelMode]]
+
+    # TODO(imo): Do we need this, or is the 10 Hz update in the ui okay?
+    # Call whenever we settle at a new FOV
+    new_fov_position: Callable[[squid.abc.Pos]]
+    # If using Piezo z axis, send piezo position updates via this
+    new_piezo_z_position: Callable[[float]]
+
 
 
 class MultiPointWorker(QObject):
