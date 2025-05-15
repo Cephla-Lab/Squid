@@ -431,7 +431,7 @@ class Microscope(QObject):
         self.objectiveStore.set_current_objective(objective)
 
     def set_coordinates(self, wellplate_format, selected, scan_size_mm, overlap_percent):
-        self.scanCoordinates = ScanCoordinatesSiLA2(self.objectiveStore)
+        self.scanCoordinates = ScanCoordinatesSiLA2(self.objectiveStore, self.camera.get_pixel_size_unbinned_um())
         self.scanCoordinates.get_scan_coordinates_from_selected_wells(
             wellplate_format, selected, scan_size_mm, overlap_percent
         )
@@ -454,8 +454,9 @@ class Microscope(QObject):
 
 
 class ScanCoordinatesSiLA2:
-    def __init__(self, objectiveStore):
+    def __init__(self, objectiveStore, camera_sensor_pixel_size_um):
         self.objectiveStore = objectiveStore
+        self.camera_sensor_pixel_size_um = camera_sensor_pixel_size_um
         self.region_centers = {}
         self.region_fov_coordinates = {}
         self.wellplate_settings = None
@@ -567,7 +568,7 @@ class ScanCoordinatesSiLA2:
 
         # if scan_size_mm is None:
         #    scan_size_mm = self.wellplate_settings.well_size_mm
-        pixel_size_um = self.objectiveStore.get_pixel_size()
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
         fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 

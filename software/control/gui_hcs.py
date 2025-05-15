@@ -777,7 +777,7 @@ class HighContentScreeningGui(QMainWindow):
         if not self.live_only_mode:
             if USE_NAPARI_FOR_MULTIPOINT:
                 self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
-                    self.objectiveStore, self.contrastManager
+                    self.objectiveStore, self.camera, self.contrastManager
                 )
                 self.imageDisplayTabs.addTab(self.napariMultiChannelWidget, "Multichannel Acquisition")
             else:
@@ -786,7 +786,7 @@ class HighContentScreeningGui(QMainWindow):
 
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
-                    self.objectiveStore, self.contrastManager
+                    self.objectiveStore, self.camera, self.contrastManager
                 )
                 self.imageDisplayTabs.addTab(self.napariMosaicDisplayWidget, "Mosaic View")
 
@@ -1631,7 +1631,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def move_from_click_image(self, click_x, click_y, image_width, image_height):
         if self.navigationWidget.get_click_to_move_enabled():
-            pixel_size_um = self.objectiveStore.get_pixel_size()
+            pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
 
             pixel_sign_x = 1
             pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1

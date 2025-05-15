@@ -4078,7 +4078,10 @@ class WellplateMultiPointWidget(QFrame):
     def get_effective_well_size(self):
         well_size = self.scanCoordinates.well_size_mm
         if self.combobox_shape.currentText() == "Circle":
-            fov_size_mm = (self.objectiveStore.get_pixel_size() / 1000) * Acquisition.CROP_WIDTH
+            pixel_size_um = (
+                self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
+            )
+            fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
             return well_size + fov_size_mm * (1 + math.sqrt(2))
         return well_size
 
@@ -6437,10 +6440,11 @@ class NapariLiveWidget(QWidget):
 
 class NapariMultiChannelWidget(QWidget):
 
-    def __init__(self, objectiveStore, contrastManager, grid_enabled=False, parent=None):
+    def __init__(self, objectiveStore, camera, contrastManager, grid_enabled=False, parent=None):
         super().__init__(parent)
         # Initialize placeholders for the acquisition parameters
         self.objectiveStore = objectiveStore
+        self.camera = camera
         self.contrastManager = contrastManager
         self.image_width = 0
         self.image_height = 0
@@ -6479,7 +6483,7 @@ class NapariMultiChannelWidget(QWidget):
             self.viewer.window._qt_viewer.layerButtons.hide()
 
     def initLayersShape(self, Nz, dz):
-        pixel_size_um = self.objectiveStore.get_pixel_size()
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
         if self.Nz != Nz or self.dz_um != dz or self.pixel_size_um != pixel_size_um:
             self.acquisition_initialized = False
             self.Nz = Nz
@@ -6659,9 +6663,10 @@ class NapariMosaicDisplayWidget(QWidget):
     signal_layers_initialized = Signal(bool)
     signal_shape_drawn = Signal(list)
 
-    def __init__(self, objectiveStore, contrastManager, parent=None):
+    def __init__(self, objectiveStore, camera, contrastManager, parent=None):
         super().__init__(parent)
         self.objectiveStore = objectiveStore
+        self.camera = camera
         self.contrastManager = contrastManager
         self.viewer = napari.Viewer(show=False)
         self.layout = QVBoxLayout()
@@ -6805,8 +6810,9 @@ class NapariMosaicDisplayWidget(QWidget):
 
     def updateMosaic(self, image, x_mm, y_mm, k, channel_name):
         # calculate pixel size
-        downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / self.objectiveStore.get_pixel_size()))
-        image_pixel_size_um = self.objectiveStore.get_pixel_size() * downsample_factor
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
+        downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um))
+        image_pixel_size_um = pixel_size_um * downsample_factor
         image_pixel_size_mm = image_pixel_size_um / 1000
         image_dtype = image.dtype
 
