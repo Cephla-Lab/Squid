@@ -62,24 +62,25 @@ class ObjectiveStore:
         self.objectives_dict = objectives_dict
         self.default_objective = default_objective
         self.current_objective = default_objective
-        self.tube_lens_mm = TUBE_LENS_MM
-        self.pixel_size_factor = self.calculate_pixel_size_factor(self.current_objective)
+        objective = self.objectives_dict[self.current_objective]
+        self.pixel_size_factor = ObjectiveStore.calculate_pixel_size_factor(objective, TUBE_LENS_MM)
 
     def get_pixel_size_factor(self):
         return self.pixel_size_factor
 
-    def calculate_pixel_size_factor(self, objective_name):
+    @staticmethod
+    def calculate_pixel_size_factor(objective, tube_lens_mm):
         """pixel_size_um = sensor_pixel_size * binning_factor * lens_factor"""
-        objective = self.objectives_dict[objective_name]
         magnification = objective["magnification"]
         objective_tube_lens_mm = objective["tube_lens_f_mm"]
-        lens_factor = (objective_tube_lens_mm / self.tube_lens_mm) / magnification
+        lens_factor = objective_tube_lens_mm / magnification / tube_lens_mm
         return lens_factor
 
     def set_current_objective(self, objective_name):
         if objective_name in self.objectives_dict:
             self.current_objective = objective_name
-            self.pixel_size_factor = self.calculate_pixel_size_factor(objective_name)
+            objective = self.objectives_dict[objective_name]
+            self.pixel_size_factor = ObjectiveStore.calculate_pixel_size_factor(objective, TUBE_LENS_MM)
         else:
             raise ValueError(f"Objective {objective_name} not found in the store.")
 
