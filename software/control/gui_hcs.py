@@ -750,6 +750,10 @@ class HighContentScreeningGui(QMainWindow):
         self.cameraTabWidget = QTabWidget()
         self.setupCameraTabWidget()
 
+        # Add QLabel for displaying pixel values and coordinates
+        self.pixelValueLabel = QLabel("Pixel Value: N/A | Coordinates: N/A")
+        self.pixelValueLabel.setAlignment(Qt.AlignCenter)
+
     def setupImageDisplayTabs(self):
         if USE_NAPARI_FOR_LIVE_VIEW:
             self.napariLiveWidget = widgets.NapariLiveWidget(
@@ -900,6 +904,9 @@ class HighContentScreeningGui(QMainWindow):
         layout.addWidget(self.sampleSettingsWidget)
         layout.addWidget(self.navigationViewer)
 
+        # Add QLabel for pixel value display
+        layout.addWidget(self.pixelValueLabel)
+
         # Add performance mode toggle button
         if not self.live_only_mode:
             self.performanceModeToggle = QPushButton("Enable Performance Mode")
@@ -1047,6 +1054,9 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
             self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
             self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
+
+        # Connect pixel value display updates
+        self.streamHandler.image_to_display.connect(self.update_pixel_value_display)
 
         self.makeNapariConnections()
 
@@ -1654,6 +1664,19 @@ class HighContentScreeningGui(QMainWindow):
     def move_to_mm(self, x_mm, y_mm):
         self.stage.move_x_to(x_mm)
         self.stage.move_y_to(y_mm)
+
+    def update_pixel_value_display(self, image):
+        """Update the QLabel with the pixel value and coordinates."""
+        if image is not None:
+            cursor_pos = QCursor.pos()
+            widget_pos = self.imageDisplayWindow.mapFromGlobal(cursor_pos)
+            x, y = widget_pos.x(), widget_pos.y()
+
+            if 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
+                pixel_value = image[y, x]
+                self.pixelValueLabel.setText(f"Pixel Value: {pixel_value} | Coordinates: ({x}, {y})")
+            else:
+                self.pixelValueLabel.setText("Pixel Value: N/A | Coordinates: N/A")
 
     def closeEvent(self, event):
         try:
