@@ -20,6 +20,7 @@ from qtpy.QtGui import *
 # control
 from control._def import *
 from control.core.multi_point_worker import MultiPointWorker
+from control.utils_config import ChannelConfigurationManager  # Added import for ChannelConfigurationManager
 
 import control.utils as utils
 import control.utils_acquisition as utils_acquisition
