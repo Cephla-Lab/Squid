@@ -30,6 +30,9 @@ class DefaultCameraCapabilities(pydantic.BaseModel):
 
 
 class DefaultCamera(AbstractCamera):
+
+    IMX226_PIXEL_SIZE_UM = 1.85
+
     @staticmethod
     def _open(device_manager: gx.DeviceManager, sn=None, index=None):
         if sn is None and index is None:
@@ -289,6 +292,21 @@ class DefaultCamera(AbstractCamera):
     def get_resolution(self) -> Tuple[int, int]:
         return self._camera.WidthMax.get(), self._camera.HeightMax.get()
 
+    def get_binning(self) -> Tuple[int, int]:
+        return (1, 1)
+
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
+        return [(1, 1)]
+
+    def set_binning(self, binning_factor_x: int, binning_factor_y: int):
+        raise NotImplementedError("DefaultCameras do not support binning")
+
+    def get_pixel_size_unbinned_um(self) -> int:
+        return DefaultCamera.IMX226_PIXEL_SIZE_UM
+
+    def get_pixel_size_binned_um(self) -> int:
+        return DefaultCamera.IMX226_PIXEL_SIZE_UM
+
     def set_analog_gain(self, analog_gain: float):
         self._camera.Gain.set(analog_gain)
 
@@ -366,10 +384,11 @@ class DefaultCamera(AbstractCamera):
             self._camera.BalanceRatio.set(rgb_vals[idx])
 
     def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
-        for idx in (0, 1, 2):  # r, g, b
-            self._camera.BalanceWhiteAuto.set(idx)
-
-        return self.get_white_balance_gains()
+        print("Setting auto white balance")
+        print(self.get_white_balance_gains())
+        self._camera.BalanceWhiteAuto.set(gx.GxAutoEntry.ONCE)
+        self._camera.BalanceWhiteAuto.set(gx.GxAutoEntry.OFF)
+        print(self.get_white_balance_gains())
 
     def set_black_level(self, black_level: float):
         if not self._capabilities.black_level:

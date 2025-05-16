@@ -1139,7 +1139,7 @@ class CameraSettingsWidget(QFrame):
             self.btn_auto_wb.setChecked(False)
             self.btn_auto_wb.clicked.connect(self.toggle_auto_wb)
 
-            self.camera_layout.addLayout(self.btn_auto_wb)
+            self.camera_layout.addWidget(self.btn_auto_wb)
 
         self.setLayout(self.camera_layout)
 
