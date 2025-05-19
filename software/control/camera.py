@@ -18,6 +18,17 @@ try:
 except:
     print("gxipy import error")
 
+def get_sn_by_model(model_name):
+    try:
+        device_manager = gx.DeviceManager()
+        device_num, device_info_list = device_manager.update_device_list()
+    except:
+        device_num = 0
+    if device_num > 0:
+        for i in range(device_num):
+            if device_info_list[i]["model_name"] == model_name:
+                return device_info_list[i]["sn"]
+    return None  # return None if no device with the specified model_name is connected
 
 class DefaultCameraCapabilities(pydantic.BaseModel):
     is_color: bool
@@ -85,7 +96,10 @@ class DefaultCamera(AbstractCamera):
         # We need to keep the device manager instance around because it also manages the gx library initialization
         # and de-initialization.  So we capture it here, but then never use it past the _open call.
         self._gx_device_manager = gx.DeviceManager()
-        (self._camera, self._capabilities) = DefaultCamera._open(self._gx_device_manager, index=0)
+
+        sn_camera = get_sn_by_model(camera_config.sn_model)
+
+        (self._camera, self._capabilities) = DefaultCamera._open(self._gx_device_manager, sn=sn_camera, index=0)
 
         # TODO/NOTE(imo): Need to test if self as user_param is correct here, of it sends self for us.
         self._camera.register_capture_callback(None, self._frame_callback)
