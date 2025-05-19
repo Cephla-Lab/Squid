@@ -30,6 +30,9 @@ class DefaultCameraCapabilities(pydantic.BaseModel):
 
 
 class DefaultCamera(AbstractCamera):
+
+    IMX226_PIXEL_SIZE_UM = 1.85
+
     @staticmethod
     def _open(device_manager: gx.DeviceManager, sn=None, index=None):
         if sn is None and index is None:
@@ -173,7 +176,7 @@ class DefaultCamera(AbstractCamera):
         pixel_size_bytes = self._get_pixel_size_bytes(self.get_pixel_format())
         exposure_delay_us = pixel_size_bytes * exposure_delay_us_8bit
         exposure_time_us = 1000.0 * self._exposure_time_ms
-        row_count = self.get_resolution()[1]
+        row_count = self.get_resolution()[1]  # TODO: this should be the row count after setting ROI
         row_period_us = 10
 
         self._strobe_delay_us = (
@@ -286,31 +289,23 @@ class DefaultCamera(AbstractCamera):
 
         return self._pixel_format
 
-    def set_resolution(self, width: int, height: int):
-        old_resolution = self.get_resolution()
-        old_roi = self.get_region_of_interest()
-        new_resolution = (width, height)
-        new_roi = AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi, new_resolution)
-
-        self._log.debug(f"Adjusting resolution from {old_resolution=} to {new_resolution=}")
-        self._camera.Width.set(width)
-        self._camera.Height.set(height)
-
-        self._log.debug(f"Adjusting roi from {old_roi=} to {new_roi=} to keep FOV the same after resolution change.")
-        self.set_region_of_interest(*new_roi)
-
     def get_resolution(self) -> Tuple[int, int]:
-        return self._camera.Width.get(), self._camera.Height.get()
+        return self._camera.WidthMax.get(), self._camera.HeightMax.get()
 
-    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
-        # There's a get_range on Width and Height, but I don't think cameras normally allow
-        # arbitrary resolutions?  So, just return the current and max.
-        current_w = self._camera.Width.get()
-        w_max = self._camera.WidthMax.get()
-        current_h = self._camera.Height.get()
-        h_max = self._camera.HeightMax.get()
+    def get_binning(self) -> Tuple[int, int]:
+        return (1, 1)
 
-        return (current_w, current_h), (w_max, h_max)
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
+        return [(1, 1)]
+
+    def set_binning(self, binning_factor_x: int, binning_factor_y: int):
+        raise NotImplementedError("DefaultCameras do not support binning")
+
+    def get_pixel_size_unbinned_um(self) -> int:
+        return DefaultCamera.IMX226_PIXEL_SIZE_UM
+
+    def get_pixel_size_binned_um(self) -> int:
+        return DefaultCamera.IMX226_PIXEL_SIZE_UM
 
     def set_analog_gain(self, analog_gain: float):
         self._camera.Gain.set(analog_gain)
@@ -377,7 +372,7 @@ class DefaultCamera(AbstractCamera):
 
         rgb_vals = []
         for idx in (0, 1, 2):  # r, g, b
-            self._camera.BalanceRatioSelector(idx)
+            self._camera.BalanceRatioSelector.set(idx)
             rgb_vals.append(self._camera.BalanceRatio.get())
 
         return rgb_vals[0], rgb_vals[1], rgb_vals[2]
@@ -388,11 +383,11 @@ class DefaultCamera(AbstractCamera):
             self._camera.BalanceRatioSelector.set(idx)
             self._camera.BalanceRatio.set(rgb_vals[idx])
 
-    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
-        for idx in (0, 1, 2):  # r, g, b
-            self._camera.BalanceWhiteAuto.set(idx)
-
-        return self.get_white_balance_gains()
+    def set_auto_white_balance_gains(self, on: bool):
+        if on:
+            self._camera.BalanceWhiteAuto.set(gx.GxAutoEntry.CONTINUOUS)
+        else:
+            self._camera.BalanceWhiteAuto.set(gx.GxAutoEntry.OFF)
 
     def set_black_level(self, black_level: float):
         if not self._capabilities.black_level:

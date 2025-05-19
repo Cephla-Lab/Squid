@@ -219,23 +219,42 @@ class CameraConfig(pydantic.BaseModel):
     # NOTE(imo): Not "type" because that's a python builtin and can cause confusion
     camera_type: CameraVariant
 
-    default_resolution: Tuple[int, int]
-
     default_pixel_format: CameraPixelFormat
+
+    # The binning factor of the camera.  If None, the camera is not using binning, or use 1x1 as default.
+    default_binning: Optional[Tuple[int, int]] = None
+
+    # The default ROI of the camera for hardware cropping. Input should be: offset_x, offset_y, width, height
+    default_roi: Optional[Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]] = None
 
     # The angle the camera should rotate this image right as it comes off the camera,
     # and before giving it to the rest of the system.
     #
     # NOTE(imo): As of 2025-feb-17, this feature is inconsistently implemented!
-    rotate_image_angle: Optional[float]
+    rotate_image_angle: Optional[float] = None
 
     # After rotation, the flip we should do to the image.
     #
     # NOTE(imo): As of 2025-feb-17, this feature is inconsistently implemented!
-    flip: Optional[FlipVariant]
+    flip: Optional[FlipVariant] = None
+
+    # The width of the crop region of the camera. This will be used for cropping the image in software. Value should be relative to the unbinned image size.
+    crop_width: Optional[int] = None
+
+    # The height of the crop region of the camera. This will be used for cropping the image in software. Value should be relative to the unbinned image size.
+    crop_height: Optional[int] = None
+
+    # Set the temperature of the camera to this value once on initialization.
+    default_temperature: Optional[float] = None
+
+    # Set the fan speed of the camera to this value once on initialization.
+    default_fan_speed: Optional[int] = None
+
+    # Set the black level of the camera to this value once on initialization.
+    default_black_level: Optional[int] = None
 
     # After initialization, set the white balance gains to this once. Only valid for color cameras.
-    default_white_balance_gains: Optional[RGBValue]
+    default_white_balance_gains: Optional[RGBValue] = None
 
 
 def _old_camera_variant_to_enum(old_string) -> CameraVariant:
@@ -258,11 +277,24 @@ def _old_camera_variant_to_enum(old_string) -> CameraVariant:
 
 _camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.CAMERA_TYPE),
-    default_resolution=(_def.CAMERA_CONFIG.ROI_WIDTH_DEFAULT, _def.CAMERA_CONFIG.ROI_HEIGHT_DEFAULT),
-    default_pixel_format=_def.DEFAULT_PIXEL_FORMAT,
-    rotate_image_angle=_def.ROTATE_IMAGE_ANGLE,
-    flip=_def.FLIP_IMAGE,
-    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B),
+    default_pixel_format=_def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT,
+    default_binning=(_def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT, _def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT),
+    default_roi=(
+        _def.CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT,
+        _def.CAMERA_CONFIG.ROI_OFFSET_Y_DEFAULT,
+        _def.CAMERA_CONFIG.ROI_WIDTH_DEFAULT,
+        _def.CAMERA_CONFIG.ROI_HEIGHT_DEFAULT,
+    ),
+    rotate_image_angle=_def.CAMERA_CONFIG.ROTATE_IMAGE_ANGLE,
+    flip=_def.CAMERA_CONFIG.FLIP_IMAGE,
+    crop_width=_def.CAMERA_CONFIG.CROP_WIDTH_UNBINNED,
+    crop_height=_def.CAMERA_CONFIG.CROP_HEIGHT_UNBINNED,
+    default_temperature=_def.CAMERA_CONFIG.TEMPERATURE_DEFAULT,
+    default_fan_speed=_def.CAMERA_CONFIG.FAN_SPEED_DEFAULT,
+    default_black_level=_def.CAMERA_CONFIG.BLACKLEVEL_VALUE_DEFAULT,
+    default_white_balance_gains=RGBValue(
+        r=_def.CAMERA_CONFIG.AWB_RATIOS_R, g=_def.CAMERA_CONFIG.AWB_RATIOS_G, b=_def.CAMERA_CONFIG.AWB_RATIOS_B
+    ),
 )
 
 
@@ -270,16 +302,16 @@ def get_camera_config() -> CameraConfig:
     """
     Returns the CameraConfig that existed at process startup.
     """
+    print(f"get_camera_config: {_camera_config}")
     return _camera_config
 
 
 _autofocus_camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE),
-    default_resolution=(_def.LASER_AF_CROP_WIDTH, _def.LASER_AF_CROP_HEIGHT),
     default_pixel_format=CameraPixelFormat.MONO8,
+    default_binning=(1, 1),
     rotate_image_angle=None,
     flip=None,
-    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B),
 )
 
 

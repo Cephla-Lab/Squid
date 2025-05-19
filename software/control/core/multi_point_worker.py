@@ -466,12 +466,11 @@ class MultiPointWorker(QObject):
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_off_illumination()
 
-        # process the image -  @@@ to move to camera
-        image = utils.crop_image(image, self.crop_width, self.crop_height)
+        height, width = image.shape[:2]
         image_to_display = utils.crop_image(
             image,
-            round(self.crop_width * self.display_resolution_scaling),
-            round(self.crop_height * self.display_resolution_scaling),
+            round(width * self.display_resolution_scaling),
+            round(height * self.display_resolution_scaling),
         )
         self.image_to_display.emit(image_to_display)
         self.image_to_display_multi.emit(image_to_display, config.illumination_source)
@@ -521,9 +520,6 @@ class MultiPointWorker(QObject):
                 # turn off the illumination if using software trigger
                 if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                     self.liveController.turn_off_illumination()
-
-                # process the image  -  @@@ to move to camera
-                image = utils.crop_image(image, self.crop_width, self.crop_height)
 
                 # add the image to dictionary
                 images[config_.name] = np.copy(image)
@@ -618,8 +614,8 @@ class MultiPointWorker(QObject):
         for channel in ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]:
             image_to_display = utils.crop_image(
                 images[channel],
-                round(self.crop_width * self.display_resolution_scaling),
-                round(self.crop_height * self.display_resolution_scaling),
+                round(images[channel].shape[1] * self.display_resolution_scaling),
+                round(images[channel].shape[0] * self.display_resolution_scaling),
             )
             self.image_to_display.emit(image_to_display)
             self.image_to_display_multi.emit(image_to_display, config.illumination_source)
@@ -641,10 +637,11 @@ class MultiPointWorker(QObject):
         rgb_image[:, :, 2] = images["BF LED matrix full_B"]
 
         # send image to display
+        height, width = rgb_image.shape[:2]
         image_to_display = utils.crop_image(
             rgb_image,
-            round(self.crop_width * self.display_resolution_scaling),
-            round(self.crop_height * self.display_resolution_scaling),
+            round(width * self.display_resolution_scaling),
+            round(height * self.display_resolution_scaling),
         )
         self.image_to_display.emit(image_to_display)
         self.image_to_display_multi.emit(image_to_display, config.illumination_source)

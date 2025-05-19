@@ -262,34 +262,30 @@ class CameraError(RuntimeError):
 
 class AbstractCamera(metaclass=abc.ABCMeta):
     @staticmethod
-    def calculate_new_roi_for_resolution(old_resolution, old_roi, new_resolution) -> Tuple[int, int, int, int]:
+    def calculate_new_roi_for_binning(old_binning, old_roi, new_binning) -> Tuple[int, int, int, int]:
         """
-        When changing resolutions, we want the roi to change such that the FOV is the same as before the resolution
-        change.  This calculates the new roi to keep the FOV the same given we change to this new resolution.
+        When changing binning, we may want the roi to change such that the FOV is the same as before the binning
+        factors change. This calculates the new roi to keep the FOV the same given we change to this new resolution.
 
-        The resolutions must be 2-tuples of (width, height).
+        This only needs to be done for some of the cameras. In other cameras the roi might be updated automatically.
+
+        The binning factors must be 2-tuples of (binning_factor_x, binning_factor_y).
 
         The roi must be a 4-tuple of (offset_x, offset_y, width, height)
 
         Returns a 4-tuple of (offset_x, offset_y, width, height)
         """
-        if (
-            not isinstance(old_resolution, tuple)
-            or not isinstance(new_resolution, tuple)
-            or not isinstance(old_roi, tuple)
-        ):
+        if not isinstance(old_binning, tuple) or not isinstance(new_binning, tuple) or not isinstance(old_roi, tuple):
             raise ValueError("Need tuple args.")
-        width_scale_factor = new_resolution[0] / old_resolution[0]
-        height_scale_factor = new_resolution[1] / old_resolution[1]
 
         def rounded_int(num) -> int:
             return int(round(num))
 
         return (
-            old_roi[0] * width_scale_factor,
-            old_roi[1] * height_scale_factor,
-            old_roi[2] * width_scale_factor,
-            old_roi[3] * height_scale_factor,
+            old_roi[0] * old_binning[0] / new_binning[0],
+            old_roi[1] * old_binning[1] / new_binning[1],
+            old_roi[2] * old_binning[0] / new_binning[0],
+            old_roi[3] * old_binning[1] / new_binning[1],
         )
 
     def __init__(
@@ -447,29 +443,45 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def set_resolution(self, width: int, height: int):
+    def set_binning(self, binning_factor_x: int, binning_factor_y: int):
         """
-        If the camera supports this width x height pixel format, set it and make sure
-        all subsequent frames are of this resolution.
+        Set the binning factor of the camera. Usually we set hardware binning here, so calling
+        this may change buffer size, readout speed, etc. Update these settings as needed.
+        """
+        pass
 
-        This should also adjust the roi to keep the same FOV.  You can use the calculate_new_roi_for_resolution
-        helper for this.
+    @abc.abstractmethod
+    def get_binning(self) -> Tuple[int, int]:
+        """
+        Return the (binning_factor_x, binning_factor_y) of the camera right now.
+        """
+        pass
 
-        If not, throw a ValueError.
+    @abc.abstractmethod
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
+        """
+        Return the list of binning options supported by the camera.
         """
         pass
 
     @abc.abstractmethod
     def get_resolution(self) -> Tuple[int, int]:
         """
-        Return the (width, height) resolution of captures made by the camera right now.
+        Returns the maximum resolution of the camera under the current binning setting.
         """
         pass
 
     @abc.abstractmethod
-    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
+    def get_pixel_size_unbinned_um(self) -> float:
         """
-        Return all the (width, height) resolutions supported by this camera.
+        Returns the pixel size without binning in microns.
+        """
+        pass
+
+    @abc.abstractmethod
+    def get_pixel_size_binned_um(self) -> float:
+        """
+        Returns the pixel size after binning in microns.
         """
         pass
 
@@ -524,9 +536,26 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
         Your camera's image callback should use this.
         """
-        return control.utils.rotate_and_flip_image(
+        # Apply rotation and flip
+        image = control.utils.rotate_and_flip_image(
             raw_frame, rotate_image_angle=self._config.rotate_image_angle, flip_image=self._config.flip
         )
+
+        # Apply software crop
+        # Crop size should be scaled wrt the binning factor as the crop_width and crop_height are defined wrt the unbinned image size.
+        crop_width, crop_height = self.get_crop_size()
+        image = control.utils.crop_image(image, crop_width, crop_height)
+
+        return image
+
+    def get_crop_size(self) -> Tuple[int, int]:
+        """
+        Returns the final crop size of the image.
+        """
+        binning_x, binning_y = self.get_binning()
+        crop_width = int(self._config.crop_width / binning_x) if self._config.crop_width else None
+        crop_height = int(self._config.crop_height / binning_y) if self._config.crop_height else None
+        return crop_width, crop_height
 
     def read_frame(self) -> Optional[np.ndarray]:
         """
@@ -579,9 +608,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
+    def set_auto_white_balance_gains(self, on: bool):
         """
-        Runs auto white balance, then returns the resulting updated gains.
+        Turn auto white balance on or off.
         """
         pass
 

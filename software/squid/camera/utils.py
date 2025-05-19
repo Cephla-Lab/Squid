@@ -99,6 +99,14 @@ def get_camera(
 
 
 class SimulatedCamera(AbstractCamera):
+
+    PIXEL_SIZE_UM = 3.76
+    BINNING_TO_RESOLUTION = {
+        (1, 1): (1920, 1080),
+        (2, 2): (960, 540),
+        (3, 3): (640, 360),
+    }
+
     @staticmethod
     def debug_log(method):
         import inspect
@@ -126,8 +134,8 @@ class SimulatedCamera(AbstractCamera):
         self._frame_format = CameraFrameFormat.RAW
         self._pixel_format = None
         self.set_pixel_format(self._config.default_pixel_format)
-        self._resolution = None
-        self.set_resolution(self._config.default_resolution[0], self._config.default_resolution[1])
+        self._binning = None
+        self.set_binning(self._config.default_binning[0], self._config.default_binning[1])
         self._analog_gain = None
         self.set_analog_gain(0)
         self._white_balance_gains = None
@@ -136,7 +144,8 @@ class SimulatedCamera(AbstractCamera):
         self.set_black_level(0)
         self._acquisition_mode = None
         self.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
-        self._roi = (0, 0, self.get_resolution()[0], self.get_resolution()[1])
+        width, height = self.BINNING_TO_RESOLUTION[(1, 1)]
+        self._roi = (0, 0, width, height)
         self._temperature_setpoint = None
         self._continue_streaming = False
         self._streaming_thread: Optional[threading.Thread] = None
@@ -204,16 +213,28 @@ class SimulatedCamera(AbstractCamera):
         return self._pixel_format
 
     @debug_log
-    def set_resolution(self, width: int, height: int):
-        self._resolution = (width, height)
+    def get_binning(self) -> Tuple[int, int]:
+        return self._binning
+
+    @debug_log
+    def set_binning(self, x_binning: int, y_binning: int):
+        self._binning = (x_binning, y_binning)
+
+    @debug_log
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
+        return [(1, 1), (2, 2), (3, 3)]
 
     @debug_log
     def get_resolution(self) -> Tuple[int, int]:
-        return self._resolution
+        return self.BINNING_TO_RESOLUTION[self._binning]
 
     @debug_log
-    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
-        return [(1920, 1080), (2000, 2000), (3000, 2000)]
+    def get_pixel_size_unbinned_um(self) -> float:
+        return self.PIXEL_SIZE_UM
+
+    @debug_log
+    def get_pixel_size_binned_um(self) -> float:
+        return self.PIXEL_SIZE_UM * self.get_binning()[0]  # Using X binning factor
 
     @debug_log
     def set_analog_gain(self, analog_gain: float):
@@ -321,7 +342,9 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def _next_frame(self):
-        (width, height) = self.get_resolution()
+        (binning_x, binning_y) = self.get_binning()
+        width, height = self.BINNING_TO_RESOLUTION[(binning_x, binning_y)]
+
         if self.get_frame_id() == 0:
             if self.get_pixel_format() == CameraPixelFormat.MONO8:
                 self._current_raw_frame = np.random.randint(255, size=(height, width), dtype=np.uint8)

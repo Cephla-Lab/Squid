@@ -30,6 +30,10 @@ _log = squid.logging.get_logger("control.utils")
 def crop_image(image, crop_width, crop_height):
     image_height = image.shape[0]
     image_width = image.shape[1]
+    if crop_width is None:
+        crop_width = image_width
+    if crop_height is None:
+        crop_height = image_height
     roi_left = int(max(image_width / 2 - crop_width / 2, 0))
     roi_right = int(min(image_width / 2 + crop_width / 2, image_width))
     roi_top = int(max(image_height / 2 - crop_height / 2, 0))

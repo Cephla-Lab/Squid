@@ -59,26 +59,25 @@ class ObjectiveStore:
         self.objectives_dict = objectives_dict
         self.default_objective = default_objective
         self.current_objective = default_objective
-        self.tube_lens_mm = TUBE_LENS_MM
-        self.sensor_pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
-        self.pixel_binning = 1
-        self.pixel_size_um = self.calculate_pixel_size(self.current_objective)
+        objective = self.objectives_dict[self.current_objective]
+        self.pixel_size_factor = ObjectiveStore.calculate_pixel_size_factor(objective, TUBE_LENS_MM)
 
-    def get_pixel_size(self):
-        return self.pixel_size_um
+    def get_pixel_size_factor(self):
+        return self.pixel_size_factor
 
-    def calculate_pixel_size(self, objective_name):
-        objective = self.objectives_dict[objective_name]
+    @staticmethod
+    def calculate_pixel_size_factor(objective, tube_lens_mm):
+        """pixel_size_um = sensor_pixel_size * binning_factor * lens_factor"""
         magnification = objective["magnification"]
         objective_tube_lens_mm = objective["tube_lens_f_mm"]
-        pixel_size_um = self.sensor_pixel_size_um / (magnification / (objective_tube_lens_mm / self.tube_lens_mm))
-        pixel_size_um *= self.pixel_binning
-        return pixel_size_um
+        lens_factor = objective_tube_lens_mm / magnification / tube_lens_mm
+        return lens_factor
 
     def set_current_objective(self, objective_name):
         if objective_name in self.objectives_dict:
             self.current_objective = objective_name
-            self.pixel_size_um = self.calculate_pixel_size(objective_name)
+            objective = self.objectives_dict[objective_name]
+            self.pixel_size_factor = ObjectiveStore.calculate_pixel_size_factor(objective, TUBE_LENS_MM)
         else:
             raise ValueError(f"Objective {objective_name} not found in the store.")
 
@@ -95,8 +94,6 @@ class StreamHandler(QObject):
 
     def __init__(
         self,
-        crop_width=Acquisition.CROP_WIDTH,
-        crop_height=Acquisition.CROP_HEIGHT,
         display_resolution_scaling=1,
         accept_new_frame_fn: Callable[[], bool] = lambda: True,
     ):
@@ -108,8 +105,6 @@ class StreamHandler(QObject):
         self.timestamp_last_save = 0
         self.timestamp_last_track = 0
 
-        self.crop_width = crop_width
-        self.crop_height = crop_height
         self.display_resolution_scaling = display_resolution_scaling
 
         self.save_image_flag = False
@@ -135,10 +130,6 @@ class StreamHandler(QObject):
     def set_save_fps(self, fps):
         self.fps_save = fps
 
-    def set_crop(self, crop_width, crop_height):
-        self.crop_width = crop_width
-        self.crop_height = crop_height
-
     def set_display_resolution_scaling(self, display_resolution_scaling):
         self.display_resolution_scaling = display_resolution_scaling / 100
         print(self.display_resolution_scaling)
@@ -162,17 +153,16 @@ class StreamHandler(QObject):
                 print("real camera fps is " + str(self.fps_real))
 
         # crop image
-        image_cropped = utils.crop_image(frame.frame, self.crop_width, self.crop_height)
-        image_cropped = np.squeeze(image_cropped)
+        image = np.squeeze(frame.frame)
 
         # send image to display
         time_now = time.time()
         if time_now - self.timestamp_last_display >= 1 / self.fps_display:
             self.image_to_display.emit(
                 utils.crop_image(
-                    image_cropped,
-                    round(self.crop_width * self.display_resolution_scaling),
-                    round(self.crop_height * self.display_resolution_scaling),
+                    image,
+                    round(image.shape[1] * self.display_resolution_scaling),
+                    round(image.shape[0] * self.display_resolution_scaling),
                 )
             )
             self.timestamp_last_display = time_now
@@ -180,8 +170,8 @@ class StreamHandler(QObject):
         # send image to write
         if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
             if frame.is_color():
-                image_cropped = cv2.cvtColor(image_cropped, cv2.COLOR_RGB2BGR)
-            self.packet_image_to_write.emit(image_cropped, frame.frame_id, frame.timestamp)
+                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            self.packet_image_to_write.emit(image, frame.frame_id, frame.timestamp)
             self.timestamp_last_save = time_now
 
         self.handler_busy = False
@@ -1223,7 +1213,6 @@ class AutoFocusController(QObject):
         self.focus_map_coords.append((x, y, z))
         print(f"Added triple ({x},{y},{z}) to focus map")
 
-
 class ConfigType(Enum):
     CHANNEL = "channel"
     CONFOCAL = "confocal"
@@ -1349,7 +1338,6 @@ class ChannelConfigurationManager:
     def toggle_confocal_widefield(self, confocal: bool) -> None:
         """Toggle between confocal and widefield configurations"""
         self.active_config_type = ConfigType.CONFOCAL if confocal else ConfigType.WIDEFIELD
-
 
 class ScanCoordinates(QObject):
 
@@ -1485,8 +1473,10 @@ class ScanCoordinates(QObject):
 
     def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
         """add region based on user inputs"""
-        pixel_size_um = self.objectiveStore.get_pixel_size()
-        fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
+        # TODO: In the future software cropping size may be changed when program is running,
+        # so we may want to use the crop_width from the camera object here.
+        fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
 
@@ -1602,7 +1592,8 @@ class ScanCoordinates(QObject):
 
     def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
         """Convert grid parameters NX, NY to FOV coordinates based on overlap"""
-        fov_size_mm = (self.objectiveStore.get_pixel_size() / 1000) * Acquisition.CROP_WIDTH
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
+        fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Calculate total grid size
@@ -1665,8 +1656,8 @@ class ScanCoordinates(QObject):
             self._log.error("Invalid manual ROI data")
             return []
 
-        pixel_size_um = self.objectiveStore.get_pixel_size()
-        fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
+        fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Ensure shape_coords is a numpy array
@@ -1933,7 +1924,6 @@ class ScanCoordinates(QObject):
 
         self._log.info(f"Updated z-level to {new_z} for region:{region_id}, fov:{fov}")
 
-
 class MultiPointController(QObject):
 
     acquisition_finished = Signal()
@@ -1996,8 +1986,6 @@ class MultiPointController(QObject):
         self.focus_map_storage = []
         self.already_using_fmap = False
         self.do_segmentation = False
-        self.crop_width = Acquisition.CROP_WIDTH
-        self.crop_height = Acquisition.CROP_HEIGHT
         self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
@@ -2084,10 +2072,6 @@ class MultiPointController(QObject):
     def set_focus_map(self, focusMap):
         self.focus_map = focusMap  # None if dont use focusMap
 
-    def set_crop(self, crop_width, crop_height):
-        self.crop_width = crop_width
-        self.crop_height = crop_height
-
     def set_base_path(self, path):
         self.base_path = path
 
@@ -2136,7 +2120,7 @@ class MultiPointController(QObject):
             except:
                 pass
         # TODO: USE OBJECTIVE STORE DATA
-        acquisition_parameters["sensor_pixel_size_um"] = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
+        acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
         acquisition_parameters["tube_lens_mm"] = TUBE_LENS_MM
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
@@ -2227,8 +2211,7 @@ class MultiPointController(QObject):
             is_color = squid.abc.CameraPixelFormat.is_color_format(self.camera.get_pixel_format())
             # Do our best to create a fake image with the correct properties.
             # TODO(imo): It'd be better to pull this from our camera but need to wait for AbstractCamera for a consistent way to do that.
-            width = self.crop_width
-            height = self.crop_height
+            width, height = self.camera.get_crop_size()
             bytes_per_pixel = 3 if is_color else 2  # Worst case assumptions: 24 bit color, 16 bit grayscale
 
             test_image = np.random.randint(2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
@@ -2557,8 +2540,6 @@ class TrackingController(QObject):
 
         self.tracking_time_interval_s = 0
 
-        self.crop_width = Acquisition.CROP_WIDTH
-        self.crop_height = Acquisition.CROP_HEIGHT
         self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
@@ -2734,8 +2715,6 @@ class TrackingWorker(QObject):
         self.autofocusController = self.trackingController.autofocusController
         self.channelConfigurationManager = self.trackingController.channelConfigurationManager
         self.imageDisplayWindow = self.trackingController.imageDisplayWindow
-        self.crop_width = self.trackingController.crop_width
-        self.crop_height = self.trackingController.crop_height
         self.display_resolution_scaling = self.trackingController.display_resolution_scaling
         self.counter = self.trackingController.counter
         self.experiment_ID = self.trackingController.experiment_ID
@@ -2813,8 +2792,6 @@ class TrackingWorker(QObject):
             t = camera_frame.timestamp
             if self.number_of_selected_configurations > 1:
                 self.liveController.turn_off_illumination()  # keep illumination on for single configuration acqusition
-            # image crop, rotation and flip
-            image = utils.crop_image(image, self.crop_width, self.crop_height)
             image = np.squeeze(image)
             # get image size
             image_shape = image.shape
@@ -2832,13 +2809,12 @@ class TrackingWorker(QObject):
                 image_ = self.camera.read_frame()
                 # TODO(imo): use illumination controller
                 self.liveController.turn_off_illumination()
-                image_ = utils.crop_image(image_, self.crop_width, self.crop_height)
                 image_ = np.squeeze(image_)
                 # display image
                 image_to_display_ = utils.crop_image(
                     image_,
-                    round(self.crop_width * self.liveController.display_resolution_scaling),
-                    round(self.crop_height * self.liveController.display_resolution_scaling),
+                    round(image_.shape[1] * self.liveController.display_resolution_scaling),
+                    round(image_.shape[0] * self.liveController.display_resolution_scaling),
                 )
                 self.image_to_display_multi.emit(image_to_display_, config_.illumination_source)
                 # save image
@@ -3564,12 +3540,13 @@ class NavigationViewer(QFrame):
 
     signal_coordinates_clicked = Signal(float, float)  # Will emit x_mm, y_mm when clicked
 
-    def __init__(self, objectivestore, sample="glass slide", invertX=False, *args, **kwargs):
+    def __init__(self, objectivestore, camera_pixel_size, sample="glass slide", invertX=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.sample = sample
         self.objectiveStore = objectivestore
+        self.camera_sensor_pixel_size_um = camera_pixel_size  # unbinned pixel size
         self.well_size_mm = WELL_SIZE_MM
         self.well_spacing_mm = WELL_SPACING_MM
         self.number_of_skip = NUMBER_OF_SKIP
@@ -3580,7 +3557,6 @@ class NavigationViewer(QFrame):
         self.location_update_threshold_mm = 0.2
         self.box_color = (255, 0, 0)
         self.box_line_thickness = 2
-        self.acquisition_size = Acquisition.CROP_HEIGHT
         self.x_mm = None
         self.y_mm = None
         self.image_paths = {
@@ -3673,10 +3649,10 @@ class NavigationViewer(QFrame):
         self.update_fov_size()
 
     def update_fov_size(self):
-        pixel_size_um = self.objectiveStore.get_pixel_size()
-        self.fov_size_mm = self.acquisition_size * pixel_size_um / 1000
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
+        self.fov_size_mm = CAMERA_CONFIG.CROP_WIDTH_UNBINNED * pixel_size_um / 1000
 
-    def on_objective_changed(self):
+    def redraw_fov(self):
         self.clear_overlay()
         self.update_fov_size()
         self.draw_current_fov(self.x_mm, self.y_mm)
