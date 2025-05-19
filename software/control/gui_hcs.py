@@ -1018,7 +1018,7 @@ class HighContentScreeningGui(QMainWindow):
             self.movement_updater.position_after_move.connect(self.wellplateMultiPointWidget.update_live_coordinates)
             self.is_live_scan_grid_on = True
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
-        self.multipointController.signal_current_configuration.connect(self.liveControlWidget.set_microscope_mode)
+        self.multipointController.signal_current_configuration.connect(self.liveControlWidget.update_ui_for_mode)
         if self.piezoWidget:
             self.multipointController.signal_z_piezo_um.connect(self.piezoWidget.update_displacement_um_display)
         self.multipointController.signal_set_display_tabs.connect(self.setAcquisitionDisplayTabs)
@@ -1028,7 +1028,7 @@ class HighContentScreeningGui(QMainWindow):
             self.imageDisplayTabs.currentChanged.connect(self.onDisplayTabChanged)
 
         if USE_NAPARI_FOR_LIVE_VIEW and not self.live_only_mode:
-            self.multipointController.signal_current_configuration.connect(self.napariLiveWidget.set_microscope_mode)
+            self.multipointController.signal_current_configuration.connect(self.napariLiveWidget.update_ui_for_mode)
             self.autofocusController.image_to_display.connect(
                 lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=True)
             )
@@ -1161,7 +1161,7 @@ class HighContentScreeningGui(QMainWindow):
         # Setup live view connections
         if USE_NAPARI_FOR_LIVE_VIEW and not self.live_only_mode:
             self.napari_connections["napariLiveWidget"] = [
-                (self.multipointController.signal_current_configuration, self.napariLiveWidget.set_microscope_mode),
+                (self.multipointController.signal_current_configuration, self.napariLiveWidget.update_ui_for_mode),
                 (
                     self.autofocusController.image_to_display,
                     lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=True),
