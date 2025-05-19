@@ -1213,6 +1213,7 @@ class AutoFocusController(QObject):
         self.focus_map_coords.append((x, y, z))
         print(f"Added triple ({x},{y},{z}) to focus map")
 
+
 class ConfigType(Enum):
     CHANNEL = "channel"
     CONFOCAL = "confocal"
@@ -1338,6 +1339,7 @@ class ChannelConfigurationManager:
     def toggle_confocal_widefield(self, confocal: bool) -> None:
         """Toggle between confocal and widefield configurations"""
         self.active_config_type = ConfigType.CONFOCAL if confocal else ConfigType.WIDEFIELD
+
 
 class ScanCoordinates(QObject):
 
@@ -1923,6 +1925,7 @@ class ScanCoordinates(QObject):
                 self.region_centers[region_id].append(new_z)
 
         self._log.info(f"Updated z-level to {new_z} for region:{region_id}, fov:{fov}")
+
 
 class MultiPointController(QObject):
 
