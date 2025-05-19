@@ -64,8 +64,6 @@ class MultiPointWorker(QObject):
         self.dt = self.multiPointController.deltat
         self.do_autofocus = self.multiPointController.do_autofocus
         self.do_reflection_af = self.multiPointController.do_reflection_af
-        self.crop_width = self.multiPointController.crop_width
-        self.crop_height = self.multiPointController.crop_height
         self.display_resolution_scaling = self.multiPointController.display_resolution_scaling
         self.experiment_ID = self.multiPointController.experiment_ID
         self.base_path = self.multiPointController.base_path
