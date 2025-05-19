@@ -32,6 +32,8 @@ class MultiPointWorker(QObject):
     image_to_display = Signal(np.ndarray)
     spectrum_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
+    # This should connect to UI updates only - it should not trigger a liveController.set_microscope_mode!
+    # We call liveController.set_microscope_mode ourselves.
     signal_current_configuration = Signal(ChannelMode)
     signal_register_current_fov = Signal(float, float)
     signal_z_piezo_um = Signal(float)
@@ -145,7 +147,7 @@ class MultiPointWorker(QObject):
                         if self.multiPointController.abort_acqusition_requested:
                             self._log.debug("In run wait loop, abort_acquisition_requested=True")
                             break
-                        time.sleep(0.05)
+                        self._sleep(0.001)
 
             elapsed_time = time.perf_counter_ns() - self.start_time
             self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
@@ -161,8 +163,7 @@ class MultiPointWorker(QObject):
             self.finished.emit()
 
     def wait_till_operation_is_completed(self):
-        while self.microcontroller.is_busy():
-            time.sleep(SLEEP_TIME_S)
+        self.microcontroller.wait_till_operation_is_completed()
 
     def run_single_time_point(self):
         start = time.time()
@@ -269,11 +270,11 @@ class MultiPointWorker(QObject):
         print("moving to coordinate", coordinate_mm)
         x_mm = coordinate_mm[0]
         self.stage.move_x_to(x_mm)
-        time.sleep(SCAN_STABILIZATION_TIME_MS_X / 1000)
+        self._sleep(SCAN_STABILIZATION_TIME_MS_X / 1000)
 
         y_mm = coordinate_mm[1]
         self.stage.move_y_to(y_mm)
-        time.sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
+        self._sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
 
         # check if z is included in the coordinate
         if len(coordinate_mm) == 3:
@@ -283,7 +284,7 @@ class MultiPointWorker(QObject):
     def move_to_z_level(self, z_mm):
         print("moving z")
         self.stage.move_z_to(z_mm)
-        time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def run_coordinate_acquisition(self, current_path):
         n_regions = len(self.scan_region_coords_mm)
@@ -416,6 +417,11 @@ class MultiPointWorker(QObject):
         if tiff_writer is not None:
             tiff_writer.close()
 
+    def _select_config(self, config: ChannelMode):
+        self.signal_current_configuration.emit(config)
+        self.liveController.set_microscope_mode(config)
+        self.wait_till_operation_is_completed()
+
     def perform_autofocus(self, region_id, fov):
         if not self.do_reflection_af:
             # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
@@ -428,7 +434,7 @@ class MultiPointWorker(QObject):
                 config_AF = self.channelConfigurationManager.get_channel_configuration_by_name(
                     self.objectiveStore.current_objective, configuration_name_AF
                 )
-                self.signal_current_configuration.emit(config_AF)
+                self._select_config(config_AF)
                 if (
                     self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0
                 ) or self.autofocusController.use_focus_map:
@@ -453,8 +459,8 @@ class MultiPointWorker(QObject):
         # move to bottom of the z stack
         if self.z_stacking_config == "FROM CENTER":
             self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
-            time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
-        time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def handle_z_offset(self, config, not_offset):
         if config.z_offset is not None:  # perform z offset for config, assume z_offset is in um
@@ -463,17 +469,10 @@ class MultiPointWorker(QObject):
                 self._log.info("Moving Z offset" + str(config.z_offset * direction))
                 self.stage.move_z(config.z_offset / 1000 * direction)
                 self.wait_till_operation_is_completed()
-                time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+                self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
-    def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k, save_individual_images=True):
-        # update the current configuration
-        if not self.performance_mode:
-            self.signal_current_configuration.emit(config)
-            self.wait_till_operation_is_completed()
-        else:
-            # set channel mode directly if in performance mode
-            self.liveController.set_microscope_mode(config)
-            self.wait_till_operation_is_completed()
+    def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k):
+        self._select_config(config)
 
         # trigger acquisition (including turning on the illumination) and read frame
         camera_illumination_time = self.camera.get_exposure_time()
@@ -488,7 +487,7 @@ class MultiPointWorker(QObject):
                 #   I am pretty sure this is broken!
                 self.microscope.nl5.start_acquisition()
         while not self.camera.get_ready_for_trigger():
-            time.sleep(0.001)
+            self._sleep(0.001)
         self.camera.send_trigger(illumination_time=camera_illumination_time)
         camera_frame = self.camera.read_camera_frame()
         image = camera_frame.frame
@@ -501,15 +500,22 @@ class MultiPointWorker(QObject):
             self.liveController.turn_off_illumination()
 
         height, width = image.shape[:2]
+        self._log.info("Cropping image...")
         image_to_display = utils.crop_image(
             image,
             round(width * self.display_resolution_scaling),
             round(height * self.display_resolution_scaling),
         )
+        self._log.info("Emitting display image...")
         self.image_to_display.emit(image_to_display)
         self.image_to_display_multi.emit(image_to_display, config.illumination_source)
 
+        self._log.info("Saving image...")
+        self.save_image(image, file_ID, config, current_path, camera_frame.is_color())
+        self._log.info("Updating napari...")
         self.update_napari(image, config.name, k)
+        self._log.info("storing current round...")
+        current_round_images[config.name] = np.copy(image)
 
         # current_round_images[config.name] = np.copy(image) # to remove
         # MultiPointWorker.handle_rgb_generation(current_round_images, file_ID, current_path, k) # to remove
@@ -522,6 +528,10 @@ class MultiPointWorker(QObject):
 
         return image
 
+    def _sleep(self, sec):
+        self._log.info(f"Sleeping for {sec} [s]")
+        self.thread().usleep(max(1, round(sec * 1e6)))
+
     def acquire_rgb_image(self, config, file_ID, current_path, current_round_images, k):
         # go through the channels
         rgb_channels = ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]
@@ -531,14 +541,7 @@ class MultiPointWorker(QObject):
             self.objectiveStore.current_objective
         ):
             if config_.name in rgb_channels:
-                # update the current configuration
-                if not self.performance_mode:
-                    self.signal_current_configuration.emit(config)
-                    self.wait_till_operation_is_completed()
-                else:
-                    # set channel mode directly if in performance mode
-                    self.liveController.set_microscope_mode(config)
-                    self.wait_till_operation_is_completed()
+                self._select_config(config_)
 
                 # trigger acquisition (including turning on the illumination)
                 if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
@@ -710,12 +713,12 @@ class MultiPointWorker(QObject):
             if (
                 self.liveController.trigger_mode == TriggerMode.SOFTWARE
             ):  # for hardware trigger, delay is in waiting for the last row to start exposure
-                time.sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
             if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
                 self.signal_z_piezo_um.emit(self.z_piezo_um)
         else:
             self.stage.move_z(self.deltaZ)
-            time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def move_z_back_after_stack(self):
         if self.use_piezo:
@@ -724,7 +727,7 @@ class MultiPointWorker(QObject):
             if (
                 self.liveController.trigger_mode == TriggerMode.SOFTWARE
             ):  # for hardware trigger, delay is in waiting for the last row to start exposure
-                time.sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
             if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
                 self.signal_z_piezo_um.emit(self.z_piezo_um)
         else:

@@ -924,7 +924,6 @@ class AutofocusWorker(QObject):
 
     finished = Signal()
     image_to_display = Signal(np.ndarray)
-    # signal_current_configuration = Signal(Configuration)
 
     def __init__(self, autofocusController):
         QObject.__init__(self)
@@ -1087,7 +1086,7 @@ class AutoFocusController(QObject):
                 print("*** autofocus threaded manually stopped ***")
         except:
             pass
-        self.thread = QThread()
+        self.thread = QThread(parent=self)
         # create a worker object
         self.autofocusWorker = AutofocusWorker(self)
         # move the worker to the thread
@@ -2384,7 +2383,7 @@ class MultiPointController(QObject):
 
         if not self.headless:
             # create a QThread object
-            self.thread = QThread()
+            self.thread = QThread(parent=self)
             # move the worker to the thread
             self.multiPointWorker.moveToThread(self.thread)
             # connect signals and slots
@@ -2422,6 +2421,7 @@ class MultiPointController(QObject):
                 self.autofocusController.focus_map_coords.append((x, y, z))
             self.autofocusController.use_focus_map = self.already_using_fmap
         self.signal_current_configuration.emit(self.configuration_before_running_multipoint)
+        self.liveController.set_microscope_mode(self.configuration_before_running_multipoint)
 
         # re-enable callback
         if self.camera_callback_was_enabled_before_multipoint:
@@ -2603,9 +2603,7 @@ class TrackingController(QObject):
         self.trackingWorker.finished.connect(self.thread.quit)
         self.trackingWorker.image_to_display.connect(self.slot_image_to_display)
         self.trackingWorker.image_to_display_multi.connect(self.slot_image_to_display_multi)
-        self.trackingWorker.signal_current_configuration.connect(
-            self.slot_current_configuration, type=Qt.BlockingQueuedConnection
-        )
+        self.trackingWorker.signal_current_configuration.connect(self.slot_current_configuration)
         # self.thread.finished.connect(self.thread.deleteLater)
         self.thread.finished.connect(self.thread.quit)
         # start the thread
@@ -2615,6 +2613,7 @@ class TrackingController(QObject):
 
         # restore the previous selected mode
         self.signal_current_configuration.emit(self.configuration_before_running_tracking)
+        self.liveController.set_microscope_mode(self.configuration_before_running_tracking)
 
         # re-enable callback
         if self.camera_callback_was_enabled_before_tracking:
@@ -2731,6 +2730,14 @@ class TrackingWorker(QObject):
             base_path=os.path.join(self.base_path, self.experiment_ID), image_format="bmp"
         )
 
+    def _select_config(self, config: ChannelMode):
+        self.signal_current_configuration.emit(config)
+        # TODO(imo): replace with illumination controller.
+        self.liveController.set_microscope_mode(config)
+        self.microcontroller.wait_till_operation_is_completed()
+        self.liveController.turn_on_illumination()  # keep illumination on for single configuration acqusition
+        self.microcontroller.wait_till_operation_is_completed()
+
     def run(self):
 
         tracking_frame_counter = 0
@@ -2768,8 +2775,7 @@ class TrackingWorker(QObject):
 
             # switch to the tracking config
             config = self.selected_configurations[0]
-            self.signal_current_configuration.emit(config)
-            self.microcontroller.wait_till_operation_is_completed()
+
             # do autofocus
             if self.trackingController.flag_AF_enabled and tracking_frame_counter > 1:
                 # do autofocus
@@ -2784,11 +2790,7 @@ class TrackingWorker(QObject):
             # grab an image
             config = self.selected_configurations[0]
             if self.number_of_selected_configurations > 1:
-                self.signal_current_configuration.emit(config)
-                # TODO(imo): replace with illumination controller
-                self.microcontroller.wait_till_operation_is_completed()
-                self.liveController.turn_on_illumination()  # keep illumination on for single configuration acqusition
-                self.microcontroller.wait_till_operation_is_completed()
+                self._select_config(config)
             self.camera.send_trigger()
             camera_frame = self.camera.read_camera_frame()
             image = camera_frame.frame
@@ -2802,12 +2804,8 @@ class TrackingWorker(QObject):
 
             # image the rest configurations
             for config_ in self.selected_configurations[1:]:
-                self.signal_current_configuration.emit(config_)
-                # TODO(imo): replace with illumination controller
-                self.microcontroller.wait_till_operation_is_completed()
-                self.liveController.turn_on_illumination()
-                self.microcontroller.wait_till_operation_is_completed()
-                # TODO(imo): this is broken if we are using hardware triggering
+                self._select_config(config_)
+
                 self.camera.send_trigger()
                 image_ = self.camera.read_frame()
                 # TODO(imo): use illumination controller
