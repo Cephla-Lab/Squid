@@ -32,6 +32,8 @@ class MultiPointWorker(QObject):
     image_to_display = Signal(np.ndarray)
     spectrum_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
+    # This should connect to UI updates only - it should not trigger a liveController.set_microscope_mode!
+    # We call liveController.set_microscope_mode ourselves.
     signal_current_configuration = Signal(ChannelMode)
     signal_register_current_fov = Signal(float, float)
     signal_z_piezo_um = Signal(float)
@@ -380,6 +382,11 @@ class MultiPointWorker(QObject):
         if self.NZ > 1:
             self.move_z_back_after_stack()
 
+    def _select_config(self, config: ChannelMode):
+        self.signal_current_configuration.emit(config)
+        self.liveController.set_microscope_mode(config)
+        self.wait_till_operation_is_completed()
+
     def perform_autofocus(self, region_id, fov):
         if not self.do_reflection_af:
             # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
@@ -392,7 +399,7 @@ class MultiPointWorker(QObject):
                 config_AF = self.channelConfigurationManager.get_channel_configuration_by_name(
                     self.objectiveStore.current_objective, configuration_name_AF
                 )
-                self.signal_current_configuration.emit(config_AF)
+                self._select_config(config_AF)
                 if (
                     self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0
                 ) or self.autofocusController.use_focus_map:
@@ -430,14 +437,7 @@ class MultiPointWorker(QObject):
                 time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k):
-        # update the current configuration
-        if not self.performance_mode:
-            self.signal_current_configuration.emit(config)
-            self.wait_till_operation_is_completed()
-        else:
-            # set channel mode directly if in performance mode
-            self.liveController.set_microscope_mode(config)
-            self.wait_till_operation_is_completed()
+        self._select_config(config)
 
         # trigger acquisition (including turning on the illumination) and read frame
         camera_illumination_time = self.camera.get_exposure_time()
@@ -492,14 +492,7 @@ class MultiPointWorker(QObject):
             self.objectiveStore.current_objective
         ):
             if config_.name in rgb_channels:
-                # update the current configuration
-                if not self.performance_mode:
-                    self.signal_current_configuration.emit(config)
-                    self.wait_till_operation_is_completed()
-                else:
-                    # set channel mode directly if in performance mode
-                    self.liveController.set_microscope_mode(config)
-                    self.wait_till_operation_is_completed()
+                self._select_config(config_)
 
                 # trigger acquisition (including turning on the illumination)
                 if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
