@@ -214,6 +214,20 @@ class TucsenCameraModel(enum.Enum):
             return None
 
 
+class HamamatsuCameraModel(enum.Enum):
+    C15440_20UP = "C15440-20UP"
+
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["HamamatsuCameraModel"]:
+        """
+        Attempts to convert the given string to a Hamamatsu camera model.  This ignores all letter cases.
+        """
+        try:
+            return HamamatsuCameraModel[cam_string.upper()]
+        except KeyError:
+            return None
+
+
 class CameraSensor(enum.Enum):
     """
     Some camera sensors may not be included here.
@@ -284,7 +298,7 @@ class CameraConfig(pydantic.BaseModel):
 
     # Specific camera model. This will be used to determine the model-specific parameters, because one camera class may
     # support multiple models from the same brand.
-    camera_model: Optional[Union[GxipyCameraModel, TucsenCameraModel]] = None
+    camera_model: Optional[Union[GxipyCameraModel, TucsenCameraModel, ToupcamCameraModel, HamamatsuCameraModel]] = None
 
     # The serial number of the camera. You may use this to select a specific camera to open if there are multiple
     # cameras using the same SDK/driver.
