@@ -397,5 +397,9 @@ class SimulatedCamera(AbstractCamera):
     def get_temperature(self) -> float:
         return self._temperature_setpoint
 
+    @debug_log
+    def set_temperature_reading_callback(self, callback: Callable):
+        self._temperature_reading_callback = callback
+
     def get_frame_id(self) -> int:
         return self._frame_id
