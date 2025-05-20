@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 os.environ["QT_API"] = "pyqt5"
-from qtpy.QtCore import Signal, QObject, QThread
+from qtpy.QtCore import Signal, QObject
 from PyQt5.QtWidgets import QApplication
 
 from control._def import *
