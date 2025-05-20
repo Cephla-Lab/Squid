@@ -183,6 +183,18 @@ class GxipyCameraModel(enum.Enum):
             return None
 
 
+class ToupcamCameraModel(enum.Enum):
+    ITR3CMOS26000KMA = "ITR3CMOS26000KMA"
+    ITR3CMOS09000KMA = "ITR3CMOS09000KMA"
+    ITR3CMOS26000KPA = "ITR3CMOS26000KPA"
+
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["ToupcamCameraModel"]:
+        """
+        Attempts to convert the given string to a Toupcam camera model.  This ignores all letter cases.
+        """
+
+
 class TucsenCameraModel(enum.Enum):
     FL26_BW = "FL26-BW"
     DHYANA_400BSI_V3 = "DHYANA-400BSI-V3"

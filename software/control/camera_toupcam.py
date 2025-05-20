@@ -15,7 +15,7 @@ from squid.abc import (
     CameraPixelFormat,
     CameraFrame,
 )
-import squid.config
+from squid.config import CameraConfig, ToupcamCameraModel
 from control._def import *
 
 import threading
@@ -33,14 +33,14 @@ class ToupCamCapabilities(pydantic.BaseModel):
     has_black_level: bool
 
 
-def get_sn_by_model(model_name):
+def get_sn_by_model(camera_model: ToupcamCameraModel):
     try:
         device_list = toupcam.Toupcam.EnumV2()
     except:
         log.error("Problem generating Toupcam device list")
         return None
     for dev in device_list:
-        if dev.displayname == model_name:
+        if dev.displayname == camera_model.value:
             return dev.id
     return None  # return None if no device with the specified model_name is connected
 
@@ -194,7 +194,7 @@ class ToupcamCamera(AbstractCamera):
 
         return camera, capabilities
 
-    def __init__(self, config: squid.config.CameraConfig, hw_trigger_fn, hw_set_strobe_delay_ms_fn):
+    def __init__(self, config: CameraConfig, hw_trigger_fn, hw_set_strobe_delay_ms_fn):
         super().__init__(config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
 
         self._current_frame: Optional[CameraFrame] = None
