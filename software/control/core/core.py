@@ -2280,12 +2280,10 @@ class MultiPointController(QObject):
         else:
             self.liveController_was_live_before_multipoint = False
 
-        # disable callback
-        if self.camera.get_callbacks_enabled():
-            self.camera_callback_was_enabled_before_multipoint = True
-            self.camera.enable_callbacks(False)
-        else:
-            self.camera_callback_was_enabled_before_multipoint = False
+        self.camera_callback_was_enabled_before_multipoint = self.camera.get_callbacks_enabled()
+        # We need callbacks, because we trigger and then use callbacks for image processing.  This
+        # lets us do overlapping triggering (soon).
+        self.camera.enable_callbacks(True)
 
         if self.usb_spectrometer != None:
             if self.usb_spectrometer.streaming_started == True and self.usb_spectrometer.streaming_paused == False:
@@ -2423,10 +2421,8 @@ class MultiPointController(QObject):
         self.signal_current_configuration.emit(self.configuration_before_running_multipoint)
         self.liveController.set_microscope_mode(self.configuration_before_running_multipoint)
 
-        # re-enable callback
-        if self.camera_callback_was_enabled_before_multipoint:
-            self.camera.enable_callbacks(True)
-            self.camera_callback_was_enabled_before_multipoint = False
+        # Restore callbacks to pre-acquisition state
+        self.camera.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
 
         # re-enable live if it's previously on
         if self.liveController_was_live_before_multipoint and RESUME_LIVE_AFTER_ACQUISITION:
