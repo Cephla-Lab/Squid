@@ -1086,7 +1086,7 @@ class AutoFocusController(QObject):
                 print("*** autofocus threaded manually stopped ***")
         except:
             pass
-        self.thread = QThread()
+        self.thread = QThread(parent=self)
         # create a worker object
         self.autofocusWorker = AutofocusWorker(self)
         # move the worker to the thread
@@ -2383,7 +2383,7 @@ class MultiPointController(QObject):
 
         if not self.headless:
             # create a QThread object
-            self.thread = QThread()
+            self.thread = QThread(parent=self)
             # move the worker to the thread
             self.multiPointWorker.moveToThread(self.thread)
             # connect signals and slots
