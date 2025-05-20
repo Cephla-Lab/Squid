@@ -38,13 +38,13 @@ class _CustomFormatter(py_logging.Formatter):
     def format(self, record):
         return self.FORMATTERS[record.levelno].format(record)
 
-def thread_id_filter(record):
+def _thread_id_filter(record: logging.LogRecord):
    """Inject thread_id to log records"""
    record.thread_id = threading.get_native_id()
-   return record
+   return True
 
 _COLOR_STREAM_HANDLER = py_logging.StreamHandler()
-_COLOR_STREAM_HANDLER.addFilter(thread_id_filter)
+_COLOR_STREAM_HANDLER.addFilter(_thread_id_filter)
 _COLOR_STREAM_HANDLER.setFormatter(_CustomFormatter())
 
 # Make sure the squid root logger has all the handlers we want setup.  We could move this into a helper so it
@@ -191,6 +191,7 @@ def add_file_logging(log_filename, replace_existing=False):
 
     formatter = py_logging.Formatter(fmt=_baseline_log_format, datefmt=_baseline_log_dateformat)
     new_handler.setFormatter(formatter)
+    new_handler.addFilter(_thread_id_filter)
 
     log.info(f"Adding new file logger writing to file '{new_handler.baseFilename}'")
     root_logger.addHandler(new_handler)
