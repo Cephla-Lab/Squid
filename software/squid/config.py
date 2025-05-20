@@ -193,6 +193,10 @@ class ToupcamCameraModel(enum.Enum):
         """
         Attempts to convert the given string to a Toupcam camera model.  This ignores all letter cases.
         """
+        try:
+            return ToupcamCameraModel[cam_string.upper()]
+        except KeyError:
+            return None
 
 
 class TucsenCameraModel(enum.Enum):
