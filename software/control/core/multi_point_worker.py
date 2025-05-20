@@ -29,6 +29,7 @@ try:
 except:
     pass
 
+
 @dataclass
 class CaptureInfo:
     position: squid.abc.Pos
@@ -37,6 +38,7 @@ class CaptureInfo:
     configuration: ChannelMode
     save_directory: str
     file_id: str
+
 
 class MultiPointWorker(QObject):
 
@@ -493,7 +495,9 @@ class MultiPointWorker(QObject):
         self._log.info("storing current round...")
         self._current_round_images[info.configuration.name] = np.copy(image)
 
-        MultiPointWorker.handle_rgb_generation(self._current_round_images, info.file_id, info.save_directory, info.z_index)
+        MultiPointWorker.handle_rgb_generation(
+            self._current_round_images, info.file_id, info.save_directory, info.z_index
+        )
 
     def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k):
         self._select_config(config)
@@ -511,7 +515,9 @@ class MultiPointWorker(QObject):
                 #   I am pretty sure this is broken!
                 self.microscope.nl5.start_acquisition()
         total_frame_time_ms = self.camera.get_total_frame_time()
-        timeout_s = total_frame_time_ms / 1e3 + 10  # This is some large timeout that we use just so as to not block forever
+        timeout_s = (
+            total_frame_time_ms / 1e3 + 10
+        )  # This is some large timeout that we use just so as to not block forever
         if not self._ready_for_next_trigger.wait(timeout_s):
             self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
             self.multiPointController.request_abort_aquisition()
@@ -525,12 +531,12 @@ class MultiPointWorker(QObject):
         # Even though the capture time will be slightly after this, we need to capture and set the capture info
         # before the trigger to be 100% sure the callback doesn't stomp on it.
         current_capture_info = CaptureInfo(
-            position = self.stage.get_pos(),
+            position=self.stage.get_pos(),
             z_index=k,
             capture_time=time.time(),
             configuration=config,
             save_directory=current_path,
-            file_id=file_ID
+            file_id=file_ID,
         )
         self._current_capture_info = current_capture_info
         self.camera.send_trigger(illumination_time=camera_illumination_time)
