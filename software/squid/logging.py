@@ -8,7 +8,9 @@ import sys
 import platformdirs
 
 _squid_root_logger_name = "squid"
-_baseline_log_format = "%(asctime)s.%(msecs)03d - %(thread_id)d - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+_baseline_log_format = (
+    "%(asctime)s.%(msecs)03d - %(thread_id)d - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+)
 _baseline_log_dateformat = "%Y-%m-%d %H:%M:%S"
 
 
@@ -38,10 +40,12 @@ class _CustomFormatter(py_logging.Formatter):
     def format(self, record):
         return self.FORMATTERS[record.levelno].format(record)
 
+
 def _thread_id_filter(record: logging.LogRecord):
-   """Inject thread_id to log records"""
-   record.thread_id = threading.get_native_id()
-   return True
+    """Inject thread_id to log records"""
+    record.thread_id = threading.get_native_id()
+    return True
+
 
 _COLOR_STREAM_HANDLER = py_logging.StreamHandler()
 _COLOR_STREAM_HANDLER.addFilter(_thread_id_filter)
