@@ -44,9 +44,6 @@ def get_sn_by_model(camera_model: GxipyCameraModel):
 
 
 class DefaultCamera(AbstractCamera):
-
-    IMX226_PIXEL_SIZE_UM = 1.85
-
     @staticmethod
     def _open(device_manager: gx.DeviceManager, sn=None, index=None):
         if sn is None and index is None:
