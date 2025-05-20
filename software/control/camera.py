@@ -527,3 +527,6 @@ class DefaultCamera(AbstractCamera):
 
     def get_temperature(self) -> float:
         raise NotImplementedError("DefaultCameras do not support getting current temperature")
+
+    def set_temperature_reading_callback(self, callback: Callable):
+        raise NotImplementedError("DefaultCameras do not support getting current temperature")

@@ -368,7 +368,7 @@ class ToupcamCamera(AbstractCamera):
 
         # TODO: Do hardware cropping here (set ROI)
 
-    def _set_temperature_reading_callback(self, func):
+    def set_temperature_reading_callback(self, func):
         self.temperature_reading_callback = func
 
     def _get_raw_exposure_time(self) -> float:

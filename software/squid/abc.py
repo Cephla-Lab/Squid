@@ -719,3 +719,10 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         Get the current temperature of the camera in deg C.
         """
         pass
+
+    @abc.abstractmethod
+    def set_temperature_reading_callback(self, callback: Callable):
+        """
+        Set the callback to be called when the temperature reading changes.
+        """
+        pass

@@ -1115,8 +1115,7 @@ class CameraSettingsWidget(QFrame):
             temp_line.addWidget(self.label_temperature_measured)
             try:
                 self.entry_temperature.valueChanged.connect(self.set_temperature)
-                # TODO(imo): temp reading callback restoration, or polling
-                # self.camera.set_temperature_reading_callback(self.update_measured_temperature)
+                self.camera.set_temperature_reading_callback(self.update_measured_temperature)
             except AttributeError:
                 pass
             self.camera_layout.addLayout(temp_line)
