@@ -175,7 +175,7 @@ class GxipyCameraModel(enum.Enum):
     @staticmethod
     def from_string(cam_string: str) -> Optional["GxipyCameraModel"]:
         """
-        Attempts to convert the given string to a camera variant.  This ignores all letter cases.
+        Attempts to convert the given string to a Gxipy camera model.  This ignores all letter cases.
         """
         try:
             return GxipyCameraModel[cam_string.upper()]
@@ -190,7 +190,7 @@ class TucsenCameraModel(enum.Enum):
     @staticmethod
     def from_string(cam_string: str) -> Optional["TucsenCameraModel"]:
         """
-        Attempts to convert the given string to a camera variant.  This ignores all letter cases.
+        Attempts to convert the given string to a Tucsen camera model.  This ignores all letter cases.
         """
         try:
             return TucsenCameraModel[cam_string.upper()]
