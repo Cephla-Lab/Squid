@@ -1378,7 +1378,6 @@ class LiveControlWidget(QFrame):
         self.liveController.set_microscope_mode(self.currentConfiguration)
         self.update_ui_for_mode(self.currentConfiguration)
 
-
         self.is_switching_mode = False  # flag used to prevent from settings being set by twice - from both mode change slot and value change slot; another way is to use blockSignals(True)
 
     def add_components(self, show_trigger_options, show_display_options, show_autolevel, autolevel, stretch):
@@ -1598,7 +1597,8 @@ class LiveControlWidget(QFrame):
     def select_new_microscope_mode_by_index(self, config_index):
         config_name = self.dropdown_modeSelection.itemText(config_index)
         maybe_new_config = self.channelConfigurationManager.get_channel_configuration_by_name(
-            self.objectiveStore.current_objective, config_name)
+            self.objectiveStore.current_objective, config_name
+        )
 
         if not maybe_new_config:
             self._log.error(f"User attempted to select config named '{config_name}' but it does not exist!")
@@ -6586,7 +6586,8 @@ class NapariLiveWidget(QWidget):
     def select_new_microscope_mode_by_name(self, config_index):
         config_name = self.dropdown_modeSelection.itemText(config_index)
         maybe_new_config = self.channelConfigurationManager.get_channel_configuration_by_name(
-            self.objectiveStore.current_objective, config_name)
+            self.objectiveStore.current_objective, config_name
+        )
 
         if not maybe_new_config:
             self._log.error(f"User attempted to select config named '{config_name}' but it does not exist!")
