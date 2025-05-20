@@ -11,7 +11,8 @@ from squid.abc import (
     CameraFrameFormat,
     CameraError,
 )
-from squid.config import CameraConfig, CameraPixelFormat
+from squid.config import CameraConfig, CameraPixelFormat, GxipyCameraModel, CameraSensor
+from control._def import CAMERA_PIXEL_SIZE_UM
 
 try:
     import control.gxipy as gx
@@ -27,6 +28,19 @@ class DefaultCameraCapabilities(pydantic.BaseModel):
     black_level: bool
     white_balance: bool
     auto_white_balance: bool
+
+
+def get_sn_by_model(model_name):
+    try:
+        device_manager = gx.DeviceManager()
+        device_num, device_info_list = device_manager.update_device_list()
+    except:
+        device_num = 0
+    if device_num > 0:
+        for i in range(device_num):
+            if device_info_list[i]["model_name"] == model_name:
+                return device_info_list[i]["sn"]
+    return None  # return None if no device with the specified model_name is connected
 
 
 class DefaultCamera(AbstractCamera):
@@ -85,10 +99,20 @@ class DefaultCamera(AbstractCamera):
     ):
         super().__init__(camera_config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
 
-        # We need to keep the device manager instance around because it also manages the gx library initialization
-        # and de-initialization.  So we capture it here, but then never use it past the _open call.
-        self._gx_device_manager = gx.DeviceManager()
-        (self._camera, self._capabilities) = DefaultCamera._open(self._gx_device_manager, index=0)
+        # If there are multiple Daheng cameras (default camera) connected, open the camera by model given in the config
+        if self._config.camera_model is not None:
+            sn = get_sn_by_model(self._config.camera_model)
+            if sn is None:
+                raise CameraError(f"Camera with model {self._config.camera_model} not found.")
+            else:
+                # We need to keep the device manager instance around because it also manages the gx library initialization
+                # and de-initialization.  So we capture it here, but then never use it past the _open call.
+                self._gx_device_manager = gx.DeviceManager()
+                (self._camera, self._capabilities) = DefaultCamera._open(self._gx_device_manager, sn=sn)
+        else:
+            # If there is only one camera connected, open it by index
+            self._gx_device_manager = gx.DeviceManager()
+            (self._camera, self._capabilities) = DefaultCamera._open(self._gx_device_manager, index=0)
 
         # TODO/NOTE(imo): Need to test if self as user_param is correct here, of it sends self for us.
         self._camera.register_capture_callback(None, self._frame_callback)
@@ -301,11 +325,23 @@ class DefaultCamera(AbstractCamera):
     def set_binning(self, binning_factor_x: int, binning_factor_y: int):
         raise NotImplementedError("DefaultCameras do not support binning")
 
-    def get_pixel_size_unbinned_um(self) -> int:
-        return DefaultCamera.IMX226_PIXEL_SIZE_UM
+    _MODEL_TO_SENSOR = {
+        GxipyCameraModel.MER2_1220_32U3M: CameraSensor.IMX226,
+        GxipyCameraModel.MER2_630_60U3M: CameraSensor.IMX178,
+    }
 
-    def get_pixel_size_binned_um(self) -> int:
-        return DefaultCamera.IMX226_PIXEL_SIZE_UM
+    def get_pixel_size_unbinned_um(self) -> float:
+        if self._config.camera_model in DefaultCamera._MODEL_TO_SENSOR:
+            return CAMERA_PIXEL_SIZE_UM[DefaultCamera._MODEL_TO_SENSOR[self._config.camera_model].value]
+        else:
+            raise NotImplementedError(f"No pixel size for {self._config.camera_model=}")
+
+    def get_pixel_size_binned_um(self) -> float:
+        # Right now binning for these cameras will always be 1x1
+        if self._config.camera_model in DefaultCamera._MODEL_TO_SENSOR:
+            return CAMERA_PIXEL_SIZE_UM[DefaultCamera._MODEL_TO_SENSOR[self._config.camera_model].value]
+        else:
+            raise NotImplementedError(f"No pixel size for {self._config.camera_model=}")
 
     def set_analog_gain(self, analog_gain: float):
         self._camera.Gain.set(analog_gain)

@@ -1,6 +1,6 @@
 import enum
 import math
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import pydantic
 
@@ -168,6 +168,53 @@ class CameraVariant(enum.Enum):
             return None
 
 
+class GxipyCameraModel(enum.Enum):
+    MER2_1220_32U3M = "MER2-1220-32U3M"
+    MER2_630_60U3M = "MER2-630-60U3M"
+
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["GxipyCameraModel"]:
+        """
+        Attempts to convert the given string to a camera variant.  This ignores all letter cases.
+        """
+        try:
+            return GxipyCameraModel[cam_string.upper()]
+        except KeyError:
+            return None
+
+
+class TucsenCameraModel(enum.Enum):
+    FL26_BW = "FL26-BW"
+    DHYANA_400BSI_V3 = "DHYANA-400BSI-V3"
+
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["TucsenCameraModel"]:
+        """
+        Attempts to convert the given string to a camera variant.  This ignores all letter cases.
+        """
+        try:
+            return TucsenCameraModel[cam_string.upper()]
+        except KeyError:
+            return None
+
+
+class CameraSensor(enum.Enum):
+    """
+    Some camera sensors may not be included here.
+    """
+
+    IMX290 = "IMX290"
+    IMX178 = "IMX178"
+    IMX226 = "IMX226"
+    IMX250 = "IMX250"
+    IMX252 = "IMX252"
+    IMX273 = "IMX273"
+    IMX264 = "IMX264"
+    IMX265 = "IMX265"
+    IMX571 = "IMX571"
+    PYTHON300 = "PYTHON300"
+
+
 class CameraPixelFormat(enum.Enum):
     """
     This is all known Pixel Formats in the Cephla world, but not all cameras will support
@@ -219,6 +266,15 @@ class CameraConfig(pydantic.BaseModel):
     # NOTE(imo): Not "type" because that's a python builtin and can cause confusion
     camera_type: CameraVariant
 
+    # Specific camera model. This will be used to determine the model-specific parameters, because one camera class may
+    # support multiple models from the same brand.
+    camera_model: Optional[Union[GxipyCameraModel, TucsenCameraModel]] = None
+
+    # The serial number of the camera. You may use this to select a specific camera to open if there are multiple
+    # cameras using the same SDK/driver.
+    serial_number: Optional[str] = None
+
+    # The default readout data bit depth of the camera. Note that this may depend on the gain mode being used.
     default_pixel_format: CameraPixelFormat
 
     # The binning factor of the camera.  If None, the camera is not using binning, or use 1x1 as default.
@@ -277,6 +333,7 @@ def _old_camera_variant_to_enum(old_string) -> CameraVariant:
 
 _camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.CAMERA_TYPE),
+    camera_model=_def.MAIN_CAMERA_MODEL,
     default_pixel_format=_def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT,
     default_binning=(_def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT, _def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT),
     default_roi=(
@@ -308,6 +365,7 @@ def get_camera_config() -> CameraConfig:
 
 _autofocus_camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE),
+    camera_model=_def.FOCUS_CAMERA_MODEL,
     default_pixel_format=CameraPixelFormat.MONO8,
     default_binning=(1, 1),
     rotate_image_angle=None,

@@ -7515,6 +7515,7 @@ class TrackingControllerWidget(QFrame):
         objective = self.dropdown_objective.currentText()
         self.trackingController.objective = objective
         # self.internal_state.data['Objective'] = self.objective
+        # TODO: these pixel size code needs to be updated.
         pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR] / (
             TUBE_LENS_MM / (OBJECTIVES[objective]["tube_lens_f_mm"] / OBJECTIVES[objective]["magnification"])
         )
@@ -7528,6 +7529,7 @@ class TrackingControllerWidget(QFrame):
         magnification = objective_info["magnification"]
         objective_tube_lens_mm = objective_info["tube_lens_f_mm"]
         tube_lens_mm = TUBE_LENS_MM
+        # TODO: these pixel size code needs to be updated.
         pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
         pixel_size_xy = pixel_size_um / (magnification / (objective_tube_lens_mm / tube_lens_mm))
         self.trackingController.update_pixel_size(pixel_size_xy)
