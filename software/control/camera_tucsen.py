@@ -151,13 +151,13 @@ class TucsenCamera(AbstractCamera):
         self._is_streaming = threading.Event()
 
         self._camera = TucsenCamera._open(index=0)
-        self._configure_camera()
         self._binning = self._config.default_binning
 
         self.m_frame = None  # image buffer
-        self.trigger_attr = (
-            TUCAM_TRIGGER_ATTR()
-        )  # We need to keep trigger attribute for starting and stopping streaming
+        # We need to keep trigger attribute for starting and stopping streaming
+        self.trigger_attr = TUCAM_TRIGGER_ATTR()
+
+        self._configure_camera()
 
         # We store exposure time so we don't need to worry about backing out strobe time from the
         # time stored on the camera.
@@ -227,10 +227,11 @@ class TucsenCamera(AbstractCamera):
         return self._is_streaming.is_set()
 
     def _close(self):
-        self._terminate_temperature_event.set()
-        self.temperature_reading_thread.join()
-        TUCAM_Buf_Release(self._camera)
-        TUCAM_Dev_Close(self._camera)
+        if self.temperature_reading_thread is not None:
+            self._terminate_temperature_event.set()
+            self.temperature_reading_thread.join()
+        if TUCAM_Dev_Close(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
+            raise Exception("Failed to close camera")
         TUCAM_Api_Uninit()
         self._log.info("Close Tucsen camera success")
 
@@ -350,6 +351,8 @@ class TucsenCamera(AbstractCamera):
             if self._hw_set_strobe_delay_ms_fn:
                 self._log.debug(f"Setting hw strobe time to {strobe_time_ms} [ms]")
                 self._hw_set_strobe_delay_ms_fn(strobe_time_ms)
+        else:
+            adjusted_exposure_time = exposure_time_ms
 
         if (
             TUCAM_Prop_SetValue(self._camera, TUCAM_IDPROP.TUIDP_EXPOSURETM.value, c_double(adjusted_exposure_time), 0)
@@ -375,11 +378,15 @@ class TucsenCamera(AbstractCamera):
     def _calculate_strobe_delay(self):
         # Line rate: FL 26BW: 34.67 us for standard resolution; 69.3 us for low noise; 12.58 us for SenBin
         #            400BSI V3: 7.2 us for high speed; 11.2 us for other gain modes
-        # Right now we are only using 400BSI V3's HDR gain mode so we just hard code the line rate here.
+        # Right now we are only using 400BSI V3's HDR mode.
+        # TODO: Support more modes.
         if self.m_frame is None:
-            raise CameraError("Image buffer not allocated. Failed to get strobe time.")
+            # If buffer is not allocated, we query the camera for nHeight
+            _, _, _, vn = self.get_region_of_interest()
+        else:
+            vn = self.m_frame.usHeight
 
-        readout_time_ms = 11.2 * self.m_frame.usHeight * self._binning[1] / 1000.0
+        readout_time_ms = TucsenCamera._MODE_TO_LINE_RATE_US[Mode400BSIV3.HDR] * vn * self._binning[1] / 1000.0
         trigger_attr = TUCAM_TRIGGER_ATTR()
         if TUCAM_Cap_GetTrigger(self._camera, pointer(trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
             raise CameraError("Failed to get trigger delay")
@@ -407,6 +414,8 @@ class TucsenCamera(AbstractCamera):
         return CameraPixelFormat.MONO16
 
     def _update_internal_settings(self):
+        if TUCAM_Buf_Release(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
+            raise Exception("Failed to release buffer")
         self._allocate_buffer()
         self._calculate_strobe_delay()
 
@@ -507,7 +516,10 @@ class TucsenCamera(AbstractCamera):
             self._update_internal_settings()
 
     def get_region_of_interest(self):
-        pass
+        roi_attr = TUCAM_ROI_ATTR()
+        if TUCAM_Cap_GetROI(self._camera, pointer(roi_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
+            raise CameraError("Failed to get ROI")
+        return (roi_attr.nHOffset, roi_attr.nVOffset, roi_attr.nWidth, roi_attr.nHeight)
 
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
         with self._pause_streaming():

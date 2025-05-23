@@ -70,7 +70,9 @@ def get_camera(
         elif config.camera_type == CameraVariant.TUCSEN:
             import control.camera_tucsen
 
-            camera = control.camera_ids.Camera(config)
+            camera = control.camera_tucsen.TucsenCamera(
+                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+            )
         elif config.camera_type == CameraVariant.TIS:
             import control.camera_TIS
 
