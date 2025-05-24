@@ -15,12 +15,6 @@ import control.utils
 from control._def import *
 
 
-class TucsenModelProperties(pydantic.BaseModel):
-    PIXEL_SIZE_UM: Dict[Enum, float] = {"400BSIV3": 6.5, "FL26BW": 3.76}
-    BINNING_OPTIONS: Dict[Tuple[int, int], int]
-    GAIN_MODE_TO_PROPERTIES: Dict[Enum, Dict[str, float]]
-
-
 class Mode400BSIV3(Enum):
     """
     HDR is the default gain mode of 400BSI V3 camera.
@@ -124,7 +118,7 @@ class TucsenCamera(AbstractCamera):
         else:
             log.info("Open Tucsen camera success!")
 
-        return TUCAMOPEN.hIdxTUCam  # TODO: return model traits
+        return TUCAMOPEN.hIdxTUCam  # TODO: return model specific properties after we support more models
 
     def __init__(
         self,
@@ -153,9 +147,9 @@ class TucsenCamera(AbstractCamera):
         self._camera = TucsenCamera._open(index=0)
         self._binning = self._config.default_binning
 
-        self.m_frame = None  # image buffer
+        self._m_frame = None  # image buffer
         # We need to keep trigger attribute for starting and stopping streaming
-        self.trigger_attr = TUCAM_TRIGGER_ATTR()
+        self._trigger_attr = TUCAM_TRIGGER_ATTR()
 
         self._configure_camera()
 
@@ -182,28 +176,30 @@ class TucsenCamera(AbstractCamera):
         # TODO: Set default roi
 
     def start_streaming(self):
-        self._allocate_buffer()
-        self._ensure_read_thread_running()
-
         if self._is_streaming.is_set():
             self._log.debug("Already streaming, start_streaming is noop")
             return
 
-        if TUCAM_Cap_Start(self._camera, self.trigger_attr.nTgrMode) != TUCAMRET.TUCAMRET_SUCCESS:
+        if self._m_frame is None:
+            self._allocate_buffer()
+
+        if TUCAM_Cap_Start(self._camera, self._trigger_attr.nTgrMode) != TUCAMRET.TUCAMRET_SUCCESS:
             TUCAM_Buf_Release(self._camera)
             raise Exception("Failed to start streaming")
+
+        self._ensure_read_thread_running()
 
         self._trigger_sent.clear()
         self._is_streaming.set()
         self._log.info("TUCam Camera starts streaming")
 
     def _allocate_buffer(self):
-        self.m_frame = TUCAM_FRAME()
-        self.m_frame.pBuffer = 0
-        self.m_frame.ucFormatGet = TUFRM_FORMATS.TUFRM_FMT_USUAl.value
-        self.m_frame.uiRsdSize = 1
+        self._m_frame = TUCAM_FRAME()
+        self._m_frame.pBuffer = 0
+        self._m_frame.ucFormatGet = TUFRM_FORMATS.TUFRM_FMT_USUAl.value
+        self._m_frame.uiRsdSize = 1
 
-        if TUCAM_Buf_Alloc(self._camera, pointer(self.m_frame)) != TUCAMRET.TUCAMRET_SUCCESS:
+        if TUCAM_Buf_Alloc(self._camera, pointer(self._m_frame)) != TUCAMRET.TUCAMRET_SUCCESS:
             raise Exception("Failed to allocate buffer")
 
     def stop_streaming(self):
@@ -211,13 +207,8 @@ class TucsenCamera(AbstractCamera):
             self._log.debug("Already stopped, stop_streaming is noop")
             return
 
-        self._cleanup_read_thread()
-
         if TUCAM_Cap_Stop(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
             raise Exception("Failed to stop streaming")
-
-        if TUCAM_Buf_Release(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
-            raise Exception("Failed to release buffer")
 
         self._trigger_sent.clear()
         self._is_streaming.clear()
@@ -227,9 +218,12 @@ class TucsenCamera(AbstractCamera):
         return self._is_streaming.is_set()
 
     def _close(self):
+        self._cleanup_read_thread()
         if self.temperature_reading_thread is not None:
             self._terminate_temperature_event.set()
             self.temperature_reading_thread.join()
+        if TUCAM_Buf_Release(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
+            raise Exception("Failed to release buffer")
         if TUCAM_Dev_Close(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
             raise Exception("Failed to close camera")
         TUCAM_Api_Uninit()
@@ -273,29 +267,31 @@ class TucsenCamera(AbstractCamera):
         self._read_thread_running.set()
         while self._read_thread_keep_running.is_set():
             try:
-                wait_time = self._read_thread_wait_period_s * 1000.0  # ms
-                frame_ready = TUCAM_Buf_WaitForFrame(self._camera, pointer(self.m_frame), wait_time)
+                wait_time_ms = int(self._read_thread_wait_period_s * 1000)  # ms, convert to int
+                try:
+                    TUCAM_Buf_WaitForFrame(self._camera, pointer(self._m_frame), c_int32(wait_time_ms))
+                except Exception:
+                    pass
 
-                if frame_ready == TUCAMRET.TUCAMRET_SUCCESS:
-                    if self.m_frame is None or self.m_frame.pBuffer == 0:
-                        self._log.error("Invalid frame buffer")
-                        continue
+                if self._m_frame is None or self._m_frame.pBuffer is None or self._m_frame.pBuffer == 0:
+                    self._log.error("Invalid frame buffer")
+                    continue
 
-                    np_image = self._convert_frame_to_numpy(self.m_frame)
-                    self._trigger_sent.clear()
+                np_image = self._convert_frame_to_numpy(self._m_frame)
 
-                    processed_frame = self._process_raw_frame(np_image)
-                    with self._frame_lock:
-                        camera_frame = CameraFrame(
-                            frame_id=self._current_frame.frame_id + 1 if self._current_frame else 1,
-                            timestamp=time.time(),
-                            frame=processed_frame,
-                            frame_format=self.get_frame_format(),
-                            frame_pixel_format=self.get_pixel_format(),
-                        )
+                processed_frame = self._process_raw_frame(np_image)
+                with self._frame_lock:
+                    camera_frame = CameraFrame(
+                        frame_id=self._current_frame.frame_id + 1 if self._current_frame else 1,
+                        timestamp=time.time(),
+                        frame=processed_frame,
+                        frame_format=self.get_frame_format(),
+                        frame_pixel_format=self.get_pixel_format(),
+                    )
 
-                        self._current_frame = camera_frame
-                    self._propogate_frame(camera_frame)
+                    self._current_frame = camera_frame
+                self._propogate_frame(camera_frame)
+                self._trigger_sent.clear()
 
                 time.sleep(0.001)
 
@@ -380,13 +376,9 @@ class TucsenCamera(AbstractCamera):
         #            400BSI V3: 7.2 us for high speed; 11.2 us for other gain modes
         # Right now we are only using 400BSI V3's HDR mode.
         # TODO: Support more modes.
-        if self.m_frame is None:
-            # If buffer is not allocated, we query the camera for nHeight
-            _, _, _, vn = self.get_region_of_interest()
-        else:
-            vn = self.m_frame.usHeight
+        _, _, _, height = self.get_region_of_interest()
+        readout_time_ms = TucsenCamera._MODE_TO_LINE_RATE_US[Mode400BSIV3.HDR] * height * self._binning[1] / 1000.0
 
-        readout_time_ms = TucsenCamera._MODE_TO_LINE_RATE_US[Mode400BSIV3.HDR] * vn * self._binning[1] / 1000.0
         trigger_attr = TUCAM_TRIGGER_ATTR()
         if TUCAM_Cap_GetTrigger(self._camera, pointer(trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
             raise CameraError("Failed to get trigger delay")
@@ -426,10 +418,10 @@ class TucsenCamera(AbstractCamera):
     }
 
     _BINNING_CODE_TO_RESOLUTION_400BSIV3 = {
-        0: (2048, 2040),
-        # 1: (2048, 2040),  # Code 1 is enhance mode, which will modify pixel values. We don't use it.
-        2: (1024, 1020),
-        3: (512, 510),
+        0: (2048, 2048),
+        # 1: (2048, 2048),  # Code 1 is enhance mode, which will modify pixel values. We don't use it.
+        2: (1024, 1024),
+        3: (512, 512),
     }
 
     def _raw_set_resolution(self, bin_value: int):
@@ -523,17 +515,17 @@ class TucsenCamera(AbstractCamera):
 
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
         with self._pause_streaming():
-            self.trigger_attr = TUCAM_TRIGGER_ATTR()
+            self._trigger_attr = TUCAM_TRIGGER_ATTR()
             if acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
-                self.trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_SOFTWARE.value
+                self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_SOFTWARE.value
             elif acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
-                self.trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_SEQUENCE.value
+                self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_SEQUENCE.value
             elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
-                self.trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_STANDARD.value
+                self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_STANDARD.value
             else:
                 raise ValueError(f"Unhandled {acquisition_mode=}")
-            self.trigger_attr.nBufFrames = 1
-            if TUCAM_Cap_SetTrigger(self._camera, self.trigger_attr) != TUCAMRET.TUCAMRET_SUCCESS:
+            self._trigger_attr.nBufFrames = 1
+            if TUCAM_Cap_SetTrigger(self._camera, self._trigger_attr) != TUCAMRET.TUCAMRET_SUCCESS:
                 raise CameraError("Failed to set acquisition mode")
 
     def get_acquisition_mode(self) -> CameraAcquisitionMode:
@@ -572,7 +564,7 @@ class TucsenCamera(AbstractCamera):
         return t.value
 
     def _check_temperature(self):
-        while self._terminate_temperature_event.is_set():
+        while not self._terminate_temperature_event.is_set():
             time.sleep(2)
             try:
                 temperature = self.get_temperature()
@@ -587,6 +579,7 @@ class TucsenCamera(AbstractCamera):
                 pass
 
     def send_trigger(self, illumination_time: Optional[float] = None):
+        print("send_trigger")
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
             raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
 
@@ -600,9 +593,7 @@ class TucsenCamera(AbstractCamera):
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
             self._hw_trigger_fn(illumination_time)
         elif self.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER:
-            if not self._camera.cap_firetrigger():
-                raise CameraError(f"Failed to send software trigger: {self._last_dcam_error_string()}")
-
+            TUCAM_Cap_DoSoftwareTrigger(self._camera)
             self._last_trigger_timestamp = time.time()
             self._trigger_sent.set()
 
