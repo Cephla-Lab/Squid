@@ -168,13 +168,6 @@ class TucsenCamera(AbstractCamera):
         self.stop_streaming()
         self._close()
 
-    @staticmethod
-    def _map_tucam_error(error: TUCAMRET) -> str:
-        for enum_name, enum_value in TUCAMRET.__members__.items():
-            if enum_value == error.value:
-                return f"{error.value}:{enum_name}"
-        return f"{error.value}:UNKNOWN_ERROR"
-
     def _configure_camera(self):
         # TODO: Add support for FL26BW model
         # TODO: For 400BSI V3, we use the default HDR mode for now.
@@ -589,7 +582,6 @@ class TucsenCamera(AbstractCamera):
                 pass
 
     def send_trigger(self, illumination_time: Optional[float] = None):
-        print("send_trigger")
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
             raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
 
