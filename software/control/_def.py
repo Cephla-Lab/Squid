@@ -223,23 +223,6 @@ class CMD_EXECUTION_STATUS:
     ERROR_CODE_EMPTYING_THE_FLUDIIC_LINE_FAILED = 100
 
 
-class ZStageConfig(Enum):
-    STEPPER_ONLY = auto()
-    PIEZO_ONLY = auto()
-    STEPPER_AND_PIEZO = auto()
-
-    @classmethod
-    def from_string(cls, mode_str: str) -> "ZStageConfig":
-        mapping = {
-            "stepper_only": cls.STEPPER_ONLY,
-            "piezo_only": cls.PIEZO_ONLY,
-            "stepper_and_piezo": cls.STEPPER_AND_PIEZO,
-        }
-        if mode_str.lower() not in mapping:
-            raise ValueError(f"Invalid z_stage_mode. Must be one of: {', '.join(mapping.keys())}")
-        return mapping[mode_str.lower()]
-
-
 class SpotDetectionMode(Enum):
     """Specifies which spot to detect when multiple spots are present.
 

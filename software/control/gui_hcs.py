@@ -35,7 +35,6 @@ if USE_PRIOR_STAGE:
 else:
     import squid.stage.cephla
 from control.piezo import PiezoStage
-from control._def import ZStageConfig
 
 if USE_XERYON:
     from control.objective_changer_2_pos_controller import (
