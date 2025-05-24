@@ -98,7 +98,7 @@ class TucsenCamera(AbstractCamera):
         log.info(f"Connect {TUCAMINIT.uiCamCount} camera(s)")
 
         if index >= TUCAMINIT.uiCamCount:
-            raise CameraError("Camera index out of range")
+            raise CameraError("Camera index out of range. Is the camera connected?")
 
         if sn is not None:
             for i in range(TUCAMINIT.uiCamCount):
@@ -168,6 +168,13 @@ class TucsenCamera(AbstractCamera):
         self.stop_streaming()
         self._close()
 
+    @staticmethod
+    def _map_tucam_error(error: TUCAMRET) -> str:
+        for enum_name, enum_value in TUCAMRET.__members__.items():
+            if enum_value == error.value:
+                return f"{error.value}:{enum_name}"
+        return f"{error.value}:UNKNOWN_ERROR"
+
     def _configure_camera(self):
         # TODO: Add support for FL26BW model
         # TODO: For 400BSI V3, we use the default HDR mode for now.
@@ -207,6 +214,8 @@ class TucsenCamera(AbstractCamera):
             self._log.debug("Already stopped, stop_streaming is noop")
             return
 
+        self._cleanup_read_thread()
+
         if TUCAM_Cap_Stop(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
             raise Exception("Failed to stop streaming")
 
@@ -218,12 +227,9 @@ class TucsenCamera(AbstractCamera):
         return self._is_streaming.is_set()
 
     def _close(self):
-        self._cleanup_read_thread()
         if self.temperature_reading_thread is not None:
             self._terminate_temperature_event.set()
             self.temperature_reading_thread.join()
-        if TUCAM_Buf_Release(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
-            raise Exception("Failed to release buffer")
         if TUCAM_Dev_Close(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
             raise Exception("Failed to close camera")
         TUCAM_Api_Uninit()
@@ -250,14 +256,15 @@ class TucsenCamera(AbstractCamera):
                 return True
 
             self._read_thread_keep_running.clear()
+
+            if TUCAM_Buf_AbortWait(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
+                self._log.error("Failed to abort wait for frame")
+
             self._read_thread.join(1.1 * self._read_thread_wait_period_s)
 
             success = not self._read_thread.is_alive()
             if not success:
                 self._log.warning("Read thread refused to exit!")
-
-            if TUCAM_Buf_AbortWait(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
-                self._log.error("Failed to abort wait for frame")
 
             self._read_thread = None
             self._read_thread_running.clear()
@@ -514,8 +521,10 @@ class TucsenCamera(AbstractCamera):
         return (roi_attr.nHOffset, roi_attr.nVOffset, roi_attr.nWidth, roi_attr.nHeight)
 
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
+        self._log.debug(f"Setting acquisition mode to {acquisition_mode}")
         with self._pause_streaming():
-            self._trigger_attr = TUCAM_TRIGGER_ATTR()
+            if TUCAM_Cap_GetTrigger(self._camera, pointer(self._trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
+                raise CameraError("Failed to get trigger attributes")
             if acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
                 self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_SOFTWARE.value
             elif acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
@@ -527,6 +536,7 @@ class TucsenCamera(AbstractCamera):
             self._trigger_attr.nBufFrames = 1
             if TUCAM_Cap_SetTrigger(self._camera, self._trigger_attr) != TUCAMRET.TUCAMRET_SUCCESS:
                 raise CameraError("Failed to set acquisition mode")
+            self._update_internal_settings()
 
     def get_acquisition_mode(self) -> CameraAcquisitionMode:
         trigger_attr = TUCAM_TRIGGER_ATTR()
