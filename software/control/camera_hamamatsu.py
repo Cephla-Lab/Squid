@@ -1,5 +1,5 @@
 import time
-from typing import Optional, Callable, Sequence, Tuple
+from typing import Optional, Callable, Sequence, Tuple, Dict
 import threading
 
 import pydantic
@@ -12,7 +12,7 @@ from control.dcamapi4 import *
 
 
 class HamamatsuCapabilities(pydantic.BaseModel):
-    bining_to_resolution: Sequence[Tuple[int, int]]
+    bining_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
 
 
 class HamamatsuCamera(AbstractCamera):
