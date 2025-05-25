@@ -9,6 +9,7 @@ from squid.config import CameraConfig, CameraPixelFormat
 from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
 from control.dcam import Dcam, Dcamapi
 from control.dcamapi4 import *
+import control.utils
 
 
 class HamamatsuCapabilities(pydantic.BaseModel):
@@ -450,7 +451,7 @@ class HamamatsuCamera(AbstractCamera):
         return not self._trigger_sent.is_set()
 
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
-        # Numbers are in unbinned pixels.
+        # Numbers are in unbinned pixels. Supports C15440-20UP (ORCA-Fusion BT) only.
         with self._pause_streaming():
             roi_mode_on = self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.ON)
 
@@ -464,15 +465,19 @@ class HamamatsuCamera(AbstractCamera):
             if not roi_mode_on:
                 raise CameraError("Failed to turn on roi mode on camera, cannot set roi.")
 
+            offset_x = control.utils.truncate_to_interval(offset_x, 4)
             if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHPOS, int(offset_x)):
                 fail("Could not set roi x offset.")
 
+            width = control.utils.truncate_to_interval(width, 4)
             if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHSIZE, int(width)):
                 fail("Could not set roi width.")
 
+            offset_y = control.utils.truncate_to_interval(offset_y, 4)
             if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVPOS, int(offset_y)):
                 fail("Could not set roi y offset.")
 
+            height = control.utils.truncate_to_interval(height, 4)
             if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVSIZE, int(height)):
                 fail("Could not set roi height.")
 
