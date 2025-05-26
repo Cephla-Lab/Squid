@@ -1,257 +1,293 @@
 from pyvcam import pvc
 from pyvcam.camera import Camera as PVCam
-from typing import Callable
+from typing import Callable, Optional, Tuple, Sequence
 import numpy as np
 import threading
 import time
 
 import squid.logging
+from squid.config import CameraConfig, CameraPixelFormat
+from squid.abc import (
+    AbstractCamera,
+    CameraAcquisitionMode,
+    CameraFrameFormat,
+    CameraFrame,
+    CameraGainRange,
+    CameraError,
+)
 from control._def import *
+import control.utils
 
 
-def get_sn_by_model(model_name: str) -> str:
-    # We don't need this for kinetix camera
-    return None
+class KinetixCamera(AbstractCamera):
+    PIXEL_SIZE_UM = 6.5  # Kinetix camera
 
-
-class Camera(object):
-    def __init__(
-        self, sn=None, resolution=(2760, 2760), is_global_shutter=False, rotate_image_angle=None, flip_image=None
-    ):
-        self.log = squid.logging.get_logger(self.__class__.__name__)
+    @staticmethod
+    def _open(index: Optional[int] = None) -> PVCam:
+        """Open a Photometrics camera and return the camera object."""
+        log = squid.logging.get_logger("PhotometricsCamera._open")
 
         pvc.init_pvcam()
-        self.cam = None
 
-        self.exposure_time = None  # ms
-        self.analog_gain = 0
-        self.is_streaming = False
-        self.pixel_format = None
-        self.is_color = False
+        try:
+            if index is not None:
+                # Open by index (not commonly used for Photometrics)
+                cameras = list(PVCam.detect_camera())
+                if index >= len(cameras):
+                    raise CameraError(f"Camera index {index} out of range. Found {len(cameras)} cameras.")
+                cam = cameras[index]
+            else:
+                # Open first available camera
+                cam = next(PVCam.detect_camera())
 
-        self.frame_ID = -1
-        self.frame_ID_software = -1
-        self.frame_ID_offset_hardware_trigger = 0
-        self.timestamp = 0
-        self.trigger_mode = None
+            cam.open()
+            log.info("Photometrics camera opened successfully")
+            return cam
 
-        self.strobe_delay_us = None
+        except Exception as e:
+            pvc.uninit_pvcam()
+            raise CameraError(f"Failed to open Photometrics camera: {e}")
 
-        self.image_locked = False
-        self.current_frame = None
-        self.callback_is_enabled = False
-        self.new_image_callback_external = None
-        self.stop_waiting = False
+    def __init__(
+        self,
+        camera_config: CameraConfig,
+        hw_trigger_fn: Optional[Callable[[Optional[float]], bool]] = None,
+        hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]] = None,
+    ):
+        super().__init__(camera_config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
 
-        self.GAIN_MAX = 0
-        self.GAIN_MIN = 0
-        self.GAIN_STEP = 0
-        self.EXPOSURE_TIME_MS_MIN = 0
-        self.EXPOSURE_TIME_MS_MAX = 10000
+        # Threading for frame reading
+        self._read_thread_lock = threading.Lock()
+        self._read_thread: Optional[threading.Thread] = None
+        self._read_thread_keep_running = threading.Event()
+        self._read_thread_keep_running.clear()
+        self._read_thread_wait_period_s = 1.0
+        self._read_thread_running = threading.Event()
+        self._read_thread_running.clear()
 
-        self.rotate_image_angle = rotate_image_angle
-        self.flip_image = flip_image
-        self.is_global_shutter = is_global_shutter
+        # Frame management
+        self._frame_lock = threading.Lock()
+        self._current_frame: Optional[CameraFrame] = None
+        self._last_trigger_timestamp = 0
+        self._trigger_sent = threading.Event()
+        self._is_streaming = threading.Event()
 
+        # Open camera
+        self._camera = KinetixCamera._open()
+
+        # Camera configuration
+        self._exposure_time_ms = self._camera.__exp_time  # set it to default camera exposure time
+
+        self._configure_camera()
+
+        """
+        # TODO: need to confirm if we can get temperature during live mode
+        # Temperature monitoring
         self.temperature_reading_callback = None
-        self.terminate_read_temperature_thread = False
-        self.temperature_reading_thread = threading.Thread(target=self.check_temperature, daemon=True)
+        self._terminate_temperature_event = threading.Event()
+        self.temperature_reading_thread = threading.Thread(target=self._check_temperature, daemon=True)
+        self.temperature_reading_thread.start()
+        """
 
-        self.ROI_offset_x = 0
-        self.ROI_offset_y = 0
-        self.ROI_width = 2760
-        self.ROI_height = 2760
+    def __del__(self):
+        self.stop_streaming()
+        self._close()
 
-        self.OffsetX = 0
-        self.OffsetY = 0
-        self.Width = 2760
-        self.Height = 2760
+    def _configure_camera(self):
+        """Configure camera with default settings."""
+        self._camera.exp_res = 1  # Exposure resolution in microseconds
+        self.set_region_of_interest(*self._config.default_roi)  # 25mm FOV ROI: 240, 240, 2720, 2720
+        self._log.info(f"Cropped area: {self._camera.shape(0)}")
+        self.set_pixel_format(self._config.default_pixel_format)
+        self.set_temperature(self._config.default_temperature)
+        self._calculate_strobe_delay()
 
-        self.WidthMax = 2760
-        self.HeightMax = 2760
-
-    def open(self):
-        self.cam = next(PVCam.detect_camera())
-        self.cam.open()
-        self.cam.exp_res = 1  # Exposure resolution in microseconds
-        self.cam.set_roi(240, 240, 2720, 2720)  # Crop fov to 25mm
-        self.log.info(f"Cropped area: {self.cam.shape(0)}")
-        self.set_temperature(15)  # temperature range: -15 - 15 degree Celcius
-        # self.temperature_reading_thread.start()
-
-    def open_by_sn(self, sn: str):
-        self.open()
-
-    def close(self):
-        if self.is_streaming:
-            self.stop_streaming()
-        self.terminate_read_temperature_thread = True
-        self.temperature_reading_callback = None
-        # self.temperature_reading_thread.join()
-        self.cam.close()
-        pvc.uninit_pvcam()
-
-    def set_callback(self, function: Callable):
-        self.new_image_callback_external = function
-
-    def enable_callback(self):
-        self.log.info("enable callback")
-        if self.callback_is_enabled:
-            return
-        self.start_streaming()
-
-        self.stop_waiting = False
-        self.callback_thread = threading.Thread(target=self._wait_and_callback, daemon=True)
-        self.callback_thread.start()
-
-        self.callback_is_enabled = True
-
-    def _wait_and_callback(self):
-        while True:
-            if self.stop_waiting:
-                break
-            data = self.read_frame()
-            if data is not None:
-                self._on_new_frame(data)
-
-    def _on_new_frame(self, image: np.ndarray):
-        if self.image_locked:
-            self.log.warning("Last image is still being processed; a frame is dropped")
+    def start_streaming(self):
+        if self._is_streaming.is_set():
+            self._log.debug("Already streaming, start_streaming is noop")
             return
 
-        self.current_frame = image
+        try:
+            self._camera.start_live()
+            self._ensure_read_thread_running()
+            self._trigger_sent.clear()
+            self._is_streaming.set()
+            self._log.info("Photometrics camera starts streaming")
+        except Exception as e:
+            raise CameraError(f"Failed to start streaming: {e}")
 
-        self.frame_ID_software += 1
-        self.frame_ID += 1
-
-        # frame ID for hardware triggered acquisition
-        if self.trigger_mode == TriggerMode.HARDWARE:
-            if self.frame_ID_offset_hardware_trigger == None:
-                self.frame_ID_offset_hardware_trigger = self.frame_ID
-            self.frame_ID = self.frame_ID - self.frame_ID_offset_hardware_trigger
-
-        self.timestamp = time.time()
-        self.new_image_callback_external(self)
-
-    def disable_callback(self):
-        self.log.info("disable callback")
-        if not self.callback_is_enabled:
+    def stop_streaming(self):
+        if not self._is_streaming.is_set():
+            self._log.debug("Already stopped, stop_streaming is noop")
             return
 
-        self.stop_waiting = True
-        time.sleep(0.02)
-        if hasattr(self, "callback_thread"):
+        try:
+            self._cleanup_read_thread()
+            self._camera.finish()
+            self._trigger_sent.clear()
+            self._is_streaming.clear()
+            self._log.info("Photometrics camera streaming stopped")
+        except Exception as e:
+            raise CameraError(f"Failed to stop streaming: {e}")
+
+    def get_is_streaming(self):
+        return self._is_streaming.is_set()
+
+    def _close(self):
+        """Close camera and cleanup resources."""
+        if hasattr(self, "temperature_reading_thread") and self.temperature_reading_thread is not None:
+            self._terminate_temperature_event.set()
+            self.temperature_reading_thread.join()
+
+        if hasattr(self, "_camera") and self._camera:
             try:
-                self.cam.abort()
+                self._camera.close()
             except Exception as e:
-                self.log.error("abort failed")
-            self.callback_thread.join()
-        self.callback_is_enabled = False
+                self._log.error(f"Error closing camera: {e}")
 
-        if self.is_streaming:
-            self.cam.start_live()
-
-    def set_analog_gain(self, gain: float):
-        pass
-
-    def set_exposure_time(self, exposure_time: float, force_update: bool = False):
-        if exposure_time == self.exposure_time and not force_update:
-            return
-        if self.trigger_mode == TriggerMode.SOFTWARE:
-            adjusted = exposure_time * 1000
-        elif self.trigger_mode == TriggerMode.HARDWARE:
-            adjusted = self.strobe_delay_us + exposure_time * 1000
         try:
-            has_callback = self.callback_is_enabled
-            self.stop_streaming()
-            self.log.info(f"setting exposure time: {adjusted} us")
-            self.cam.exp_time = int(adjusted)  # us
-            self.exposure_time = exposure_time  # ms
-            if has_callback:
-                self.enable_callback()
-            if not self.is_streaming:
-                self.start_streaming()
+            pvc.uninit_pvcam()
         except Exception as e:
-            self.log.error("set_exposure_time failed")
-            raise e
+            self._log.error(f"Error uninitializing pvcam: {e}")
 
-    def set_temperature_reading_callback(self, func: Callable):
-        self.temperature_reading_callback = func
+        self._log.info("Photometrics camera closed successfully")
 
-    def set_temperature(self, temperature: float):
-        try:
-            has_callback = self.callback_is_enabled
-            self.stop_streaming()
-            self.log.info(f"setting temperature: {temperature} C")
-            self.cam.temp_setpoint = int(temperature)
-            if has_callback:
-                self.enable_callback()
-            if not self.is_streaming:
-                self.start_streaming()
-        except Exception as e:
-            self.log.error("set_temperature failed")
-            raise e
+    def _ensure_read_thread_running(self):
+        with self._read_thread_lock:
+            if self._read_thread is not None and self._read_thread_running.is_set():
+                self._log.debug("Read thread exists and thread is marked as running.")
+                return True
 
-    def get_temperature(self) -> float:
-        try:
-            return self.cam.temp
-        except Exception as e:
-            self.log.error("get_temperature failed")
+            elif self._read_thread is not None:
+                self._log.warning("Read thread already exists, but not marked as running. Still attempting start.")
 
-    def check_temperature(self):
-        while self.terminate_read_temperature_thread == False:
-            time.sleep(2)
-            temperature = self.get_temperature()
-            if self.temperature_reading_callback is not None:
-                try:
-                    self.temperature_reading_callback(temperature)
-                except Exception as e:
-                    self.log.error("Temperature read callback failed due to error: " + repr(e))
+            self._read_thread = threading.Thread(target=self._wait_for_frame, daemon=True)
+            self._read_thread_keep_running.set()
+            self._read_thread.start()
 
-    def set_continuous_acquisition(self):
-        try:
-            has_callback = self.callback_is_enabled
-            self.stop_streaming()
-            self.cam.exp_mode = "Internal Trigger"
-            self.trigger_mode = TriggerMode.CONTINUOUS
-            if has_callback:
-                self.enable_callback()
-            if not self.is_streaming:
-                self.start_streaming()
-        except Exception as e:
-            self.log.error("set_continuous_acquisition failed")
-            raise e
+    def _cleanup_read_thread(self):
+        self._log.debug("Cleaning up read thread.")
+        with self._read_thread_lock:
+            if self._read_thread is None:
+                self._log.warning("No read thread, already not running?")
+                return True
 
-    def set_software_triggered_acquisition(self):
-        try:
-            has_callback = self.callback_is_enabled
-            self.stop_streaming()
-            self.cam.exp_mode = "Software Trigger Edge"
-            self.trigger_mode = TriggerMode.SOFTWARE
-            if has_callback:
-                self.enable_callback()
-            if not self.is_streaming:
-                self.start_streaming()
-        except Exception as e:
-            self.log.error("set_software_triggered_acquisition failed")
-            raise e
+            self._read_thread_keep_running.clear()
 
-    def set_hardware_triggered_acquisition(self):
-        try:
-            has_callback = self.callback_is_enabled
-            self.stop_streaming()
-            self.cam.exp_mode = "Edge Trigger"
-            self.frame_ID_offset_hardware_trigger = None
-            self.trigger_mode = TriggerMode.HARDWARE
-            if has_callback:
-                self.enable_callback()
-            if not self.is_streaming:
-                self.start_streaming()
-        except Exception as e:
-            self.log.error("set_hardware_triggered_acquisition failed")
-            raise e
+            try:
+                self._camera.abort()
+            except Exception as e:
+                self._log.error(f"Failed to abort camera: {e}")
 
-    def set_pixel_format(self, pixel_format: str):
+            self._read_thread.join(1.1 * self._read_thread_wait_period_s)
+
+            success = not self._read_thread.is_alive()
+            if not success:
+                self._log.warning("Read thread refused to exit!")
+
+            self._read_thread = None
+            self._read_thread_running.clear()
+
+    def _wait_for_frame(self):
+        """Thread function to wait for and process frames."""
+        self._log.info("Starting Photometrics read thread.")
+        self._read_thread_running.set()
+
+        while self._read_thread_keep_running.is_set():
+            try:
+                # Poll for frame
+                frame, _, _ = self._camera.poll_frame()
+                if frame is None:
+                    time.sleep(0.001)
+                    continue
+
+                raw_data = frame["pixel_data"]
+                processed_frame = self._process_raw_frame(raw_data)
+
+                with self._frame_lock:
+                    camera_frame = CameraFrame(
+                        frame_id=self._current_frame.frame_id + 1 if self._current_frame else 1,
+                        timestamp=time.time(),
+                        frame=processed_frame,
+                        frame_format=self.get_frame_format(),
+                        frame_pixel_format=self.get_pixel_format(),
+                    )
+                    self._current_frame = camera_frame
+
+                self._propogate_frame(camera_frame)
+                self._trigger_sent.clear()
+
+                time.sleep(0.001)
+
+            except Exception as e:
+                self._log.debug(f"Exception in read loop: {e}, continuing...")
+                time.sleep(0.001)
+
+        self._read_thread_running.clear()
+
+    def read_camera_frame(self) -> Optional[CameraFrame]:
+        if not self.get_is_streaming():
+            self._log.error("Cannot read camera frame when not streaming.")
+            return None
+
+        if not self._read_thread_running.is_set():
+            self._log.error("Fatal camera error: read thread not running!")
+            return None
+
+        starting_id = self.get_frame_id()
+        timeout_s = (1.04 * self.get_total_frame_time() + 1000) / 1000.0
+        timeout_time_s = time.time() + timeout_s
+
+        while self.get_frame_id() == starting_id:
+            if time.time() > timeout_time_s:
+                self._log.warning(
+                    f"Timed out after waiting {timeout_s=}[s] for frame ({starting_id=}), total_frame_time={self.get_total_frame_time()}."
+                )
+                return None
+            time.sleep(0.001)
+
+        with self._frame_lock:
+            return self._current_frame
+
+    def get_frame_id(self) -> int:
+        with self._frame_lock:
+            return self._current_frame.frame_id if self._current_frame else -1
+
+    def set_exposure_time(self, exposure_time_ms: float):
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            strobe_time_ms = self.get_strobe_time()
+            adjusted_exposure_time = exposure_time_ms + strobe_time_ms
+            if self._hw_set_strobe_delay_ms_fn:
+                self._log.debug(f"Setting hw strobe time to {strobe_time_ms} [ms]")
+                self._hw_set_strobe_delay_ms_fn(strobe_time_ms)
+        else:
+            adjusted_exposure_time = exposure_time_ms
+
+        with self._pause_streaming():
+            try:
+                self._camera.exp_time = int(adjusted_exposure_time)
+                self._exposure_time_ms = exposure_time_ms
+                self._trigger_sent.clear()
+            except Exception as e:
+                raise CameraError(f"Failed to set exposure time: {e}")
+
+    def get_exposure_time(self) -> float:
+        return self._exposure_time_ms
+
+    def get_exposure_limits(self) -> Tuple[float, float]:
+        return 0.0, 10000.0  # From Kinetix manual
+
+    def get_strobe_time(self) -> float:
+        return self._strobe_delay_ms
+
+    def set_frame_format(self, frame_format: CameraFrameFormat):
+        if frame_format != CameraFrameFormat.RAW:
+            raise ValueError("Only the RAW frame format is supported by this camera.")
+
+    def get_frame_format(self) -> CameraFrameFormat:
+        return CameraFrameFormat.RAW
+
+    def set_pixel_format(self, pixel_format: CameraPixelFormat):
         """
         port_speed_gain_table:
         {'Sensitivity': {'port_value': 0, 'Speed_0': {'speed_index': 0, 'pixel_time': 10, 'bit_depth': 12, 'gain_range': [1], 'Standard': {'gain_index': 1}}},
@@ -259,192 +295,177 @@ class Camera(object):
         'Dynamic Range': {'port_value': 2, 'Speed_0': {'speed_index': 0, 'pixel_time': 10, 'bit_depth': 16, 'gain_range': [1], 'Standard': {'gain_index': 1}}},
         'Sub-Electron': {'port_value': 3, 'Speed_0': {'speed_index': 0, 'pixel_time': 10, 'bit_depth': 16, 'gain_range': [1], 'Standard': {'gain_index': 1}}}}
         """
+        with self._pause_streaming():
+            try:
+                if pixel_format == CameraPixelFormat.MONO8:
+                    self._camera.readout_port = 1
+                elif pixel_format == CameraPixelFormat.MONO12:
+                    self._camera.readout_port = 0
+                elif pixel_format == CameraPixelFormat.MONO16:
+                    self._camera.readout_port = 2
+                else:
+                    raise ValueError(f"Unsupported pixel format: {pixel_format}")
+
+                self._calculate_strobe_delay()
+
+            except Exception as e:
+                raise CameraError(f"Failed to set pixel format: {e}")
+
+    def get_pixel_format(self) -> CameraPixelFormat:
+        if self._camera.readout_port == 0:
+            return CameraPixelFormat.MONO12
+        elif self._camera.readout_port == 1:
+            return CameraPixelFormat.MONO8
+        elif self._camera.readout_port == 2:
+            return CameraPixelFormat.MONO16
+        else:
+            raise ValueError(f"Unknown gain mode: {self._camera.readout_port}. Cannot determine pixel format.")
+
+    def set_binning(self, binning_factor_x: int, binning_factor_y: int):
+        if binning_factor_x != 1 or binning_factor_y != 1:
+            raise ValueError("Kinetix camera does not support binning")
+
+    def get_binning(self) -> Tuple[int, int]:
+        return (1, 1)
+
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
+        return [(1, 1)]
+
+    def get_resolution(self) -> Tuple[int, int]:
+        width, height = self.get_region_of_interest()[2:]
+        return width, height
+
+    def get_pixel_size_unbinned_um(self) -> float:
+        return PhotometricsCamera.PIXEL_SIZE_UM
+
+    def get_pixel_size_binned_um(self) -> float:
+        return PhotometricsCamera.PIXEL_SIZE_UM  # No binning supported
+
+    def set_analog_gain(self, analog_gain: float):
+        raise NotImplementedError("Analog gain is not supported by this camera.")
+
+    def get_analog_gain(self) -> float:
+        raise NotImplementedError("Analog gain is not supported by this camera.")
+
+    def get_gain_range(self) -> CameraGainRange:
+        raise NotImplementedError("Analog gain is not supported by this camera.")
+
+    def get_white_balance_gains(self) -> Tuple[float, float, float]:
+        raise NotImplementedError("White balance gains are not supported by this camera.")
+
+    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
+        raise NotImplementedError("White balance gains are not supported by this camera.")
+
+    def set_auto_white_balance_gains(self, on: bool):
+        raise NotImplementedError("Auto white balance gains are not supported by this camera.")
+
+    def set_black_level(self, black_level: float):
+        raise NotImplementedError("Black level adjustment is not supported by this camera.")
+
+    def get_black_level(self) -> float:
+        raise NotImplementedError("Black level adjustment is not supported by this camera.")
+
+    def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
+        with self._pause_streaming():
+            try:
+                if acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
+                    self._camera.exp_mode = "Internal Trigger"
+                elif acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+                    self._camera.exp_mode = "Software Trigger Edge"
+                elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                    self._camera.exp_mode = "Edge Trigger"
+                else:
+                    raise ValueError(f"Unsupported acquisition mode: {acquisition_mode}")
+
+                self._acquisition_mode = acquisition_mode
+
+            except Exception as e:
+                raise CameraError(f"Failed to set acquisition mode: {e}")
+
+    def get_acquisition_mode(self) -> CameraAcquisitionMode:
+        # TODO: need to confirm if we can get acquisition mode during live mode
+        if self._camera.exp_mode == "Internal Trigger":
+            return CameraAcquisitionMode.CONTINUOUS
+        elif self._camera.exp_mode == "Software Trigger Edge":
+            return CameraAcquisitionMode.SOFTWARE_TRIGGER
+        elif self._camera.exp_mode == "Edge Trigger":
+            return CameraAcquisitionMode.HARDWARE_TRIGGER
+        else:
+            raise ValueError(f"Unknown acquisition mode: {self._camera.exp_mode}")
+
+    def send_trigger(self, illumination_time: Optional[float] = None):
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
+            raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
+
+        if not self.get_is_streaming():
+            raise CameraError("Camera is not streaming, cannot send trigger.")
+
+        if not self.get_ready_for_trigger():
+            raise CameraError(
+                f"Requested trigger too early (last trigger was {time.time() - self._last_trigger_timestamp} [s] ago), refusing."
+            )
+
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            self._hw_trigger_fn(illumination_time)
+        elif self.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+            try:
+                self._camera.sw_trigger()
+                self._last_trigger_timestamp = time.time()
+                self._trigger_sent.set()
+            except Exception as e:
+                raise CameraError(f"Failed to send software trigger: {e}")
+
+    def get_ready_for_trigger(self) -> bool:
+        if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
+            self._trigger_sent.clear()
+        return not self._trigger_sent.is_set()
+
+    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+        with self._pause_streaming():
+            try:
+                self._camera.set_roi(offset_x, offset_y, width, height)
+            except Exception as e:
+                raise CameraError(f"Failed to set ROI: {e}")
+
+    def get_region_of_interest(self) -> Tuple[int, int, int, int]:
         try:
-            has_callback = self.callback_is_enabled
-            self.stop_streaming()
-            self.log.info(f"setting pixel format: {pixel_format}")
-            if pixel_format == "MONO8":
-                self.cam.readout_port = 1
-            elif pixel_format == "MONO12":
-                self.cam.readout_port = 0
-            elif pixel_format == "MONO16":
-                self.cam.readout_port = 2
-            else:
-                raise ValueError(f"Invalid pixel format: {pixel_format}")
-
-            self.calculate_strobe_delay()
-            if self.trigger_mode == TriggerMode.HARDWARE:
-                self.set_exposure_time(self.exposure_time, force_update=True)
-
-            if has_callback:
-                self.enable_callback()
-            if not self.is_streaming:
-                self.start_streaming()
+            return self._camera.shape(0)
         except Exception as e:
-            self.log.exception(f"set_pixel_format failed: {e}")
-            raise e
+            raise CameraError(f"Failed to get ROI: {e}")
 
-    def send_trigger(self):
+    def set_temperature(self, temperature_deg_c: Optional[float]):
+        # Kinetix camera temperature range: -15 to 15 C
         try:
-            self.cam.sw_trigger()
+            if temperature_deg_c < -15 or temperature_deg_c > 15:
+                raise ValueError(f"Temperature must be between -15 and 15 C, got {temperature_deg_c} C")
+            self._camera.temp_setpoint = int(temperature_deg_c)
         except Exception as e:
-            self.log.debug(f"sending trigger failed: {e}")
+            raise CameraError(f"Failed to set temperature: {e}")
 
-    def read_frame(self) -> np.ndarray:
-        try:
-            frame, _, _ = self.cam.poll_frame()
-            data = frame["pixel_data"]
-            return data
-        except Exception as e:
-            self.log.debug(f"poll frame interrupted: {e}")
-            return None
+    def get_temperature(self) -> float:
+        # Right now we need to pause streaming to get temperature. This is very slow, so we will not update real-time temperature in gui.
+        with self._pause_streaming():
+            try:
+                return self._camera.temp
+            except Exception as e:
+                raise CameraError(f"Failed to get temperature: {e}")
 
-    def start_streaming(self):
-        if self.is_streaming:
-            return
-        self.cam.start_live()
-        self.is_streaming = True
+    def set_temperature_reading_callback(self, callback: Callable):
+        raise NotImplementedError("Temperature reading callback is not supported by this camera.")
 
-    def stop_streaming(self):
-        self.is_streaming = False
-        if self.callback_is_enabled:
-            self.disable_callback()
-        self.cam.finish()
-
-    def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
-        pass
-
-    def calculate_strobe_delay(self):
+    def _calculate_strobe_delay(self):
+        """Calculate strobe delay based on pixel format and ROI."""
         # Line time (us) from the manual:
         # Dynamic Range Mode: 3.75; Speed Mode: 0.625; Sensitivity Mode: 3.53125; Sub-Electron Mode: 60.1
-        # hard coded before implementing roi
-        if self.pixel_format == "MONO8":
-            self.strobe_delay_us = int(0.625 * 2720)  # us
-        elif self.pixel_format == "MONO12":
-            self.strobe_delay_us = int(3.53125 * 2720)  # us
-        elif self.pixel_format == "MONO16":
-            self.strobe_delay_us = int(3.75 * 2720)  # us
-        # TODO: trigger delay, line delay
+        _, _, _, height = self.get_region_of_interest()
 
-
-class Camera_Simulation(object):
-    def __init__(self, sn=None, is_global_shutter=False, rotate_image_angle=None, flip_image=None):
-        pvc.init_pvcam()
-        self.cam = None
-
-        self.exposure_time = 1  # ms
-        self.analog_gain = 0
-        self.is_streaming = False
-        self.pixel_format = None
-        self.is_color = False
-
-        self.frame_ID = -1
-        self.frame_ID_software = -1
-        self.frame_ID_offset_hardware_trigger = 0
-        self.timestamp = 0
-        self.trigger_mode = None
-
-        self.strobe_delay_us = None
-
-        self.image_locked = False
-        self.current_frame = None
-        self.callback_is_enabled = False
-        self.new_image_callback_external = None
-        self.stop_waiting = False
-
-        self.GAIN_MAX = 0
-        self.GAIN_MIN = 0
-        self.GAIN_STEP = 0
-        self.EXPOSURE_TIME_MS_MIN = 0.01
-        self.EXPOSURE_TIME_MS_MAX = 10000
-
-        self.rotate_image_angle = rotate_image_angle
-        self.flip_image = flip_image
-        self.is_global_shutter = is_global_shutter
-        self.sn = sn
-
-        self.ROI_offset_x = 0
-        self.ROI_offset_y = 0
-        self.ROI_width = 3200
-        self.ROI_height = 3200
-
-        self.OffsetX = 0
-        self.OffsetY = 0
-        self.Width = 3200
-        self.Height = 3200
-
-        self.WidthMax = 3200
-        self.HeightMax = 3200
-
-        self.new_image_callback_external = None
-
-    def open(self, index=0):
-        pass
-
-    def set_callback(self, function):
-        self.new_image_callback_external = function
-
-    def enable_callback(self):
-        self.callback_is_enabled = True
-
-    def disable_callback(self):
-        self.callback_is_enabled = False
-
-    def open_by_sn(self, sn):
-        pass
-
-    def close(self):
-        pass
-
-    def set_exposure_time(self, exposure_time):
-        pass
-
-    def set_analog_gain(self, analog_gain):
-        pass
-
-    def start_streaming(self):
-        self.frame_ID_software = 0
-
-    def stop_streaming(self):
-        pass
-
-    def set_pixel_format(self, pixel_format):
-        self.pixel_format = pixel_format
-        print(pixel_format)
-        self.frame_ID = 0
-
-    def set_continuous_acquisition(self):
-        pass
-
-    def set_software_triggered_acquisition(self):
-        pass
-
-    def set_hardware_triggered_acquisition(self):
-        pass
-
-    def send_trigger(self):
-        print("send trigger")
-        self.frame_ID = self.frame_ID + 1
-        self.timestamp = time.time()
-        if self.frame_ID == 1:
-            if self.pixel_format == "MONO8":
-                self.current_frame = np.random.randint(255, size=(2000, 2000), dtype=np.uint8)
-                self.current_frame[901:1100, 901:1100] = 200
-            elif self.pixel_format == "MONO16":
-                self.current_frame = np.random.randint(65535, size=(2000, 2000), dtype=np.uint16)
-                self.current_frame[901:1100, 901:1100] = 200 * 256
+        if self._pixel_format == CameraPixelFormat.MONO8:
+            line_time_us = 0.625
+        elif self._pixel_format == CameraPixelFormat.MONO12:
+            line_time_us = 3.53125
+        elif self._pixel_format == CameraPixelFormat.MONO16:
+            line_time_us = 3.75
         else:
-            self.current_frame = np.roll(self.current_frame, 10, axis=0)
-            pass
-            # self.current_frame = np.random.randint(255,size=(768,1024),dtype=np.uint8)
-        if self.new_image_callback_external is not None and self.callback_is_enabled:
-            self.new_image_callback_external(self)
+            line_time_us = 3.53125  # Default
 
-    def read_frame(self):
-        return self.current_frame
-
-    def _on_frame_callback(self, user_param, raw_image):
-        pass
-
-    def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
-        pass
+        self._strobe_delay_ms = (line_time_us * height) / 1000.0
