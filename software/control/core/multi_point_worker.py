@@ -549,7 +549,7 @@ class MultiPointWorker(QObject):
         )
         self._current_capture_info = current_capture_info
         self.camera.send_trigger(illumination_time=camera_illumination_time)
-        exposure_done_time = time.time() + total_frame_time_ms / 1e3
+        exposure_done_time = time.time() + self.camera.get_total_frame_time() / 1e3
         # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
         # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
         self._sleep(max(0.0, exposure_done_time - time.time()))
