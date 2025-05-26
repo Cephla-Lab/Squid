@@ -19,7 +19,7 @@ from control._def import *
 import control.utils
 
 
-class KinetixCamera(AbstractCamera):
+class PhotometricsCamera(AbstractCamera):
     PIXEL_SIZE_UM = 6.5  # Kinetix camera
 
     @staticmethod
@@ -78,6 +78,8 @@ class KinetixCamera(AbstractCamera):
         # Camera configuration
         self._exposure_time_ms = self._camera.__exp_time  # set it to default camera exposure time
 
+        self._pixel_format = self._config.default_pixel_format
+        self._crop_roi = self._config.default_roi
         self._configure_camera()
 
         """
@@ -96,6 +98,7 @@ class KinetixCamera(AbstractCamera):
     def _configure_camera(self):
         """Configure camera with default settings."""
         self._camera.exp_res = 1  # Exposure resolution in microseconds
+        self._camera.speed_table_index = 0
         self.set_region_of_interest(*self._config.default_roi)  # 25mm FOV ROI: 240, 240, 2720, 2720
         self._log.info(f"Cropped area: {self._camera.shape(0)}")
         self.set_pixel_format(self._config.default_pixel_format)
@@ -306,20 +309,15 @@ class KinetixCamera(AbstractCamera):
                 else:
                     raise ValueError(f"Unsupported pixel format: {pixel_format}")
 
+                self._pixel_format = pixel_format
                 self._calculate_strobe_delay()
 
             except Exception as e:
                 raise CameraError(f"Failed to set pixel format: {e}")
 
     def get_pixel_format(self) -> CameraPixelFormat:
-        if self._camera.readout_port == 0:
-            return CameraPixelFormat.MONO12
-        elif self._camera.readout_port == 1:
-            return CameraPixelFormat.MONO8
-        elif self._camera.readout_port == 2:
-            return CameraPixelFormat.MONO16
-        else:
-            raise ValueError(f"Unknown gain mode: {self._camera.readout_port}. Cannot determine pixel format.")
+        # We are not able to query camera for pixel format during live mode, so we need to return the pixel format we set.
+        return self._pixel_format
 
     def set_binning(self, binning_factor_x: int, binning_factor_y: int):
         if binning_factor_x != 1 or binning_factor_y != 1:
@@ -332,8 +330,7 @@ class KinetixCamera(AbstractCamera):
         return [(1, 1)]
 
     def get_resolution(self) -> Tuple[int, int]:
-        width, height = self.get_region_of_interest()[2:]
-        return width, height
+        return self._camera.shape(0)
 
     def get_pixel_size_unbinned_um(self) -> float:
         return PhotometricsCamera.PIXEL_SIZE_UM
@@ -383,12 +380,20 @@ class KinetixCamera(AbstractCamera):
                 raise CameraError(f"Failed to set acquisition mode: {e}")
 
     def get_acquisition_mode(self) -> CameraAcquisitionMode:
+        """
+        Trigger codes for Kinetix camera:
+        {
+            'Internal Trigger': 1792, 'Edge Trigger': 2304, 'Trigger First': 2048, 'Level Trigger': 2560,
+            'Level Trigger Overlap': 3328, 'Software Trigger Edge': 3072, 'Software Trigger First': 2816
+        }
+        """
+
         # TODO: need to confirm if we can get acquisition mode during live mode
-        if self._camera.exp_mode == "Internal Trigger":
+        if self._camera.exp_mode == 1792:
             return CameraAcquisitionMode.CONTINUOUS
-        elif self._camera.exp_mode == "Software Trigger Edge":
+        elif self._camera.exp_mode == 3072:
             return CameraAcquisitionMode.SOFTWARE_TRIGGER
-        elif self._camera.exp_mode == "Edge Trigger":
+        elif self._camera.exp_mode == 2304:
             return CameraAcquisitionMode.HARDWARE_TRIGGER
         else:
             raise ValueError(f"Unknown acquisition mode: {self._camera.exp_mode}")
@@ -424,14 +429,13 @@ class KinetixCamera(AbstractCamera):
         with self._pause_streaming():
             try:
                 self._camera.set_roi(offset_x, offset_y, width, height)
+                self._crop_roi = (offset_x, offset_y, width, height)
             except Exception as e:
                 raise CameraError(f"Failed to set ROI: {e}")
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
-        try:
-            return self._camera.shape(0)
-        except Exception as e:
-            raise CameraError(f"Failed to get ROI: {e}")
+        # There's no way to query ROI in their SDK, so we need to return the ROI we set.
+        return self._crop_roi
 
     def set_temperature(self, temperature_deg_c: Optional[float]):
         # Kinetix camera temperature range: -15 to 15 C
