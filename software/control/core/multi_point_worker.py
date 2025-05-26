@@ -508,6 +508,9 @@ class MultiPointWorker(QObject):
                     self._current_round_images, info.file_id, info.save_directory, info.z_index
                 )
 
+    def _frame_wait_timeout_s(self):
+        return (self.camera.get_total_frame_time() / 1e3) + 10
+
     def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k):
         self._select_config(config)
 
@@ -523,11 +526,8 @@ class MultiPointWorker(QObject):
                 #  "reset_image_ready_flag" arg, so this is broken for all other cameras.  Also this used to do some other funky stuff like setting internal camera flags.
                 #   I am pretty sure this is broken!
                 self.microscope.nl5.start_acquisition()
-        total_frame_time_ms = self.camera.get_total_frame_time()
-        timeout_s = (
-            total_frame_time_ms / 1e3 + 10
-        )  # This is some large timeout that we use just so as to not block forever
-        if not self._ready_for_next_trigger.wait(timeout_s):
+        # This is some large timeout that we use just so as to not block forever
+        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
             self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
             self.multiPointController.request_abort_aquisition()
             return
@@ -740,6 +740,12 @@ class MultiPointWorker(QObject):
         self.microcontroller.enable_joystick(True)
 
         self._log.debug(self._timing.get_report())
+
+        # If there are outstanding frames, wait for them to come in.
+        self._log.info("Waiting for any outstanding frames at end of acquisition.")
+        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
+            self._log.warning("Timed out waiting for the last outstanding frames at end of acquisition!")
+
 
     def move_z_for_stack(self):
         if self.use_piezo:
