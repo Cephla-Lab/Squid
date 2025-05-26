@@ -470,7 +470,7 @@ class MultiPointWorker(QObject):
 
     def _image_callback(self, camera_frame: CameraFrame):
         with self._timing.get_timer("_image_callback"):
-            self._log.debug("In Image callback for frame_id={}", camera_frame.frame_id)
+            self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
             info = self._current_capture_info
             self._current_capture_info = None
             self._ready_for_next_trigger.set()
