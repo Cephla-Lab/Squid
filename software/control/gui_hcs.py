@@ -267,9 +267,13 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageDisplayWindow,
             )
         if WELLPLATE_FORMAT == "glass slide":
-            self.navigationViewer = core.NavigationViewer(self.objectiveStore, sample="4 glass slide")
+            self.navigationViewer = core.NavigationViewer(
+                self.objectiveStore, self.camera.get_pixel_size_unbinned_um(), sample="4 glass slide"
+            )
         else:
-            self.navigationViewer = core.NavigationViewer(self.objectiveStore, sample=WELLPLATE_FORMAT)
+            self.navigationViewer = core.NavigationViewer(
+                self.objectiveStore, self.camera.get_pixel_size_unbinned_um(), sample=WELLPLATE_FORMAT
+            )
         self.scanCoordinates = core.ScanCoordinates(
             objectiveStore=self.objectiveStore, navigationViewer=self.navigationViewer, stage=self.stage
         )
@@ -775,7 +779,7 @@ class HighContentScreeningGui(QMainWindow):
         if not self.live_only_mode:
             if USE_NAPARI_FOR_MULTIPOINT:
                 self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
-                    self.objectiveStore, self.contrastManager
+                    self.objectiveStore, self.camera, self.contrastManager
                 )
                 self.imageDisplayTabs.addTab(self.napariMultiChannelWidget, "Multichannel Acquisition")
             else:
@@ -784,7 +788,7 @@ class HighContentScreeningGui(QMainWindow):
 
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
-                    self.objectiveStore, self.contrastManager
+                    self.objectiveStore, self.camera, self.contrastManager
                 )
                 self.imageDisplayTabs.addTab(self.napariMosaicDisplayWidget, "Mosaic View")
 
@@ -1002,7 +1006,8 @@ class HighContentScreeningGui(QMainWindow):
         self.connectSlidePositionController()
 
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
-        self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.on_objective_changed)
+        self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
+        self.cameraSettingWidget.signal_binning_changed.connect(self.navigationViewer.redraw_fov)
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.objectivesWidget.signal_objective_changed.connect(self.flexibleMultiPointWidget.update_fov_positions)
         # TODO(imo): Fix position updates after removal of navigation controller
@@ -1628,7 +1633,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def move_from_click_image(self, click_x, click_y, image_width, image_height):
         if self.navigationWidget.get_click_to_move_enabled():
-            pixel_size_um = self.objectiveStore.get_pixel_size()
+            pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
 
             pixel_sign_x = 1
             pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1

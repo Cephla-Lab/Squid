@@ -11,7 +11,8 @@ from squid.abc import (
     CameraFrameFormat,
     CameraError,
 )
-from squid.config import CameraConfig, CameraPixelFormat
+from squid.config import CameraConfig, CameraPixelFormat, GxipyCameraModel, CameraSensor
+from control._def import CAMERA_PIXEL_SIZE_UM
 
 try:
     import control.gxipy as gx
@@ -27,6 +28,19 @@ class DefaultCameraCapabilities(pydantic.BaseModel):
     black_level: bool
     white_balance: bool
     auto_white_balance: bool
+
+
+def get_sn_by_model(camera_model: GxipyCameraModel):
+    try:
+        device_manager = gx.DeviceManager()
+        device_num, device_info_list = device_manager.update_device_list()
+    except:
+        device_num = 0
+    if device_num > 0:
+        for i in range(device_num):
+            if device_info_list[i]["model_name"] == camera_model.value:
+                return device_info_list[i]["sn"]
+    return None  # return None if no device with the specified model_name is connected
 
 
 class DefaultCamera(AbstractCamera):
@@ -82,10 +96,20 @@ class DefaultCamera(AbstractCamera):
     ):
         super().__init__(camera_config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
 
-        # We need to keep the device manager instance around because it also manages the gx library initialization
-        # and de-initialization.  So we capture it here, but then never use it past the _open call.
-        self._gx_device_manager = gx.DeviceManager()
-        (self._camera, self._capabilities) = DefaultCamera._open(self._gx_device_manager, index=0)
+        # If there are multiple Daheng cameras (default camera) connected, open the camera by model given in the config
+        if self._config.camera_model is not None:
+            sn = get_sn_by_model(self._config.camera_model)
+            if sn is None:
+                raise CameraError(f"Camera with model {self._config.camera_model} not found.")
+            else:
+                # We need to keep the device manager instance around because it also manages the gx library initialization
+                # and de-initialization.  So we capture it here, but then never use it past the _open call.
+                self._gx_device_manager = gx.DeviceManager()
+                (self._camera, self._capabilities) = DefaultCamera._open(self._gx_device_manager, sn=sn)
+        else:
+            # If there is only one camera connected, open it by index
+            self._gx_device_manager = gx.DeviceManager()
+            (self._camera, self._capabilities) = DefaultCamera._open(self._gx_device_manager, index=0)
 
         # TODO/NOTE(imo): Need to test if self as user_param is correct here, of it sends self for us.
         self._camera.register_capture_callback(None, self._frame_callback)
@@ -173,7 +197,7 @@ class DefaultCamera(AbstractCamera):
         pixel_size_bytes = self._get_pixel_size_bytes(self.get_pixel_format())
         exposure_delay_us = pixel_size_bytes * exposure_delay_us_8bit
         exposure_time_us = 1000.0 * self._exposure_time_ms
-        row_count = self.get_resolution()[1]
+        row_count = self.get_resolution()[1]  # TODO: this should be the row count after setting ROI
         row_period_us = 10
 
         self._strobe_delay_us = (
@@ -286,31 +310,35 @@ class DefaultCamera(AbstractCamera):
 
         return self._pixel_format
 
-    def set_resolution(self, width: int, height: int):
-        old_resolution = self.get_resolution()
-        old_roi = self.get_region_of_interest()
-        new_resolution = (width, height)
-        new_roi = AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi, new_resolution)
-
-        self._log.debug(f"Adjusting resolution from {old_resolution=} to {new_resolution=}")
-        self._camera.Width.set(width)
-        self._camera.Height.set(height)
-
-        self._log.debug(f"Adjusting roi from {old_roi=} to {new_roi=} to keep FOV the same after resolution change.")
-        self.set_region_of_interest(*new_roi)
-
     def get_resolution(self) -> Tuple[int, int]:
-        return self._camera.Width.get(), self._camera.Height.get()
+        return self._camera.WidthMax.get(), self._camera.HeightMax.get()
 
-    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
-        # There's a get_range on Width and Height, but I don't think cameras normally allow
-        # arbitrary resolutions?  So, just return the current and max.
-        current_w = self._camera.Width.get()
-        w_max = self._camera.WidthMax.get()
-        current_h = self._camera.Height.get()
-        h_max = self._camera.HeightMax.get()
+    def get_binning(self) -> Tuple[int, int]:
+        return (1, 1)
 
-        return (current_w, current_h), (w_max, h_max)
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
+        return [(1, 1)]
+
+    def set_binning(self, binning_factor_x: int, binning_factor_y: int):
+        raise NotImplementedError("DefaultCameras do not support binning")
+
+    _MODEL_TO_SENSOR = {
+        GxipyCameraModel.MER2_1220_32U3M: CameraSensor.IMX226,
+        GxipyCameraModel.MER2_630_60U3M: CameraSensor.IMX178,
+    }
+
+    def get_pixel_size_unbinned_um(self) -> float:
+        if self._config.camera_model in DefaultCamera._MODEL_TO_SENSOR:
+            return CAMERA_PIXEL_SIZE_UM[DefaultCamera._MODEL_TO_SENSOR[self._config.camera_model].value]
+        else:
+            raise NotImplementedError(f"No pixel size for {self._config.camera_model=}")
+
+    def get_pixel_size_binned_um(self) -> float:
+        # Right now binning for these cameras will always be 1x1
+        if self._config.camera_model in DefaultCamera._MODEL_TO_SENSOR:
+            return CAMERA_PIXEL_SIZE_UM[DefaultCamera._MODEL_TO_SENSOR[self._config.camera_model].value]
+        else:
+            raise NotImplementedError(f"No pixel size for {self._config.camera_model=}")
 
     def set_analog_gain(self, analog_gain: float):
         self._camera.Gain.set(analog_gain)
@@ -377,7 +405,7 @@ class DefaultCamera(AbstractCamera):
 
         rgb_vals = []
         for idx in (0, 1, 2):  # r, g, b
-            self._camera.BalanceRatioSelector(idx)
+            self._camera.BalanceRatioSelector.set(idx)
             rgb_vals.append(self._camera.BalanceRatio.get())
 
         return rgb_vals[0], rgb_vals[1], rgb_vals[2]
@@ -388,11 +416,11 @@ class DefaultCamera(AbstractCamera):
             self._camera.BalanceRatioSelector.set(idx)
             self._camera.BalanceRatio.set(rgb_vals[idx])
 
-    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
-        for idx in (0, 1, 2):  # r, g, b
-            self._camera.BalanceWhiteAuto.set(idx)
-
-        return self.get_white_balance_gains()
+    def set_auto_white_balance_gains(self, on: bool):
+        if on:
+            self._camera.BalanceWhiteAuto.set(gx.GxAutoEntry.CONTINUOUS)
+        else:
+            self._camera.BalanceWhiteAuto.set(gx.GxAutoEntry.OFF)
 
     def set_black_level(self, black_level: float):
         if not self._capabilities.black_level:
@@ -498,4 +526,7 @@ class DefaultCamera(AbstractCamera):
         raise NotImplementedError("DefaultCameras do not support temperature control.")
 
     def get_temperature(self) -> float:
+        raise NotImplementedError("DefaultCameras do not support getting current temperature")
+
+    def set_temperature_reading_callback(self, callback: Callable):
         raise NotImplementedError("DefaultCameras do not support getting current temperature")

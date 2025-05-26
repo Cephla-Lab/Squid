@@ -967,6 +967,8 @@ class ObjectivesWidget(QWidget):
 
 class CameraSettingsWidget(QFrame):
 
+    signal_binning_changed = Signal()
+
     def __init__(
         self,
         camera: AbstractCamera,
@@ -1018,8 +1020,8 @@ class CameraSettingsWidget(QFrame):
             self.dropdown_pixelFormat.setCurrentText(self.camera.get_pixel_format().name)
         else:
             print("setting camera's default pixel format")
-            self.camera.set_pixel_format(CameraPixelFormat.from_string(DEFAULT_PIXEL_FORMAT))
-            self.dropdown_pixelFormat.setCurrentText(DEFAULT_PIXEL_FORMAT)
+            self.camera.set_pixel_format(CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
+            self.dropdown_pixelFormat.setCurrentText(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
         self.dropdown_pixelFormat.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
         # to do: load and save pixel format in configurations
 
@@ -1088,21 +1090,21 @@ class CameraSettingsWidget(QFrame):
         format_line.addWidget(QLabel("Pixel Format"))
         format_line.addWidget(self.dropdown_pixelFormat)
         try:
-            current_res = self.camera.get_resolution()
-            current_res_string = "x".join([str(current_res[0]), str(current_res[1])])
-            res_options = [f"{res[0]}x{res[1]}" for res in self.camera.get_resolutions()]
-            self.dropdown_res = QComboBox()
-            self.dropdown_res.addItems(res_options)
-            self.dropdown_res.setCurrentText(current_res_string)
+            current_binning = self.camera.get_binning()
+            current_binning_string = "x".join([str(current_binning[0]), str(current_binning[1])])
+            binning_options = [f"{binning[0]}x{binning[1]}" for binning in self.camera.get_binning_options()]
+            self.dropdown_binning = QComboBox()
+            self.dropdown_binning.addItems(binning_options)
+            self.dropdown_binning.setCurrentText(current_binning_string)
 
-            self.dropdown_res.currentTextChanged.connect(self.change_full_res)
+            self.dropdown_binning.currentTextChanged.connect(self.set_binning)
         except AttributeError as ae:
             print(ae)
-            self.dropdown_res = QComboBox()
-            self.dropdown_res.setEnabled(False)
+            self.dropdown_binning = QComboBox()
+            self.dropdown_binning.setEnabled(False)
             pass
-        format_line.addWidget(QLabel(" FOV Resolution"))
-        format_line.addWidget(self.dropdown_res)
+        format_line.addWidget(QLabel("Binning"))
+        format_line.addWidget(self.dropdown_binning)
         self.camera_layout.addLayout(format_line)
 
         if include_camera_temperature_setting:
@@ -1113,8 +1115,7 @@ class CameraSettingsWidget(QFrame):
             temp_line.addWidget(self.label_temperature_measured)
             try:
                 self.entry_temperature.valueChanged.connect(self.set_temperature)
-                # TODO(imo): temp reading callback restoration, or polling
-                # self.camera.set_temperature_reading_callback(self.update_measured_temperature)
+                self.camera.set_temperature_reading_callback(self.update_measured_temperature)
             except AttributeError:
                 pass
             self.camera_layout.addLayout(temp_line)
@@ -1154,7 +1155,7 @@ class CameraSettingsWidget(QFrame):
             self.btn_auto_wb.setChecked(False)
             self.btn_auto_wb.clicked.connect(self.toggle_auto_wb)
 
-            self.camera_layout.addLayout(self.btn_auto_wb)
+            self.camera_layout.addWidget(self.btn_auto_wb)
 
         self.setLayout(self.camera_layout)
 
@@ -1168,8 +1169,11 @@ class CameraSettingsWidget(QFrame):
         # 0: OFF  1:CONTINUOUS  2:ONCE
         if pressed:
             # Run auto white balance once, then uncheck
-            self.camera.set_auto_white_balance_gains()
-            self.btn_auto_wb.setChecked(False)
+            self.camera.set_auto_white_balance_gains(on=True)
+        else:
+            self.camera.set_auto_white_balance_gains(on=False)
+            r, g, b = self.camera.get_white_balance_gains()
+            self.camera.set_white_balance_gains(r, g, b)
 
     def set_exposure_time(self, exposure_time):
         self.entry_exposureTime.setValue(exposure_time)
@@ -1228,16 +1232,19 @@ class CameraSettingsWidget(QFrame):
     def update_measured_temperature(self, temperature):
         self.label_temperature_measured.setNum(temperature)
 
-    def change_full_res(self, index):
-        res_strings = self.dropdown_res.currentText().split("x")
-        res_x = int(res_strings[0])
-        res_y = int(res_strings[1])
-        self.camera.set_resolution(res_x, res_y)
+    def set_binning(self, binning_text):
+        binning_parts = binning_text.split("x")
+        binning_x = int(binning_parts[0])
+        binning_y = int(binning_parts[1])
+
+        self.camera.set_binning(binning_x, binning_y)
+
         self.entry_ROI_offset_x.blockSignals(True)
         self.entry_ROI_offset_y.blockSignals(True)
         self.entry_ROI_height.blockSignals(True)
         self.entry_ROI_width.blockSignals(True)
 
+        # TODO: move these calculations to camera class as they can be different for different cameras
         def round_to_8(val):
             return int(8 * val // 8)
 
@@ -1258,6 +1265,8 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_offset_y.blockSignals(False)
         self.entry_ROI_height.blockSignals(False)
         self.entry_ROI_width.blockSignals(False)
+
+        self.signal_binning_changed.emit()
 
     def update_blacklevel(self, blacklevel):
         try:
@@ -3559,6 +3568,9 @@ class FlexibleMultiPointWidget(QFrame):
         self.multipointController.set_reflection_af_flag(False)
         self.multipointController.set_use_fluidics(False)
 
+        z = self.stage.get_pos().z_mm
+        self.multipointController.set_z_range(z, z)
+
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
         self.multipointController.run_acquisition(acquire_current_fov=True)
@@ -4129,7 +4141,12 @@ class WellplateMultiPointWidget(QFrame):
     def get_effective_well_size(self):
         well_size = self.scanCoordinates.well_size_mm
         if self.combobox_shape.currentText() == "Circle":
-            fov_size_mm = (self.objectiveStore.get_pixel_size() / 1000) * Acquisition.CROP_WIDTH
+            pixel_size_um = (
+                self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
+            )
+            # TODO: In the future software cropping size may be changed when program is running,
+            # so we may want to use the crop_width from the camera object here.
+            fov_size_mm = (pixel_size_um / 1000) * CAMERA_CONFIG.CROP_WIDTH_UNBINNED
             return well_size + fov_size_mm * (1 + math.sqrt(2))
         return well_size
 
@@ -4434,6 +4451,8 @@ class WellplateMultiPointWidget(QFrame):
         self.multipointController.set_reflection_af_flag(False)
         self.multipointController.set_use_fluidics(False)
 
+        z = self.stage.get_pos().z_mm
+        self.multipointController.set_z_range(z, z)
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
         self.multipointController.run_acquisition(acquire_current_fov=True)
@@ -6732,10 +6751,11 @@ class NapariLiveWidget(QWidget):
 
 class NapariMultiChannelWidget(QWidget):
 
-    def __init__(self, objectiveStore, contrastManager, grid_enabled=False, parent=None):
+    def __init__(self, objectiveStore, camera, contrastManager, grid_enabled=False, parent=None):
         super().__init__(parent)
         # Initialize placeholders for the acquisition parameters
         self.objectiveStore = objectiveStore
+        self.camera = camera
         self.contrastManager = contrastManager
         self.image_width = 0
         self.image_height = 0
@@ -6774,7 +6794,7 @@ class NapariMultiChannelWidget(QWidget):
             self.viewer.window._qt_viewer.layerButtons.hide()
 
     def initLayersShape(self, Nz, dz):
-        pixel_size_um = self.objectiveStore.get_pixel_size()
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
         if self.Nz != Nz or self.dz_um != dz or self.pixel_size_um != pixel_size_um:
             self.acquisition_initialized = False
             self.Nz = Nz
@@ -6910,9 +6930,10 @@ class NapariMosaicDisplayWidget(QWidget):
     signal_layers_initialized = Signal(bool)
     signal_shape_drawn = Signal(list)
 
-    def __init__(self, objectiveStore, contrastManager, parent=None):
+    def __init__(self, objectiveStore, camera, contrastManager, parent=None):
         super().__init__(parent)
         self.objectiveStore = objectiveStore
+        self.camera = camera
         self.contrastManager = contrastManager
         self.viewer = napari.Viewer(show=False)
         self.layout = QVBoxLayout()
@@ -7055,8 +7076,9 @@ class NapariMosaicDisplayWidget(QWidget):
 
     def updateMosaic(self, image, x_mm, y_mm, k, channel_name):
         # calculate pixel size
-        downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / self.objectiveStore.get_pixel_size()))
-        image_pixel_size_um = self.objectiveStore.get_pixel_size() * downsample_factor
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
+        downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um))
+        image_pixel_size_um = pixel_size_um * downsample_factor
         image_pixel_size_mm = image_pixel_size_um / 1000
         image_dtype = image.dtype
 
@@ -7492,6 +7514,7 @@ class TrackingControllerWidget(QFrame):
         objective = self.dropdown_objective.currentText()
         self.trackingController.objective = objective
         # self.internal_state.data['Objective'] = self.objective
+        # TODO: these pixel size code needs to be updated.
         pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR] / (
             TUBE_LENS_MM / (OBJECTIVES[objective]["tube_lens_f_mm"] / OBJECTIVES[objective]["magnification"])
         )
@@ -7505,6 +7528,7 @@ class TrackingControllerWidget(QFrame):
         magnification = objective_info["magnification"]
         objective_tube_lens_mm = objective_info["tube_lens_f_mm"]
         tube_lens_mm = TUBE_LENS_MM
+        # TODO: these pixel size code needs to be updated.
         pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
         pixel_size_xy = pixel_size_um / (magnification / (objective_tube_lens_mm / tube_lens_mm))
         self.trackingController.update_pixel_size(pixel_size_xy)
@@ -8846,8 +8870,8 @@ class CalibrationLiveViewer(QWidget):
         self.viewbox.invertY(True)
 
         # Set appropriate panning limits based on the acquisition image or plate size
-        xmax = int(Acquisition.CROP_WIDTH * Acquisition.IMAGE_DISPLAY_SCALING_FACTOR)
-        ymax = int(Acquisition.CROP_HEIGHT * Acquisition.IMAGE_DISPLAY_SCALING_FACTOR)
+        xmax = int(CAMERA_CONFIG.CROP_WIDTH_UNBINNED)
+        ymax = int(CAMERA_CONFIG.CROP_HEIGHT_UNBINNED)
         self.viewbox.setLimits(xMin=0, xMax=xmax, yMin=0, yMax=ymax)
 
         self.img_item = pg.ImageItem()

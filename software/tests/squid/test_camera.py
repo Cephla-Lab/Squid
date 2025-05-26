@@ -34,33 +34,32 @@ def test_simulated_camera():
     assert frame_height == res_height
 
 
-def test_new_roi_for_resolution():
-    old_resolution = (2000, 4000)
-    old_roi_full = (0, 0, 2000, 4000)
-    old_roi_partial = (20, 40, 200, 400)
+def test_new_roi_for_binning():
+    old_binning = (2, 2)  # Base binning
+    old_roi_full = (0, 0, 1500, 3000)
+    old_roi_partial = (30, 60, 300, 600)
 
-    new_resolution_up = (4000, 6000)
-    new_resolution_down = (1000, 3000)
+    new_binning_up = (1, 1)  # Decreasing binning (increasing resolution)
+    new_binning_down = (3, 3)  # Increasing binning (decreasing resolution)
 
-    expected_up_roi_full = (0, 0, 4000, 6000)
-    expected_up_roi_partial = (40, 60, 400, 600)
-    expected_down_roi_full = (0, 0, 1000, 3000)
-    expected_down_roi_partial = (10, 30, 100, 300)
+    expected_up_roi_full = (0, 0, 3000, 6000)
+    expected_up_roi_partial = (60, 120, 600, 1200)
+    expected_down_roi_full = (0, 0, 1000, 2000)
+    expected_down_roi_partial = (20, 40, 200, 400)
 
     assert (
-        AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi_full, new_resolution_up)
-        == expected_up_roi_full
+        AbstractCamera.calculate_new_roi_for_binning(old_binning, old_roi_full, new_binning_up) == expected_up_roi_full
     )
     assert (
-        AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi_partial, new_resolution_up)
+        AbstractCamera.calculate_new_roi_for_binning(old_binning, old_roi_partial, new_binning_up)
         == expected_up_roi_partial
     )
     assert (
-        AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi_full, new_resolution_down)
+        AbstractCamera.calculate_new_roi_for_binning(old_binning, old_roi_full, new_binning_down)
         == expected_down_roi_full
     )
     assert (
-        AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi_partial, new_resolution_down)
+        AbstractCamera.calculate_new_roi_for_binning(old_binning, old_roi_partial, new_binning_down)
         == expected_down_roi_partial
     )
 

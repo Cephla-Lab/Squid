@@ -154,6 +154,8 @@ class XLight_Simulation:
         self.dichroic_wheel_pos = 1
         self.disk_motor_state = False
         self.spinning_disk_pos = 0
+        self.illumination_iris = 0
+        self.emission_iris = 0
 
     def set_emission_filter(self, position, extraction=False, validate=False):
         self.emission_wheel_pos = position
@@ -555,6 +557,7 @@ class LDI_Simulation(LightSource):
             735: 730,
             750: 730,
         }
+        self.active_channel = None
 
     def initialize(self):
         pass

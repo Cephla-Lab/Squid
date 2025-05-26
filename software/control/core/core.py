@@ -51,6 +51,7 @@ import pandas as pd
 import cv2
 import imageio as iio
 import squid.abc
+import scipy.ndimage
 
 
 class ObjectiveStore:
@@ -58,26 +59,25 @@ class ObjectiveStore:
         self.objectives_dict = objectives_dict
         self.default_objective = default_objective
         self.current_objective = default_objective
-        self.tube_lens_mm = TUBE_LENS_MM
-        self.sensor_pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
-        self.pixel_binning = 1
-        self.pixel_size_um = self.calculate_pixel_size(self.current_objective)
+        objective = self.objectives_dict[self.current_objective]
+        self.pixel_size_factor = ObjectiveStore.calculate_pixel_size_factor(objective, TUBE_LENS_MM)
 
-    def get_pixel_size(self):
-        return self.pixel_size_um
+    def get_pixel_size_factor(self):
+        return self.pixel_size_factor
 
-    def calculate_pixel_size(self, objective_name):
-        objective = self.objectives_dict[objective_name]
+    @staticmethod
+    def calculate_pixel_size_factor(objective, tube_lens_mm):
+        """pixel_size_um = sensor_pixel_size * binning_factor * lens_factor"""
         magnification = objective["magnification"]
         objective_tube_lens_mm = objective["tube_lens_f_mm"]
-        pixel_size_um = self.sensor_pixel_size_um / (magnification / (objective_tube_lens_mm / self.tube_lens_mm))
-        pixel_size_um *= self.pixel_binning
-        return pixel_size_um
+        lens_factor = objective_tube_lens_mm / magnification / tube_lens_mm
+        return lens_factor
 
     def set_current_objective(self, objective_name):
         if objective_name in self.objectives_dict:
             self.current_objective = objective_name
-            self.pixel_size_um = self.calculate_pixel_size(objective_name)
+            objective = self.objectives_dict[objective_name]
+            self.pixel_size_factor = ObjectiveStore.calculate_pixel_size_factor(objective, TUBE_LENS_MM)
         else:
             raise ValueError(f"Objective {objective_name} not found in the store.")
 
@@ -94,8 +94,6 @@ class StreamHandler(QObject):
 
     def __init__(
         self,
-        crop_width=Acquisition.CROP_WIDTH,
-        crop_height=Acquisition.CROP_HEIGHT,
         display_resolution_scaling=1,
         accept_new_frame_fn: Callable[[], bool] = lambda: True,
     ):
@@ -107,8 +105,6 @@ class StreamHandler(QObject):
         self.timestamp_last_save = 0
         self.timestamp_last_track = 0
 
-        self.crop_width = crop_width
-        self.crop_height = crop_height
         self.display_resolution_scaling = display_resolution_scaling
 
         self.save_image_flag = False
@@ -134,10 +130,6 @@ class StreamHandler(QObject):
     def set_save_fps(self, fps):
         self.fps_save = fps
 
-    def set_crop(self, crop_width, crop_height):
-        self.crop_width = crop_width
-        self.crop_height = crop_height
-
     def set_display_resolution_scaling(self, display_resolution_scaling):
         self.display_resolution_scaling = display_resolution_scaling / 100
         print(self.display_resolution_scaling)
@@ -161,17 +153,16 @@ class StreamHandler(QObject):
                 print("real camera fps is " + str(self.fps_real))
 
         # crop image
-        image_cropped = utils.crop_image(frame.frame, self.crop_width, self.crop_height)
-        image_cropped = np.squeeze(image_cropped)
+        image = np.squeeze(frame.frame)
 
         # send image to display
         time_now = time.time()
         if time_now - self.timestamp_last_display >= 1 / self.fps_display:
             self.image_to_display.emit(
                 utils.crop_image(
-                    image_cropped,
-                    round(self.crop_width * self.display_resolution_scaling),
-                    round(self.crop_height * self.display_resolution_scaling),
+                    image,
+                    round(image.shape[1] * self.display_resolution_scaling),
+                    round(image.shape[0] * self.display_resolution_scaling),
                 )
             )
             self.timestamp_last_display = time_now
@@ -179,8 +170,8 @@ class StreamHandler(QObject):
         # send image to write
         if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
             if frame.is_color():
-                image_cropped = cv2.cvtColor(image_cropped, cv2.COLOR_RGB2BGR)
-            self.packet_image_to_write.emit(image_cropped, frame.frame_id, frame.timestamp)
+                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            self.packet_image_to_write.emit(image, frame.frame_id, frame.timestamp)
             self.timestamp_last_save = time_now
 
         self.handler_busy = False
@@ -1484,8 +1475,10 @@ class ScanCoordinates(QObject):
 
     def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
         """add region based on user inputs"""
-        pixel_size_um = self.objectiveStore.get_pixel_size()
-        fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
+        # TODO: In the future software cropping size may be changed when program is running,
+        # so we may want to use the crop_width from the camera object here.
+        fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
 
@@ -1601,7 +1594,8 @@ class ScanCoordinates(QObject):
 
     def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
         """Convert grid parameters NX, NY to FOV coordinates based on overlap"""
-        fov_size_mm = (self.objectiveStore.get_pixel_size() / 1000) * Acquisition.CROP_WIDTH
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
+        fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Calculate total grid size
@@ -1664,8 +1658,8 @@ class ScanCoordinates(QObject):
             self._log.error("Invalid manual ROI data")
             return []
 
-        pixel_size_um = self.objectiveStore.get_pixel_size()
-        fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
+        fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Ensure shape_coords is a numpy array
@@ -1995,8 +1989,6 @@ class MultiPointController(QObject):
         self.focus_map_storage = []
         self.already_using_fmap = False
         self.do_segmentation = False
-        self.crop_width = Acquisition.CROP_WIDTH
-        self.crop_height = Acquisition.CROP_HEIGHT
         self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
@@ -2083,10 +2075,6 @@ class MultiPointController(QObject):
     def set_focus_map(self, focusMap):
         self.focus_map = focusMap  # None if dont use focusMap
 
-    def set_crop(self, crop_width, crop_height):
-        self.crop_width = crop_width
-        self.crop_height = crop_height
-
     def set_base_path(self, path):
         self.base_path = path
 
@@ -2135,7 +2123,7 @@ class MultiPointController(QObject):
             except:
                 pass
         # TODO: USE OBJECTIVE STORE DATA
-        acquisition_parameters["sensor_pixel_size_um"] = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
+        acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
         acquisition_parameters["tube_lens_mm"] = TUBE_LENS_MM
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
@@ -2226,8 +2214,7 @@ class MultiPointController(QObject):
             is_color = squid.abc.CameraPixelFormat.is_color_format(self.camera.get_pixel_format())
             # Do our best to create a fake image with the correct properties.
             # TODO(imo): It'd be better to pull this from our camera but need to wait for AbstractCamera for a consistent way to do that.
-            width = self.crop_width
-            height = self.crop_height
+            width, height = self.camera.get_crop_size()
             bytes_per_pixel = 3 if is_color else 2  # Worst case assumptions: 24 bit color, 16 bit grayscale
 
             test_image = np.random.randint(2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
@@ -2556,8 +2543,6 @@ class TrackingController(QObject):
 
         self.tracking_time_interval_s = 0
 
-        self.crop_width = Acquisition.CROP_WIDTH
-        self.crop_height = Acquisition.CROP_HEIGHT
         self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
@@ -2733,8 +2718,6 @@ class TrackingWorker(QObject):
         self.autofocusController = self.trackingController.autofocusController
         self.channelConfigurationManager = self.trackingController.channelConfigurationManager
         self.imageDisplayWindow = self.trackingController.imageDisplayWindow
-        self.crop_width = self.trackingController.crop_width
-        self.crop_height = self.trackingController.crop_height
         self.display_resolution_scaling = self.trackingController.display_resolution_scaling
         self.counter = self.trackingController.counter
         self.experiment_ID = self.trackingController.experiment_ID
@@ -2812,8 +2795,6 @@ class TrackingWorker(QObject):
             t = camera_frame.timestamp
             if self.number_of_selected_configurations > 1:
                 self.liveController.turn_off_illumination()  # keep illumination on for single configuration acqusition
-            # image crop, rotation and flip
-            image = utils.crop_image(image, self.crop_width, self.crop_height)
             image = np.squeeze(image)
             # get image size
             image_shape = image.shape
@@ -2831,13 +2812,12 @@ class TrackingWorker(QObject):
                 image_ = self.camera.read_frame()
                 # TODO(imo): use illumination controller
                 self.liveController.turn_off_illumination()
-                image_ = utils.crop_image(image_, self.crop_width, self.crop_height)
                 image_ = np.squeeze(image_)
                 # display image
                 image_to_display_ = utils.crop_image(
                     image_,
-                    round(self.crop_width * self.liveController.display_resolution_scaling),
-                    round(self.crop_height * self.liveController.display_resolution_scaling),
+                    round(image_.shape[1] * self.liveController.display_resolution_scaling),
+                    round(image_.shape[0] * self.liveController.display_resolution_scaling),
                 )
                 self.image_to_display_multi.emit(image_to_display_, config_.illumination_source)
                 # save image
@@ -2928,11 +2908,23 @@ class ImageDisplayWindow(QMainWindow):
         self.show_LUT = show_LUT
         self.autoLevels = autoLevels
 
+        self.first_image = True
+
         # Store last valid cursor position
         self.last_valid_x = 0
         self.last_valid_y = 0
         self.last_valid_value = 0
         self.has_valid_position = False
+
+        # Line profiler state
+        self.line_roi = None
+        self.is_drawing_line = False
+        self.line_start_pos = None
+        self.line_end_pos = None
+        self.drawing_cursor = QCursor(Qt.CrossCursor)  # Cross cursor for drawing mode
+        self.normal_cursor = QCursor(Qt.ArrowCursor)  # Normal cursor
+        self.preview_line = None
+        self.start_point_marker = None
 
         # Create main layout
         layout = QVBoxLayout()
@@ -2955,6 +2947,13 @@ class ImageDisplayWindow(QMainWindow):
         self.piezo_position_label = QLabel()
         self.piezo_position_label.setMinimumWidth(150)
 
+        # Add line profiler toggle button
+        self.btn_line_profiler = QPushButton("Line Profiler")
+        self.btn_line_profiler.setCheckable(True)
+        self.btn_line_profiler.setChecked(False)
+        self.btn_line_profiler.setEnabled(False)
+        self.btn_line_profiler.clicked.connect(self.toggle_line_profiler)
+
         # Add labels to status layout with spacing
         status_layout.addWidget(self.cursor_position_label)
         status_layout.addWidget(QLabel(" | "))  # Add separator
@@ -2964,6 +2963,8 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.piezo_position_label)
         status_layout.addStretch()  # Push labels to the left
+        status_layout.addWidget(QLabel(" | "))  # Add separator
+        status_layout.addWidget(self.btn_line_profiler)  # Add button after stretch
 
         status_widget.setLayout(status_layout)
 
@@ -2975,6 +2976,12 @@ class ImageDisplayWindow(QMainWindow):
 
         # interpret image data as row-major instead of col-major
         pg.setConfigOptions(imageAxisOrder="row-major")
+
+        # Create a container widget for the image display
+        self.image_container = QWidget()
+        image_layout = QVBoxLayout()
+        image_layout.setContentsMargins(0, 0, 0, 0)
+        image_layout.setSpacing(0)
 
         self.graphics_widget = pg.GraphicsLayoutWidget()
         self.graphics_widget.view = self.graphics_widget.addViewBox()
@@ -3018,11 +3025,32 @@ class ImageDisplayWindow(QMainWindow):
         self.centroid = None
         self.image_offset = np.array([0, 0])
 
-        ## Layout
+        # Add image widget to container
         if self.show_LUT:
-            layout.addWidget(self.graphics_widget.view)
+            image_layout.addWidget(self.graphics_widget.view)
         else:
-            layout.addWidget(self.graphics_widget)
+            image_layout.addWidget(self.graphics_widget)
+        self.image_container.setLayout(image_layout)
+
+        # Create line profiler widget
+        self.line_profiler_widget = pg.GraphicsLayoutWidget()
+        self.line_profiler_plot = self.line_profiler_widget.addPlot()
+        self.line_profiler_plot.setLabel("left", "Intensity")
+        self.line_profiler_plot.setLabel("bottom", "Position")
+        self.line_profiler_widget.hide()  # Initially hidden
+
+        # Create splitter
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.addWidget(self.image_container)
+        self.splitter.addWidget(self.line_profiler_widget)
+        self.splitter.setStretchFactor(0, 1)  # Image container gets more space
+        self.splitter.setStretchFactor(1, 0)  # Line profiler starts collapsed
+
+        # Set initial sizes (80% image, 20% profiler)
+        self.splitter.setSizes([800, 200])
+
+        # Add splitter to main layout
+        layout.addWidget(self.splitter)
 
         # Add status bar at the bottom
         layout.addWidget(status_widget)
@@ -3086,12 +3114,178 @@ class ImageDisplayWindow(QMainWindow):
         self.update_timer.stop()
         super().closeEvent(event)
 
+    def toggle_line_profiler(self):
+        """Toggle the visibility of the line profiler widget."""
+        if self.btn_line_profiler.isChecked():
+            self.line_profiler_widget.show()
+            if self.line_roi is None:
+                # Start in drawing mode
+                self.is_drawing_line = True
+                self.line_start_pos = None
+                self.line_end_pos = None
+                # Set cross cursor
+                if self.show_LUT:
+                    self.graphics_widget.view.getView().setCursor(self.drawing_cursor)
+                else:
+                    self.graphics_widget.view.setCursor(self.drawing_cursor)
+                self._log.info("Line profiler opened - ready to draw line")
+            else:
+                self.line_roi.show()
+                self.update_line_profile()
+        else:
+            self.line_profiler_widget.hide()
+            if self.line_roi is not None:
+                self.line_roi.hide()
+            # Reset cursor to normal
+            if self.show_LUT:
+                self.graphics_widget.view.getView().setCursor(self.normal_cursor)
+            else:
+                self.graphics_widget.view.setCursor(self.normal_cursor)
+
+    def create_line_roi(self):
+        """Create a line ROI for intensity profiling."""
+        if self.line_roi is None and self.line_start_pos is not None and self.line_end_pos is not None:
+            try:
+                # Convert coordinates to Point objects
+                start_point = pg.Point(self.line_start_pos[0], self.line_start_pos[1])
+                end_point = pg.Point(self.line_end_pos[0], self.line_end_pos[1])
+
+                # Create the line ROI with width parameter
+                self.line_roi = pg.LineROI(
+                    pos1=start_point,
+                    pos2=end_point,
+                    width=5,  # Default width in pixels
+                    pen=pg.mkPen("y", width=2),
+                    hoverPen=pg.mkPen("y", width=2),
+                    handlePen=pg.mkPen("y", width=2),
+                    handleHoverPen=pg.mkPen("y", width=2),
+                    movable=True,
+                    rotatable=True,
+                    resizable=True,
+                )
+
+                # Add the ROI to the view
+                if self.show_LUT:
+                    self.graphics_widget.view.getView().addItem(self.line_roi)
+                else:
+                    self.graphics_widget.view.addItem(self.line_roi)
+
+                # Connect signal
+                self.line_roi.sigRegionChanged.connect(self.update_line_profile)
+                self.update_line_profile()
+                self._log.info("Line ROI created successfully")
+            except Exception as e:
+                self._log.error(f"Error creating line ROI: {str(e)}")
+                self.line_roi = None
+                self.line_start_pos = None
+                self.line_end_pos = None
+
+    def update_line_profile(self):
+        """Update the line profile plot based on the line ROI."""
+        if not self.btn_line_profiler.isChecked() or self.line_roi is None:
+            return
+
+        try:
+            if hasattr(self.graphics_widget.img, "image"):
+                image = self.graphics_widget.img.image
+                if image is not None:
+                    # Get the line ROI state
+                    state = self.line_roi.getState()
+                    pos = state["pos"]
+                    size = state["size"]
+                    angle = state["angle"]
+                    print(angle)
+                    angle = np.radians(angle)
+
+                    # Calculate start and end points
+                    start = (pos[0], pos[1])
+                    end = (pos[0] + size[0] * np.cos(angle), pos[1] + size[0] * np.sin(angle))
+
+                    # Convert ROI coordinates to image coordinates
+                    start_img = self.graphics_widget.img.mapFromView(pg.Point(start[0], start[1]))
+                    end_img = self.graphics_widget.img.mapFromView(pg.Point(end[0], end[1]))
+
+                    # Get the profile along the line
+                    profile = self.get_line_profile(image, start_img, end_img, size[1])  # size[1] is the width
+
+                    # Clear previous plots
+                    self.line_profiler_plot.clear()
+
+                    # Calculate pixel distance for x-axis
+                    pixel_distance = np.linspace(0, size[0], len(profile))
+
+                    # Plot the profile
+                    self.line_profiler_plot.plot(pixel_distance, profile, pen="w", name="Intensity Profile")
+
+                    # Set labels
+                    self.line_profiler_plot.setLabel("left", "Intensity")
+                    self.line_profiler_plot.setLabel("bottom", "Distance (pixels)")
+
+                    # Add legend
+                    self.line_profiler_plot.addLegend()
+
+                    # Auto-scale the plot
+                    self.line_profiler_plot.autoRange()
+        except Exception as e:
+            self._log.error(f"Error updating line profile: {str(e)}")
+
+    def get_line_profile(self, image, start, end, width=1):
+        """Get intensity profile along a line with specified width."""
+        try:
+            # Calculate the line vector
+            line_vec = np.array([end.x() - start.x(), end.y() - start.y()])
+            line_length = np.linalg.norm(line_vec)
+
+            # Calculate the number of points along the line
+            num_points = int(line_length)
+            if num_points < 2:
+                num_points = 2  # Ensure at least 2 points
+
+            # Create coordinate arrays
+            x = np.linspace(start.x(), end.x(), num_points)
+            y = np.linspace(start.y(), end.y(), num_points)
+
+            # Calculate perpendicular vector
+            perp_vec = np.array([-line_vec[1], line_vec[0]]) / line_length
+
+            # Create meshgrid for width sampling
+            width_points = max(1, int(width))  # Ensure at least 1 point
+            width_offsets = np.linspace(-width / 2, width / 2, width_points)
+
+            # Initialize profile array
+            profile = np.zeros(num_points)
+
+            # Sample points along the width
+            for w in width_offsets:
+                x_offset = x + perp_vec[0] * w
+                y_offset = y + perp_vec[1] * w
+
+                # Get values at these points
+                values = scipy.ndimage.map_coordinates(image, [y_offset, x_offset], order=1)
+                profile += values
+
+            # Average the values
+            profile /= width_points
+
+            return profile
+
+        except Exception as e:
+            self._log.error(f"Error getting line profile: {str(e)}")
+            return np.zeros(1)
+
     def handle_mouse_move(self, pos):
         try:
             if self.show_LUT:
                 view_coord = self.graphics_widget.view.getView().mapSceneToView(pos)
             else:
                 view_coord = self.graphics_widget.view.mapSceneToView(pos)
+
+            # Update preview line if we're drawing
+            if self.is_drawing_line and self.line_start_pos is not None and self.preview_line is not None:
+                self.preview_line.setData(
+                    x=[self.line_start_pos[0], view_coord.x()], y=[self.line_start_pos[1], view_coord.y()]
+                )
+
             image_coord = self.graphics_widget.img.mapFromView(view_coord)
 
             if self.is_within_image(image_coord):
@@ -3104,30 +3298,103 @@ class ImageDisplayWindow(QMainWindow):
                 self.cursor_position_label.setText(f"Position: ({x}, {y})")
 
                 # Get pixel value
-                if hasattr(self.graphics_widget.img, "image"):
-                    image = self.graphics_widget.img.image
-                    if image is not None and 0 <= y < image.shape[0] and 0 <= x < image.shape[1]:
-                        pixel_value = image[y, x]
-                        self.last_valid_value = pixel_value
-                        self.pixel_value_label.setText(f"Value: {pixel_value:.2f}")
-                    else:
-                        self.pixel_value_label.setText("Value: N/A")
+                image = self.graphics_widget.img.image
+                if image is not None and 0 <= y < image.shape[0] and 0 <= x < image.shape[1]:
+                    pixel_value = image[y, x]
+                    self.last_valid_value = pixel_value
+                    self.pixel_value_label.setText(f"Value: {pixel_value}")
                 else:
-                    self.pixel_value_label.setText("Value: N/A")
+                    self.pixel_value_label.setText("Value:")
             else:
-                self.cursor_position_label.setText("Position: Out of bounds")
-                self.pixel_value_label.setText("Value: N/A")
+                self.cursor_position_label.setText("Position:")
+                self.pixel_value_label.setText("Value:")
+                self.has_valid_position = False
         except:
-            # Keep last valid position if available
-            if self.has_valid_position:
-                self.cursor_position_label.setText(f"Position: ({self.last_valid_x}, {self.last_valid_y})")
-                self.pixel_value_label.setText(f"Value: {self.last_valid_value:.2f}")
-            else:
-                self.cursor_position_label.setText("Position: (0, 0)")
-                self.pixel_value_label.setText("Value: N/A")
+            pass
 
     def handle_mouse_click(self, evt):
-        # Only process double clicks
+        """Handle mouse clicks for both line drawing and other interactions."""
+        if self.is_drawing_line:
+            try:
+                # Get the view that received the click
+                if self.show_LUT:
+                    view = self.graphics_widget.view.getView()
+                else:
+                    view = self.graphics_widget.view
+
+                # Convert click position to view coordinates
+                pos = evt.pos()
+                view_coord = view.mapSceneToView(pos)
+
+                if self.line_start_pos is None:
+                    # First click - start drawing
+                    self.line_start_pos = (view_coord.x(), view_coord.y())
+                    self._log.info(f"Line start position set to: {self.line_start_pos}")
+
+                    # Add a point marker at the start position
+                    self.start_point_marker = pg.ScatterPlotItem(
+                        pos=[(self.line_start_pos[0], self.line_start_pos[1])],
+                        size=10,
+                        symbol="o",
+                        pen=pg.mkPen("y", width=2),
+                        brush=pg.mkBrush("y"),
+                    )
+                    if self.show_LUT:
+                        self.graphics_widget.view.getView().addItem(self.start_point_marker)
+                    else:
+                        self.graphics_widget.view.addItem(self.start_point_marker)
+
+                    # Create preview line
+                    self.preview_line = pg.PlotDataItem(pen=pg.mkPen("y", width=2, style=Qt.DashLine))
+                    if self.show_LUT:
+                        self.graphics_widget.view.getView().addItem(self.preview_line)
+                    else:
+                        self.graphics_widget.view.addItem(self.preview_line)
+                else:
+                    # Second click - finish drawing
+                    self.line_end_pos = (view_coord.x(), view_coord.y())
+                    self._log.info(f"Line end position set to: {self.line_end_pos}")
+
+                    # Remove preview line and start point marker
+                    if self.preview_line is not None:
+                        if self.show_LUT:
+                            self.graphics_widget.view.getView().removeItem(self.preview_line)
+                        else:
+                            self.graphics_widget.view.removeItem(self.preview_line)
+                        self.preview_line = None
+
+                    if self.start_point_marker is not None:
+                        if self.show_LUT:
+                            self.graphics_widget.view.getView().removeItem(self.start_point_marker)
+                        else:
+                            self.graphics_widget.view.removeItem(self.start_point_marker)
+                        self.start_point_marker = None
+
+                    self.create_line_roi()
+                    self.is_drawing_line = False
+                    # Reset cursor to normal
+                    view.setCursor(self.normal_cursor)
+            except Exception as e:
+                self._log.error(f"Error drawing line: {str(e)}")
+                self.is_drawing_line = False
+                self.line_start_pos = None
+                self.line_end_pos = None
+                # Clean up any remaining preview items
+                if self.preview_line is not None:
+                    if self.show_LUT:
+                        self.graphics_widget.view.getView().removeItem(self.preview_line)
+                    else:
+                        self.graphics_widget.view.removeItem(self.preview_line)
+                    self.preview_line = None
+                if self.start_point_marker is not None:
+                    if self.show_LUT:
+                        self.graphics_widget.view.getView().removeItem(self.start_point_marker)
+                    else:
+                        self.graphics_widget.view.removeItem(self.start_point_marker)
+                    self.start_point_marker = None
+            return
+
+        # Handle double clicks for other purposes
         if not evt.double():
             return
 
@@ -3156,8 +3423,12 @@ class ImageDisplayWindow(QMainWindow):
         except:
             return False
 
-    # [Rest of the methods remain exactly the same...]
     def display_image(self, image):
+        # enable the line profiler button after the first image is displayed
+        if self.first_image:
+            self.first_image = False
+            self.btn_line_profiler.setEnabled(True)
+
         if ENABLE_TRACKING:
             image = np.copy(image)
             self.image_height, self.image_width = image.shape[:2]
@@ -3194,11 +3465,14 @@ class ImageDisplayWindow(QMainWindow):
                     pixel_value = image[self.last_valid_y, self.last_valid_x]
                     self.last_valid_value = pixel_value
                     self.cursor_position_label.setText(f"Position: ({self.last_valid_x}, {self.last_valid_y})")
-                    self.pixel_value_label.setText(f"Value: {pixel_value:.2f}")
+                    self.pixel_value_label.setText(f"Value: {pixel_value}")
             except:
                 # If there's an error, keep the last valid values
                 self.cursor_position_label.setText(f"Position: ({self.last_valid_x}, {self.last_valid_y})")
-                self.pixel_value_label.setText(f"Value: {self.last_valid_value:.2f}")
+                self.pixel_value_label.setText(f"Value: {self.last_valid_value}")
+
+        if self.line_roi is not None and self.btn_line_profiler.isChecked():
+            self.update_line_profile()
 
     def mark_spot(self, image: np.ndarray, x: float, y: float):
         """Mark the detected laserspot location on the image.
@@ -3269,12 +3543,13 @@ class NavigationViewer(QFrame):
 
     signal_coordinates_clicked = Signal(float, float)  # Will emit x_mm, y_mm when clicked
 
-    def __init__(self, objectivestore, sample="glass slide", invertX=False, *args, **kwargs):
+    def __init__(self, objectivestore, camera_pixel_size, sample="glass slide", invertX=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.sample = sample
         self.objectiveStore = objectivestore
+        self.camera_sensor_pixel_size_um = camera_pixel_size  # unbinned pixel size
         self.well_size_mm = WELL_SIZE_MM
         self.well_spacing_mm = WELL_SPACING_MM
         self.number_of_skip = NUMBER_OF_SKIP
@@ -3285,7 +3560,6 @@ class NavigationViewer(QFrame):
         self.location_update_threshold_mm = 0.2
         self.box_color = (255, 0, 0)
         self.box_line_thickness = 2
-        self.acquisition_size = Acquisition.CROP_HEIGHT
         self.x_mm = None
         self.y_mm = None
         self.image_paths = {
@@ -3378,10 +3652,10 @@ class NavigationViewer(QFrame):
         self.update_fov_size()
 
     def update_fov_size(self):
-        pixel_size_um = self.objectiveStore.get_pixel_size()
-        self.fov_size_mm = self.acquisition_size * pixel_size_um / 1000
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
+        self.fov_size_mm = CAMERA_CONFIG.CROP_WIDTH_UNBINNED * pixel_size_um / 1000
 
-    def on_objective_changed(self):
+    def redraw_fov(self):
         self.clear_overlay()
         self.update_fov_size()
         self.draw_current_fov(self.x_mm, self.y_mm)

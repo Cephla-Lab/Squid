@@ -67,8 +67,8 @@ def get_test_objective_store():
     )
 
 
-def get_test_navigation_viewer(objective_store: control.core.core.ObjectiveStore):
-    return control.core.core.NavigationViewer(objective_store)
+def get_test_navigation_viewer(objective_store: control.core.core.ObjectiveStore, camera_pixel_size: float):
+    return control.core.core.NavigationViewer(objective_store, camera_pixel_size)
 
 
 def get_test_multi_point_controller() -> control.core.core.MultiPointController:
@@ -92,7 +92,9 @@ def get_test_multi_point_controller() -> control.core.core.MultiPointController:
         live_controller=live_controller,
         autofocus_controller=get_test_autofocus_controller(camera, stage, live_controller, microcontroller),
         channel_configuration_manager=config_manager.channel_manager,
-        scan_coordinates=get_test_scan_coordinates(objective_store, get_test_navigation_viewer(objective_store), stage),
+        scan_coordinates=get_test_scan_coordinates(
+            objective_store, get_test_navigation_viewer(objective_store, camera.get_pixel_size_unbinned_um()), stage
+        ),
         piezo=get_test_piezo_stage(microcontroller),
         objective_store=objective_store,
     )

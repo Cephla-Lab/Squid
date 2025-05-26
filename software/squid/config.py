@@ -1,6 +1,6 @@
 import enum
 import math
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import pydantic
 
@@ -168,6 +168,83 @@ class CameraVariant(enum.Enum):
             return None
 
 
+class GxipyCameraModel(enum.Enum):
+    MER2_1220_32U3M = "MER2-1220-32U3M"
+    MER2_630_60U3M = "MER2-630-60U3M"
+
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["GxipyCameraModel"]:
+        """
+        Attempts to convert the given string to a Gxipy camera model.  This ignores all letter cases.
+        """
+        try:
+            return GxipyCameraModel[cam_string.upper()]
+        except KeyError:
+            return None
+
+
+class ToupcamCameraModel(enum.Enum):
+    ITR3CMOS26000KMA = "ITR3CMOS26000KMA"
+    ITR3CMOS09000KMA = "ITR3CMOS09000KMA"
+    ITR3CMOS26000KPA = "ITR3CMOS26000KPA"
+
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["ToupcamCameraModel"]:
+        """
+        Attempts to convert the given string to a Toupcam camera model.  This ignores all letter cases.
+        """
+        try:
+            return ToupcamCameraModel[cam_string.upper()]
+        except KeyError:
+            return None
+
+
+class TucsenCameraModel(enum.Enum):
+    FL26_BW = "FL26-BW"
+    DHYANA_400BSI_V3 = "DHYANA-400BSI-V3"
+
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["TucsenCameraModel"]:
+        """
+        Attempts to convert the given string to a Tucsen camera model.  This ignores all letter cases.
+        """
+        try:
+            return TucsenCameraModel[cam_string.upper()]
+        except KeyError:
+            return None
+
+
+class HamamatsuCameraModel(enum.Enum):
+    C15440_20UP = "C15440-20UP"
+
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["HamamatsuCameraModel"]:
+        """
+        Attempts to convert the given string to a Hamamatsu camera model.  This ignores all letter cases.
+        """
+        try:
+            return HamamatsuCameraModel[cam_string.upper()]
+        except KeyError:
+            return None
+
+
+class CameraSensor(enum.Enum):
+    """
+    Some camera sensors may not be included here.
+    """
+
+    IMX290 = "IMX290"
+    IMX178 = "IMX178"
+    IMX226 = "IMX226"
+    IMX250 = "IMX250"
+    IMX252 = "IMX252"
+    IMX273 = "IMX273"
+    IMX264 = "IMX264"
+    IMX265 = "IMX265"
+    IMX571 = "IMX571"
+    PYTHON300 = "PYTHON300"
+
+
 class CameraPixelFormat(enum.Enum):
     """
     This is all known Pixel Formats in the Cephla world, but not all cameras will support
@@ -219,23 +296,51 @@ class CameraConfig(pydantic.BaseModel):
     # NOTE(imo): Not "type" because that's a python builtin and can cause confusion
     camera_type: CameraVariant
 
-    default_resolution: Tuple[int, int]
+    # Specific camera model. This will be used to determine the model-specific parameters, because one camera class may
+    # support multiple models from the same brand.
+    camera_model: Optional[Union[GxipyCameraModel, TucsenCameraModel, ToupcamCameraModel, HamamatsuCameraModel]] = None
 
+    # The serial number of the camera. You may use this to select a specific camera to open if there are multiple
+    # cameras using the same SDK/driver.
+    serial_number: Optional[str] = None
+
+    # The default readout data bit depth of the camera. Note that this may depend on the gain mode being used.
     default_pixel_format: CameraPixelFormat
+
+    # The binning factor of the camera.  If None, the camera is not using binning, or use 1x1 as default.
+    default_binning: Optional[Tuple[int, int]] = None
+
+    # The default ROI of the camera for hardware cropping. Input should be: offset_x, offset_y, width, height
+    default_roi: Optional[Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]] = None
 
     # The angle the camera should rotate this image right as it comes off the camera,
     # and before giving it to the rest of the system.
     #
     # NOTE(imo): As of 2025-feb-17, this feature is inconsistently implemented!
-    rotate_image_angle: Optional[float]
+    rotate_image_angle: Optional[float] = None
 
     # After rotation, the flip we should do to the image.
     #
     # NOTE(imo): As of 2025-feb-17, this feature is inconsistently implemented!
-    flip: Optional[FlipVariant]
+    flip: Optional[FlipVariant] = None
+
+    # The width of the crop region of the camera. This will be used for cropping the image in software. Value should be relative to the unbinned image size.
+    crop_width: Optional[int] = None
+
+    # The height of the crop region of the camera. This will be used for cropping the image in software. Value should be relative to the unbinned image size.
+    crop_height: Optional[int] = None
+
+    # Set the temperature of the camera to this value once on initialization.
+    default_temperature: Optional[float] = None
+
+    # Set the fan speed of the camera to this value once on initialization.
+    default_fan_speed: Optional[int] = None
+
+    # Set the black level of the camera to this value once on initialization.
+    default_black_level: Optional[int] = None
 
     # After initialization, set the white balance gains to this once. Only valid for color cameras.
-    default_white_balance_gains: Optional[RGBValue]
+    default_white_balance_gains: Optional[RGBValue] = None
 
 
 def _old_camera_variant_to_enum(old_string) -> CameraVariant:
@@ -258,11 +363,25 @@ def _old_camera_variant_to_enum(old_string) -> CameraVariant:
 
 _camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.CAMERA_TYPE),
-    default_resolution=(_def.CAMERA_CONFIG.ROI_WIDTH_DEFAULT, _def.CAMERA_CONFIG.ROI_HEIGHT_DEFAULT),
-    default_pixel_format=_def.DEFAULT_PIXEL_FORMAT,
-    rotate_image_angle=_def.ROTATE_IMAGE_ANGLE,
-    flip=_def.FLIP_IMAGE,
-    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B),
+    camera_model=_def.MAIN_CAMERA_MODEL,
+    default_pixel_format=_def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT,
+    default_binning=(_def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT, _def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT),
+    default_roi=(
+        _def.CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT,
+        _def.CAMERA_CONFIG.ROI_OFFSET_Y_DEFAULT,
+        _def.CAMERA_CONFIG.ROI_WIDTH_DEFAULT,
+        _def.CAMERA_CONFIG.ROI_HEIGHT_DEFAULT,
+    ),
+    rotate_image_angle=_def.CAMERA_CONFIG.ROTATE_IMAGE_ANGLE,
+    flip=_def.CAMERA_CONFIG.FLIP_IMAGE,
+    crop_width=_def.CAMERA_CONFIG.CROP_WIDTH_UNBINNED,
+    crop_height=_def.CAMERA_CONFIG.CROP_HEIGHT_UNBINNED,
+    default_temperature=_def.CAMERA_CONFIG.TEMPERATURE_DEFAULT,
+    default_fan_speed=_def.CAMERA_CONFIG.FAN_SPEED_DEFAULT,
+    default_black_level=_def.CAMERA_CONFIG.BLACKLEVEL_VALUE_DEFAULT,
+    default_white_balance_gains=RGBValue(
+        r=_def.CAMERA_CONFIG.AWB_RATIOS_R, g=_def.CAMERA_CONFIG.AWB_RATIOS_G, b=_def.CAMERA_CONFIG.AWB_RATIOS_B
+    ),
 )
 
 
@@ -270,16 +389,17 @@ def get_camera_config() -> CameraConfig:
     """
     Returns the CameraConfig that existed at process startup.
     """
+    print(f"get_camera_config: {_camera_config}")
     return _camera_config
 
 
 _autofocus_camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE),
-    default_resolution=(_def.LASER_AF_CROP_WIDTH, _def.LASER_AF_CROP_HEIGHT),
+    camera_model=_def.FOCUS_CAMERA_MODEL,
     default_pixel_format=CameraPixelFormat.MONO8,
+    default_binning=(1, 1),
     rotate_image_angle=None,
     flip=None,
-    default_white_balance_gains=RGBValue(r=_def.AWB_RATIOS_R, g=_def.AWB_RATIOS_G, b=_def.AWB_RATIOS_B),
 )
 
 

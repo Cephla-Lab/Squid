@@ -113,7 +113,7 @@ class Microscope(QObject):
             hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
         )
 
-        self.camera.set_pixel_format(squid.config.CameraPixelFormat.from_string(DEFAULT_PIXEL_FORMAT))
+        self.camera.set_pixel_format(squid.config.CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
         self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
         if SUPPORT_LASER_AUTOFOCUS:
@@ -426,7 +426,7 @@ class Microscope(QObject):
         self.objectiveStore.set_current_objective(objective)
 
     def set_coordinates(self, wellplate_format, selected, scan_size_mm, overlap_percent):
-        self.scanCoordinates = ScanCoordinatesSiLA2(self.objectiveStore)
+        self.scanCoordinates = ScanCoordinatesSiLA2(self.objectiveStore, self.camera.get_pixel_size_unbinned_um())
         self.scanCoordinates.get_scan_coordinates_from_selected_wells(
             wellplate_format, selected, scan_size_mm, overlap_percent
         )
@@ -449,8 +449,9 @@ class Microscope(QObject):
 
 
 class ScanCoordinatesSiLA2:
-    def __init__(self, objectiveStore):
+    def __init__(self, objectiveStore, camera_sensor_pixel_size_um):
         self.objectiveStore = objectiveStore
+        self.camera_sensor_pixel_size_um = camera_sensor_pixel_size_um
         self.region_centers = {}
         self.region_fov_coordinates = {}
         self.wellplate_settings = None
@@ -562,8 +563,8 @@ class ScanCoordinatesSiLA2:
 
         # if scan_size_mm is None:
         #    scan_size_mm = self.wellplate_settings.well_size_mm
-        pixel_size_um = self.objectiveStore.get_pixel_size()
-        fov_size_mm = (pixel_size_um / 1000) * Acquisition.CROP_WIDTH
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
+        fov_size_mm = (pixel_size_um / 1000) * CAMERA_CONFIG.CROP_WIDTH_UNBINNED
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         steps = math.floor(scan_size_mm / step_size_mm)

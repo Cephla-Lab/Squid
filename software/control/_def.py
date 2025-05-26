@@ -69,8 +69,6 @@ class TriggerMode:
 
 
 class Acquisition:
-    CROP_WIDTH = 3000
-    CROP_HEIGHT = 3000
     NUMBER_OF_FOVS_PER_AF = 3
     IMAGE_FORMAT = "bmp"
     IMAGE_DISPLAY_SCALING_FACTOR = 0.3
@@ -225,13 +223,6 @@ class CMD_EXECUTION_STATUS:
     ERROR_CODE_EMPTYING_THE_FLUDIIC_LINE_FAILED = 100
 
 
-class CAMERA_CONFIG:
-    ROI_OFFSET_X_DEFAULT = 0
-    ROI_OFFSET_Y_DEFAULT = 0
-    ROI_WIDTH_DEFAULT = 3104
-    ROI_HEIGHT_DEFAULT = 2084
-
-
 class ZStageConfig(Enum):
     STEPPER_ONLY = auto()
     PIEZO_ONLY = auto()
@@ -271,12 +262,6 @@ PRINT_CAMERA_FPS = True
 ###########################################################
 #### machine specific configurations - to be overridden ###
 ###########################################################
-ROTATE_IMAGE_ANGLE = None
-FLIP_IMAGE = None  # 'Horizontal', 'Vertical', 'Both'
-
-CAMERA_REVERSE_X = False
-CAMERA_REVERSE_Y = False
-
 DEFAULT_TRIGGER_MODE = TriggerMode.SOFTWARE
 
 BUFFER_SIZE_LIMIT = 4095
@@ -412,8 +397,6 @@ LED_MATRIX_B_FACTOR = 1
 DEFAULT_SAVING_PATH = str(Path.home()) + "/Downloads"
 FILE_ID_PADDING = 0
 
-DEFAULT_PIXEL_FORMAT = "MONO12"
-
 
 class PLATE_READER:
     NUMBER_OF_ROWS = 8
@@ -444,6 +427,25 @@ DEFAULT_TRACKER = "csrt"
 
 ENABLE_TRACKING = False
 TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS = False  # set to true when doing multimodal acquisition
+
+
+class CAMERA_CONFIG:
+    ROI_OFFSET_X_DEFAULT = None
+    ROI_OFFSET_Y_DEFAULT = None
+    ROI_WIDTH_DEFAULT = None
+    ROI_HEIGHT_DEFAULT = None
+    ROTATE_IMAGE_ANGLE = None
+    FLIP_IMAGE = None  # 'Horizontal', 'Vertical', 'Both'
+    CROP_WIDTH_UNBINNED = 4168
+    CROP_HEIGHT_UNBINNED = 4168
+    BINNING_FACTOR_DEFAULT = 2
+    PIXEL_FORMAT_DEFAULT = "MONO12"
+    TEMPERATURE_DEFAULT = 20
+    FAN_SPEED_DEFAULT = 1
+    BLACKLEVEL_VALUE_DEFAULT = 3
+    AWB_RATIOS_R = 1.375
+    AWB_RATIOS_G = 1
+    AWB_RATIOS_B = 1.4141
 
 
 class AF:
@@ -698,7 +700,6 @@ PRIOR_STAGE_SN = ""
 
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
-DEFAULT_BLACKLEVEL_VALUE = 3
 
 
 def read_objectives_csv(file_path):
@@ -801,10 +802,6 @@ OBJECTIVE_PIEZO_FLIP_DIR = False
 
 MULTIPOINT_PIEZO_DELAY_MS = 20
 MULTIPOINT_PIEZO_UPDATE_DISPLAY = True
-
-AWB_RATIOS_R = 1.375
-AWB_RATIOS_G = 1
-AWB_RATIOS_B = 1.4141
 
 USE_TERMINAL_CONSOLE = False
 USE_JUPYTER_CONSOLE = False
