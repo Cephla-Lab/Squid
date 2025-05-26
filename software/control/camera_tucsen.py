@@ -440,14 +440,14 @@ class TucsenCamera(AbstractCamera):
         self._raw_set_resolution(TucsenCamera._BINNING_TO_BINNING_CODE_400BSIV3[(binning_factor_x, binning_factor_y)])
         self._binning = (binning_factor_x, binning_factor_y)
 
-    def get_binning(self):
+    def get_binning(self) -> Tuple[int, int]:
         return self._binning
 
-    def get_binning_options(self):
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
         # TODO: Add support for FL26BW model
         return TucsenCamera._BINNING_TO_BINNING_CODE_400BSIV3.keys()
 
-    def get_resolution(self):
+    def get_resolution(self) -> Tuple[int, int]:
         # TODO: Add support for FL26BW model
         idx = c_int(0)
         if (
@@ -457,11 +457,11 @@ class TucsenCamera(AbstractCamera):
             raise CameraError("Failed to get resolution")
         return TucsenCamera._BINNING_CODE_TO_RESOLUTION_400BSIV3[idx.value]
 
-    def get_pixel_size_unbinned_um(self):
+    def get_pixel_size_unbinned_um(self) -> float:
         model = self._config.camera_model
         return TucsenCamera._MODEL_TO_PIXEL_SIZE_UM[model]
 
-    def get_pixel_size_binned_um(self):
+    def get_pixel_size_binned_um(self) -> float:
         return self.get_pixel_size_unbinned_um() * self.get_binning()[0]
 
     def set_analog_gain(self, analog_gain: float):
@@ -507,7 +507,7 @@ class TucsenCamera(AbstractCamera):
                 )
             self._update_internal_settings()
 
-    def get_region_of_interest(self):
+    def get_region_of_interest(self) -> Tuple[int, int, int, int]:
         roi_attr = TUCAM_ROI_ATTR()
         if TUCAM_Cap_GetROI(self._camera, pointer(roi_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
             raise CameraError("Failed to get ROI")
@@ -544,10 +544,10 @@ class TucsenCamera(AbstractCamera):
         else:
             raise ValueError(f"Unknown tucsen trigger source mode {trigger_attr.nTgrMode=}")
 
-    def set_temperature_reading_callback(self, func):
+    def set_temperature_reading_callback(self, func: Callable):
         self.temperature_reading_callback = func
 
-    def set_temperature(self, temperature):
+    def set_temperature(self, temperature: float):
         t = temperature * 10 + 500
         if (
             TUCAM_Prop_SetValue(self._camera, TUCAM_IDPROP.TUIDP_TEMPERATURE.value, c_double(t), 0)
@@ -556,7 +556,7 @@ class TucsenCamera(AbstractCamera):
             self._log.exception(f"Failed to set temperature to {temperature}C")
             raise
 
-    def get_temperature(self):
+    def get_temperature(self) -> float:
         t = c_double(0)
         if (
             TUCAM_Prop_GetValue(self._camera, TUCAM_IDPROP.TUIDP_TEMPERATURE.value, pointer(t), 0)
