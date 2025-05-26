@@ -489,20 +489,20 @@ class TimingManager:
             def mean(i):
                 if not len(i):
                     return "N/A"
-                return statistics.mean(i)
+                return f"{statistics.mean(i):.4f}"
 
 
             def median(i):
                 if not len(i):
                     return "N/A"
-                return statistics.median(i)
+                return f"{statistics.median(i):.4f}"
 
             def min_max(i):
                 if not len(i):
                     return "N/A"
-                return f"{min(i)}/{max(i)}"
+                return f"{min(i):.4f}/{max(i):.4f}"
 
-            return f"{self._name} (N={len(intervals)}): mean={mean(intervals):.4f} [s], median={median(intervals):.4f} [s], min/max={min_max(intervals)} [s]"
+            return f"{self._name} (N={len(intervals)}): mean={mean(intervals)} [s], median={median(intervals)} [s], min/max={min_max(intervals)} [s]"
 
     def __init__(self, name):
         self._name = name
