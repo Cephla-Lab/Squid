@@ -56,7 +56,7 @@ class TucsenCamera(AbstractCamera):
 
     @staticmethod
     def _get_sn_by_model(camera_model: TucsenCameraModel) -> str:
-        TUCAMINIT = TUCAM_INIT(0, "./control".encode("utf-8"))
+        TUCAMINIT = TUCAM_INIT(0, "./".encode("utf-8"))
         TUCAM_Api_Init(pointer(TUCAMINIT))
 
         for i in range(TUCAMINIT.uiCamCount):
@@ -109,9 +109,13 @@ class TucsenCamera(AbstractCamera):
                 if TucsenCamera._read_camera_sn(TUCAMOPEN.hIdxTUCam) == sn:
                     index = i
                     break
-
-        TUCAMOPEN = TUCAM_OPEN(index, 0)
-        TUCAM_Dev_Open(pointer(TUCAMOPEN))
+                else:
+                    TUCAM_Dev_Close(TUCAMOPEN.hIdxTUCam)
+            TUCAM_Api_Uninit()
+            raise CameraError(f"Camera with serial number {sn} not found")
+        else:
+            TUCAMOPEN = TUCAM_OPEN(index, 0)
+            TUCAM_Dev_Open(pointer(TUCAMOPEN))
 
         if TUCAMOPEN.hIdxTUCam == 0:
             raise CameraError("Open Tucsen camera failure!")
@@ -185,7 +189,7 @@ class TucsenCamera(AbstractCamera):
 
         if TUCAM_Cap_Start(self._camera, self._trigger_attr.nTgrMode) != TUCAMRET.TUCAMRET_SUCCESS:
             TUCAM_Buf_Release(self._camera)
-            raise Exception("Failed to start streaming")
+            raise CameraError("Failed to start streaming")
 
         self._ensure_read_thread_running()
 
@@ -200,7 +204,7 @@ class TucsenCamera(AbstractCamera):
         self._m_frame.uiRsdSize = 1
 
         if TUCAM_Buf_Alloc(self._camera, pointer(self._m_frame)) != TUCAMRET.TUCAMRET_SUCCESS:
-            raise Exception("Failed to allocate buffer")
+            raise CameraError("Failed to allocate buffer")
 
     def stop_streaming(self):
         if not self._is_streaming.is_set():
@@ -210,7 +214,7 @@ class TucsenCamera(AbstractCamera):
         self._cleanup_read_thread()
 
         if TUCAM_Cap_Stop(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
-            raise Exception("Failed to stop streaming")
+            raise CameraError("Failed to stop streaming")
 
         self._trigger_sent.clear()
         self._is_streaming.clear()
@@ -224,7 +228,7 @@ class TucsenCamera(AbstractCamera):
             self._terminate_temperature_event.set()
             self.temperature_reading_thread.join()
         if TUCAM_Dev_Close(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
-            raise Exception("Failed to close camera")
+            raise CameraError("Failed to close camera")
         TUCAM_Api_Uninit()
         self._log.info("Close Tucsen camera success")
 
@@ -407,7 +411,7 @@ class TucsenCamera(AbstractCamera):
 
     def _update_internal_settings(self):
         if TUCAM_Buf_Release(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
-            raise Exception("Failed to release buffer")
+            raise CameraError("Failed to release buffer")
         self._allocate_buffer()
         self._calculate_strobe_delay()
 
