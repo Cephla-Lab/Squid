@@ -191,6 +191,7 @@ class MultiPointWorker(QObject):
             self._log.error(te)
             self.multiPointController.request_abort_aquisition()
         finally:
+            self._log.debug(self._timing.get_report())
             if this_image_callback_id:
                 self.camera.remove_frame_callback(this_image_callback_id)
         if not self.headless:
@@ -739,8 +740,6 @@ class MultiPointWorker(QObject):
         # Save coordinates.csv
         self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
         self.microcontroller.enable_joystick(True)
-
-        self._log.debug(self._timing.get_report())
 
         # If there are outstanding frames, wait for them to come in.
         self._log.info("Waiting for any outstanding frames at end of acquisition.")
