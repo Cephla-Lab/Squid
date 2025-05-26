@@ -190,6 +190,7 @@ class MultiPointWorker(QObject):
             self._log.error(f"Operation timed out during acquisition, aborting acquisition!")
             self._log.error(te)
             self.multiPointController.request_abort_aquisition()
+        finally:
             if this_image_callback_id:
                 self.camera.remove_frame_callback(this_image_callback_id)
         if not self.headless:
