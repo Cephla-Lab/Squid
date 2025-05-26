@@ -16,7 +16,6 @@ from squid.abc import (
     CameraError,
 )
 from control._def import *
-import control.utils
 
 
 class PhotometricsCamera(AbstractCamera):
@@ -73,7 +72,7 @@ class PhotometricsCamera(AbstractCamera):
         self._is_streaming = threading.Event()
 
         # Open camera
-        self._camera = KinetixCamera._open()
+        self._camera = PhotometricsCamera._open()
 
         # Camera configuration
         self._exposure_time_ms = self._camera.__exp_time  # set it to default camera exposure time
@@ -330,7 +329,7 @@ class PhotometricsCamera(AbstractCamera):
         return [(1, 1)]
 
     def get_resolution(self) -> Tuple[int, int]:
-        return self._camera.shape(0)
+        return (3200, 3200)
 
     def get_pixel_size_unbinned_um(self) -> float:
         return PhotometricsCamera.PIXEL_SIZE_UM
@@ -379,24 +378,27 @@ class PhotometricsCamera(AbstractCamera):
             except Exception as e:
                 raise CameraError(f"Failed to set acquisition mode: {e}")
 
-    def get_acquisition_mode(self) -> CameraAcquisitionMode:
-        """
-        Trigger codes for Kinetix camera:
-        {
-            'Internal Trigger': 1792, 'Edge Trigger': 2304, 'Trigger First': 2048, 'Level Trigger': 2560,
-            'Level Trigger Overlap': 3328, 'Software Trigger Edge': 3072, 'Software Trigger First': 2816
-        }
-        """
+    _TRIGGER_CODE_MAPPING_KINETIX = {
+        1792: "Internal Trigger",
+        2304: "Edge Trigger",
+        2048: "Trigger First",
+        2560: "Level Trigger",
+        3328: "Level Trigger Overlap",
+        3072: "Software Trigger Edge",
+        2816: "Software Trigger First",
+    }
 
-        # TODO: need to confirm if we can get acquisition mode during live mode
-        if self._camera.exp_mode == 1792:
+    def get_acquisition_mode(self) -> CameraAcquisitionMode:
+        if PhotometricsCamera._TRIGGER_CODE_MAPPING_KINETIX[self._camera.exp_mode] == "Internal Trigger":
             return CameraAcquisitionMode.CONTINUOUS
-        elif self._camera.exp_mode == 3072:
+        elif PhotometricsCamera._TRIGGER_CODE_MAPPING_KINETIX[self._camera.exp_mode] == "Software Trigger Edge":
             return CameraAcquisitionMode.SOFTWARE_TRIGGER
-        elif self._camera.exp_mode == 2304:
+        elif PhotometricsCamera._TRIGGER_CODE_MAPPING_KINETIX[self._camera.exp_mode] == "Edge Trigger":
             return CameraAcquisitionMode.HARDWARE_TRIGGER
         else:
-            raise ValueError(f"Unknown acquisition mode: {self._camera.exp_mode}")
+            raise ValueError(
+                f"Unknown acquisition mode: {PhotometricsCamera._TRIGGER_CODE_MAPPING_KINETIX[self._camera.exp_mode]}"
+            )
 
     def send_trigger(self, illumination_time: Optional[float] = None):
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
@@ -438,13 +440,15 @@ class PhotometricsCamera(AbstractCamera):
         return self._crop_roi
 
     def set_temperature(self, temperature_deg_c: Optional[float]):
-        # Kinetix camera temperature range: -15 to 15 C
-        try:
-            if temperature_deg_c < -15 or temperature_deg_c > 15:
-                raise ValueError(f"Temperature must be between -15 and 15 C, got {temperature_deg_c} C")
-            self._camera.temp_setpoint = int(temperature_deg_c)
-        except Exception as e:
-            raise CameraError(f"Failed to set temperature: {e}")
+        # Kinetix camera temperature range: -15 to 15 C.
+        # Right now we need to pause streaming to set temperature. Not sure if this is the same with new cameras.
+        with self._pause_streaming():
+            try:
+                if temperature_deg_c < -15 or temperature_deg_c > 15:
+                    raise ValueError(f"Temperature must be between -15 and 15 C, got {temperature_deg_c} C")
+                self._camera.temp_setpoint = int(temperature_deg_c)
+            except Exception as e:
+                raise CameraError(f"Failed to set temperature: {e}")
 
     def get_temperature(self) -> float:
         # Right now we need to pause streaming to get temperature. This is very slow, so we will not update real-time temperature in gui.
@@ -460,8 +464,8 @@ class PhotometricsCamera(AbstractCamera):
     def _calculate_strobe_delay(self):
         """Calculate strobe delay based on pixel format and ROI."""
         # Line time (us) from the manual:
-        # Dynamic Range Mode: 3.75; Speed Mode: 0.625; Sensitivity Mode: 3.53125; Sub-Electron Mode: 60.1
-        _, _, _, height = self.get_region_of_interest()
+        # Dynamic Range Mode (16bit): 3.75; Speed Mode (8bit): 0.625; Sensitivity Mode (12bit): 3.53125; Sub-Electron Mode (16bit): 60.1
+        _, height = self._camera.shape(0)
 
         if self._pixel_format == CameraPixelFormat.MONO8:
             line_time_us = 0.625
