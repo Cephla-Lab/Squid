@@ -11,6 +11,8 @@ import numpy as np
 from numpy.typing import NDArray
 import pandas as pd
 
+import control.utils
+
 os.environ["QT_API"] = "pyqt5"
 from qtpy.QtCore import Signal, QObject
 from PyQt5.QtWidgets import QApplication
@@ -60,6 +62,7 @@ class MultiPointWorker(QObject):
         QObject.__init__(self)
         self.multiPointController = multiPointController
         self._log = squid.logging.get_logger(__class__.__name__)
+        self._timing = control.utils.TimingManager("MultiPointWorker Timer Manager")
         self.start_time = 0
         self.camera: AbstractCamera = self.multiPointController.camera
         self.microcontroller = self.multiPointController.microcontroller
@@ -148,7 +151,8 @@ class MultiPointWorker(QObject):
                     self.fluidics.run_before_imaging()
                     self.fluidics.wait_for_completion()
 
-                self.run_single_time_point()
+                with self._timing.get_timer("run_single_time_point"):
+                    self.run_single_time_point()
 
                 if self.fluidics and self.multiPointController.use_fluidics:
                     # For MERFISH, after imaging, run the following 2 sequences (Cleavage buffer, SSC rinse)
@@ -212,7 +216,8 @@ class MultiPointWorker(QObject):
         # init z parameters, z range
         self.initialize_z_stack()
 
-        self.run_coordinate_acquisition(current_path)
+        with self._timing.get_timer("run_coordinate_acquisition"):
+            self.run_coordinate_acquisition(current_path)
 
         # finished region scan
         self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
@@ -326,9 +331,10 @@ class MultiPointWorker(QObject):
             self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
 
             for fov_count, coordinate_mm in enumerate(coordinates):
-
-                self.move_to_coordinate(coordinate_mm)
-                self.acquire_at_position(region_id, current_path, fov_count)
+                with self._timing.get_timer("move_to_coordinate"):
+                    self.move_to_coordinate(coordinate_mm)
+                with self._timing.get_timer("acquire_at_position"):
+                    self.acquire_at_position(region_id, current_path, fov_count)
 
                 if self.multiPointController.abort_acqusition_requested:
                     self.handle_acquisition_abort(current_path, region_id)
@@ -463,41 +469,44 @@ class MultiPointWorker(QObject):
                 self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def _image_callback(self, camera_frame: CameraFrame):
-        info = self._current_capture_info
-        self._current_capture_info = None
-        self._ready_for_next_trigger.set()
-        if not info:
-            self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
-            self.multiPointController.request_abort_aquisition()
-            return
+        with self._timing.get_timer("_image_callback"):
+            self._log.debug("In Image callback for frame_id={}", camera_frame.frame_id)
+            info = self._current_capture_info
+            self._current_capture_info = None
+            self._ready_for_next_trigger.set()
+            if not info:
+                self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
+                self.multiPointController.request_abort_aquisition()
+                return
 
-        image = camera_frame.frame
-        if not camera_frame or image is None:
-            self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
-            self.multiPointController.request_abort_aquisition()
-            return
+            image = camera_frame.frame
+            if not camera_frame or image is None:
+                self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
+                self.multiPointController.request_abort_aquisition()
+                return
 
-        height, width = image.shape[:2]
-        self._log.info("Cropping image...")
-        image_to_display = utils.crop_image(
-            image,
-            round(width * self.display_resolution_scaling),
-            round(height * self.display_resolution_scaling),
-        )
-        self._log.info("Emitting display image...")
-        self.image_to_display.emit(image_to_display)
-        self.image_to_display_multi.emit(image_to_display, info.configuration.illumination_source)
+            height, width = image.shape[:2]
+            with self._timing.get_timer("crop_image"):
+                image_to_display = utils.crop_image(
+                    image,
+                    round(width * self.display_resolution_scaling),
+                    round(height * self.display_resolution_scaling),
+                )
+            with self._timing.get_timer("image_to_display*.emit"):
+                self.image_to_display.emit(image_to_display)
+                self.image_to_display_multi.emit(image_to_display, info.configuration.illumination_source)
 
-        self._log.info("Saving image...")
-        self.save_image(image, info.file_id, info.configuration, info.save_directory, camera_frame.is_color())
-        self._log.info("Updating napari...")
-        self.update_napari(image, info.configuration.name, info.z_index)
-        self._log.info("storing current round...")
-        self._current_round_images[info.configuration.name] = np.copy(image)
+            with self._timing.get_timer("save_image"):
+                self.save_image(image, info.file_id, info.configuration, info.save_directory, camera_frame.is_color())
+            with self._timing.get_timer("update_napari"):
+                self.update_napari(image, info.configuration.name, info.z_index)
+            with self._timing.get_timer("_current_round_images"):
+                self._current_round_images[info.configuration.name] = np.copy(image)
 
-        MultiPointWorker.handle_rgb_generation(
-            self._current_round_images, info.file_id, info.save_directory, info.z_index
-        )
+            with self._timing.get_timer("handle_rgb_generation"):
+                MultiPointWorker.handle_rgb_generation(
+                    self._current_round_images, info.file_id, info.save_directory, info.z_index
+                )
 
     def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k):
         self._select_config(config)
@@ -729,6 +738,8 @@ class MultiPointWorker(QObject):
         # Save coordinates.csv
         self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
         self.microcontroller.enable_joystick(True)
+
+        self._log.debug(self._timing.get_report())
 
     def move_z_for_stack(self):
         if self.use_piezo:
