@@ -258,7 +258,7 @@ class HamamatsuCamera(AbstractCamera):
     def set_binning(self, binning_factor_x: int, binning_factor_y: int):
         # TODO: We only support 1x1 binning for now. More may be added later.
         if binning_factor_x != 1 or binning_factor_y != 1:
-            raise NotImplementedError("Binning has not been implemented for this camera yet.")
+            raise ValueError("Binning has not been implemented for this camera yet.")
 
     def get_binning(self) -> Tuple[int, int]:
         return (1, 1)
