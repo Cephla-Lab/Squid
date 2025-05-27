@@ -154,6 +154,7 @@ class CameraVariant(enum.Enum):
     HAMAMATSU = "HAMAMATSU"
     IDS = "IDS"
     TUCSEN = "TUCSEN"
+    PHOTOMETRICS = "PHOTOMETRICS"
     TIS = "TIS"
     GXIPY = "GXIPY"
 
@@ -228,6 +229,20 @@ class HamamatsuCameraModel(enum.Enum):
             return None
 
 
+class PhotometricsCameraModel(enum.Enum):
+    KINETIX = "KINETIX"
+
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["PhotometricsCameraModel"]:
+        """
+        Attempts to convert the given string to a Photometrics camera model.  This ignores all letter cases.
+        """
+        try:
+            return PhotometricsCameraModel[cam_string.upper()]
+        except KeyError:
+            return None
+
+
 class CameraSensor(enum.Enum):
     """
     Some camera sensors may not be included here.
@@ -298,7 +313,9 @@ class CameraConfig(pydantic.BaseModel):
 
     # Specific camera model. This will be used to determine the model-specific parameters, because one camera class may
     # support multiple models from the same brand.
-    camera_model: Optional[Union[GxipyCameraModel, TucsenCameraModel, ToupcamCameraModel, HamamatsuCameraModel]] = None
+    camera_model: Optional[
+        Union[GxipyCameraModel, TucsenCameraModel, ToupcamCameraModel, HamamatsuCameraModel, PhotometricsCameraModel]
+    ] = None
 
     # The serial number of the camera. You may use this to select a specific camera to open if there are multiple
     # cameras using the same SDK/driver.
@@ -356,6 +373,8 @@ def _old_camera_variant_to_enum(old_string) -> CameraVariant:
         return CameraVariant.TIS
     elif old_string == "Tucsen":
         return CameraVariant.TUCSEN
+    elif old_string == "Photometrics":
+        return CameraVariant.PHOTOMETRICS
     elif old_string == "Default":
         return CameraVariant.GXIPY
     raise ValueError(f"Unknown old camera type {old_string=}")

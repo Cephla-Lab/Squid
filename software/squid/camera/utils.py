@@ -71,6 +71,10 @@ def get_camera(
             import control.camera_tucsen
 
             camera = control.camera_ids.Camera(config)
+        elif config.camera_type == CameraVariant.PHOTOMETRICS:
+            import control.camera_photometrics
+
+            camera = control.camera_photometrics.PhotometricsCamera(config)
         elif config.camera_type == CameraVariant.TIS:
             import control.camera_TIS
 

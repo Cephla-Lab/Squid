@@ -136,23 +136,11 @@ class PhotometricsCamera(AbstractCamera):
         return self._is_streaming.is_set()
 
     def _close(self):
-        """Close camera and cleanup resources."""
-        if hasattr(self, "temperature_reading_thread") and self.temperature_reading_thread is not None:
-            self._terminate_temperature_event.set()
-            self.temperature_reading_thread.join()
-
-        if hasattr(self, "_camera") and self._camera:
-            try:
-                self._camera.close()
-            except Exception as e:
-                self._log.error(f"Error closing camera: {e}")
-
         try:
-            pvc.uninit_pvcam()
+            self._camera.close()
         except Exception as e:
-            self._log.error(f"Error uninitializing pvcam: {e}")
-
-        self._log.info("Photometrics camera closed successfully")
+            raise CameraError(f"Failed to close camera: {e}")
+        pvc.uninit_pvcam()
 
     def _ensure_read_thread_running(self):
         with self._read_thread_lock:
@@ -179,7 +167,7 @@ class PhotometricsCamera(AbstractCamera):
             try:
                 self._camera.abort()
             except Exception as e:
-                self._log.error(f"Failed to abort camera: {e}")
+                raise CameraError(f"Failed to abort camera: {e}")
 
             self._read_thread.join(1.1 * self._read_thread_wait_period_s)
 
@@ -197,8 +185,8 @@ class PhotometricsCamera(AbstractCamera):
 
         while self._read_thread_keep_running.is_set():
             try:
-                # Poll for frame
-                frame, _, _ = self._camera.poll_frame()
+                wait_time = self._read_thread_wait_period_s * 1000
+                frame, _, _ = self._camera.poll_frame(timeout_ms=wait_time)
                 if frame is None:
                     time.sleep(0.001)
                     continue
