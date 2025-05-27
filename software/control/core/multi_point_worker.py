@@ -313,8 +313,7 @@ class MultiPointWorker(QObject):
         piezo_column = ["z_piezo (um)"] if self.use_piezo else []
         self.coordinates_pd = pd.DataFrame(columns=["region", "fov"] + base_columns + piezo_column)
 
-    def update_coordinates_dataframe(self, region_id, z_level, fov=None):
-        pos = self.stage.get_pos()
+    def update_coordinates_dataframe(self, region_id, z_level, pos: squid.abc.Pos, fov=None):
         base_data = {
             "z_level": [z_level],
             "x (mm)": [pos.x_mm],
@@ -425,8 +424,8 @@ class MultiPointWorker(QObject):
                 self.signal_region_progress.emit(current_image, self.total_scans)
 
             # updates coordinates df
-            self.update_coordinates_dataframe(region_id, z_level, fov)
-            self.signal_register_current_fov.emit(self.stage.get_pos().x_mm, self.stage.get_pos().y_mm)
+            self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov)
+            self.signal_register_current_fov.emit(acquire_pos.x_mm, acquire_pos.y_mm)
 
             # check if the acquisition should be aborted
             if self.multiPointController.abort_acqusition_requested:
@@ -564,6 +563,9 @@ class MultiPointWorker(QObject):
         self._ready_for_next_trigger.clear()
         # Even though the capture time will be slightly after this, we need to capture and set the capture info
         # before the trigger to be 100% sure the callback doesn't stomp on it.
+        # NOTE(imo): One level up from acquire_camera_image, we have acquire_pos.  We're careful to use that as
+        # much as we can, but don't use it here because we'd rather take the position as close as possible to the
+        # real capture time for the image info.  Ideally we'd use this position for the caller's acquire_pos as well.
         current_capture_info = CaptureInfo(
             position=self.stage.get_pos(),
             z_index=k,
@@ -697,9 +699,14 @@ class MultiPointWorker(QObject):
                 print("init napari layers")
                 self.init_napari_layers = True
                 self.napari_layers_init.emit(image.shape[0], image.shape[1], image.dtype)
-            pos = self.stage.get_pos()
             objective_magnification = str(int(self.objectiveStore.get_current_objective_info()["magnification"]))
-            self.napari_layers_update.emit(image, pos.x_mm, pos.y_mm, k, objective_magnification + "x " + config_name)
+            self.napari_layers_update.emit(
+                image,
+                capture_info.position.x_mm,
+                capture_info.position.y_mm,
+                capture_info.z_index,
+                objective_magnification + "x " + capture_info.configuration.name,
+            )
 
     @staticmethod
     def handle_rgb_generation(current_round_images, capture_info: CaptureInfo):
