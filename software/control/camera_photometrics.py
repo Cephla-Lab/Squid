@@ -50,8 +50,8 @@ class PhotometricsCamera(AbstractCamera):
     def __init__(
         self,
         camera_config: CameraConfig,
-        hw_trigger_fn: Optional[Callable[[Optional[float]], bool]] = None,
-        hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]] = None,
+        hw_trigger_fn: Optional[Callable[[Optional[float]], bool]],
+        hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]],
     ):
         super().__init__(camera_config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
 
@@ -75,10 +75,10 @@ class PhotometricsCamera(AbstractCamera):
         self._camera = PhotometricsCamera._open()
 
         # Camera configuration
-        self._exposure_time_ms = self._camera.__exp_time  # set it to default camera exposure time
+        self._exposure_time_ms = 20  # set it to some default value
 
-        self._pixel_format = self._config.default_pixel_format
-        self._crop_roi = self._config.default_roi
+        self._pixel_format = CameraPixelFormat.MONO16  # Initialize pixel format to 16bit (Dynamic Range Mode)
+        self._crop_roi = (0, 0, 3200, 3200)  # Initialize ROI values to full frame, otherwise we may get None values if default ROI is not set
         self._configure_camera()
 
         """
@@ -98,7 +98,10 @@ class PhotometricsCamera(AbstractCamera):
         """Configure camera with default settings."""
         self._camera.exp_res = 1  # Exposure resolution in microseconds
         self._camera.speed_table_index = 0
-        self.set_region_of_interest(*self._config.default_roi)  # 25mm FOV ROI: 240, 240, 2720, 2720
+        try:
+            self.set_region_of_interest(*self._config.default_roi)  # 25mm FOV ROI: 240, 240, 2720, 2720
+        except Exception as e:
+            self._log.error(f"Failed to set crop ROI: {e}")
         self._log.info(f"Cropped area: {self._camera.shape(0)}")
         self.set_pixel_format(self._config.default_pixel_format)
         self.set_temperature(self._config.default_temperature)
@@ -185,7 +188,7 @@ class PhotometricsCamera(AbstractCamera):
 
         while self._read_thread_keep_running.is_set():
             try:
-                wait_time = self._read_thread_wait_period_s * 1000
+                wait_time = int(self._read_thread_wait_period_s * 1000)
                 frame, _, _ = self._camera.poll_frame(timeout_ms=wait_time)
                 if frame is None:
                     time.sleep(0.001)

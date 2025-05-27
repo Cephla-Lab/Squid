@@ -74,7 +74,9 @@ def get_camera(
         elif config.camera_type == CameraVariant.PHOTOMETRICS:
             import control.camera_photometrics
 
-            camera = control.camera_photometrics.PhotometricsCamera(config)
+            camera = control.camera_photometrics.PhotometricsCamera(
+                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+            )
         elif config.camera_type == CameraVariant.TIS:
             import control.camera_TIS
 
