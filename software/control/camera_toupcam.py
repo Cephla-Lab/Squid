@@ -235,6 +235,11 @@ class ToupcamCamera(AbstractCamera):
         self._start_raw_camera_stream()
         self._update_internal_settings()
 
+    def __del__(self):
+        if self.get_is_streaming():
+            self.stop_streaming()
+        self._close()
+
     def _start_raw_camera_stream(self):
         """
         Make sure the camera is setup to tell us when frames are available.
