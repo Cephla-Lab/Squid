@@ -1,5 +1,5 @@
 import time
-from typing import Optional, Callable, Sequence, Tuple
+from typing import Optional, Callable, Sequence, Tuple, Dict
 import threading
 
 import pydantic
@@ -9,13 +9,16 @@ from squid.config import CameraConfig, CameraPixelFormat
 from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
 from control.dcam import Dcam, Dcamapi
 from control.dcamapi4 import *
+import control.utils
 
 
 class HamamatsuCapabilities(pydantic.BaseModel):
-    resolutions: Sequence[Tuple[int, int]]
+    bining_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
 
 
 class HamamatsuCamera(AbstractCamera):
+    PIXEL_SIZE_UM: float = 6.5
+
     @staticmethod
     def _open(index=None, sn=None) -> Tuple[Dcam, HamamatsuCapabilities]:
         if index is None and sn is None:
@@ -57,13 +60,14 @@ class HamamatsuCamera(AbstractCamera):
         if not camera.dev_open(index):
             raise CameraError(f"Failed to open camera with index={index}")
 
-        # For now, we just support the default resolution.
-        default_width = int(camera.prop_getvalue(DCAM_IDPROP.IMAGE_WIDTH))
-        default_height = int(camera.prop_getvalue(DCAM_IDPROP.IMAGE_HEIGHT))
+        supported_resolutions = {
+            # C15440-20UP (ORCA-Fusion BT)
+            (1, 1): (2304, 2304),
+            (2, 2): (1152, 1152),
+            (4, 4): (576, 576),
+        }
 
-        supported_resolutions = ((default_width, default_height),)
-
-        capabilities = HamamatsuCapabilities(resolutions=supported_resolutions)
+        capabilities = HamamatsuCapabilities(binning_to_resolution=supported_resolutions)
 
         return camera, capabilities
 
@@ -193,9 +197,8 @@ class HamamatsuCamera(AbstractCamera):
         return self._exposure_time_ms
 
     def get_exposure_limits(self) -> Tuple[float, float]:
-        # TODO(imo): We should be able to query this from the hardware.  For now, use the hard coded
-        # values we used before.  I'm not sure where these values came from.
-        return 0.017633, 10000.0046  # Each in ms
+        exposure_attr = self._camera.prop_getattr(DCAM_IDPROP.EXPOSURETIME)
+        return exposure_attr.valuemin, exposure_attr.valuemax  # in ms
 
     def get_strobe_time(self) -> float:
         resolution = self.get_resolution()
@@ -249,42 +252,25 @@ class HamamatsuCamera(AbstractCamera):
 
         return _dcam_to_pixel[dcam_pixel_format]
 
-    def set_resolution(self, width: int, height: int):
-        # We don't know how to set the resolution of this camera yet.  Allow set_resolution if what they're
-        # asking for is the default resolution.
-        if len(self._capabilities.resolutions) != 1:
-            raise ValueError(
-                "Driver only supports 1 resolution, but capabilities has more than 1.  Driver update needed."
-            )
-
-        supported_resolution = self._capabilities.resolutions[0]
-
-        requested_resolution = (width, height)
-        if requested_resolution != supported_resolution:
-            raise ValueError(
-                f"The only supported resolution is {supported_resolution}, but you asked for {requested_resolution}"
-            )
-
-        old_resolution = self.get_resolution()
-        old_roi = self.get_region_of_interest()
-
-        new_roi = AbstractCamera.calculate_new_roi_for_resolution(old_resolution, old_roi, requested_resolution)
-        self.set_region_of_interest(*new_roi)
-
-        # We are already using the correct resolution, so let this pass through.
-        return True
-
     def get_resolution(self) -> Tuple[int, int]:
-        raw_width = self._camera.prop_getvalue(DCAM_IDPROP.IMAGE_WIDTH)
-        raw_height = self._camera.prop_getvalue(DCAM_IDPROP.IMAGE_HEIGHT)
+        return self._capabilities.binning_to_resolution[self._binning]
 
-        if isinstance(raw_width, bool) or isinstance(raw_height, bool):
-            raise CameraError("Camera failed to report width or height.")
+    def set_binning(self, binning_factor_x: int, binning_factor_y: int):
+        # TODO: We only support 1x1 binning for now. More may be added later.
+        if binning_factor_x != 1 or binning_factor_y != 1:
+            raise ValueError("Binning has not been implemented for this camera yet.")
 
-        return int(raw_width), int(raw_height)
+    def get_binning(self) -> Tuple[int, int]:
+        return (1, 1)
 
-    def get_resolutions(self) -> Sequence[Tuple[int, int]]:
-        return self._capabilities.resolutions
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
+        return [(1, 1)]
+
+    def get_pixel_size_unbinned_um(self) -> float:
+        return self.PIXEL_SIZE_UM
+
+    def get_pixel_size_binned_um(self) -> float:
+        return self.PIXEL_SIZE_UM * self.get_binning()[0]
 
     def set_analog_gain(self, analog_gain: float):
         raise NotImplementedError("Analog gain is not implemented for this camera.")
@@ -466,6 +452,7 @@ class HamamatsuCamera(AbstractCamera):
         return not self._trigger_sent.is_set()
 
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+        # Numbers are in unbinned pixels. Supports C15440-20UP (ORCA-Fusion BT) only.
         with self._pause_streaming():
             roi_mode_on = self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.ON)
 
@@ -479,15 +466,19 @@ class HamamatsuCamera(AbstractCamera):
             if not roi_mode_on:
                 raise CameraError("Failed to turn on roi mode on camera, cannot set roi.")
 
+            offset_x = control.utils.truncate_to_interval(offset_x, 4)
             if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHPOS, int(offset_x)):
                 fail("Could not set roi x offset.")
 
+            width = control.utils.truncate_to_interval(width, 4)
             if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHSIZE, int(width)):
                 fail("Could not set roi width.")
 
+            offset_y = control.utils.truncate_to_interval(offset_y, 4)
             if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVPOS, int(offset_y)):
                 fail("Could not set roi y offset.")
 
+            height = control.utils.truncate_to_interval(height, 4)
             if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVSIZE, int(height)):
                 fail("Could not set roi height.")
 
@@ -503,7 +494,12 @@ class HamamatsuCamera(AbstractCamera):
         )
 
     def set_temperature(self, temperature_deg_c: Optional[float]):
-        self._camera.prop_setvalue(DCAM_IDPROP.SENSORTEMPERATURETARGET, temperature_deg_c)
+        # Commented out since setting temperature is not supported in Model C15440-20UP (ORCA-Fusion BT)
+        # self._camera.prop_setvalue(DCAM_IDPROP.SENSORTEMPERATURETARGET, temperature_deg_c)
+        raise NotImplementedError("Setting temperature is not supported for this camera.")
 
     def get_temperature(self) -> float:
         return self._camera.prop_getvalue(DCAM_IDPROP.SENSORTEMPERATURE)
+
+    def set_temperature_reading_callback(self, func) -> Callable[[float], None]:
+        raise NotImplementedError("Setting temperature reading callback is not supported for this camera.")
