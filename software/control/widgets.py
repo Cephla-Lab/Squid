@@ -1015,7 +1015,12 @@ class CameraSettingsWidget(QFrame):
             self.entry_analogGain.setEnabled(False)
 
         self.dropdown_pixelFormat = QComboBox()
-        self.dropdown_pixelFormat.addItems(["MONO8", "MONO12", "MONO14", "MONO16", "BAYER_RG8", "BAYER_RG12"])
+        try:
+            pixel_formats = self.camera.get_available_pixel_formats()
+            pixel_formats = [pf.name for pf in pixel_formats]
+        except NotImplementedError:
+            pixel_formats = ["MONO8", "MONO12", "MONO14", "MONO16", "BAYER_RG8", "BAYER_RG12"]
+        self.dropdown_pixelFormat.addItems(pixel_formats)
         if self.camera.get_pixel_format() is not None:
             self.dropdown_pixelFormat.setCurrentText(self.camera.get_pixel_format().name)
         else:

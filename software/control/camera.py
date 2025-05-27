@@ -310,6 +310,9 @@ class DefaultCamera(AbstractCamera):
 
         return self._pixel_format
 
+    def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
+        raise NotImplementedError("get_available_pixel_formats is not implemented for DefaultCamera")
+
     def get_resolution(self) -> Tuple[int, int]:
         return self._camera.WidthMax.get(), self._camera.HeightMax.get()
 

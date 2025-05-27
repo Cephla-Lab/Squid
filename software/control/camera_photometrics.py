@@ -311,6 +311,9 @@ class PhotometricsCamera(AbstractCamera):
         # We are not able to query camera for pixel format during live mode, so we need to return the pixel format we set.
         return self._pixel_format
 
+    def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
+        return [CameraPixelFormat.MONO8, CameraPixelFormat.MONO12, CameraPixelFormat.MONO16]
+
     def set_binning(self, binning_factor_x: int, binning_factor_y: int):
         if binning_factor_x != 1 or binning_factor_y != 1:
             raise ValueError("Kinetix camera does not support binning")

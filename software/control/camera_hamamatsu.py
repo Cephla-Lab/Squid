@@ -252,6 +252,9 @@ class HamamatsuCamera(AbstractCamera):
 
         return _dcam_to_pixel[dcam_pixel_format]
 
+    def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
+        return list(self._PIXEL_FORMAT_TO_DCAM_FORMAT.keys())
+
     def get_resolution(self) -> Tuple[int, int]:
         return self._capabilities.binning_to_resolution[self.get_binning()]
 

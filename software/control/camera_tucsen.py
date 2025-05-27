@@ -409,6 +409,9 @@ class TucsenCamera(AbstractCamera):
         # TODO: This is temporary before we move to support the new version of 400BSI V3 hardware and FL26BW model.
         return CameraPixelFormat.MONO16
 
+    def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
+        return [CameraPixelFormat.MONO16]
+
     def _update_internal_settings(self):
         if TUCAM_Buf_Release(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
             raise CameraError("Failed to release buffer")
