@@ -78,7 +78,8 @@ class PhotometricsCamera(AbstractCamera):
         self._exposure_time_ms = 20  # set it to some default value
 
         self._pixel_format = CameraPixelFormat.MONO16  # Initialize pixel format to 16bit (Dynamic Range Mode)
-        self._crop_roi = (0, 0, 3200, 3200)  # Initialize ROI values to full frame, otherwise we may get None values if default ROI is not set
+        # Initialize ROI values to full frame, or we may get None values if default ROI is not set
+        self._crop_roi = (0, 0, 3200, 3200)
         self._configure_camera()
 
         """
@@ -96,8 +97,9 @@ class PhotometricsCamera(AbstractCamera):
 
     def _configure_camera(self):
         """Configure camera with default settings."""
-        self._camera.exp_res = 1  # Exposure resolution in microseconds
+        self._camera.exp_res = 0  # Exposure resolution in milliseconds
         self._camera.speed_table_index = 0
+        self._camera.exp_out_mode = 3  # Rolling shutter mode
         try:
             self.set_region_of_interest(*self._config.default_roi)  # 25mm FOV ROI: 240, 240, 2720, 2720
         except Exception as e:
@@ -170,7 +172,7 @@ class PhotometricsCamera(AbstractCamera):
             try:
                 self._camera.abort()
             except Exception as e:
-                raise CameraError(f"Failed to abort camera: {e}")
+                self._log.warning(f"Failed to abort camera: {e}")
 
             self._read_thread.join(1.1 * self._read_thread_wait_period_s)
 
