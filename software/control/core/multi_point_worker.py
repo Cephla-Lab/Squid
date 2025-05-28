@@ -305,7 +305,6 @@ class MultiPointWorker(QObject):
                     return
 
     def acquire_at_position(self, region_id, current_path, fov):
-
         if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in globals():
             print("run custom multipoint")
             multipoint_custom_script_entry(self, current_path, region_id, fov)
@@ -323,6 +322,12 @@ class MultiPointWorker(QObject):
         if self.use_piezo:
             self.z_piezo_um = self.piezo.position
 
+        # Initialize TIFF writer if using Multi-Page TIFF format
+        tiff_writer = None
+        if FILE_FORMAT == "Multi-Page TIFF":
+            output_path = os.path.join(current_path, f"{region_id}_{fov:0{FILE_ID_PADDING}}_stack.tiff")
+            tiff_writer = iio.get_writer(output_path, format="TIFF")
+
         for z_level in range(self.NZ):
             file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
 
@@ -339,13 +344,37 @@ class MultiPointWorker(QObject):
             current_round_images = {}
             # iterate through selected modes
             for config_idx, config in enumerate(self.selected_configurations):
-
                 if self.NZ == 1:  # TODO: handle z offset for z stack
                     self.handle_z_offset(config, True)
 
                 # acquire image
                 if "USB Spectrometer" not in config.name and "RGB" not in config.name:
-                    self.acquire_camera_image(config, file_ID, current_path, current_round_images, z_level)
+                    image = self.acquire_camera_image(
+                        config,
+                        file_ID,
+                        current_path,
+                        current_round_images,
+                        z_level,
+                        save_individual_images=SAVE_INDIVIDUAL_IMAGES,
+                    )
+
+                    # Write image to multipage TIFF if FILE_FORMAT is "Multi-Page TIFF"
+                    if FILE_FORMAT == "Multi-Page TIFF" and tiff_writer is not None:
+                        # Add metadata for the image
+                        metadata = {
+                            "z_level": z_level,
+                            "channel": config.name,
+                            "channel_index": config_idx,
+                            "region_id": region_id,
+                            "fov": fov,
+                            "x_mm": acquire_pos.x_mm,
+                            "y_mm": acquire_pos.y_mm,
+                            "z_mm": acquire_pos.z_mm,
+                        }
+
+                        # Write the image to TIFF
+                        tiff_writer.append_data(image, meta=metadata)
+
                 elif "RGB" in config.name:
                     self.acquire_rgb_image(config, file_ID, current_path, current_round_images, z_level)
                 else:
@@ -369,6 +398,9 @@ class MultiPointWorker(QObject):
             # check if the acquisition should be aborted
             if self.multiPointController.abort_acqusition_requested:
                 self.handle_acquisition_abort(current_path, region_id)
+                # Close TIFF writer if open
+                if tiff_writer is not None:
+                    tiff_writer.close()
                 return
 
             # update FOV counter
@@ -379,6 +411,10 @@ class MultiPointWorker(QObject):
 
         if self.NZ > 1:
             self.move_z_back_after_stack()
+
+        # Close TIFF writer if open
+        if tiff_writer is not None:
+            tiff_writer.close()
 
     def perform_autofocus(self, region_id, fov):
         if not self.do_reflection_af:
@@ -429,7 +465,7 @@ class MultiPointWorker(QObject):
                 self.wait_till_operation_is_completed()
                 time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
-    def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k):
+    def acquire_camera_image(self, config, file_ID, current_path, current_round_images, k, save_individual_images=True):
         # update the current configuration
         if not self.performance_mode:
             self.signal_current_configuration.emit(config)
@@ -473,15 +509,18 @@ class MultiPointWorker(QObject):
         self.image_to_display.emit(image_to_display)
         self.image_to_display_multi.emit(image_to_display, config.illumination_source)
 
-        self.save_image(image, file_ID, config, current_path, camera_frame.is_color())
         self.update_napari(image, config.name, k)
 
-        current_round_images[config.name] = np.copy(image)
-
-        MultiPointWorker.handle_rgb_generation(current_round_images, file_ID, current_path, k)
+        # current_round_images[config.name] = np.copy(image) # to remove
+        # MultiPointWorker.handle_rgb_generation(current_round_images, file_ID, current_path, k) # to remove
 
         if not self.headless:
             QApplication.processEvents()
+
+        if save_individual_images:
+            self.save_image(image, file_ID, config, current_path, camera_frame.is_color())
+
+        return image
 
     def acquire_rgb_image(self, config, file_ID, current_path, current_round_images, k):
         # go through the channels
