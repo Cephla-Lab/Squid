@@ -3,6 +3,7 @@ import sys
 import glob
 from pathlib import Path
 from configparser import ConfigParser
+from typing import Union
 import json
 import csv
 import squid.logging
@@ -238,6 +239,32 @@ class SpotDetectionMode(Enum):
     DUAL_LEFT = "dual_left"
     MULTI_RIGHT = "multi_right"
     MULTI_SECOND_RIGHT = "multi_second_right"
+
+
+class FileSavingOption(Enum):
+    """File saving options.
+
+    INDIVIDUAL_IMAGES: Save each image as a separate file. Format is defined in Acquisition.IMAGE_FORMAT.
+    TODO: Move all file saving related settings to this enum.
+    MULTI_PAGE_TIFF: Save all images from a single FOV as a single multi-page TIFF file.
+    TODO: Add zarr saving options.
+    """
+
+    INDIVIDUAL_IMAGES = "INDIVIDUAL_IMAGES"
+    MULTI_PAGE_TIFF = "MULTI_PAGE_TIFF"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "FileSavingOption"]) -> "FileSavingOption":
+        """
+        Attempts to convert the given string to a FileSavingOption.  This ignores all letter cases.
+        """
+        if isinstance(option, FileSavingOption):
+            return option
+
+        try:
+            return FileSavingOption[option.upper()]
+        except KeyError:
+            raise ValueError(f"Invalid file saving option: {option}")
 
 
 PRINT_CAMERA_FPS = True
@@ -769,11 +796,7 @@ FLUIDICS_CONFIG_PATH = "./merfish_config/MERFISH_config.json"
 
 USE_TEMPLATE_MULTIPOINT = False
 
-# tmp - to be improved
-# SAVE_INDIVIDUAL_IMAGES = False
-# FILE_FORMAT = "Multi-Page TIFF"
-SAVE_INDIVIDUAL_IMAGES = True
-FILE_FORMAT = None
+FILE_SAVING_OPTION = FileSavingOption.MULTI_PAGE_TIFF
 
 ##########################################################
 #### start of loading machine specific configurations ####
@@ -886,6 +909,9 @@ A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_pixel"]  # coordi
 # objective piezo
 HAS_OBJECTIVE_PIEZO = "PIEZO" in Z_MOTOR_CONFIG
 MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
+
+# file saving
+FILE_SAVING_OPTION = FileSavingOption.convert_to_enum(FILE_SAVING_OPTION)
 
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):

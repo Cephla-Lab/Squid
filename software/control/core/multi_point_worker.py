@@ -324,7 +324,7 @@ class MultiPointWorker(QObject):
 
         # Initialize TIFF writer if using Multi-Page TIFF format
         tiff_writer = None
-        if FILE_FORMAT == "Multi-Page TIFF":
+        if FILE_SAVING_OPTION == FileSavingOption.MULTI_PAGE_TIFF:
             output_path = os.path.join(current_path, f"{region_id}_{fov:0{FILE_ID_PADDING}}_stack.tiff")
             tiff_writer = iio.get_writer(output_path, format="TIFF")
 
@@ -355,11 +355,11 @@ class MultiPointWorker(QObject):
                         current_path,
                         current_round_images,
                         z_level,
-                        save_individual_images=SAVE_INDIVIDUAL_IMAGES,
+                        save_individual_images=(FILE_SAVING_OPTION == FileSavingOption.INDIVIDUAL_IMAGES),
                     )
 
                     # Write image to multipage TIFF if FILE_FORMAT is "Multi-Page TIFF"
-                    if FILE_FORMAT == "Multi-Page TIFF" and tiff_writer is not None:
+                    if FILE_SAVING_OPTION == FileSavingOption.MULTI_PAGE_TIFF and tiff_writer is not None:
                         # Add metadata for the image
                         metadata = {
                             "z_level": z_level,
