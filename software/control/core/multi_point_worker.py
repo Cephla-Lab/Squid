@@ -451,9 +451,15 @@ class MultiPointWorker(QObject):
                 #  "reset_image_ready_flag" arg, so this is broken for all other cameras.  Also this used to do some other funky stuff like setting internal camera flags.
                 #   I am pretty sure this is broken!
                 self.microscope.nl5.start_acquisition()
-        while not self.camera.get_ready_for_trigger():
-            time.sleep(0.001)
-        self.camera.send_trigger(illumination_time=camera_illumination_time)
+                nl5_triggered = True
+
+        if nl5_triggered:
+            nl5_triggered = False
+        else:
+            while not self.camera.get_ready_for_trigger():
+                time.sleep(0.001)
+            self.camera.send_trigger(illumination_time=camera_illumination_time)
+
         camera_frame = self.camera.read_camera_frame()
         image = camera_frame.frame
         if not camera_frame or image is None:
