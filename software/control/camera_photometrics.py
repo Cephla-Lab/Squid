@@ -428,6 +428,7 @@ class PhotometricsCamera(AbstractCamera):
             try:
                 self._camera.set_roi(offset_x, offset_y, width, height)
                 self._crop_roi = (offset_x, offset_y, width, height)
+                self._calculate_strobe_delay()
             except Exception as e:
                 raise CameraError(f"Failed to set ROI: {e}")
 
