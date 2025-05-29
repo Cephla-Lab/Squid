@@ -796,7 +796,7 @@ FLUIDICS_CONFIG_PATH = "./merfish_config/MERFISH_config.json"
 
 USE_TEMPLATE_MULTIPOINT = False
 
-FILE_SAVING_OPTION = FileSavingOption.MULTI_PAGE_TIFF
+FILE_SAVING_OPTION = FileSavingOption.INDIVIDUAL_IMAGES
 
 ##########################################################
 #### start of loading machine specific configurations ####
