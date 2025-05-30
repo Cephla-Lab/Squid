@@ -235,11 +235,6 @@ class ToupcamCamera(AbstractCamera):
         self._start_raw_camera_stream()
         self._update_internal_settings()
 
-    def __del__(self):
-        if self.get_is_streaming():
-            self.stop_streaming()
-        self._close()
-
     def _start_raw_camera_stream(self):
         """
         Make sure the camera is setup to tell us when frames are available.
@@ -379,7 +374,7 @@ class ToupcamCamera(AbstractCamera):
     def _get_raw_exposure_time(self) -> float:
         return self._camera.get_ExpoTime() / 1000.0  # microseconds -> milliseconds
 
-    def _close(self):
+    def close(self):
         self.terminate_read_temperature_thread = True
         self.thread_read_temperature.join()
         self._set_fan_speed(0)

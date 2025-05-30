@@ -415,3 +415,7 @@ class SimulatedCamera(AbstractCamera):
 
     def get_frame_id(self) -> int:
         return self._frame_id
+
+    @debug_log
+    def close(self):
+        pass

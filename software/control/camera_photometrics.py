@@ -91,10 +91,6 @@ class PhotometricsCamera(AbstractCamera):
         self.temperature_reading_thread.start()
         """
 
-    def __del__(self):
-        self.stop_streaming()
-        self._close()
-
     def _configure_camera(self):
         """Configure camera with default settings."""
         self._camera.exp_res = 0  # Exposure resolution in milliseconds
@@ -140,7 +136,7 @@ class PhotometricsCamera(AbstractCamera):
     def get_is_streaming(self):
         return self._is_streaming.is_set()
 
-    def _close(self):
+    def close(self):
         try:
             self._camera.close()
         except Exception as e:

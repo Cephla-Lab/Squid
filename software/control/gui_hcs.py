@@ -1664,6 +1664,8 @@ class HighContentScreeningGui(QMainWindow):
             squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
         except ValueError as e:
             self.log.error(f"Couldn't cache position while closing.  Ignoring and continuing. Error is: {e}")
+        self.movement_update_timer.stop()
+
         if USE_ZABER_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel.set_emission_filter(1)
         if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
@@ -1677,6 +1679,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self.liveController.stop_live()
         self.camera.stop_streaming()
+        self.camera.close()
 
         self.microcontroller.turn_off_all_pid()
 

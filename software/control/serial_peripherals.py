@@ -498,7 +498,7 @@ class LDI(LightSource):
             for pair in pairs:
                 channel, value = pair.split("=")
                 intensities[int(channel)] = int(value)
-            return intensity[channel]
+            return intensities[channel]
         except:
             return None
 

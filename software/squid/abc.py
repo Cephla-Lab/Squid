@@ -733,3 +733,10 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         Set the callback to be called when the temperature reading changes.
         """
         pass
+
+    @abc.abstractmethod
+    def close(self):
+        """
+        Close the camera.
+        """
+        pass

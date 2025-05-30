@@ -168,10 +168,6 @@ class TucsenCamera(AbstractCamera):
         self.temperature_reading_thread = threading.Thread(target=self._check_temperature, daemon=True)
         self.temperature_reading_thread.start()
 
-    def __del__(self):
-        self.stop_streaming()
-        self._close()
-
     def _configure_camera(self):
         # TODO: Add support for FL26BW model
         # TODO: For 400BSI V3, we use the default HDR mode for now.
@@ -223,7 +219,7 @@ class TucsenCamera(AbstractCamera):
     def get_is_streaming(self):
         return self._is_streaming.is_set()
 
-    def _close(self):
+    def close(self):
         if self.temperature_reading_thread is not None:
             self._terminate_temperature_event.set()
             self.temperature_reading_thread.join()
