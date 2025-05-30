@@ -133,7 +133,7 @@ class DefaultCamera(AbstractCamera):
         self._frame_lock = threading.Lock()
         self._current_frame: Optional[CameraFrame] = None
 
-    def __del__(self):
+    def close(self):
         try:
             if self._camera:
                 self._camera.close_device()

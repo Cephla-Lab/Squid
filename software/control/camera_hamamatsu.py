@@ -105,7 +105,7 @@ class HamamatsuCamera(AbstractCamera):
         self._exposure_time_ms: int = 20
         self.set_exposure_time(self._exposure_time_ms)
 
-    def __del__(self):
+    def close(self):
         self._cleanup_read_thread()
 
     def _set_prop(self, dcam_prop, prop_value):
