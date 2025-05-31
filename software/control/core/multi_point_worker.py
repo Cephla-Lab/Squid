@@ -66,6 +66,7 @@ class MultiPointWorker(QObject):
         self.multiPointController = multiPointController
         self._log = squid.logging.get_logger(__class__.__name__)
         self._timing = control.utils.TimingManager("MultiPointWorker Timer Manager")
+        self._file_writer = None
         self.start_time = 0
         self.camera: AbstractCamera = self.multiPointController.camera
         self.microcontroller = self.multiPointController.microcontroller
