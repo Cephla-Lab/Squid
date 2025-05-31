@@ -127,6 +127,10 @@ class MultiPointWorker(QObject):
         self._ready_for_next_trigger = threading.Event()
         # Set this to true so that the first frame capture can proceed.
         self._ready_for_next_trigger.set()
+        # This is cleared when the image callback is no longer processing an image.  If true, an image is still
+        # in flux and we need to make sure the object doesn't disappear.
+        self._image_callback_idle = threading.Event()
+        self._image_callback_idle.set()
         # This is protected by the threading event above (aka set after clear, take copy before set)
         self._current_capture_info: Optional[CaptureInfo] = None
         # This is only touched via the image callback path.  Don't touch it outside of there!
@@ -211,6 +215,9 @@ class MultiPointWorker(QObject):
         self._log.info("Waiting for any outstanding frames.")
         if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
             self._log.warning("Timed out waiting for the last outstanding frames at end of acquisition!")
+
+        if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
+            self._log.warning("Timed out waiting for the last image to process!")
 
     def wait_till_operation_is_completed(self):
         self.microcontroller.wait_till_operation_is_completed()
@@ -515,51 +522,56 @@ class MultiPointWorker(QObject):
                 self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def _image_callback(self, camera_frame: CameraFrame):
-        with self._timing.get_timer("_image_callback"):
-            self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
-            info = self._current_capture_info
-            self._current_capture_info = None
-            self._ready_for_next_trigger.set()
-            if not info:
-                self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
-                self.multiPointController.request_abort_aquisition()
-                return
+        try:
+            self._image_callback_idle.clear()
+            with self._timing.get_timer("_image_callback"):
+                self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
+                info = self._current_capture_info
+                self._current_capture_info = None
 
-            image = camera_frame.frame
-            if not camera_frame or image is None:
-                self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
-                self.multiPointController.request_abort_aquisition()
-                return
+                self._ready_for_next_trigger.set()
+                if not info:
+                    self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
+                    self.multiPointController.request_abort_aquisition()
+                    return
 
-            height, width = image.shape[:2]
-            with self._timing.get_timer("crop_image"):
-                image_to_display = utils.crop_image(
-                    image,
-                    round(width * self.display_resolution_scaling),
-                    round(height * self.display_resolution_scaling),
-                )
-            with self._timing.get_timer("image_to_display*.emit"):
-                self.image_to_display.emit(image_to_display)
-                self.image_to_display_multi.emit(image_to_display, info.configuration.illumination_source)
+                image = camera_frame.frame
+                if not camera_frame or image is None:
+                    self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
+                    self.multiPointController.request_abort_aquisition()
+                    return
 
-            with self._timing.get_timer("save_image"):
-                # NOTE(imo): We silently fall back to individual image saving here.  We should warn or do something.
-                if FILE_SAVING_OPTION == FileSavingOption.MULTI_PAGE_TIFF and self._file_writer is not None:
-                    metadata = {
-                        "z_level": info.z_index,
-                        "channel": info.configuration.name,
-                        "channel_index": info.configuration_idx,
-                        "region_id": info.region_id,
-                        "fov": info.fov,
-                        "x_mm": info.position.x_mm,
-                        "y_mm": info.position.y_mm,
-                        "z_mm": info.position.z_mm,
-                    }
-                    self._file_writer.append_data(image, meta=metadata)
-                else:
-                    self.save_image(image, info.file_id, info.configuration, info.save_directory, camera_frame.is_color())
-            with self._timing.get_timer("update_napari"):
-                self.update_napari(image, info)
+                height, width = image.shape[:2]
+                with self._timing.get_timer("crop_image"):
+                    image_to_display = utils.crop_image(
+                        image,
+                        round(width * self.display_resolution_scaling),
+                        round(height * self.display_resolution_scaling),
+                    )
+                with self._timing.get_timer("image_to_display*.emit"):
+                    self.image_to_display.emit(image_to_display)
+                    self.image_to_display_multi.emit(image_to_display, info.configuration.illumination_source)
+
+                with self._timing.get_timer("save_image"):
+                    # NOTE(imo): We silently fall back to individual image saving here.  We should warn or do something.
+                    if FILE_SAVING_OPTION == FileSavingOption.MULTI_PAGE_TIFF and self._file_writer is not None:
+                        metadata = {
+                            "z_level": info.z_index,
+                            "channel": info.configuration.name,
+                            "channel_index": info.configuration_idx,
+                            "region_id": info.region_id,
+                            "fov": info.fov,
+                            "x_mm": info.position.x_mm,
+                            "y_mm": info.position.y_mm,
+                            "z_mm": info.position.z_mm,
+                        }
+                        self._file_writer.append_data(image, meta=metadata)
+                    else:
+                        self.save_image(image, info.file_id, info.configuration, info.save_directory, camera_frame.is_color())
+                with self._timing.get_timer("update_napari"):
+                    self.update_napari(image, info)
+        finally:
+            self._image_callback_idle.set()
 
     def _frame_wait_timeout_s(self):
         return (self.camera.get_total_frame_time() / 1e3) + 10
