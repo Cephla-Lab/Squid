@@ -7,6 +7,7 @@ from datetime import datetime
 
 import cv2
 import imageio as iio
+import tifffile
 import numpy as np
 from numpy.typing import NDArray
 import pandas as pd
@@ -660,8 +661,8 @@ class MultiPointWorker(QObject):
                 "z_mm": info.position.z_mm,
             }
             output_path = os.path.join(info.save_directory, f"{info.region_id}_{info.fov:0{FILE_ID_PADDING}}_stack.tiff")
-            tiff_writer = iio.get_writer(output_path, format="TIFF")
-            tiff_writer.append_data(image, meta=metadata)
+            with tifffile.TiffWriter(output_path, append=True) as tiff_writer:
+                tiff_writer.write(image, metadata=metadata)
         else:
             saved_image = utils_acquisition.save_image(
                 image=image, file_id=info.file_id, save_directory=info.save_directory, config=info.configuration, is_color=is_color
