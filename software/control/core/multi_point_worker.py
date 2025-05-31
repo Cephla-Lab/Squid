@@ -66,7 +66,6 @@ class MultiPointWorker(QObject):
         self.multiPointController = multiPointController
         self._log = squid.logging.get_logger(__class__.__name__)
         self._timing = control.utils.TimingManager("MultiPointWorker Timer Manager")
-        self._file_writer = None
         self.start_time = 0
         self.camera: AbstractCamera = self.multiPointController.camera
         self.microcontroller = self.multiPointController.microcontroller
@@ -368,29 +367,6 @@ class MultiPointWorker(QObject):
                     self.handle_acquisition_abort(current_path, region_id)
                     return
 
-    def _setup_new_file_writer(self, current_path, region_id, fov):
-        if self._file_writer is not None:
-            self._log.warning("File writer exists, but not expecting one to.")
-            self._close_file_writer_if_needed()
-
-        if FILE_SAVING_OPTION == FileSavingOption.MULTI_PAGE_TIFF:
-            self._log.info("Saving acquisition images in a multi page tiff instead of individual images.")
-            output_path = os.path.join(current_path, f"{region_id}_{fov:0{FILE_ID_PADDING}}_stack.tiff")
-            self._file_writer = iio.get_writer(output_path, format="TIFF")
-        elif FILE_SAVING_OPTION == FileSavingOption.INDIVIDUAL_IMAGES:
-            self._log.info("Saving individual images from acquisition...")
-        else:
-            self._log.info("Unknown file saving option, falling back to individual images.")
-
-        return self._file_writer
-
-    def _close_file_writer_if_needed(self):
-        try:
-            if self._file_writer is not None:
-                self._file_writer.close()
-        finally:
-            self._file_writer = None
-
     def acquire_at_position(self, region_id, current_path, fov):
         if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in globals():
             print("run custom multipoint")
@@ -407,10 +383,6 @@ class MultiPointWorker(QObject):
 
         if self.use_piezo:
             self.z_piezo_um = self.piezo.position
-
-        # TODO(imo): It'd be simpler to *always* use a file writer instead of special casing the individual image
-        # case, but for now we do that.
-        self._setup_new_file_writer(current_path=current_path, region_id=region_id, fov=fov)
 
         for z_level in range(self.NZ):
             file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
@@ -458,7 +430,6 @@ class MultiPointWorker(QObject):
             # check if the acquisition should be aborted
             if self.multiPointController.abort_acqusition_requested:
                 self.handle_acquisition_abort(current_path, region_id)
-                self._close_file_writer_if_needed()
 
             # update FOV counter
             self.af_fov_count = self.af_fov_count + 1
@@ -468,8 +439,6 @@ class MultiPointWorker(QObject):
 
         if self.NZ > 1:
             self.move_z_back_after_stack()
-
-        self._close_file_writer_if_needed()
 
     def _select_config(self, config: ChannelMode):
         self.signal_current_configuration.emit(config)
@@ -557,21 +526,7 @@ class MultiPointWorker(QObject):
                     self.image_to_display_multi.emit(image_to_display, info.configuration.illumination_source)
 
                 with self._timing.get_timer("save_image"):
-                    # NOTE(imo): We silently fall back to individual image saving here.  We should warn or do something.
-                    if FILE_SAVING_OPTION == FileSavingOption.MULTI_PAGE_TIFF and self._file_writer is not None:
-                        metadata = {
-                            "z_level": info.z_index,
-                            "channel": info.configuration.name,
-                            "channel_index": info.configuration_idx,
-                            "region_id": info.region_id,
-                            "fov": info.fov,
-                            "x_mm": info.position.x_mm,
-                            "y_mm": info.position.y_mm,
-                            "z_mm": info.position.z_mm,
-                        }
-                        self._file_writer.append_data(image, meta=metadata)
-                    else:
-                        self.save_image(image, info.file_id, info.configuration, info.save_directory, camera_frame.is_color())
+                    self.save_image(image, info, camera_frame.is_color())
                 with self._timing.get_timer("update_napari"):
                     self.update_napari(image, info)
         finally:
@@ -691,13 +646,29 @@ class MultiPointWorker(QObject):
                 )
                 np.savetxt(saving_path, data, delimiter=",")
 
-    def save_image(self, image: np.array, file_ID: str, config: ChannelMode, current_path: str, is_color: bool):
-        saved_image = utils_acquisition.save_image(
-            image=image, file_id=file_ID, save_directory=current_path, config=config, is_color=is_color
-        )
+    def save_image(self, image: np.array, info: CaptureInfo, is_color: bool):
+        # NOTE(imo): We silently fall back to individual image saving here.  We should warn or do something.
+        if FILE_SAVING_OPTION == FileSavingOption.MULTI_PAGE_TIFF:
+            metadata = {
+                "z_level": info.z_index,
+                "channel": info.configuration.name,
+                "channel_index": info.configuration_idx,
+                "region_id": info.region_id,
+                "fov": info.fov,
+                "x_mm": info.position.x_mm,
+                "y_mm": info.position.y_mm,
+                "z_mm": info.position.z_mm,
+            }
+            output_path = os.path.join(info.save_directory, f"{info.region_id}_{info.fov:0{FILE_ID_PADDING}}_stack.tiff")
+            tiff_writer = iio.get_writer(output_path, format="TIFF")
+            tiff_writer.append_data(image, meta=metadata)
+        else:
+            saved_image = utils_acquisition.save_image(
+                image=image, file_id=info.file_id, save_directory=info.save_directory, config=info.configuration, is_color=is_color
+            )
 
-        if MERGE_CHANNELS:
-            self._save_merged_image(saved_image, file_ID, current_path)
+            if MERGE_CHANNELS:
+                self._save_merged_image(saved_image, info.file_id, info.save_directory)
 
     def _save_merged_image(self, image: np.array, file_ID: str, current_path: str):
         self.image_count += 1
