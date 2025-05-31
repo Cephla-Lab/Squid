@@ -249,6 +249,10 @@ class PhotometricsCamera(AbstractCamera):
             return self._current_frame.frame_id if self._current_frame else -1
 
     def set_exposure_time(self, exposure_time_ms: float):
+        # Kinetix camera set_exposure_time is slow, so we don't want to call it unnecessarily.
+        if exposure_time_ms == self._exposure_time_ms:
+            return
+
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
             strobe_time_ms = self.get_strobe_time()
             adjusted_exposure_time = exposure_time_ms + strobe_time_ms
@@ -370,6 +374,7 @@ class PhotometricsCamera(AbstractCamera):
                     raise ValueError(f"Unsupported acquisition mode: {acquisition_mode}")
 
                 self._acquisition_mode = acquisition_mode
+                self.set_exposure_time(self._exposure_time_ms)
 
             except Exception as e:
                 raise CameraError(f"Failed to set acquisition mode: {e}")
