@@ -3,6 +3,9 @@ import inspect
 import pathlib
 import sys
 import shutil
+import statistics
+import time
+from dataclasses import dataclass
 
 import cv2
 import git
@@ -11,7 +14,7 @@ import numpy as np
 from scipy.ndimage import label
 from scipy import signal
 import os
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 from control._def import (
     LASER_AF_Y_WINDOW,
@@ -439,3 +442,88 @@ def get_directory_disk_usage(directory: pathlib.Path) -> int:
                 total_size += os.path.getsize(fp)
 
     return total_size
+
+
+class TimingManager:
+    @dataclass
+    class TimingPair:
+        start: float
+        stop: float
+
+        def elapsed(self):
+            return self.stop - self.start
+
+    class Timer:
+        def __init__(self, name):
+            self._log = squid.logging.get_logger(self.__class__.__name__)
+            self._name = name
+            self._timing_pairs: List[TimingManager.TimingPair] = []
+            self._last_start: Optional[float] = None
+
+        def __enter__(self):
+            self.start()
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.stop()
+
+        def start(self):
+            if self._last_start:
+                self._log.warning(f"Double start detected for Timer={self._name}")
+            self._log.debug(f"Starting name={self._name}")
+            self._last_start = time.perf_counter()
+
+        def stop(self):
+            if not self._last_start:
+                self._log.error(f"Timer={self._name} got stop() without start() first.")
+                return
+            this_pair = TimingManager.TimingPair(self._last_start, time.perf_counter())
+            self._timing_pairs.append(this_pair)
+            self._log.debug(f"Stopping name={self._name} with elapsed={this_pair.elapsed()} [s]")
+            self._last_start = None
+
+        def get_intervals(self):
+            return [tp.elapsed() for tp in self._timing_pairs]
+
+        def get_report(self):
+            intervals = self.get_intervals()
+
+            def mean(i):
+                if not len(i):
+                    return "N/A"
+                return f"{statistics.mean(i):.4f}"
+
+            def median(i):
+                if not len(i):
+                    return "N/A"
+                return f"{statistics.median(i):.4f}"
+
+            def min_max(i):
+                if not len(i):
+                    return "N/A"
+                return f"{min(i):.4f}/{max(i):.4f}"
+
+            return f"{self._name} (N={len(intervals)}): mean={mean(intervals)} [s], median={median(intervals)} [s], min/max={min_max(intervals)} [s]"
+
+    def __init__(self, name):
+        self._name = name
+        self._timers = {}
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+    def get_timer(self, name) -> Timer:
+        if name not in self._timers:
+            self._log.debug(f"Creating timer={name} for manager={self._name}")
+            self._timers[name] = TimingManager.Timer(name)
+
+        return self._timers[name]
+
+    def get_report(self) -> str:
+        timer_names = sorted(self._timers.keys())
+        report = f"Timings For {self._name}:\n"
+        for name in timer_names:
+            timer = self._timers[name]
+            report += f"  {timer.get_report()}\n"
+
+        return report
+
+    def get_intervals(self, name) -> List[float]:
+        return self.get_timer(name).get_intervals()
