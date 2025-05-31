@@ -187,6 +187,8 @@ class MultiPointWorker(QObject):
             elapsed_time = time.perf_counter_ns() - self.start_time
             self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
 
+            # Since we use callback based acquisition, make sure to wait for any final images to come in
+            self._wait_for_outstanding_callback_images()
             self._log.info(
                 f"Time taken for acquisition/processing: {(time.perf_counter_ns() - self.start_time) / 1e9} [s]"
             )
@@ -195,11 +197,20 @@ class MultiPointWorker(QObject):
             self._log.error(te)
             self.multiPointController.request_abort_aquisition()
         finally:
+            # We do this above, but there are some paths that skip the proper end of the acquisition so make
+            # sure to always wait for final images here before removing our callback.
+            self._wait_for_outstanding_callback_images()
             self._log.debug(self._timing.get_report())
             if this_image_callback_id:
                 self.camera.remove_frame_callback(this_image_callback_id)
         if not self.headless:
             self.finished.emit()
+
+    def _wait_for_outstanding_callback_images(self):
+        # If there are outstanding frames, wait for them to come in.
+        self._log.info("Waiting for any outstanding frames.")
+        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
+            self._log.warning("Timed out waiting for the last outstanding frames at end of acquisition!")
 
     def wait_till_operation_is_completed(self):
         self.microcontroller.wait_till_operation_is_completed()
@@ -792,11 +803,7 @@ class MultiPointWorker(QObject):
         self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
         self.microcontroller.enable_joystick(True)
 
-        # If there are outstanding frames, wait for them to come in.
-        self._log.info("Waiting for any outstanding frames at end of acquisition.")
-        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
-            self._log.warning("Timed out waiting for the last outstanding frames at end of acquisition!")
-
+        self._wait_for_outstanding_callback_images()
 
     def move_z_for_stack(self):
         if self.use_piezo:
