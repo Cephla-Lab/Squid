@@ -219,6 +219,10 @@ class MultiPointWorker(QObject):
         if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
             self._log.warning("Timed out waiting for the last image to process!")
 
+        # No matter what, set the flags so things can continue
+        self._ready_for_next_trigger.set()
+        self._image_callback_idle.set()
+
     def wait_till_operation_is_completed(self):
         self.microcontroller.wait_till_operation_is_completed()
 
