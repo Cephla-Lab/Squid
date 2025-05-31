@@ -406,7 +406,9 @@ class MultiPointWorker(QObject):
                 # acquire image
                 with self._timing.get_timer("acquire_camera_image"):
                     if "USB Spectrometer" not in config.name and "RGB" not in config.name:
-                        self.acquire_camera_image(config, file_ID, current_path, z_level, region_id=region_id, fov=fov, config_idx=config_idx)
+                        self.acquire_camera_image(
+                            config, file_ID, current_path, z_level, region_id=region_id, fov=fov, config_idx=config_idx
+                        )
                     elif "RGB" in config.name:
                         self.acquire_rgb_image(config, file_ID, current_path, current_round_images, z_level)
                     else:
@@ -535,7 +537,9 @@ class MultiPointWorker(QObject):
     def _frame_wait_timeout_s(self):
         return (self.camera.get_total_frame_time() / 1e3) + 10
 
-    def acquire_camera_image(self, config, file_ID: str, current_path: str, k: int, region_id: int, fov: int, config_idx: int):
+    def acquire_camera_image(
+        self, config, file_ID: str, current_path: str, k: int, region_id: int, fov: int, config_idx: int
+    ):
         self._select_config(config)
 
         # trigger acquisition (including turning on the illumination) and read frame
@@ -575,7 +579,7 @@ class MultiPointWorker(QObject):
             file_id=file_ID,
             region_id=region_id,
             fov=fov,
-            configuration_idx=config_idx
+            configuration_idx=config_idx,
         )
         self._current_capture_info = current_capture_info
         self.camera.send_trigger(illumination_time=camera_illumination_time)
@@ -662,12 +666,18 @@ class MultiPointWorker(QObject):
                 "y_mm": info.position.y_mm,
                 "z_mm": info.position.z_mm,
             }
-            output_path = os.path.join(info.save_directory, f"{info.region_id}_{info.fov:0{FILE_ID_PADDING}}_stack.tiff")
+            output_path = os.path.join(
+                info.save_directory, f"{info.region_id}_{info.fov:0{FILE_ID_PADDING}}_stack.tiff"
+            )
             with tifffile.TiffWriter(output_path, append=True) as tiff_writer:
                 tiff_writer.write(image, metadata=metadata)
         else:
             saved_image = utils_acquisition.save_image(
-                image=image, file_id=info.file_id, save_directory=info.save_directory, config=info.configuration, is_color=is_color
+                image=image,
+                file_id=info.file_id,
+                save_directory=info.save_directory,
+                config=info.configuration,
+                is_color=is_color,
             )
 
             if MERGE_CHANNELS:
