@@ -2392,9 +2392,7 @@ class MultiPointController(QObject):
             self.multiPointWorker.image_to_display.connect(self.slot_image_to_display)
             self.multiPointWorker.image_to_display_multi.connect(self.slot_image_to_display_multi)
             self.multiPointWorker.spectrum_to_display.connect(self.slot_spectrum_to_display)
-            self.multiPointWorker.signal_current_configuration.connect(
-                self.slot_current_configuration, type=Qt.BlockingQueuedConnection
-            )
+            self.multiPointWorker.signal_current_configuration.connect(self.slot_current_configuration)
             self.multiPointWorker.signal_register_current_fov.connect(self.slot_register_current_fov)
             self.multiPointWorker.napari_layers_init.connect(self.slot_napari_layers_init)
             self.multiPointWorker.napari_layers_update.connect(self.slot_napari_layers_update)
