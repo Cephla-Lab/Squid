@@ -56,6 +56,10 @@ def calculate_focus_measure(image, method="LAPE"):
         focus_measure = mean(square(lap))
     elif method == "GLVA":
         focus_measure = np.std(image, axis=None)  # GLVA
+    elif method == "TENENGRAD":
+        sobelx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
+        sobely = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
+        focus_measure = np.sum(np.sqrt(sobelx**2 + sobely**2))
     else:
         focus_measure = np.std(image, axis=None)  # GLVA
     return focus_measure
