@@ -428,9 +428,9 @@ class HighContentScreeningGui(QMainWindow):
 
         if USE_CELESTA_ETHENET_CONTROL:
             try:
-                import control.celesta
+                import control.lighting_celesta
 
-                self.celesta = control.celesta.CELESTA()
+                self.celesta = control.lighting_celesta.CELESTA()
                 self.illuminationController = IlluminationController(
                     self.microcontroller,
                     IntensityControlMode.Software,
