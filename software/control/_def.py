@@ -548,7 +548,7 @@ N_SPECTRUM_PER_POINT = 5
 
 # focus measure operator
 FOCUS_MEASURE_OPERATOR = (
-    "TENENGRAD"  # LAPE has worked well for bright field images; GLVA works well for darkfield/fluorescence
+    "LAPE"  # LAPE has worked well for bright field images; GLVA works well for darkfield/fluorescence
 )
 
 # controller version
