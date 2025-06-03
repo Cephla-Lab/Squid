@@ -9693,6 +9693,7 @@ class SurfacePlotWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._log = squid.logging.get_logger(__name__)
 
         # Setup canvas and figure
         self.fig = Figure()
@@ -9719,42 +9720,48 @@ class SurfacePlotWidget(QWidget):
             y (np.array): Y coordinates (1D array)
             z (np.array): Z coordinates (1D array)
         """
-        # Store the original coordinates
-        self.x = x
-        self.y = y
-        self.z = z
+        try:
+            # Store the original coordinates
+            self.x = x
+            self.y = y
+            self.z = z
 
-        # Clear previous plot
-        self.ax.clear()
+            # Clear previous plot
+            self.ax.clear()
 
-        # plot surface by region
-        for r in np.unique(region):
-            mask = region == r
-            grid_x, grid_y = np.mgrid[min(x[mask]) : max(x[mask]) : 10j, min(y[mask]) : max(y[mask]) : 10j]
-            grid_z = griddata((x[mask], y[mask]), z[mask], (grid_x, grid_y), method="cubic")
-            self.ax.plot_surface(grid_x, grid_y, grid_z, cmap="viridis", edgecolor="none")
-            # self.ax.plot_trisurf(x[mask], y[mask], z[mask], cmap='viridis', edgecolor='none')
+            # plot surface by region
+            for r in np.unique(region):
+                try:
+                    mask = region == r
+                    grid_x, grid_y = np.mgrid[min(x[mask]) : max(x[mask]) : 10j, min(y[mask]) : max(y[mask]) : 10j]
+                    grid_z = griddata((x[mask], y[mask]), z[mask], (grid_x, grid_y), method="cubic")
+                    self.ax.plot_surface(grid_x, grid_y, grid_z, cmap="viridis", edgecolor="none")
+                    # self.ax.plot_trisurf(x[mask], y[mask], z[mask], cmap='viridis', edgecolor='none')
+                except Exception as e:
+                    raise Exception(f"Cannot plotting region {r}: {e}")
 
-        # Create scatter plot using original coordinates
-        self.colors = ["r"] * len(self.x)
-        self.scatter = self.ax.scatter(self.x, self.y, self.z, c=self.colors, s=30)
+            # Create scatter plot using original coordinates
+            self.colors = ["r"] * len(self.x)
+            self.scatter = self.ax.scatter(self.x, self.y, self.z, c=self.colors, s=30)
 
-        # Set labels
-        self.ax.set_xlabel("X (mm)")
-        self.ax.set_ylabel("Y (mm)")
-        self.ax.set_zlabel("Z (um)")
-        self.ax.set_title("Double-click a point to go to that position")
+            # Set labels
+            self.ax.set_xlabel("X (mm)")
+            self.ax.set_ylabel("Y (mm)")
+            self.ax.set_zlabel("Z (um)")
+            self.ax.set_title("Double-click a point to go to that position")
 
-        # Force x and y to have same scale
-        max_range = max(np.ptp(self.x), np.ptp(self.y))
-        center_x = np.mean(self.x)
-        center_y = np.mean(self.y)
+            # Force x and y to have same scale
+            max_range = max(np.ptp(self.x), np.ptp(self.y))
+            center_x = np.mean(self.x)
+            center_y = np.mean(self.y)
 
-        self.ax.set_xlim(center_x - max_range / 2, center_x + max_range / 2)
-        self.ax.set_ylim(center_y - max_range / 2, center_y + max_range / 2)
+            self.ax.set_xlim(center_x - max_range / 2, center_x + max_range / 2)
+            self.ax.set_ylim(center_y - max_range / 2, center_y + max_range / 2)
 
-        self.canvas.draw()
-        self.plot_populated = True
+            self.canvas.draw()
+            self.plot_populated = True
+        except Exception as e:
+            self._log.error(f"Error plotting surface: {e}")
 
     def on_scroll(self, event):
         scale = 1.1 if event.button == "up" else 0.9
