@@ -19,13 +19,13 @@ class VersaLase(LightSource):
     individual power and shutter control for each channel.
     """
 
-    def __init__(self, vendor_id=0x201A, product_id=0x0003, **kwds):
+    def __init__(self, vendor_id=0x201A, product_id=0x1001, **kwds):
         """
         Initialize the VersaLase controller and establish USB communication.
 
         Args:
             vendor_id: USB vendor ID (default: 0x201a)
-            product_id: USB product ID (default: 0x0003)
+            product_id: USB product ID (default: 0x1001)
         """
         self._log = squid.logging.get_logger(__name__)
 
@@ -53,7 +53,6 @@ class VersaLase(LightSource):
         Returns True if successful, False otherwise.
         """
         try:
-            # Find and connect to the device
             self.dev = usb.core.find(idVendor=self.vendor_id, idProduct=self.product_id)
             if self.dev is None:
                 raise ValueError("VersaLase device not found")
