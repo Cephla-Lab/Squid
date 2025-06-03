@@ -9733,12 +9733,16 @@ class SurfacePlotWidget(QWidget):
             for r in np.unique(region):
                 try:
                     mask = region == r
-                    grid_x, grid_y = np.mgrid[min(x[mask]) : max(x[mask]) : 10j, min(y[mask]) : max(y[mask]) : 10j]
-                    grid_z = griddata((x[mask], y[mask]), z[mask], (grid_x, grid_y), method="cubic")
-                    self.ax.plot_surface(grid_x, grid_y, grid_z, cmap="viridis", edgecolor="none")
-                    # self.ax.plot_trisurf(x[mask], y[mask], z[mask], cmap='viridis', edgecolor='none')
+                    num_points = np.sum(mask)
+                    if num_points >= 4:
+                        grid_x, grid_y = np.mgrid[min(x[mask]) : max(x[mask]) : 10j, min(y[mask]) : max(y[mask]) : 10j]
+                        grid_z = griddata((x[mask], y[mask]), z[mask], (grid_x, grid_y), method="cubic")
+                        self.ax.plot_surface(grid_x, grid_y, grid_z, cmap="viridis", edgecolor="none")
+                        # self.ax.plot_trisurf(x[mask], y[mask], z[mask], cmap='viridis', edgecolor='none')
+                    else:
+                        self._log.debug(f"Region {r} has only {num_points} point(s), skipping surface interpolation")
                 except Exception as e:
-                    raise Exception(f"Cannot plotting region {r}: {e}")
+                    raise Exception(f"Cannot plot region {r}: {e}")
 
             # Create scatter plot using original coordinates
             self.colors = ["r"] * len(self.x)
