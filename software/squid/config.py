@@ -171,6 +171,7 @@ class CameraVariant(enum.Enum):
 
 class GxipyCameraModel(enum.Enum):
     MER2_1220_32U3M = "MER2-1220-32U3M"
+    MER2_1220_32U3C = "MER2-1220-32U3C"
     MER2_630_60U3M = "MER2-630-60U3M"
 
     @staticmethod

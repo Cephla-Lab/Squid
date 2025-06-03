@@ -327,6 +327,7 @@ class DefaultCamera(AbstractCamera):
 
     _MODEL_TO_SENSOR = {
         GxipyCameraModel.MER2_1220_32U3M: CameraSensor.IMX226,
+        GxipyCameraModel.MER2_1220_32U3C: CameraSensor.IMX226,
         GxipyCameraModel.MER2_630_60U3M: CameraSensor.IMX178,
     }
 
