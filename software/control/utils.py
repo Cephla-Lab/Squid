@@ -24,6 +24,7 @@ from control._def import (
     LASER_AF_MIN_PEAK_PROMINENCE,
     LASER_AF_SPOT_SPACING,
     SpotDetectionMode,
+    FocusMeasureOperator,
 )
 import squid.logging
 
@@ -45,23 +46,23 @@ def crop_image(image, crop_width, crop_height):
     return image_cropped
 
 
-def calculate_focus_measure(image, method="LAPE"):
+def calculate_focus_measure(image, method=FocusMeasureOperator.LAPE):
     if len(image.shape) == 3:
         image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)  # optional
-    if method == "LAPE":
+    if method == FocusMeasureOperator.LAPE:
         if image.dtype == np.uint16:
             lap = cv2.Laplacian(image, cv2.CV_32F)
         else:
             lap = cv2.Laplacian(image, cv2.CV_16S)
         focus_measure = mean(square(lap))
-    elif method == "GLVA":
+    elif method == FocusMeasureOperator.GLVA:
         focus_measure = np.std(image, axis=None)  # GLVA
-    elif method == "TENENGRAD":
+    elif method == FocusMeasureOperator.TENENGRAD:
         sobelx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
         sobely = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
         focus_measure = np.sum(cv2.magnitude(sobelx, sobely))
     else:
-        focus_measure = np.std(image, axis=None)  # GLVA
+        raise ValueError(f"Invalid focus measure operator: {method}")
     return focus_measure
 
 

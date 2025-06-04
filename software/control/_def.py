@@ -267,6 +267,25 @@ class FileSavingOption(Enum):
             raise ValueError(f"Invalid file saving option: {option}")
 
 
+class FocusMeasureOperator(Enum):
+    LAPE = "LAPE"  # LAPE has worked well for bright field images
+    GLVA = "GLVA"  # GLVA works well for darkfield/fluorescence
+    TENENGRAD = "TENENGRAD"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "FocusMeasureOperator"]) -> "FocusMeasureOperator":
+        """
+        Attempts to convert the given string to a FocusMeasureOperator.  This ignores all letter cases.
+        """
+        if isinstance(option, FocusMeasureOperator):
+            return option
+
+        try:
+            return FocusMeasureOperator[option.upper()]
+        except KeyError:
+            raise ValueError(f"Invalid focus measure operator: {option}")
+
+
 PRINT_CAMERA_FPS = True
 
 ###########################################################
@@ -547,9 +566,7 @@ WELLPLATE_OFFSET_Y_mm = 0  # y offset adjustment for using different plates
 N_SPECTRUM_PER_POINT = 5
 
 # focus measure operator
-FOCUS_MEASURE_OPERATOR = (
-    "LAPE"  # LAPE has worked well for bright field images; GLVA works well for darkfield/fluorescence
-)
+FOCUS_MEASURE_OPERATOR = FocusMeasureOperator.LAPE
 
 # controller version
 CONTROLLER_VERSION = "Arduino Due"  # 'Teensy'
@@ -910,8 +927,9 @@ A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_pixel"]  # coordi
 HAS_OBJECTIVE_PIEZO = "PIEZO" in Z_MOTOR_CONFIG
 MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
 
-# file saving
+# convert str to enum
 FILE_SAVING_OPTION = FileSavingOption.convert_to_enum(FILE_SAVING_OPTION)
+FOCUS_MEASURE_OPERATOR = FocusMeasureOperator.convert_to_enum(FOCUS_MEASURE_OPERATOR)
 
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):
