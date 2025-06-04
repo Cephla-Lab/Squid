@@ -586,7 +586,7 @@ class MultiPointWorker(QObject):
         if self.liveController.trigger_mode == TriggerMode.HARDWARE:
             exposure_done_time = time.time() + self.camera.get_total_frame_time() / 1e3
         else:
-            # For software trigger, add another strobe time to illuminate until the readout stage.
+            # For software trigger, add another strobe time to illuminate until all lines end exposure.
             exposure_done_time = (
                 time.time() + (self.camera.get_total_frame_time() + self.camera.get_strobe_time()) / 1e3
             )
