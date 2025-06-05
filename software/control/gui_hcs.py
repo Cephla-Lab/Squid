@@ -1660,6 +1660,19 @@ class HighContentScreeningGui(QMainWindow):
         self.stage.move_y_to(y_mm)
 
     def closeEvent(self, event):
+        # Show confirmation dialog
+        reply = QMessageBox.question(
+            self,
+            "Confirm Exit",
+            "Are you sure you want to exit the software?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if reply == QMessageBox.No:
+            event.ignore()
+            return
+
         try:
             squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
         except ValueError as e:
