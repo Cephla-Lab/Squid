@@ -1499,7 +1499,7 @@ class LiveControlWidget(QFrame):
         self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
         self.slider_resolutionScaling.valueChanged.connect(self.streamHandler.set_display_resolution_scaling)
         self.slider_resolutionScaling.valueChanged.connect(self.liveController.set_display_resolution_scaling)
-        self.dropdown_modeSelection.activated.connect(self.select_new_microscope_mode_by_index)
+        self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
         self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
@@ -1598,8 +1598,7 @@ class LiveControlWidget(QFrame):
             self.update_ui_for_mode(first_config)
             self.liveController.set_microscope_mode(first_config)
 
-    def select_new_microscope_mode_by_index(self, config_index):
-        config_name = self.dropdown_modeSelection.itemText(config_index)
+    def select_new_microscope_mode_by_name(self, config_name):
         maybe_new_config = self.channelConfigurationManager.get_channel_configuration_by_name(
             self.objectiveStore.current_objective, config_name
         )

@@ -1067,12 +1067,12 @@ class HighContentScreeningGui(QMainWindow):
             self.objectivesWidget.signal_objective_changed.connect(self.wellplateMultiPointWidget.update_coordinates)
 
         self.profileWidget.signal_profile_changed.connect(
-            lambda: self.liveControlWidget.update_microscope_mode_by_name(
+            lambda: self.liveControlWidget.select_new_microscope_mode_by_name(
                 self.liveControlWidget.currentConfiguration.name
             )
         )
         self.objectivesWidget.signal_objective_changed.connect(
-            lambda: self.liveControlWidget.update_microscope_mode_by_name(
+            lambda: self.liveControlWidget.select_new_microscope_mode_by_name(
                 self.liveControlWidget.currentConfiguration.name
             )
         )
@@ -1131,7 +1131,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.channelConfigurationManager.toggle_confocal_widefield
             )
             self.spinningDiskConfocalWidget.signal_toggle_confocal_widefield.connect(
-                lambda: self.liveControlWidget.update_microscope_mode_by_name(
+                lambda: self.liveControlWidget.select_new_microscope_mode_by_name(
                     self.liveControlWidget.currentConfiguration.name
                 )
             )
