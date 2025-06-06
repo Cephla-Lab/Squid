@@ -410,6 +410,7 @@ class HamamatsuCamera(AbstractCamera):
             if not self._set_prop(DCAM_IDPROP.TRIGGERSOURCE, dcam_trigger_source):
                 self._log.error(f"Failed to set acquisition mode to {acquisition_mode=}")
                 return False
+            self.set_exposure_time(self._exposure_time_ms)
         return True
 
     def get_acquisition_mode(self) -> CameraAcquisitionMode:
