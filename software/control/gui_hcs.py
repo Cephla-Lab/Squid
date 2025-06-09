@@ -513,16 +513,17 @@ class HighContentScreeningGui(QMainWindow):
 
             if HOMING_ENABLED_X and HOMING_ENABLED_Y:
                 # The plate clamp actuation post can get in the way of homing if we start with
-                # the stage in "just the wrong" position.  Blindly moving the Y out 20, then the
-                # x over 20, guarantees we'll clear the post for homing.  If we are <20mm from the
-                # end travel of either axis, we'll just stop at the extent without consequence.
+                # the stage in "just the wrong" position.  Blindly moving the Y out 20, then home x
+                # and move x over 20 , guarantees we'll clear the post for homing.  If we are <20mm
+                # from the end travel of either axis, we'll just stop at the extent without consequence.
                 #
                 # The one odd corner case is if the system gets shut down in the loading position.
                 # in that case, we drive off of the loading position and the clamp closes quickly.
                 # This doesn't seem to cause problems, and there isn't a clean way to avoid the corner
                 # case.
-                self.log.info("Moving y+20, then x+20 to make sure system is clear for homing.")
+                self.log.info("Moving y+20, then x->home->+20 to make sure system is clear for homing.")
                 self.stage.move_y(20)
+                self.stage.home(x=True, y=False, z=False, theta=False)
                 self.stage.move_x(20)
 
                 self.log.info("Homing the X and Y axes...")
