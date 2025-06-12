@@ -1426,18 +1426,19 @@ class LiveControlWidget(QFrame):
         self.entry_exposureTime.setSizePolicy(sizePolicy)
 
         self.entry_analogGain = QDoubleSpinBox()
-        self.entry_analogGain.setMinimum(0)
-        self.entry_analogGain.setMaximum(24)
-        # self.entry_analogGain.setSuffix('x')
-        self.entry_analogGain.setSingleStep(0.1)
-        self.entry_analogGain.setValue(0)
-        self.entry_analogGain.setSizePolicy(sizePolicy)
         # Not all cameras support analog gain, so attempt to get the gain
         # to check this
         try:
-            self.liveController.camera.get_analog_gain()
+            gain_range = self.liveController.camera.get_gain_range()
+            self.entry_analogGain.setMinimum(gain_range.min_gain)
+            self.entry_analogGain.setMaximum(gain_range.max_gain)
+            self.entry_analogGain.setSingleStep(gain_range.gain_step)
+            self.entry_analogGain.setValue(gain_range.min_gain)
+            self.entry_analogGain.setSizePolicy(sizePolicy)
+            self.liveController.camera.set_analog_gain(gain_range.min_gain)
         except NotImplementedError:
-            self._log.info("Analog gain not supported, disabling it in live control widget.")
+            self._log.info("Analog gain not supported,  disabling it in live control widget.")
+            self.entry_analogGain.setValue(0)
             self.entry_analogGain.setEnabled(False)
 
         self.slider_illuminationIntensity = QSlider(Qt.Horizontal)

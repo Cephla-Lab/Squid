@@ -150,6 +150,11 @@ class TucsenCamera(AbstractCamera):
 
         self._camera = TucsenCamera._open(index=0)
         self._binning = self._config.default_binning
+        if self._config.camera_model == TucsenCameraModel.FL26_BW:
+            self._camera_mode = ModeFL26BW.STANDARD if self._config.default_binning == (1, 1) else ModeFL26BW.SENBIN
+            # Low noise mode is not supported for FL26BW model yet.
+        else:
+            self._camera_mode = Mode400BSIV3.HDR  # HDR as default
 
         self._m_frame = None  # image buffer
         # We need to keep trigger attribute for starting and stopping streaming
@@ -377,7 +382,7 @@ class TucsenCamera(AbstractCamera):
         # Right now we are only using 400BSI V3's HDR mode.
         # TODO: Support more modes.
         _, _, _, height = self.get_region_of_interest()
-        readout_time_ms = TucsenCamera._MODE_TO_LINE_RATE_US[Mode400BSIV3.HDR] * height * self._binning[1] / 1000.0
+        readout_time_ms = TucsenCamera._MODE_TO_LINE_RATE_US[self._camera_mode] * height * self._binning[1] / 1000.0
 
         trigger_attr = TUCAM_TRIGGER_ATTR()
         if TUCAM_Cap_GetTrigger(self._camera, pointer(trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
@@ -434,6 +439,8 @@ class TucsenCamera(AbstractCamera):
                 != TUCAMRET.TUCAMRET_SUCCESS
             ):
                 raise CameraError("Cannot set camera binning.")
+            if self._config.camera_model == TucsenCameraModel.FL26_BW:
+                self._camera_mode = ModeFL26BW.STANDARD if bin_value == 0 else ModeFL26BW.SENBIN
             self._update_internal_settings()
 
     def set_binning(self, binning_factor_x: int, binning_factor_y: int):
@@ -468,16 +475,23 @@ class TucsenCamera(AbstractCamera):
         return self.get_pixel_size_unbinned_um() * self.get_binning()[0]
 
     def set_analog_gain(self, analog_gain: float):
-        # TODO: This should be supported for FL26BW model
-        raise NotImplementedError("Analog gain is not implemented for this camera.")
+        if self._config.camera_model == TucsenCameraModel.FL26_BW:
+            self._raw_set_analog_gain_fl26bw(analog_gain)
+        else:
+            raise NotImplementedError("Analog gain is not implemented for this camera.")
 
     def get_analog_gain(self) -> float:
-        # TODO: This should be supported for FL26BW model
-        raise NotImplementedError("Analog gain is not implemented for this camera.")
+        if self._config.camera_model == TucsenCameraModel.FL26_BW:
+            return self._raw_get_analog_gain_fl26bw()
+        else:
+            raise NotImplementedError("Analog gain is not implemented for this camera.")
 
     def get_gain_range(self) -> CameraGainRange:
-        # TODO: This should be supported for FL26BW model
-        raise NotImplementedError("Analog gain is not implemented for this camera.")
+        if self._config.camera_model == TucsenCameraModel.FL26_BW:
+            # These values are not accurate gain values. They are for selecting gain mode for FL26BW model.
+            return CameraGainRange(min_gain=0, max_gain=3, gain_step=1)
+        else:
+            raise NotImplementedError("Analog gain is not implemented for this camera.")
 
     def get_white_balance_gains(self) -> Tuple[float, float, float]:
         raise NotImplementedError("White Balance Gains not implemented for the Tucsen driver.")
@@ -616,19 +630,25 @@ class TucsenCamera(AbstractCamera):
         else:
             self.log.info("Auto exposure disabled")
 
-    def _raw_set_analog_gain_fl26bw(self, gain):
-        # TODO: Add support for FL26BW model
+    def _raw_set_analog_gain_fl26bw(self, gain: float):
+        # For FL26BW model
         # Gain0: System Gain (DN/e-): 1.28; Full Well Capacity (e-): 49000; Readout Noise (e-): 2.7(Median), 3.3(RMS)
         # Gain1: System Gain (DN/e-): 3.98; Full Well Capacity (e-): 15700; Readout Noise (e-): 1.0(Median), 1.3(RMS)
         # Gain2: System Gain (DN/e-): 8.0; Full Well Capacity (e-): 7800; Readout Noise (e-): 0.95(Median), 1.2(RMS)
         # Gain3: System Gain (DN/e-): 20; Full Well Capacity (e-): 3000; Readout Noise (e-): 0.85(Median), 1.0(RMS)
-        if gain < 2:
-            value = 0
-        elif gain >= 2 and gain < 4:
-            value = 1
-        elif gain >= 4 and gain < 9:
-            value = 2
-        else:
-            value = 3
-        TUCAM_Prop_SetValue(self._camera, TUCAM_IDPROP.TUIDP_GLOBALGAIN.value, c_double(value), 0)
-        self.analog_gain = value
+        if (
+            TUCAM_Prop_SetValue(self._camera, TUCAM_IDPROP.TUIDP_GLOBALGAIN.value, c_double(gain), 0)
+            != TUCAMRET.TUCAMRET_SUCCESS
+        ):
+            raise CameraError("Failed to set analog gain")
+
+    def _raw_get_analog_gain_fl26bw(self) -> float:
+        # For FL26BW model
+        gain_value = c_double(0)
+        if (
+            TUCAM_Prop_GetValue(self._camera, TUCAM_IDPROP.TUIDP_GLOBALGAIN.value, pointer(gain_value), 0)
+            != TUCAMRET.TUCAMRET_SUCCESS
+        ):
+            raise CameraError("Failed to get analog gain")
+
+        return gain_value.value
