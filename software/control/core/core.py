@@ -3035,6 +3035,7 @@ class ImageDisplayWindow(QMainWindow):
         self.line_profiler_plot.setLabel("left", "Intensity")
         self.line_profiler_plot.setLabel("bottom", "Position")
         self.line_profiler_widget.hide()  # Initially hidden
+        self.line_profiler_manual_range = False  # Flag to track if y-range is manually set
 
         # Create splitter
         self.splitter = QSplitter(Qt.Vertical)
@@ -3139,6 +3140,13 @@ class ImageDisplayWindow(QMainWindow):
             else:
                 self.graphics_widget.view.setCursor(self.normal_cursor)
 
+        # Connect to the view range changed signal to detect manual range changes
+        self.line_profiler_plot.sigRangeChanged.connect(self._on_range_changed)
+
+    def _on_range_changed(self, view_range):
+        """Handle manual range changes in the line profiler plot."""
+        self.line_profiler_manual_range = True
+
     def create_line_roi(self):
         """Create a line ROI for intensity profiling."""
         if self.line_roi is None and self.line_start_pos is not None and self.line_end_pos is not None:
@@ -3221,8 +3229,9 @@ class ImageDisplayWindow(QMainWindow):
                     # Add legend
                     self.line_profiler_plot.addLegend()
 
-                    # Auto-scale the plot
-                    self.line_profiler_plot.autoRange()
+                    # Only auto-range if not manually set
+                    if not self.line_profiler_manual_range:
+                        self.line_profiler_plot.autoRange()
         except Exception as e:
             self._log.error(f"Error updating line profile: {str(e)}")
 
