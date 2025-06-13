@@ -117,6 +117,7 @@ class HighContentScreeningGui(QMainWindow):
         self.is_live_scan_grid_on = False
         self.performance_mode = False
         self.napari_connections = {}
+        self.well_selector_visible = False  # Add this line to track well selector visibility
 
         self.loadObjects(is_simulation)
 
@@ -1141,6 +1142,12 @@ class HighContentScreeningGui(QMainWindow):
         # Connect to plot xyz data when coordinates are saved
         self.multipointController.signal_coordinates.connect(self.zPlotWidget.plot)
 
+        # Connect well selector button
+        if hasattr(self.imageDisplayWindow, "btn_well_selector"):
+            self.imageDisplayWindow.btn_well_selector.clicked.connect(
+                lambda: self.toggleWellSelector(not self.dock_wellSelection.isVisible())
+            )
+
     def setup_movement_updater(self):
         # We provide a few signals about the system's physical movement to other parts of the UI.  Ideally, they other
         # parts would register their interest (instead of us needing to know that they want to hear about the movements
@@ -1423,17 +1430,11 @@ class HighContentScreeningGui(QMainWindow):
             if not is_laser_focus_tab:
                 self.laserAutofocusSettingWidget.stop_live()
 
-        is_wellplate_acquisition = (
-            (index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget))
-            if ENABLE_WELLPLATE_MULTIPOINT
-            else False
-        )
-        if self.imageDisplayTabs.tabText(index) != "Live View" or not (
-            is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide"
-        ):
-            self.toggleWellSelector(False)
+        # Only show well selector in Live View tab if it was previously shown
+        if self.imageDisplayTabs.tabText(index) == "Live View":
+            self.toggleWellSelector(self.well_selector_visible)  # Use stored visibility state
         else:
-            self.toggleWellSelector(True)
+            self.toggleWellSelector(False)
 
     def onWellplateChanged(self, format_):
         if isinstance(format_, QVariant):
@@ -1533,12 +1534,20 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
 
-    def toggleWellSelector(self, show):
-        if USE_NAPARI_WELL_SELECTION and not self.performance_mode and not self.live_only_mode:
-            self.napariLiveWidget.toggle_well_selector(show)
+    def toggleWellSelector(self, show, remember_state=True):
+        if show and self.imageDisplayTabs.tabText(self.imageDisplayTabs.currentIndex()) == "Live View":
+            self.dock_wellSelection.setVisible(True)
         else:
-            self.dock_wellSelection.setVisible(show)
-        self.wellSelectionWidget.setVisible(show)
+            self.dock_wellSelection.setVisible(False)
+
+        # Only update visibility state if we're in Live View tab and we want to remember the state
+        # remember_state is False when we're toggling the well selector for starting/stopping an acquisition
+        if self.imageDisplayTabs.tabText(self.imageDisplayTabs.currentIndex()) == "Live View" and remember_state:
+            self.well_selector_visible = show
+
+        # Update button text
+        if hasattr(self.imageDisplayWindow, "btn_well_selector"):
+            self.imageDisplayWindow.btn_well_selector.setText("Hide Well Selector" if show else "Show Well Selector")
 
     def toggleAcquisitionStart(self, acquisition_started):
         self.log.debug(f"toggleAcquisitionStarted({acquisition_started=})")
@@ -1576,7 +1585,7 @@ class HighContentScreeningGui(QMainWindow):
             else False
         )
         if is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide":
-            self.toggleWellSelector(not acquisition_started)
+            self.toggleWellSelector(not acquisition_started, remember_state=False)
         else:
             self.toggleWellSelector(False)
 

@@ -2946,6 +2946,10 @@ class ImageDisplayWindow(QMainWindow):
         self.btn_line_profiler.setEnabled(False)
         self.btn_line_profiler.clicked.connect(self.toggle_line_profiler)
 
+        # Add well selector toggle button
+        self.btn_well_selector = QPushButton("Show Well Selector")
+        self.btn_well_selector.setCheckable(False)
+
         # Add labels to status layout with spacing
         status_layout.addWidget(self.cursor_position_label)
         status_layout.addWidget(QLabel(" | "))  # Add separator
@@ -2956,7 +2960,9 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(self.piezo_position_label)
         status_layout.addStretch()  # Push labels to the left
         status_layout.addWidget(QLabel(" | "))  # Add separator
-        status_layout.addWidget(self.btn_line_profiler)  # Add button after stretch
+        status_layout.addWidget(self.btn_well_selector)  # Add well selector button
+        status_layout.addWidget(QLabel(" | "))  # Add separator
+        status_layout.addWidget(self.btn_line_profiler)  # Add line profiler button
 
         status_widget.setLayout(status_layout)
 
