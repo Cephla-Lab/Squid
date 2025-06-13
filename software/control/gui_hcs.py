@@ -266,7 +266,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.autofocusController,
                 self.imageDisplayWindow,
             )
-        if WELLPLATE_FORMAT == "glass slide":
+        if WELLPLATE_FORMAT == "glass slide" and IS_HCS:
             self.navigationViewer = core.NavigationViewer(
                 self.objectiveStore, self.camera.get_pixel_size_unbinned_um(), sample="4 glass slide"
             )
