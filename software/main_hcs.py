@@ -19,7 +19,7 @@ squid.logging.setup_uncaught_exception_logging()
 # app specific libraries
 import control.gui_hcs as gui
 from configparser import ConfigParser
-from control.widgets import ConfigEditorBackwardsCompatible
+from control.widgets import ConfigEditorBackwardsCompatible, StageUtils
 from control._def import CACHED_CONFIG_FILE_PATH
 from control._def import USE_TERMINAL_CONSOLE
 import control.utils
@@ -89,6 +89,12 @@ if __name__ == "__main__":
         config_action.triggered.connect(lambda: show_config(cf_editor_parser, config_files[0], win))
         file_menu.addAction(config_action)
 
+    microscope_utils_menu = QMenu("Utils", win)
+
+    stage_utils_action = QAction("Stage Utils", win)
+    stage_utils_action.triggered.connect(lambda: win.stageUtils.show())
+    microscope_utils_menu.addAction(stage_utils_action)
+
     try:
         csw = win.cswWindow
         if csw is not None:
@@ -109,6 +115,7 @@ if __name__ == "__main__":
 
     menu_bar = win.menuBar()
     menu_bar.addMenu(file_menu)
+    menu_bar.addMenu(microscope_utils_menu)
     win.show()
 
     if USE_TERMINAL_CONSOLE:

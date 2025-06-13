@@ -616,6 +616,7 @@ class HighContentScreeningGui(QMainWindow):
         self.navigationWidget = widgets.NavigationWidget(
             self.stage, self.slidePositionController, widget_configuration=f"{WELLPLATE_FORMAT} well plate"
         )
+        self.stageUtils = widgets.StageUtils(self.stage, self.slidePositionController)
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
         if self.piezo:
@@ -1479,11 +1480,11 @@ class HighContentScreeningGui(QMainWindow):
             self.stage, self.liveController, is_for_wellplate=is_for_wellplate
         )
         self.connectSlidePositionController()
-        self.navigationWidget.replace_slide_controller(self.slidePositionController)
+        self.stageUtils.replace_slide_controller(self.slidePositionController)
 
     def connectSlidePositionController(self):
         self.slidePositionController.signal_slide_loading_position_reached.connect(
-            self.navigationWidget.slot_slide_loading_position_reached
+            self.stageUtils.slot_slide_loading_position_reached
         )
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.slidePositionController.signal_slide_loading_position_reached.connect(
@@ -1499,7 +1500,7 @@ class HighContentScreeningGui(QMainWindow):
             )
 
         self.slidePositionController.signal_slide_scanning_position_reached.connect(
-            self.navigationWidget.slot_slide_scanning_position_reached
+            self.stageUtils.slot_slide_scanning_position_reached
         )
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.slidePositionController.signal_slide_scanning_position_reached.connect(
