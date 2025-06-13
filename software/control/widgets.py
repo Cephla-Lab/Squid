@@ -509,7 +509,7 @@ class StageUtils(QDialog):
         msg.setDefaultButton(QMessageBox.Cancel)
         retval = msg.exec_()
         if QMessageBox.Ok == retval:
-            self.stage.home(x=False, y=False, z=True, theta=False)
+            self.stage.home(x=x, y=y, z=z, theta=theta)
 
     def zero_x(self):
         """Zero X axis position."""
