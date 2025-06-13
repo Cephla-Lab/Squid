@@ -2959,7 +2959,6 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.piezo_position_label)
         status_layout.addStretch()  # Push labels to the left
-        status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.btn_well_selector)  # Add well selector button
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.btn_line_profiler)  # Add line profiler button
