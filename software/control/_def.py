@@ -86,7 +86,7 @@ class PosUpdate:
 
 class MicrocontrollerDef:
     MSG_LENGTH = 24
-    CMD_LENGTH = 8
+    CMD_LENGTH = 24
     N_BYTES_POS = 4
 
 
@@ -145,6 +145,8 @@ class CMD_SET:
     SEND_HARDWARE_TRIGGER = 30
     SET_STROBE_DELAY = 31
     SET_AXIS_DISABLE_ENABLE = 32
+    MOVE_XY = 33
+    MOVETO_XY = 34
     SET_PIN_LEVEL = 41
     INITFILTERWHEEL = 253
     INITIALIZE = 254

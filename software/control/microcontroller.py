@@ -684,6 +684,24 @@ class Microcontroller:
         cmd[5] = payload & 0xFF
         self.send_command(cmd)
 
+    def move_xy_to_usteps(self, xusteps, yusteps):
+        xpayload = self._int_to_payload(xusteps, 4)
+        ypayload = self._int_to_payload(yusteps, 4)
+
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.MOVETO_XY
+        cmd[2] = xpayload >> 24
+        cmd[3] = (xpayload >> 16) & 0xFF
+        cmd[4] = (xpayload >> 8) & 0xFF
+        cmd[5] = xpayload & 0xFF
+
+        cmd[6] = ypayload >> 24
+        cmd[7] = (ypayload >> 16) & 0xFF
+        cmd[8] = (ypayload >> 8) & 0xFF
+        cmd[9] = ypayload & 0xFF
+
+        self.send_command(cmd)
+
     def move_z_usteps(self, usteps):
         self._move_axis_usteps(usteps, CMD_SET.MOVE_Z)
 
