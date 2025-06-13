@@ -488,32 +488,18 @@ class StageUtils(QDialog):
 
     def home_x(self):
         """Home X axis with confirmation dialog."""
-        msg = QMessageBox()
-        msg.setIcon(QMessageBox.Information)
-        msg.setText("Confirm your action")
-        msg.setInformativeText("Click OK to run homing")
-        msg.setWindowTitle("Confirmation")
-        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-        msg.setDefaultButton(QMessageBox.Cancel)
-        retval = msg.exec_()
-        if QMessageBox.Ok == retval:
-            self.stage.home(x=True, y=False, z=False, theta=False)
+        self._show_confirmation_dialog(x=True, y=False, z=False, theta=False)
 
     def home_y(self):
         """Home Y axis with confirmation dialog."""
-        msg = QMessageBox()
-        msg.setIcon(QMessageBox.Information)
-        msg.setText("Confirm your action")
-        msg.setInformativeText("Click OK to run homing")
-        msg.setWindowTitle("Confirmation")
-        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-        msg.setDefaultButton(QMessageBox.Cancel)
-        retval = msg.exec_()
-        if QMessageBox.Ok == retval:
-            self.stage.home(x=False, y=True, z=False, theta=False)
+        self._show_confirmation_dialog(x=False, y=True, z=False, theta=False)
 
     def home_z(self):
         """Home Z axis with confirmation dialog."""
+        self._show_confirmation_dialog(x=False, y=False, z=True, theta=False)
+
+    def _show_confirmation_dialog(self, x: bool, y: bool, z: bool, theta: bool):
+        """Display a confirmation dialog and home the specified axis if confirmed."""
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Information)
         msg.setText("Confirm your action")
