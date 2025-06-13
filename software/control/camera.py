@@ -114,6 +114,8 @@ class DefaultCamera(AbstractCamera):
         # TODO/NOTE(imo): Need to test if self as user_param is correct here, of it sends self for us.
         self._camera.register_capture_callback(None, self._frame_callback)
 
+        self.set_auto_white_balance_gains(False)
+
         if self._config.default_white_balance_gains is not None and self._capabilities.white_balance:
             default_wb = self._config.default_white_balance_gains
             self.set_white_balance_gains(default_wb.r, default_wb.g, default_wb.b)
