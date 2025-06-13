@@ -92,7 +92,7 @@ if __name__ == "__main__":
     microscope_utils_menu = QMenu("Utils", win)
 
     stage_utils_action = QAction("Stage Utils", win)
-    stage_utils_action.triggered.connect(lambda: win.stageUtils.show())
+    stage_utils_action.triggered.connect(win.stageUtils.show)
     microscope_utils_menu.addAction(stage_utils_action)
 
     try:
