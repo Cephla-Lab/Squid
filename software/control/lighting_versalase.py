@@ -1,9 +1,6 @@
-"""
-https://github.com/jmtayloruk/scripts/blob/main/versalase-usb-comms-demonstration.ipynb
-"""
+import time
 
-import usb.core
-import sys, time
+from laser_sdk import LaserSDK
 
 from squid.abc import LightSource
 from control.lighting import ShutterControlMode, IntensityControlMode
@@ -12,35 +9,29 @@ import squid.logging
 
 
 class VersaLase(LightSource):
-    """
-    Controls a Stradus VersaLase laser system via USB.
-
-    The VersaLase can control up to 4 laser channels (a, b, c, d) with
-    individual power and shutter control for each channel.
-    """
-
-    def __init__(self, vendor_id=0x201A, product_id=0x1001, **kwds):
-        """
-        Initialize the VersaLase controller and establish USB communication.
-
-        Args:
-            vendor_id: USB vendor ID (default: 0x201a)
-            product_id: USB product ID (default: 0x1001)
-        """
+    def __init__(self, **kwds):
         self._log = squid.logging.get_logger(__name__)
 
-        self.vendor_id = vendor_id
-        self.product_id = product_id
-        self.dev = None
-        self.live = False
-        self.laser_channels = ["a", "b", "c", "d"]
-        self.active_channels = {}
-        self.channel_info = {}
+        self.sdk = LaserSDK()
+        self.sdk.discover()
+
         self.intensity_mode = IntensityControlMode.Software
         self.shutter_mode = ShutterControlMode.Software
 
-        # Channel mapping for common wavelengths
-        self.wavelength_to_channel = {405: "d", 488: "c", 490: "c", 561: "b", 640: "a", 638: "a"}
+        self.channel_mappings = {
+            405: None,
+            470: None,
+            488: None,
+            545: None,
+            550: None,
+            555: None,
+            561: None,
+            638: None,
+            640: None,
+            730: None,
+            735: None,
+            750: None,
+        }
 
         try:
             self.initialize()
@@ -53,149 +44,29 @@ class VersaLase(LightSource):
         Returns True if successful, False otherwise.
         """
         try:
-            self.dev = usb.core.find(idVendor=self.vendor_id, idProduct=self.product_id)
-            if self.dev is None:
-                raise ValueError("VersaLase device not found")
-
-            self._log.info("Connected to VersaLase")
-
             # Query information about installed lasers
-            for channel in self.laser_channels:
-                laser_info = self._send_command(f"{channel}.?li")
-                if laser_info is not None:
-                    # This laser is installed
-                    self.active_channels[channel] = True
-                    self.channel_info[channel] = {
-                        "info": laser_info,
-                        "wavelength": self._parse_float_query(f"{channel}.?lw"),
-                        "max_power": self._parse_float_query(f"{channel}.?maxp"),
-                        "rated_power": self._parse_float_query(f"{channel}.?rp"),
-                    }
-                    self._log.info(f"Found laser {channel}: {laser_info}")
-
-                    # Initialize laser to safe state
-                    self._send_command(f"{channel}.le=0")  # Turn off
-                    self._send_command(f"{channel}.epc=0")  # Disable external power control
-                    self._send_command(f"{channel}.lp=0")  # Set power to 0
-                else:
-                    self.active_channels[channel] = False
-
-            self.live = True
+            for laser in self.sdk.get_lasers():
+                self.wavelength_to_laser[laser.wavelength] = laser
+                self._log.info(f"Found laser {laser.wavelength}: {laser.max_power}")
+                laser.disable()
+                if laser.wavelength == 405:
+                    self.channel_mappings[405] = laser.id
+                elif laser.wavelength == 488:
+                    self.channel_mappings[470] = laser.id
+                    self.channel_mappings[488] = laser.id
+                elif laser.wavelength == 545:
+                    self.channel_mappings[545] = laser.id
+                    self.channel_mappings[550] = laser.id
+                    self.channel_mappings[555] = laser.id
+                    self.channel_mappings[561] = laser.id
+                elif laser.wavelength == 638:
+                    self.channel_mappings[638] = laser.id
+                    self.channel_mappings[640] = laser.id
             return True
 
         except Exception as e:
             self._log.error(f"Initialization failed: {e}")
-            self.live = False
             return False
-
-    def _get_a1_response(self, timeout=2.0, min_length=2, timeout_acceptable=False):
-        """Read response from A1 control transfer."""
-        t0 = time.time()
-        did_find = None
-        first_seen = None
-
-        while time.time() < t0 + timeout:
-            result = self.dev.ctrl_transfer(0xC0, 0xA1, 0x0000, 0, 256)
-            sret = "".join([chr(x) for x in result])
-            if len(sret) > min_length:
-                return sret
-            elif len(sret) > 0:
-                if first_seen is None:
-                    first_seen = time.time() - t0
-                did_find = sret
-            time.sleep(0.01)
-
-        if timeout_acceptable:
-            return ""
-
-        self._log.debug("Read timed out")
-        if did_find is not None:
-            self._log.debug(f"Did see '{did_find}' after {first_seen:.3f}s")
-        raise TimeoutError("A1 response timeout")
-
-    def _send_a0_text_command(self, cmd):
-        """Send text command via A0 control transfer."""
-        self.dev.ctrl_transfer(0x40, 0xA0, 0x0000, 0, cmd + "\r")
-
-    def _get_a2(self):
-        """Read status from A2 control transfer."""
-        result = self.dev.ctrl_transfer(0xC0, 0xA2, 0x0000, 0, 1)
-        return result[0] if len(result) == 1 else 0
-
-    def _send_a3(self):
-        """Send acknowledgment via A3 control transfer."""
-        self.dev.ctrl_transfer(0x40, 0xA3, 0x0000, 0, 0)
-
-    def _send_command(self, cmd, log_level=0):
-        """
-        Send a text command to the laser and receive the response.
-
-        Args:
-            cmd: Command string to send
-            log_level: Logging verbosity (0=quiet, 1=normal, 2=verbose)
-
-        Returns:
-            Response string or None
-        """
-        if not self.live:
-            return None
-
-        result = None
-
-        try:
-            # Send command
-            self._send_a0_text_command(cmd)
-
-            # Initial A1 query (may be empty)
-            resp = self._get_a1_response(min_length=0, timeout=0.5, timeout_acceptable=True)
-
-            # Wait for response to be available
-            t0 = time.time()
-            initially_zero = False
-            while self._get_a2() == 0:
-                initially_zero = True
-                if time.time() > t0 + 5:
-                    self._log.debug("A2 never returned 1")
-                    break
-
-            # Read all available responses
-            while self._get_a2() == 1:
-                resp = self._get_a1_response(min_length=0)[2:]  # Skip \r\n
-                if resp and resp != "Stradus> ":
-                    result = resp
-                self._send_a3()  # Acknowledge
-
-            if log_level >= 1:
-                self._log.info(f"Sent {cmd}, got response '{result}'")
-
-            return result
-
-        except Exception as e:
-            self._log.error(f"Command failed: {cmd}, error: {e}")
-            return None
-
-    def _parse_query(self, cmd):
-        """Send query command and parse response."""
-        response = self._send_command(cmd)
-        if response:
-            return response[len(cmd) + 1 :]
-        return None
-
-    def _parse_float_query(self, cmd):
-        """Send query command and parse response as float."""
-        result = self._parse_query(cmd)
-        return float(result) if result else 0.0
-
-    def _parse_int_query(self, cmd):
-        """Send query command and parse response as int."""
-        result = self._parse_query(cmd)
-        return int(result) if result else 0
-
-    def _get_channel_for_wavelength(self, wavelength):
-        """Map wavelength to channel if using wavelength-based addressing."""
-        if isinstance(wavelength, (int, float)):
-            return self.wavelength_to_channel.get(int(wavelength))
-        return wavelength  # Assume it's already a channel letter
 
     def set_intensity_control_mode(self, mode):
         """
@@ -204,12 +75,7 @@ class VersaLase(LightSource):
         Args:
             mode: IntensityControlMode.Software or IntensityControlMode.External
         """
-        self.intensity_mode = mode
-        epc_value = 1 if mode == IntensityControlMode.External else 0
-
-        for channel in self.active_channels:
-            if self.active_channels[channel]:
-                self._send_command(f"{channel}.epc={epc_value}")
+        raise NotImplementedError("Only software intensity control is supported for VersaLase")
 
     def get_intensity_control_mode(self):
         """
@@ -227,9 +93,10 @@ class VersaLase(LightSource):
         Args:
             mode: ShutterControlMode enum
         """
+        for laser in self.sdk.get_lasers():
+            laser.set_digital_mode(mode == ShutterControlMode.TTL)
+
         self.shutter_mode = mode
-        # VersaLase doesn't have explicit TTL shutter control in the protocol shown
-        # This would need to be implemented if the hardware supports it
 
     def get_shutter_control_mode(self):
         """
