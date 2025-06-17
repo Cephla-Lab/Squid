@@ -133,6 +133,8 @@ Follow the instructions during the installation.
 <details>
 <summary>Installing SDK for VersaLase laser</summary>
 
+Link: https://github.com/sthronevlt/VersaLSS
+
 Run the following commands:
 ```
 curl -L -O https://raw.githubusercontent.com/sthronevlt/VersaLSS/main/dist/laser_sdk-0.1.1-py3-none-any.whl
