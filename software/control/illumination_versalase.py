@@ -1,7 +1,7 @@
 from laser_sdk import LaserSDK
 
 from squid.abc import LightSource
-from control.lighting import ShutterControlMode, IntensityControlMode
+from control.illumination import ShutterControlMode, IntensityControlMode
 
 import squid.logging
 

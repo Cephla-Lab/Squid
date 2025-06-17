@@ -16,7 +16,7 @@ import squid.config
 import squid.stage.utils
 
 import control.microcontroller as microcontroller
-from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
+from control.illumination import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.piezo import PiezoStage
 import control.serial_peripherals as serial_peripherals
 import control.filterwheel as filterwheel
@@ -260,9 +260,9 @@ class Microscope(QObject):
 
         if USE_CELESTA_ETHENET_CONTROL:
             try:
-                import control.lighting_celesta
+                import control.illumination_celesta
 
-                self.celesta = control.lighting_celesta.CELESTA()
+                self.celesta = control.illumination_celesta.CELESTA()
                 self.illuminationController = IlluminationController(
                     self.microcontroller,
                     IntensityControlMode.Software,

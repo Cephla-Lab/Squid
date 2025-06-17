@@ -1,7 +1,7 @@
 # set QT_API environment variable
 import os
 
-import control.lighting
+import control.illumination
 
 os.environ["QT_API"] = "pyqt5"
 import serial
@@ -23,7 +23,7 @@ import squid.logging
 import squid.config
 import squid.stage.utils
 import control.microscope
-from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
+from control.illumination import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 import squid.camera.utils
 
 log = squid.logging.get_logger(__name__)
@@ -343,7 +343,7 @@ class HighContentScreeningGui(QMainWindow):
 
         if USE_LDI_SERIAL_CONTROL:
             self.ldi = serial_peripherals.LDI_Simulation()
-            self.illuminationController = control.lighting.IlluminationController(
+            self.illuminationController = control.illumination.IlluminationController(
                 self.microcontroller, self.ldi.intensity_mode, self.ldi.shutter_mode, LightSourceType.LDI, self.ldi
             )
         if USE_ZABER_EMISSION_FILTER_WHEEL:
@@ -428,9 +428,9 @@ class HighContentScreeningGui(QMainWindow):
 
         if USE_CELESTA_ETHENET_CONTROL:
             try:
-                import control.lighting_celesta
+                import control.illumination_celesta
 
-                self.celesta = control.lighting_celesta.CELESTA()
+                self.celesta = control.illumination_celesta.CELESTA()
                 self.illuminationController = IlluminationController(
                     self.microcontroller,
                     IntensityControlMode.Software,
@@ -444,9 +444,9 @@ class HighContentScreeningGui(QMainWindow):
 
         if USE_VORTRAN_LASER_USB_CONTROL:
             try:
-                import control.lighting_versalase
+                import control.illumination_versalase
 
-                self.versalase = control.lighting_versalase.VersaLase()
+                self.versalase = control.illumination_versalase.VersaLase()
                 self.illuminationController = IlluminationController(
                     self.microcontroller,
                     IntensityControlMode.Software,
