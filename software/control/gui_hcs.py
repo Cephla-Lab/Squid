@@ -442,6 +442,22 @@ class HighContentScreeningGui(QMainWindow):
                 self.log.error("Error initializing CELESTA")
                 raise
 
+        if USE_VORTRAN_LASER_USB_CONTROL:
+            try:
+                import control.lighting_versalase
+
+                self.versalase = control.lighting_versalase.VersaLase()
+                self.illuminationController = IlluminationController(
+                    self.microcontroller,
+                    IntensityControlMode.Software,
+                    ShutterControlMode.TTL if VORTRAN_SHUTTER_CONTROL_MODE == "EXT" else ShutterControlMode.Software,
+                    LightSourceType.VersaLase,
+                    self.versalase,
+                )
+            except Exception:
+                self.log.error("Error initializing VersaLase")
+                raise
+
         if USE_ZABER_EMISSION_FILTER_WHEEL:
             try:
                 self.emission_filter_wheel = serial_peripherals.FilterController(

@@ -1,5 +1,3 @@
-import time
-
 from laser_sdk import LaserSDK
 
 from squid.abc import LightSource
@@ -14,9 +12,6 @@ class VersaLase(LightSource):
 
         self.sdk = LaserSDK()
         self.sdk.discover()
-
-        self.intensity_mode = IntensityControlMode.Software
-        self.shutter_mode = ShutterControlMode.Software
 
         self.channel_mappings = {
             405: None,
@@ -36,17 +31,16 @@ class VersaLase(LightSource):
         try:
             self.initialize()
         except Exception as e:
-            self._log.error(f"Failed to initialize VersaLase: {e}")
+            self._log.error(f"Failed to initialize Vortran laser: {e}")
 
-    def initialize(self):
+    def initialize(self) -> bool:
         """
-        Initialize the connection and settings for the VersaLase.
+        Initialize the connection and settings for the Vortran laser.
         Returns True if successful, False otherwise.
         """
         try:
             # Query information about installed lasers
             for laser in self.sdk.get_lasers():
-                self.wavelength_to_laser[laser.wavelength] = laser
                 self._log.info(f"Found laser {laser.wavelength}: {laser.max_power}")
                 laser.disable()
                 if laser.wavelength == 405:
@@ -68,27 +62,28 @@ class VersaLase(LightSource):
             self._log.error(f"Initialization failed: {e}")
             return False
 
-    def set_intensity_control_mode(self, mode):
+    def set_intensity_control_mode(self, mode: IntensityControlMode):
         """
-        Set intensity control mode.
+        Set intensity control mode. Only software intensity control is supported for Vortran laser.
 
         Args:
             mode: IntensityControlMode.Software or IntensityControlMode.External
         """
-        raise NotImplementedError("Only software intensity control is supported for VersaLase")
+        self._log.debug("Only software intensity control is supported for Vortran laser")
+        pass
 
-    def get_intensity_control_mode(self):
+    def get_intensity_control_mode(self) -> IntensityControlMode:
         """
-        Get current intensity control mode.
+        Get current intensity control mode. Only software intensity control is supported for Vortran laser.
 
         Returns:
             IntensityControlMode enum value
         """
-        return self.intensity_mode
+        return IntensityControlMode.Software
 
-    def set_shutter_control_mode(self, mode):
+    def set_shutter_control_mode(self, mode: ShutterControlMode):
         """
-        Set shutter control mode.
+        Set shutter control mode for all lasers.
 
         Args:
             mode: ShutterControlMode enum
@@ -98,16 +93,28 @@ class VersaLase(LightSource):
 
         self.shutter_mode = mode
 
-    def get_shutter_control_mode(self):
+    def get_shutter_control_mode(self) -> ShutterControlMode:
         """
         Get current shutter control mode.
 
         Returns:
             ShutterControlMode enum value
         """
-        return self.shutter_mode
+        # The lasers in the VersaLase may have different shutter control states.
+        # We call set_shutter_control_mode() on initialize so they should all be the same.
+        # Raise an error here if they are not.
+        digital_mode = None
+        for laser in self.sdk.get_lasers():
+            if digital_mode is None:
+                digital_mode = laser.digital_mode
+            elif digital_mode != laser.digital_mode:
+                raise ValueError("Laser shutter control modes are not consistent")
+        if digital_mode is None:
+            raise ValueError("No lasers found")
 
-    def set_shutter_state(self, channel, state):
+        return ShutterControlMode.TTL if digital_mode else ShutterControlMode.Software
+
+    def set_shutter_state(self, channel: int, state: bool):
         """
         Turn a specific channel on or off.
 
@@ -115,14 +122,10 @@ class VersaLase(LightSource):
             channel: Channel ID (letter or wavelength)
             state: True to turn on, False to turn off
         """
-        channel = self._get_channel_for_wavelength(channel)
-        if channel and channel in self.active_channels and self.active_channels[channel]:
-            le_value = 1 if state else 0
-            response = self._send_command(f"{channel}.le={le_value}")
-            if response:
-                self._log.info(f"Set channel {channel} shutter to {state}")
+        laser = self.sdk.get_laser_by_id(self.channel_mappings[channel])
+        laser.enable(state)
 
-    def get_shutter_state(self, channel):
+    def get_shutter_state(self, channel: int) -> bool:
         """
         Get the current shutter state of a specific channel.
 
@@ -132,12 +135,10 @@ class VersaLase(LightSource):
         Returns:
             bool: True if channel is on, False if off
         """
-        channel = self._get_channel_for_wavelength(channel)
-        if channel and channel in self.active_channels and self.active_channels[channel]:
-            return self._parse_int_query(f"{channel}.?le") == 1
-        return False
+        laser = self.sdk.get_laser_by_id(self.channel_mappings[channel])
+        return laser.get_emission_status()
 
-    def set_intensity(self, channel, intensity):
+    def set_intensity(self, channel: int, intensity: float):
         """
         Set the intensity for a specific channel.
 
@@ -145,17 +146,10 @@ class VersaLase(LightSource):
             channel: Channel ID (letter or wavelength)
             intensity: Intensity value (0-100 percent)
         """
-        channel = self._get_channel_for_wavelength(channel)
-        if channel and channel in self.active_channels and self.active_channels[channel]:
-            # Convert percentage to power in mW
-            max_power = self.channel_info[channel]["max_power"]
-            power_mw = (intensity / 100.0) * max_power
+        laser = self.sdk.get_laser_by_id(self.channel_mappings[channel])
+        laser.set_power(laser.max_power * intensity / 100.0)
 
-            response = self._send_command(f"{channel}.lp={power_mw:.2f}")
-            if response:
-                self._log.info(f"Set channel {channel} intensity to {intensity}% ({power_mw:.2f}mW)")
-
-    def get_intensity(self, channel):
+    def get_intensity(self, channel: int) -> float:
         """
         Get the current intensity of a specific channel.
 
@@ -165,40 +159,14 @@ class VersaLase(LightSource):
         Returns:
             float: Current intensity value (0-100 percent)
         """
-        channel = self._get_channel_for_wavelength(channel)
-        if channel and channel in self.active_channels and self.active_channels[channel]:
-            # Get the set power (lps) rather than measured power (lp)
-            # as measured power might be 0 if shutter is closed
-            power_mw = self._parse_float_query(f"{channel}.?lps")
-            max_power = self.channel_info[channel]["max_power"]
-            if max_power > 0:
-                return (power_mw / max_power) * 100.0
-        return 0.0
+        # For Vortran laser, we are able to get the actual intensity of the lasers.
+        # To keep consistency with other light sources, we return the set power/intensity here.
+        laser = self.sdk.get_laser_by_id(self.channel_mappings[channel])
+        laser_info = laser.get_op2()
+        return laser_info["LaserSetPower"] / laser.max_power * 100.0
 
     def shut_down(self):
-        """Safely shut down the VersaLase."""
-        if self.live:
-            self._log.info("Shutting down VersaLase")
-            for channel in self.active_channels:
-                if self.active_channels[channel]:
-                    self.set_intensity(channel, 0)
-                    self.set_shutter_state(channel, False)
-            self.live = False
-
-    def get_status(self):
-        """
-        Get the status of the VersaLase.
-
-        Returns:
-            bool: True if connected and operational
-        """
-        return self.live
-
-    def get_channel_info(self):
-        """
-        Get information about all active channels.
-
-        Returns:
-            dict: Channel information including wavelength and power limits
-        """
-        return self.channel_info
+        """Safely shut down the Vortran laser."""
+        for laser in self.sdk.get_lasers():
+            laser.disable()
+            laser.disconnect()
