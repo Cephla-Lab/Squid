@@ -79,7 +79,7 @@ class DefaultCamera(AbstractCamera):
                 and camera.BalanceRatioSelector.is_writable()
             ),
             auto_white_balance=(camera.BalanceWhiteAuto.is_implemented() and camera.BalanceWhiteAuto.is_writable()),
-            is_global_shutter=False
+            is_global_shutter=False,
         )
 
         # NOTE(imo): In our previous driver, we did all these as defaults/prep to make things down the line work.
@@ -223,7 +223,7 @@ class DefaultCamera(AbstractCamera):
 
         self._log.debug(
             f"Setting exposure time {exposure_time_calculated_us} [us] for exposure_time={exposure_time_ms * 1000} [us] and strobe={self._strobe_delay_us} [us]"
-        ) 
+        )
         self._camera.ExposureTime.set(exposure_time_calculated_us)
         self._exposure_time_ms = exposure_time_ms
 
