@@ -522,14 +522,13 @@ class HighContentScreeningGui(QMainWindow):
                 # in that case, we drive off of the loading position and the clamp closes quickly.
                 # This doesn't seem to cause problems, and there isn't a clean way to avoid the corner
                 # case.
-                self.log.info("Moving y+20, then x->home->+20 to make sure system is clear for homing.")
+                self.log.info("Moving y+20, then x->home->+50 to make sure system is clear for homing.")
                 self.stage.move_y(20)
                 self.stage.home(x=True, y=False, z=False, theta=False)
-                self.stage.move_x(20)
+                self.stage.move_x(50)
 
-                self.log.info("Homing the X and Y axes...")
+                self.log.info("Homing the Y axis...")
                 self.stage.home(x=False, y=True, z=False, theta=False)
-                self.stage.home(x=True, y=False, z=False, theta=False)
                 self.slidePositionController.homing_done = True
             if USE_ZABER_EMISSION_FILTER_WHEEL:
                 self.emission_filter_wheel.wait_for_homing_complete()
