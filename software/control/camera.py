@@ -204,7 +204,9 @@ class DefaultCamera(AbstractCamera):
         row_count = self.get_resolution()[1]  # TODO: this should be the row count after setting ROI
         row_period_us = 10
 
-        self._strobe_delay_us = 10000 + (
+        # NOTE(imo): Our strobe delay calculation is not perfect, so add 10ms buffer to make sure we are good to go.  It'd
+        # be better to calculate exactly, though!
+        self._strobe_delay_us = (
             exposure_delay_us + exposure_time_us + row_period_us * pixel_size_bytes * (row_count - 1) + 500
         )
 
@@ -216,12 +218,12 @@ class DefaultCamera(AbstractCamera):
         if not self._capabilities.is_global_shutter:
             self._update_strobe_time()
 
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            exposure_time_calculated_us += self._strobe_delay_us
+
         self._log.debug(
             f"Setting exposure time {exposure_time_calculated_us} [us] for exposure_time={exposure_time_ms * 1000} [us] and strobe={self._strobe_delay_us} [us]"
-        )
-        # The camera exposure time is the actual per-row exposure time we want, not including the strobe delay.  If this
-        # is not a global shutter camera, the frame time will actually be longer than this (and so illumination should use
-        # fram time, not exposure time).  
+        ) 
         self._camera.ExposureTime.set(exposure_time_calculated_us)
         self._exposure_time_ms = exposure_time_ms
 
