@@ -31,6 +31,10 @@ class ObjectiveChanger2PosController:
     def home(self):
         self.axisX.findIndex()
 
+    def moveToZero(self):
+        self.axisX.setDPOS(0)
+        self.current_position = 0
+
     def moveToPosition1(self, move_z=True):
         self.axisX.setDPOS(self.position1)
         if self.stage is not None and self.current_position == 2 and self.retracted:

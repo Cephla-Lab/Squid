@@ -1705,6 +1705,13 @@ class HighContentScreeningGui(QMainWindow):
         self.camera.stop_streaming()
         self.camera.close()
 
+        # retract z
+        self.stage.move_z_to(0.1)
+
+        # reset objective changer
+        if USE_XERYON:
+            self.objective_changer.moveToZero()
+
         self.microcontroller.turn_off_all_pid()
 
         if ENABLE_CELLX:
