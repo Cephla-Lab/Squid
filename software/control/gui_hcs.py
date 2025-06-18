@@ -313,6 +313,12 @@ class HighContentScreeningGui(QMainWindow):
                 self.objectiveStore,
                 self.laserAFSettingManager,
             )
+        else:
+            self.liveController_focus_camera = None
+            self.streamHandler_focus_camera = None
+            self.imageDisplayWindow_focus = None
+            self.displacementMeasurementController = None
+            self.laserAutofocusController = None
 
         if USE_SQUID_FILTERWHEEL:
             self.squid_filter_wheel = filterwheel.SquidFilterWheelWrapper(self.microcontroller)
