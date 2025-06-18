@@ -392,7 +392,10 @@ class MultiPointWorker(QObject):
             self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
 
             # laser af characterization mode
-            if self.do_reflection_af and self.microscope.laserAutofocusController.characterization_mode:
+            if (
+                self.microscope.laserAutofocusController
+                and self.microscope.laserAutofocusController.characterization_mode
+            ):
                 image = self.microscope.laserAutofocusController.get_image()
                 saving_path = os.path.join(current_path, file_ID + "_laser af camera" + ".bmp")
                 iio.imwrite(saving_path, image)
