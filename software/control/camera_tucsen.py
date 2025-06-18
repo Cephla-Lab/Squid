@@ -547,6 +547,7 @@ class TucsenCamera(AbstractCamera):
             if TUCAM_Cap_SetTrigger(self._camera, self._trigger_attr) != TUCAMRET.TUCAMRET_SUCCESS:
                 raise CameraError("Failed to set acquisition mode")
             self._update_internal_settings()
+            self.set_exposure_time(self._exposure_time_ms)
 
     def get_acquisition_mode(self) -> CameraAcquisitionMode:
         trigger_attr = TUCAM_TRIGGER_ATTR()
