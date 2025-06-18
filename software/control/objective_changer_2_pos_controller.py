@@ -31,19 +31,21 @@ class ObjectiveChanger2PosController:
     def home(self):
         self.axisX.findIndex()
 
-    def moveToPosition1(self):
+    def moveToPosition1(self, move_z=True):
         self.axisX.setDPOS(self.position1)
         if self.stage is not None and self.current_position == 2 and self.retracted:
             # revert retracting z by self.position2_offset
-            self.stage.move_z(self.position2_offset)
+            if move_z:
+                self.stage.move_z(self.position2_offset)
             self.retracted = False
         self.current_position = 1
 
-    def moveToPosition2(self):
+    def moveToPosition2(self, move_z=True):
         self.axisX.setDPOS(self.position2)
         if self.stage is not None and self.current_position == 1:
             # retract z by self.position2_offset
-            self.stage.move_z(-self.position2_offset)
+            if move_z:
+                self.stage.move_z(-self.position2_offset)
             self.retracted = True
         self.current_position = 2
 
@@ -71,14 +73,14 @@ class ObjectiveChanger2PosController_Simulation:
     def home(self):
         pass
 
-    def moveToPosition1(self):
+    def moveToPosition1(self, move_z=True):
         if self.stage is not None and self.current_position == 2 and self.retracted:
             # revert retracting z by self.position2_offset
             self.stage.move_z(self.position2_offset)
             self.retracted = False
         self.current_position = 1
 
-    def moveToPosition2(self):
+    def moveToPosition2(self, move_z=True):
         if self.stage is not None and self.current_position == 1:
             # retract z by self.position2_offset
             self.stage.move_z(-self.position2_offset)
