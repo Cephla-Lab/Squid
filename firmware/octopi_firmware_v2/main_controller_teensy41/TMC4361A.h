@@ -71,6 +71,7 @@ typedef struct
   int target_tolerance;
   int pid_tolerance;
 
+  int ramp_mode;	
 } TMC4361ATypeDef;
 
 typedef void (*tmc4361A_callback)(TMC4361ATypeDef*, ConfigState);
