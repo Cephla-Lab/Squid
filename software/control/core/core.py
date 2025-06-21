@@ -2151,7 +2151,7 @@ class MultiPointController(QObject):
         try:
             # We have Nt timepoints.  For each timepoint, we capture images at all the regions.  Each
             # region has a list of coordinates that we capture at, and at each coordinate we need to
-            # do a capture for each requested camera + lighting + other configuration selected.  So
+            # do a capture for each requested camera + illumination + other configuration selected.  So
             # total image count is:
             coords_per_region = [
                 len(region_coords) for (region_id, region_coords) in self.scanCoordinates.region_fov_coordinates.items()

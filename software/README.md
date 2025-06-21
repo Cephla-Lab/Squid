@@ -130,6 +130,20 @@ Follow the instructions during the installation.
 
 </details>
 
+<details>
+<summary>Installing SDK for VersaLase laser</summary>
+
+Link: https://github.com/sthronevlt/VersaLSS
+
+Run the following commands:
+```
+curl -L -O https://raw.githubusercontent.com/sthronevlt/VersaLSS/main/dist/laser_sdk-0.1.1-py3-none-any.whl
+pip3 install laser_sdk-0.1.1-py3-none-any.whl
+rm laser_sdk-0.1.1-py3-none-any.whl
+```
+
+</details>
+
 ## Configuring the software
 Copy the .ini file associated with the microscope configuration to the software folder. Make modifications as needed (e.g. `camera_type`, `support_laser_autofocus`,`focus_camera_exposure_time_ms`)
 

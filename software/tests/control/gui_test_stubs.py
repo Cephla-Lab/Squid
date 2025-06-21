@@ -2,7 +2,7 @@ import pathlib
 
 import control.core.core
 import control.microcontroller
-import control.lighting
+import control.illumination
 import squid.abc
 
 import control._def
@@ -34,11 +34,11 @@ def get_test_configuration_manager() -> control.core.core.ConfigurationManager:
 
 def get_test_illumination_controller(
     microcontroller: control.microcontroller.Microcontroller,
-) -> control.lighting.IlluminationController:
-    return control.lighting.IlluminationController(
+) -> control.illumination.IlluminationController:
+    return control.illumination.IlluminationController(
         microcontroller=microcontroller,
-        intensity_control_mode=control.lighting.IntensityControlMode.Software,
-        shutter_control_mode=control.lighting.ShutterControlMode.Software,
+        intensity_control_mode=control.illumination.IntensityControlMode.Software,
+        shutter_control_mode=control.illumination.ShutterControlMode.Software,
     )
 
 
