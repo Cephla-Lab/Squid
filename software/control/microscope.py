@@ -131,6 +131,7 @@ class Microscope(QObject):
                 version=CONTROLLER_VERSION, sn=CONTROLLER_SN, simulated=is_simulation
             )
         )
+        self.illuminationController = IlluminationController(self.microcontroller)
         if not USE_PRIOR_STAGE or is_simulation:  # TODO: Simulated Prior stage is not implemented yet
             self.stage = squid.stage.cephla.CephlaStage(
                 microcontroller=self.microcontroller, stage_config=squid.config.get_stage_config()
@@ -163,7 +164,7 @@ class Microscope(QObject):
             self.channelConfigurationManager, self.laserAFSettingManager
         )
 
-        self.liveController = core.LiveController(self.camera, self.microcontroller, None, self)
+        self.liveController = core.LiveController(self.camera, self.microcontroller, self.illuminationController, self)
         self.streamHandler = core.StreamHandler(accept_new_frame_fn=lambda: self.liveController.is_live)
         self.slidePositionController = core.SlidePositionController(self.stage, self.liveController)
 
@@ -567,14 +568,14 @@ class Microscope(QObject):
     def set_illumination_intensity(self, channel, intensity, objective=None):
         if objective is None:
             objective = self.objectiveStore.current_objective
-        channel_config = self.channelConfigurationManager.get_channel_configurations_for_objective(objective)[channel]
+        channel_config = self.channelConfigurationManager.get_channel_configuration_by_name(objective, channel)
         channel_config.illumination_intensity = intensity
         self.liveController.set_microscope_mode(channel_config)
 
     def set_exposure_time(self, channel, exposure_time, objective=None):
         if objective is None:
             objective = self.objectiveStore.current_objective
-        channel_config = self.channelConfigurationManager.get_channel_configurations_for_objective(objective)[channel]
+        channel_config = self.channelConfigurationManager.get_channel_configuration_by_name(objective, channel)
         channel_config.exposure_time = exposure_time
         self.liveController.set_microscope_mode(channel_config)
 
