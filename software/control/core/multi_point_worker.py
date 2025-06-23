@@ -655,45 +655,50 @@ class MultiPointWorker(QObject):
                 #   I am pretty sure this is broken!
                 self.microscope.nl5.start_acquisition()
         # This is some large timeout that we use just so as to not block forever
-        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
-            self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
-            self.multiPointController.request_abort_aquisition()
-            return
+        with self._timing.get_timer("_ready_for_next_trigger.wait"):
+            if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
+                self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
+                self.multiPointController.request_abort_aquisition()
+                return
+        with self._timing.get_timer("get_ready_for_trigger re-check"):
+            # This should be a noop - we have the frame already.  Still, check!
+            while not self.camera.get_ready_for_trigger():
+                self._sleep(0.001)
 
-        # This should be a noop - we have the frame already.  Still, check!
-        while not self.camera.get_ready_for_trigger():
-            self._sleep(0.001)
-
-        self._ready_for_next_trigger.clear()
-        # Even though the capture time will be slightly after this, we need to capture and set the capture info
-        # before the trigger to be 100% sure the callback doesn't stomp on it.
-        # NOTE(imo): One level up from acquire_camera_image, we have acquire_pos.  We're careful to use that as
-        # much as we can, but don't use it here because we'd rather take the position as close as possible to the
-        # real capture time for the image info.  Ideally we'd use this position for the caller's acquire_pos as well.
-        current_capture_info = CaptureInfo(
-            position=self.stage.get_pos(),
-            z_index=k,
-            capture_time=time.time(),
-            configuration=config,
-            save_directory=current_path,
-            file_id=file_ID,
-            region_id=region_id,
-            fov=fov,
-            configuration_idx=config_idx,
-        )
-        self._current_capture_info = current_capture_info
-        self.camera.send_trigger(illumination_time=camera_illumination_time)
-        exposure_done_time = time.time() + self.camera.get_total_frame_time() / 1e3
-        # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
-        # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
-        self._sleep(max(0.0, exposure_done_time - time.time()))
+            self._ready_for_next_trigger.clear()
+        with self._timing.get_timer("current_capture_info ="):
+            # Even though the capture time will be slightly after this, we need to capture and set the capture info
+            # before the trigger to be 100% sure the callback doesn't stomp on it.
+            # NOTE(imo): One level up from acquire_camera_image, we have acquire_pos.  We're careful to use that as
+            # much as we can, but don't use it here because we'd rather take the position as close as possible to the
+            # real capture time for the image info.  Ideally we'd use this position for the caller's acquire_pos as well.
+            current_capture_info = CaptureInfo(
+                position=self.stage.get_pos(),
+                z_index=k,
+                capture_time=time.time(),
+                configuration=config,
+                save_directory=current_path,
+                file_id=file_ID,
+                region_id=region_id,
+                fov=fov,
+                configuration_idx=config_idx,
+            )
+            self._current_capture_info = current_capture_info
+        with self._timing.get_timer("send_trigger"):
+            self.camera.send_trigger(illumination_time=camera_illumination_time)
+        with self._timing.get_timer("exposure_time_done sleep"):
+            exposure_done_time = time.time() + self.camera.get_total_frame_time() / 1e3
+            # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
+            # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
+            self._sleep(max(0.0, exposure_done_time - time.time()))
 
         # turn off the illumination if using software trigger
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_off_illumination()
 
-        if not self.headless:
-            QApplication.processEvents()
+        with self._timing.get_timer("QApplication.processEvents"):
+            if not self.headless:
+                QApplication.processEvents()
 
     def _sleep(self, sec):
         self._log.info(f"Sleeping for {sec} [s]")
