@@ -34,13 +34,6 @@ def show_config(cfp, configpath, main_gui):
     config_widget.exec_()
 
 
-"""
-# Planning to replace this with a better design
-def show_acq_config(cfm):
-    acq_config_widget = ConfigEditorForAcquisitions(cfm)
-    acq_config_widget.exec_()
-"""
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--simulation", help="Run the GUI with simulated hardware.", action="store_true")
@@ -75,14 +68,7 @@ if __name__ == "__main__":
 
     win = gui.HighContentScreeningGui(is_simulation=args.simulation, live_only_mode=args.live_only)
 
-    """
-    # Planning to replace this with a better design
-    acq_config_action = QAction("Acquisition Settings", win)
-    acq_config_action.triggered.connect(lambda: show_acq_config(win.configurationManager))
-    """
-
     file_menu = QMenu("File", win)
-    # file_menu.addAction(acq_config_action)
 
     if not legacy_config:
         config_action = QAction("Microscope Settings", win)
