@@ -1,3 +1,4 @@
+import collections
 import enum
 import inspect
 import pathlib
@@ -513,11 +514,16 @@ class TimingManager:
                     return "N/A"
                 return f"{min(i):.4f}/{max(i):.4f}"
 
-            return f"{self._name} (N={len(intervals)}): mean={mean(intervals)} [s], median={median(intervals)} [s], min/max={min_max(intervals)} [s]"
+            def total_time(i):
+                if not len(i):
+                    return "N/A"
+                return f"{sum(intervals):.4f}"
+
+            return f"{self._name:>30}: (N={len(intervals)}, total={total_time(intervals)} [s]): mean={mean(intervals)} [s], median={median(intervals)} [s], min/max={min_max(intervals)} [s]"
 
     def __init__(self, name):
         self._name = name
-        self._timers = {}
+        self._timers = collections.OrderedDict()
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
     def get_timer(self, name) -> Timer:
