@@ -4901,7 +4901,10 @@ class LaserAutofocusController(QObject):
                     "spot_spacing": self.laser_af_properties.spot_spacing,
                 }
                 result = utils.find_spot_location(
-                    image, mode=self.laser_af_properties.spot_detection_mode, params=spot_detection_params
+                    image,
+                    mode=self.laser_af_properties.spot_detection_mode,
+                    params=spot_detection_params,
+                    filter_sigma=LASER_AF_FILTER_SIGMA,
                 )
                 if result is None:
                     self._log.warning(

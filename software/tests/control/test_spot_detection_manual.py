@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 
 from tests.tools import get_repo_root
 from control.utils import find_spot_location, SpotDetectionMode
+from control._def import LASER_AF_FILTER_SIGMA
 
 
 def check_image_from_disk(image_path: str):
@@ -50,7 +51,9 @@ def check_image_from_disk(image_path: str):
             print(f"\nParameters set {j+1}:")
             print(params)
 
-            result = find_spot_location(image, mode=mode, params=params, debug_plot=True)
+            result = find_spot_location(
+                image, mode=mode, params=params, filter_sigma=LASER_AF_FILTER_SIGMA, debug_plot=True
+            )
 
             if result is not None:
                 x, y = result

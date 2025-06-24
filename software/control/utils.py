@@ -11,7 +11,7 @@ import cv2
 import git
 from numpy import square, mean
 import numpy as np
-from scipy.ndimage import label
+from scipy.ndimage import label, gaussian_filter
 from scipy import signal
 import os
 from typing import Optional, Tuple, List
@@ -203,6 +203,7 @@ def find_spot_location(
     image: np.ndarray,
     mode: SpotDetectionMode = SpotDetectionMode.SINGLE,
     params: Optional[dict] = None,
+    filter_sigma: Optional[int] = None,
     debug_plot: bool = False,
 ) -> Optional[Tuple[float, float]]:
     """Find the location of a spot in an image.
@@ -246,6 +247,13 @@ def find_spot_location(
     p = default_params
 
     try:
+        # Apply Gaussian filter if requested
+        if filter_sigma is not None and filter_sigma > 0:
+            filtered = gaussian_filter(image.astype(float), sigma=filter_sigma)
+            filtered = np.clip(filtered, 0, 255).astype(np.uint8)
+        else:
+            filtered = image.copy()
+
         # Get the y position of the spots
         y_intensity_profile = np.sum(image, axis=1)
         if np.all(y_intensity_profile == 0):

@@ -874,7 +874,9 @@ class LaserAutofocusSettingWidget(QWidget):
         frame = self.illuminate_and_get_frame()
         if frame is not None:
             try:
-                result = utils.find_spot_location(frame, mode=mode, params=params, debug_plot=True)
+                result = utils.find_spot_location(
+                    frame, mode=mode, params=params, filter_sigma=LASER_AF_FILTER_SIGMA, debug_plot=True
+                )
                 if result is not None:
                     x, y = result
                     self.signal_laser_spot_location.emit(frame, x, y)
