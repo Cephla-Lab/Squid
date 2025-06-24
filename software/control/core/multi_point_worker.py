@@ -329,18 +329,23 @@ class MultiPointWorker(QObject):
 
     def move_to_coordinate(self, coordinate_mm):
         print("moving to coordinate", coordinate_mm)
-        x_mm = coordinate_mm[0]
-        self.stage.move_x_to(x_mm)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_X / 1000)
-
-        y_mm = coordinate_mm[1]
-        self.stage.move_y_to(y_mm)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
 
         # check if z is included in the coordinate
         if len(coordinate_mm) == 3:
+            x_mm = coordinate_mm[0]
+            y_mm = coordinate_mm[1]
             z_mm = coordinate_mm[2]
+
+            self.stage.move_xy_to(x_mm, y_mm, blocking=False)
             self.move_to_z_level(z_mm)
+
+            time.sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
+        else:
+            x_mm = coordinate_mm[0]
+            y_mm = coordinate_mm[1]
+
+            self.stage.move_xy_to(x_mm, y_mm)
+            time.sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
 
     def move_to_z_level(self, z_mm):
         print("moving z")
@@ -549,7 +554,6 @@ class MultiPointWorker(QObject):
         camera_illumination_time = self.camera.get_exposure_time()
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_on_illumination()
-            self.wait_till_operation_is_completed()
             camera_illumination_time = None
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
             if "Fluorescence" in config.name and ENABLE_NL5 and NL5_USE_DOUT:
@@ -617,7 +621,6 @@ class MultiPointWorker(QObject):
                 if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                     # TODO(imo): use illum controller
                     self.liveController.turn_on_illumination()
-                    self.wait_till_operation_is_completed()
 
                 # read camera frame
                 self.camera.send_trigger(illumination_time=self.camera.get_exposure_time())
