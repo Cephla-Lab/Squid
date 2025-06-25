@@ -928,6 +928,19 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.setupMultiWindowLayout()
 
+    def _getMainWindowMinimumSize(self):
+        """
+        We want our main window to fit on the primary screen, so grab the users primary screen and return
+        something slightly smaller than that.
+        """
+        desktop_info = QDesktopWidget()
+        primary_screen_size = desktop_info.screen(desktop_info.primaryScreen()).size()
+
+        height_min = int(0.9 * primary_screen_size.height())
+        width_min = int(0.96 * primary_screen_size.width())
+
+        return (width_min, height_min)
+
     def setupSingleWindowLayout(self):
         main_dockArea = dock.DockArea()
 
@@ -951,10 +964,7 @@ class HighContentScreeningGui(QMainWindow):
         main_dockArea.addDock(dock_controlPanel, "right")
         self.setCentralWidget(main_dockArea)
 
-        desktopWidget = QDesktopWidget()
-        height_min = 0.9 * desktopWidget.height()
-        width_min = 0.96 * desktopWidget.width()
-        self.setMinimumSize(int(width_min), int(height_min))
+        self.setMinimumSize(*self._getMainWindowMinimumSize())
         self.onTabChanged(self.recordTabWidget.currentIndex())
 
     def setupMultiWindowLayout(self):
@@ -963,10 +973,8 @@ class HighContentScreeningGui(QMainWindow):
         self.tabbedImageDisplayWindow.setCentralWidget(self.imageDisplayTabs)
         self.tabbedImageDisplayWindow.setWindowFlags(self.windowFlags() | Qt.CustomizeWindowHint)
         self.tabbedImageDisplayWindow.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint)
-        desktopWidget = QDesktopWidget()
-        width = 0.96 * desktopWidget.height()
-        height = width
-        self.tabbedImageDisplayWindow.setFixedSize(int(width), int(height))
+        (width_min, height_min) = self._getMainWindowMinimumSize()
+        self.tabbedImageDisplayWindow.setFixedSize(width_min, height_min)
         self.tabbedImageDisplayWindow.show()
 
     def makeConnections(self):
