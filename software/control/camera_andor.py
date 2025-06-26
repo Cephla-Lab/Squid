@@ -2,11 +2,17 @@ import time
 import numpy as np
 import threading
 import os
+from typing import Optional, Callable, Sequence, Tuple, Dict
+import pydantic
 
 import pyAndorSDK3
 from pyAndorSDK3 import AndorSDK3
 from control._def import *
 import squid.logging
+from squid.abc import AbstractCamera, CameraError
+from squid.config import CameraConfig, CameraPixelFormat
+from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
+import control.utils
 
 
 # For using in Windows only
@@ -15,432 +21,513 @@ library_path = os.path.join(package_path, "libs", "Windows", "64")
 pyAndorSDK3.utils.add_library_path(library_path)
 
 
-def get_sn_by_model(model_name):
-    pass
+class AndorCapabilities(pydantic.BaseModel):
+    binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
+    max_width: int
+    max_height: int
 
 
-class Camera(object):
-    def __init__(
-        self, sn=None, resolution=(2048, 2048), is_global_shutter=False, rotate_image_angle=None, flip_image=None
-    ):
-        self.log = squid.logging.get_logger(self.__class__.__name__)
-        self.cam = None
-        self.exposure_time = 1  # ms
-        self.analog_gain = 0
-        self.is_streaming = False
-        self.pixel_format = None
-        self.is_color = False
-        self.available_pixel_formats = ["MONO12", "MONO16"]
+class AndorCamera(AbstractCamera):
+    PIXEL_SIZE_UM: float = 6.5  # ZL 41 Cell
 
-        self.frame_ID = -1
-        self.frame_ID_software = -1
-        self.frame_ID_offset_hardware_trigger = 0
-        self.timestamp = 0
-        self.trigger_mode = None
+    @staticmethod
+    def _open(index=None, sn=None) -> Tuple["pyAndorSDK3.Camera", AndorCapabilities]:
+        if index is None and sn is None:
+            raise ValueError("You must specify one of either index or sn.")
+        elif index is not None and sn is not None:
+            raise ValueError("You must specify only 1 of index or sn")
 
-        self.strobe_delay_us = None
-        self.line_rate = None  # in us
-
-        self.image_locked = False
-        self.current_frame = None
-        self.callback_is_enabled = False
-        self.new_image_callback_external = None
-        self.stop_waiting = False
-        self.buffer_queue = []
-
-        self.GAIN_MAX = 0
-        self.GAIN_MIN = 0
-        self.GAIN_STEP = 0
-        self.EXPOSURE_TIME_MS_MIN = 0.01
-        self.EXPOSURE_TIME_MS_MAX = 30000.0
-
-        self.rotate_image_angle = rotate_image_angle
-        self.flip_image = flip_image
-        self.is_global_shutter = is_global_shutter
-
-        self.ROI_offset_x = 0
-        self.ROI_offset_y = 0
-        self.ROI_width = resolution[0]
-        self.ROI_height = resolution[1]
-
-        self.OffsetX = 0
-        self.OffsetY = 0
-        self.Width = resolution[0]
-        self.Height = resolution[1]
-
-        self.WidthMax = resolution[0]
-        self.HeightMax = resolution[1]
-
-    def open(self, index=0):
         sdk3 = AndorSDK3()
-        self.cam = sdk3.GetCamera(index)
-        self.cam.open()
+
+        if sn is not None:
+            # TODO: Implement serial number lookup
+            raise NotImplementedError("Serial number lookup not yet implemented for Andor cameras")
+
+        if index is None:
+            index = 0
+
+        try:
+            camera = sdk3.GetCamera(index)
+            camera.open()
+        except Exception as e:
+            raise CameraError(f"Failed to open Andor camera with index={index}: {e}")
+
+        # Get camera capabilities
+        try:
+            # For now, we only support 1x1 binning
+            supported_resolutions = {
+                (1, 1): (2048, 2048),  # Default for most Andor cameras
+            }
+
+            capabilities = AndorCapabilities(
+                binning_to_resolution=supported_resolutions, max_width=2048, max_height=2048
+            )
+
+            return camera, capabilities
+        except Exception as e:
+            camera.close()
+            raise CameraError(f"Failed to get camera capabilities: {e}")
+
+    def __init__(
+        self,
+        camera_config: CameraConfig,
+        hw_trigger_fn: Optional[Callable[[Optional[float]], bool]],
+        hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]],
+    ):
+        super().__init__(camera_config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
+
+        self._read_thread_lock = threading.Lock()
+        self._read_thread: Optional[threading.Thread] = None
+        self._read_thread_keep_running = threading.Event()
+        self._read_thread_keep_running.clear()
+        self._read_thread_wait_period_s = 0.01
+        self._read_thread_running = threading.Event()
+        self._read_thread_running.clear()
+
+        self._frame_lock = threading.Lock()
+        self._current_frame: Optional[CameraFrame] = None
+        self._last_trigger_timestamp = 0
+        self._trigger_sent = threading.Event()
+
+        camera, capabilities = AndorCamera._open(index=0)
+
+        self._camera = camera
+        self._capabilities: AndorCapabilities = capabilities
+        self._is_streaming = threading.Event()
+
+        # Andor specific properties
+        self._line_rate_us: Optional[float] = None
+        self._strobe_delay_us: Optional[float] = None
+        self._buffer_queue = []
+
+        # We store exposure time so we don't need to worry about backing out strobe time
+        self._exposure_time_ms: float = 20
+
+        # Initialize camera settings
         self._initialize_camera()
-        self.log.info(f"Andor Camera opened. SN: {self.cam.SerialNumber}")
-
-    def open_by_sn(self, sn):
-        self.open()
-
-    def close(self):
-        if self.is_streaming:
-            self.stop_streaming()
-
-        self.disable_callback()
-
-        if self.cam is not None:
-            self.cam.close()
-            self.cam = None
+        self.set_exposure_time(self._exposure_time_ms)
 
     def _initialize_camera(self):
-        if self.cam is None:
+        if self._camera is None:
             return
+
         # Get exposure time limits
         try:
-            self.EXPOSURE_TIME_MS_MIN = self.cam.min_ExposureTime * 1000  # convert to ms
-            self.EXPOSURE_TIME_MS_MAX = self.cam.max_ExposureTime * 1000  # convert to ms
-            self.log.info(f"exposure min: {self.EXPOSURE_TIME_MS_MIN}, max: {self.EXPOSURE_TIME_MS_MAX}")
-        except:
-            self.log.error("Could not determine exposure time limits")
-
-        try:
-            self.line_rate = 1 / self.cam.LineScanSpeed * 1000000
-            self.log.info(f"line rate: {self.line_rate} us")
-        except:
-            self.log.error("Could not determine line rate")
-            raise
-
-    def set_callback(self, function):
-        self.new_image_callback_external = function
-
-    def enable_callback(self):
-        if self.callback_is_enabled:
-            return
-
-        if not self.is_streaming:
-            self.start_streaming()
-
-        self.stop_waiting = False
-        self.callback_thread = threading.Thread(target=self._wait_and_callback)
-        self.callback_thread.start()
-
-        self.callback_is_enabled = True
-
-    def _wait_and_callback(self):
-        while True:
-            if self.stop_waiting:
-                break
-            try:
-                image = self.read_frame()
-                if image is not False:
-                    self._on_new_frame(image)
-            except Exception as e:
-                self.log.warning(f"Error waiting for frame: {e}")
-                time.sleep(0.01)
-
-    def _on_new_frame(self, image):
-        if self.image_locked:
-            self.log.warning("Last image is still being processed; a frame is dropped")
-            return
-
-        self.current_frame = image
-
-        self.frame_ID_software += 1
-        self.frame_ID += 1
-
-        # Frame ID for hardware triggered acquisition
-        if self.trigger_mode == TriggerMode.HARDWARE:
-            if self.frame_ID_offset_hardware_trigger is None:
-                self.frame_ID_offset_hardware_trigger = self.frame_ID
-            self.frame_ID = self.frame_ID - self.frame_ID_offset_hardware_trigger
-
-        self.timestamp = time.time()
-        self.new_image_callback_external(self)
-
-    def disable_callback(self):
-        if not self.callback_is_enabled:
-            return
-
-        was_streaming = self.is_streaming
-        if self.is_streaming:
-            self.stop_streaming()
-
-        self.stop_waiting = True
-        time.sleep(0.2)
-        if hasattr(self, "callback_thread"):
-            self.callback_thread.join()
-            del self.callback_thread
-        self.callback_is_enabled = False
-
-        if was_streaming:
-            self.start_streaming()
-
-    def set_analog_gain(self, gain):
-        pass
-
-    def set_exposure_time(self, exposure_time):
-        if self.trigger_mode == TriggerMode.SOFTWARE:
-            exposure_time_s = exposure_time / 1000.0
-        elif self.trigger_mode == TriggerMode.HARDWARE:
-            exposure_time_s = self.strobe_delay_us / 1000000 + exposure_time / 1000
-        try:
-            self.cam.ExposureTime = exposure_time_s
-            self.exposure_time = exposure_time
+            self.EXPOSURE_TIME_MS_MIN = self._camera.min_ExposureTime * 1000  # convert to ms
+            self.EXPOSURE_TIME_MS_MAX = self._camera.max_ExposureTime * 1000  # convert to ms
+            self._log.info(f"Exposure limits: min={self.EXPOSURE_TIME_MS_MIN}ms, max={self.EXPOSURE_TIME_MS_MAX}ms")
         except Exception as e:
-            self.log.error(f"Error setting exposure time: {e}")
-            raise e
+            self._log.error(f"Could not determine exposure time limits: {e}")
+            self.EXPOSURE_TIME_MS_MIN = 0.01
+            self.EXPOSURE_TIME_MS_MAX = 30000.0
 
-    def set_continuous_acquisition(self):
-        was_streaming = False
-        if self.is_streaming:
-            was_streaming = True
-            self.stop_streaming()
+        self.set_exposure_time(self._exposure_time_ms)
 
         try:
-            self.cam.CycleMode = "Continuous"
-            self.cam.TriggerMode = "Internal"
-            self.trigger_mode = TriggerMode.CONTINUOUS
+            self._line_rate_us = 1 / self._camera.LineScanSpeed * 1000000
+            self._log.info(f"Line rate: {self._line_rate_us} us")
+            self._calculate_strobe_delay()
         except Exception as e:
-            self.log.error(f"Error setting continuous acquisition: {e}")
-
-        if was_streaming:
-            self.start_streaming()
-
-    def set_software_triggered_acquisition(self):
-        was_streaming = False
-        if self.is_streaming:
-            was_streaming = True
-            self.stop_streaming()
-
-        try:
-            self.cam.CycleMode = "Continuous"
-            self.cam.TriggerMode = "Software"
-            self.trigger_mode = TriggerMode.SOFTWARE
-        except Exception as e:
-            self.log.error(f"Error setting software triggered acquisition: {e}")
-
-        if was_streaming:
-            self.start_streaming()
-
-    def set_hardware_triggered_acquisition(self):
-        was_streaming = False
-        if self.is_streaming:
-            was_streaming = True
-            self.stop_streaming()
-
-        try:
-            self.cam.CycleMode = "Continuous"
-            self.cam.TriggerMode = "External"
-            self.frame_ID_offset_hardware_trigger = None
-            self.trigger_mode = TriggerMode.HARDWARE
-        except Exception as e:
-            self.log.error(f"Error setting hardware triggered acquisition: {e}")
-
-        if was_streaming:
-            self.start_streaming()
-
-    def set_pixel_format(self, pixel_format):
-        was_streaming = False
-        if self.is_streaming:
-            was_streaming = True
-            self.stop_streaming()
-
-        try:
-            if pixel_format == "MONO12":
-                self.cam.PixelEncoding = "Mono12"
-                self.pixel_format = pixel_format
-            elif pixel_format == "MONO16":
-                self.cam.PixelEncoding = "Mono16"
-                self.pixel_format = pixel_format
-            else:
-                raise ValueError(f"Invalid pixel format: {pixel_format}")
-
-            self.line_rate = 1 / self.cam.LineScanSpeed * 1000000
-            self.calculate_strobe_delay()
-            if self.trigger_mode == TriggerMode.HARDWARE:
-                self.set_exposure_time(self.exposure_time)
-
-        except Exception as e:
-            self.log.error(f"Error setting pixel format: {e}")
-
-        if was_streaming:
-            self.start_streaming()
-
-    def send_trigger(self):
-        try:
-            self.cam.SoftwareTrigger()
-        except Exception as e:
-            self.log.error(f"Trigger not sent - error: {e}")
-
-    def read_frame(self):
-        try:
-            acq = self.cam.wait_buffer(2000)
-            self.cam.queue(acq._np_data, self.cam.ImageSizeBytes)
-            raw = np.asarray(acq._np_data, dtype=np.uint8)
-            img16 = raw.view("<u2")
-            img16 = img16.reshape(2048, 2048)
-            return img16
-        except Exception as e:
-            self.log.error(f"Error reading frame: {e}")
-            return None
-
-    def start_streaming(self, buffer_frame_num=2):
-        if self.is_streaming:
-            return
-
-        try:
-            # Queue buffers based on ImageSizeBytes
-            img_size = self.cam.ImageSizeBytes
-            for _ in range(buffer_frame_num):
-                buf = np.empty((img_size,), dtype="B")
-                self.cam.queue(buf, img_size)
-                self.buffer_queue.append(buf)  # Keep reference to avoid garbage collection
-
-            # Start acquisition
-            self.cam.AcquisitionStart()
-            self.is_streaming = True
-            self.log.info("Andor Camera starts streaming")
-        except Exception as e:
-            self.log.error(f"Andor Camera cannot start streaming: {e}")
-            self.is_streaming = False
-
-    def stop_streaming(self):
-        try:
-            self.cam.AcquisitionStop()
-            self.cam.flush()
-            self.is_streaming = False
-            self.buffer_queue = []
-            self.log.info("Andor Camera streaming stopped")
-        except Exception as e:
-            self.log.error(f"Error stopping streaming: {e}")
-
-    def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
-        pass
-
-    def calculate_strobe_delay(self):
-        self.strobe_delay_us = int(self.line_rate * 2048)
-
-
-class Camera_Simulation(object):
-    def __init__(self, sn=None, is_global_shutter=False, rotate_image_angle=None, flip_image=None):
-        sdk3 = AndorSDK3()
-        self.cam = None
-
-        self.exposure_time = 1  # ms
-        self.analog_gain = 0
-        self.is_streaming = False
-        self.pixel_format = None
-        self.is_color = False
-
-        self.frame_ID = -1
-        self.frame_ID_software = -1
-        self.frame_ID_offset_hardware_trigger = 0
-        self.timestamp = 0
-        self.trigger_mode = None
-
-        self.strobe_delay_us = None
-
-        self.image_locked = False
-        self.current_frame = None
-        self.callback_is_enabled = False
-        self.new_image_callback_external = None
-        self.stop_waiting = False
-
-        self.GAIN_MAX = 0
-        self.GAIN_MIN = 0
-        self.GAIN_STEP = 0
-        self.EXPOSURE_TIME_MS_MIN = 0.01
-        self.EXPOSURE_TIME_MS_MAX = 10000
-
-        self.rotate_image_angle = rotate_image_angle
-        self.flip_image = flip_image
-        self.is_global_shutter = is_global_shutter
-        self.sn = sn
-
-        self.ROI_offset_x = 0
-        self.ROI_offset_y = 0
-        self.ROI_width = 2760
-        self.ROI_height = 2760
-
-        self.OffsetX = 0
-        self.OffsetY = 0
-        self.Width = 2760
-        self.Height = 2760
-
-        self.WidthMax = 2760
-        self.HeightMax = 2760
-
-        self.new_image_callback_external = None
-
-    def open(self, index=0):
-        pass
-
-    def set_callback(self, function):
-        self.new_image_callback_external = function
-
-    def enable_callback(self):
-        self.callback_is_enabled = True
-
-    def disable_callback(self):
-        self.callback_is_enabled = False
-
-    def open_by_sn(self, sn):
-        pass
+            self._log.error(f"Could not determine line rate: {e}")
 
     def close(self):
-        pass
+        self._cleanup_read_thread()
 
-    def set_exposure_time(self, exposure_time):
-        pass
+        if self._is_streaming.is_set():
+            self.stop_streaming()
 
-    def set_analog_gain(self, analog_gain):
-        pass
+        if self._camera is not None:
+            self._camera.close()
+            self._camera = None
+
+    def _allocate_read_buffers(self, count=2):
+        """Allocate buffers for the Andor camera"""
+        try:
+            img_size = self._camera.ImageSizeBytes
+            self._buffer_queue = []
+            for _ in range(count):
+                buf = np.empty((img_size,), dtype="B")
+                self._camera.queue(buf, img_size)
+                self._buffer_queue.append(buf)  # Keep reference to avoid GC
+            return True
+        except Exception as e:
+            self._log.error(f"Failed to allocate buffers: {e}")
+            return False
+
+    def _read_frames_when_available(self):
+        self._log.info("Starting Andor read thread.")
+        self._read_thread_running.set()
+
+        while self._read_thread_keep_running.is_set():
+            try:
+                if not self._is_streaming.is_set():
+                    time.sleep(0.001)
+                    continue
+
+                try:
+                    # Wait for frame with timeout
+                    acq = self._camera.wait_buffer(100)  # 100ms timeout
+
+                    # Queue a new buffer
+                    self._camera.queue(acq._np_data, self._camera.ImageSizeBytes)
+
+                    # Process the frame
+                    raw = np.asarray(acq._np_data, dtype=np.uint8)
+
+                    # Convert based on pixel format
+                    if self.get_pixel_format() == CameraPixelFormat.MONO16:
+                        img = raw.view("<u2")
+                    else:  # MONO8 or MONO12
+                        img = raw.view("<u2")  # Andor typically returns 16-bit data
+
+                    img = img.reshape(self.get_resolution())
+                    self._trigger_sent.clear()
+
+                    processed_frame = self._process_raw_frame(img)
+
+                    with self._frame_lock:
+                        camera_frame = CameraFrame(
+                            frame_id=self._current_frame.frame_id + 1 if self._current_frame else 1,
+                            timestamp=time.time(),
+                            frame=processed_frame,
+                            frame_format=self.get_frame_format(),
+                            frame_pixel_format=self.get_pixel_format(),
+                        )
+                        self._current_frame = camera_frame
+
+                    # Send frame to callbacks
+                    self._propogate_frame(camera_frame)
+
+                except Exception as e:
+                    # Timeout is normal, don't log
+                    if "timeout" not in str(e).lower():
+                        self._log.debug(f"Frame read error: {e}")
+                    time.sleep(0.001)
+
+            except Exception as e:
+                self._log.exception("Exception in read loop, ignoring and trying to continue.")
+                time.sleep(0.01)
+
+        self._read_thread_running.clear()
+
+    def set_exposure_time(self, exposure_time_ms: float):
+        camera_exposure_time_s = exposure_time_ms / 1000.0
+
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            strobe_time_ms = self.get_strobe_time()
+            camera_exposure_time_s += strobe_time_ms / 1000.0
+            if self._hw_set_strobe_delay_ms_fn:
+                self._log.debug(f"Setting hw strobe time to {strobe_time_ms} [ms]")
+                self._hw_set_strobe_delay_ms_fn(strobe_time_ms)
+
+        try:
+            self._camera.ExposureTime = camera_exposure_time_s
+            self._exposure_time_ms = exposure_time_ms
+            self._trigger_sent.clear()
+            return True
+        except Exception as e:
+            raise CameraError(f"Failed to set exposure time to {exposure_time_ms}ms: {e}")
+
+    def get_exposure_time(self) -> float:
+        return self._exposure_time_ms
+
+    def get_exposure_limits(self) -> Tuple[float, float]:
+        return self.EXPOSURE_TIME_MS_MIN, self.EXPOSURE_TIME_MS_MAX
+
+    def get_strobe_time(self) -> float:
+        if self._strobe_delay_us is None:
+            return 0.0
+        return self._strobe_delay_us / 1000.0  # Convert to ms
+
+    def _calculate_strobe_delay(self):
+        if self._line_rate_us is not None:
+            resolution = self.get_resolution()
+            self._strobe_delay_us = int(self._line_rate_us * resolution[1])
+
+    def set_frame_format(self, frame_format: CameraFrameFormat):
+        if frame_format != CameraFrameFormat.RAW:
+            raise ValueError("Only the RAW frame format is supported by this camera.")
+        return True
+
+    def get_frame_format(self) -> CameraFrameFormat:
+        return CameraFrameFormat.RAW
+
+    _PIXEL_FORMAT_TO_ANDOR_FORMAT = {
+        CameraPixelFormat.MONO12: "Mono12",
+        CameraPixelFormat.MONO16: "Mono16",
+    }
+
+    def set_pixel_format(self, pixel_format: CameraPixelFormat):
+        if isinstance(pixel_format, str):
+            try:
+                pixel_format = CameraPixelFormat(pixel_format)
+            except ValueError:
+                raise ValueError(f"Unknown or unsupported pixel format={pixel_format}")
+
+        if pixel_format not in self._PIXEL_FORMAT_TO_ANDOR_FORMAT:
+            raise ValueError(f"Pixel format {pixel_format} is not supported by this camera.")
+
+        with self._pause_streaming():
+            try:
+                self._camera.PixelEncoding = self._PIXEL_FORMAT_TO_ANDOR_FORMAT[pixel_format]
+
+                # Recalculate line rate and strobe delay
+                self._line_rate_us = 1 / self._camera.LineScanSpeed * 1000000
+                self._calculate_strobe_delay()
+
+                # Update exposure time if in hardware trigger mode
+                if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                    self.set_exposure_time(self._exposure_time_ms)
+
+            except Exception as e:
+                raise CameraError(f"Failed to set pixel format to {pixel_format}: {e}")
+
+    def get_pixel_format(self) -> CameraPixelFormat:
+        try:
+            andor_format = self._camera.PixelEncoding
+            _andor_to_pixel = {v: k for (k, v) in self._PIXEL_FORMAT_TO_ANDOR_FORMAT.items()}
+
+            if andor_format not in _andor_to_pixel:
+                # Default to MONO16 if unknown
+                return CameraPixelFormat.MONO16
+
+            return _andor_to_pixel[andor_format]
+        except:
+            return CameraPixelFormat.MONO16
+
+    def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
+        return list(self._PIXEL_FORMAT_TO_ANDOR_FORMAT.keys())
+
+    def get_resolution(self) -> Tuple[int, int]:
+        return self._capabilities.binning_to_resolution[self.get_binning()]
+
+    def set_binning(self, binning_factor_x: int, binning_factor_y: int):
+        if binning_factor_x != 1 or binning_factor_y != 1:
+            raise ValueError("Binning has not been implemented for this camera yet.")
+
+    def get_binning(self) -> Tuple[int, int]:
+        return (1, 1)
+
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
+        return [(1, 1)]
+
+    def get_pixel_size_unbinned_um(self) -> float:
+        return self.PIXEL_SIZE_UM
+
+    def get_pixel_size_binned_um(self) -> float:
+        return self.PIXEL_SIZE_UM * self.get_binning()[0]
+
+    def set_analog_gain(self, analog_gain: float):
+        # Andor cameras typically don't have analog gain
+        self._log.warning("Analog gain is not supported for Andor cameras")
+
+    def get_analog_gain(self) -> float:
+        return 0.0
+
+    def get_gain_range(self) -> CameraGainRange:
+        return CameraGainRange(min=0.0, max=0.0, step=1.0)
+
+    def _ensure_read_thread_running(self):
+        with self._read_thread_lock:
+            if self._read_thread is not None and self._read_thread_running.is_set():
+                self._log.debug("Read thread exists and thread is marked as running.")
+                return True
+
+            elif self._read_thread is not None:
+                self._log.warning("Read thread already exists, but not marked as running. Still attempting start.")
+
+            self._read_thread = threading.Thread(target=self._read_frames_when_available, daemon=True)
+            self._read_thread_keep_running.set()
+            self._read_thread.start()
 
     def start_streaming(self):
-        self.frame_ID_software = 0
+        self._ensure_read_thread_running()
+
+        if self._is_streaming.is_set():
+            self._log.debug("Already streaming, start_streaming is noop")
+            return True
+
+        try:
+            if not self._allocate_read_buffers():
+                raise CameraError("Failed to allocate read buffers")
+
+            self._camera.AcquisitionStart()
+            self._trigger_sent.clear()
+            self._is_streaming.set()
+            self._log.info("Andor camera started streaming")
+            return True
+        except Exception as e:
+            self._log.error(f"Failed to start streaming: {e}")
+            self._is_streaming.clear()
+            return False
+
+    def _cleanup_read_thread(self):
+        self._log.debug("Cleaning up read thread.")
+        with self._read_thread_lock:
+            if self._read_thread is None:
+                self._log.warning("No read thread, already not running?")
+                return True
+
+            self._read_thread_keep_running.clear()
+            self._read_thread.join(1.1 * self._read_thread_wait_period_s)
+
+            success = not self._read_thread.is_alive()
+            if not success:
+                self._log.warning("Read thread refused to exit!")
+
+            self._read_thread = None
+            self._read_thread_running.clear()
 
     def stop_streaming(self):
-        pass
+        self._log.debug("Stopping Andor streaming.")
+        success = True
 
-    def set_pixel_format(self, pixel_format):
-        self.pixel_format = pixel_format
-        print(pixel_format)
-        self.frame_ID = 0
+        try:
+            self._camera.AcquisitionStop()
+            self._camera.flush()
+            self._buffer_queue = []
+            self._trigger_sent.clear()
+            self._is_streaming.clear()
+            self._log.info("Andor camera stopped streaming")
+        except Exception as e:
+            self._log.error(f"Error stopping streaming: {e}")
+            success = False
 
-    def set_continuous_acquisition(self):
-        pass
+        return success
 
-    def set_software_triggered_acquisition(self):
-        pass
+    def get_is_streaming(self):
+        return self._is_streaming.is_set()
 
-    def set_hardware_triggered_acquisition(self):
-        pass
+    def read_camera_frame(self) -> Optional[CameraFrame]:
+        if not self.get_is_streaming():
+            self._log.error("Cannot read camera frame when not streaming.")
+            return None
 
-    def send_trigger(self):
-        print("send trigger")
-        self.frame_ID = self.frame_ID + 1
-        self.timestamp = time.time()
-        if self.frame_ID == 1:
-            if self.pixel_format == "MONO8":
-                self.current_frame = np.random.randint(255, size=(2000, 2000), dtype=np.uint8)
-                self.current_frame[901:1100, 901:1100] = 200
-            elif self.pixel_format == "MONO16":
-                self.current_frame = np.random.randint(65535, size=(2000, 2000), dtype=np.uint16)
-                self.current_frame[901:1100, 901:1100] = 200 * 256
-        else:
-            self.current_frame = np.roll(self.current_frame, 10, axis=0)
-            pass
-            # self.current_frame = np.random.randint(255,size=(768,1024),dtype=np.uint8)
-        if self.new_image_callback_external is not None and self.callback_is_enabled:
-            self.new_image_callback_external(self)
+        if not self._read_thread_running.is_set():
+            self._log.error("Fatal camera error: read thread not running!")
+            return None
 
-    def read_frame(self):
-        return self.current_frame
+        starting_id = self.get_frame_id()
+        timeout_s = (1.04 * self.get_total_frame_time() + 1000) / 1000.0
+        timeout_time_s = time.time() + timeout_s
 
-    def _on_frame_callback(self, user_param, raw_image):
-        pass
+        while self.get_frame_id() == starting_id:
+            if time.time() > timeout_time_s:
+                self._log.warning(f"Timed out after waiting {timeout_s}s for frame (starting_id={starting_id})")
+                return None
+            time.sleep(0.001)
 
-    def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
-        pass
+        with self._frame_lock:
+            return self._current_frame
 
-    def calculate_strobe_delay(self):
-        self.strobe_delay_us = 20000
+    def get_frame_id(self) -> int:
+        with self._frame_lock:
+            return self._current_frame.frame_id if self._current_frame else -1
+
+    def get_white_balance_gains(self) -> Tuple[float, float, float]:
+        raise NotImplementedError("White Balance Gains not implemented for the Andor driver.")
+
+    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
+        raise NotImplementedError("White Balance Gains not implemented for the Andor driver.")
+
+    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
+        raise NotImplementedError("White Balance Gains not implemented for the Andor driver.")
+
+    def set_black_level(self, black_level: float):
+        raise NotImplementedError("Black levels are not implemented for the Andor driver.")
+
+    def get_black_level(self) -> float:
+        raise NotImplementedError("Black levels are not implemented for the Andor driver.")
+
+    def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
+        with self._pause_streaming():
+            try:
+                if acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+                    self._camera.CycleMode = "Continuous"
+                    self._camera.TriggerMode = "Software"
+                elif acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
+                    self._camera.CycleMode = "Continuous"
+                    self._camera.TriggerMode = "Internal"
+                elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                    self._camera.CycleMode = "Continuous"
+                    self._camera.TriggerMode = "External"
+                    self._frame_ID_offset_hardware_trigger = None
+                else:
+                    raise ValueError(f"Unhandled acquisition_mode={acquisition_mode}")
+
+                # Recalculate exposure time if needed
+                if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                    self.set_exposure_time(self._exposure_time_ms)
+
+            except Exception as e:
+                self._log.error(f"Failed to set acquisition mode to {acquisition_mode}: {e}")
+                return False
+        return True
+
+    def get_acquisition_mode(self) -> CameraAcquisitionMode:
+        try:
+            trigger_mode = self._camera.TriggerMode
+
+            if trigger_mode == "External":
+                return CameraAcquisitionMode.HARDWARE_TRIGGER
+            elif trigger_mode == "Software":
+                return CameraAcquisitionMode.SOFTWARE_TRIGGER
+            elif trigger_mode == "Internal":
+                return CameraAcquisitionMode.CONTINUOUS
+            else:
+                raise ValueError(f"Unknown Andor trigger mode: {trigger_mode}")
+        except:
+            # Default to continuous if we can't determine
+            return CameraAcquisitionMode.CONTINUOUS
+
+    def send_trigger(self, illumination_time: Optional[float] = None):
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
+            raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
+
+        if not self.get_is_streaming():
+            raise CameraError("Camera is not streaming, cannot send trigger.")
+
+        if not self.get_ready_for_trigger():
+            raise CameraError(
+                f"Requested trigger too early (last trigger was {time.time() - self._last_trigger_timestamp}s ago)"
+            )
+
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            self._hw_trigger_fn(illumination_time)
+        elif self.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+            try:
+                self._camera.SoftwareTrigger()
+                self._last_trigger_timestamp = time.time()
+                self._trigger_sent.set()
+            except Exception as e:
+                raise CameraError(f"Failed to send software trigger: {e}")
+
+    def get_ready_for_trigger(self) -> bool:
+        if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
+            self._trigger_sent.clear()
+        return not self._trigger_sent.is_set()
+
+    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+        # Andor cameras have limited ROI support
+        self._log.warning("ROI is not fully implemented for Andor cameras")
+
+        # Store ROI parameters for potential future use
+        self.ROI_offset_x = offset_x
+        self.ROI_offset_y = offset_y
+        self.ROI_width = width
+        self.ROI_height = height
+
+    def get_region_of_interest(self) -> Tuple[int, int, int, int]:
+        return (self.ROI_offset_x, self.ROI_offset_y, self.ROI_width, self.ROI_height)
+
+    def set_temperature(self, temperature_deg_c: Optional[float]):
+        raise NotImplementedError("Temperature control is not implemented for this Andor camera model.")
+
+    def get_temperature(self) -> float:
+        try:
+            return self._camera.SensorTemperature
+        except:
+            raise NotImplementedError("Temperature reading is not available for this Andor camera model.")
+
+    def set_temperature_reading_callback(self, func) -> Callable[[float], None]:
+        raise NotImplementedError("Temperature reading callback is not supported for this camera.")
