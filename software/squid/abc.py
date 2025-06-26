@@ -443,6 +443,13 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
+    def get_available_pixel_formats(self) -> Sequence[squid.config.CameraPixelFormat]:
+        """
+        Returns the list of pixel formats supported by the camera.
+        """
+        pass
+
+    @abc.abstractmethod
     def set_binning(self, binning_factor_x: int, binning_factor_y: int):
         """
         Set the binning factor of the camera. Usually we set hardware binning here, so calling
@@ -724,5 +731,12 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def set_temperature_reading_callback(self, callback: Callable):
         """
         Set the callback to be called when the temperature reading changes.
+        """
+        pass
+
+    @abc.abstractmethod
+    def close(self):
+        """
+        Close the camera.
         """
         pass

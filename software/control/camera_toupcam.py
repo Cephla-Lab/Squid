@@ -374,7 +374,7 @@ class ToupcamCamera(AbstractCamera):
     def _get_raw_exposure_time(self) -> float:
         return self._camera.get_ExpoTime() / 1000.0  # microseconds -> milliseconds
 
-    def _close(self):
+    def close(self):
         self.terminate_read_temperature_thread = True
         self.thread_read_temperature.join()
         self._set_fan_speed(0)
@@ -488,6 +488,9 @@ class ToupcamCamera(AbstractCamera):
 
     def get_pixel_format(self) -> CameraPixelFormat:
         return self._pixel_format
+
+    def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
+        raise NotImplementedError("get_available_pixel_formats is not implemented for Toupcam")
 
     def set_auto_exposure(self, enabled: bool):
         try:

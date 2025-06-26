@@ -19,7 +19,7 @@ squid.logging.setup_uncaught_exception_logging()
 # app specific libraries
 import control.gui_hcs as gui
 from configparser import ConfigParser
-from control.widgets import ConfigEditorBackwardsCompatible
+from control.widgets import ConfigEditorBackwardsCompatible, StageUtils
 from control._def import CACHED_CONFIG_FILE_PATH
 from control._def import USE_TERMINAL_CONSOLE
 import control.utils
@@ -33,13 +33,6 @@ def show_config(cfp, configpath, main_gui):
     config_widget = ConfigEditorBackwardsCompatible(cfp, configpath, main_gui)
     config_widget.exec_()
 
-
-"""
-# Planning to replace this with a better design
-def show_acq_config(cfm):
-    acq_config_widget = ConfigEditorForAcquisitions(cfm)
-    acq_config_widget.exec_()
-"""
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -75,19 +68,18 @@ if __name__ == "__main__":
 
     win = gui.HighContentScreeningGui(is_simulation=args.simulation, live_only_mode=args.live_only)
 
-    """
-    # Planning to replace this with a better design
-    acq_config_action = QAction("Acquisition Settings", win)
-    acq_config_action.triggered.connect(lambda: show_acq_config(win.configurationManager))
-    """
-
     file_menu = QMenu("File", win)
-    # file_menu.addAction(acq_config_action)
 
     if not legacy_config:
         config_action = QAction("Microscope Settings", win)
         config_action.triggered.connect(lambda: show_config(cf_editor_parser, config_files[0], win))
         file_menu.addAction(config_action)
+
+    microscope_utils_menu = QMenu("Utils", win)
+
+    stage_utils_action = QAction("Stage Utils", win)
+    stage_utils_action.triggered.connect(win.stageUtils.show)
+    microscope_utils_menu.addAction(stage_utils_action)
 
     try:
         csw = win.cswWindow
@@ -109,6 +101,7 @@ if __name__ == "__main__":
 
     menu_bar = win.menuBar()
     menu_bar.addMenu(file_menu)
+    menu_bar.addMenu(microscope_utils_menu)
     win.show()
 
     if USE_TERMINAL_CONSOLE:

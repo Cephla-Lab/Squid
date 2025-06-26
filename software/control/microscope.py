@@ -131,6 +131,7 @@ class Microscope(QObject):
                 version=CONTROLLER_VERSION, sn=CONTROLLER_SN, simulated=is_simulation
             )
         )
+        self.illuminationController = IlluminationController(self.microcontroller)
         if not USE_PRIOR_STAGE or is_simulation:  # TODO: Simulated Prior stage is not implemented yet
             self.stage = squid.stage.cephla.CephlaStage(
                 microcontroller=self.microcontroller, stage_config=squid.config.get_stage_config()
@@ -163,7 +164,7 @@ class Microscope(QObject):
             self.channelConfigurationManager, self.laserAFSettingManager
         )
 
-        self.liveController = core.LiveController(self.camera, self.microcontroller, None, self)
+        self.liveController = core.LiveController(self.camera, self.microcontroller, self.illuminationController, self)
         self.streamHandler = core.StreamHandler(accept_new_frame_fn=lambda: self.liveController.is_live)
         self.slidePositionController = core.SlidePositionController(self.stage, self.liveController)
 
@@ -407,15 +408,134 @@ class Microscope(QObject):
         self.microcontroller.close()
         if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel.close()
+        self.camera.close()
 
-    # ===============================================
-    # Methods for SiLA2
-    # ===============================================
     def to_loading_position(self):
+        was_live = self.liveController.is_live
+        if was_live:
+            self.liveController.stop_live()
+
         # retract z
-        self.move_z_to(1.0)
-        self.move_x_to(30.0)
-        self.move_y_to(30.0)
+        self.slidePositionController.z_pos = self.stage.get_pos().z_mm  # zpos at the beginning of the scan
+        self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM, blocking=False)
+        self.stage.wait_for_idle(SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+
+        print("z retracted")
+        self.slidePositionController.objective_retracted = True
+
+        # move to position
+        # for well plate
+        if self.slidePositionController.is_for_wellplate:
+            # So we can home without issue, set our limits to something large.  Then later reset them back to
+            # the safe values.
+            a_large_limit_mm = 100
+            self.stage.set_limits(
+                x_pos_mm=a_large_limit_mm,
+                x_neg_mm=-a_large_limit_mm,
+                y_pos_mm=a_large_limit_mm,
+                y_neg_mm=-a_large_limit_mm,
+            )
+
+            # home for the first time
+            if not self.slidePositionController.homing_done:
+                print("running homing first")
+                # x needs to be at > + 20 mm when homing y
+                self.stage.move_x(20)
+                self.stage.home(x=False, y=True, z=False, theta=False)
+                self.stage.home(x=True, y=False, z=False, theta=False)
+
+                self.slidePositionController.homing_done = True
+            # homing done previously
+            else:
+                self.stage.move_x_to(20)
+                self.stage.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
+                self.stage.move_x_to(SLIDE_POSITION.LOADING_X_MM)
+            # set limits again
+            self.stage.set_limits(
+                x_pos_mm=self.stage.get_config().X_AXIS.MAX_POSITION,
+                x_neg_mm=self.stage.get_config().X_AXIS.MIN_POSITION,
+                y_pos_mm=self.stage.get_config().Y_AXIS.MAX_POSITION,
+                y_neg_mm=self.stage.get_config().Y_AXIS.MIN_POSITION,
+            )
+        else:
+
+            # for glass slide
+            if self.slidePositionController.homing_done == False or SLIDE_POTISION_SWITCHING_HOME_EVERYTIME:
+                if self.home_x_and_y_separately:
+                    self.stage.home(x=True, y=False, z=False, theta=False)
+                    self.stage.move_x_to(SLIDE_POSITION.LOADING_X_MM)
+
+                    self.stage.home(x=False, y=True, z=False, theta=False)
+                    self.stage.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
+                else:
+                    self.stage.home(x=True, y=True, z=False, theta=False)
+
+                    self.stage.move_x_to(SLIDE_POSITION.LOADING_X_MM)
+                    self.stage.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
+                self.slidePositionController.homing_done = True
+            else:
+                self.stage.move_y_to(SLIDE_POSITION.LOADING_Y_MM)
+                self.stage.move_x_to(SLIDE_POSITION.LOADING_X_MM)
+
+        if was_live:
+            self.liveController.start_live()
+
+        self.slidePositionController.slide_loading_position_reached = True
+
+    def to_scanning_position(self):
+        was_live = self.liveController.is_live
+        if was_live:
+            self.liveController.stop_live()
+
+        # move to position
+        # for well plate
+        if self.slidePositionController.is_for_wellplate:
+            # home for the first time
+            if not self.slidePositionController.homing_done:
+
+                # x needs to be at > + 20 mm when homing y
+                self.stage.move_x_to(20)
+                # home y
+                self.stage.home(x=False, y=True, z=False, theta=False)
+                # home x
+                self.stage.home(x=True, y=False, z=False, theta=False)
+                self.slidePositionController.homing_done = True
+
+                # move to scanning position
+                self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
+                self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
+            else:
+                self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
+                self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
+        else:
+            if self.slidePositionController.homing_done == False or SLIDE_POTISION_SWITCHING_HOME_EVERYTIME:
+                if self.home_x_and_y_separately:
+                    self.stage.home(x=False, y=True, z=False, theta=False)
+
+                    self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
+
+                    self.stage.home(x=True, y=False, z=False, theta=False)
+                    self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
+                else:
+                    self.stage.home(x=True, y=True, z=False, theta=False)
+
+                    self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
+                    self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
+                self.slidePositionController.homing_done = True
+            else:
+                self.stage.move_y_to(SLIDE_POSITION.SCANNING_Y_MM)
+                self.stage.move_x_to(SLIDE_POSITION.SCANNING_X_MM)
+
+        # restore z
+        if self.slidePositionController.objective_retracted:
+            self.stage.move_z_to(self.slidePositionController.z_pos)
+            self.slidePositionController.objective_retracted = False
+            print("z position restored")
+
+        if was_live:
+            self.liveController.start_live()
+
+        self.slidePositionController.slide_scanning_position_reached = True
 
     def move_to_position(self, x, y, z):
         self.move_x_to(x)
@@ -431,12 +551,10 @@ class Microscope(QObject):
             wellplate_format, selected, scan_size_mm, overlap_percent
         )
 
-    def perform_scanning(self, path, experiment_ID, z_pos_um, channels, use_laser_af=False):
+    def perform_scanning(self, path, experiment_ID, z_pos_um, channels, use_laser_af=False, dz=1.5, Nz=1):
         if self.scanCoordinates is not None:
             self.multipointController.scanCoordinates = self.scanCoordinates
         self.move_z_to(z_pos_um / 1000)
-        dz = 1.5  # um
-        Nz = 1
         self.multipointController.set_deltaZ(dz)
         self.multipointController.set_NZ(Nz)
         self.multipointController.set_z_range(z_pos_um / 1000, z_pos_um / 1000 + dz / 1000 * (Nz - 1))
@@ -446,6 +564,20 @@ class Microscope(QObject):
         self.multipointController.set_selected_configurations(channels)
         self.multipointController.start_new_experiment(experiment_ID)
         self.multipointController.run_acquisition()
+
+    def set_illumination_intensity(self, channel, intensity, objective=None):
+        if objective is None:
+            objective = self.objectiveStore.current_objective
+        channel_config = self.channelConfigurationManager.get_channel_configuration_by_name(objective, channel)
+        channel_config.illumination_intensity = intensity
+        self.liveController.set_microscope_mode(channel_config)
+
+    def set_exposure_time(self, channel, exposure_time, objective=None):
+        if objective is None:
+            objective = self.objectiveStore.current_objective
+        channel_config = self.channelConfigurationManager.get_channel_configuration_by_name(objective, channel)
+        channel_config.exposure_time = exposure_time
+        self.liveController.set_microscope_mode(channel_config)
 
 
 class ScanCoordinatesSiLA2:

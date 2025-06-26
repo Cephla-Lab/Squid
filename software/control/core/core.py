@@ -924,7 +924,6 @@ class AutofocusWorker(QObject):
 
     finished = Signal()
     image_to_display = Signal(np.ndarray)
-    # signal_current_configuration = Signal(Configuration)
 
     def __init__(self, autofocusController):
         QObject.__init__(self)
@@ -1087,7 +1086,7 @@ class AutoFocusController(QObject):
                 print("*** autofocus threaded manually stopped ***")
         except:
             pass
-        self.thread = QThread()
+        self.thread = QThread(parent=self)
         # create a worker object
         self.autofocusWorker = AutofocusWorker(self)
         # move the worker to the thread
@@ -2281,12 +2280,10 @@ class MultiPointController(QObject):
         else:
             self.liveController_was_live_before_multipoint = False
 
-        # disable callback
-        if self.camera.get_callbacks_enabled():
-            self.camera_callback_was_enabled_before_multipoint = True
-            self.camera.enable_callbacks(False)
-        else:
-            self.camera_callback_was_enabled_before_multipoint = False
+        self.camera_callback_was_enabled_before_multipoint = self.camera.get_callbacks_enabled()
+        # We need callbacks, because we trigger and then use callbacks for image processing.  This
+        # lets us do overlapping triggering (soon).
+        self.camera.enable_callbacks(True)
 
         if self.usb_spectrometer != None:
             if self.usb_spectrometer.streaming_started == True and self.usb_spectrometer.streaming_paused == False:
@@ -2384,7 +2381,7 @@ class MultiPointController(QObject):
 
         if not self.headless:
             # create a QThread object
-            self.thread = QThread()
+            self.thread = QThread(parent=self)
             # move the worker to the thread
             self.multiPointWorker.moveToThread(self.thread)
             # connect signals and slots
@@ -2395,9 +2392,7 @@ class MultiPointController(QObject):
             self.multiPointWorker.image_to_display.connect(self.slot_image_to_display)
             self.multiPointWorker.image_to_display_multi.connect(self.slot_image_to_display_multi)
             self.multiPointWorker.spectrum_to_display.connect(self.slot_spectrum_to_display)
-            self.multiPointWorker.signal_current_configuration.connect(
-                self.slot_current_configuration, type=Qt.BlockingQueuedConnection
-            )
+            self.multiPointWorker.signal_current_configuration.connect(self.slot_current_configuration)
             self.multiPointWorker.signal_register_current_fov.connect(self.slot_register_current_fov)
             self.multiPointWorker.napari_layers_init.connect(self.slot_napari_layers_init)
             self.multiPointWorker.napari_layers_update.connect(self.slot_napari_layers_update)
@@ -2422,11 +2417,10 @@ class MultiPointController(QObject):
                 self.autofocusController.focus_map_coords.append((x, y, z))
             self.autofocusController.use_focus_map = self.already_using_fmap
         self.signal_current_configuration.emit(self.configuration_before_running_multipoint)
+        self.liveController.set_microscope_mode(self.configuration_before_running_multipoint)
 
-        # re-enable callback
-        if self.camera_callback_was_enabled_before_multipoint:
-            self.camera.enable_callbacks(True)
-            self.camera_callback_was_enabled_before_multipoint = False
+        # Restore callbacks to pre-acquisition state
+        self.camera.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
 
         # re-enable live if it's previously on
         if self.liveController_was_live_before_multipoint and RESUME_LIVE_AFTER_ACQUISITION:
@@ -2603,9 +2597,7 @@ class TrackingController(QObject):
         self.trackingWorker.finished.connect(self.thread.quit)
         self.trackingWorker.image_to_display.connect(self.slot_image_to_display)
         self.trackingWorker.image_to_display_multi.connect(self.slot_image_to_display_multi)
-        self.trackingWorker.signal_current_configuration.connect(
-            self.slot_current_configuration, type=Qt.BlockingQueuedConnection
-        )
+        self.trackingWorker.signal_current_configuration.connect(self.slot_current_configuration)
         # self.thread.finished.connect(self.thread.deleteLater)
         self.thread.finished.connect(self.thread.quit)
         # start the thread
@@ -2615,6 +2607,7 @@ class TrackingController(QObject):
 
         # restore the previous selected mode
         self.signal_current_configuration.emit(self.configuration_before_running_tracking)
+        self.liveController.set_microscope_mode(self.configuration_before_running_tracking)
 
         # re-enable callback
         if self.camera_callback_was_enabled_before_tracking:
@@ -2731,6 +2724,14 @@ class TrackingWorker(QObject):
             base_path=os.path.join(self.base_path, self.experiment_ID), image_format="bmp"
         )
 
+    def _select_config(self, config: ChannelMode):
+        self.signal_current_configuration.emit(config)
+        # TODO(imo): replace with illumination controller.
+        self.liveController.set_microscope_mode(config)
+        self.microcontroller.wait_till_operation_is_completed()
+        self.liveController.turn_on_illumination()  # keep illumination on for single configuration acqusition
+        self.microcontroller.wait_till_operation_is_completed()
+
     def run(self):
 
         tracking_frame_counter = 0
@@ -2768,8 +2769,7 @@ class TrackingWorker(QObject):
 
             # switch to the tracking config
             config = self.selected_configurations[0]
-            self.signal_current_configuration.emit(config)
-            self.microcontroller.wait_till_operation_is_completed()
+
             # do autofocus
             if self.trackingController.flag_AF_enabled and tracking_frame_counter > 1:
                 # do autofocus
@@ -2784,11 +2784,7 @@ class TrackingWorker(QObject):
             # grab an image
             config = self.selected_configurations[0]
             if self.number_of_selected_configurations > 1:
-                self.signal_current_configuration.emit(config)
-                # TODO(imo): replace with illumination controller
-                self.microcontroller.wait_till_operation_is_completed()
-                self.liveController.turn_on_illumination()  # keep illumination on for single configuration acqusition
-                self.microcontroller.wait_till_operation_is_completed()
+                self._select_config(config)
             self.camera.send_trigger()
             camera_frame = self.camera.read_camera_frame()
             image = camera_frame.frame
@@ -2802,12 +2798,8 @@ class TrackingWorker(QObject):
 
             # image the rest configurations
             for config_ in self.selected_configurations[1:]:
-                self.signal_current_configuration.emit(config_)
-                # TODO(imo): replace with illumination controller
-                self.microcontroller.wait_till_operation_is_completed()
-                self.liveController.turn_on_illumination()
-                self.microcontroller.wait_till_operation_is_completed()
-                # TODO(imo): this is broken if we are using hardware triggering
+                self._select_config(config_)
+
                 self.camera.send_trigger()
                 image_ = self.camera.read_frame()
                 # TODO(imo): use illumination controller
@@ -2954,6 +2946,10 @@ class ImageDisplayWindow(QMainWindow):
         self.btn_line_profiler.setEnabled(False)
         self.btn_line_profiler.clicked.connect(self.toggle_line_profiler)
 
+        # Add well selector toggle button
+        self.btn_well_selector = QPushButton("Show Well Selector")
+        self.btn_well_selector.setCheckable(False)
+
         # Add labels to status layout with spacing
         status_layout.addWidget(self.cursor_position_label)
         status_layout.addWidget(QLabel(" | "))  # Add separator
@@ -2963,8 +2959,9 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.piezo_position_label)
         status_layout.addStretch()  # Push labels to the left
+        status_layout.addWidget(self.btn_well_selector)  # Add well selector button
         status_layout.addWidget(QLabel(" | "))  # Add separator
-        status_layout.addWidget(self.btn_line_profiler)  # Add button after stretch
+        status_layout.addWidget(self.btn_line_profiler)  # Add line profiler button
 
         status_widget.setLayout(status_layout)
 
@@ -3038,6 +3035,7 @@ class ImageDisplayWindow(QMainWindow):
         self.line_profiler_plot.setLabel("left", "Intensity")
         self.line_profiler_plot.setLabel("bottom", "Position")
         self.line_profiler_widget.hide()  # Initially hidden
+        self.line_profiler_manual_range = False  # Flag to track if y-range is manually set
 
         # Create splitter
         self.splitter = QSplitter(Qt.Vertical)
@@ -3142,6 +3140,13 @@ class ImageDisplayWindow(QMainWindow):
             else:
                 self.graphics_widget.view.setCursor(self.normal_cursor)
 
+        # Connect to the view range changed signal to detect manual range changes
+        self.line_profiler_plot.sigRangeChanged.connect(self._on_range_changed)
+
+    def _on_range_changed(self, view_range):
+        """Handle manual range changes in the line profiler plot."""
+        self.line_profiler_manual_range = True
+
     def create_line_roi(self):
         """Create a line ROI for intensity profiling."""
         if self.line_roi is None and self.line_start_pos is not None and self.line_end_pos is not None:
@@ -3224,8 +3229,9 @@ class ImageDisplayWindow(QMainWindow):
                     # Add legend
                     self.line_profiler_plot.addLegend()
 
-                    # Auto-scale the plot
-                    self.line_profiler_plot.autoRange()
+                    # Only auto-range if not manually set
+                    if not self.line_profiler_manual_range:
+                        self.line_profiler_plot.autoRange()
         except Exception as e:
             self._log.error(f"Error updating line profile: {str(e)}")
 
@@ -4895,7 +4901,10 @@ class LaserAutofocusController(QObject):
                     "spot_spacing": self.laser_af_properties.spot_spacing,
                 }
                 result = utils.find_spot_location(
-                    image, mode=self.laser_af_properties.spot_detection_mode, params=spot_detection_params
+                    image,
+                    mode=self.laser_af_properties.spot_detection_mode,
+                    params=spot_detection_params,
+                    filter_sigma=self.laser_af_properties.filter_sigma,
                 )
                 if result is None:
                     self._log.warning(

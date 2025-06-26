@@ -221,6 +221,10 @@ class SimulatedCamera(AbstractCamera):
         return self._pixel_format
 
     @debug_log
+    def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
+        return [CameraPixelFormat.MONO8, CameraPixelFormat.MONO12, CameraPixelFormat.MONO16]
+
+    @debug_log
     def get_binning(self) -> Tuple[int, int]:
         return self._binning
 
@@ -411,3 +415,7 @@ class SimulatedCamera(AbstractCamera):
 
     def get_frame_id(self) -> int:
         return self._frame_id
+
+    @debug_log
+    def close(self):
+        pass

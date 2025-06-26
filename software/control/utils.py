@@ -3,15 +3,18 @@ import inspect
 import pathlib
 import sys
 import shutil
+import statistics
+import time
+from dataclasses import dataclass
 
 import cv2
 import git
 from numpy import square, mean
 import numpy as np
-from scipy.ndimage import label
+from scipy.ndimage import label, gaussian_filter
 from scipy import signal
 import os
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 from control._def import (
     LASER_AF_Y_WINDOW,
@@ -21,6 +24,7 @@ from control._def import (
     LASER_AF_MIN_PEAK_PROMINENCE,
     LASER_AF_SPOT_SPACING,
     SpotDetectionMode,
+    FocusMeasureOperator,
 )
 import squid.logging
 
@@ -42,19 +46,23 @@ def crop_image(image, crop_width, crop_height):
     return image_cropped
 
 
-def calculate_focus_measure(image, method="LAPE"):
+def calculate_focus_measure(image, method=FocusMeasureOperator.LAPE):
     if len(image.shape) == 3:
         image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)  # optional
-    if method == "LAPE":
+    if method == FocusMeasureOperator.LAPE:
         if image.dtype == np.uint16:
             lap = cv2.Laplacian(image, cv2.CV_32F)
         else:
             lap = cv2.Laplacian(image, cv2.CV_16S)
         focus_measure = mean(square(lap))
-    elif method == "GLVA":
+    elif method == FocusMeasureOperator.GLVA:
         focus_measure = np.std(image, axis=None)  # GLVA
+    elif method == FocusMeasureOperator.TENENGRAD:
+        sobelx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
+        sobely = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
+        focus_measure = np.sum(cv2.magnitude(sobelx, sobely))
     else:
-        focus_measure = np.std(image, axis=None)  # GLVA
+        raise ValueError(f"Invalid focus measure operator: {method}")
     return focus_measure
 
 
@@ -195,6 +203,7 @@ def find_spot_location(
     image: np.ndarray,
     mode: SpotDetectionMode = SpotDetectionMode.SINGLE,
     params: Optional[dict] = None,
+    filter_sigma: Optional[int] = None,
     debug_plot: bool = False,
 ) -> Optional[Tuple[float, float]]:
     """Find the location of a spot in an image.
@@ -238,6 +247,11 @@ def find_spot_location(
     p = default_params
 
     try:
+        # Apply Gaussian filter if requested
+        if filter_sigma is not None and filter_sigma > 0:
+            filtered = gaussian_filter(image.astype(float), sigma=filter_sigma)
+            image = np.clip(filtered, 0, 255).astype(np.uint8)
+
         # Get the y position of the spots
         y_intensity_profile = np.sum(image, axis=1)
         if np.all(y_intensity_profile == 0):
@@ -439,3 +453,88 @@ def get_directory_disk_usage(directory: pathlib.Path) -> int:
                 total_size += os.path.getsize(fp)
 
     return total_size
+
+
+class TimingManager:
+    @dataclass
+    class TimingPair:
+        start: float
+        stop: float
+
+        def elapsed(self):
+            return self.stop - self.start
+
+    class Timer:
+        def __init__(self, name):
+            self._log = squid.logging.get_logger(self.__class__.__name__)
+            self._name = name
+            self._timing_pairs: List[TimingManager.TimingPair] = []
+            self._last_start: Optional[float] = None
+
+        def __enter__(self):
+            self.start()
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.stop()
+
+        def start(self):
+            if self._last_start:
+                self._log.warning(f"Double start detected for Timer={self._name}")
+            self._log.debug(f"Starting name={self._name}")
+            self._last_start = time.perf_counter()
+
+        def stop(self):
+            if not self._last_start:
+                self._log.error(f"Timer={self._name} got stop() without start() first.")
+                return
+            this_pair = TimingManager.TimingPair(self._last_start, time.perf_counter())
+            self._timing_pairs.append(this_pair)
+            self._log.debug(f"Stopping name={self._name} with elapsed={this_pair.elapsed()} [s]")
+            self._last_start = None
+
+        def get_intervals(self):
+            return [tp.elapsed() for tp in self._timing_pairs]
+
+        def get_report(self):
+            intervals = self.get_intervals()
+
+            def mean(i):
+                if not len(i):
+                    return "N/A"
+                return f"{statistics.mean(i):.4f}"
+
+            def median(i):
+                if not len(i):
+                    return "N/A"
+                return f"{statistics.median(i):.4f}"
+
+            def min_max(i):
+                if not len(i):
+                    return "N/A"
+                return f"{min(i):.4f}/{max(i):.4f}"
+
+            return f"{self._name} (N={len(intervals)}): mean={mean(intervals)} [s], median={median(intervals)} [s], min/max={min_max(intervals)} [s]"
+
+    def __init__(self, name):
+        self._name = name
+        self._timers = {}
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+    def get_timer(self, name) -> Timer:
+        if name not in self._timers:
+            self._log.debug(f"Creating timer={name} for manager={self._name}")
+            self._timers[name] = TimingManager.Timer(name)
+
+        return self._timers[name]
+
+    def get_report(self) -> str:
+        timer_names = sorted(self._timers.keys())
+        report = f"Timings For {self._name}:\n"
+        for name in timer_names:
+            timer = self._timers[name]
+            report += f"  {timer.get_report()}\n"
+
+        return report
+
+    def get_intervals(self, name) -> List[float]:
+        return self.get_timer(name).get_intervals()

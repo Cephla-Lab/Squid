@@ -117,6 +117,7 @@ class HighContentScreeningGui(QMainWindow):
         self.is_live_scan_grid_on = False
         self.performance_mode = False
         self.napari_connections = {}
+        self.well_selector_visible = False  # Add this line to track well selector visibility
 
         self.loadObjects(is_simulation)
 
@@ -265,7 +266,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.autofocusController,
                 self.imageDisplayWindow,
             )
-        if WELLPLATE_FORMAT == "glass slide":
+        if WELLPLATE_FORMAT == "glass slide" and IS_HCS:
             self.navigationViewer = core.NavigationViewer(
                 self.objectiveStore, self.camera.get_pixel_size_unbinned_um(), sample="4 glass slide"
             )
@@ -312,6 +313,12 @@ class HighContentScreeningGui(QMainWindow):
                 self.objectiveStore,
                 self.laserAFSettingManager,
             )
+        else:
+            self.liveController_focus_camera = None
+            self.streamHandler_focus_camera = None
+            self.imageDisplayWindow_focus = None
+            self.displacementMeasurementController = None
+            self.laserAutofocusController = None
 
         if USE_SQUID_FILTERWHEEL:
             self.squid_filter_wheel = filterwheel.SquidFilterWheelWrapper(self.microcontroller)
@@ -513,21 +520,21 @@ class HighContentScreeningGui(QMainWindow):
 
             if HOMING_ENABLED_X and HOMING_ENABLED_Y:
                 # The plate clamp actuation post can get in the way of homing if we start with
-                # the stage in "just the wrong" position.  Blindly moving the Y out 20, then the
-                # x over 20, guarantees we'll clear the post for homing.  If we are <20mm from the
-                # end travel of either axis, we'll just stop at the extent without consequence.
+                # the stage in "just the wrong" position.  Blindly moving the Y out 20, then home x
+                # and move x over 20 , guarantees we'll clear the post for homing.  If we are <20mm
+                # from the end travel of either axis, we'll just stop at the extent without consequence.
                 #
                 # The one odd corner case is if the system gets shut down in the loading position.
                 # in that case, we drive off of the loading position and the clamp closes quickly.
                 # This doesn't seem to cause problems, and there isn't a clean way to avoid the corner
                 # case.
-                self.log.info("Moving y+20, then x+20 to make sure system is clear for homing.")
+                self.log.info("Moving y+20, then x->home->+50 to make sure system is clear for homing.")
                 self.stage.move_y(20)
-                self.stage.move_x(20)
-
-                self.log.info("Homing the X and Y axes...")
-                self.stage.home(x=False, y=True, z=False, theta=False)
                 self.stage.home(x=True, y=False, z=False, theta=False)
+                self.stage.move_x(50)
+
+                self.log.info("Homing the Y axis...")
+                self.stage.home(x=False, y=True, z=False, theta=False)
                 self.slidePositionController.homing_done = True
             if USE_ZABER_EMISSION_FILTER_WHEEL:
                 self.emission_filter_wheel.wait_for_homing_complete()
@@ -568,9 +575,9 @@ class HighContentScreeningGui(QMainWindow):
             self.objective_changer.home()
             self.objective_changer.setSpeed(XERYON_SPEED)
             if DEFAULT_OBJECTIVE in XERYON_OBJECTIVE_SWITCHER_POS_1:
-                self.objective_changer.moveToPosition1()
+                self.objective_changer.moveToPosition1(move_z=False)
             elif DEFAULT_OBJECTIVE in XERYON_OBJECTIVE_SWITCHER_POS_2:
-                self.objective_changer.moveToPosition2()
+                self.objective_changer.moveToPosition2(move_z=False)
 
     def waitForMicrocontroller(self, timeout=5.0, error_message=None):
         try:
@@ -615,6 +622,7 @@ class HighContentScreeningGui(QMainWindow):
         self.navigationWidget = widgets.NavigationWidget(
             self.stage, self.slidePositionController, widget_configuration=f"{WELLPLATE_FORMAT} well plate"
         )
+        self.stageUtils = widgets.StageUtils(self.stage, self.slidePositionController)
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
         if self.piezo:
@@ -1017,7 +1025,7 @@ class HighContentScreeningGui(QMainWindow):
             self.movement_updater.position_after_move.connect(self.wellplateMultiPointWidget.update_live_coordinates)
             self.is_live_scan_grid_on = True
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
-        self.multipointController.signal_current_configuration.connect(self.liveControlWidget.set_microscope_mode)
+        self.multipointController.signal_current_configuration.connect(self.liveControlWidget.update_ui_for_mode)
         if self.piezoWidget:
             self.multipointController.signal_z_piezo_um.connect(self.piezoWidget.update_displacement_um_display)
         self.multipointController.signal_set_display_tabs.connect(self.setAcquisitionDisplayTabs)
@@ -1027,7 +1035,7 @@ class HighContentScreeningGui(QMainWindow):
             self.imageDisplayTabs.currentChanged.connect(self.onDisplayTabChanged)
 
         if USE_NAPARI_FOR_LIVE_VIEW and not self.live_only_mode:
-            self.multipointController.signal_current_configuration.connect(self.napariLiveWidget.set_microscope_mode)
+            self.multipointController.signal_current_configuration.connect(self.napariLiveWidget.update_ui_for_mode)
             self.autofocusController.image_to_display.connect(
                 lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=True)
             )
@@ -1067,12 +1075,12 @@ class HighContentScreeningGui(QMainWindow):
             self.objectivesWidget.signal_objective_changed.connect(self.wellplateMultiPointWidget.update_coordinates)
 
         self.profileWidget.signal_profile_changed.connect(
-            lambda: self.liveControlWidget.update_microscope_mode_by_name(
+            lambda: self.liveControlWidget.select_new_microscope_mode_by_name(
                 self.liveControlWidget.currentConfiguration.name
             )
         )
         self.objectivesWidget.signal_objective_changed.connect(
-            lambda: self.liveControlWidget.update_microscope_mode_by_name(
+            lambda: self.liveControlWidget.select_new_microscope_mode_by_name(
                 self.liveControlWidget.currentConfiguration.name
             )
         )
@@ -1131,13 +1139,19 @@ class HighContentScreeningGui(QMainWindow):
                 self.channelConfigurationManager.toggle_confocal_widefield
             )
             self.spinningDiskConfocalWidget.signal_toggle_confocal_widefield.connect(
-                lambda: self.liveControlWidget.update_microscope_mode_by_name(
+                lambda: self.liveControlWidget.select_new_microscope_mode_by_name(
                     self.liveControlWidget.currentConfiguration.name
                 )
             )
 
         # Connect to plot xyz data when coordinates are saved
         self.multipointController.signal_coordinates.connect(self.zPlotWidget.plot)
+
+        # Connect well selector button
+        if hasattr(self.imageDisplayWindow, "btn_well_selector"):
+            self.imageDisplayWindow.btn_well_selector.clicked.connect(
+                lambda: self.toggleWellSelector(not self.dock_wellSelection.isVisible())
+            )
 
     def setup_movement_updater(self):
         # We provide a few signals about the system's physical movement to other parts of the UI.  Ideally, they other
@@ -1160,7 +1174,7 @@ class HighContentScreeningGui(QMainWindow):
         # Setup live view connections
         if USE_NAPARI_FOR_LIVE_VIEW and not self.live_only_mode:
             self.napari_connections["napariLiveWidget"] = [
-                (self.multipointController.signal_current_configuration, self.napariLiveWidget.set_microscope_mode),
+                (self.multipointController.signal_current_configuration, self.napariLiveWidget.update_ui_for_mode),
                 (
                     self.autofocusController.image_to_display,
                     lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=True),
@@ -1421,17 +1435,11 @@ class HighContentScreeningGui(QMainWindow):
             if not is_laser_focus_tab:
                 self.laserAutofocusSettingWidget.stop_live()
 
-        is_wellplate_acquisition = (
-            (index == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget))
-            if ENABLE_WELLPLATE_MULTIPOINT
-            else False
-        )
-        if self.imageDisplayTabs.tabText(index) != "Live View" or not (
-            is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide"
-        ):
-            self.toggleWellSelector(False)
+        # Only show well selector in Live View tab if it was previously shown
+        if self.imageDisplayTabs.tabText(index) == "Live View":
+            self.toggleWellSelector(self.well_selector_visible)  # Use stored visibility state
         else:
-            self.toggleWellSelector(True)
+            self.toggleWellSelector(False)
 
     def onWellplateChanged(self, format_):
         if isinstance(format_, QVariant):
@@ -1478,11 +1486,11 @@ class HighContentScreeningGui(QMainWindow):
             self.stage, self.liveController, is_for_wellplate=is_for_wellplate
         )
         self.connectSlidePositionController()
-        self.navigationWidget.replace_slide_controller(self.slidePositionController)
+        self.stageUtils.replace_slide_controller(self.slidePositionController)
 
     def connectSlidePositionController(self):
         self.slidePositionController.signal_slide_loading_position_reached.connect(
-            self.navigationWidget.slot_slide_loading_position_reached
+            self.stageUtils.slot_slide_loading_position_reached
         )
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.slidePositionController.signal_slide_loading_position_reached.connect(
@@ -1498,7 +1506,7 @@ class HighContentScreeningGui(QMainWindow):
             )
 
         self.slidePositionController.signal_slide_scanning_position_reached.connect(
-            self.navigationWidget.slot_slide_scanning_position_reached
+            self.stageUtils.slot_slide_scanning_position_reached
         )
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.slidePositionController.signal_slide_scanning_position_reached.connect(
@@ -1531,12 +1539,20 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
 
-    def toggleWellSelector(self, show):
-        if USE_NAPARI_WELL_SELECTION and not self.performance_mode and not self.live_only_mode:
-            self.napariLiveWidget.toggle_well_selector(show)
+    def toggleWellSelector(self, show, remember_state=True):
+        if show and self.imageDisplayTabs.tabText(self.imageDisplayTabs.currentIndex()) == "Live View":
+            self.dock_wellSelection.setVisible(True)
         else:
-            self.dock_wellSelection.setVisible(show)
-        self.wellSelectionWidget.setVisible(show)
+            self.dock_wellSelection.setVisible(False)
+
+        # Only update visibility state if we're in Live View tab and we want to remember the state
+        # remember_state is False when we're toggling the well selector for starting/stopping an acquisition
+        if self.imageDisplayTabs.tabText(self.imageDisplayTabs.currentIndex()) == "Live View" and remember_state:
+            self.well_selector_visible = show
+
+        # Update button text
+        if hasattr(self.imageDisplayWindow, "btn_well_selector"):
+            self.imageDisplayWindow.btn_well_selector.setText("Hide Well Selector" if show else "Show Well Selector")
 
     def toggleAcquisitionStart(self, acquisition_started):
         self.log.debug(f"toggleAcquisitionStarted({acquisition_started=})")
@@ -1574,7 +1590,7 @@ class HighContentScreeningGui(QMainWindow):
             else False
         )
         if is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide":
-            self.toggleWellSelector(not acquisition_started)
+            self.toggleWellSelector(not acquisition_started, remember_state=False)
         else:
             self.toggleWellSelector(False)
 
@@ -1660,10 +1676,25 @@ class HighContentScreeningGui(QMainWindow):
         self.stage.move_y_to(y_mm)
 
     def closeEvent(self, event):
+        # Show confirmation dialog
+        reply = QMessageBox.question(
+            self,
+            "Confirm Exit",
+            "Are you sure you want to exit the software?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if reply == QMessageBox.No:
+            event.ignore()
+            return
+
         try:
             squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
         except ValueError as e:
             self.log.error(f"Couldn't cache position while closing.  Ignoring and continuing. Error is: {e}")
+        self.movement_update_timer.stop()
+
         if USE_ZABER_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel.set_emission_filter(1)
         if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
@@ -1677,6 +1708,14 @@ class HighContentScreeningGui(QMainWindow):
 
         self.liveController.stop_live()
         self.camera.stop_streaming()
+        self.camera.close()
+
+        # retract z
+        self.stage.move_z_to(0.1)
+
+        # reset objective changer
+        if USE_XERYON:
+            self.objective_changer.moveToZero()
 
         self.microcontroller.turn_off_all_pid()
 

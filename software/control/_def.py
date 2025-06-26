@@ -3,6 +3,7 @@ import sys
 import glob
 from pathlib import Path
 from configparser import ConfigParser
+from typing import Union
 import json
 import csv
 import squid.logging
@@ -238,6 +239,51 @@ class SpotDetectionMode(Enum):
     DUAL_LEFT = "dual_left"
     MULTI_RIGHT = "multi_right"
     MULTI_SECOND_RIGHT = "multi_second_right"
+
+
+class FileSavingOption(Enum):
+    """File saving options.
+
+    INDIVIDUAL_IMAGES: Save each image as a separate file. Format is defined in Acquisition.IMAGE_FORMAT.
+    TODO: Move all file saving related settings to this enum.
+    MULTI_PAGE_TIFF: Save all images from a single FOV as a single multi-page TIFF file.
+    TODO: Add zarr saving options.
+    """
+
+    INDIVIDUAL_IMAGES = "INDIVIDUAL_IMAGES"
+    MULTI_PAGE_TIFF = "MULTI_PAGE_TIFF"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "FileSavingOption"]) -> "FileSavingOption":
+        """
+        Attempts to convert the given string to a FileSavingOption.  This ignores all letter cases.
+        """
+        if isinstance(option, FileSavingOption):
+            return option
+
+        try:
+            return FileSavingOption[option.upper()]
+        except KeyError:
+            raise ValueError(f"Invalid file saving option: {option}")
+
+
+class FocusMeasureOperator(Enum):
+    LAPE = "LAPE"  # LAPE has worked well for bright field images
+    GLVA = "GLVA"  # GLVA works well for darkfield/fluorescence
+    TENENGRAD = "TENENGRAD"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "FocusMeasureOperator"]) -> "FocusMeasureOperator":
+        """
+        Attempts to convert the given string to a FocusMeasureOperator.  This ignores all letter cases.
+        """
+        if isinstance(option, FocusMeasureOperator):
+            return option
+
+        try:
+            return FocusMeasureOperator[option.upper()]
+        except KeyError:
+            raise ValueError(f"Invalid focus measure operator: {option}")
 
 
 PRINT_CAMERA_FPS = True
@@ -520,9 +566,7 @@ WELLPLATE_OFFSET_Y_mm = 0  # y offset adjustment for using different plates
 N_SPECTRUM_PER_POINT = 5
 
 # focus measure operator
-FOCUS_MEASURE_OPERATOR = (
-    "LAPE"  # 'GLVA' # LAPE has worked well for bright field images; GLVA works well for darkfield/fluorescence
-)
+FOCUS_MEASURE_OPERATOR = FocusMeasureOperator.LAPE
 
 # controller version
 CONTROLLER_VERSION = "Arduino Due"  # 'Teensy'
@@ -553,6 +597,7 @@ LASER_AF_MIN_PEAK_DISTANCE = 10
 LASER_AF_MIN_PEAK_PROMINENCE = 0.25
 LASER_AF_SPOT_SPACING = 100
 SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS = False
+LASER_AF_FILTER_SIGMA = None
 
 MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT = False
 MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT = False
@@ -769,6 +814,8 @@ FLUIDICS_CONFIG_PATH = "./merfish_config/MERFISH_config.json"
 
 USE_TEMPLATE_MULTIPOINT = False
 
+FILE_SAVING_OPTION = FileSavingOption.INDIVIDUAL_IMAGES
+
 ##########################################################
 #### start of loading machine specific configurations ####
 ##########################################################
@@ -880,6 +927,10 @@ A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_pixel"]  # coordi
 # objective piezo
 HAS_OBJECTIVE_PIEZO = "PIEZO" in Z_MOTOR_CONFIG
 MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
+
+# convert str to enum
+FILE_SAVING_OPTION = FileSavingOption.convert_to_enum(FILE_SAVING_OPTION)
+FOCUS_MEASURE_OPERATOR = FocusMeasureOperator.convert_to_enum(FOCUS_MEASURE_OPERATOR)
 
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):

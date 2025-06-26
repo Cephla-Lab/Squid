@@ -137,3 +137,50 @@ def test_get_available_disk_space():
     temp_dir.rmdir()
     with pytest.raises(ValueError):
         get_available_disk_space(temp_dir)
+
+
+def test_timing_manager():
+    tma = control.utils.TimingManager("a")
+    tmb = control.utils.TimingManager("b")
+
+    ta1 = tma.get_timer("a 1")
+    ta1.start()
+
+    ta2 = tma.get_timer("a 2")
+    ta1.stop()
+    ta2.start()
+
+    tb1 = tmb.get_timer("b 1")
+    tb1.start()
+
+    tb2 = tmb.get_timer("b 2")
+    tb2.start()
+    ta2.stop()
+    tb1.stop()
+    tb2.stop()
+
+    ta2.start()
+    ta2.stop()
+    tb1.start()
+    tb2.start()
+    tb2.stop()
+    tb1.stop()
+
+    tb1.start()
+    tb1.stop()
+
+    assert len(tma.get_report())
+    assert len(tma.get_report())
+    assert len(ta1.get_intervals()) == 1
+    assert len(ta2.get_intervals()) == 2
+    assert len(tb1.get_intervals()) == 3
+    assert len(tb2.get_intervals()) == 2
+
+    assert not len(tma.get_timer("t1").get_intervals())
+    with tma.get_timer("t1"):
+        pass
+    assert len(tma.get_timer("t1").get_intervals()) == 1
+
+    with tma.get_timer("t2"):
+        pass
+    assert len(tma.get_timer("t2").get_intervals()) == 1

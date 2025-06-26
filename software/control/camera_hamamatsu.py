@@ -13,7 +13,7 @@ import control.utils
 
 
 class HamamatsuCapabilities(pydantic.BaseModel):
-    bining_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
+    binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
 
 
 class HamamatsuCamera(AbstractCamera):
@@ -105,7 +105,7 @@ class HamamatsuCamera(AbstractCamera):
         self._exposure_time_ms: int = 20
         self.set_exposure_time(self._exposure_time_ms)
 
-    def __del__(self):
+    def close(self):
         self._cleanup_read_thread()
 
     def _set_prop(self, dcam_prop, prop_value):
@@ -198,7 +198,7 @@ class HamamatsuCamera(AbstractCamera):
 
     def get_exposure_limits(self) -> Tuple[float, float]:
         exposure_attr = self._camera.prop_getattr(DCAM_IDPROP.EXPOSURETIME)
-        return exposure_attr.valuemin, exposure_attr.valuemax  # in ms
+        return exposure_attr.valuemin * 1000.0, exposure_attr.valuemax * 1000.0  # in ms
 
     def get_strobe_time(self) -> float:
         resolution = self.get_resolution()
@@ -252,8 +252,11 @@ class HamamatsuCamera(AbstractCamera):
 
         return _dcam_to_pixel[dcam_pixel_format]
 
+    def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
+        return list(self._PIXEL_FORMAT_TO_DCAM_FORMAT.keys())
+
     def get_resolution(self) -> Tuple[int, int]:
-        return self._capabilities.binning_to_resolution[self._binning]
+        return self._capabilities.binning_to_resolution[self.get_binning()]
 
     def set_binning(self, binning_factor_x: int, binning_factor_y: int):
         # TODO: We only support 1x1 binning for now. More may be added later.

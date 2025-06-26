@@ -91,10 +91,6 @@ class PhotometricsCamera(AbstractCamera):
         self.temperature_reading_thread.start()
         """
 
-    def __del__(self):
-        self.stop_streaming()
-        self._close()
-
     def _configure_camera(self):
         """Configure camera with default settings."""
         self._camera.exp_res = 0  # Exposure resolution in milliseconds
@@ -140,7 +136,7 @@ class PhotometricsCamera(AbstractCamera):
     def get_is_streaming(self):
         return self._is_streaming.is_set()
 
-    def _close(self):
+    def close(self):
         try:
             self._camera.close()
         except Exception as e:
@@ -249,6 +245,10 @@ class PhotometricsCamera(AbstractCamera):
             return self._current_frame.frame_id if self._current_frame else -1
 
     def set_exposure_time(self, exposure_time_ms: float):
+        # Kinetix camera set_exposure_time is slow, so we don't want to call it unnecessarily.
+        if exposure_time_ms == self._exposure_time_ms:
+            return
+
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
             strobe_time_ms = self.get_strobe_time()
             adjusted_exposure_time = exposure_time_ms + strobe_time_ms
@@ -311,6 +311,9 @@ class PhotometricsCamera(AbstractCamera):
         # We are not able to query camera for pixel format during live mode, so we need to return the pixel format we set.
         return self._pixel_format
 
+    def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
+        return [CameraPixelFormat.MONO8, CameraPixelFormat.MONO12, CameraPixelFormat.MONO16]
+
     def set_binning(self, binning_factor_x: int, binning_factor_y: int):
         if binning_factor_x != 1 or binning_factor_y != 1:
             raise ValueError("Kinetix camera does not support binning")
@@ -367,6 +370,7 @@ class PhotometricsCamera(AbstractCamera):
                     raise ValueError(f"Unsupported acquisition mode: {acquisition_mode}")
 
                 self._acquisition_mode = acquisition_mode
+                self.set_exposure_time(self._exposure_time_ms)
 
             except Exception as e:
                 raise CameraError(f"Failed to set acquisition mode: {e}")
@@ -425,6 +429,7 @@ class PhotometricsCamera(AbstractCamera):
             try:
                 self._camera.set_roi(offset_x, offset_y, width, height)
                 self._crop_roi = (offset_x, offset_y, width, height)
+                self._calculate_strobe_delay()
             except Exception as e:
                 raise CameraError(f"Failed to set ROI: {e}")
 

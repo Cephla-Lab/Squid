@@ -28,6 +28,7 @@ class DefaultCameraCapabilities(pydantic.BaseModel):
     black_level: bool
     white_balance: bool
     auto_white_balance: bool
+    is_global_shutter: bool
 
 
 def get_sn_by_model(camera_model: GxipyCameraModel):
@@ -78,6 +79,7 @@ class DefaultCamera(AbstractCamera):
                 and camera.BalanceRatioSelector.is_writable()
             ),
             auto_white_balance=(camera.BalanceWhiteAuto.is_implemented() and camera.BalanceWhiteAuto.is_writable()),
+            is_global_shutter=False,
         )
 
         # NOTE(imo): In our previous driver, we did all these as defaults/prep to make things down the line work.
@@ -114,6 +116,8 @@ class DefaultCamera(AbstractCamera):
         # TODO/NOTE(imo): Need to test if self as user_param is correct here, of it sends self for us.
         self._camera.register_capture_callback(None, self._frame_callback)
 
+        self.set_auto_white_balance_gains(False)
+
         if self._config.default_white_balance_gains is not None and self._capabilities.white_balance:
             default_wb = self._config.default_white_balance_gains
             self.set_white_balance_gains(default_wb.r, default_wb.g, default_wb.b)
@@ -133,7 +137,7 @@ class DefaultCamera(AbstractCamera):
         self._frame_lock = threading.Lock()
         self._current_frame: Optional[CameraFrame] = None
 
-    def __del__(self):
+    def close(self):
         try:
             if self._camera:
                 self._camera.close_device()
@@ -200,6 +204,8 @@ class DefaultCamera(AbstractCamera):
         row_count = self.get_resolution()[1]  # TODO: this should be the row count after setting ROI
         row_period_us = 10
 
+        # NOTE(imo): Our strobe delay calculation is not perfect, so add 10ms buffer to make sure we are good to go.  It'd
+        # be better to calculate exactly, though!
         self._strobe_delay_us = (
             exposure_delay_us + exposure_time_us + row_period_us * pixel_size_bytes * (row_count - 1) + 500
         )
@@ -209,12 +215,12 @@ class DefaultCamera(AbstractCamera):
 
     def set_exposure_time(self, exposure_time_ms: float):
         exposure_time_calculated_us = 1000.0 * exposure_time_ms
-        if (
-            self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER
-            and not self._capabilities.is_global_shutter
-        ):
+        if not self._capabilities.is_global_shutter:
             self._update_strobe_time()
+
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
             exposure_time_calculated_us += self._strobe_delay_us
+
         self._log.debug(
             f"Setting exposure time {exposure_time_calculated_us} [us] for exposure_time={exposure_time_ms * 1000} [us] and strobe={self._strobe_delay_us} [us]"
         )
@@ -310,6 +316,9 @@ class DefaultCamera(AbstractCamera):
 
         return self._pixel_format
 
+    def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
+        raise NotImplementedError("get_available_pixel_formats is not implemented for DefaultCamera")
+
     def get_resolution(self) -> Tuple[int, int]:
         return self._camera.WidthMax.get(), self._camera.HeightMax.get()
 
@@ -324,6 +333,7 @@ class DefaultCamera(AbstractCamera):
 
     _MODEL_TO_SENSOR = {
         GxipyCameraModel.MER2_1220_32U3M: CameraSensor.IMX226,
+        GxipyCameraModel.MER2_1220_32U3C: CameraSensor.IMX226,
         GxipyCameraModel.MER2_630_60U3M: CameraSensor.IMX178,
     }
 

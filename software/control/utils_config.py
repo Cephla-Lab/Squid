@@ -24,6 +24,7 @@ from control._def import (
     LASER_AF_MIN_PEAK_DISTANCE,
     LASER_AF_MIN_PEAK_PROMINENCE,
     LASER_AF_SPOT_SPACING,
+    LASER_AF_FILTER_SIGMA,
 )
 from control._def import SpotDetectionMode
 
@@ -57,6 +58,7 @@ class LaserAFConfig(BaseModel):
     min_peak_distance: float = LASER_AF_MIN_PEAK_DISTANCE  # Minimum distance between peaks
     min_peak_prominence: float = LASER_AF_MIN_PEAK_PROMINENCE  # Minimum peak prominence
     spot_spacing: float = LASER_AF_SPOT_SPACING  # Expected spacing between spots
+    filter_sigma: Optional[int] = LASER_AF_FILTER_SIGMA  # Sigma for Gaussian filter
     x_reference: Optional[float] = 0  # Reference position in um
     reference_image: Optional[str] = None  # Stores base64 encoded reference image for cross-correlation check
     reference_image_shape: Optional[tuple] = None
