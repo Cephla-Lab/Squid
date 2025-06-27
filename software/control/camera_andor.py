@@ -122,6 +122,7 @@ class AndorCamera(AbstractCamera):
             self.EXPOSURE_TIME_MS_MAX = 30000.0
 
         self.set_exposure_time(self._exposure_time_ms)
+        self.set_pixel_format(CameraPixelFormat.MONO16)
 
         try:
             self._line_rate_us = 1 / self._camera.LineScanSpeed * 1000000
@@ -160,27 +161,24 @@ class AndorCamera(AbstractCamera):
 
         while self._read_thread_keep_running.is_set():
             try:
-                if not self._is_streaming.is_set():
-                    time.sleep(0.001)
-                    continue
-
                 try:
+                    print("waiting for frame")
                     # Wait for frame with timeout
-                    acq = self._camera.wait_buffer(100)  # 100ms timeout
+                    acq = self._camera.wait_buffer(1000)  # 1000ms timeout
 
                     # Queue a new buffer
                     self._camera.queue(acq._np_data, self._camera.ImageSizeBytes)
 
                     # Process the frame
                     raw = np.asarray(acq._np_data, dtype=np.uint8)
+                    print("raw", raw.shape)
 
-                    # Convert based on pixel format
-                    if self.get_pixel_format() == CameraPixelFormat.MONO16:
-                        img = raw.view("<u2")
-                    else:  # MONO8 or MONO12
-                        img = raw.view("<u2")  # Andor typically returns 16-bit data
+                    img = raw.view("<u2")  # Andor typically returns 16-bit data
+                    print(img)
 
-                    img = img.reshape(self.get_resolution())
+                    img = img.reshape(2048, 2048)
+                    print("img")
+                    print(img)
                     self._trigger_sent.clear()
 
                     processed_frame = self._process_raw_frame(img)
@@ -325,7 +323,7 @@ class AndorCamera(AbstractCamera):
         return 0.0
 
     def get_gain_range(self) -> CameraGainRange:
-        return CameraGainRange(min=0.0, max=0.0, step=1.0)
+        raise NotImplementedError("Analog gain is not supported for Andor cameras")
 
     def _ensure_read_thread_running(self):
         with self._read_thread_lock:
@@ -341,8 +339,6 @@ class AndorCamera(AbstractCamera):
             self._read_thread.start()
 
     def start_streaming(self):
-        self._ensure_read_thread_running()
-
         if self._is_streaming.is_set():
             self._log.debug("Already streaming, start_streaming is noop")
             return True
@@ -354,6 +350,7 @@ class AndorCamera(AbstractCamera):
             self._camera.AcquisitionStart()
             self._trigger_sent.clear()
             self._is_streaming.set()
+            self._ensure_read_thread_running()
             self._log.info("Andor camera started streaming")
             return True
         except Exception as e:
@@ -379,9 +376,9 @@ class AndorCamera(AbstractCamera):
             self._read_thread_running.clear()
 
     def stop_streaming(self):
-        self._log.debug("Stopping Andor streaming.")
-        success = True
-
+        if not self._is_streaming.is_set():
+            self._log.debug("Already stopped, stop_streaming is noop")
+            return
         try:
             self._camera.AcquisitionStop()
             self._camera.flush()
@@ -391,9 +388,6 @@ class AndorCamera(AbstractCamera):
             self._log.info("Andor camera stopped streaming")
         except Exception as e:
             self._log.error(f"Error stopping streaming: {e}")
-            success = False
-
-        return success
 
     def get_is_streaming(self):
         return self._is_streaming.is_set()
@@ -499,6 +493,7 @@ class AndorCamera(AbstractCamera):
                 self._camera.SoftwareTrigger()
                 self._last_trigger_timestamp = time.time()
                 self._trigger_sent.set()
+                print("trigger sent")
             except Exception as e:
                 raise CameraError(f"Failed to send software trigger: {e}")
 
@@ -518,7 +513,7 @@ class AndorCamera(AbstractCamera):
         self.ROI_height = height
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
-        return (self.ROI_offset_x, self.ROI_offset_y, self.ROI_width, self.ROI_height)
+        return (0, 0, 2048, 2048)
 
     def set_temperature(self, temperature_deg_c: Optional[float]):
         raise NotImplementedError("Temperature control is not implemented for this Andor camera model.")
