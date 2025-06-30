@@ -569,8 +569,10 @@ class LiveController(QObject):
                 print("not setting emission filter position due to " + str(e))
 
     def start_live(self):
+        self._log.debug("Beginning of start_live.")
         self.is_live = True
         self.camera.start_streaming()
+        self._log.debug("start_streaming returned.")
         if self.trigger_mode == TriggerMode.SOFTWARE or (
             self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
         ):

@@ -106,13 +106,17 @@ class PhotometricsCamera(AbstractCamera):
         self._calculate_strobe_delay()
 
     def start_streaming(self):
+        self._log.debug("Beginning of start_streaming...")
         if self._is_streaming.is_set():
             self._log.debug("Already streaming, start_streaming is noop")
             return
 
         try:
+            self._log.debug("before start_live")
             self._camera.start_live()
+            self._log.debug("Before _ensure_read_thread_running.")
             self._ensure_read_thread_running()
+            self._log.debug("After _ensure_read_thread_running.")
             self._trigger_sent.clear()
             self._is_streaming.set()
             self._log.info("Photometrics camera starts streaming")
@@ -144,7 +148,9 @@ class PhotometricsCamera(AbstractCamera):
         pvc.uninit_pvcam()
 
     def _ensure_read_thread_running(self):
+        self._log.debug("First line of _ensure_read_thread_running.")
         with self._read_thread_lock:
+            self._log.debug("Have read_thread_lock in _ensure_read_thread_running")
             if self._read_thread is not None and self._read_thread_running.is_set():
                 self._log.debug("Read thread exists and thread is marked as running.")
                 return True
@@ -152,9 +158,12 @@ class PhotometricsCamera(AbstractCamera):
             elif self._read_thread is not None:
                 self._log.warning("Read thread already exists, but not marked as running. Still attempting start.")
 
+            self._log.debug("Before constructing read thread.")
             self._read_thread = threading.Thread(target=self._wait_for_frame, daemon=True)
+            self._log.debug("After constructing read thread.")
             self._read_thread_keep_running.set()
             self._read_thread.start()
+            self._log.debug("End of _ensure_read_thread_running")
 
     def _cleanup_read_thread(self):
         self._log.debug("Cleaning up read thread.")
