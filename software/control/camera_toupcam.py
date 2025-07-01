@@ -34,7 +34,8 @@ class ToupCamCapabilities(pydantic.BaseModel):
 
 
 class StrobeInfo(pydantic.BaseModel):
-    delay_us: float
+    strobe_time_us: float
+    trigger_delay_us: float
 
 
 def get_sn_by_model(camera_model: ToupcamCameraModel):
@@ -154,14 +155,13 @@ class ToupcamCamera(AbstractCamera):
             shr = 1
 
         trigger_delay_us = (shr * line_length) / 72
-
-        strobe_time = int(vheight * row_time) + trigger_delay_us
+        strobe_time = int(vheight * row_time)
 
         log.debug(
             f"New strobe time calculated as {strobe_time} [us]. {resolution_width=}, {resolution_height=}, {pixel_bits=}, {line_length=}, {low_noise=}, {vheight=}, {trigger_delay_us=}"
         )
 
-        return StrobeInfo(delay_us=strobe_time)
+        return StrobeInfo(strobe_time_us=strobe_time, trigger_delay_us=trigger_delay_us)
 
     @staticmethod
     def _open(index=None, sn=None) -> Tuple[toupcam.Toupcam, ToupCamCapabilities]:
@@ -435,7 +435,10 @@ class ToupcamCamera(AbstractCamera):
         exposure_for_camera_us = int(1000 * exposure_time)
         # In the calls below, we need to make sure we convert to microseconds.
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
-            exposure_for_camera_us += self._strobe_info.delay_us
+            # Only add the strobe_time_us, and not strobe_time_us + trigger_delay_us.  We'll tell the lighting
+            # to come on at strobe_time_us + trigger_delay_us since that's when the common (all row) exposure time
+            # starts, but if we tell that to the camera we'll get an extra trigger_delay_us of exposure.
+            exposure_for_camera_us += self._strobe_info.strobe_time_us
 
         self._log.debug(
             f"Sending exposure {exposure_for_camera_us} [us] to camera for exposure_time={1000 * exposure_time} [us]"
@@ -670,7 +673,12 @@ class ToupcamCamera(AbstractCamera):
             pass
 
     def get_strobe_time(self) -> float:
-        return self._strobe_info.delay_us / 1000.0
+        # Use both strobe_time_us and trigger_delay_us here because our notion of "strobe time" is when the
+        # last row first starts exposing.  For the toupcam, this happens after trigger delay + strobe time.
+        #
+        # For software lighting, sleeping get_strobe_time() + get_exposure_time() works.  For hardware triggering,
+        # we need to ignore trigger_delay_us since the camera itself imposes that delay after it sees the trigger.
+        return (self._strobe_info.strobe_time_us + self._strobe_info.trigger_delay_us) / 1000.0
 
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
         roi_offset_x = control.utils.truncate_to_interval(offset_x, 2)
