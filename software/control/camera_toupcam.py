@@ -347,18 +347,19 @@ class ToupcamCamera(AbstractCamera):
         # create the buffer
         self._internal_read_buffer = bytes(buffer_size)
 
-        exposure_time_ms = self.get_exposure_time()
+        image_exposure_time_ms = self.get_exposure_time()
+        camera_exposure_time_ms = self._calculate_camera_exposure_time(image_exposure_time_ms)
         self._strobe_info = ToupcamCamera._calculate_strobe_info(
             camera=self._camera,
             pixel_size=self._get_pixel_size_in_bytes(),
-            exposure_time_ms=exposure_time_ms,
+            exposure_time_ms=camera_exposure_time_ms,
             capabilities=self._capabilities,
         )
         if self._hw_set_strobe_delay_ms_fn:
-            self._hw_set_strobe_delay_ms_fn(self.get_strobe_time() / 1000.0)
+            self._hw_set_strobe_delay_ms_fn(self.get_strobe_time())
 
         if send_exposure:
-            self._set_camera_exposure_time(exposure_time_ms)
+            self._calculate_and_set_camera_exposure_time(camera_exposure_time_ms)
 
         self._log.debug(
             f"image size: {width=} x {height=}, {buffer_size=}, strobe_time={self.get_strobe_time()} [ms], exposure_time={self.get_exposure_time()} [ms], full frame time={self.get_total_frame_time()} [ms], {send_exposure=}"
@@ -433,17 +434,21 @@ class ToupcamCamera(AbstractCamera):
 
         self._update_internal_settings(send_exposure=True)
 
-    def _set_camera_exposure_time(self, exposure_time):
-        exposure_for_camera_us = int(1000 * exposure_time)
+    def _calculate_camera_exposure_time(self, image_exposure_time_ms):
+        exposure_for_camera_ms = image_exposure_time_ms
         # In the calls below, we need to make sure we convert to microseconds.
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
             # Only add the strobe_time_us, and not strobe_time_us + trigger_delay_us.  We'll tell the lighting
             # to come on at strobe_time_us + trigger_delay_us since that's when the common (all row) exposure time
             # starts, but if we tell that to the camera we'll get an extra trigger_delay_us of exposure.
-            exposure_for_camera_us += int(self._strobe_info.strobe_time_us)
+            exposure_for_camera_ms += self._strobe_info.strobe_time_us / 1000.0
 
+        return exposure_for_camera_ms
+
+    def _calculate_and_set_camera_exposure_time(self, image_exposure_time_us):
+        exposure_for_camera_us = self._calculate_camera_exposure_time(image_exposure_time_us) * 1000.0
         self._log.debug(
-            f"Sending exposure {exposure_for_camera_us} [us] to camera for exposure_time={1000 * exposure_time} [us]"
+            f"Sending exposure {exposure_for_camera_us} [us] to camera for exposure_time={1000 * image_exposure_time_us} [us]"
         )
         self._camera.put_ExpoTime(exposure_for_camera_us)
 
