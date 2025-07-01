@@ -445,10 +445,10 @@ class ToupcamCamera(AbstractCamera):
 
         return exposure_for_camera_ms
 
-    def _calculate_and_set_camera_exposure_time(self, image_exposure_time_us):
-        exposure_for_camera_us = self._calculate_camera_exposure_time(image_exposure_time_us) * 1000.0
+    def _calculate_and_set_camera_exposure_time(self, image_exposure_time_ms):
+        exposure_for_camera_us = int(self._calculate_camera_exposure_time(image_exposure_time_ms) * 1000.0)
         self._log.debug(
-            f"Sending exposure {exposure_for_camera_us} [us] to camera for exposure_time={1000 * image_exposure_time_us} [us]"
+            f"Sending exposure {exposure_for_camera_us} [us] to camera for image_exposure_time={1000 * image_exposure_time_ms} [us]"
         )
         self._camera.put_ExpoTime(exposure_for_camera_us)
 
