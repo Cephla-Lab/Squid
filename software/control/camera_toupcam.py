@@ -438,7 +438,7 @@ class ToupcamCamera(AbstractCamera):
             # Only add the strobe_time_us, and not strobe_time_us + trigger_delay_us.  We'll tell the lighting
             # to come on at strobe_time_us + trigger_delay_us since that's when the common (all row) exposure time
             # starts, but if we tell that to the camera we'll get an extra trigger_delay_us of exposure.
-            exposure_for_camera_us += self._strobe_info.strobe_time_us
+            exposure_for_camera_us += int(self._strobe_info.strobe_time_us)
 
         self._log.debug(
             f"Sending exposure {exposure_for_camera_us} [us] to camera for exposure_time={1000 * exposure_time} [us]"
