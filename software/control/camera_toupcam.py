@@ -356,7 +356,7 @@ class ToupcamCamera(AbstractCamera):
             capabilities=self._capabilities,
         )
         if self._hw_set_strobe_delay_ms_fn:
-            self._hw_set_strobe_delay_ms_fn(self._strobe_info.delay_us / 1000.0)
+            self._hw_set_strobe_delay_ms_fn(self.get_strobe_time() / 1000.0)
 
         if send_exposure:
             self.set_exposure_time(exposure_time_ms)
