@@ -501,6 +501,12 @@ class MultiPointWorker(QObject):
 
     def _image_callback(self, camera_frame: CameraFrame):
         try:
+            if self._ready_for_next_trigger.is_set():
+                self._log.warning(
+                    "Got an image in the image callback, but we didn't send a trigger.  Ignoring the image."
+                )
+                return
+
             self._image_callback_idle.clear()
             with self._timing.get_timer("_image_callback"):
                 self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
