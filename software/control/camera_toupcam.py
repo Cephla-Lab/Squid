@@ -146,7 +146,6 @@ class ToupcamCamera(AbstractCamera):
         pdf from toupcam.
         """
         exposure_time_us = exposure_time_ms * 1000.0
-
         exposure_length = int(72 * exposure_time_us / line_length)
 
         if vheight >= exposure_length - 1:
@@ -359,7 +358,7 @@ class ToupcamCamera(AbstractCamera):
             self._hw_set_strobe_delay_ms_fn(self.get_strobe_time() / 1000.0)
 
         if send_exposure:
-            self.set_exposure_time(exposure_time_ms)
+            self._set_camera_exposure_time(exposure_time_ms)
 
         self._log.debug(
             f"image size: {width=} x {height=}, {buffer_size=}, strobe_time={self.get_strobe_time()} [ms], exposure_time={self.get_exposure_time()} [ms], full frame time={self.get_total_frame_time()} [ms], {send_exposure=}"
@@ -426,12 +425,15 @@ class ToupcamCamera(AbstractCamera):
     def get_is_streaming(self):
         return self._raw_camera_stream_started
 
-    def set_exposure_time(self, exposure_time):
+    def set_exposure_time(self, exposure_time_ms: float):
         # Since we have to set the on-camera exposure time differently depending on the trigger mode
         # and the calculated strobe delay, it is tricky to get the exposure time from the
         # camera.  To get around this, we store it.
-        self._exposure_time = exposure_time
+        self._exposure_time = exposure_time_ms
 
+        self._update_internal_settings(send_exposure=True)
+
+    def _set_camera_exposure_time(self, exposure_time):
         exposure_for_camera_us = int(1000 * exposure_time)
         # In the calls below, we need to make sure we convert to microseconds.
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
