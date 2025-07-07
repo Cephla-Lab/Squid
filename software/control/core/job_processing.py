@@ -2,10 +2,11 @@ import abc
 import multiprocessing
 import queue
 import os
+import time
 from typing import Optional, Generic, TypeVar
 from uuid import uuid4
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import imageio as iio
 import numpy as np
@@ -45,11 +46,7 @@ class Job(abc.ABC, Generic[T]):
     capture_info: CaptureInfo
     capture_image: JobImage
 
-    _id: str = str(uuid4())
-
-    @property
-    def job_id(self) -> str:
-        return self._id
+    job_id: str = field(default_factory=lambda: str(uuid4()))
 
     def image_array(self) -> np.array:
         if self.capture_image.image_array is not None:
@@ -107,6 +104,20 @@ class SaveImageJob(Job):
 
         return True
 
+# These are debugging jobs - they should not be used in normal usage!
+class HangForeverJob(Job):
+    def run(self) -> bool:
+        while True:
+            time.sleep(1)
+
+        return True  # noqa
+
+class ThrowImmediatelyJobException(RuntimeError):
+    pass
+
+class ThrowImmediatelyJob(Job):
+    def run(self) -> bool:
+        raise ThrowImmediatelyJobException("ThrowImmediatelyJob threw")
 
 class JobRunner(multiprocessing.Process):
     def __init__(self):
