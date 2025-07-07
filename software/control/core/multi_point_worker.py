@@ -135,11 +135,13 @@ class MultiPointWorker(QObject):
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
         self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
+        self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
         for job_class in job_classes:
             self._log.info(f"Creating job runner for {job_class.__name__} jobs")
-            job_runner = control.core.job_processing.JobRunner()
-            job_runner.daemon = True
-            job_runner.start()
+            job_runner = control.core.job_processing.JobRunner() if Acquisition.USE_MULTIPROCESSING else None
+            if job_runner:
+                job_runner.daemon = True
+                job_runner.start()
             self._job_runners.append((job_class, job_runner))
 
 
@@ -243,15 +245,16 @@ class MultiPointWorker(QObject):
             return max(timeout_time - time.time(), 0)
 
         for (job_class, job_runner) in self._job_runners:
-            while job_runner.has_pending():
-                if not timed_out():
-                    time.sleep(0.1)
-                else:
-                    self._log.error(f"Timed out after {timeout_s} [s] waiting for jobs to finish.  Pending jobs for {job_class.__name__} abandoned!!!")
-                    job_runner.kill()
+            if job_runner is not None:
+                while job_runner.has_pending():
+                    if not timed_out():
+                        time.sleep(0.1)
+                    else:
+                        self._log.error(f"Timed out after {timeout_s} [s] waiting for jobs to finish.  Pending jobs for {job_class.__name__} abandoned!!!")
+                        job_runner.kill()
 
-            self._log.info("Trying to shut down job runner...")
-            job_runner.shutdown(time_left())
+                self._log.info("Trying to shut down job runner...")
+                job_runner.shutdown(time_left())
 
     def wait_till_operation_is_completed(self):
         self.microcontroller.wait_till_operation_is_completed()
@@ -377,6 +380,29 @@ class MultiPointWorker(QObject):
         self.stage.move_z_to(z_mm)
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
+    def _summarize_runner_outputs(self):
+        for (job_class, job_runner) in self._job_runners:
+            if job_runner is None:
+                continue
+            out_queue = job_runner.output_queue()
+            try:
+                job_result: JobResult = out_queue.get_nowait()
+                # TODO(imo): Should we abort if there is a failure?
+                self._summarize_job_result(job_result)
+            except queue.Empty:
+                continue
+
+    def _summarize_job_result(self, job_result: JobResult) -> bool:
+        """
+        Prints a summary, then returns True if the result was successful or False otherwise.
+        """
+        if job_result.exception is not None:
+            self._log.error(f"Error while running job {job_result.job_id}: {job_result.exception}")
+            return False
+        else:
+            self._log.info(f"Got result for job {job_result.job_id}, it completed!")
+            return True
+
     def run_coordinate_acquisition(self, current_path):
         n_regions = len(self.scan_region_coords_mm)
 
@@ -390,17 +416,7 @@ class MultiPointWorker(QObject):
             for fov_count, coordinate_mm in enumerate(coordinates):
                 # Just so the job result queues don't get too big, check and print a summary of intermediate results here
                 with self._timing.get_timer("job result summaries"):
-                    for (job_class, job_runner) in self._job_runners:
-                        out_queue = job_runner.output_queue()
-                        try:
-                            job_result: JobResult = out_queue.get_nowait()
-                            if job_result.exception is not None:
-                                self._log.error(f"Error while running job {job_result.job_id}: {job_result.exception}")
-                                # TODO(imo): Should we abort?
-                            else:
-                                self._log.info(f"Got result for job {job_result.job_id}, it completed!")
-                        except queue.Empty:
-                            continue
+                    self._summarize_runner_outputs()
                 with self._timing.get_timer("move_to_coordinate"):
                     self.move_to_coordinate(coordinate_mm)
                 with self._timing.get_timer("acquire_at_position"):
@@ -571,10 +587,16 @@ class MultiPointWorker(QObject):
                 with self._timing.get_timer("job creation and dispatch"):
                     for (job_class, job_runner) in self._job_runners:
                         job = job_class(capture_info=info, capture_image=JobImage(image_array=image))
-                        if not job_runner.dispatch(job):
-                            self._log.error("Failed to dispatch job!")
-                            self.multiPointController.request_abort_aquisition()
-                            return
+                        if job_runner is not None:
+                            if not job_runner.dispatch(job):
+                                self._log.error("Failed to dispatch multiprocessing job!")
+                                self.multiPointController.request_abort_aquisition()
+                                return
+                        else:
+                            result = job.run()
+                            if not self._summarize_job_result(result):
+                                self.multiPointController.request_abort_aquisition()
+                                return
 
                 height, width = image.shape[:2]
                 with self._timing.get_timer("crop_image"):
