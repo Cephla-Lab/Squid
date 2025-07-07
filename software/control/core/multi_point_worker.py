@@ -53,7 +53,7 @@ class MultiPointWorker(QObject):
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
 
-    def __init__(self, multiPointController, extra_job_classes: list[type[Job]] | None = None):
+    def __init__(self, multiPointController, extra_job_classes: list[type[Job]] | None = None, abort_on_failed_jobs: bool =True):
         QObject.__init__(self)
         self.multiPointController = multiPointController
         self._log = squid.logging.get_logger(__class__.__name__)
@@ -143,6 +143,7 @@ class MultiPointWorker(QObject):
                 job_runner.daemon = True
                 job_runner.start()
             self._job_runners.append((job_class, job_runner))
+        self._abort_on_failed_job = abort_on_failed_jobs
 
     def update_use_piezo(self, value):
         self.use_piezo = value
@@ -234,6 +235,8 @@ class MultiPointWorker(QObject):
         self._image_callback_idle.set()
 
     def _finish_jobs(self, timeout_s=10):
+        self._summarize_runner_outputs()
+
         self._log.info(
             f"Waiting for jobs to finish on {len(self._job_runners)} job runners before shutting them down..."
         )
@@ -255,6 +258,7 @@ class MultiPointWorker(QObject):
                             f"Timed out after {timeout_s} [s] waiting for jobs to finish.  Pending jobs for {job_class.__name__} abandoned!!!"
                         )
                         job_runner.kill()
+                        break
 
                 self._log.info("Trying to shut down job runner...")
                 job_runner.shutdown(time_left())
@@ -384,6 +388,7 @@ class MultiPointWorker(QObject):
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def _summarize_runner_outputs(self):
+        none_failed = True
         for job_class, job_runner in self._job_runners:
             if job_runner is None:
                 continue
@@ -391,9 +396,11 @@ class MultiPointWorker(QObject):
             try:
                 job_result: JobResult = out_queue.get_nowait()
                 # TODO(imo): Should we abort if there is a failure?
-                self._summarize_job_result(job_result)
+                none_failed = none_failed and self._summarize_job_result(job_result)
             except queue.Empty:
                 continue
+
+        return none_failed
 
     def _summarize_job_result(self, job_result: JobResult) -> bool:
         """
@@ -419,7 +426,11 @@ class MultiPointWorker(QObject):
             for fov_count, coordinate_mm in enumerate(coordinates):
                 # Just so the job result queues don't get too big, check and print a summary of intermediate results here
                 with self._timing.get_timer("job result summaries"):
-                    self._summarize_runner_outputs()
+                    if not self._summarize_runner_outputs() and self._abort_on_failed_job:
+                        self._log.error("Some jobs failed, aborting acquisition because abort_on_failed_job=True")
+                        self.multiPointController.request_abort_aquisition()
+                        return
+
                 with self._timing.get_timer("move_to_coordinate"):
                     self.move_to_coordinate(coordinate_mm)
                 with self._timing.get_timer("acquire_at_position"):

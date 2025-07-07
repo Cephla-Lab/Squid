@@ -20,6 +20,7 @@ from qtpy.QtGui import *
 # control
 from control._def import *
 from control.core.multi_point_worker import MultiPointWorker
+from control.core import job_processing
 
 import control.utils as utils
 import control.utils_acquisition as utils_acquisition
@@ -2376,7 +2377,7 @@ class MultiPointController(QObject):
                 self._log.exception("Invalid coordinates for autofocus plane, aborting.")
                 return
 
-        self.multiPointWorker = MultiPointWorker(self)
+        self.multiPointWorker = MultiPointWorker(self, extra_job_classes=[])
         self.multiPointWorker.use_piezo = self.use_piezo
 
         if not self.headless:
