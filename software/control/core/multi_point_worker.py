@@ -53,7 +53,9 @@ class MultiPointWorker(QObject):
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
 
-    def __init__(self, multiPointController, extra_job_classes: list[type[Job]] | None = None, abort_on_failed_jobs: bool =True):
+    def __init__(
+        self, multiPointController, extra_job_classes: list[type[Job]] | None = None, abort_on_failed_jobs: bool = True
+    ):
         QObject.__init__(self)
         self.multiPointController = multiPointController
         self._log = squid.logging.get_logger(__class__.__name__)

@@ -104,6 +104,7 @@ class SaveImageJob(Job):
 
         return True
 
+
 # These are debugging jobs - they should not be used in normal usage!
 class HangForeverJob(Job):
     def run(self) -> bool:
@@ -112,12 +113,15 @@ class HangForeverJob(Job):
 
         return True  # noqa
 
+
 class ThrowImmediatelyJobException(RuntimeError):
     pass
+
 
 class ThrowImmediatelyJob(Job):
     def run(self) -> bool:
         raise ThrowImmediatelyJobException("ThrowImmediatelyJob threw")
+
 
 class JobRunner(multiprocessing.Process):
     def __init__(self):
