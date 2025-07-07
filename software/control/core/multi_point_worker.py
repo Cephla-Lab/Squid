@@ -593,8 +593,12 @@ class MultiPointWorker(QObject):
                                 self.multiPointController.request_abort_aquisition()
                                 return
                         else:
-                            result = job.run()
-                            if not self._summarize_job_result(result):
+                            try:
+                                # NOTE(imo): We don't have any way of people using results, so for now just
+                                # grab and ignore it.
+                                result = job.run()
+                            except Exception:
+                                self._log.exception("Failed to execute job, abandoning acquisition!")
                                 self.multiPointController.request_abort_aquisition()
                                 return
 
