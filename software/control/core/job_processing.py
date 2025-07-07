@@ -31,11 +31,15 @@ class CaptureInfo:
     fov: int
     configuration_idx: int
 
+
 @dataclass()
 class JobImage:
     image_array: Optional[np.array]
 
+
 T = TypeVar("T")
+
+
 @dataclass
 class Job(abc.ABC, Generic[T]):
     capture_info: CaptureInfo
@@ -57,11 +61,13 @@ class Job(abc.ABC, Generic[T]):
     def run(self) -> T:
         raise NotImplementedError("You must implement run for your job type.")
 
+
 @dataclass
 class JobResult(Generic[T]):
     job_id: str
     result: Optional[T]
     exception: Optional[Exception]
+
 
 class SaveImageJob(Job):
     def run(self) -> bool:
@@ -100,6 +106,7 @@ class SaveImageJob(Job):
                 raise NotImplementedError("Image merging not supported yet")
 
         return True
+
 
 class JobRunner(multiprocessing.Process):
     def __init__(self):

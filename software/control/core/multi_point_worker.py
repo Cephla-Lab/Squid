@@ -144,7 +144,6 @@ class MultiPointWorker(QObject):
                 job_runner.start()
             self._job_runners.append((job_class, job_runner))
 
-
     def update_use_piezo(self, value):
         self.use_piezo = value
         self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
@@ -235,7 +234,9 @@ class MultiPointWorker(QObject):
         self._image_callback_idle.set()
 
     def _finish_jobs(self, timeout_s=10):
-        self._log.info(f"Waiting for jobs to finish on {len(self._job_runners)} job runners before shutting them down...")
+        self._log.info(
+            f"Waiting for jobs to finish on {len(self._job_runners)} job runners before shutting them down..."
+        )
         timeout_time = time.time() + timeout_s
 
         def timed_out():
@@ -244,13 +245,15 @@ class MultiPointWorker(QObject):
         def time_left():
             return max(timeout_time - time.time(), 0)
 
-        for (job_class, job_runner) in self._job_runners:
+        for job_class, job_runner in self._job_runners:
             if job_runner is not None:
                 while job_runner.has_pending():
                     if not timed_out():
                         time.sleep(0.1)
                     else:
-                        self._log.error(f"Timed out after {timeout_s} [s] waiting for jobs to finish.  Pending jobs for {job_class.__name__} abandoned!!!")
+                        self._log.error(
+                            f"Timed out after {timeout_s} [s] waiting for jobs to finish.  Pending jobs for {job_class.__name__} abandoned!!!"
+                        )
                         job_runner.kill()
 
                 self._log.info("Trying to shut down job runner...")
@@ -381,7 +384,7 @@ class MultiPointWorker(QObject):
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def _summarize_runner_outputs(self):
-        for (job_class, job_runner) in self._job_runners:
+        for job_class, job_runner in self._job_runners:
             if job_runner is None:
                 continue
             out_queue = job_runner.output_queue()
@@ -585,7 +588,7 @@ class MultiPointWorker(QObject):
                     return
 
                 with self._timing.get_timer("job creation and dispatch"):
-                    for (job_class, job_runner) in self._job_runners:
+                    for job_class, job_runner in self._job_runners:
                         job = job_class(capture_info=info, capture_image=JobImage(image_array=image))
                         if job_runner is not None:
                             if not job_runner.dispatch(job):
