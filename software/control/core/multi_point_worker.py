@@ -1,12 +1,14 @@
 import os
+import queue
 import threading
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple, Type
 from dataclasses import dataclass
 from datetime import datetime
 
 import cv2
 import imageio as iio
+import pydantic
 import tifffile
 import numpy as np
 from numpy.typing import NDArray
@@ -24,6 +26,8 @@ from control.piezo import PiezoStage
 from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, CameraFrame
 import squid.logging
+import control.core.job_processing
+from control.core.job_processing import CaptureInfo, SaveImageJob, Job, JobImage, JobRunner, JobResult
 
 try:
     from control.multipoint_custom_script_entry_v2 import *
@@ -31,19 +35,6 @@ try:
     print("custom multipoint script found")
 except:
     pass
-
-
-@dataclass
-class CaptureInfo:
-    position: squid.abc.Pos
-    z_index: int
-    capture_time: float
-    configuration: ChannelMode
-    save_directory: str
-    file_id: str
-    region_id: int
-    fov: int
-    configuration_idx: int
 
 
 class MultiPointWorker(QObject):
@@ -62,7 +53,7 @@ class MultiPointWorker(QObject):
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
 
-    def __init__(self, multiPointController):
+    def __init__(self, multiPointController, extra_job_classes: list[type[Job]] | None = None):
         QObject.__init__(self)
         self.multiPointController = multiPointController
         self._log = squid.logging.get_logger(__class__.__name__)
@@ -136,6 +127,22 @@ class MultiPointWorker(QObject):
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
 
+        job_classes = [SaveImageJob]
+        if extra_job_classes:
+            job_classes.extend(extra_job_classes)
+
+        # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
+        # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
+        # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
+        self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
+        for job_class in job_classes:
+            self._log.info(f"Creating job runner for {job_class.__name__} jobs")
+            job_runner = control.core.job_processing.JobRunner()
+            job_runner.daemon = True
+            job_runner.start()
+            self._job_runners.append((job_class, job_runner))
+
+
     def update_use_piezo(self, value):
         self.use_piezo = value
         self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
@@ -207,6 +214,8 @@ class MultiPointWorker(QObject):
             self._log.debug(self._timing.get_report())
             if this_image_callback_id:
                 self.camera.remove_frame_callback(this_image_callback_id)
+
+            self._finish_jobs()
         if not self.headless:
             self.finished.emit()
 
@@ -222,6 +231,27 @@ class MultiPointWorker(QObject):
         # No matter what, set the flags so things can continue
         self._ready_for_next_trigger.set()
         self._image_callback_idle.set()
+
+    def _finish_jobs(self, timeout_s=10):
+        self._log.info(f"Waiting for jobs to finish on {len(self._job_runners)} job runners before shutting them down...")
+        timeout_time = time.time() + timeout_s
+
+        def timed_out():
+            return time.time() > timeout_time
+
+        def time_left():
+            return max(timeout_time - time.time(), 0)
+
+        for (job_class, job_runner) in self._job_runners:
+            while job_runner.has_pending():
+                if not timed_out():
+                    time.sleep(0.1)
+                else:
+                    self._log.error(f"Timed out after {timeout_s} [s] waiting for jobs to finish.  Pending jobs for {job_class.__name__} abandoned!!!")
+                    job_runner.kill()
+
+            self._log.info("Trying to shut down job runner...")
+            job_runner.shutdown(time_left())
 
     def wait_till_operation_is_completed(self):
         self.microcontroller.wait_till_operation_is_completed()
@@ -358,6 +388,19 @@ class MultiPointWorker(QObject):
             self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
 
             for fov_count, coordinate_mm in enumerate(coordinates):
+                # Just so the job result queues don't get too big, check and print a summary of intermediate results here
+                with self._timing.get_timer("job result summaries"):
+                    for (job_class, job_runner) in self._job_runners:
+                        out_queue = job_runner.output_queue()
+                        try:
+                            job_result: JobResult = out_queue.get_nowait()
+                            if job_result.exception is not None:
+                                self._log.error(f"Error while running job {job_result.job_id}: {job_result.exception}")
+                                # TODO(imo): Should we abort?
+                            else:
+                                self._log.info(f"Got result for job {job_result.job_id}, it completed!")
+                        except queue.Empty:
+                            continue
                 with self._timing.get_timer("move_to_coordinate"):
                     self.move_to_coordinate(coordinate_mm)
                 with self._timing.get_timer("acquire_at_position"):
@@ -525,6 +568,14 @@ class MultiPointWorker(QObject):
                     self.multiPointController.request_abort_aquisition()
                     return
 
+                with self._timing.get_timer("job creation and dispatch"):
+                    for (job_class, job_runner) in self._job_runners:
+                        job = job_class(capture_info=info, capture_image=JobImage(image_array=image))
+                        if not job_runner.dispatch(job):
+                            self._log.error("Failed to dispatch job!")
+                            self.multiPointController.request_abort_aquisition()
+                            return
+
                 height, width = image.shape[:2]
                 with self._timing.get_timer("crop_image"):
                     image_to_display = utils.crop_image(
@@ -536,8 +587,6 @@ class MultiPointWorker(QObject):
                     self.image_to_display.emit(image_to_display)
                     self.image_to_display_multi.emit(image_to_display, info.configuration.illumination_source)
 
-                with self._timing.get_timer("save_image"):
-                    self.save_image(image, info, camera_frame.is_color())
                 with self._timing.get_timer("update_napari"):
                     self.update_napari(image, info)
         finally:
@@ -661,55 +710,6 @@ class MultiPointWorker(QObject):
                     current_path, file_ID + "_" + str(config.name).replace(" ", "_") + "_" + str(l) + ".csv"
                 )
                 np.savetxt(saving_path, data, delimiter=",")
-
-    def save_image(self, image: np.array, info: CaptureInfo, is_color: bool):
-        # NOTE(imo): We silently fall back to individual image saving here.  We should warn or do something.
-        if FILE_SAVING_OPTION == FileSavingOption.MULTI_PAGE_TIFF:
-            metadata = {
-                "z_level": info.z_index,
-                "channel": info.configuration.name,
-                "channel_index": info.configuration_idx,
-                "region_id": info.region_id,
-                "fov": info.fov,
-                "x_mm": info.position.x_mm,
-                "y_mm": info.position.y_mm,
-                "z_mm": info.position.z_mm,
-            }
-            output_path = os.path.join(
-                info.save_directory, f"{info.region_id}_{info.fov:0{FILE_ID_PADDING}}_stack.tiff"
-            )
-            with tifffile.TiffWriter(output_path, append=True) as tiff_writer:
-                tiff_writer.write(image, metadata=metadata)
-        else:
-            saved_image = utils_acquisition.save_image(
-                image=image,
-                file_id=info.file_id,
-                save_directory=info.save_directory,
-                config=info.configuration,
-                is_color=is_color,
-            )
-
-            if MERGE_CHANNELS:
-                self._save_merged_image(saved_image, info.file_id, info.save_directory)
-
-    def _save_merged_image(self, image: np.array, file_ID: str, current_path: str):
-        self.image_count += 1
-
-        if self.image_count == 1:
-            self.merged_image = image
-        else:
-            self.merged_image = np.maximum(self.merged_image, image)
-
-            if self.image_count == len(self.selected_configurations):
-                if image.dtype == np.uint16:
-                    saving_path = os.path.join(current_path, file_ID + "_merged" + ".tiff")
-                else:
-                    saving_path = os.path.join(current_path, file_ID + "_merged" + "." + Acquisition.IMAGE_FORMAT)
-
-                iio.imwrite(saving_path, self.merged_image)
-                self.image_count = 0
-
-        return
 
     def update_napari(self, image, capture_info: CaptureInfo):
         if not self.performance_mode and (USE_NAPARI_FOR_MOSAIC_DISPLAY or USE_NAPARI_FOR_MULTIPOINT):
