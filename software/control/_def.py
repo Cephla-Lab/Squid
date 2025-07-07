@@ -78,7 +78,7 @@ class Acquisition:
     DZ = 1.5
     NX = 1
     NY = 1
-    USE_MULTIPROCESSING = False
+    USE_MULTIPROCESSING = True
 
 
 class PosUpdate:
