@@ -76,12 +76,10 @@ class TriggerMode:
         if isinstance(option, TriggerMode):
             return option
 
-        try:
-            for name, value in vars(TriggerMode).items():
-                if value == option or name == option.upper():
-                    return getattr(TriggerMode, name)
-        except KeyError:
-            raise ValueError(f"Invalid trigger mode: {option}")
+        for name, value in vars(TriggerMode).items():
+            if value == option or name == option.upper():
+                return getattr(TriggerMode, name)
+        raise ValueError(f"Invalid trigger mode: {option}")
 
 
 class Acquisition:
