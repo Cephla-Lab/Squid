@@ -68,6 +68,21 @@ class TriggerMode:
     HARDWARE = "Hardware Trigger"
     CONTINUOUS = "Continuous Acquisition"
 
+    @staticmethod
+    def convert_to_var(option: Union[str, "TriggerMode"]) -> "TriggerMode":
+        """
+        Attempts to convert the given string to a TriggerMode.
+        """
+        if isinstance(option, TriggerMode):
+            return option
+
+        try:
+            for name, value in vars(TriggerMode).items():
+                if value == option or name == option.upper():
+                    return getattr(TriggerMode, name)
+        except KeyError:
+            raise ValueError(f"Invalid trigger mode: {option}")
+
 
 class Acquisition:
     NUMBER_OF_FOVS_PER_AF = 3
@@ -931,6 +946,7 @@ MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
 # convert str to enum
 FILE_SAVING_OPTION = FileSavingOption.convert_to_enum(FILE_SAVING_OPTION)
 FOCUS_MEASURE_OPERATOR = FocusMeasureOperator.convert_to_enum(FOCUS_MEASURE_OPERATOR)
+DEFAULT_TRIGGER_MODE = TriggerMode.convert_to_var(DEFAULT_TRIGGER_MODE)
 
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):
