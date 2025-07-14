@@ -162,7 +162,6 @@ class AndorCamera(AbstractCamera):
         while self._read_thread_keep_running.is_set():
             try:
                 try:
-                    print("waiting for frame")
                     # Wait for frame with timeout
                     acq = self._camera.wait_buffer(1000)  # 1000ms timeout
 
@@ -171,14 +170,10 @@ class AndorCamera(AbstractCamera):
 
                     # Process the frame
                     raw = np.asarray(acq._np_data, dtype=np.uint8)
-                    print("raw", raw.shape)
-
                     img = raw.view("<u2")  # Andor typically returns 16-bit data
-                    print(img)
 
                     img = img.reshape(2048, 2048)
-                    print("img")
-                    print(img)
+
                     self._trigger_sent.clear()
 
                     processed_frame = self._process_raw_frame(img)
