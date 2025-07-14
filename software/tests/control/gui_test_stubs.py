@@ -1,6 +1,7 @@
 import pathlib
 
 import control.core.core
+import control.core.objective_store
 import control.microcontroller
 import control.lighting
 import squid.abc
@@ -54,7 +55,7 @@ def get_test_autofocus_controller(
 
 
 def get_test_scan_coordinates(
-    objective_store: control.core.core.ObjectiveStore,
+    objective_store: control.core.objective_store.ObjectiveStore,
     navigation_viewer: control.core.core.NavigationViewer,
     stage: squid.abc.AbstractStage,
 ):
@@ -62,12 +63,12 @@ def get_test_scan_coordinates(
 
 
 def get_test_objective_store():
-    return control.core.core.ObjectiveStore(
+    return control.core.objective_store.ObjectiveStore(
         objectives_dict=control._def.OBJECTIVES, default_objective=control._def.DEFAULT_OBJECTIVE
     )
 
 
-def get_test_navigation_viewer(objective_store: control.core.core.ObjectiveStore, camera_pixel_size: float):
+def get_test_navigation_viewer(objective_store: control.core.objective_store.ObjectiveStore, camera_pixel_size: float):
     return control.core.core.NavigationViewer(objective_store, camera_pixel_size)
 
 

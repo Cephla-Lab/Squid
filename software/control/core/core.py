@@ -3,12 +3,6 @@ import os
 import sys
 import tempfile
 
-import control._def
-from control.microcontroller import Microcontroller
-from control.piezo import PiezoStage
-from squid.abc import AbstractStage, AbstractCamera, CameraAcquisitionMode
-import squid.logging
-
 # qt libraries
 os.environ["QT_API"] = "pyqt5"
 import qtpy
@@ -17,17 +11,27 @@ from qtpy.QtCore import *
 from qtpy.QtWidgets import *
 from qtpy.QtGui import *
 
-# control
 from control._def import *
-from control.core.multi_point_worker import MultiPointWorker
 from control.core import job_processing
-
+from control.core.live_controller import LiveController
+from control.core.multi_point_worker import MultiPointWorker
+from control.core.objective_store import ObjectiveStore
+from control.core.stream_handler import StreamHandlerFunctions, StreamHandler
+from control.core.laser_af_settings_manager import LaserAFSettingManager
+from control.core.channel_configuration_mananger import ChannelConfigurationManager
+from control.core.configuration_mananger import ConfigurationManager
+from control.core.contrast_manager import ContrastManager
+from control.microcontroller import Microcontroller
+from control.piezo import PiezoStage
+from squid.abc import AbstractStage, AbstractCamera, CameraAcquisitionMode, CameraFrame
+import control._def
+import control.serial_peripherals as serial_peripherals
+import control.tracking as tracking
 import control.utils as utils
 import control.utils_acquisition as utils_acquisition
 import control.utils_channel as utils_channel
 import control.utils_config as utils_config
-import control.tracking as tracking
-import control.serial_peripherals as serial_peripherals
+import squid.logging
 
 try:
     from control.multipoint_custom_script_entry_v2 import *
@@ -55,131 +59,45 @@ import squid.abc
 import scipy.ndimage
 
 
-class ObjectiveStore:
-    def __init__(self, objectives_dict=OBJECTIVES, default_objective=DEFAULT_OBJECTIVE):
-        self.objectives_dict = objectives_dict
-        self.default_objective = default_objective
-        self.current_objective = default_objective
-        objective = self.objectives_dict[self.current_objective]
-        self.pixel_size_factor = ObjectiveStore.calculate_pixel_size_factor(objective, TUBE_LENS_MM)
-
-    def get_pixel_size_factor(self):
-        return self.pixel_size_factor
-
-    @staticmethod
-    def calculate_pixel_size_factor(objective, tube_lens_mm):
-        """pixel_size_um = sensor_pixel_size * binning_factor * lens_factor"""
-        magnification = objective["magnification"]
-        objective_tube_lens_mm = objective["tube_lens_f_mm"]
-        lens_factor = objective_tube_lens_mm / magnification / tube_lens_mm
-        return lens_factor
-
-    def set_current_objective(self, objective_name):
-        if objective_name in self.objectives_dict:
-            self.current_objective = objective_name
-            objective = self.objectives_dict[objective_name]
-            self.pixel_size_factor = ObjectiveStore.calculate_pixel_size_factor(objective, TUBE_LENS_MM)
-        else:
-            raise ValueError(f"Objective {objective_name} not found in the store.")
-
-    def get_current_objective_info(self):
-        return self.objectives_dict[self.current_objective]
-
-
-class StreamHandler(QObject):
+class QtStreamHandler(QObject):
 
     image_to_display = Signal(np.ndarray)
     packet_image_to_write = Signal(np.ndarray, int, float)
-    packet_image_for_tracking = Signal(np.ndarray, int, float)
     signal_new_frame_received = Signal()
 
-    def __init__(
-        self,
-        display_resolution_scaling=1,
-        accept_new_frame_fn: Callable[[], bool] = lambda: True,
-    ):
-        QObject.__init__(self)
-        self.fps_display = 1
-        self.fps_save = 1
-        self.fps_track = 1
-        self.timestamp_last_display = 0
-        self.timestamp_last_save = 0
-        self.timestamp_last_track = 0
+    def __init__(self, display_resolution_scaling=1, accept_new_frame_fn: Callable[[], bool] = lambda: True):
+        super().__init__()
 
-        self.display_resolution_scaling = display_resolution_scaling
+        functions = StreamHandlerFunctions(
+            image_to_display=self.image_to_display.emit,
+            packet_image_to_write=self.packet_image_to_write.emit,
+            signal_new_frame_received=self.signal_new_frame_received.emit,
+            accept_new_frame=accept_new_frame_fn,
+        )
+        self._handler = StreamHandler(
+            handler_functions=functions, display_resolution_scaling=display_resolution_scaling
+        )
 
-        self.save_image_flag = False
-        self.handler_busy = False
-
-        # for fps measurement
-        self.timestamp_last = 0
-        self.counter = 0
-        self.fps_real = 0
-
-        # Only accept new frames if this user defined function returns true
-        self._accept_new_frames_fn = accept_new_frame_fn
+    def get_frame_callback(self) -> Callable[[CameraFrame], None]:
+        return self._handler.on_new_frame
 
     def start_recording(self):
-        self.save_image_flag = True
+        self._handler.start_recording()
 
     def stop_recording(self):
-        self.save_image_flag = False
+        self._handler.stop_recording()
 
     def set_display_fps(self, fps):
-        self.fps_display = fps
+        self._handler.set_display_fps(fps)
 
     def set_save_fps(self, fps):
-        self.fps_save = fps
+        self._handler.set_save_fps(fps)
 
     def set_display_resolution_scaling(self, display_resolution_scaling):
-        self.display_resolution_scaling = display_resolution_scaling / 100
-        print(self.display_resolution_scaling)
-
-    def on_new_frame(self, frame: squid.abc.CameraFrame):
-        if not self._accept_new_frames_fn():
-            return
-
-        self.handler_busy = True
-        self.signal_new_frame_received.emit()
-
-        # measure real fps
-        timestamp_now = round(time.time())
-        if timestamp_now == self.timestamp_last:
-            self.counter = self.counter + 1
-        else:
-            self.timestamp_last = timestamp_now
-            self.fps_real = self.counter
-            self.counter = 0
-            if PRINT_CAMERA_FPS:
-                print("real camera fps is " + str(self.fps_real))
-
-        # crop image
-        image = np.squeeze(frame.frame)
-
-        # send image to display
-        time_now = time.time()
-        if time_now - self.timestamp_last_display >= 1 / self.fps_display:
-            self.image_to_display.emit(
-                utils.crop_image(
-                    image,
-                    round(image.shape[1] * self.display_resolution_scaling),
-                    round(image.shape[0] * self.display_resolution_scaling),
-                )
-            )
-            self.timestamp_last_display = time_now
-
-        # send image to write
-        if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
-            if frame.is_color():
-                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-            self.packet_image_to_write.emit(image, frame.frame_id, frame.timestamp)
-            self.timestamp_last_save = time_now
-
-        self.handler_busy = False
+        self._handler.set_display_resolution_scaling(display_resolution_scaling)
 
 
 class ImageSaver(QObject):
-
     stop_recording = Signal()
 
     def __init__(self, image_format=Acquisition.IMAGE_FORMAT):
@@ -330,7 +248,6 @@ class ImageSaver_Tracking(QObject):
 
 
 class ImageDisplay(QObject):
-
     image_to_display = Signal(np.ndarray)
 
     def __init__(self):
@@ -375,340 +292,7 @@ class ImageDisplay(QObject):
         self.thread.join()
 
 
-class LiveController(QObject):
-    def __init__(
-        self,
-        camera: AbstractCamera,
-        microcontroller,
-        illuminationController,
-        parent=None,
-        control_illumination=True,
-        use_internal_timer_for_hardware_trigger=True,
-        for_displacement_measurement=False,
-    ):
-        QObject.__init__(self)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.microscope = parent
-        self.camera: AbstractCamera = camera
-        self.microcontroller = microcontroller
-        self.currentConfiguration = None
-        self.trigger_mode = TriggerMode.SOFTWARE  # @@@ change to None
-        self.is_live = False
-        self.control_illumination = control_illumination
-        self.illumination_on = False
-        self.illuminationController = illuminationController
-        self.use_internal_timer_for_hardware_trigger = (
-            use_internal_timer_for_hardware_trigger  # use QTimer vs timer in the MCU
-        )
-        self.for_displacement_measurement = for_displacement_measurement
-
-        self.fps_trigger = 1
-        self.timer_trigger_interval = (1 / self.fps_trigger) * 1000
-
-        self.timer_trigger = QTimer()
-        self.timer_trigger.setInterval(int(self.timer_trigger_interval))
-        self.timer_trigger.timeout.connect(self.trigger_acquisition)
-
-        self.trigger_ID = -1
-
-        self.fps_real = 0
-        self.counter = 0
-        self.timestamp_last = 0
-
-        self.display_resolution_scaling = 1
-
-        self.enable_channel_auto_filter_switching = True
-
-        if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
-            # to do: add error handling
-            self.led_array = serial_peripherals.SciMicroscopyLEDArray(
-                SCIMICROSCOPY_LED_ARRAY_SN, SCIMICROSCOPY_LED_ARRAY_DISTANCE, SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY
-            )
-            self.led_array.set_NA(SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
-
-    # illumination control
-    def turn_on_illumination(self):
-        if not "LED matrix" in self.currentConfiguration.name:
-            self.illuminationController.turn_on_illumination(
-                int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
-            )
-        elif SUPPORT_SCIMICROSCOPY_LED_ARRAY and "LED matrix" in self.currentConfiguration.name:
-            self.led_array.turn_on_illumination()
-        # LED matrix
-        else:
-            self.microcontroller.turn_on_illumination()  # to wrap microcontroller in Squid_led_array
-        self.illumination_on = True
-
-    def turn_off_illumination(self):
-        if not "LED matrix" in self.currentConfiguration.name:
-            self.illuminationController.turn_off_illumination(
-                int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
-            )
-        elif SUPPORT_SCIMICROSCOPY_LED_ARRAY and "LED matrix" in self.currentConfiguration.name:
-            self.led_array.turn_off_illumination()
-        # LED matrix
-        else:
-            self.microcontroller.turn_off_illumination()  # to wrap microcontroller in Squid_led_array
-        self.illumination_on = False
-
-    def update_illumination(self):
-        illumination_source = self.currentConfiguration.illumination_source
-        intensity = self.currentConfiguration.illumination_intensity
-        if illumination_source < 10:  # LED matrix
-            if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
-                # set color
-                if "BF LED matrix full_R" in self.currentConfiguration.name:
-                    self.led_array.set_color((1, 0, 0))
-                elif "BF LED matrix full_G" in self.currentConfiguration.name:
-                    self.led_array.set_color((0, 1, 0))
-                elif "BF LED matrix full_B" in self.currentConfiguration.name:
-                    self.led_array.set_color((0, 0, 1))
-                else:
-                    self.led_array.set_color(SCIMICROSCOPY_LED_ARRAY_DEFAULT_COLOR)
-                # set intensity
-                self.led_array.set_brightness(intensity)
-                # set mode
-                if "BF LED matrix left half" in self.currentConfiguration.name:
-                    self.led_array.set_illumination("dpc.l")
-                if "BF LED matrix right half" in self.currentConfiguration.name:
-                    self.led_array.set_illumination("dpc.r")
-                if "BF LED matrix top half" in self.currentConfiguration.name:
-                    self.led_array.set_illumination("dpc.t")
-                if "BF LED matrix bottom half" in self.currentConfiguration.name:
-                    self.led_array.set_illumination("dpc.b")
-                if "BF LED matrix full" in self.currentConfiguration.name:
-                    self.led_array.set_illumination("bf")
-                if "DF LED matrix" in self.currentConfiguration.name:
-                    self.led_array.set_illumination("df")
-            else:
-                if "BF LED matrix full_R" in self.currentConfiguration.name:
-                    self.microcontroller.set_illumination_led_matrix(illumination_source, r=(intensity / 100), g=0, b=0)
-                elif "BF LED matrix full_G" in self.currentConfiguration.name:
-                    self.microcontroller.set_illumination_led_matrix(illumination_source, r=0, g=(intensity / 100), b=0)
-                elif "BF LED matrix full_B" in self.currentConfiguration.name:
-                    self.microcontroller.set_illumination_led_matrix(illumination_source, r=0, g=0, b=(intensity / 100))
-                else:
-                    self.microcontroller.set_illumination_led_matrix(
-                        illumination_source,
-                        r=(intensity / 100) * LED_MATRIX_R_FACTOR,
-                        g=(intensity / 100) * LED_MATRIX_G_FACTOR,
-                        b=(intensity / 100) * LED_MATRIX_B_FACTOR,
-                    )
-        else:
-            # update illumination
-            wavelength = int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
-            self.illuminationController.set_intensity(wavelength, intensity)
-            if ENABLE_NL5 and NL5_USE_DOUT and "Fluorescence" in self.currentConfiguration.name:
-                self.microscope.nl5.set_active_channel(NL5_WAVENLENGTH_MAP[wavelength])
-                if NL5_USE_AOUT:
-                    self.microscope.nl5.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
-                if ENABLE_CELLX:
-                    self.microscope.cellx.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
-
-        # set emission filter position
-        if ENABLE_SPINNING_DISK_CONFOCAL:
-            try:
-                self.microscope.xlight.set_emission_filter(
-                    XLIGHT_EMISSION_FILTER_MAPPING[illumination_source],
-                    extraction=False,
-                    validate=XLIGHT_VALIDATE_WHEEL_POS,
-                )
-            except Exception as e:
-                print("not setting emission filter position due to " + str(e))
-
-        if USE_ZABER_EMISSION_FILTER_WHEEL and self.enable_channel_auto_filter_switching:
-            try:
-                if (
-                    self.currentConfiguration.emission_filter_position
-                    != self.microscope.emission_filter_wheel.current_index
-                ):
-                    if ZABER_EMISSION_FILTER_WHEEL_BLOCKING_CALL:
-                        self.microscope.emission_filter_wheel.set_emission_filter(
-                            self.currentConfiguration.emission_filter_position, blocking=True
-                        )
-                    else:
-                        self.microscope.emission_filter_wheel.set_emission_filter(
-                            self.currentConfiguration.emission_filter_position, blocking=False
-                        )
-                        if self.trigger_mode == TriggerMode.SOFTWARE:
-                            time.sleep(ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000)
-                        else:
-                            time.sleep(
-                                max(
-                                    0, ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.get_strobe_time() / 1e3
-                                )
-                            )
-            except Exception as e:
-                print("not setting emission filter position due to " + str(e))
-
-        if (
-            USE_OPTOSPIN_EMISSION_FILTER_WHEEL
-            and self.enable_channel_auto_filter_switching
-            and OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER == False
-        ):
-            try:
-                if (
-                    self.currentConfiguration.emission_filter_position
-                    != self.microscope.emission_filter_wheel.current_index
-                ):
-                    self.microscope.emission_filter_wheel.set_emission_filter(
-                        self.currentConfiguration.emission_filter_position
-                    )
-                    if self.trigger_mode == TriggerMode.SOFTWARE:
-                        time.sleep(OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000)
-                    elif self.trigger_mode == TriggerMode.HARDWARE:
-                        time.sleep(
-                            max(0, OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.get_strobe_time() / 1e3)
-                        )
-            except Exception as e:
-                print("not setting emission filter position due to " + str(e))
-
-        if USE_SQUID_FILTERWHEEL and self.enable_channel_auto_filter_switching:
-            try:
-                self.microscope.squid_filter_wheel.set_emission(self.currentConfiguration.emission_filter_position)
-            except Exception as e:
-                print("not setting emission filter position due to " + str(e))
-
-    def start_live(self):
-        self.is_live = True
-        self.camera.start_streaming()
-        if self.trigger_mode == TriggerMode.SOFTWARE or (
-            self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
-        ):
-            self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
-            self._start_triggerred_acquisition()
-        # if controlling the laser displacement measurement camera
-        if self.for_displacement_measurement:
-            self.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
-
-    def stop_live(self):
-        if self.is_live:
-            self.is_live = False
-            if self.trigger_mode == TriggerMode.SOFTWARE:
-                self._stop_triggerred_acquisition()
-            if self.trigger_mode == TriggerMode.CONTINUOUS:
-                self.camera.stop_streaming()
-            if (self.trigger_mode == TriggerMode.SOFTWARE) or (
-                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
-            ):
-                self._stop_triggerred_acquisition()
-            if self.control_illumination:
-                self.turn_off_illumination()
-            # if controlling the laser displacement measurement camera
-            if self.for_displacement_measurement:
-                self.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
-
-    # software trigger related
-    def trigger_acquisition(self):
-        if not self.camera.get_ready_for_trigger():
-            # TODO(imo): Before, send_trigger would pass silently for this case.  Now
-            # we do the same here.  Should this warn?  I didn't add a warning because it seems like
-            # we over-trigger as standard practice (eg: we trigger at our exposure time frequency, but
-            # the cameras can't give us images that fast so we essentially always have at least 1 skipped trigger)
-            self._log.debug("Not ready for trigger, skipping.")
-            return
-        if self.trigger_mode == TriggerMode.SOFTWARE and self.control_illumination:
-            if not self.illumination_on:
-                self.turn_on_illumination()
-
-        self.trigger_ID = self.trigger_ID + 1
-
-        self.camera.send_trigger(self.camera.get_exposure_time())
-
-        if self.trigger_mode == TriggerMode.SOFTWARE:
-            if self.control_illumination and self.illumination_on == False:
-                self.turn_on_illumination()
-
-    def _start_triggerred_acquisition(self):
-        if not self.timer_trigger.isActive():
-            self.timer_trigger.start()
-
-    def _set_trigger_fps(self, fps_trigger):
-        self.fps_trigger = fps_trigger
-        self.timer_trigger_interval = (1 / self.fps_trigger) * 1000
-        self.timer_trigger.setInterval(int(self.timer_trigger_interval))
-
-    def _stop_triggerred_acquisition(self):
-        self.timer_trigger.stop()
-
-    # trigger mode and settings
-    def set_trigger_mode(self, mode):
-        if mode == TriggerMode.SOFTWARE:
-            if self.is_live and (
-                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
-            ):
-                self._stop_triggerred_acquisition()
-            self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
-            if self.is_live:
-                self._start_triggerred_acquisition()
-        if mode == TriggerMode.HARDWARE:
-            if self.trigger_mode == TriggerMode.SOFTWARE and self.is_live:
-                self._stop_triggerred_acquisition()
-            self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
-            self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
-
-            if self.is_live and self.use_internal_timer_for_hardware_trigger:
-                self._start_triggerred_acquisition()
-        if mode == TriggerMode.CONTINUOUS:
-            if (self.trigger_mode == TriggerMode.SOFTWARE) or (
-                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
-            ):
-                self._stop_triggerred_acquisition()
-            self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
-        self.trigger_mode = mode
-
-    def set_trigger_fps(self, fps):
-        if (self.trigger_mode == TriggerMode.SOFTWARE) or (
-            self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
-        ):
-            self._set_trigger_fps(fps)
-
-    # set microscope mode
-    # @@@ to do: change softwareTriggerGenerator to TriggerGeneratror
-    def set_microscope_mode(self, configuration):
-
-        self.currentConfiguration = configuration
-        self._log.info("setting microscope mode to " + self.currentConfiguration.name)
-
-        # temporarily stop live while changing mode
-        if self.is_live is True:
-            self.timer_trigger.stop()
-            if self.control_illumination:
-                self.turn_off_illumination()
-
-        # set camera exposure time and analog gain
-        self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
-        try:
-            self.camera.set_analog_gain(self.currentConfiguration.analog_gain)
-        except NotImplementedError:
-            pass
-
-        # set illumination
-        if self.control_illumination:
-            self.update_illumination()
-
-        # restart live
-        if self.is_live is True:
-            if self.control_illumination:
-                self.turn_on_illumination()
-            self.timer_trigger.start()
-        self._log.info("Done setting microscope mode.")
-
-    def get_trigger_mode(self):
-        return self.trigger_mode
-
-    # slot
-    def on_new_frame(self):
-        if self.fps_trigger <= 5:
-            if self.control_illumination and self.illumination_on == True:
-                self.turn_off_illumination()
-
-    def set_display_resolution_scaling(self, display_resolution_scaling):
-        self.display_resolution_scaling = display_resolution_scaling / 100
-
-
 class SlidePositionControlWorker(QObject):
-
     finished = Signal()
     signal_stop_live = Signal()
     signal_resume_live = Signal()
@@ -853,7 +437,6 @@ class SlidePositionControlWorker(QObject):
 
 
 class SlidePositionController(QObject):
-
     signal_slide_loading_position_reached = Signal()
     signal_slide_scanning_position_reached = Signal()
     signal_clear_slide = Signal()
@@ -922,7 +505,6 @@ class SlidePositionController(QObject):
 
 
 class AutofocusWorker(QObject):
-
     finished = Signal()
     image_to_display = Signal(np.ndarray)
 
@@ -1018,7 +600,6 @@ class AutofocusWorker(QObject):
 
 
 class AutoFocusController(QObject):
-
     z_pos = Signal(float)
     autofocusFinished = Signal()
     image_to_display = Signal(np.ndarray)
@@ -1214,135 +795,7 @@ class AutoFocusController(QObject):
         print(f"Added triple ({x},{y},{z}) to focus map")
 
 
-class ConfigType(Enum):
-    CHANNEL = "channel"
-    CONFOCAL = "confocal"
-    WIDEFIELD = "widefield"
-
-
-class ChannelConfigurationManager:
-    def __init__(self):
-        self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.config_root = None
-        self.all_configs: Dict[ConfigType, Dict[str, ChannelConfig]] = {
-            ConfigType.CHANNEL: {},
-            ConfigType.CONFOCAL: {},
-            ConfigType.WIDEFIELD: {},
-        }
-        self.active_config_type = ConfigType.CHANNEL if not ENABLE_SPINNING_DISK_CONFOCAL else ConfigType.CONFOCAL
-
-    def set_profile_path(self, profile_path: Path) -> None:
-        """Set the root path for configurations"""
-        self.config_root = profile_path
-
-    def _load_xml_config(self, objective: str, config_type: ConfigType) -> None:
-        """Load XML configuration for a specific config type, generating default if needed"""
-        config_file = self.config_root / objective / f"{config_type.value}_configurations.xml"
-
-        if not config_file.exists():
-            utils_config.generate_default_configuration(str(config_file))
-
-        xml_content = config_file.read_bytes()
-        self.all_configs[config_type][objective] = ChannelConfig.from_xml(xml_content)
-
-    def load_configurations(self, objective: str) -> None:
-        """Load available configurations for an objective"""
-        if ENABLE_SPINNING_DISK_CONFOCAL:
-            # Load both confocal and widefield configurations
-            self._load_xml_config(objective, ConfigType.CONFOCAL)
-            self._load_xml_config(objective, ConfigType.WIDEFIELD)
-        else:
-            # Load only channel configurations
-            self._load_xml_config(objective, ConfigType.CHANNEL)
-
-    def _save_xml_config(self, objective: str, config_type: ConfigType) -> None:
-        """Save XML configuration for a specific config type"""
-        if objective not in self.all_configs[config_type]:
-            return
-
-        config = self.all_configs[config_type][objective]
-        save_path = self.config_root / objective / f"{config_type.value}_configurations.xml"
-
-        if not save_path.parent.exists():
-            save_path.parent.mkdir(parents=True)
-
-        xml_str = config.to_xml(pretty_print=True, encoding="utf-8")
-        save_path.write_bytes(xml_str)
-
-    def save_configurations(self, objective: str) -> None:
-        """Save configurations based on spinning disk configuration"""
-        if ENABLE_SPINNING_DISK_CONFOCAL:
-            # Save both confocal and widefield configurations
-            self._save_xml_config(objective, ConfigType.CONFOCAL)
-            self._save_xml_config(objective, ConfigType.WIDEFIELD)
-        else:
-            # Save only channel configurations
-            self._save_xml_config(objective, ConfigType.CHANNEL)
-
-    def save_current_configuration_to_path(self, objective: str, path: Path) -> None:
-        """Only used in TrackingController. Might be temporary."""
-        config = self.all_configs[self.active_config_type][objective]
-        xml_str = config.to_xml(pretty_print=True, encoding="utf-8")
-        path.write_bytes(xml_str)
-
-    def get_configurations(self, objective: str) -> List[ChannelMode]:
-        """Get channel modes for current active type"""
-        config = self.all_configs[self.active_config_type].get(objective)
-        if not config:
-            return []
-        return config.modes
-
-    def update_configuration(self, objective: str, config_id: str, attr_name: str, value: Any) -> None:
-        """Update a specific configuration in current active type"""
-        config = self.all_configs[self.active_config_type].get(objective)
-        if not config:
-            self._log.error(f"Objective {objective} not found")
-            return
-
-        for mode in config.modes:
-            if mode.id == config_id:
-                setattr(mode, utils_config.get_attr_name(attr_name), value)
-                break
-
-        self.save_configurations(objective)
-
-    def write_configuration_selected(
-        self, objective: str, selected_configurations: List[ChannelMode], filename: str
-    ) -> None:
-        """Write selected configurations to a file"""
-        config = self.all_configs[self.active_config_type].get(objective)
-        if not config:
-            raise ValueError(f"Objective {objective} not found")
-
-        # Update selected status
-        for mode in config.modes:
-            mode.selected = any(conf.id == mode.id for conf in selected_configurations)
-
-        # Save to specified file
-        xml_str = config.to_xml(pretty_print=True, encoding="utf-8")
-        filename = Path(filename)
-        filename.write_bytes(xml_str)
-
-        # Reset selected status
-        for mode in config.modes:
-            mode.selected = False
-        self.save_configurations(objective)
-
-    def get_channel_configurations_for_objective(self, objective: str) -> List[ChannelMode]:
-        """Get Configuration objects for current active type (alias for get_configurations)"""
-        return self.get_configurations(objective)
-
-    def get_channel_configuration_by_name(self, objective: str, name: str) -> ChannelMode:
-        """Get Configuration object by name"""
-        return next((mode for mode in self.get_configurations(objective) if mode.name == name), None)
-
-    def toggle_confocal_widefield(self, confocal: bool) -> None:
-        """Toggle between confocal and widefield configurations"""
-        self.active_config_type = ConfigType.CONFOCAL if confocal else ConfigType.WIDEFIELD
-
-
 class ScanCoordinates(QObject):
-
     signal_scan_coordinates_updated = Signal()
 
     def __init__(self, objectiveStore, navigationViewer, stage: AbstractStage):
@@ -1928,7 +1381,6 @@ class ScanCoordinates(QObject):
 
 
 class MultiPointController(QObject):
-
     acquisition_finished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -2507,7 +1959,6 @@ class MultiPointController(QObject):
 
 
 class TrackingController(QObject):
-
     signal_tracking_stopped = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -2694,7 +2145,6 @@ class TrackingController(QObject):
 
 
 class TrackingWorker(QObject):
-
     finished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -2879,7 +2329,6 @@ class TrackingWorker(QObject):
 
 
 class ImageDisplayWindow(QMainWindow):
-
     image_click_coordinates = Signal(int, int, int, int)
 
     def __init__(
@@ -3088,7 +2537,7 @@ class ImageDisplayWindow(QMainWindow):
                 else:
                     self.stage_position_label.setText("Stage: N/A")
 
-                piezo = self.liveController.microscope.piezo
+                piezo = self.liveController.microscope.addons.piezo_stage
                 if piezo:
                     try:
                         piezo_pos = piezo.position
@@ -3547,7 +2996,6 @@ class ImageDisplayWindow(QMainWindow):
 
 
 class NavigationViewer(QFrame):
-
     signal_coordinates_clicked = Signal(float, float)  # Will emit x_mm, y_mm when clicked
 
     def __init__(self, objectivestore, camera_pixel_size, sample="glass slide", invertX=False, *args, **kwargs):
@@ -3901,187 +3349,6 @@ class ImageArrayDisplayWindow(QMainWindow):
             self.graphics_widget_4.img.setImage(image, autoLevels=False)
 
 
-class LaserAFSettingManager:
-    """Manages JSON-based laser autofocus configurations."""
-
-    def __init__(self):
-        self.autofocus_configurations: Dict[str, LaserAFConfig] = {}  # Dict[str, Dict[str, Any]]
-        self.current_profile_path = None
-
-    def set_profile_path(self, profile_path: Path) -> None:
-        self.current_profile_path = profile_path
-
-    def load_configurations(self, objective: str) -> None:
-        """Load autofocus configurations for a specific objective."""
-        config_file = self.current_profile_path / objective / "laser_af_settings.json"
-        if config_file.exists():
-            with open(config_file, "r") as f:
-                config_dict = json.load(f)
-                self.autofocus_configurations[objective] = LaserAFConfig(**config_dict)
-
-    def save_configurations(self, objective: str) -> None:
-        """Save autofocus configurations for a specific objective."""
-        if objective not in self.autofocus_configurations:
-            return
-
-        objective_path = self.current_profile_path / objective
-        if not objective_path.exists():
-            objective_path.mkdir(parents=True)
-        config_file = objective_path / "laser_af_settings.json"
-
-        config_dict = self.autofocus_configurations[objective].model_dump(serialize=True)
-        with open(config_file, "w") as f:
-            json.dump(config_dict, f, indent=4)
-
-    def get_settings_for_objective(self, objective: str) -> Dict[str, Any]:
-        if objective not in self.autofocus_configurations:
-            raise ValueError(f"No configuration found for objective {objective}")
-        return self.autofocus_configurations[objective]
-
-    def get_laser_af_settings(self) -> Dict[str, Any]:
-        return self.autofocus_configurations
-
-    def update_laser_af_settings(
-        self, objective: str, updates: Dict[str, Any], crop_image: Optional[np.ndarray] = None
-    ) -> None:
-        if objective not in self.autofocus_configurations:
-            self.autofocus_configurations[objective] = LaserAFConfig(**updates)
-        else:
-            config = self.autofocus_configurations[objective]
-            self.autofocus_configurations[objective] = config.model_copy(update=updates)
-        if crop_image is not None:
-            self.autofocus_configurations[objective].set_reference_image(crop_image)
-
-
-class ConfigurationManager:
-    """Main configuration manager that coordinates channel and autofocus configurations."""
-
-    def __init__(
-        self,
-        channel_manager: ChannelConfigurationManager,
-        laser_af_manager: Optional[LaserAFSettingManager] = None,
-        base_config_path: Path = Path("acquisition_configurations"),
-        profile: str = "default_profile",
-    ):
-        super().__init__()
-        self.base_config_path = Path(base_config_path)
-        self.current_profile = profile
-        self.available_profiles = self._get_available_profiles()
-
-        self.channel_manager = channel_manager
-        self.laser_af_manager = laser_af_manager
-
-        self.load_profile(profile)
-
-    def _get_available_profiles(self) -> List[str]:
-        """Get all available user profile names in the base config path. Use default profile if no other profiles exist."""
-        if not self.base_config_path.exists():
-            os.makedirs(self.base_config_path)
-            os.makedirs(self.base_config_path / "default_profile")
-            for objective in OBJECTIVES:
-                os.makedirs(self.base_config_path / "default_profile" / objective)
-        return [d.name for d in self.base_config_path.iterdir() if d.is_dir()]
-
-    def _get_available_objectives(self, profile_path: Path) -> List[str]:
-        """Get all available objective names in a profile."""
-        return [d.name for d in profile_path.iterdir() if d.is_dir()]
-
-    def load_profile(self, profile_name: str) -> None:
-        """Load all configurations from a specific profile."""
-        profile_path = self.base_config_path / profile_name
-        if not profile_path.exists():
-            raise ValueError(f"Profile {profile_name} does not exist")
-
-        self.current_profile = profile_name
-        if self.channel_manager:
-            self.channel_manager.set_profile_path(profile_path)
-        if self.laser_af_manager:
-            self.laser_af_manager.set_profile_path(profile_path)
-
-        # Load configurations for each objective
-        for objective in self._get_available_objectives(profile_path):
-            if self.channel_manager:
-                self.channel_manager.load_configurations(objective)
-            if self.laser_af_manager:
-                self.laser_af_manager.load_configurations(objective)
-
-    def create_new_profile(self, profile_name: str) -> None:
-        """Create a new profile using current configurations."""
-        new_profile_path = self.base_config_path / profile_name
-        if new_profile_path.exists():
-            raise ValueError(f"Profile {profile_name} already exists")
-        os.makedirs(new_profile_path)
-
-        objectives = OBJECTIVES
-
-        self.current_profile = profile_name
-        if self.channel_manager:
-            self.channel_manager.set_profile_path(new_profile_path)
-        if self.laser_af_manager:
-            self.laser_af_manager.set_profile_path(new_profile_path)
-
-        for objective in objectives:
-            os.makedirs(new_profile_path / objective)
-            if self.channel_manager:
-                self.channel_manager.save_configurations(objective)
-            if self.laser_af_manager:
-                self.laser_af_manager.save_configurations(objective)
-
-        self.available_profiles = self._get_available_profiles()
-
-
-class ContrastManager:
-    def __init__(self):
-        self.contrast_limits = {}
-        self.acquisition_dtype = None
-
-    def update_limits(self, channel, min_val, max_val):
-        self.contrast_limits[channel] = (min_val, max_val)
-
-    def get_limits(self, channel, dtype=None):
-        if dtype is not None:
-            if self.acquisition_dtype is None:
-                self.acquisition_dtype = dtype
-            elif self.acquisition_dtype != dtype:
-                self.scale_contrast_limits(dtype)
-        return self.contrast_limits.get(channel, self.get_default_limits())
-
-    def get_default_limits(self):
-        if self.acquisition_dtype is None:
-            return (0, 1)
-        elif np.issubdtype(self.acquisition_dtype, np.integer):
-            info = np.iinfo(self.acquisition_dtype)
-            return (info.min, info.max)
-        elif np.issubdtype(self.acquisition_dtype, np.floating):
-            return (0.0, 1.0)
-        else:
-            return (0, 1)
-
-    def get_scaled_limits(self, channel, target_dtype):
-        min_val, max_val = self.get_limits(channel)
-        if self.acquisition_dtype == target_dtype:
-            return min_val, max_val
-
-        source_info = np.iinfo(self.acquisition_dtype)
-        target_info = np.iinfo(target_dtype)
-
-        scaled_min = (min_val - source_info.min) / (source_info.max - source_info.min) * (
-            target_info.max - target_info.min
-        ) + target_info.min
-        scaled_max = (max_val - source_info.min) / (source_info.max - source_info.min) * (
-            target_info.max - target_info.min
-        ) + target_info.min
-
-        return scaled_min, scaled_max
-
-    def scale_contrast_limits(self, target_dtype):
-        print(f"{self.acquisition_dtype} -> {target_dtype}")
-        for channel in self.contrast_limits.keys():
-            self.contrast_limits[channel] = self.get_scaled_limits(channel, target_dtype)
-
-        self.acquisition_dtype = target_dtype
-
-
 from scipy.interpolate import SmoothBivariateSpline, RBFInterpolator
 
 
@@ -4383,7 +3650,6 @@ class FocusMap:
 
 
 class LaserAutofocusController(QObject):
-
     image_to_display = Signal(np.ndarray)
     signal_displacement_um = Signal(float)
     signal_cross_correlation = Signal(float)
@@ -4887,7 +4153,7 @@ class LaserAutofocusController(QObject):
             try:
                 image = self.get_new_frame()
                 if image is None:
-                    self._log.warning(f"Failed to read frame {i+1}/{self.laser_af_properties.laser_af_averaging_n}")
+                    self._log.warning(f"Failed to read frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}")
                     continue
 
                 self.image = image  # store for debugging # TODO: add to return instead of storing
@@ -4918,7 +4184,7 @@ class LaserAutofocusController(QObject):
                 )
                 if result is None:
                     self._log.warning(
-                        f"No spot detected in frame {i+1}/{self.laser_af_properties.laser_af_averaging_n}"
+                        f"No spot detected in frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}"
                     )
                     continue
 
@@ -4936,7 +4202,7 @@ class LaserAutofocusController(QObject):
 
             except Exception as e:
                 self._log.error(
-                    f"Error processing frame {i+1}/{self.laser_af_properties.laser_af_averaging_n}: {str(e)}"
+                    f"Error processing frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}: {str(e)}"
                 )
                 continue
 

@@ -1,12 +1,13 @@
 # set QT_API environment variable
 import os
 
-import control.lighting
+from control.NL5Widget import NL5Widget
+from control.filterwheel import SquidFilterWheelWrapper
 
 os.environ["QT_API"] = "pyqt5"
 import serial
 import time
-from typing import Optional
+from typing import Any, Optional
 
 # qt libraries
 from qtpy.QtCore import *
@@ -16,15 +17,26 @@ from qtpy.QtGui import *
 from control._def import *
 
 # app specific libraries
+from control.core.live_controller import LiveController
+from control.core.configuration_mananger import ConfigurationManager
+from control.core.channel_configuration_mananger import ChannelConfigurationManager
+from control.core.laser_af_settings_manager import LaserAFSettingManager
+from control.core.contrast_manager import ContrastManager
+from control.core.objective_store import ObjectiveStore
+from control.core.stream_handler import StreamHandler
+from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
+from control.microcontroller import Microcontroller
+from control.microscope import Microscope
+from squid.abc import AbstractCamera, AbstractStage
+import control.lighting
+import control.microscope
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
 import squid.abc
-import squid.logging
-import squid.config
-import squid.stage.utils
-import control.microscope
-from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 import squid.camera.utils
+import squid.config
+import squid.logging
+import squid.stage.utils
 
 log = squid.logging.get_logger(__name__)
 
@@ -68,7 +80,7 @@ class MovementUpdater(QObject):
     position_after_move = Signal(squid.abc.Pos)
     position = Signal(squid.abc.Pos)
 
-    def __init__(self, stage: squid.abc.AbstractStage, movement_threshhold_mm=0.0001, *args, **kwargs):
+    def __init__(self, stage: AbstractStage, movement_threshhold_mm=0.0001, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.stage = stage
         self.movement_threshhold_mm = movement_threshhold_mm
@@ -108,30 +120,114 @@ class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
 
-    def __init__(self, is_simulation=False, live_only_mode=False, *args, **kwargs):
+    def __init__(
+        self, microscope: control.microscope.Microscope, is_simulation=False, live_only_mode=False, *args, **kwargs
+    ):
         super().__init__(*args, **kwargs)
-        self.microcontroller: Optional[microcontroller.Microcontroller] = None
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
+
+        self.microscope: control.microscope.Microscope = microscope
+        self.stage: AbstractStage = microscope.stage
+        self.camera: AbstractCamera = microscope.camera
+        self.microcontroller: Microcontroller = microscope.low_level_drivers.microcontroller
+
+        self.xlight: Optional[serial_peripherals.XLight] = microscope.addons.xlight
+        self.nl5: Optional[Any] = microscope.addons.nl5
+        self.cellx: Optional[serial_peripherals.CellX] = microscope.addons.cellx
+        self.emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterController] = (
+            microscope.addons.emission_filter_wheel
+        )
+        self.squid_filter_wheel: Optional[SquidFilterWheelWrapper] = microscope.addons.filter_wheel
+        self.objective_changer: Optional[Any] = microscope.addons.objective_changer
+        self.camera_focus: Optional[AbstractCamera] = microscope.addons.camera_focus
+        self.fluidics: Optional[Fluidics] = microscope.addons.fluidics
+        self.piezo: Optional[PiezoStage] = microscope.addons.piezo_stage
+
+        self.channelConfigurationManager: ChannelConfigurationManager = microscope.channel_configuration_manager
+        self.laserAFSettingManager: LaserAFSettingManager = microscope.laser_af_settings_manager
+        self.configurationManager: ConfigurationManager = microscope.configuration_manager
+        self.contrastManager: ContrastManager = microscope.contrast_manager
+        self.liveController: LiveController = microscope.live_controller
+        self.objectiveStore: ObjectiveStore = microscope.objective_store
+
+        self.liveController_focus_camera: Optional[AbstractCamera] = None
+        self.streamHandler_focus_camera: Optional[StreamHandler] = None
+        self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
+        self.displacementMeasurementController: Optional[
+            core_displacement_measurement.DisplacementMeasurementController
+        ] = None
+        self.laserAutofocusController: Optional[core.LaserAutofocusController] = None
+
+        if SUPPORT_LASER_AUTOFOCUS:
+            self.liveController_focus_camera = self.microscope.live_controller_focus
+            self.streamHandler_focus_camera = core.QtStreamHandler(
+                accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live
+            )
+            self.imageDisplayWindow_focus = core.ImageDisplayWindow(show_LUT=False, autoLevels=False)
+            self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
+            self.laserAutofocusController = core.LaserAutofocusController(
+                self.microcontroller,
+                self.camera_focus,
+                self.liveController_focus_camera,
+                self.stage,
+                self.piezo,
+                self.objectiveStore,
+                self.laserAFSettingManager,
+            )
+
         self.live_only_mode = live_only_mode or LIVE_ONLY_MODE
         self.is_live_scan_grid_on = False
         self.performance_mode = False
         self.napari_connections = {}
         self.well_selector_visible = False  # Add this line to track well selector visibility
 
-        self.loadObjects(is_simulation)
-
-        self.setupHardware()
+        self.load_objects(is_simulation=is_simulation)
+        self.setup_hardware()
 
         self.setup_movement_updater()
 
-        self.loadWidgets()
+        # Pre-declare and give types to all our widgets so type hinting tools work.  You should
+        # add to this as you add widgets.
+        self.spinningDiskConfocalWidget: Optional[widgets.SpinningDiskConfocalWidget] = None
+        self.nl5Wdiget: Optional[NL5Widget] = None
+        self.cameraSettingWidget: Optional[widgets.CameraSettingsWidget] = None
+        self.profileWidget: Optional[widgets.ProfileWidget] = None
+        self.liveControlWidget: Optional[widgets.LiveControlWidget] = None
+        self.navigationWidget: Optional[widgets.NavigationWidget] = None
+        self.stageUtils: Optional[widgets.StageUtils] = None
+        self.dacControlWidget: Optional[widgets.DACControWidget] = None
+        self.autofocusWidget: Optional[widgets.AutoFocusWidget] = None
+        self.piezoWidget: Optional[widgets.PiezoWidget] = None
+        self.objectivesWidget: Optional[widgets.ObjectivesWidget] = None
+        self.filterControllerWidget: Optional[widgets.FilterControllerWidget] = None
+        self.squidFilterWidget: Optional[widgets.SquidFilterWidget] = None
+        self.recordingControlWidget: Optional[widgets.RecordingWidget] = None
+        self.wellplateFormatWidget: Optional[widgets.WellplateFormatWidget] = None
+        self.wellSelectionWidget: Optional[widgets.WellSelectionWidget] = None
+        self.focusMapWidget: Optional[widgets.FocusMapWidget] = None
+        self.cameraSettingWidget_focus_camera: Optional[widgets.CameraSettingsWidget] = None
+        self.laserAutofocusSettingWidget: Optional[widgets.LaserAutofocusSettingWidget] = None
+        self.waveformDisplay: Optional[widgets.WaveformDisplay] = None
+        self.displacementMeasurementWidget: Optional[widgets.DisplacementMeasurementWidget] = None
+        self.laserAutofocusControlWidget: Optional[widgets.LaserAutofocusControlWidget] = None
+        self.fluidicsWidget: Optional[widgets.FluidicsWidget] = None
+        self.flexibleMultiPointWidget: Optional[widgets.FlexibleMultiPointWidget] = None
+        self.wellplateMultiPointWidget: Optional[widgets.WellplateMultiPointWidget] = None
+        self.templateMultiPointWidget: Optional[TemplateMultiPointWidget] = None
+        self.multiPointWithFluidicsWidget: Optional[widgets.MultiPointWithFluidicsWidget] = None
+        self.sampleSettingsWidget: Optional[widgets.SampleSettingsWidget] = None
+        self.trackingControlWidget: Optional[widgets.TrackingControllerWidget] = None
+        self.stitcherWidget: Optional[widgets.StitcherWidget] = None
+        self.napariLiveWidget: Optional[widgets.NapariLiveWidget] = None
+        self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
+        self.napariMultiChannelWidget: Optional[widgets.NapariMultiChannelWidget] = None
+        self.imageArrayDisplayWindow: Optional[core.ImageArrayDisplayWindow] = None
+        self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
 
-        self.setupLayout()
-
-        self.makeConnections()
-
-        self.microscope = control.microscope.Microscope(microscope=self, is_simulation=is_simulation)
+        self.load_widgets()
+        self.setup_layout()
+        self.make_connections()
 
         # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
         if HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
@@ -167,79 +263,8 @@ class HighContentScreeningGui(QMainWindow):
             self.jupyter_dock.setWidget(self.jupyter_widget)
             self.addDockWidget(Qt.LeftDockWidgetArea, self.jupyter_dock)
 
-    def loadObjects(self, is_simulation):
-        if is_simulation:
-            self.loadSimulationObjects()
-        else:
-            try:
-                self.loadHardwareObjects()
-            except Exception:
-                self.log.error("---- !! ERROR CONNECTING TO HARDWARE !! ----", stack_info=True, exc_info=True)
-                raise
-
-        if HAS_OBJECTIVE_PIEZO:
-            self.piezo = PiezoStage(
-                self.microcontroller,
-                {
-                    "OBJECTIVE_PIEZO_HOME_UM": OBJECTIVE_PIEZO_HOME_UM,
-                    "OBJECTIVE_PIEZO_RANGE_UM": OBJECTIVE_PIEZO_RANGE_UM,
-                    "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE": OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE,
-                    "OBJECTIVE_PIEZO_FLIP_DIR": OBJECTIVE_PIEZO_FLIP_DIR,
-                },
-            )
-            self.piezo.home()
-        else:
-            self.piezo = None
-
-        def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
-            # NOTE(imo): If this succeeds, it means means we sent the request,
-            # but we didn't necessarily get confirmation of success.
-            if ENABLE_NL5 and NL5_USE_DOUT:
-                self.nl5.start_acquisition()
-            else:
-                illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
-                self.log.debug(
-                    f"Sending hw trigger with illumination_time={illumination_time_us if illumination_time else None} [us]"
-                )
-                self.microcontroller.send_hardware_trigger(True if illumination_time else False, illumination_time_us)
-            return True
-
-        def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
-            strobe_delay_us = int(1000 * strobe_delay_ms)
-            self.log.debug(f"Setting microcontroller strobe delay to {strobe_delay_us} [us]")
-            self.microcontroller.set_strobe_delay_us(strobe_delay_us)
-            self.microcontroller.wait_till_operation_is_completed()
-
-            return True
-
-        self.camera: squid.abc.AbstractCamera = squid.camera.utils.get_camera(
-            squid.config.get_camera_config(),
-            simulated=is_simulation,
-            hw_trigger_fn=acquisition_camera_hw_trigger_fn,
-            hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
-        )
-        self.camera_focus: Optional[squid.abc.AbstractCamera] = None
-        if SUPPORT_LASER_AUTOFOCUS:
-            self.camera_focus = squid.camera.utils.get_camera(
-                squid.config.get_autofocus_camera_config(), simulated=is_simulation
-            )
-
-        # Common object initialization
-        self.objectiveStore = core.ObjectiveStore()
-        self.channelConfigurationManager = core.ChannelConfigurationManager()
-        if SUPPORT_LASER_AUTOFOCUS:
-            self.laserAFSettingManager = core.LaserAFSettingManager()
-        else:
-            self.laserAFSettingManager = None
-        self.configurationManager = core.ConfigurationManager(
-            channel_manager=self.channelConfigurationManager, laser_af_manager=self.laserAFSettingManager
-        )
-        self.contrastManager = core.ContrastManager()
-
-        self.liveController = core.LiveController(
-            self.camera, self.microcontroller, self.illuminationController, parent=self
-        )
-        self.streamHandler = core.StreamHandler(accept_new_frame_fn=lambda: self.liveController.is_live)
+    def load_objects(self, is_simulation):
+        self.streamHandler = core.QtStreamHandler(accept_new_frame_fn=lambda: self.liveController.is_live)
 
         self.slidePositionController = core.SlidePositionController(
             self.stage, self.liveController, is_for_wellplate=True
@@ -286,206 +311,8 @@ class HighContentScreeningGui(QMainWindow):
             parent=self,
         )
 
-        if SUPPORT_LASER_AUTOFOCUS:
-            self.liveController_focus_camera = core.LiveController(
-                self.camera_focus,
-                self.microcontroller,
-                self,
-                control_illumination=False,
-                for_displacement_measurement=True,
-            )
-            self.streamHandler_focus_camera = core.StreamHandler(
-                accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live
-            )
-            self.imageDisplayWindow_focus = core.ImageDisplayWindow(show_LUT=False, autoLevels=False)
-            self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
-            self.laserAutofocusController = core.LaserAutofocusController(
-                self.microcontroller,
-                self.camera_focus,
-                self.liveController_focus_camera,
-                self.stage,
-                self.piezo,
-                self.objectiveStore,
-                self.laserAFSettingManager,
-            )
-        else:
-            self.liveController_focus_camera = None
-            self.streamHandler_focus_camera = None
-            self.imageDisplayWindow_focus = None
-            self.displacementMeasurementController = None
-            self.laserAutofocusController = None
-
-        if USE_SQUID_FILTERWHEEL:
-            self.squid_filter_wheel = filterwheel.SquidFilterWheelWrapper(self.microcontroller)
-
-    def loadSimulationObjects(self):
-        self.log.debug("Loading simulated hardware objects...")
-        self.microcontroller = microcontroller.Microcontroller(
-            serial_device=microcontroller.get_microcontroller_serial_device(simulated=True)
-        )
-        self.illuminationController = IlluminationController(self.microcontroller)
-        if USE_PRIOR_STAGE:
-            self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(
-                sn=PRIOR_STAGE_SN, stage_config=squid.config.get_stage_config()
-            )
-
-        else:
-            self.stage: squid.abc.AbstractStage = squid.stage.cephla.CephlaStage(
-                microcontroller=self.microcontroller, stage_config=squid.config.get_stage_config()
-            )
-        # Initialize simulation objects
-        if ENABLE_SPINNING_DISK_CONFOCAL:
-            self.xlight = serial_peripherals.XLight_Simulation()
-        if ENABLE_NL5:
-            import control.NL5 as NL5
-
-            self.nl5 = NL5.NL5_Simulation()
-        if ENABLE_CELLX:
-            self.cellx = serial_peripherals.CellX_Simulation()
-
-        if USE_LDI_SERIAL_CONTROL:
-            self.ldi = serial_peripherals.LDI_Simulation()
-            self.illuminationController = control.lighting.IlluminationController(
-                self.microcontroller, self.ldi.intensity_mode, self.ldi.shutter_mode, LightSourceType.LDI, self.ldi
-            )
-        if USE_ZABER_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel = serial_peripherals.FilterController_Simulation(
-                115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE
-            )
-        if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel = serial_peripherals.Optospin_Simulation(SN=None)
-        if USE_SQUID_FILTERWHEEL:
-            self.squid_filter_wheel = filterwheel.SquidFilterWheelWrapper_Simulation(None)
-        if USE_XERYON:
-            self.objective_changer = ObjectiveChanger2PosController_Simulation(
-                sn=XERYON_SERIAL_NUMBER, stage=self.stage
-            )
-        if RUN_FLUIDICS:
-            self.fluidics = Fluidics(
-                config_path=FLUIDICS_CONFIG_PATH,
-                simulation=True,
-            )
-        else:
-            self.fluidics = None
-
-    def loadHardwareObjects(self):
-        # Initialize hardware objects
-        try:
-            self.microcontroller = microcontroller.Microcontroller(
-                serial_device=microcontroller.get_microcontroller_serial_device(
-                    version=CONTROLLER_VERSION, sn=CONTROLLER_SN
-                )
-            )
-        except Exception:
-            self.log.error(f"Error initializing Microcontroller")
-            raise
-
-        self.illuminationController = IlluminationController(self.microcontroller)
-
-        if USE_PRIOR_STAGE:
-            self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(
-                sn=PRIOR_STAGE_SN, stage_config=squid.config.get_stage_config()
-            )
-
-        else:
-            self.stage: squid.abc.AbstractStage = squid.stage.cephla.CephlaStage(
-                microcontroller=self.microcontroller, stage_config=squid.config.get_stage_config()
-            )
-
-        if ENABLE_SPINNING_DISK_CONFOCAL:
-            try:
-                self.xlight = serial_peripherals.XLight(XLIGHT_SERIAL_NUMBER, XLIGHT_SLEEP_TIME_FOR_WHEEL)
-            except Exception:
-                self.log.error("Error initializing Spinning Disk Confocal")
-                raise
-
-        if ENABLE_NL5:
-            try:
-                import control.NL5 as NL5
-
-                self.nl5 = NL5.NL5()
-            except Exception:
-                self.log.error("Error initializing NL5")
-                raise
-
-        if ENABLE_CELLX:
-            try:
-                self.cellx = serial_peripherals.CellX(CELLX_SN)
-                for channel in [1, 2, 3, 4]:
-                    self.cellx.set_modulation(channel, CELLX_MODULATION)
-                    self.cellx.turn_on(channel)
-            except Exception:
-                self.log.error("Error initializing CellX")
-                raise
-
-        if USE_LDI_SERIAL_CONTROL:
-            try:
-                self.ldi = serial_peripherals.LDI()
-                self.illuminationController = IlluminationController(
-                    self.microcontroller, self.ldi.intensity_mode, self.ldi.shutter_mode, LightSourceType.LDI, self.ldi
-                )
-            except Exception:
-                self.log.error("Error initializing LDI")
-                raise
-
-        if USE_CELESTA_ETHENET_CONTROL:
-            try:
-                import control.celesta
-
-                self.celesta = control.celesta.CELESTA()
-                self.illuminationController = IlluminationController(
-                    self.microcontroller,
-                    IntensityControlMode.Software,
-                    ShutterControlMode.TTL,
-                    LightSourceType.CELESTA,
-                    self.celesta,
-                )
-            except Exception:
-                self.log.error("Error initializing CELESTA")
-                raise
-
-        if USE_ZABER_EMISSION_FILTER_WHEEL:
-            try:
-                self.emission_filter_wheel = serial_peripherals.FilterController(
-                    FILTER_CONTROLLER_SERIAL_NUMBER, 115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE
-                )
-            except Exception:
-                self.log.error("Error initializing Zaber Emission Filter Wheel")
-                raise
-
-        if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-            try:
-                self.emission_filter_wheel = serial_peripherals.Optospin(SN=FILTER_CONTROLLER_SERIAL_NUMBER)
-            except Exception:
-                self.log.error("Error initializing Optospin Emission Filter Wheel")
-                raise
-
-        if USE_XERYON:
-            try:
-                self.objective_changer = ObjectiveChanger2PosController(sn=XERYON_SERIAL_NUMBER, stage=self.stage)
-            except Exception:
-                self.log.error("Error initializing Xeryon objective switcher")
-                raise
-
-        if RUN_FLUIDICS:
-            try:
-                self.fluidics = Fluidics(
-                    config_path=FLUIDICS_CONFIG_PATH,
-                    simulation=False,
-                )
-            except Exception:
-                self.log.error("Error initializing Fluidics")
-                raise
-        else:
-            self.fluidics = None
-
-    def setupHardware(self):
+    def setup_hardware(self):
         # Setup hardware components
-        if USE_ZABER_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.start_homing()
-        if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.set_speed(OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ)
-
         if not self.microcontroller:
             raise ValueError("Microcontroller must be none-None for hardware setup.")
 
@@ -551,22 +378,22 @@ class HighContentScreeningGui(QMainWindow):
             self.camera.set_acquisition_mode(squid.abc.CameraAcquisitionMode.HARDWARE_TRIGGER)
         else:
             self.camera.set_acquisition_mode(squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER)
-        self.camera.add_frame_callback(self.streamHandler.on_new_frame)
+        self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
         self.camera.enable_callbacks(enabled=True)
 
-        if SUPPORT_LASER_AUTOFOCUS:
+        if self.camera_focus:
             self.camera_focus.set_acquisition_mode(
                 squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER
             )  # self.camera.set_continuous_acquisition()
-            self.camera_focus.add_frame_callback(self.streamHandler_focus_camera.on_new_frame)
+            self.camera_focus.add_frame_callback(self.streamHandler_focus_camera.get_frame_callback())
             self.camera_focus.enable_callbacks(enabled=True)
             self.camera_focus.start_streaming()
 
-        if USE_SQUID_FILTERWHEEL:
+        if self.squid_filter_wheel:
             if SQUID_FILTERWHEEL_HOMING_ENABLED:
                 self.squid_filter_wheel.homing()
 
-        if USE_XERYON:
+        if self.objective_changer:
             self.objective_changer.home()
             self.objective_changer.setSpeed(XERYON_SPEED)
             if DEFAULT_OBJECTIVE in XERYON_OBJECTIVE_SWITCHER_POS_1:
@@ -581,7 +408,7 @@ class HighContentScreeningGui(QMainWindow):
             self.log.error(error_message or "Microcontroller operation timed out!")
             raise e
 
-    def loadWidgets(self):
+    def load_widgets(self):
         # Initialize all GUI widgets
         if ENABLE_SPINNING_DISK_CONFOCAL:
             self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
@@ -683,7 +510,7 @@ class HighContentScreeningGui(QMainWindow):
         if RUN_FLUIDICS:
             self.fluidicsWidget = widgets.FluidicsWidget(self.fluidics)
 
-        self.imageDisplayTabs = QTabWidget()
+        self.imageDisplayTabs = QTabWidget(parent=self)
         if self.live_only_mode:
             if ENABLE_TRACKING:
                 self.imageDisplayWindow = core.ImageDisplayWindow(self.liveController, self.contrastManager)
@@ -750,10 +577,10 @@ class HighContentScreeningGui(QMainWindow):
                 self.objectiveStore, self.channelConfigurationManager, self.contrastManager
             )
 
-        self.recordTabWidget = QTabWidget()
+        self.recordTabWidget: QTabWidget = QTabWidget()
         self.setupRecordTabWidget()
 
-        self.cameraTabWidget = QTabWidget()
+        self.cameraTabWidget: QTabWidget = QTabWidget()
         self.setupCameraTabWidget()
 
     def setupImageDisplayTabs(self):
@@ -883,7 +710,7 @@ class HighContentScreeningGui(QMainWindow):
         self.cameraTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.cameraTabWidget))
         self.resizeCurrentTab(self.cameraTabWidget)
 
-    def setupLayout(self):
+    def setup_layout(self):
         layout = QVBoxLayout()
 
         if USE_NAPARI_FOR_LIVE_CONTROL and not self.live_only_mode:
@@ -972,7 +799,7 @@ class HighContentScreeningGui(QMainWindow):
         self.tabbedImageDisplayWindow.setFixedSize(width_min, height_min)
         self.tabbedImageDisplayWindow.show()
 
-    def makeConnections(self):
+    def make_connections(self):
         self.streamHandler.signal_new_frame_received.connect(self.liveController.on_new_frame)
         self.streamHandler.packet_image_to_write.connect(self.imageSaver.enqueue)
 

@@ -2,11 +2,12 @@ from typing import Optional
 import os
 
 import squid.logging
-from squid.abc import Pos
+from squid.abc import Pos, AbstractStage
 from squid.config import StageConfig
 
 _log = squid.logging.get_logger(__package__)
 _DEFAULT_CACHE_PATH = "cache/last_coords.txt"
+
 """
 Attempts to load a cached stage position and return it.
 """
