@@ -4500,7 +4500,7 @@ class LaserAutofocusController(QObject):
         self.microcontroller.turn_on_AF_laser()
         self.microcontroller.wait_till_operation_is_completed()
 
-        result = self._get_laser_spot_centroid(remove_background=True)
+        result = self._get_laser_spot_centroid(remove_background=True, use_center_crop=(1200, 800))
         if result is None:
             self._log.error("Failed to find laser spot during initialization")
             self.microcontroller.turn_off_AF_laser()
@@ -4862,7 +4862,9 @@ class LaserAutofocusController(QObject):
         self.camera.send_trigger(self.camera.get_exposure_time())
         return self.camera.read_frame()
 
-    def _get_laser_spot_centroid(self, remove_background: bool = False) -> Optional[Tuple[float, float]]:
+    def _get_laser_spot_centroid(
+        self, remove_background: bool = False, use_center_crop: Optional[Tuple[int, int]] = None
+    ) -> Optional[Tuple[float, float]]:
         """Get the centroid location of the laser spot.
 
         Averages multiple measurements to improve accuracy. The number of measurements
@@ -4886,6 +4888,9 @@ class LaserAutofocusController(QObject):
                     continue
 
                 self.image = image  # store for debugging # TODO: add to return instead of storing
+
+                if use_center_crop is not None:
+                    image = utils.crop_image(image, use_center_crop[0], use_center_crop[1])
 
                 if remove_background:
                     # remove background using top hat filter
@@ -4913,7 +4918,14 @@ class LaserAutofocusController(QObject):
                     )
                     continue
 
-                x, y = result
+                if use_center_crop is not None:
+                    x, y = (
+                        result[0] + (self.image.shape[1] - use_center_crop[0]) // 2,
+                        result[1] + (self.image.shape[0] - use_center_crop[1]) // 2,
+                    )
+                else:
+                    x, y = result
+
                 tmp_x += x
                 tmp_y += y
                 successful_detections += 1
