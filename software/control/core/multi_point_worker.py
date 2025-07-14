@@ -686,11 +686,28 @@ class MultiPointWorker(QObject):
             self._current_capture_info = current_capture_info
         with self._timing.get_timer("send_trigger"):
             self.camera.send_trigger(illumination_time=camera_illumination_time)
-        with self._timing.get_timer("exposure_time_done sleep"):
-            exposure_done_time = time.time() + self.camera.get_total_frame_time() / 1e3
-            # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
-            # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
-            self._sleep(max(0.0, exposure_done_time - time.time()))
+
+        with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
+            if self.liveController.trigger_mode == TriggerMode.HARDWARE:
+                exposure_done_time = time.time() + self.camera.get_total_frame_time() / 1e3
+                # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
+                # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
+                self._sleep(max(0.0, exposure_done_time - time.time()))
+            else:
+                # In SW trigger mode (or anything not HARDWARE mode), there's indeterminism in the trigger timing.
+                # To overcome this, just wait until the frame for this capture actually comes into the image
+                # callback.  That way we know we have it.  This also helps by making sure the illumination for this
+                # frame is on from before the trigger until after we get the frame (which guarantees it will be on
+                # for the full exposure).
+                #
+                # If we wait for longer than 5x the exposure + 2 seconds, abort the acquisition because something is
+                # wrong.
+                non_hw_frame_timeout = 5 * self.camera.get_total_frame_time() / 1e3 + 2
+                if not self._ready_for_next_trigger.wait(non_hw_frame_timeout):
+                    self._log.error("Timed out waiting {non_hw_frame_timeout} [s] for a frame, aborting acquisition.")
+                    self.multiPointController.request_abort_aquisition()
+                    # Let this fall through so we still turn off illumination.  Let the caller actually break out
+                    # of the acquisition.
 
         # turn off the illumination if using software trigger
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
@@ -701,7 +718,7 @@ class MultiPointWorker(QObject):
                 QApplication.processEvents()
 
     def _sleep(self, sec):
-        self._log.info(f"Sleeping for {sec} [s]")
+        self._log.debug(f"Sleeping for {sec} [s]")
         self.thread().usleep(max(1, round(sec * 1e6)))
 
     def acquire_rgb_image(self, config, file_ID, current_path, current_round_images, k):
