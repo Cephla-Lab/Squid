@@ -718,7 +718,7 @@ class MultiPointWorker(QObject):
                 QApplication.processEvents()
 
     def _sleep(self, sec):
-        self._log.info(f"Sleeping for {sec} [s]")
+        self._log.debug(f"Sleeping for {sec} [s]")
         self.thread().usleep(max(1, round(sec * 1e6)))
 
     def acquire_rgb_image(self, config, file_ID, current_path, current_round_images, k):
