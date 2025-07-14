@@ -1,3 +1,5 @@
+import abc
+
 import serial
 from serial.tools import list_ports
 import time
@@ -763,7 +765,7 @@ class CellX:
 
     """Wrapper for communicating with LDI over serial"""
 
-    def __init__(self, SN=""):
+    def __init__(self, SN="", initial_modulation=CELLX_MODULATION):
         self.serial_connection = SerialDevice(
             SN=SN,
             baudrate=115200,
@@ -776,6 +778,10 @@ class CellX:
         )
         self.serial_connection.open_ser()
         self.power = {}
+
+        for channel in [1, 2, 3, 4]:
+            self.set_modulation(channel, initial_modulation)
+            self.turn_on(channel)
 
     def turn_on(self, channel):
         self.serial_connection.write_and_check(

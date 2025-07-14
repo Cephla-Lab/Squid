@@ -3,14 +3,17 @@ import re
 import serial
 from typing import Optional
 
-from PyQt5.QtCore import QObject
-
+import control.celesta
 import control.core.core as core
+from control.core.objective_store import ObjectiveStore
+from control import NL5
 from control._def import *
 import squid.camera.utils
-from squid.abc import CameraAcquisitionMode
+from control.filterwheel import SquidFilterWheelWrapper
+from control.fluidics import Fluidics
+from control.microcontroller import Microcontroller
+from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage
 import squid.stage.cephla
-import squid.abc
 import squid.logging
 import squid.config
 import squid.stage.utils
@@ -20,6 +23,8 @@ from control.lighting import LightSourceType, IntensityControlMode, ShutterContr
 from control.piezo import PiezoStage
 import control.serial_peripherals as serial_peripherals
 import control.filterwheel as filterwheel
+from squid.stage.cephla import CephlaStage
+from squid.stage.prior import PriorStage
 
 if USE_XERYON:
     from control.objective_changer_2_pos_controller import (
@@ -31,130 +36,305 @@ if SUPPORT_LASER_AUTOFOCUS:
     import control.core_displacement_measurement as core_displacement_measurement
 
 
-class Microscope(QObject):
+class MicroscopeAddons:
 
-    def __init__(self, microscope=None, is_simulation=False):
-        super().__init__()
-        self._log = squid.logging.get_logger(self.__class__.__name__)
-        if microscope is None:
-            self.initialize_microcontroller(is_simulation=is_simulation)
-            self.initialize_camera(is_simulation=is_simulation)
-            self.initialize_core_components()
-            if not is_simulation:
-                self.initialize_peripherals()
-            else:
-                self.initialize_simulation_objects()
-            self.setup_hardware()
-            self.performance_mode = True
-        else:
-            self.camera = microscope.camera
-            self.camera_focus = microscope.camera_focus
-            self.stage = microscope.stage
-            self.microcontroller = microscope.microcontroller
-            self.configurationManager = microscope.configurationManager
-            self.objectiveStore = microscope.objectiveStore
-            self.streamHandler = microscope.streamHandler
-            self.liveController = microscope.liveController
-            self.multipointController = microscope.multipointController
-            self.illuminationController = microscope.illuminationController
-            self.performance_mode = microscope.performance_mode
+    @staticmethod
+    def build_from_global_config(
+        stage: AbstractStage, micro: Optional[Microcontroller], simulated: bool = False
+    ) -> MicroscopeAddons:
+        xlight = None
+        nl5 = None
+        cellx = None
+        emission_filter_wheel = None
+        squid_filter_wheel = None
+        objective_changer = None
+        camera_focus = None
+        fluidics = None
 
-            if SUPPORT_LASER_AUTOFOCUS:
-                self.laserAutofocusController = microscope.laserAutofocusController
-            self.slidePositionController = microscope.slidePositionController
+        if ENABLE_SPINNING_DISK_CONFOCAL:
+            xlight = (
+                serial_peripherals.XLight(XLIGHT_SERIAL_NUMBER, XLIGHT_SLEEP_TIME_FOR_WHEEL)
+                if not simulated
+                else serial_peripherals.XLight_Simulation()
+            )
 
-            if ENABLE_SPINNING_DISK_CONFOCAL:
-                self.xlight = microscope.xlight
+        if ENABLE_NL5:
+            import control.NL5 as NL5
 
-            if ENABLE_NL5:
-                self.nl5 = microscope.nl5
+            nl5 = NL5.NL5() if not simulated else NL5.NL5_Simulation()
 
-            if ENABLE_CELLX:
-                self.cellx = microscope.cellx
+        if ENABLE_CELLX:
+            cellx = serial_peripherals.CellX(CELLX_SN) if not simulated else serial_peripherals.CellX_Simulation()
 
-            if USE_LDI_SERIAL_CONTROL:
-                self.ldi = microscope.ldi
-
-            if USE_CELESTA_ETHENET_CONTROL:
-                self.celesta = microscope.celesta
-
-            if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-                self.emission_filter_wheel = microscope.emission_filter_wheel
-
-            if USE_XERYON:
-                self.objective_changer = microscope.objective_changer
-
-    def initialize_camera(self, is_simulation):
-        def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
-            # NOTE(imo): If this succeeds, it means means we sent the request,
-            # but we didn't necessarily get confirmation of success.
-            if ENABLE_NL5 and NL5_USE_DOUT:
-                self.nl5.start_acquisition()
-            else:
-                illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
-                self._log.debug(
-                    f"Sending hw trigger with illumination_time={illumination_time_us if illumination_time else None} [us]"
+        if USE_ZABER_EMISSION_FILTER_WHEEL:
+            emission_filter_wheel = (
+                serial_peripherals.FilterController(
+                    FILTER_CONTROLLER_SERIAL_NUMBER, 115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE
                 )
-                self.microcontroller.send_hardware_trigger(True if illumination_time else False, illumination_time_us)
-            return True
+                if not simulated
+                else serial_peripherals.FilterController_Simulation(115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE)
+            )
+        elif USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
+            emission_filter_wheel = (
+                serial_peripherals.Optospin(SN=FILTER_CONTROLLER_SERIAL_NUMBER)
+                if not simulated
+                else serial_peripherals.Optospin_Simulation(SN=None)
+            )
 
-        def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
-            strobe_delay_us = int(1000 * strobe_delay_ms)
-            self._log.debug(f"Setting microcontroller strobe delay to {strobe_delay_us} [us]")
-            self.microcontroller.set_strobe_delay_us(strobe_delay_us)
-            self.microcontroller.wait_till_operation_is_completed()
+        if USE_SQUID_FILTERWHEEL:
+            squid_filter_wheel = (
+                filterwheel.SquidFilterWheelWrapper(microcontroller)
+                if not simulated
+                else filterwheel.SquidFilterWheelWrapper_Simulation(None)
+            )
 
-            return True
-
-        self.camera = squid.camera.utils.get_camera(
-            squid.config.get_camera_config(),
-            simulated=is_simulation,
-            hw_trigger_fn=acquisition_camera_hw_trigger_fn,
-            hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
-        )
-
-        self.camera.set_pixel_format(squid.config.CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
-        self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+        if USE_XERYON:
+            objective_changer = (
+                ObjectiveChanger2PosController(sn=XERYON_SERIAL_NUMBER, stage=stage)
+                if not simulated
+                else ObjectiveChanger2PosController_Simulation(sn=XERYON_SERIAL_NUMBER, stage=stage)
+            )
 
         if SUPPORT_LASER_AUTOFOCUS:
-            self.camera_focus = squid.camera.utils.get_camera(
-                squid.config.get_autofocus_camera_config(), simulated=is_simulation
-            )
-            self.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
-            self.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
-        else:
-            self.camera_focus = None
-
-    def initialize_microcontroller(self, is_simulation):
-        self.microcontroller = microcontroller.Microcontroller(
-            serial_device=microcontroller.get_microcontroller_serial_device(
-                version=CONTROLLER_VERSION, sn=CONTROLLER_SN, simulated=is_simulation
-            )
-        )
-        self.illuminationController = IlluminationController(self.microcontroller)
-        if not USE_PRIOR_STAGE or is_simulation:  # TODO: Simulated Prior stage is not implemented yet
-            self.stage = squid.stage.cephla.CephlaStage(
-                microcontroller=self.microcontroller, stage_config=squid.config.get_stage_config()
+            camera_focus = squid.camera.utils.get_camera(
+                squid.config.get_autofocus_camera_config(), simulated=simulated
             )
 
-        self.home_x_and_y_separately = False
+        if RUN_FLUIDICS:
+            fluidics = Fluidics(config_path=FLUIDICS_CONFIG_PATH, simulation=simulated)
 
-    def initialize_core_components(self):
         if HAS_OBJECTIVE_PIEZO:
-            self.piezo = PiezoStage(
-                self.microcontroller,
-                {
+            if not micro:
+                raise ValueError("Cannot create PiezoStage without a Microcontroller.")
+            piezo_stage = PiezoStage(
+                microcontroller=micro,
+                config={
                     "OBJECTIVE_PIEZO_HOME_UM": OBJECTIVE_PIEZO_HOME_UM,
                     "OBJECTIVE_PIEZO_RANGE_UM": OBJECTIVE_PIEZO_RANGE_UM,
                     "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE": OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE,
                     "OBJECTIVE_PIEZO_FLIP_DIR": OBJECTIVE_PIEZO_FLIP_DIR,
                 },
             )
-            self.piezo.home()
-        else:
-            self.piezo = None
 
-        self.objectiveStore = core.ObjectiveStore()
+        return MicroscopeAddons(
+            xlight,
+            nl5,
+            cellx,
+            emission_filter_wheel,
+            squid_filter_wheel,
+            objective_changer,
+            camera_focus,
+            fluidics,
+            piezo_stage,
+        )
+
+    def __init__(
+        self,
+        xlight: Optional[serial_peripherals.XLight] = None,
+        nl5: Optional[NL5.NL5] = None,
+        cellx: Optional[serial_peripherals.CELLX_SN] = None,
+        emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterWheel] = None,
+        filter_wheel: Optional[SquidFilterWheelWrapper] = None,
+        objective_changer: Optional[ObjectiveChanger2PosController] = None,
+        camera_focus: Optional[AbstractCamera] = None,
+        fluidics: Optional[Fluidics] = None,
+        piezo_stage: Optional[PiezoStage] = None,
+    ):
+        self.xlight: Optional[serial_peripherals.XLight] = xlight
+        self.nl5: Optional[NL5.NL5] = nl5
+        self.cellx: Optional[serial_peripherals.CellX] = cellx
+        self.emission_filter_wheel = emission_filter_wheel
+        self.filter_wheel = filter_wheel
+        self.objective_changer = objective_changer
+        self.camera_focus: Optional[AbstractCamera] = camera_focus
+        self.fluidics = fluidics
+        self.piezo_stage = piezo_stage
+
+    def prepare_for_use(self):
+        """
+        Prepare all the addon hardware for immediate use.
+
+        NOTE(imo): The emission_filter wheel is confusing - there's no base class but it can be multiple
+        different variants with different methods.  For now leave as is just to make progress, but
+        we need to fix this.
+        """
+        if USE_ZABER_EMISSION_FILTER_WHEEL:
+            self.emission_filter_wheel.start_homing()
+        if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
+            self.emission_filter_wheel.set_speed(OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ)
+
+
+class LowLevelDrivers:
+    @staticmethod
+    def build_from_global_config(simulated: bool = False):
+        micro_serial_device = (
+            microcontroller.get_microcontroller_serial_device(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)
+            if not simulated
+            else microcontroller.get_microcontroller_serial_device(simulated=True)
+        )
+        micro = microcontroller.Microcontroller(serial_device=micro_serial_device)
+
+        return LowLevelDrivers(microcontroller=micro)
+
+    def __init__(self, microcontroller: Optional[Microcontroller] = None):
+        self.microcontroller: Optional[Microcontroller] = microcontroller
+
+
+class Microscope:
+    @staticmethod
+    def build_from_global_config(simulated: bool = False):
+        low_level_devices = LowLevelDrivers.build_from_global_config(simulated)
+
+        stage_config = squid.config.get_stage_config()
+        if USE_PRIOR_STAGE:
+            stage = PriorStage(sn=PRIOR_STAGE_SN, stage_config=stage_config)
+        else:
+            if microcontroller is None:
+                raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
+            stage = CephlaStage(low_level_devices.microcontroller, stage_config)
+
+        addons = MicroscopeAddons.build_from_global_config(stage, low_level_devices.microcontroller)
+
+        cam_trigger_log = squid.logging.get_logger("camera hw functions")
+
+        def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
+            # NOTE(imo): If this succeeds, it means we sent the request,
+            # but we didn't necessarily get confirmation of success.
+            if addons.nl5 and NL5_USE_DOUT:
+                addons.nl5.start_acquisition()
+            else:
+                illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
+                cam_trigger_log.debug(
+                    f"Sending hw trigger with illumination_time={illumination_time_us if illumination_time else None} [us]"
+                )
+                low_level_devices.microcontroller.send_hardware_trigger(
+                    True if illumination_time else False, illumination_time_us
+                )
+            return True
+
+        def acquisition_camera_hw_strobe_delay_fn(strobe_delay_ms: float) -> bool:
+            strobe_delay_us = int(1000 * strobe_delay_ms)
+            cam_trigger_log.debug(f"Setting microcontroller strobe delay to {strobe_delay_us} [us]")
+            low_level_devices.microcontroller.set_strobe_delay_us(strobe_delay_us)
+            low_level_devices.microcontroller.wait_till_operation_is_completed()
+
+            return True
+
+        camera = squid.camera.utils.get_camera(
+            config=squid.config.get_camera_config(),
+            simulated=simulated,
+            hw_trigger_fn=acquisition_camera_hw_trigger_fn,
+            hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
+        )
+
+        if USE_LDI_SERIAL_CONTROL and not simulated:
+            ldi = serial_peripherals.LDI()
+
+            illumination_controller = IlluminationController(
+                microcontroller, ldi.intensity_mode, ldi.shutter_mode, LightSourceType.LDI, ldi
+            )
+        elif USE_CELESTA_ETHENET_CONTROL and not simulated:
+            celesta = control.celesta.CELESTA()
+            illumination_controller = IlluminationController(
+                microcontroller,
+                IntensityControlMode.Software,
+                ShutterControlMode.TTL,
+                LightSourceType.CELESTA,
+                celesta,
+            )
+        else:
+            illumination_controller = IlluminationController(microcontroller)
+
+        return Microscope(
+            stage=stage,
+            camera=camera,
+            illumination_controller=illumination_controller,
+            addons=addons,
+            low_level_drivers=low_level_devices,
+        )
+
+    def __init__(
+        self,
+        stage: AbstractStage,
+        camera: AbstractCamera,
+        illumination_controller: IlluminationController,
+        addons: MicroscopeAddons,
+        low_level_drivers: LowLevelDrivers,
+    ):
+        super().__init__()
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.objective_store: ObjectiveStore = ObjectiveStore()
+
+        self.stage: AbstractStage = stage
+        self.camera: AbstractCamera = camera
+        self.illumination_controller: IlluminationController = illumination_controller
+
+        self.addons = addons
+        self.low_level_drivers = low_level_drivers
+
+        self._home_x_and_y_separately: bool = False
+        # if microscope is None:
+        #     self.initialize_microcontroller(is_simulation=is_simulation)
+        #     self.initialize_camera(is_simulation=is_simulation)
+        #     self.initialize_core_components()
+        #     if not is_simulation:
+        #         self.initialize_peripherals()
+        #     else:
+        #         self.initialize_simulation_objects()
+        #     self.setup_hardware()
+        #     self.performance_mode = True
+        # else:
+        #     self.camera = microscope.camera
+        #     self.camera_focus = microscope.camera_focus
+        #     self.stage = microscope.stage
+        #     self.microcontroller = microscope.microcontroller
+        #     self.configurationManager = microscope.configurationManager
+        #     self.objectiveStore = microscope.objectiveStore
+        #     self.streamHandler = microscope.streamHandler
+        #     self.liveController = microscope.liveController
+        #     self.multipointController = microscope.multipointController
+        #     self.illuminationController = microscope.illuminationController
+        #
+        #     if SUPPORT_LASER_AUTOFOCUS:
+        #         self.laserAutofocusController = microscope.laserAutofocusController
+        #     self.slidePositionController = microscope.slidePositionController
+        #
+        #     if ENABLE_SPINNING_DISK_CONFOCAL:
+        #         self.xlight = microscope.xlight
+        #
+        #     if ENABLE_NL5:
+        #         self.nl5 = microscope.nl5
+        #
+        #     if ENABLE_CELLX:
+        #         self.cellx = microscope.cellx
+        #
+        #     if USE_LDI_SERIAL_CONTROL:
+        #         self.ldi = microscope.ldi
+        #
+        #     if USE_CELESTA_ETHENET_CONTROL:
+        #         self.celesta = microscope.celesta
+        #
+        #     if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
+        #         self.emission_filter_wheel = microscope.emission_filter_wheel
+        #
+        #     if USE_XERYON:
+        #         self.objective_changer = microscope.objective_changer
+
+    def initialize_camera(self, is_simulation):
+        self.camera.set_pixel_format(squid.config.CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
+        self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+
+        if self.addons.camera_focus:
+            self.addons.camera_focus = squid.camera.utils.get_camera(
+                squid.config.get_autofocus_camera_config(), simulated=is_simulation
+            )
+            self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
+            self.addons.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+
+    def initialize_core_components(self):
+        if self.addons.piezo_stage:
+            self.addons.piezo_stage.home()
+
         self.channelConfigurationManager = core.ChannelConfigurationManager()
         if SUPPORT_LASER_AUTOFOCUS:
             self.laserAFSettingManager = core.LaserAFSettingManager()
@@ -211,96 +391,10 @@ class Microscope(QObject):
         self.camera.add_frame_callback(self.streamHandler.on_new_frame)
         self.camera.enable_callbacks(True)
 
-        if SUPPORT_LASER_AUTOFOCUS:
-            self.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+        if self.addons.camera_focus:
             self.camera_focus.add_frame_callback(self.streamHandler_focus_camera.on_new_frame)
             self.camera_focus.enable_callbacks(True)
             self.camera_focus.start_streaming()
-
-    def initialize_peripherals(self):
-        if USE_PRIOR_STAGE:
-            self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(
-                sn=PRIOR_STAGE_SN, stage_config=squid.config.get_stage_config()
-            )
-
-        if ENABLE_SPINNING_DISK_CONFOCAL:
-            try:
-                self.xlight = serial_peripherals.XLight(XLIGHT_SERIAL_NUMBER, XLIGHT_SLEEP_TIME_FOR_WHEEL)
-            except Exception:
-                self._log.error("Error initializing Spinning Disk Confocal")
-                raise
-
-        if ENABLE_NL5:
-            try:
-                import control.NL5 as NL5
-
-                self.nl5 = NL5.NL5()
-            except Exception:
-                self._log.error("Error initializing NL5")
-                raise
-
-        if ENABLE_CELLX:
-            try:
-                self.cellx = serial_peripherals.CellX(CELLX_SN)
-                for channel in [1, 2, 3, 4]:
-                    self.cellx.set_modulation(channel, CELLX_MODULATION)
-                    self.cellx.turn_on(channel)
-            except Exception:
-                self._log.error("Error initializing CellX")
-                raise
-
-        if USE_LDI_SERIAL_CONTROL:
-            try:
-                self.ldi = serial_peripherals.LDI()
-                self.illuminationController = IlluminationController(
-                    self.microcontroller, self.ldi.intensity_mode, self.ldi.shutter_mode, LightSourceType.LDI, self.ldi
-                )
-            except Exception:
-                self._log.error("Error initializing LDI")
-                raise
-
-        if USE_CELESTA_ETHENET_CONTROL:
-            try:
-                import control.celesta
-
-                self.celesta = control.celesta.CELESTA()
-                self.illuminationController = IlluminationController(
-                    self.microcontroller,
-                    IntensityControlMode.Software,
-                    ShutterControlMode.TTL,
-                    LightSourceType.CELESTA,
-                    self.celesta,
-                )
-            except Exception:
-                self._log.error("Error initializing CELESTA")
-                raise
-
-        if USE_ZABER_EMISSION_FILTER_WHEEL:
-            try:
-                self.emission_filter_wheel = serial_peripherals.FilterController(
-                    FILTER_CONTROLLER_SERIAL_NUMBER, 115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE
-                )
-                self.emission_filter_wheel.start_homing()
-            except Exception:
-                self._log.error("Error initializing Zaber Emission Filter Wheel")
-                raise
-        if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-            try:
-                self.emission_filter_wheel = serial_peripherals.Optospin(SN=FILTER_CONTROLLER_SERIAL_NUMBER)
-                self.emission_filter_wheel.set_speed(OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ)
-            except Exception:
-                self._log.error("Error initializing Optospin Emission Filter Wheel")
-                raise
-
-        if USE_SQUID_FILTERWHEEL:
-            self.squid_filter_wheel = filterwheel.SquidFilterWheelWrapper(self.microcontroller)
-
-        if USE_XERYON:
-            try:
-                self.objective_changer = ObjectiveChanger2PosController(sn=XERYON_SERIAL_NUMBER, stage=self.stage)
-            except Exception:
-                self._log.error("Error initializing Xeryon objective switcher")
-                raise
 
     def initialize_simulation_objects(self):
         if ENABLE_SPINNING_DISK_CONFOCAL:

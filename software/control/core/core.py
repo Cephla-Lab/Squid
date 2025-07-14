@@ -4,6 +4,7 @@ import sys
 import tempfile
 
 import control._def
+from control.core.stream_handler import StreamHandlerCallbacks
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import AbstractStage, AbstractCamera, CameraAcquisitionMode
@@ -28,6 +29,7 @@ import control.utils_channel as utils_channel
 import control.utils_config as utils_config
 import control.tracking as tracking
 import control.serial_peripherals as serial_peripherals
+from control.core.objective_store import ObjectiveStore
 
 try:
     from control.multipoint_custom_script_entry_v2 import *
@@ -55,131 +57,28 @@ import squid.abc
 import scipy.ndimage
 
 
-class ObjectiveStore:
-    def __init__(self, objectives_dict=OBJECTIVES, default_objective=DEFAULT_OBJECTIVE):
-        self.objectives_dict = objectives_dict
-        self.default_objective = default_objective
-        self.current_objective = default_objective
-        objective = self.objectives_dict[self.current_objective]
-        self.pixel_size_factor = ObjectiveStore.calculate_pixel_size_factor(objective, TUBE_LENS_MM)
-
-    def get_pixel_size_factor(self):
-        return self.pixel_size_factor
-
-    @staticmethod
-    def calculate_pixel_size_factor(objective, tube_lens_mm):
-        """pixel_size_um = sensor_pixel_size * binning_factor * lens_factor"""
-        magnification = objective["magnification"]
-        objective_tube_lens_mm = objective["tube_lens_f_mm"]
-        lens_factor = objective_tube_lens_mm / magnification / tube_lens_mm
-        return lens_factor
-
-    def set_current_objective(self, objective_name):
-        if objective_name in self.objectives_dict:
-            self.current_objective = objective_name
-            objective = self.objectives_dict[objective_name]
-            self.pixel_size_factor = ObjectiveStore.calculate_pixel_size_factor(objective, TUBE_LENS_MM)
-        else:
-            raise ValueError(f"Objective {objective_name} not found in the store.")
-
-    def get_current_objective_info(self):
-        return self.objectives_dict[self.current_objective]
-
-
-class StreamHandler(QObject):
+class QtStreamHandler(QObject):
 
     image_to_display = Signal(np.ndarray)
     packet_image_to_write = Signal(np.ndarray, int, float)
-    packet_image_for_tracking = Signal(np.ndarray, int, float)
     signal_new_frame_received = Signal()
 
-    def __init__(
-        self,
-        display_resolution_scaling=1,
-        accept_new_frame_fn: Callable[[], bool] = lambda: True,
-    ):
-        QObject.__init__(self)
-        self.fps_display = 1
-        self.fps_save = 1
-        self.fps_track = 1
-        self.timestamp_last_display = 0
-        self.timestamp_last_save = 0
-        self.timestamp_last_track = 0
+    def __init__(self, display_resolution_scaling=1, accept_new_frame_fn: Callable[[], bool] = lambda: True):
+        super().__init__()
 
-        self.display_resolution_scaling = display_resolution_scaling
-
-        self.save_image_flag = False
-        self.handler_busy = False
-
-        # for fps measurement
-        self.timestamp_last = 0
-        self.counter = 0
-        self.fps_real = 0
-
-        # Only accept new frames if this user defined function returns true
-        self._accept_new_frames_fn = accept_new_frame_fn
-
-    def start_recording(self):
-        self.save_image_flag = True
-
-    def stop_recording(self):
-        self.save_image_flag = False
-
-    def set_display_fps(self, fps):
-        self.fps_display = fps
-
-    def set_save_fps(self, fps):
-        self.fps_save = fps
-
-    def set_display_resolution_scaling(self, display_resolution_scaling):
-        self.display_resolution_scaling = display_resolution_scaling / 100
-        print(self.display_resolution_scaling)
-
-    def on_new_frame(self, frame: squid.abc.CameraFrame):
-        if not self._accept_new_frames_fn():
-            return
-
-        self.handler_busy = True
-        self.signal_new_frame_received.emit()
-
-        # measure real fps
-        timestamp_now = round(time.time())
-        if timestamp_now == self.timestamp_last:
-            self.counter = self.counter + 1
-        else:
-            self.timestamp_last = timestamp_now
-            self.fps_real = self.counter
-            self.counter = 0
-            if PRINT_CAMERA_FPS:
-                print("real camera fps is " + str(self.fps_real))
-
-        # crop image
-        image = np.squeeze(frame.frame)
-
-        # send image to display
-        time_now = time.time()
-        if time_now - self.timestamp_last_display >= 1 / self.fps_display:
-            self.image_to_display.emit(
-                utils.crop_image(
-                    image,
-                    round(image.shape[1] * self.display_resolution_scaling),
-                    round(image.shape[0] * self.display_resolution_scaling),
-                )
-            )
-            self.timestamp_last_display = time_now
-
-        # send image to write
-        if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
-            if frame.is_color():
-                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-            self.packet_image_to_write.emit(image, frame.frame_id, frame.timestamp)
-            self.timestamp_last_save = time_now
-
-        self.handler_busy = False
+        callbacks = StreamHandlerCallbacks(
+            image_to_display=self.image_to_display.emit,
+            packet_image_to_write=self.packet_image_to_write.emit,
+            signal_new_frame_received=self.signal_new_frame_received.emit,
+        )
+        self._handler = StreamHandler(
+            update_callbacks=callbacks,
+            display_resolution_scaling=display_resolution_scaling,
+            accept_new_frame_fn=accept_new_frame_fn,
+        )
 
 
 class ImageSaver(QObject):
-
     stop_recording = Signal()
 
     def __init__(self, image_format=Acquisition.IMAGE_FORMAT):
@@ -330,7 +229,6 @@ class ImageSaver_Tracking(QObject):
 
 
 class ImageDisplay(QObject):
-
     image_to_display = Signal(np.ndarray)
 
     def __init__(self):
@@ -708,7 +606,6 @@ class LiveController(QObject):
 
 
 class SlidePositionControlWorker(QObject):
-
     finished = Signal()
     signal_stop_live = Signal()
     signal_resume_live = Signal()
@@ -853,7 +750,6 @@ class SlidePositionControlWorker(QObject):
 
 
 class SlidePositionController(QObject):
-
     signal_slide_loading_position_reached = Signal()
     signal_slide_scanning_position_reached = Signal()
     signal_clear_slide = Signal()
@@ -922,7 +818,6 @@ class SlidePositionController(QObject):
 
 
 class AutofocusWorker(QObject):
-
     finished = Signal()
     image_to_display = Signal(np.ndarray)
 
@@ -1018,7 +913,6 @@ class AutofocusWorker(QObject):
 
 
 class AutoFocusController(QObject):
-
     z_pos = Signal(float)
     autofocusFinished = Signal()
     image_to_display = Signal(np.ndarray)
@@ -1342,7 +1236,6 @@ class ChannelConfigurationManager:
 
 
 class ScanCoordinates(QObject):
-
     signal_scan_coordinates_updated = Signal()
 
     def __init__(self, objectiveStore, navigationViewer, stage: AbstractStage):
@@ -1928,7 +1821,6 @@ class ScanCoordinates(QObject):
 
 
 class MultiPointController(QObject):
-
     acquisition_finished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -2507,7 +2399,6 @@ class MultiPointController(QObject):
 
 
 class TrackingController(QObject):
-
     signal_tracking_stopped = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -2694,7 +2585,6 @@ class TrackingController(QObject):
 
 
 class TrackingWorker(QObject):
-
     finished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -2879,7 +2769,6 @@ class TrackingWorker(QObject):
 
 
 class ImageDisplayWindow(QMainWindow):
-
     image_click_coordinates = Signal(int, int, int, int)
 
     def __init__(
@@ -3547,7 +3436,6 @@ class ImageDisplayWindow(QMainWindow):
 
 
 class NavigationViewer(QFrame):
-
     signal_coordinates_clicked = Signal(float, float)  # Will emit x_mm, y_mm when clicked
 
     def __init__(self, objectivestore, camera_pixel_size, sample="glass slide", invertX=False, *args, **kwargs):
@@ -4383,7 +4271,6 @@ class FocusMap:
 
 
 class LaserAutofocusController(QObject):
-
     image_to_display = Signal(np.ndarray)
     signal_displacement_um = Signal(float)
     signal_cross_correlation = Signal(float)
@@ -4882,7 +4769,7 @@ class LaserAutofocusController(QObject):
             try:
                 image = self.get_new_frame()
                 if image is None:
-                    self._log.warning(f"Failed to read frame {i+1}/{self.laser_af_properties.laser_af_averaging_n}")
+                    self._log.warning(f"Failed to read frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}")
                     continue
 
                 self.image = image  # store for debugging # TODO: add to return instead of storing
@@ -4909,7 +4796,7 @@ class LaserAutofocusController(QObject):
                 )
                 if result is None:
                     self._log.warning(
-                        f"No spot detected in frame {i+1}/{self.laser_af_properties.laser_af_averaging_n}"
+                        f"No spot detected in frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}"
                     )
                     continue
 
@@ -4920,7 +4807,7 @@ class LaserAutofocusController(QObject):
 
             except Exception as e:
                 self._log.error(
-                    f"Error processing frame {i+1}/{self.laser_af_properties.laser_af_averaging_n}: {str(e)}"
+                    f"Error processing frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}: {str(e)}"
                 )
                 continue
 
