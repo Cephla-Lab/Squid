@@ -247,12 +247,7 @@ class HighContentScreeningGui(QMainWindow):
         self.autofocusController = core.AutoFocusController(
             self.camera, self.stage, self.liveController, self.microcontroller
         )
-        self.slidePositionController = core.SlidePositionController(
-            self.stage, self.liveController, is_for_wellplate=True
-        )
-        self.autofocusController = core.AutoFocusController(
-            self.camera, self.stage, self.liveController, self.microcontroller
-        )
+
         self.imageSaver = core.ImageSaver()
         self.imageDisplay = core.ImageDisplay()
         if ENABLE_TRACKING:
