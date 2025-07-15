@@ -4415,9 +4415,6 @@ class LaserAutofocusController(QObject):
         self.laser_af_properties = LaserAFConfig()
         self.reference_crop = None
 
-        self.x_width = 3088
-        self.y_width = 2064
-
         self.spot_spacing_pixels = None  # spacing between the spots from the two interfaces (unit: pixel)
 
         self.image = None  # for saving the focus camera image for debugging when centroid cannot be found
@@ -4888,6 +4885,7 @@ class LaserAutofocusController(QObject):
                     continue
 
                 self.image = image  # store for debugging # TODO: add to return instead of storing
+                full_height, full_width = image.shape[:2]
 
                 if use_center_crop is not None:
                     image = utils.crop_image(image, use_center_crop[0], use_center_crop[1])
@@ -4920,8 +4918,8 @@ class LaserAutofocusController(QObject):
 
                 if use_center_crop is not None:
                     x, y = (
-                        result[0] + (self.image.shape[1] - use_center_crop[0]) // 2,
-                        result[1] + (self.image.shape[0] - use_center_crop[1]) // 2,
+                        result[0] + (full_width - use_center_crop[0]) // 2,
+                        result[1] + (full_height - use_center_crop[1]) // 2,
                     )
                 else:
                     x, y = result
