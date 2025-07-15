@@ -3,13 +3,6 @@ import os
 import sys
 import tempfile
 
-import control._def
-from control.core.stream_handler import StreamHandlerFunctions
-from control.microcontroller import Microcontroller
-from control.piezo import PiezoStage
-from squid.abc import AbstractStage, AbstractCamera, CameraAcquisitionMode
-import squid.logging
-
 # qt libraries
 os.environ["QT_API"] = "pyqt5"
 import qtpy
@@ -18,18 +11,27 @@ from qtpy.QtCore import *
 from qtpy.QtWidgets import *
 from qtpy.QtGui import *
 
-# control
 from control._def import *
-from control.core.multi_point_worker import MultiPointWorker
 from control.core import job_processing
-
+from control.core.live_controller import LiveController
+from control.core.multi_point_worker import MultiPointWorker
+from control.core.objective_store import ObjectiveStore
+from control.core.stream_handler import StreamHandlerFunctions, StreamHandler
+from control.core.laser_af_settings_manager import LaserAFSettingManager
+from control.core.channel_configuration_mananger import ChannelConfigurationManager
+from control.core.configuration_mananger import ConfigurationManager
+from control.core.contrast_manager import ContrastManager
+from control.microcontroller import Microcontroller
+from control.piezo import PiezoStage
+from squid.abc import AbstractStage, AbstractCamera, CameraAcquisitionMode, CameraFrame
+import control._def
+import control.serial_peripherals as serial_peripherals
+import control.tracking as tracking
 import control.utils as utils
 import control.utils_acquisition as utils_acquisition
 import control.utils_channel as utils_channel
 import control.utils_config as utils_config
-import control.tracking as tracking
-import control.serial_peripherals as serial_peripherals
-from control.core.objective_store import ObjectiveStore
+import squid.logging
 
 try:
     from control.multipoint_custom_script_entry_v2 import *
@@ -66,13 +68,33 @@ class QtStreamHandler(QObject):
     def __init__(self, display_resolution_scaling=1, accept_new_frame_fn: Callable[[], bool] = lambda: True):
         super().__init__()
 
-        callbacks = StreamHandlerFunctions(
+        functions = StreamHandlerFunctions(
             image_to_display=self.image_to_display.emit,
             packet_image_to_write=self.packet_image_to_write.emit,
             signal_new_frame_received=self.signal_new_frame_received.emit,
             accept_new_frame=accept_new_frame_fn,
         )
-        self._handler = StreamHandler(update_callbacks=callbacks, display_resolution_scaling=display_resolution_scaling)
+        self._handler = StreamHandler(
+            handler_functions=functions, display_resolution_scaling=display_resolution_scaling
+        )
+
+    def get_frame_callback(self) -> Callable[[CameraFrame], None]:
+        return self._handler.on_new_frame
+
+    def start_recording(self):
+        self._handler.start_recording()
+
+    def stop_recording(self):
+        self._handler.stop_recording()
+
+    def set_display_fps(self, fps):
+        self._handler.set_display_fps(fps)
+
+    def set_save_fps(self, fps):
+        self._handler.set_save_fps(fps)
+
+    def set_display_resolution_scaling(self, display_resolution_scaling):
+        self._handler.set_display_resolution_scaling(display_resolution_scaling)
 
 
 class ImageSaver(QObject):
@@ -771,133 +793,6 @@ class AutoFocusController(QObject):
             self.focus_map_coords.pop()
         self.focus_map_coords.append((x, y, z))
         print(f"Added triple ({x},{y},{z}) to focus map")
-
-
-class ConfigType(Enum):
-    CHANNEL = "channel"
-    CONFOCAL = "confocal"
-    WIDEFIELD = "widefield"
-
-
-class ChannelConfigurationManager:
-    def __init__(self):
-        self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.config_root = None
-        self.all_configs: Dict[ConfigType, Dict[str, ChannelConfig]] = {
-            ConfigType.CHANNEL: {},
-            ConfigType.CONFOCAL: {},
-            ConfigType.WIDEFIELD: {},
-        }
-        self.active_config_type = ConfigType.CHANNEL if not ENABLE_SPINNING_DISK_CONFOCAL else ConfigType.CONFOCAL
-
-    def set_profile_path(self, profile_path: Path) -> None:
-        """Set the root path for configurations"""
-        self.config_root = profile_path
-
-    def _load_xml_config(self, objective: str, config_type: ConfigType) -> None:
-        """Load XML configuration for a specific config type, generating default if needed"""
-        config_file = self.config_root / objective / f"{config_type.value}_configurations.xml"
-
-        if not config_file.exists():
-            utils_config.generate_default_configuration(str(config_file))
-
-        xml_content = config_file.read_bytes()
-        self.all_configs[config_type][objective] = ChannelConfig.from_xml(xml_content)
-
-    def load_configurations(self, objective: str) -> None:
-        """Load available configurations for an objective"""
-        if ENABLE_SPINNING_DISK_CONFOCAL:
-            # Load both confocal and widefield configurations
-            self._load_xml_config(objective, ConfigType.CONFOCAL)
-            self._load_xml_config(objective, ConfigType.WIDEFIELD)
-        else:
-            # Load only channel configurations
-            self._load_xml_config(objective, ConfigType.CHANNEL)
-
-    def _save_xml_config(self, objective: str, config_type: ConfigType) -> None:
-        """Save XML configuration for a specific config type"""
-        if objective not in self.all_configs[config_type]:
-            return
-
-        config = self.all_configs[config_type][objective]
-        save_path = self.config_root / objective / f"{config_type.value}_configurations.xml"
-
-        if not save_path.parent.exists():
-            save_path.parent.mkdir(parents=True)
-
-        xml_str = config.to_xml(pretty_print=True, encoding="utf-8")
-        save_path.write_bytes(xml_str)
-
-    def save_configurations(self, objective: str) -> None:
-        """Save configurations based on spinning disk configuration"""
-        if ENABLE_SPINNING_DISK_CONFOCAL:
-            # Save both confocal and widefield configurations
-            self._save_xml_config(objective, ConfigType.CONFOCAL)
-            self._save_xml_config(objective, ConfigType.WIDEFIELD)
-        else:
-            # Save only channel configurations
-            self._save_xml_config(objective, ConfigType.CHANNEL)
-
-    def save_current_configuration_to_path(self, objective: str, path: Path) -> None:
-        """Only used in TrackingController. Might be temporary."""
-        config = self.all_configs[self.active_config_type][objective]
-        xml_str = config.to_xml(pretty_print=True, encoding="utf-8")
-        path.write_bytes(xml_str)
-
-    def get_configurations(self, objective: str) -> List[ChannelMode]:
-        """Get channel modes for current active type"""
-        config = self.all_configs[self.active_config_type].get(objective)
-        if not config:
-            return []
-        return config.modes
-
-    def update_configuration(self, objective: str, config_id: str, attr_name: str, value: Any) -> None:
-        """Update a specific configuration in current active type"""
-        config = self.all_configs[self.active_config_type].get(objective)
-        if not config:
-            self._log.error(f"Objective {objective} not found")
-            return
-
-        for mode in config.modes:
-            if mode.id == config_id:
-                setattr(mode, utils_config.get_attr_name(attr_name), value)
-                break
-
-        self.save_configurations(objective)
-
-    def write_configuration_selected(
-        self, objective: str, selected_configurations: List[ChannelMode], filename: str
-    ) -> None:
-        """Write selected configurations to a file"""
-        config = self.all_configs[self.active_config_type].get(objective)
-        if not config:
-            raise ValueError(f"Objective {objective} not found")
-
-        # Update selected status
-        for mode in config.modes:
-            mode.selected = any(conf.id == mode.id for conf in selected_configurations)
-
-        # Save to specified file
-        xml_str = config.to_xml(pretty_print=True, encoding="utf-8")
-        filename = Path(filename)
-        filename.write_bytes(xml_str)
-
-        # Reset selected status
-        for mode in config.modes:
-            mode.selected = False
-        self.save_configurations(objective)
-
-    def get_channel_configurations_for_objective(self, objective: str) -> List[ChannelMode]:
-        """Get Configuration objects for current active type (alias for get_configurations)"""
-        return self.get_configurations(objective)
-
-    def get_channel_configuration_by_name(self, objective: str, name: str) -> ChannelMode:
-        """Get Configuration object by name"""
-        return next((mode for mode in self.get_configurations(objective) if mode.name == name), None)
-
-    def toggle_confocal_widefield(self, confocal: bool) -> None:
-        """Toggle between confocal and widefield configurations"""
-        self.active_config_type = ConfigType.CONFOCAL if confocal else ConfigType.WIDEFIELD
 
 
 class ScanCoordinates(QObject):
@@ -2642,7 +2537,7 @@ class ImageDisplayWindow(QMainWindow):
                 else:
                     self.stage_position_label.setText("Stage: N/A")
 
-                piezo = self.liveController.microscope.piezo
+                piezo = self.liveController.microscope.addons.piezo_stage
                 if piezo:
                     try:
                         piezo_pos = piezo.position
@@ -3452,187 +3347,6 @@ class ImageArrayDisplayWindow(QMainWindow):
             self.graphics_widget_3.img.setImage(image, autoLevels=False)
         elif illumination_source == 13:
             self.graphics_widget_4.img.setImage(image, autoLevels=False)
-
-
-class LaserAFSettingManager:
-    """Manages JSON-based laser autofocus configurations."""
-
-    def __init__(self):
-        self.autofocus_configurations: Dict[str, LaserAFConfig] = {}  # Dict[str, Dict[str, Any]]
-        self.current_profile_path = None
-
-    def set_profile_path(self, profile_path: Path) -> None:
-        self.current_profile_path = profile_path
-
-    def load_configurations(self, objective: str) -> None:
-        """Load autofocus configurations for a specific objective."""
-        config_file = self.current_profile_path / objective / "laser_af_settings.json"
-        if config_file.exists():
-            with open(config_file, "r") as f:
-                config_dict = json.load(f)
-                self.autofocus_configurations[objective] = LaserAFConfig(**config_dict)
-
-    def save_configurations(self, objective: str) -> None:
-        """Save autofocus configurations for a specific objective."""
-        if objective not in self.autofocus_configurations:
-            return
-
-        objective_path = self.current_profile_path / objective
-        if not objective_path.exists():
-            objective_path.mkdir(parents=True)
-        config_file = objective_path / "laser_af_settings.json"
-
-        config_dict = self.autofocus_configurations[objective].model_dump(serialize=True)
-        with open(config_file, "w") as f:
-            json.dump(config_dict, f, indent=4)
-
-    def get_settings_for_objective(self, objective: str) -> Dict[str, Any]:
-        if objective not in self.autofocus_configurations:
-            raise ValueError(f"No configuration found for objective {objective}")
-        return self.autofocus_configurations[objective]
-
-    def get_laser_af_settings(self) -> Dict[str, Any]:
-        return self.autofocus_configurations
-
-    def update_laser_af_settings(
-        self, objective: str, updates: Dict[str, Any], crop_image: Optional[np.ndarray] = None
-    ) -> None:
-        if objective not in self.autofocus_configurations:
-            self.autofocus_configurations[objective] = LaserAFConfig(**updates)
-        else:
-            config = self.autofocus_configurations[objective]
-            self.autofocus_configurations[objective] = config.model_copy(update=updates)
-        if crop_image is not None:
-            self.autofocus_configurations[objective].set_reference_image(crop_image)
-
-
-class ConfigurationManager:
-    """Main configuration manager that coordinates channel and autofocus configurations."""
-
-    def __init__(
-        self,
-        channel_manager: ChannelConfigurationManager,
-        laser_af_manager: Optional[LaserAFSettingManager] = None,
-        base_config_path: Path = Path("acquisition_configurations"),
-        profile: str = "default_profile",
-    ):
-        super().__init__()
-        self.base_config_path = Path(base_config_path)
-        self.current_profile = profile
-        self.available_profiles = self._get_available_profiles()
-
-        self.channel_manager = channel_manager
-        self.laser_af_manager = laser_af_manager
-
-        self.load_profile(profile)
-
-    def _get_available_profiles(self) -> List[str]:
-        """Get all available user profile names in the base config path. Use default profile if no other profiles exist."""
-        if not self.base_config_path.exists():
-            os.makedirs(self.base_config_path)
-            os.makedirs(self.base_config_path / "default_profile")
-            for objective in OBJECTIVES:
-                os.makedirs(self.base_config_path / "default_profile" / objective)
-        return [d.name for d in self.base_config_path.iterdir() if d.is_dir()]
-
-    def _get_available_objectives(self, profile_path: Path) -> List[str]:
-        """Get all available objective names in a profile."""
-        return [d.name for d in profile_path.iterdir() if d.is_dir()]
-
-    def load_profile(self, profile_name: str) -> None:
-        """Load all configurations from a specific profile."""
-        profile_path = self.base_config_path / profile_name
-        if not profile_path.exists():
-            raise ValueError(f"Profile {profile_name} does not exist")
-
-        self.current_profile = profile_name
-        if self.channel_manager:
-            self.channel_manager.set_profile_path(profile_path)
-        if self.laser_af_manager:
-            self.laser_af_manager.set_profile_path(profile_path)
-
-        # Load configurations for each objective
-        for objective in self._get_available_objectives(profile_path):
-            if self.channel_manager:
-                self.channel_manager.load_configurations(objective)
-            if self.laser_af_manager:
-                self.laser_af_manager.load_configurations(objective)
-
-    def create_new_profile(self, profile_name: str) -> None:
-        """Create a new profile using current configurations."""
-        new_profile_path = self.base_config_path / profile_name
-        if new_profile_path.exists():
-            raise ValueError(f"Profile {profile_name} already exists")
-        os.makedirs(new_profile_path)
-
-        objectives = OBJECTIVES
-
-        self.current_profile = profile_name
-        if self.channel_manager:
-            self.channel_manager.set_profile_path(new_profile_path)
-        if self.laser_af_manager:
-            self.laser_af_manager.set_profile_path(new_profile_path)
-
-        for objective in objectives:
-            os.makedirs(new_profile_path / objective)
-            if self.channel_manager:
-                self.channel_manager.save_configurations(objective)
-            if self.laser_af_manager:
-                self.laser_af_manager.save_configurations(objective)
-
-        self.available_profiles = self._get_available_profiles()
-
-
-class ContrastManager:
-    def __init__(self):
-        self.contrast_limits = {}
-        self.acquisition_dtype = None
-
-    def update_limits(self, channel, min_val, max_val):
-        self.contrast_limits[channel] = (min_val, max_val)
-
-    def get_limits(self, channel, dtype=None):
-        if dtype is not None:
-            if self.acquisition_dtype is None:
-                self.acquisition_dtype = dtype
-            elif self.acquisition_dtype != dtype:
-                self.scale_contrast_limits(dtype)
-        return self.contrast_limits.get(channel, self.get_default_limits())
-
-    def get_default_limits(self):
-        if self.acquisition_dtype is None:
-            return (0, 1)
-        elif np.issubdtype(self.acquisition_dtype, np.integer):
-            info = np.iinfo(self.acquisition_dtype)
-            return (info.min, info.max)
-        elif np.issubdtype(self.acquisition_dtype, np.floating):
-            return (0.0, 1.0)
-        else:
-            return (0, 1)
-
-    def get_scaled_limits(self, channel, target_dtype):
-        min_val, max_val = self.get_limits(channel)
-        if self.acquisition_dtype == target_dtype:
-            return min_val, max_val
-
-        source_info = np.iinfo(self.acquisition_dtype)
-        target_info = np.iinfo(target_dtype)
-
-        scaled_min = (min_val - source_info.min) / (source_info.max - source_info.min) * (
-            target_info.max - target_info.min
-        ) + target_info.min
-        scaled_max = (max_val - source_info.min) / (source_info.max - source_info.min) * (
-            target_info.max - target_info.min
-        ) + target_info.min
-
-        return scaled_min, scaled_max
-
-    def scale_contrast_limits(self, target_dtype):
-        print(f"{self.acquisition_dtype} -> {target_dtype}")
-        for channel in self.contrast_limits.keys():
-            self.contrast_limits[channel] = self.get_scaled_limits(channel, target_dtype)
-
-        self.acquisition_dtype = target_dtype
 
 
 from scipy.interpolate import SmoothBivariateSpline, RBFInterpolator

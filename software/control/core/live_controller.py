@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import time
 import threading
 from typing import Optional
@@ -6,7 +8,6 @@ import squid.logging
 from control.microcontroller import Microcontroller
 from squid.abc import CameraAcquisitionMode
 
-from control.microscope import Microscope
 from control._def import *
 from control import utils_channel
 
@@ -14,7 +15,7 @@ from control import utils_channel
 class LiveController:
     def __init__(
         self,
-        microscope: Microscope,
+        microscope: "Microscope",
         control_illumination: bool = True,
         use_internal_timer_for_hardware_trigger: bool = True,
         for_displacement_measurement: bool = False,
@@ -22,7 +23,7 @@ class LiveController:
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope = microscope
         self.currentConfiguration = None
-        self.trigger_mode: Optional[TriggerMode] = None  # @@@ change to None
+        self.trigger_mode: Optional[TriggerMode] = TriggerMode.SOFTWARE  # @@@ change to None
         self.is_live = False
         self.control_illumination = control_illumination
         self.illumination_on = False
@@ -206,10 +207,13 @@ class LiveController:
 
     def start_live(self):
         self.is_live = True
+        self._log.error("start_live entry")
         self.microscope.camera.start_streaming()
+        self._log.error("after start_streaming")
         if self.trigger_mode == TriggerMode.SOFTWARE or (
             self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
         ):
+            self._log.error("STARTING LIVE")
             self.microscope.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
             self._start_triggerred_acquisition()
         # if controlling the laser displacement measurement camera
@@ -259,19 +263,16 @@ class LiveController:
     def _stop_existing_timer(self):
         if self.timer_trigger and self.timer_trigger.is_alive():
             self.timer_trigger.cancel()
-            self.timer_trigger.join(1.0)
-            if self.timer_trigger.is_alive():
-                self._log.warning("Trigger timer failed to join!")
         self.timer_trigger = None
 
     def _start_new_timer(self):
         self._stop_existing_timer()
-        self.timer_trigger = threading.Timer(self.timer_trigger_interval / 1000.0, self.trigger_acquisition)
+        interval_s = self.timer_trigger_interval / 1000.0
+        self.timer_trigger = threading.Timer(interval_s, self.trigger_acquisition)
         self.timer_trigger.start()
 
     def _start_triggerred_acquisition(self):
-        if not self.timer_trigger and not self.timer_trigger.is_alive():
-            self._start_new_timer()
+        self._start_new_timer()
 
     def _set_trigger_fps(self, fps_trigger):
         if fps_trigger <= 0:

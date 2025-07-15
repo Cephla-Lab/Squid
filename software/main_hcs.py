@@ -23,6 +23,7 @@ from control.widgets import ConfigEditorBackwardsCompatible, StageUtils
 from control._def import CACHED_CONFIG_FILE_PATH
 from control._def import USE_TERMINAL_CONSOLE
 import control.utils
+import control.microscope
 
 
 if USE_TERMINAL_CONSOLE:
@@ -66,7 +67,10 @@ if __name__ == "__main__":
     # This allows shutdown via ctrl+C even after the gui has popped up.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    win = gui.HighContentScreeningGui(is_simulation=args.simulation, live_only_mode=args.live_only)
+    microscope = control.microscope.Microscope.build_from_global_config(args.simulation)
+    win = gui.HighContentScreeningGui(
+        microscope=microscope, is_simulation=args.simulation, live_only_mode=args.live_only
+    )
 
     file_menu = QMenu("File", win)
 

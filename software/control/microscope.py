@@ -1,50 +1,59 @@
 import math
 import re
 import serial
-from typing import Optional
+from typing import Optional, TypeVar
 
-import control.celesta
-from control.core.core import LaserAFSettingManager, ChannelConfigurationManager, ConfigurationManager
+from control._def import *
+from control.core.channel_configuration_mananger import ChannelConfigurationManager
+from control.core.configuration_mananger import ConfigurationManager
+from control.core.contrast_manager import ContrastManager
+from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
-from control import NL5
-from control._def import *
-import squid.camera.utils
 from control.filterwheel import SquidFilterWheelWrapper
-from control.fluidics import Fluidics
+
+from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
+from control.piezo import PiezoStage
 from control.serial_peripherals import SciMicroscopyLEDArray
 from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage
-import squid.stage.cephla
-import squid.logging
-import squid.config
-import squid.stage.utils
-
-import control.microcontroller as microcontroller
-from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
-from control.piezo import PiezoStage
-import control.serial_peripherals as serial_peripherals
-import control.filterwheel as filterwheel
 from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
+import control.celesta
+import control.filterwheel as filterwheel
+import control.microcontroller as microcontroller
+import control.serial_peripherals as serial_peripherals
+import squid.camera.utils
+import squid.config
+import squid.logging
+import squid.stage.cephla
+import squid.stage.utils
 
 if USE_XERYON:
     from control.objective_changer_2_pos_controller import (
         ObjectiveChanger2PosController,
         ObjectiveChanger2PosController_Simulation,
     )
+else:
+    ObjectiveChanger2PosController = TypeVar("ObjectiveChanger2PosController")
 
-if SUPPORT_LASER_AUTOFOCUS:
-    import control.core_displacement_measurement as core_displacement_measurement
+if RUN_FLUIDICS:
+    from control.fluidics import Fluidics
+else:
+    Fluidics = TypeVar("Fluidics")
+
+if ENABLE_NL5:
+    import control.NL5 as NL5
+else:
+    NL5 = TypeVar("NL5")
 
 
 class MicroscopeAddons:
-
     @staticmethod
     def build_from_global_config(
         stage: AbstractStage, micro: Optional[Microcontroller], simulated: bool = False
-    ) -> MicroscopeAddons:
+    ) -> "MicroscopeAddons":
 
         xlight = None
         if ENABLE_SPINNING_DISK_CONFOCAL:
@@ -56,8 +65,6 @@ class MicroscopeAddons:
 
         nl5 = None
         if ENABLE_NL5:
-            import control.NL5 as NL5
-
             nl5 = NL5.NL5() if not simulated else NL5.NL5_Simulation()
 
         cellx = None
@@ -144,8 +151,8 @@ class MicroscopeAddons:
     def __init__(
         self,
         xlight: Optional[serial_peripherals.XLight] = None,
-        nl5: Optional[NL5.NL5] = None,
-        cellx: Optional[serial_peripherals.CELLX_SN] = None,
+        nl5: Optional[NL5] = None,
+        cellx: Optional[serial_peripherals.CellX] = None,
         emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterController] = None,
         filter_wheel: Optional[SquidFilterWheelWrapper] = None,
         objective_changer: Optional[ObjectiveChanger2PosController] = None,
@@ -155,7 +162,7 @@ class MicroscopeAddons:
         sci_microscopy_led_array: Optional[SciMicroscopyLEDArray] = None,
     ):
         self.xlight: Optional[serial_peripherals.XLight] = xlight
-        self.nl5: Optional[NL5.NL5] = nl5
+        self.nl5: Optional[NL5] = nl5
         self.cellx: Optional[serial_peripherals.CellX] = cellx
         self.emission_filter_wheel = emission_filter_wheel
         self.filter_wheel = filter_wheel
@@ -181,7 +188,7 @@ class MicroscopeAddons:
 
 class LowLevelDrivers:
     @staticmethod
-    def build_from_global_config(simulated: bool = False):
+    def build_from_global_config(simulated: bool = False) -> "LowLevelDrivers":
         micro_serial_device = (
             microcontroller.get_microcontroller_serial_device(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)
             if not simulated
@@ -303,10 +310,16 @@ class Microscope:
         self.configuration_manager: ConfigurationManager = ConfigurationManager(
             self.channel_configuration_manager, self.laser_af_settings_manager
         )
+        self.contrast_manager: ContrastManager = ContrastManager()
         self.stream_handler: StreamHandler = StreamHandler(handler_functions=stream_handler_callbacks)
 
+        self.stream_handler_focus: Optional[StreamHandler] = None
+        self.live_controller_focus: Optional[LiveController] = None
         if self.addons.camera_focus:
-            self.stream_handler_focus: StreamHandler = StreamHandler(handler_functions=NoOpStreamHandlerFunctions)
+            self.stream_handler_focus = StreamHandler(handler_functions=NoOpStreamHandlerFunctions)
+            self.live_controller_focus = LiveController(
+                microscope=self, control_illumination=False, for_displacement_measurement=True
+            )
 
         self.live_controller: LiveController = LiveController(microscope=self)
 
