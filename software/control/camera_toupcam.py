@@ -842,8 +842,8 @@ class ToupcamCamera(AbstractCamera):
                 error_type = hresult_checker(ex)
                 self._log.exception("Unable to set GPIO1 for trigger ready: " + error_type)
                 raise
-            # Re-set exposure time to force strobe to get set to the remote.
-            self.set_exposure_time(self.get_exposure_time())
+        # Re-set exposure time to force strobe to get set to the remote.
+        self.set_exposure_time(self.get_exposure_time())
 
     def get_acquisition_mode(self) -> CameraAcquisitionMode:
         trigger_option_value = self._camera.get_Option(toupcam.TOUPCAM_OPTION_TRIGGER)
