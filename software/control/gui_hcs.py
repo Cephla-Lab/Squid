@@ -18,6 +18,7 @@ from control._def import *
 
 # app specific libraries
 import control.widgets as widgets
+from control.core.live_controller import LiveController
 import pyqtgraph.dockarea as dock
 import squid.abc
 import squid.logging
@@ -181,7 +182,7 @@ class HighContentScreeningGui(QMainWindow):
         )
         self.contrastManager = core.ContrastManager()
 
-        self.liveController = core.LiveController(
+        self.liveController = LiveController(
             self.camera, self.microcontroller, self.illuminationController, parent=self
         )
         self.streamHandler = core.QtStreamHandler(accept_new_frame_fn=lambda: self.liveController.is_live)
@@ -237,7 +238,7 @@ class HighContentScreeningGui(QMainWindow):
         )
 
         if SUPPORT_LASER_AUTOFOCUS:
-            self.liveController_focus_camera = core.LiveController(
+            self.liveController_focus_camera = LiveController(
                 self.camera_focus,
                 self.microcontroller,
                 self,

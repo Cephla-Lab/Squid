@@ -11,18 +11,26 @@ from squid.abc import CameraFrame
 
 
 @dataclass
-class StreamHandlerCallbacks:
+class StreamHandlerFunctions:
     image_to_display: Callable[[np.ndarray], None]
     packet_image_to_write: Callable[[np.ndarray, int, float], None]
-    signal_new_frame_received: Callable[[None], None]
+    signal_new_frame_received: Callable[[], None]
+    accept_new_frame: Callable[[], bool]
+
+
+NoOpStreamHandlerFunctions = StreamHandlerFunctions(
+    image_to_display=lambda x: None,
+    packet_image_to_write=lambda a, i, f: None,
+    signal_new_frame_received=lambda: None,
+    accept_new_frame=lambda: True,
+)
 
 
 class StreamHandler:
     def __init__(
         self,
-        update_callbacks: StreamHandlerCallbacks,
+        handler_functions: StreamHandlerFunctions,
         display_resolution_scaling=1,
-        accept_new_frame_fn: Callable[[], bool] = lambda: True,
     ):
         self.fps_display = 1
         self.fps_save = 1
@@ -41,11 +49,7 @@ class StreamHandler:
         self.counter = 0
         self.fps_real = 0
 
-        # Only accept new frames if this user defined function returns true
-        self._accept_new_frames_fn = accept_new_frame_fn
-
-        # Update the users when various events happen using these callbacks.
-        self._callbacks: StreamHandlerCallbacks = update_callbacks
+        self._fns: StreamHandlerFunctions = handler_functions
 
     def start_recording(self):
         self.save_image_flag = True
@@ -63,12 +67,15 @@ class StreamHandler:
         self.display_resolution_scaling = display_resolution_scaling / 100
         print(self.display_resolution_scaling)
 
+    def set_functions(self, functions: StreamHandlerFunctions):
+        self._fns = functions
+
     def on_new_frame(self, frame: CameraFrame):
-        if not self._accept_new_frames_fn():
+        if not self._fns.accept_new_frame():
             return
 
         self.handler_busy = True
-        self._callbacks.signal_new_frame_received()
+        self._fns.signal_new_frame_received()
 
         # measure real fps
         timestamp_now = round(time.time())
@@ -87,7 +94,7 @@ class StreamHandler:
         # send image to display
         time_now = time.time()
         if time_now - self.timestamp_last_display >= 1 / self.fps_display:
-            self._callbacks.image_to_display(
+            self._fns.image_to_display(
                 utils.crop_image(
                     image,
                     round(image.shape[1] * self.display_resolution_scaling),
@@ -100,7 +107,7 @@ class StreamHandler:
         if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
             if frame.is_color():
                 image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-            self._callbacks.packet_image_to_write(image, frame.frame_id, frame.timestamp)
+            self._fns.packet_image_to_write(image, frame.frame_id, frame.timestamp)
             self.timestamp_last_save = time_now
 
         self.handler_busy = False
