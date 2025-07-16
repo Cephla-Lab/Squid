@@ -4683,7 +4683,7 @@ class WellplateMultiPointWidget(QFrame):
 
                 self.objectiveStore.set_current_objective(current_objective)
                 self.update_coordinates()
-                obj_file_path = os.path.join(folder_path, f"{folder_name}_{objective_name}.csv")
+                obj_file_path = os.path.join(folder_path, f"{folder_name}_{current_objective}.csv")
                 _helper_save_coordinates(self, obj_file_path)
 
             except Exception as e:
