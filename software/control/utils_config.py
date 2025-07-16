@@ -63,6 +63,8 @@ class LaserAFConfig(BaseModel):
     reference_image: Optional[str] = None  # Stores base64 encoded reference image for cross-correlation check
     reference_image_shape: Optional[tuple] = None
     reference_image_dtype: Optional[str] = None
+    initialize_crop_width: int = 1200  # Width of the center crop used for initialization
+    initialize_crop_height: int = 800  # Height of the center crop used for initialization
 
     @property
     def reference_image_cropped(self) -> Optional[np.ndarray]:

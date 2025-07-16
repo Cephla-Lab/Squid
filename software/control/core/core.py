@@ -4497,7 +4497,13 @@ class LaserAutofocusController(QObject):
         self.microcontroller.turn_on_AF_laser()
         self.microcontroller.wait_till_operation_is_completed()
 
-        result = self._get_laser_spot_centroid(remove_background=True, use_center_crop=(1200, 800))
+        result = self._get_laser_spot_centroid(
+            remove_background=True,
+            use_center_crop=(
+                self.laser_af_properties.initialize_crop_width,
+                self.laser_af_properties.initialize_crop_height,
+            ),
+        )
         if result is None:
             self._log.error("Failed to find laser spot during initialization")
             self.microcontroller.turn_off_AF_laser()
