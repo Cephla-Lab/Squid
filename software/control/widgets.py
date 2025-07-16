@@ -3213,6 +3213,7 @@ class FlexibleMultiPointWidget(QFrame):
             # @@@ to do: add a widgetManger to enable and disable widget
             # @@@ to do: emit signal to widgetManager to disable other widgets
             self.is_current_acquisition_widget = True  # keep track of what widget started the acquisition
+            self.btn_startAcquisition.setText("Stop\n Acquisition ")
             self.setEnabled_all(False)
 
             # emit signals
@@ -3662,6 +3663,7 @@ class FlexibleMultiPointWidget(QFrame):
 
         self.signal_acquisition_started.emit(False)
         self.btn_startAcquisition.setChecked(False)
+        self.btn_startAcquisition.setText("Start\n Acquisition ")
         self.setEnabled_all(True)
         self.is_current_acquisition_widget = False
 
@@ -4445,6 +4447,7 @@ class WellplateMultiPointWidget(QFrame):
 
             self.setEnabled_all(False)
             self.is_current_acquisition_widget = True
+            self.btn_startAcquisition.setText("Stop\n Acquisition ")
 
             # Emit signals
             self.signal_acquisition_started.emit(True)
@@ -4468,6 +4471,7 @@ class WellplateMultiPointWidget(QFrame):
         self.signal_acquisition_started.emit(False)
         self.is_current_acquisition_widget = False
         self.btn_startAcquisition.setChecked(False)
+        self.btn_startAcquisition.setText("Start\n Acquisition ")
         if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
             self.focusMapWidget.disable_updating_focus_points_on_signal()
         self.reset_coordinates()
@@ -4637,18 +4641,19 @@ class WellplateMultiPointWidget(QFrame):
     def save_coordinates(self):
         """Save scan coordinates to a CSV file.
 
-        Opens a file dialog for the user to choose save location and filename.
-        Coordinates are saved in CSV format with headers.
+        Opens a file dialog for the user to specify a folder name and location.
+        Coordinates are saved in CSV format with headers for each objective.
         """
-        # Open file dialog for user to select save location and filename
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Scan Coordinates", "", "CSV Files (*.csv);;All Files (*)"  # Default directory
+        # Open file dialog for user to specify folder name and location
+        folder_path, _ = QFileDialog.getSaveFileName(
+            self, "Create Folder for Scan Coordinates", "", "Folder"  # Default directory
         )
 
-        if file_path:
-            base_path, extension = os.path.splitext(file_path)
-            if not extension:
-                extension = ".csv"
+        if folder_path:
+            # Create the folder if it doesn't exist
+            os.makedirs(folder_path, exist_ok=True)
+
+            folder_name = os.path.basename(folder_path)
 
             current_objective = self.objectiveStore.current_objective
 
@@ -4673,17 +4678,17 @@ class WellplateMultiPointWidget(QFrame):
                     else:
                         self.objectiveStore.set_current_objective(objective_name)
                         self.update_coordinates()
-                        obj_file_path = f"{base_path}_{objective_name}{extension}"
+                        obj_file_path = os.path.join(folder_path, f"{folder_name}_{objective_name}.csv")
                         _helper_save_coordinates(self, obj_file_path)
 
                 self.objectiveStore.set_current_objective(current_objective)
                 self.update_coordinates()
-                obj_file_path = f"{base_path}_{current_objective}{extension}"
+                obj_file_path = os.path.join(folder_path, f"{folder_name}_{objective_name}.csv")
                 _helper_save_coordinates(self, obj_file_path)
 
             except Exception as e:
                 self._log.error(f"Failed to save coordinates: {str(e)}")
-                QMessageBox.warning(self, "Save Error", f"Failed to save coordinates to {file_path}\nError: {str(e)}")
+                QMessageBox.warning(self, "Save Error", f"Failed to save coordinates to {folder_path}\nError: {str(e)}")
 
 
 class MultiPointWithFluidicsWidget(QFrame):
@@ -4913,6 +4918,7 @@ class MultiPointWithFluidicsWidget(QFrame):
 
             self.setEnabled_all(False)
             self.is_current_acquisition_widget = True
+            self.btn_startAcquisition.setText("Stop\n Acquisition ")
 
             self.multipointController.set_deltaZ(self.entry_deltaZ.value())
             self.multipointController.set_NZ(self.entry_NZ.value())
@@ -4983,6 +4989,7 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.signal_acquisition_started.emit(False)
         self.is_current_acquisition_widget = False
         self.btn_startAcquisition.setChecked(False)
+        self.btn_startAcquisition.setText("Start\n Acquisition ")
         self.setEnabled_all(True)
 
     def setEnabled_all(self, enabled):
