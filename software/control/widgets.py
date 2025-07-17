@@ -8645,7 +8645,10 @@ class WellplateCalibration(QDialog):
             self.live_viewer.signal_calibration_viewer_click.disconnect(self.viewerClicked)
 
     def viewerClicked(self, x, y, width, height):
-        pixel_size_um = self.navigationViewer.objectiveStore.get_pixel_size_factor() * self.liveController.camera.get_pixel_size_binned_um()
+        pixel_size_um = (
+            self.navigationViewer.objectiveStore.get_pixel_size_factor()
+            * self.liveController.camera.get_pixel_size_binned_um()
+        )
 
         pixel_sign_x = 1
         pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
