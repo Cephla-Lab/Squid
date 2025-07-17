@@ -25,7 +25,7 @@
 // byte[2]: how many micro steps - upper 8 bits
 // byte[3]: how many micro steps - lower 8 bits
 
-static const int CMD_LENGTH = 8;
+static const int CMD_LENGTH = 12;
 static const int MSG_LENGTH = 24;
 byte buffer_rx[512];
 byte buffer_tx[MSG_LENGTH];
@@ -67,6 +67,8 @@ static const int SET_PID_ARGUMENTS = 29;
 static const int SEND_HARDWARE_TRIGGER = 30;
 static const int SET_STROBE_DELAY = 31;
 static const int SET_AXIS_DISABLE_ENABLE = 32;
+static const int MOVETO_XY = 34;
+static const int SET_SRAMP_MOD = 36;
 static const int SET_PIN_LEVEL = 41;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;
@@ -301,12 +303,11 @@ uint16_t home_safety_margin[4] = {4, 4, 4, 4};
 // IntervalTimer does not work on teensy with SPI, the below lines are to be removed
 static const int TIMER_PERIOD = 500; // in us
 volatile int counter_send_pos_update = 0;
-volatile bool flag_send_pos_update = false;
 
 static const int interval_send_pos_update = 10000; // in us
 elapsedMicros us_since_last_pos_update;
 
-static const int interval_check_position = 10000; // in us
+static const int interval_check_position = 5000;   // in us
 elapsedMicros us_since_last_check_position;
 
 static const int interval_send_joystick_update = 30000; // in us
@@ -356,7 +357,7 @@ void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
   }
   else
   {
-    focusPosition = focusPosition + (int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3])) - focuswheel_pos);
+    focusPosition = focusPosition - (int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3])) - focuswheel_pos);
     focuswheel_pos = int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3]));
   }
 
@@ -911,6 +912,21 @@ void loop() {
             }
             break;
           }
+        case MOVETO_XY:
+          {
+            long x_absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
+            X_direction = sgn(x_absolute_position - tmc4361A_currentPosition(&tmc4361[x]));
+            X_commanded_target_position = x_absolute_position;
+            if (tmc4361A_moveTo(&tmc4361[x], X_commanded_target_position) == 0)
+              X_commanded_movement_in_progress = true;
+            long y_absolute_position = int32_t(uint32_t(buffer_rx[6]) << 24 | uint32_t(buffer_rx[7]) << 16 | uint32_t(buffer_rx[8]) << 8 | uint32_t(buffer_rx[9]));
+            Y_direction = sgn(y_absolute_position - tmc4361A_currentPosition(&tmc4361[y]));
+            Y_commanded_target_position = y_absolute_position;
+            if (tmc4361A_moveTo(&tmc4361[y], Y_commanded_target_position) == 0)
+              Y_commanded_movement_in_progress = true;
+            mcu_cmd_execution_in_progress = true;
+            break;
+          }
         case MOVETO_Z:
           {
             long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
@@ -936,6 +952,21 @@ void loop() {
                 mcu_cmd_execution_in_progress = true;
               }
             }
+            break;
+          }
+        case SET_SRAMP_MOD:
+          {
+            uint8_t axis = buffer_rx[2];
+            uint8_t mode = buffer_rx[3];
+            // map to w axis, in the host w axis index is 5
+            if (axis == AXIS_W)
+              axis = w;
+            
+            // guard code
+            if (axis > STAGE_AXES)
+              return;
+
+            tmc4361[axis].ramp_mode = mode;
             break;
           }
         case SET_LIM:
@@ -2181,9 +2212,9 @@ void loop() {
     buffer_tx[18] &= ~ (1 << BIT_POS_JOYSTICK_BUTTON); // clear the joystick button bit
     buffer_tx[18] = buffer_tx[18] | joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON;
 
-   // Calculate and fill out the checksum.  NOTE: This must be after all other buffer_tx modifications are done!
-   uint8_t checksum = crc8ccitt(buffer_tx, MSG_LENGTH - 1);
-   buffer_tx[MSG_LENGTH - 1] = checksum;
+    // Calculate and fill out the checksum.  NOTE: This must be after all other buffer_tx modifications are done!
+    uint8_t checksum = crc8ccitt(buffer_tx, MSG_LENGTH - 1);
+    buffer_tx[MSG_LENGTH - 1] = checksum;
 
     if(!DEBUG_MODE)
       SerialUSB.write(buffer_tx,MSG_LENGTH);
@@ -2201,8 +2232,6 @@ void loop() {
       SerialUSB.print(", PG:");
       SerialUSB.println(digitalRead(pin_PG));
     }
-    flag_send_pos_update = false;
-    
   }
 
   // keep checking position process at suitable frequence
@@ -2213,22 +2242,29 @@ void loop() {
     {
       X_commanded_movement_in_progress = false;
       mcu_cmd_execution_in_progress = false || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress;
+      // It's important that we check positions next time around because
+      // once the axis reaches the target position, we need the PC to be notified instantly.
+      // Other axes are the same reason.
+      us_since_last_pos_update = interval_send_pos_update + 1;
     }
     if (Y_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[y]) == Y_commanded_target_position && !is_homing_Y && !tmc4361A_isRunning(&tmc4361[y], stage_PID_enabled[y]))
     {
       Y_commanded_movement_in_progress = false;
       mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress;
+      us_since_last_pos_update = interval_send_pos_update + 1;
     }
     if (Z_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[z]) == Z_commanded_target_position && !is_homing_Z && !tmc4361A_isRunning(&tmc4361[z], stage_PID_enabled[z]))
     {
       Z_commanded_movement_in_progress = false;
       mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || W_commanded_movement_in_progress;
+      us_since_last_pos_update = interval_send_pos_update + 1;
     }
     if (enable_filterwheel == true) {
       if (W_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[w]) == W_commanded_target_position && !is_homing_W && !tmc4361A_isRunning(&tmc4361[w], stage_PID_enabled[w]))
       {
         W_commanded_movement_in_progress = false;
         mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress;
+        us_since_last_pos_update = interval_send_pos_update + 1;
       }
     }
   }
@@ -2269,28 +2305,6 @@ void loop() {
     }
   }
 }
-
-/***************************************************
-
-                    timer interrupt
-
- ***************************************************/
-
-// timer interrupt
-/*
-  // IntervalTimer stops working after SPI.begin()
-  void timer_interruptHandler()
-  {
-  SerialUSB.println("timer event");
-  counter_send_pos_update = counter_send_pos_update + 1;
-  if(counter_send_pos_update==interval_send_pos_update/TIMER_PERIOD)
-  {
-    flag_send_pos_update = true;
-    counter_send_pos_update = 0;
-    SerialUSB.println("send pos update");
-  }
-  }
-*/
 
 /***************************************************************************************************/
 /*********************************************  utils  *********************************************/

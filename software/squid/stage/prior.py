@@ -229,6 +229,9 @@ class PriorStage(AbstractStage):
         else:
             threading.Thread(target=self.wait_for_stop, daemon=True).start()
 
+    def move_xy_to(self, x_abs_mm: float, y_abs_mm: float, blocking: bool = True):
+        pass
+
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         pass
 
