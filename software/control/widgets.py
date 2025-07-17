@@ -8973,9 +8973,6 @@ class CalibrationLiveViewer(QWidget):
         # Set fixed size for the viewer
         self.setFixedSize(500, 500)
 
-        # Initialize with a blank image
-        self.display_image(np.zeros((xmax, ymax)))
-
     def setCrosshairPosition(self):
         center = self.viewbox.viewRect().center()
         self.crosshair_h.setPos(center.y())
