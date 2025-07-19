@@ -8646,20 +8646,25 @@ class WellplateCalibration(QDialog):
         self.stage.move_y(dy)
 
     def toggleClickToMove(self, state):
-        # TODO(imo): I broke click to move with the navigation controller rip out
-        # if state == Qt.Checked:
-        #     self.navigationController.set_flag_click_to_move(True)
-        #     self.live_viewer.signal_calibration_viewer_click.connect(self.viewerClicked)
-        # else:
-        #     self.live_viewer.signal_calibration_viewer_click.disconnect(self.viewerClicked)
-        #     self.navigationController.set_flag_click_to_move(False)
-        pass
+        if state == Qt.Checked:
+            self.live_viewer.signal_calibration_viewer_click.connect(self.viewerClicked)
+        else:
+            self.live_viewer.signal_calibration_viewer_click.disconnect(self.viewerClicked)
 
     def viewerClicked(self, x, y, width, height):
-        # TODO(imo): I broke click to move with the navigation controller rip out
-        # if self.clickToMoveCheckbox.isChecked():
-        #     self.navigationController.move_from_click(x, y, width, height)
-        pass
+        pixel_size_um = (
+            self.navigationViewer.objectiveStore.get_pixel_size_factor()
+            * self.liveController.camera.get_pixel_size_binned_um()
+        )
+
+        pixel_sign_x = 1
+        pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
+
+        delta_x = pixel_sign_x * pixel_size_um * x / 1000.0
+        delta_y = pixel_sign_y * pixel_size_um * y / 1000.0
+
+        self.stage.move_x(delta_x)
+        self.stage.move_y(delta_y)
 
     def setCorner(self, index):
         if self.corners[index] is None:
@@ -8955,6 +8960,9 @@ class CalibrationLiveViewer(QWidget):
         self.viewbox.setAspectLocked(True)
         self.viewbox.invertY(True)
 
+        self.viewbox.setMouseEnabled(x=False, y=False)  # Disable panning
+        self.viewbox.setMenuEnabled(False)
+
         # Set appropriate panning limits based on the acquisition image or plate size
         xmax = int(CAMERA_CONFIG.CROP_WIDTH_UNBINNED)
         ymax = int(CAMERA_CONFIG.CROP_HEIGHT_UNBINNED)
@@ -8979,9 +8987,6 @@ class CalibrationLiveViewer(QWidget):
 
         # Set fixed size for the viewer
         self.setFixedSize(500, 500)
-
-        # Initialize with a blank image
-        self.display_image(np.zeros((xmax, ymax)))
 
     def setCrosshairPosition(self):
         center = self.viewbox.viewRect().center()
