@@ -419,6 +419,244 @@ class XLight:
         return self.disk_motor_state
 
 
+class Dragonfly:
+
+    def __init__(self, SN):
+        self.log = squid.logging.get_logger(self.__class__.__name__)
+        self.serial_connection = SerialDevice(
+            SN=SN,
+            baudrate=115200,
+            bytesize=serial.EIGHTBITS,
+            stopbits=serial.STOPBITS_ONE,
+            parity=serial.PARITY_NONE,
+            xonxoff=False,
+            rtscts=False,
+            dsrdtr=False,
+        )
+        self.serial_connection.open_ser()
+        self.get_config()
+
+        # Exit standby mode
+        self._send_command("AT_STANDBY,0")
+
+    def _send_command(self, command, expected_suffix=":A", read_delay=0.05):
+        """Send AT command and return response"""
+        response = self.serial_connection.write_and_read(command + "\r", read_delay=read_delay)
+        if response.endswith(expected_suffix):
+            # Remove the suffix and return the value
+            return response[: -len(expected_suffix)]
+        else:
+            self.log.warning(f"Unexpected response: {response}")
+            return None
+
+    def _send_command_with_check(self, command, expected_response=None, read_delay=0.05):
+        """Send AT command and check response"""
+        response = self.serial_connection.write_and_read(command + "\r", read_delay=read_delay)
+
+        if response.endswith(":A"):
+            # Success - return the response without :A suffix
+            return response[:-2]
+        elif response.endswith(":N"):
+            # Failure
+            self.log.warning(f"Command failed: {command} -> {response}")
+            return None
+        else:
+            # Unexpected response format
+            self.log.warning(f"Unexpected response format: {command} -> {response}")
+            return None
+
+    def get_config(self):
+        """Get device configuration and capabilities"""
+        self.log.info("Dragonfly configuration:")
+
+        # Get serial number
+        serial_num = self._send_command("AT_SERIAL_CSU,?")
+        if serial_num:
+            self.log.info(f"Serial Number: {serial_num}")
+
+        # Get product info
+        product = self._send_command("AT_PRODUCT_CSU,?")
+        if product:
+            self.log.info(f"Product: {product}")
+
+        # Get version
+        version = self._send_command("AT_VER,?")
+        if version:
+            self.log.info(f"Version: {version}")
+
+        # Get max motor speed
+        max_speed = self._send_command("AT_MS_MAX,?")
+        if max_speed:
+            self.spinning_disk_max_speed = int(max_speed)
+            self.log.info(f"Max disk speed: {self.spinning_disk_max_speed}")
+
+        # Get system info
+        system_info = self._send_command("AT_SYSTEM,?")
+        if system_info:
+            self.log.info(f"System info: {system_info}")
+
+    def set_emission_filter(self, port, position):
+        """Set emission filter wheel position
+
+        Args:
+            port: Filter wheel port number (typically 1)
+            position: Target position (1-8 typically)
+        """
+        command = f"AT_FW_POS,{port},{position}"
+        response = self._send_command_with_check(command, f"{position}:A")
+        return position if response else None
+
+    def get_emission_filter(self, port):
+        """Get current emission filter wheel position
+
+        Args:
+            port: Filter wheel port number (typically 1)
+
+        Returns:
+            Current position or None if error
+        """
+        response = self._send_command(f"AT_FW_POS,{port},?")
+        return int(response) if response and response.isdigit() else None
+
+    def set_port_selection_dichroic(self, position):
+        """Set port selection dichroic position
+
+        Args:
+            position: Target position
+        """
+        command = f"AT_PS_POS,1,{position}"
+        response = self._send_command_with_check(command, f"{position}:A")
+        return position if response else None
+
+    def get_port_selection_dichroic(self):
+        """Get current port selection dichroic position
+
+        Returns:
+            Current position or None if error
+        """
+        response = self._send_command("AT_PS_POS,1,?")
+        return int(response) if response and response.isdigit() else None
+
+    def set_modality(self, modality):
+        """Set imaging modality
+
+        Args:
+            modality: Modality string (e.g., 'CONFOCAL', 'BF', etc.)
+        """
+        command = f"AT_MODALITY,{modality}"
+        response = self._send_command_with_check(command, f"{modality}:A")
+        return modality if response else None
+
+    def get_modality(self):
+        """Get current imaging modality
+
+        Returns:
+            Current modality string or None if error
+        """
+        return self._send_command("AT_MODALITY,?")
+
+    def set_disk_motor_state(self, run):
+        """Start or stop the spinning disk motor
+
+        Args:
+            run: True to start, False to stop
+        """
+        if run:
+            response = self._send_command_with_check("AT_MS_RUN", ":A", read_delay=0.5)
+            return bool(response)
+        else:
+            # To stop, set speed to 0
+            return self.set_disk_speed(0)
+
+    def get_disk_motor_state(self):
+        """Get spinning disk motor state
+
+        Returns:
+            True if running, False if stopped
+        """
+        speed = self.get_disk_speed()
+        return speed > 0 if speed is not None else None
+
+    def set_disk_speed(self, speed):
+        """Set spinning disk motor speed
+
+        Args:
+            speed: Speed in RPM (0 to stop)
+
+        Returns:
+            Set speed or None if error
+        """
+        command = f"AT_MS,{speed}"
+        response = self._send_command_with_check(command, f"{speed}:A", read_delay=0.1)
+        return speed if response else None
+
+    def get_disk_speed(self):
+        """Get current spinning disk motor speed
+
+        Returns:
+            Current speed in RPM or None if error
+        """
+        response = self._send_command("AT_MS,?")
+        return int(response) if response and response.isdigit() else None
+
+    def set_filter_wheel_speed(self, port, speed):
+        """Set filter wheel rotation speed
+
+        Args:
+            port: Filter wheel port number
+            speed: Speed setting
+        """
+        command = f"AT_FW_SPEED,{port},{speed}"
+        response = self._send_command_with_check(command, f"{speed}:A")
+        return speed if response else None
+
+    def set_field_aperture_wheel_position(self, port, position):
+        """Set aperture position
+
+        Args:
+            port: Aperture port number
+            position: Target position
+        """
+        command = f"AT_AP_POS,{port},{position}"
+        response = self._send_command_with_check(command, f"{position}:A")
+        return position if response else None
+
+    def get_field_aperture_wheel_position(self, port):
+        """Get current aperture position
+
+        Args:
+            port: Aperture port number
+
+        Returns:
+            Current position or None if error
+        """
+        response = self._send_command(f"AT_AP_POS,{port},?")
+        return int(response) if response and response.isdigit() else None
+
+    def get_component_info(self, component_type, port, index=None):
+        """Get information about a component
+
+        Args:
+            component_type: Component type (e.g., 'FW', 'AP', 'PS', 'DM')
+            port: Port number
+            index: Optional index for additional info
+
+        Returns:
+            Component info string or None if error
+        """
+        if index is not None:
+            command = f"AT_{component_type}_INFO,{port},{index},?"
+        else:
+            command = f"AT_{component_type}_INFO,{port},?"
+
+        return self._send_command(command)
+
+    def close(self):
+        """Close serial connection"""
+        if self.serial_connection:
+            self.serial_connection.close()
+
+
 class LDI(LightSource):
     """Wrapper for communicating with LDI over serial"""
 
