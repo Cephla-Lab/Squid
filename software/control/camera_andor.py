@@ -23,8 +23,6 @@ pyAndorSDK3.utils.add_library_path(library_path)
 
 class AndorCapabilities(pydantic.BaseModel):
     binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
-    max_width: int
-    max_height: int
 
 
 class AndorCamera(AbstractCamera):
@@ -54,14 +52,18 @@ class AndorCamera(AbstractCamera):
 
         # Get camera capabilities
         try:
-            # For now, we only support 1x1 binning
+            camera_model = camera.ModelName
+            log.info(f"Andor camera model: {camera_model}")
+            # For now, we only support ZL41 Cell 4.2
             supported_resolutions = {
-                (1, 1): (2048, 2048),  # Default for most Andor cameras
+                (1, 1): (2048, 2048),
+                (2, 2): (1024, 1024),
+                (3, 3): (682, 682),
+                (4, 4): (512, 512),
+                (8, 8): (256, 256),
             }
 
-            capabilities = AndorCapabilities(
-                binning_to_resolution=supported_resolutions, max_width=2048, max_height=2048
-            )
+            capabilities = AndorCapabilities(binning_to_resolution=supported_resolutions)
 
             return camera, capabilities
         except Exception as e:
@@ -96,7 +98,6 @@ class AndorCamera(AbstractCamera):
         self._is_streaming = threading.Event()
 
         # Andor specific properties
-        self._line_rate_us: Optional[float] = None
         self._strobe_delay_us: Optional[float] = None
         self._buffer_queue = []
 
@@ -125,8 +126,6 @@ class AndorCamera(AbstractCamera):
         self.set_pixel_format(CameraPixelFormat.MONO16)
 
         try:
-            self._line_rate_us = 1 / self._camera.LineScanSpeed * 1000000
-            self._log.info(f"Line rate: {self._line_rate_us} us")
             self._calculate_strobe_delay()
         except Exception as e:
             self._log.error(f"Could not determine line rate: {e}")
@@ -233,6 +232,13 @@ class AndorCamera(AbstractCamera):
         return self._strobe_delay_us / 1000.0  # Convert to ms
 
     def _calculate_strobe_delay(self):
+        try:
+            self._line_rate_us = 1 / self._camera.LineScanSpeed * 1000000
+            self._log.info(f"Line rate: {self._line_rate_us} us")
+        except Exception as e:
+            self._log.error(f"Could not determine line rate: {e}")
+            self._line_rate_us = None
+
         if self._line_rate_us is not None:
             resolution = self.get_resolution()
             self._strobe_delay_us = int(self._line_rate_us * resolution[1])
@@ -244,6 +250,11 @@ class AndorCamera(AbstractCamera):
 
     def get_frame_format(self) -> CameraFrameFormat:
         return CameraFrameFormat.RAW
+
+    _PIXEL_FORMAT_TO_GAIN_MODE = {
+        CameraPixelFormat.MONO12: "12-bit (low noise)",
+        CameraPixelFormat.MONO16: "16-bit (low noise & high well capacity)",
+    }
 
     _PIXEL_FORMAT_TO_ANDOR_FORMAT = {
         CameraPixelFormat.MONO12: "Mono12",
@@ -257,15 +268,16 @@ class AndorCamera(AbstractCamera):
             except ValueError:
                 raise ValueError(f"Unknown or unsupported pixel format={pixel_format}")
 
-        if pixel_format not in self._PIXEL_FORMAT_TO_ANDOR_FORMAT:
+        if pixel_format not in self._PIXEL_FORMAT_TO_GAIN_MODE:
             raise ValueError(f"Pixel format {pixel_format} is not supported by this camera.")
 
         with self._pause_streaming():
             try:
+                self._camera.SimplePreAmpGainControl = self._PIXEL_FORMAT_TO_GAIN_MODE[pixel_format]
+                # PixelEncoding will be set automatically based on SimplePreAmpGainControl, but to make sure we are
+                # using the "Mono12" instead of "Mono12Packed" or other formats, it may be safer to set it explicitly
                 self._camera.PixelEncoding = self._PIXEL_FORMAT_TO_ANDOR_FORMAT[pixel_format]
 
-                # Recalculate line rate and strobe delay
-                self._line_rate_us = 1 / self._camera.LineScanSpeed * 1000000
                 self._calculate_strobe_delay()
 
                 # Update exposure time if in hardware trigger mode
@@ -280,13 +292,9 @@ class AndorCamera(AbstractCamera):
             andor_format = self._camera.PixelEncoding
             _andor_to_pixel = {v: k for (k, v) in self._PIXEL_FORMAT_TO_ANDOR_FORMAT.items()}
 
-            if andor_format not in _andor_to_pixel:
-                # Default to MONO16 if unknown
-                return CameraPixelFormat.MONO16
-
             return _andor_to_pixel[andor_format]
         except:
-            return CameraPixelFormat.MONO16
+            raise CameraError("Could not determine pixel format")
 
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
         return list(self._PIXEL_FORMAT_TO_ANDOR_FORMAT.keys())
@@ -299,10 +307,15 @@ class AndorCamera(AbstractCamera):
             raise ValueError("Binning has not been implemented for this camera yet.")
 
     def get_binning(self) -> Tuple[int, int]:
-        return (1, 1)
+        try:
+            binning = self._camera.AOIBinning
+            binning_x, binning_y = binning.split("x")
+            return (int(binning_x), int(binning_y))
+        except:
+            raise CameraError("Could not determine binning")
 
     def get_binning_options(self) -> Sequence[Tuple[int, int]]:
-        return [(1, 1)]
+        return self._capabilities.binning_to_resolution.keys()
 
     def get_pixel_size_unbinned_um(self) -> float:
         return self.PIXEL_SIZE_UM
@@ -444,9 +457,7 @@ class AndorCamera(AbstractCamera):
                 else:
                     raise ValueError(f"Unhandled acquisition_mode={acquisition_mode}")
 
-                # Recalculate exposure time if needed
-                if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
-                    self.set_exposure_time(self._exposure_time_ms)
+                self.set_exposure_time(self._exposure_time_ms)
 
             except Exception as e:
                 self._log.error(f"Failed to set acquisition mode to {acquisition_mode}: {e}")
