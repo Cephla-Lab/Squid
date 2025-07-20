@@ -293,7 +293,7 @@ class AndorCamera(AbstractCamera):
             _andor_to_pixel = {v: k for (k, v) in self._PIXEL_FORMAT_TO_ANDOR_FORMAT.items()}
 
             return _andor_to_pixel[andor_format]
-        except:
+        except Exception:
             raise CameraError("Could not determine pixel format")
 
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
