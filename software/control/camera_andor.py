@@ -100,6 +100,7 @@ class AndorCamera(AbstractCamera):
         # Andor specific properties
         self._strobe_delay_us: Optional[float] = None
         self._buffer_queue = []
+        self._binning = self._config.default_binning
 
         # We store exposure time so we don't need to worry about backing out strobe time
         self._exposure_time_ms: float = 20
@@ -124,11 +125,7 @@ class AndorCamera(AbstractCamera):
 
         self.set_exposure_time(self._exposure_time_ms)
         self.set_pixel_format(CameraPixelFormat.MONO16)
-
-        try:
-            self._calculate_strobe_delay()
-        except Exception as e:
-            self._log.error(f"Could not determine line rate: {e}")
+        self.set_binning(*self._config.default_binning)
 
     def close(self):
         self._cleanup_read_thread()
@@ -171,7 +168,10 @@ class AndorCamera(AbstractCamera):
                     raw = np.asarray(acq._np_data, dtype=np.uint8)
                     img = raw.view("<u2")  # Andor typically returns 16-bit data
 
-                    img = img.reshape(2048, 2048)
+                    # We reshape the image based on the full resolution now. After we implement ROI, we should
+                    # use AOIWidth, AOIHeight, and AOIStride instead.
+                    h, w = self._capabilities.binning_to_resolution[self._binning]
+                    img = img.reshape(h, w)
 
                     self._trigger_sent.clear()
 
@@ -303,8 +303,15 @@ class AndorCamera(AbstractCamera):
         return self._capabilities.binning_to_resolution[self.get_binning()]
 
     def set_binning(self, binning_factor_x: int, binning_factor_y: int):
-        if binning_factor_x != 1 or binning_factor_y != 1:
-            raise ValueError("Binning has not been implemented for this camera yet.")
+        if (binning_factor_x, binning_factor_y) not in self._capabilities.binning_to_resolution:
+            raise ValueError(f"Binning {binning_factor_x}x{binning_factor_y} is not supported by this camera.")
+        with self._pause_streaming():
+            try:
+                self._camera.AOIBinning = f"{binning_factor_x}x{binning_factor_y}"
+                self._calculate_strobe_delay()
+                self._binning = (binning_factor_x, binning_factor_y)
+            except Exception as e:
+                raise CameraError(f"Failed to set binning to {binning_factor_x}x{binning_factor_y}: {e}")
 
     def get_binning(self) -> Tuple[int, int]:
         try:
@@ -519,7 +526,7 @@ class AndorCamera(AbstractCamera):
         self.ROI_height = height
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
-        return (0, 0, 2048, 2048)
+        return (0, 0, self._camera.AOIWidth, self._camera.AOIHeight)
 
     def set_temperature(self, temperature_deg_c: Optional[float]):
         raise NotImplementedError("Temperature control is not implemented for this Andor camera model.")
