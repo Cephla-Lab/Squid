@@ -52,7 +52,7 @@ class AndorCamera(AbstractCamera):
 
         # Get camera capabilities
         try:
-            camera_model = camera.ModelName
+            camera_model = camera.CameraModel
             log.info(f"Andor camera model: {camera_model}")
             # For now, we only support ZL41 Cell 4.2
             supported_resolutions = {
