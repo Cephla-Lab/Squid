@@ -483,7 +483,7 @@ class AndorCamera(AbstractCamera):
                 return CameraAcquisitionMode.CONTINUOUS
             else:
                 raise ValueError(f"Unknown Andor trigger mode: {trigger_mode}")
-        except:
+        except Exception:
             # Default to continuous if we can't determine
             return CameraAcquisitionMode.CONTINUOUS
 
