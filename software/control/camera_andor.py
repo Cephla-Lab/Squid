@@ -318,7 +318,7 @@ class AndorCamera(AbstractCamera):
             binning = self._camera.AOIBinning
             binning_x, binning_y = binning.split("x")
             return (int(binning_x), int(binning_y))
-        except:
+        except Exception:
             raise CameraError("Could not determine binning")
 
     def get_binning_options(self) -> Sequence[Tuple[int, int]]:
