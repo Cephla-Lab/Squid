@@ -506,7 +506,7 @@ class AndorCamera(AbstractCamera):
                 self._camera.SoftwareTrigger()
                 self._last_trigger_timestamp = time.time()
                 self._trigger_sent.set()
-                print("trigger sent")
+                self._log.debug("trigger sent")
             except Exception as e:
                 raise CameraError(f"Failed to send software trigger: {e}")
 
