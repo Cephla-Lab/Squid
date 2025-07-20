@@ -534,7 +534,7 @@ class AndorCamera(AbstractCamera):
     def get_temperature(self) -> float:
         try:
             return self._camera.SensorTemperature
-        except:
+        except Exception:
             raise NotImplementedError("Temperature reading is not available for this Andor camera model.")
 
     def set_temperature_reading_callback(self, func) -> Callable[[float], None]:
