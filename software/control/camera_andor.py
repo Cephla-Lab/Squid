@@ -8,7 +8,6 @@ import pydantic
 import pyAndorSDK3
 from pyAndorSDK3 import AndorSDK3
 from control._def import *
-import squid.logging
 from squid.abc import AbstractCamera, CameraError
 from squid.config import CameraConfig, CameraPixelFormat
 from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
