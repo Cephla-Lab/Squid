@@ -318,6 +318,9 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
         self._baudrate = baudrate
         self._serial = serial.Serial(port, baudrate)
 
+    def __del__(self):
+        self.close()
+
     def close(self) -> None:
         return self._serial.close()
 

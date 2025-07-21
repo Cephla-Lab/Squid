@@ -1,5 +1,6 @@
 import pathlib
 
+import control.microscope
 import control.core.core
 import control.core.objective_store
 import control.microcontroller
@@ -7,15 +8,16 @@ import control.lighting
 import squid.abc
 
 import control._def
-from tests.tools import get_test_microcontroller, get_test_camera, get_test_stage, get_repo_root, get_test_piezo_stage
+from control.microscope import Microscope
+from tests.tools import get_repo_root, get_test_piezo_stage
 
 
 def get_test_live_controller(
-    camera, microcontroller, config_manager, illumination_controller, starting_objective
+    microscope: control.microscope.Microscope, starting_objective
 ) -> control.core.core.LiveController:
-    controller = control.core.core.LiveController(camera, microcontroller, config_manager, illumination_controller)
+    controller = control.core.core.LiveController(microscope=microscope)
 
-    controller.set_microscope_mode(config_manager.channel_manager.get_configurations(objective=starting_objective)[0])
+    controller.set_microscope_mode(microscope.configuration_manager.channel_manager.get_configurations(objective=starting_objective)[0])
     return controller
 
 
@@ -72,32 +74,21 @@ def get_test_navigation_viewer(objective_store: control.core.objective_store.Obj
     return control.core.core.NavigationViewer(objective_store, camera_pixel_size)
 
 
-def get_test_multi_point_controller() -> control.core.core.MultiPointController:
-    microcontroller = get_test_microcontroller()
-    camera = get_test_camera()
-    stage = get_test_stage(microcontroller)
-    config_manager = get_test_configuration_manager()
-    objective_store = get_test_objective_store()
-    live_controller = get_test_live_controller(
-        camera,
-        microcontroller,
-        config_manager,
-        get_test_illumination_controller(microcontroller),
-        objective_store.current_objective,
-    )
+def get_test_multi_point_controller(microscope: Microscope) -> control.core.core.MultiPointController:
+    live_controller = get_test_live_controller(microscope=microscope, starting_objective=microscope.objective_store.default_objective)
 
     multi_point_controller = control.core.core.MultiPointController(
-        camera=camera,
-        stage=stage,
-        microcontroller=microcontroller,
+        camera=microscope.camera,
+        stage=microscope.stage,
+        microcontroller=microscope.low_level_drivers.microcontroller,
         live_controller=live_controller,
-        autofocus_controller=get_test_autofocus_controller(camera, stage, live_controller, microcontroller),
-        channel_configuration_manager=config_manager.channel_manager,
+        autofocus_controller=get_test_autofocus_controller(microscope.camera, microscope.stage, live_controller, microscope.low_level_drivers.microcontroller),
+        channel_configuration_manager=microscope.channel_configuration_manager,
         scan_coordinates=get_test_scan_coordinates(
-            objective_store, get_test_navigation_viewer(objective_store, camera.get_pixel_size_unbinned_um()), stage
+            microscope.objective_store, get_test_navigation_viewer(microscope.objective_store, microscope.camera.get_pixel_size_unbinned_um()), microscope.stage
         ),
-        piezo=get_test_piezo_stage(microcontroller),
-        objective_store=objective_store,
+        piezo=get_test_piezo_stage(microscope.low_level_drivers.microcontroller),
+        objective_store=microscope.objective_store,
     )
 
     multi_point_controller.set_base_path("/tmp/")

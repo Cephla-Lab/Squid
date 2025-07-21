@@ -99,6 +99,7 @@ def test_microcontroller_simulated_positions():
     micro.home_xy()
     micro.wait_till_operation_is_completed()
     assert_pos_almost_equal((0, 0, 3000, 0), micro.get_pos())
+    micro.close()
 
 
 @pytest.mark.skip(
@@ -152,6 +153,7 @@ def test_microcontroller_absolute_and_relative_match():
     micro.move_z_usteps(-abs_position)
     wait()
     assert_pos_almost_equal((0, 0, 0, 0), micro.get_pos())
+    micro.close()
 
 
 def test_microcontroller_reconnects_serial():
@@ -180,6 +182,7 @@ def test_microcontroller_reconnects_serial():
     micro.move_z_usteps(3 * some_pos)
     wait()
     assert_pos_almost_equal((some_pos, 2 * some_pos, 3 * some_pos, 0), micro.get_pos())
+    micro.close()
 
 
 def test_home_directions():
@@ -200,3 +203,5 @@ def test_home_directions():
             hm(homing_direction=d)
             wait()
             assert test_micro.last_command[3] == d.value
+
+    test_micro.close()

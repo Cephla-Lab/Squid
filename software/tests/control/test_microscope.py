@@ -6,4 +6,5 @@ from tests.control.test_microcontroller import get_test_micro
 
 
 def test_create_simulated_microscope():
-    sim_scope = control.microscope.Microscope(is_simulation=True)
+    sim_scope = control.microscope.Microscope.build_from_global_config(True)
+    sim_scope.close()

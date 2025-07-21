@@ -1,10 +1,11 @@
 import tests.control.gui_test_stubs as gts
-import pytest
 import control._def
+import control.microscope
 
 
 def test_multi_point_controller_image_count_calculation(qtbot):
-    mpc = gts.get_test_multi_point_controller()
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = gts.get_test_multi_point_controller(microscope=scope)
 
     control._def.MERGE_CHANNELS = False
     all_configuration_names = [
@@ -55,8 +56,9 @@ def test_multi_point_controller_image_count_calculation(qtbot):
     assert mpc.get_acquisition_image_count() == final_number_of_fov * (all_config_count + 1)
 
 
-def test_multi_point_controller_disk_space_esimate(qtbot):
-    mpc = gts.get_test_multi_point_controller()
+def test_multi_point_controller_disk_space_estimate(qtbot):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = gts.get_test_multi_point_controller(microscope=scope)
 
     control._def.MERGE_CHANNELS = False
     all_configuration_names = [

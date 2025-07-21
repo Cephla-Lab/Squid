@@ -15,7 +15,7 @@ from control import utils_channel
 class LiveController:
     def __init__(
         self,
-        microscope: "Microscope",
+        microscope: "Microscope",  # NOTE(imo): Right now, Microscope needs to import LiveController.  So we can't properly annotate it here.
         control_illumination: bool = True,
         use_internal_timer_for_hardware_trigger: bool = True,
         for_displacement_measurement: bool = False,
@@ -35,8 +35,8 @@ class LiveController:
         self.fps_trigger = 1
         self.timer_trigger_interval = (1.0 / self.fps_trigger) * 1000
 
-        self.timer_trigger: threading.Timer = threading.Timer(self.timer_trigger_interval, self.trigger_acquisition)
-        self.timer_trigger.start()
+        self.timer_trigger: Optional[threading.Timer] = None
+        self._start_new_timer()
 
         self.trigger_ID = -1
 
@@ -269,6 +269,7 @@ class LiveController:
         self._stop_existing_timer()
         interval_s = self.timer_trigger_interval / 1000.0
         self.timer_trigger = threading.Timer(interval_s, self.trigger_acquisition)
+        self.timer_trigger.daemon = True
         self.timer_trigger.start()
 
     def _start_triggerred_acquisition(self):

@@ -1,5 +1,9 @@
+from sympy.physics.units import micro
+
 import tests.control.gui_test_stubs as gts
 import pytest
+
+import control.microscope
 
 
 # Make sure we can create a multi point controller and worker with out default config
@@ -7,9 +11,11 @@ import pytest
     "This fails because of the QApplicateion.processEvents() in _on_acqusition_complete.  Not sure why we need that."
 )
 def test_multi_point_worker_with_default_config(qtbot):
-    multi_point_controller = gts.get_test_multi_point_controller()
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    multi_point_controller = gts.get_test_multi_point_controller(microscope=scope)
     multi_point_controller.run_acquisition()
     multi_point_controller.request_abort_aquisition()
+    scope.close()
 
 
 @pytest.mark.skip(
@@ -25,14 +31,16 @@ def test_multi_point_worker_init_bugs(qtbot):
     # so make sure that it is initialized regardless of that config value.
 
     USE_NAPARI_FOR_MULTIPOINT = False
-    multi_point_controller_for_false = gts.get_test_multi_point_controller()
+    scope_false = control.microscope.Microscope.build_from_global_config(True)
+    multi_point_controller_for_false = gts.get_test_multi_point_controller(microscope=scope_false)
     multi_point_controller_for_false.run_acquisition()
     multi_point_controller_for_false.request_abort_aquisition()
     # This will throw if the attribute doesn't exist
     napari_layer_for_false = multi_point_controller_for_false.multiPointWorker.init_napari_layers
 
     USE_NAPARI_FOR_MULTIPOINT = True
-    multi_point_controller_for_true = gts.get_test_multi_point_controller()
+    scope_true = control.microscope.Microscope.build_from_global_config(True)
+    multi_point_controller_for_true = gts.get_test_multi_point_controller(microscope=scope_true)
     multi_point_controller_for_true.run_acquisition()
     multi_point_controller_for_true.request_abort_aquisition()
     # This will throw if the attribute doesn't exist
