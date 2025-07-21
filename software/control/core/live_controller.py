@@ -235,12 +235,14 @@ class LiveController:
 
     def _trigger_acquisition_timer_fn(self):
         if self.trigger_acquisition():
-            self._start_new_timer()
+            if self.is_live:
+                self._start_new_timer()
         else:
-            # It failed, try again real soon
-            # Use a short period so we get back here fast and check again.
-            re_check_period_ms = 10
-            self._start_new_timer(maybe_custom_interval_ms=re_check_period_ms)
+            if self.is_live:
+                # It failed, try again real soon
+                # Use a short period so we get back here fast and check again.
+                re_check_period_ms = 10
+                self._start_new_timer(maybe_custom_interval_ms=re_check_period_ms)
 
     # software trigger related
     def trigger_acquisition(self):
