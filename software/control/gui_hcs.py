@@ -226,7 +226,6 @@ class HighContentScreeningGui(QMainWindow):
         self.imageArrayDisplayWindow: Optional[core.ImageArrayDisplayWindow] = None
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
 
-
         self.recordTabWidget: QTabWidget = QTabWidget()
         self.cameraTabWidget: QTabWidget = QTabWidget()
         self.load_widgets()
@@ -418,6 +417,7 @@ class HighContentScreeningGui(QMainWindow):
             self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
         if ENABLE_NL5:
             import control.NL5Widget as NL5Widget
+
             self.nl5Wdiget = NL5Widget.NL5Widget(self.nl5)
 
         if CAMERA_TYPE in ["Toupcam", "Tucsen", "Kinetix"]:

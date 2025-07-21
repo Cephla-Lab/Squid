@@ -63,6 +63,7 @@ if ENABLE_NL5:
 else:
     NL5 = TypeVar("NL5")
 
+
 class QtStreamHandler(QObject):
 
     image_to_display = Signal(np.ndarray)
@@ -610,12 +611,13 @@ class AutoFocusController(QObject):
     image_to_display = Signal(np.ndarray)
 
     def __init__(
-            self,
-            camera: AbstractCamera,
-            stage: AbstractStage,
-            liveController: LiveController,
-            microcontroller: Microcontroller,
-            nl5: Optional[NL5]):
+        self,
+        camera: AbstractCamera,
+        stage: AbstractStage,
+        liveController: LiveController,
+        microcontroller: Microcontroller,
+        nl5: Optional[NL5],
+    ):
         QObject.__init__(self)
         self.camera: AbstractCamera = camera
         self.stage: AbstractStage = stage
