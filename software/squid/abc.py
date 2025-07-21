@@ -17,6 +17,45 @@ from squid.exceptions import SquidTimeout
 import control.utils
 
 
+class FilterWheel(ABC):
+    """Abstract base class defining the interface for different filter wheels."""
+
+    @abstractmethod
+    def __init__(self):
+        """Initialize the filter wheel and establish communication."""
+        pass
+
+    @abstractmethod
+    def home(self):
+        """Home the filter wheel."""
+        pass
+
+    @abstractmethod
+    def set_filter_wheel_position(self, position: int):
+        """Set the filter wheel position to the given index."""
+        pass
+
+    @abstractmethod
+    def get_filter_wheel_position(self) -> int:
+        """Get the current filter wheel position."""
+        pass
+
+    @abstractmethod
+    def get_number_of_positions(self) -> int:
+        """Get the number of positions of the filter wheel."""
+        pass
+
+    @abstractmethod
+    def get_temperature(self) -> float:
+        """Get the temperature of the filter wheel."""
+        pass
+
+    @abstractmethod
+    def close(self):
+        """Close the filter wheel."""
+        pass
+
+
 class LightSource(ABC):
     """Abstract base class defining the interface for different light sources."""
 
