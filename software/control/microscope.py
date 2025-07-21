@@ -288,6 +288,7 @@ class Microscope:
         low_level_drivers: LowLevelDrivers,
         stream_handler_callbacks: Optional[StreamHandlerFunctions] = None,
         simulated: bool = False,
+        skip_prepare_for_use: bool = False
     ):
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -323,16 +324,10 @@ class Microscope:
 
         self.live_controller: LiveController = LiveController(microscope=self)
 
-    def update_camera_functions(self, functions: StreamHandlerFunctions):
-        self.stream_handler.set_functions(functions)
+        if not skip_prepare_for_use:
+            self._prepare_for_use()
 
-    def update_camera_focus_functions(self, functions: StreamHandlerFunctions):
-        if not self.addons.camera_focus:
-            raise ValueError("No focus camera, cannot change its stream handler functions.")
-
-        self.stream_handler_focus.set_functions(functions)
-
-    def prepare_for_use(self):
+    def _prepare_for_use(self):
         self.low_level_drivers.prepare_for_use()
         self.addons.prepare_for_use()
 
@@ -345,6 +340,15 @@ class Microscope:
             )
             self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
             self.addons.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+
+    def update_camera_functions(self, functions: StreamHandlerFunctions):
+        self.stream_handler.set_functions(functions)
+
+    def update_camera_focus_functions(self, functions: StreamHandlerFunctions):
+        if not self.addons.camera_focus:
+            raise ValueError("No focus camera, cannot change its stream handler functions.")
+
+        self.stream_handler_focus.set_functions(functions)
 
     def initialize_core_components(self):
         if self.addons.piezo_stage:
