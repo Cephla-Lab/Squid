@@ -233,6 +233,15 @@ class LiveController:
             if self.for_displacement_measurement:
                 self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
 
+    def _trigger_acquisition_timer_fn(self):
+        if self.trigger_acquisition():
+            self._start_new_timer()
+        else:
+            # It failed, try again real soon
+            # Use a short period so we get back here fast and check again.
+            re_check_period_ms = 10
+            self._start_new_timer(maybe_custom_interval_ms=re_check_period_ms)
+
     # software trigger related
     def trigger_acquisition(self):
         if not self.microscope.camera.get_ready_for_trigger():
@@ -240,9 +249,8 @@ class LiveController:
             # we do the same here.  Should this warn?  I didn't add a warning because it seems like
             # we over-trigger as standard practice (eg: we trigger at our exposure time frequency, but
             # the cameras can't give us images that fast so we essentially always have at least 1 skipped trigger)
-            self._log.debug("Not ready for trigger, skipping.")
-            self._start_new_timer()
-            return
+            self._log.debug(f"Not ready for trigger, skipping (total frame time = {self.microscope.camera.get_total_frame_time()} [ms]).")
+            return False
         if self.trigger_mode == TriggerMode.SOFTWARE and self.control_illumination:
             if not self.illumination_on:
                 self.turn_on_illumination()
@@ -255,17 +263,20 @@ class LiveController:
             if self.control_illumination and self.illumination_on == False:
                 self.turn_on_illumination()
 
-        self._start_new_timer()
+        return True
 
     def _stop_existing_timer(self):
         if self.timer_trigger and self.timer_trigger.is_alive():
             self.timer_trigger.cancel()
         self.timer_trigger = None
 
-    def _start_new_timer(self):
+    def _start_new_timer(self, maybe_custom_interval_ms = None):
         self._stop_existing_timer()
-        interval_s = self.timer_trigger_interval / 1000.0
-        self.timer_trigger = threading.Timer(interval_s, self.trigger_acquisition)
+        if maybe_custom_interval_ms:
+            interval_s = maybe_custom_interval_ms / 1000.0
+        else:
+            interval_s = self.timer_trigger_interval / 1000.0
+        self.timer_trigger = threading.Timer(interval_s, self._trigger_acquisition_timer_fn)
         self.timer_trigger.daemon = True
         self.timer_trigger.start()
 
