@@ -17,7 +17,9 @@ def get_test_live_controller(
 ) -> control.core.core.LiveController:
     controller = control.core.core.LiveController(microscope=microscope)
 
-    controller.set_microscope_mode(microscope.configuration_manager.channel_manager.get_configurations(objective=starting_objective)[0])
+    controller.set_microscope_mode(
+        microscope.configuration_manager.channel_manager.get_configurations(objective=starting_objective)[0]
+    )
     return controller
 
 
@@ -75,17 +77,23 @@ def get_test_navigation_viewer(objective_store: control.core.objective_store.Obj
 
 
 def get_test_multi_point_controller(microscope: Microscope) -> control.core.core.MultiPointController:
-    live_controller = get_test_live_controller(microscope=microscope, starting_objective=microscope.objective_store.default_objective)
+    live_controller = get_test_live_controller(
+        microscope=microscope, starting_objective=microscope.objective_store.default_objective
+    )
 
     multi_point_controller = control.core.core.MultiPointController(
         camera=microscope.camera,
         stage=microscope.stage,
         microcontroller=microscope.low_level_drivers.microcontroller,
         live_controller=live_controller,
-        autofocus_controller=get_test_autofocus_controller(microscope.camera, microscope.stage, live_controller, microscope.low_level_drivers.microcontroller),
+        autofocus_controller=get_test_autofocus_controller(
+            microscope.camera, microscope.stage, live_controller, microscope.low_level_drivers.microcontroller
+        ),
         channel_configuration_manager=microscope.channel_configuration_manager,
         scan_coordinates=get_test_scan_coordinates(
-            microscope.objective_store, get_test_navigation_viewer(microscope.objective_store, microscope.camera.get_pixel_size_unbinned_um()), microscope.stage
+            microscope.objective_store,
+            get_test_navigation_viewer(microscope.objective_store, microscope.camera.get_pixel_size_unbinned_um()),
+            microscope.stage,
         ),
         piezo=get_test_piezo_stage(microscope.low_level_drivers.microcontroller),
         objective_store=microscope.objective_store,
