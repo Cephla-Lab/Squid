@@ -28,7 +28,7 @@ class LiveController:
         self.control_illumination = control_illumination
         self.illumination_on = False
         self.use_internal_timer_for_hardware_trigger = (
-            use_internal_timer_for_hardware_trigger  # use QTimer vs timer in the MCU
+            use_internal_timer_for_hardware_trigger  # use Timer vs timer in the MCU
         )
         self.for_displacement_measurement = for_displacement_measurement
 
@@ -241,6 +241,7 @@ class LiveController:
             # we over-trigger as standard practice (eg: we trigger at our exposure time frequency, but
             # the cameras can't give us images that fast so we essentially always have at least 1 skipped trigger)
             self._log.debug("Not ready for trigger, skipping.")
+            self._start_new_timer()
             return
         if self.trigger_mode == TriggerMode.SOFTWARE and self.control_illumination:
             if not self.illumination_on:
