@@ -45,7 +45,7 @@ class LiveController:
 
         self.display_resolution_scaling = 1
 
-        self.enable_channel_auto_filter_switching = True
+        self.enable_channel_auto_filter_switching: bool = True
 
     # illumination control
     def turn_on_illumination(self):
@@ -206,13 +206,10 @@ class LiveController:
 
     def start_live(self):
         self.is_live = True
-        self._log.error("start_live entry")
         self.microscope.camera.start_streaming()
-        self._log.error("after start_streaming")
         if self.trigger_mode == TriggerMode.SOFTWARE or (
             self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
         ):
-            self._log.error("STARTING LIVE")
             self.microscope.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
             self._start_triggerred_acquisition()
         # if controlling the laser displacement measurement camera

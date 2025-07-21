@@ -854,15 +854,15 @@ class LaserAutofocusSettingWidget(QWidget):
     def illuminate_and_get_frame(self):
         # Get a frame from the live controller.  We need to reach deep into the liveController here which
         # is not ideal.
-        self.liveController.microcontroller.turn_on_AF_laser()
-        self.liveController.microcontroller.wait_till_operation_is_completed()
+        self.liveController.microscope.low_level_drivers.microcontroller.turn_on_AF_laser()
+        self.liveController.microscope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
         self.liveController.trigger_acquisition()
 
         try:
             frame = self.liveController.microscope.camera.read_frame()
         finally:
-            self.liveController.microcontroller.turn_off_AF_laser()
-            self.liveController.microcontroller.wait_till_operation_is_completed()
+            self.liveController.microscope.low_level_drivers.microcontroller.turn_off_AF_laser()
+            self.liveController.microscope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
 
         return frame
 
@@ -2385,7 +2385,7 @@ class FilterControllerWidget(QFrame):
     def __init__(self, filterController, liveController, main=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.filterController = filterController
-        self.liveController = liveController
+        self.liveController: LiveController = liveController
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
@@ -6319,7 +6319,7 @@ class NapariLiveWidget(QWidget):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.streamHandler = streamHandler
-        self.liveController = liveController
+        self.liveController: LiveController = liveController
         self.stage = stage
         self.objectiveStore = objectiveStore
         self.channelConfigurationManager = channelConfigurationManager
@@ -6469,9 +6469,6 @@ class NapariLiveWidget(QWidget):
         for display_name, mode in trigger_modes:
             self.dropdown_triggerMode.addItem(display_name, mode)
         self.dropdown_triggerMode.currentIndexChanged.connect(self.on_trigger_mode_changed)
-        # self.dropdown_triggerMode = QComboBox()
-        # self.dropdown_triggerMode.addItems([TriggerMode.SOFTWARE, TriggerMode.HARDWARE, TriggerMode.CONTINUOUS])
-        # self.dropdown_triggerMode.currentTextChanged.connect(self.liveController.set_trigger_mode)
 
         # Trigger FPS
         self.entry_triggerFPS = QDoubleSpinBox()
@@ -8455,7 +8452,7 @@ class WellplateCalibration(QDialog):
         self.stage = stage
         self.navigationViewer = navigationViewer
         self.streamHandler = streamHandler
-        self.liveController = liveController
+        self.liveController: LiveController = liveController
         self.was_live = self.liveController.is_live
         self.corners = [None, None, None]
         self.show_virtual_joystick = True  # FLAG
@@ -8655,7 +8652,7 @@ class WellplateCalibration(QDialog):
     def viewerClicked(self, x, y, width, height):
         pixel_size_um = (
             self.navigationViewer.objectiveStore.get_pixel_size_factor()
-            * self.liveController.camera.get_pixel_size_binned_um()
+            * self.liveController.microscope.camera.get_pixel_size_binned_um()
         )
 
         pixel_sign_x = 1
