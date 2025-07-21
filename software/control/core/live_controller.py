@@ -253,7 +253,9 @@ class LiveController:
             # the cameras can't give us images that fast so we essentially always have at least 1 skipped trigger)
             self._trigger_skip_count += 1
             if self._trigger_skip_count % 100 == 1:
-                self._log.debug(f"Not ready for trigger, skipping (_trigger_skip_count={self._trigger_skip_count}, total frame time = {self.microscope.camera.get_total_frame_time()} [ms]).")
+                self._log.debug(
+                    f"Not ready for trigger, skipping (_trigger_skip_count={self._trigger_skip_count}, total frame time = {self.microscope.camera.get_total_frame_time()} [ms])."
+                )
             return False
 
         self._trigger_skip_count = 0
@@ -276,7 +278,7 @@ class LiveController:
             self.timer_trigger.cancel()
         self.timer_trigger = None
 
-    def _start_new_timer(self, maybe_custom_interval_ms = None):
+    def _start_new_timer(self, maybe_custom_interval_ms=None):
         self._stop_existing_timer()
         if maybe_custom_interval_ms:
             interval_s = maybe_custom_interval_ms / 1000.0
