@@ -40,7 +40,7 @@ try:
 except:
     pass
 
-from typing import List, Tuple, Optional, Dict, Any, Callable
+from typing import List, Tuple, Optional, Dict, Any, Callable, TypeVar
 from queue import Queue
 from threading import Thread, Lock
 from pathlib import Path
