@@ -34,7 +34,7 @@ class LiveController:
 
         self.fps_trigger = 1
         self.timer_trigger_interval = (1.0 / self.fps_trigger) * 1000
-
+        self._trigger_skip_count = 0
         self.timer_trigger: Optional[threading.Timer] = None
 
         self.trigger_ID = -1
@@ -251,8 +251,12 @@ class LiveController:
             # we do the same here.  Should this warn?  I didn't add a warning because it seems like
             # we over-trigger as standard practice (eg: we trigger at our exposure time frequency, but
             # the cameras can't give us images that fast so we essentially always have at least 1 skipped trigger)
-            self._log.debug(f"Not ready for trigger, skipping (total frame time = {self.microscope.camera.get_total_frame_time()} [ms]).")
+            self._trigger_skip_count += 1
+            if self._trigger_skip_count % 100 == 1:
+                self._log.debug(f"Not ready for trigger, skipping (_trigger_skip_count={self._trigger_skip_count}, total frame time = {self.microscope.camera.get_total_frame_time()} [ms]).")
             return False
+
+        self._trigger_skip_count = 0
         if self.trigger_mode == TriggerMode.SOFTWARE and self.control_illumination:
             if not self.illumination_on:
                 self.turn_on_illumination()
