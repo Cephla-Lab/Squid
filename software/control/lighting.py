@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
+from control.microcontroller import Microcontroller
+
 
 class LightSourceType(Enum):
     SquidLED = 0
@@ -28,7 +30,7 @@ class ShutterControlMode(Enum):
 class IlluminationController:
     def __init__(
         self,
-        microcontroller,
+        microcontroller: Microcontroller,
         intensity_control_mode=IntensityControlMode.SquidControllerDAC,
         shutter_control_mode=ShutterControlMode.TTL,
         light_source_type=None,

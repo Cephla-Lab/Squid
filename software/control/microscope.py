@@ -22,7 +22,7 @@ from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
 import control.celesta
 import control.filterwheel as filterwheel
-import control.microcontroller as microcontroller
+import control.microcontroller
 import control.serial_peripherals as serial_peripherals
 import squid.camera.utils
 import squid.config
@@ -90,7 +90,7 @@ class MicroscopeAddons:
         squid_filter_wheel = None
         if USE_SQUID_FILTERWHEEL:
             squid_filter_wheel = (
-                filterwheel.SquidFilterWheelWrapper(microcontroller)
+                filterwheel.SquidFilterWheelWrapper(microcontroller=micro)
                 if not simulated
                 else filterwheel.SquidFilterWheelWrapper_Simulation(None)
             )
@@ -190,11 +190,11 @@ class LowLevelDrivers:
     @staticmethod
     def build_from_global_config(simulated: bool = False) -> "LowLevelDrivers":
         micro_serial_device = (
-            microcontroller.get_microcontroller_serial_device(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)
+            control.microcontroller.get_microcontroller_serial_device(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)
             if not simulated
-            else microcontroller.get_microcontroller_serial_device(simulated=True)
+            else control.microcontroller.get_microcontroller_serial_device(simulated=True)
         )
-        micro = microcontroller.Microcontroller(serial_device=micro_serial_device)
+        micro = control.microcontroller.Microcontroller(serial_device=micro_serial_device)
 
         return LowLevelDrivers(microcontroller=micro)
 
@@ -214,7 +214,7 @@ class Microscope:
         if USE_PRIOR_STAGE:
             stage = PriorStage(sn=PRIOR_STAGE_SN, stage_config=stage_config)
         else:
-            if microcontroller is None:
+            if low_level_devices.microcontroller is None:
                 raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
             stage = CephlaStage(low_level_devices.microcontroller, stage_config)
 
@@ -256,19 +256,19 @@ class Microscope:
             ldi = serial_peripherals.LDI()
 
             illumination_controller = IlluminationController(
-                microcontroller, ldi.intensity_mode, ldi.shutter_mode, LightSourceType.LDI, ldi
+                low_level_devices.microcontroller, ldi.intensity_mode, ldi.shutter_mode, LightSourceType.LDI, ldi
             )
         elif USE_CELESTA_ETHENET_CONTROL and not simulated:
             celesta = control.celesta.CELESTA()
             illumination_controller = IlluminationController(
-                microcontroller,
+                low_level_devices.microcontroller,
                 IntensityControlMode.Software,
                 ShutterControlMode.TTL,
                 LightSourceType.CELESTA,
                 celesta,
             )
         else:
-            illumination_controller = IlluminationController(microcontroller)
+            illumination_controller = IlluminationController(low_level_devices.microcontroller)
 
         return Microscope(
             stage=stage,
