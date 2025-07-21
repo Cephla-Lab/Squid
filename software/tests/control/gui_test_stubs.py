@@ -54,7 +54,7 @@ def get_test_autofocus_controller(
     microcontroller: control.microcontroller.Microcontroller,
 ):
     return control.core.core.AutoFocusController(
-        camera=camera, stage=stage, liveController=live_controller, microcontroller=microcontroller
+        camera=camera, stage=stage, liveController=live_controller, microcontroller=microcontroller, nl5=None
     )
 
 

@@ -221,10 +221,14 @@ class HighContentScreeningGui(QMainWindow):
         self.stitcherWidget: Optional[widgets.StitcherWidget] = None
         self.napariLiveWidget: Optional[widgets.NapariLiveWidget] = None
         self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
+        self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
         self.napariMultiChannelWidget: Optional[widgets.NapariMultiChannelWidget] = None
         self.imageArrayDisplayWindow: Optional[core.ImageArrayDisplayWindow] = None
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
 
+
+        self.recordTabWidget: QTabWidget = QTabWidget()
+        self.cameraTabWidget: QTabWidget = QTabWidget()
         self.load_widgets()
         self.setup_layout()
         self.make_connections()
@@ -270,7 +274,7 @@ class HighContentScreeningGui(QMainWindow):
             self.stage, self.liveController, is_for_wellplate=True
         )
         self.autofocusController = core.AutoFocusController(
-            self.camera, self.stage, self.liveController, self.microcontroller
+            self.camera, self.stage, self.liveController, self.microcontroller, self.nl5
         )
 
         self.imageSaver = core.ImageSaver()
@@ -414,7 +418,6 @@ class HighContentScreeningGui(QMainWindow):
             self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
         if ENABLE_NL5:
             import control.NL5Widget as NL5Widget
-
             self.nl5Wdiget = NL5Widget.NL5Widget(self.nl5)
 
         if CAMERA_TYPE in ["Toupcam", "Tucsen", "Kinetix"]:
@@ -449,8 +452,7 @@ class HighContentScreeningGui(QMainWindow):
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
         if self.piezo:
             self.piezoWidget = widgets.PiezoWidget(self.piezo)
-        else:
-            self.piezoWidget = None
+
         if USE_XERYON:
             self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore, self.objective_changer)
         else:
@@ -577,10 +579,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.objectiveStore, self.channelConfigurationManager, self.contrastManager
             )
 
-        self.recordTabWidget: QTabWidget = QTabWidget()
         self.setupRecordTabWidget()
-
-        self.cameraTabWidget: QTabWidget = QTabWidget()
         self.setupCameraTabWidget()
 
     def setupImageDisplayTabs(self):

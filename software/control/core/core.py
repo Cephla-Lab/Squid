@@ -58,6 +58,10 @@ import imageio as iio
 import squid.abc
 import scipy.ndimage
 
+if ENABLE_NL5:
+    import control.NL5 as NL5
+else:
+    NL5 = TypeVar("NL5")
 
 class QtStreamHandler(QObject):
 
@@ -510,12 +514,13 @@ class AutofocusWorker(QObject):
 
     def __init__(self, autofocusController):
         QObject.__init__(self)
-        self.autofocusController = autofocusController
+        self.autofocusController: AutoFocusController = autofocusController
 
         self.camera: AbstractCamera = self.autofocusController.camera
-        self.microcontroller = self.autofocusController.microcontroller
-        self.stage = self.autofocusController.stage
-        self.liveController = self.autofocusController.liveController
+        self.microcontroller: Microcontroller = self.autofocusController.microcontroller
+        self.stage: AbstractStage = self.autofocusController.stage
+        self.liveController: LiveController = self.autofocusController.liveController
+        self.nl5: Optional[NL5] = self.autofocusController.nl5
 
         self.N = self.autofocusController.N
         self.deltaZ = self.autofocusController.deltaZ
@@ -553,7 +558,7 @@ class AutofocusWorker(QObject):
                 image = self.camera.read_frame()
             elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
                 if "Fluorescence" in self.liveController.currentConfiguration.name and ENABLE_NL5 and NL5_USE_DOUT:
-                    self.microscope.nl5.start_acquisition()
+                    self.nl5.start_acquisition()
                     # TODO(imo): This used to use the "reset_image_ready_flag=False" arg, but oinly the toupcam camera implementation had the
                     #  "reset_image_ready_flag" arg, so this is broken for all other cameras.
                     image = self.camera.read_frame()
@@ -604,12 +609,20 @@ class AutoFocusController(QObject):
     autofocusFinished = Signal()
     image_to_display = Signal(np.ndarray)
 
-    def __init__(self, camera: AbstractCamera, stage: AbstractStage, liveController, microcontroller: Microcontroller):
+    def __init__(
+            self,
+            camera: AbstractCamera,
+            stage: AbstractStage,
+            liveController: LiveController,
+            microcontroller: Microcontroller,
+            nl5: Optional[NL5]):
         QObject.__init__(self)
         self.camera: AbstractCamera = camera
-        self.stage = stage
-        self.microcontroller = microcontroller
-        self.liveController = liveController
+        self.stage: AbstractStage = stage
+        self.microcontroller: Microcontroller = microcontroller
+        self.liveController: LiveController = liveController
+        self.nl5: Optional[NL5] = nl5
+
         self.N = None
         self.deltaZ = None
         self.crop_width = AF.CROP_WIDTH
