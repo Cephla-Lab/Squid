@@ -36,7 +36,6 @@ class LiveController:
         self.timer_trigger_interval = (1.0 / self.fps_trigger) * 1000
 
         self.timer_trigger: Optional[threading.Timer] = None
-        self._start_new_timer()
 
         self.trigger_ID = -1
 
