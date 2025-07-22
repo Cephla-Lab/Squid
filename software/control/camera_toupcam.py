@@ -359,7 +359,7 @@ class ToupcamCamera(AbstractCamera):
             self._hw_set_strobe_delay_ms_fn(self.get_strobe_time())
 
         if send_exposure:
-            self._calculate_and_set_camera_exposure_time(camera_exposure_time_ms)
+            self._calculate_and_set_camera_exposure_time(image_exposure_time_ms)
 
         self._log.debug(
             f"image size: {width=} x {height=}, {buffer_size=}, strobe_time={self.get_strobe_time()} [ms], exposure_time={self.get_exposure_time()} [ms], full frame time={self.get_total_frame_time()} [ms], {send_exposure=}"
