@@ -49,7 +49,7 @@ class StreamHandler:
         self.counter = 0
         self.fps_real = 0
 
-        self._fns: StreamHandlerFunctions = handler_functions
+        self._fns: StreamHandlerFunctions = handler_functions if handler_functions else NoOpStreamHandlerFunctions
 
     def start_recording(self):
         self.save_image_flag = True
@@ -68,6 +68,8 @@ class StreamHandler:
         print(self.display_resolution_scaling)
 
     def set_functions(self, functions: StreamHandlerFunctions):
+        if not functions:
+            functions = NoOpStreamHandlerFunctions
         self._fns = functions
 
     def on_new_frame(self, frame: CameraFrame):

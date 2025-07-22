@@ -17,6 +17,10 @@ def main(args):
     # you can use this to test on real hardware (in addition to the existing unit tests)
     scope: control.microscope.Microscope = control.microscope.Microscope.build_from_global_config(args.simulate)
 
+    # NOTE(imo): We will probably put this into __init__.  For now, keep it separate just in case it'd break
+    # anything in the gui.
+    scope.setup_hardware()
+
     # Do manual homing, and again using the scope helper
     scope.stage.home(x=False, y=False, z=True, theta=False, blocking=True)
     scope.stage.home(x=True, y=True, z=False, theta=False, blocking=True)
@@ -34,7 +38,9 @@ def main(args):
     scope.move_to_position(x=x_max / 3, y=y_max / 3, z=z_max / 4)
 
     scope.camera.start_streaming()
-    for config_name in scope.configuration_manager.channel_manager.get_configurations(scope.objective_store.current_objective):
+    for config_name in scope.configuration_manager.channel_manager.get_configurations(
+        scope.objective_store.current_objective
+    ):
         scope.live_controller.set_microscope_mode(config_name)
         scope.illumination_controller.turn_on_illumination()
 
@@ -57,17 +63,17 @@ def main(args):
 
     scope.camera.stop_streaming()
 
-    counts = {
-        "image_to_display": 0,
-        "packet_image_to_write": 0,
-        "signal_new_frame_received": 0
-    }
+    counts = {"image_to_display": 0, "packet_image_to_write": 0, "signal_new_frame_received": 0}
+
+    def add_count(item):
+        nonlocal counts
+        counts[item] = counts[item] + 1
 
     stream_handlers = StreamHandlerFunctions(
-        image_to_display=lambda a: counts["image_to_display"] += 1,
-        packet_image_to_write=lambda a,i,f: counts.update(["packet_image_to_write"]),
-        signal_new_frame_received=lambda: counts.update(["signal_new_frame_received"]),
-        accept_new_frame=lambda: True
+        image_to_display=lambda a: add_count("image_to_display"),
+        packet_image_to_write=lambda a, i, f: add_count("packet_image_to_write"),
+        signal_new_frame_received=lambda: add_count("signal_new_frame_received"),
+        accept_new_frame=lambda: True,
     )
     trigger_fps = 2
     desired_frames = 6
@@ -77,11 +83,13 @@ def main(args):
     time.sleep(desired_frames / trigger_fps)
     scope.stop_live()
 
-    for label, count in counts:
-        if desired_frames != count:
-            log.warning(f"Counter with {label=} saw {counts} counts instead of expected {desired_frames}")
-        else:
-            log.info(f"Counter with {label=} has correct count. {counts} == {desired_frames}")
+    if abs(counts["signal_new_frame_received"] - desired_frames) > 1:
+        log.warning(
+            f"Expected {desired_frames} frames, but only received {counts['signal_new_frame_received']} new frame signals!"
+        )
+
+    for label, count in counts.items():
+        log.info(f"Counter with {label=} saw {count} counts with {desired_frames=}")
 
     scope.close()
 

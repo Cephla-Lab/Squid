@@ -286,9 +286,9 @@ class Microscope:
         illumination_controller: IlluminationController,
         addons: MicroscopeAddons,
         low_level_drivers: LowLevelDrivers,
-        stream_handler_callbacks: Optional[StreamHandlerFunctions] = None,
+        stream_handler_callbacks: Optional[StreamHandlerFunctions] = NoOpStreamHandlerFunctions,
         simulated: bool = False,
-        skip_prepare_for_use: bool = False
+        skip_prepare_for_use: bool = False,
     ):
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)

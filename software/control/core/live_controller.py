@@ -294,6 +294,7 @@ class LiveController:
     def _set_trigger_fps(self, fps_trigger):
         if fps_trigger <= 0:
             raise ValueError(f"fps_trigger must be > 0, but {fps_trigger=}")
+        self._log.debug(f"Setting {fps_trigger=}")
         self.fps_trigger = fps_trigger
         self.timer_trigger_interval = (1 / self.fps_trigger) * 1000
         self._start_new_timer()
