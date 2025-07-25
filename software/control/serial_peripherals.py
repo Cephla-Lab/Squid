@@ -657,6 +657,114 @@ class Dragonfly:
             self.serial_connection.close()
 
 
+class Dragonfly_Simulation:
+    def __init__(self, SN="00000000"):
+        self.log = squid.logging.get_logger(self.__class__.__name__)
+
+        # Internal state variables
+        self.emission_filter_positions = {1: 1, 2: 1}  # port -> position
+        self.field_aperture_positions = {1: 1, 2: 1}  # port -> position
+        self.dichroic_position = 1
+        self.current_modality = "BF"  # Default to brightfield
+        self.disk_speed = 0
+        self.disk_motor_running = False
+
+        # Configuration info
+        self.spinning_disk_max_speed = 10000
+
+        self.log.info("Dragonfly simulation initialized")
+
+    def get_config(self):
+        """Simulate device configuration retrieval"""
+        self.log.info("Dragonfly simulation configuration:")
+        self.log.info("Serial Number: SIM12345")
+        self.log.info("Product: Dragonfly Simulator")
+        self.log.info("Version: 1.0.0")
+        self.log.info(f"Max disk speed: {self.spinning_disk_max_speed}")
+        self.log.info("System info: Simulation System")
+
+    def set_emission_filter(self, port, position):
+        """Set emission filter wheel position"""
+        self.emission_filter_positions[port] = position
+        self.log.debug(f"Set emission filter port {port} to position {position}")
+        return position
+
+    def get_emission_filter(self, port):
+        """Get current emission filter wheel position"""
+        return self.emission_filter_positions.get(port, 1)
+
+    def set_port_selection_dichroic(self, position):
+        """Set port selection dichroic position"""
+        self.dichroic_position = position
+        self.log.debug(f"Set dichroic to position {position}")
+        return position
+
+    def get_port_selection_dichroic(self):
+        """Get current port selection dichroic position"""
+        return self.dichroic_position
+
+    def set_modality(self, modality):
+        """Set imaging modality"""
+        self.current_modality = modality
+        self.log.debug(f"Set modality to {modality}")
+        return modality
+
+    def get_modality(self):
+        """Get current imaging modality"""
+        return self.current_modality
+
+    def set_disk_motor_state(self, run):
+        """Start or stop the spinning disk motor"""
+        if run:
+            self.disk_motor_running = True
+            self.disk_speed = 5000  # Default speed
+            self.log.debug("Started disk motor")
+            return True
+        else:
+            self.disk_motor_running = False
+            self.disk_speed = 0
+            self.log.debug("Stopped disk motor")
+            return True
+
+    def get_disk_motor_state(self):
+        """Get spinning disk motor state"""
+        return self.disk_motor_running
+
+    def set_disk_speed(self, speed):
+        """Set spinning disk motor speed"""
+        self.disk_speed = speed
+        self.disk_motor_running = speed > 0
+        self.log.debug(f"Set disk speed to {speed} RPM")
+        return speed
+
+    def get_disk_speed(self):
+        """Get current spinning disk motor speed"""
+        return self.disk_speed
+
+    def set_filter_wheel_speed(self, port, speed):
+        """Set filter wheel rotation speed"""
+        self.log.debug(f"Set filter wheel port {port} speed to {speed}")
+        return speed
+
+    def set_field_aperture_wheel_position(self, port, position):
+        """Set aperture position"""
+        self.field_aperture_positions[port] = position
+        self.log.debug(f"Set field aperture port {port} to position {position}")
+        return position
+
+    def get_field_aperture_wheel_position(self, port):
+        """Get current aperture position"""
+        return self.field_aperture_positions.get(port, 1)
+
+    def get_component_info(self, component_type, port, index=None):
+        """Get information about a component"""
+        return f"Component {component_type} Port {port} - Simulation"
+
+    def close(self):
+        """Close the simulated connection"""
+        self.log.info("Dragonfly simulation closed")
+
+
 class LDI(LightSource):
     """Wrapper for communicating with LDI over serial"""
 

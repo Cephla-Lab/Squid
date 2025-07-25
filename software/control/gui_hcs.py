@@ -95,29 +95,15 @@ from control.custom_multipoint_widget import TemplateMultiPointWidget
 class MovementUpdater(QObject):
     position_after_move = Signal(squid.abc.Pos)
     position = Signal(squid.abc.Pos)
-    piezo_z_um = Signal(float)
 
-    def __init__(
-        self, stage: AbstractStage, piezo: Optional[PiezoStage], movement_threshhold_mm=0.0001, *args, **kwargs
-    ):
+    def __init__(self, stage: squid.abc.AbstractStage, movement_threshhold_mm=0.0001, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.stage: AbstractStage = stage
-        self.piezo: Optional[PiezoStage] = piezo
+        self.stage = stage
         self.movement_threshhold_mm = movement_threshhold_mm
-        self.previous_pos: Optional[squid.abc.Pos] = None
-        self.previous_piezo_pos: Optional[float] = None
+        self.previous_pos = None
         self.sent_after_stopped = False
 
     def do_update(self):
-        if self.piezo:
-            if not self.previous_piezo_pos:
-                self.previous_piezo_pos = self.piezo.position
-            else:
-                current_piezo_position = self.piezo.position
-                if self.previous_piezo_pos != current_piezo_position:
-                    self.previous_piezo_pos = current_piezo_position
-                    self.piezo_z_um.emit(current_piezo_position)
-
         pos = self.stage.get_pos()
         # Doing previous_pos initialization like this means we technically miss the first real update,
         # but that's okay since this is intended to be run frequently in the background.
@@ -146,105 +132,11 @@ class MovementUpdater(QObject):
         self.previous_pos = pos
 
 
-class QtMultiPointController(MultiPointController, QObject):
-    acquisition_finished = Signal()
-    signal_acquisition_start = Signal()
-    image_to_display = Signal(np.ndarray)
-    image_to_display_multi = Signal(np.ndarray, int)
-    signal_current_configuration = Signal(ChannelMode)
-    signal_register_current_fov = Signal(float, float)
-    napari_layers_init = Signal(int, int, object)
-    napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
-    signal_set_display_tabs = Signal(list, int)
-    signal_acquisition_progress = Signal(int, int, int)
-    signal_region_progress = Signal(int, int)
-    signal_coordinates = Signal(float, float, float, int)  # x, y, z, region
-
-    def __init__(
-        self,
-        microscope: Microscope,
-        live_controller: LiveController,
-        autofocus_controller: AutoFocusController,
-        objective_store: ObjectiveStore,
-        channel_configuration_manager: ChannelConfigurationManager,
-        scan_coordinates: Optional[ScanCoordinates] = None,
-        laser_autofocus_controller: Optional[LaserAutofocusController] = None,
-        fluidics: Optional[Any] = None,
-    ):
-        MultiPointController.__init__(
-            self,
-            microscope=microscope,
-            live_controller=live_controller,
-            autofocus_controller=autofocus_controller,
-            objective_store=objective_store,
-            channel_configuration_manager=channel_configuration_manager,
-            callbacks=MultiPointControllerFunctions(
-                signal_acquisition_start=self._signal_acquisition_start_fn,
-                signal_acquisition_finished=self._signal_acquisition_finished_fn,
-                signal_new_image=self._signal_new_image_fn,
-                signal_current_configuration=self._signal_current_configuration_fn,
-                signal_current_fov=self._signal_current_fov_fn,
-                signal_overall_progress=self._signal_overall_progress_fn,
-                signal_region_progress=self._signal_region_progress_fn,
-            ),
-            scan_coordinates=scan_coordinates,
-            laser_autofocus_controller=laser_autofocus_controller,
-        )
-        QObject.__init__(self)
-
-        self._napari_inited_for_this_acquisition = False
-
-    def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
-        # TODO mpc napari signals
-        self._napari_inited_for_this_acquisition = False
-        if not self.run_acquisition_current_fov:
-            self.signal_set_display_tabs.emit(self.selected_configurations, self.NZ)
-        else:
-            self.signal_set_display_tabs.emit(self.selected_configurations, 2)
-        self.signal_acquisition_start.emit()
-
-    def _signal_acquisition_finished_fn(self):
-        self.acquisition_finished.emit()
-        finish_pos = self.stage.get_pos()
-        self.signal_register_current_fov.emit(finish_pos.x_mm, finish_pos.y_mm)
-
-    def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
-        self.image_to_display.emit(frame.frame)
-        self.image_to_display_multi.emit(frame.frame, info.configuration.illumination_source)
-        self.signal_coordinates.emit(info.position.x_mm, info.position.y_mm, info.position.z_mm, info.region_id)
-
-        if not self._napari_inited_for_this_acquisition:
-            self._napari_inited_for_this_acquisition = True
-            self.napari_layers_init.emit(frame.frame.shape[0], frame.frame.shape[1], frame.frame.dtype)
-
-        objective_magnification = str(int(self.objectiveStore.get_current_objective_info()["magnification"]))
-        napri_layer_name = objective_magnification + "x " + info.configuration.name
-        self.napari_layers_update.emit(
-            frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
-        )
-
-    def _signal_current_configuration_fn(self, channel_mode: ChannelMode):
-        self.signal_current_configuration.emit(channel_mode)
-
-    def _signal_current_fov_fn(self, x_mm: float, y_mm: float):
-        self.signal_register_current_fov.emit(x_mm, y_mm)
-
-    def _signal_overall_progress_fn(self, overall_progress: OverallProgressUpdate):
-        self.signal_acquisition_progress.emit(
-            overall_progress.current_region, overall_progress.total_regions, overall_progress.current_timepoint
-        )
-
-    def _signal_region_progress_fn(self, region_progress: RegionProgressUpdate):
-        self.signal_region_progress.emit(region_progress.current_fov, region_progress.region_fovs)
-
-
 class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
 
-    def __init__(
-        self, microscope: control.microscope.Microscope, is_simulation=False, live_only_mode=False, *args, **kwargs
-    ):
+    def __init__(self, is_simulation=False, live_only_mode=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
@@ -255,6 +147,7 @@ class HighContentScreeningGui(QMainWindow):
         self.microcontroller: Microcontroller = microscope.low_level_drivers.microcontroller
 
         self.xlight: Optional[serial_peripherals.XLight] = microscope.addons.xlight
+        self.dragonfly: Optional[serial_peripherals.Dragonfly] = microscope.addons.dragonfly
         self.nl5: Optional[Any] = microscope.addons.nl5
         self.cellx: Optional[serial_peripherals.CellX] = microscope.addons.cellx
         self.emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterController] = (
@@ -502,7 +395,7 @@ class HighContentScreeningGui(QMainWindow):
         self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
         self.camera.enable_callbacks(enabled=True)
 
-        if self.camera_focus:
+        if SUPPORT_LASER_AUTOFOCUS:
             self.camera_focus.set_acquisition_mode(
                 squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER
             )  # self.camera.set_continuous_acquisition()
@@ -532,7 +425,10 @@ class HighContentScreeningGui(QMainWindow):
     def load_widgets(self):
         # Initialize all GUI widgets
         if ENABLE_SPINNING_DISK_CONFOCAL:
-            self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
+            if USE_DRAGONFLY:
+                self.spinningDiskConfocalWidget = widgets.DragonflyConfocalWidget(self.dragonfly)
+            else:
+                self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
         if ENABLE_NL5:
             import control.NL5Widget as NL5Widget
 
