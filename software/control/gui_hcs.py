@@ -334,6 +334,10 @@ class HighContentScreeningGui(QMainWindow):
         # Initialize simulation objects
         if ENABLE_SPINNING_DISK_CONFOCAL:
             self.xlight = serial_peripherals.XLight_Simulation()
+
+        if USE_DRAGONFLY:
+            self.dragonfly = serial_peripherals.Dragonfly_Simulation()
+
         if ENABLE_NL5:
             import control.NL5 as NL5
 
@@ -395,6 +399,13 @@ class HighContentScreeningGui(QMainWindow):
                 self.xlight = serial_peripherals.XLight(XLIGHT_SERIAL_NUMBER, XLIGHT_SLEEP_TIME_FOR_WHEEL)
             except Exception:
                 self.log.error("Error initializing Spinning Disk Confocal")
+                raise
+
+        if USE_DRAGONFLY:
+            try:
+                self.dragonfly = serial_peripherals.Dragonfly(SN=DRAGONFLY_SERIAL_NUMBER)
+            except Exception:
+                self.log.error("Error initializing Dragonfly")
                 raise
 
         if ENABLE_NL5:
@@ -582,7 +593,10 @@ class HighContentScreeningGui(QMainWindow):
     def loadWidgets(self):
         # Initialize all GUI widgets
         if ENABLE_SPINNING_DISK_CONFOCAL:
-            self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
+            if USE_DRAGONFLY:
+                self.spinningDiskConfocalWidget = widgets.DragonflyConfocalWidget(self.dragonfly)
+            else:
+                self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
         if ENABLE_NL5:
             import control.NL5Widget as NL5Widget
 
