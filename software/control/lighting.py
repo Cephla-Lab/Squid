@@ -13,6 +13,7 @@ class LightSourceType(Enum):
     CELESTA = 3
     VersaLase = 4
     SCI = 5
+    AndorLaser = 6
 
 
 class IntensityControlMode(Enum):
