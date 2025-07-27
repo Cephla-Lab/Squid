@@ -778,13 +778,13 @@ class Dragonfly_Simulation:
         return f"Component {component_type} Port {port} - Simulation"
 
     def get_emission_filter_info(self, port: int) -> list[str]:
-        return range(1, 9)
+        return [str(i) for i in range(1, 9)]
 
     def get_field_aperture_info(self) -> list[str]:
-        return range(1, 11)
+        return [str(i) for i in range(1, 11)]
 
     def get_port_selection_dichroic_info(self) -> list[str]:
-        return range(1, 5)
+        return [str(i) for i in range(1, 5)]
 
     def close(self):
         """Close the simulated connection"""

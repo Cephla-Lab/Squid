@@ -989,8 +989,7 @@ class DragonflyConfocalWidget(QWidget):
         self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
         self.dropdown_port1_emission_filter.currentIndexChanged.connect(self.set_port1_emission_filter)
         self.dropdown_port2_emission_filter.currentIndexChanged.connect(self.set_port2_emission_filter)
-        self.dropdown_port1_field_aperture.currentIndexChanged.connect(self.set_port1_field_aperture)
-        self.dropdown_port2_field_aperture.currentIndexChanged.connect(self.set_port2_field_aperture)
+        self.dropdown_field_aperture.currentIndexChanged.connect(self.set_field_aperture)
 
         # Emit initial state
         self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
@@ -1016,7 +1015,7 @@ class DragonflyConfocalWidget(QWidget):
 
         layout_wheels = QGridLayout(self)
         # Row 2: Camera Port 1 Emission Filter and Field Aperture
-        port1_emission_label = QLabel("Camera Port 1 Emission Filter")
+        port1_emission_label = QLabel("Port 1 Emission Filter")
         self.dropdown_port1_emission_filter = QComboBox(self)
         self.dropdown_port1_emission_filter.addItems(self.dragonfly.get_emission_filter_info(1))
 
@@ -1030,7 +1029,7 @@ class DragonflyConfocalWidget(QWidget):
         layout_wheels.addWidget(self.dropdown_field_aperture, 0, 3)
 
         # Row 3: Camera Port 2 Emission Filter and Field Aperture
-        port2_emission_label = QLabel("Camera Port 2 Emission Filter")
+        port2_emission_label = QLabel("Port 2 Emission Filter")
         self.dropdown_port2_emission_filter = QComboBox(self)
         self.dropdown_port2_emission_filter.addItems(self.dragonfly.get_emission_filter_info(2))
 
