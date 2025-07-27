@@ -332,7 +332,7 @@ class HighContentScreeningGui(QMainWindow):
                 microcontroller=self.microcontroller, stage_config=squid.config.get_stage_config()
             )
         # Initialize simulation objects
-        if ENABLE_SPINNING_DISK_CONFOCAL:
+        if ENABLE_SPINNING_DISK_CONFOCAL and not USE_DRAGONFLY:
             self.xlight = serial_peripherals.XLight_Simulation()
 
         if USE_DRAGONFLY:
@@ -394,7 +394,7 @@ class HighContentScreeningGui(QMainWindow):
                 microcontroller=self.microcontroller, stage_config=squid.config.get_stage_config()
             )
 
-        if ENABLE_SPINNING_DISK_CONFOCAL:
+        if ENABLE_SPINNING_DISK_CONFOCAL and not USE_DRAGONFLY:
             try:
                 self.xlight = serial_peripherals.XLight(XLIGHT_SERIAL_NUMBER, XLIGHT_SLEEP_TIME_FOR_WHEEL)
             except Exception:

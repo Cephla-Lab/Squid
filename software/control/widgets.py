@@ -1004,10 +1004,10 @@ class DragonflyConfocalWidget(QWidget):
         self.btn_disk_motor = QPushButton("Disk Motor On")
         self.btn_disk_motor.setCheckable(True)
 
-        dichroic_label = QLabel("Dichroic")
+        dichroic_label = QLabel("Port Selection")
         dichroic_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         self.dropdown_dichroic = QComboBox(self)
-        self.dropdown_dichroic.addItems([str(i) for i in range(1, 9)])  # Positions 1-8
+        self.dropdown_dichroic.addItems(self.dragonfly.get_port_selection_dichroic_info())
 
         layout_confocal.addWidget(self.btn_toggle_confocal)
         layout_confocal.addWidget(self.btn_disk_motor)
@@ -1018,30 +1018,24 @@ class DragonflyConfocalWidget(QWidget):
         # Row 2: Camera Port 1 Emission Filter and Field Aperture
         port1_emission_label = QLabel("Camera Port 1 Emission Filter")
         self.dropdown_port1_emission_filter = QComboBox(self)
-        self.dropdown_port1_emission_filter.addItems([str(i) for i in range(1, 9)])  # Positions 1-8
+        self.dropdown_port1_emission_filter.addItems(self.dragonfly.get_emission_filter_info(1))
 
         port1_aperture_label = QLabel("Field Aperture")
-        self.dropdown_port1_field_aperture = QComboBox(self)
-        self.dropdown_port1_field_aperture.addItems([str(i) for i in range(1, 9)])  # Positions 1-8
+        self.dropdown_field_aperture = QComboBox(self)
+        self.dropdown_field_aperture.addItems(self.dragonfly.get_field_aperture_info())
 
         layout_wheels.addWidget(port1_emission_label, 0, 0)
         layout_wheels.addWidget(self.dropdown_port1_emission_filter, 0, 1)
         layout_wheels.addWidget(port1_aperture_label, 0, 2)
-        layout_wheels.addWidget(self.dropdown_port1_field_aperture, 0, 3)
+        layout_wheels.addWidget(self.dropdown_field_aperture, 0, 3)
 
         # Row 3: Camera Port 2 Emission Filter and Field Aperture
         port2_emission_label = QLabel("Camera Port 2 Emission Filter")
         self.dropdown_port2_emission_filter = QComboBox(self)
-        self.dropdown_port2_emission_filter.addItems([str(i) for i in range(1, 9)])  # Positions 1-8
-
-        port2_aperture_label = QLabel("Field Aperture")
-        self.dropdown_port2_field_aperture = QComboBox(self)
-        self.dropdown_port2_field_aperture.addItems([str(i) for i in range(1, 9)])  # Positions 1-8
+        self.dropdown_port2_emission_filter.addItems(self.dragonfly.get_emission_filter_info(2))
 
         layout_wheels.addWidget(port2_emission_label, 1, 0)
         layout_wheels.addWidget(self.dropdown_port2_emission_filter, 1, 1)
-        layout_wheels.addWidget(port2_aperture_label, 1, 2)
-        layout_wheels.addWidget(self.dropdown_port2_field_aperture, 1, 3)
 
         main_layout.addLayout(layout_confocal)
         main_layout.addLayout(layout_wheels)
@@ -1055,8 +1049,7 @@ class DragonflyConfocalWidget(QWidget):
         self.dropdown_dichroic.setEnabled(enable)
         self.dropdown_port1_emission_filter.setEnabled(enable)
         self.dropdown_port2_emission_filter.setEnabled(enable)
-        self.dropdown_port1_field_aperture.setEnabled(enable)
-        self.dropdown_port2_field_aperture.setEnabled(enable)
+        self.dropdown_field_aperture.setEnabled(enable)
 
     def toggle_confocal_mode(self):
         """Toggle between confocal and widefield modes"""
@@ -1098,8 +1091,8 @@ class DragonflyConfocalWidget(QWidget):
         """Set dichroic position"""
         self.enable_all_buttons(False)
         try:
-            selected_pos = int(self.dropdown_dichroic.currentText())
-            self.dragonfly.set_port_selection_dichroic(selected_pos)
+            selected_pos = self.dropdown_dichroic.currentIndex()
+            self.dragonfly.set_port_selection_dichroic(selected_pos + 1)
         except Exception as e:
             print(f"Error setting dichroic: {e}")
         finally:
@@ -1109,8 +1102,8 @@ class DragonflyConfocalWidget(QWidget):
         """Set port 1 emission filter position"""
         self.enable_all_buttons(False)
         try:
-            selected_pos = int(self.dropdown_port1_emission_filter.currentText())
-            self.dragonfly.set_emission_filter(1, selected_pos)
+            selected_pos = self.dropdown_port1_emission_filter.currentIndex()
+            self.dragonfly.set_emission_filter(1, selected_pos + 1)
         except Exception as e:
             print(f"Error setting port 1 emission filter: {e}")
         finally:
@@ -1120,32 +1113,21 @@ class DragonflyConfocalWidget(QWidget):
         """Set port 2 emission filter position"""
         self.enable_all_buttons(False)
         try:
-            selected_pos = int(self.dropdown_port2_emission_filter.currentText())
-            self.dragonfly.set_emission_filter(2, selected_pos)
+            selected_pos = self.dropdown_port2_emission_filter.currentIndex()
+            self.dragonfly.set_emission_filter(2, selected_pos + 1)
         except Exception as e:
             print(f"Error setting port 2 emission filter: {e}")
         finally:
             self.enable_all_buttons(True)
 
-    def set_port1_field_aperture(self, index):
+    def set_field_aperture(self, index):
         """Set port 1 field aperture position"""
         self.enable_all_buttons(False)
         try:
-            selected_pos = int(self.dropdown_port1_field_aperture.currentText())
-            self.dragonfly.set_field_aperture_wheel_position(1, selected_pos)
+            selected_pos = self.dropdown_field_aperture.currentIndex()
+            self.dragonfly.set_field_aperture_wheel_position(selected_pos + 1)
         except Exception as e:
             print(f"Error setting port 1 field aperture: {e}")
-        finally:
-            self.enable_all_buttons(True)
-
-    def set_port2_field_aperture(self, index):
-        """Set port 2 field aperture position"""
-        self.enable_all_buttons(False)
-        try:
-            selected_pos = int(self.dropdown_port2_field_aperture.currentText())
-            self.dragonfly.set_field_aperture_wheel_position(2, selected_pos)
-        except Exception as e:
-            print(f"Error setting port 2 field aperture: {e}")
         finally:
             self.enable_all_buttons(True)
 

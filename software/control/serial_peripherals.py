@@ -419,7 +419,7 @@ class XLight:
 
 class Dragonfly:
 
-    def __init__(self, SN):
+    def __init__(self, SN: str):
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.serial_connection = SerialDevice(
             SN=SN,
@@ -436,19 +436,18 @@ class Dragonfly:
 
         # Exit standby mode
         self._send_command("AT_STANDBY,0")
+        self._send_command("AT_DC_SLCT,1")
 
-    def _send_command(self, command, expected_suffix=":A", read_delay=0.05):
-        """Send AT command and return response"""
-        response = self.serial_connection.write_and_read(command + "\r", read_delay=read_delay)
-        if response.endswith(expected_suffix):
-            # Remove the suffix and return the value
-            return response[: -len(expected_suffix)]
-        else:
-            self.log.warning(f"Unexpected response: {response}")
-            return None
+    def _send_command(self, command: str, read_delay: float = 0.05) -> str | None:
+        """Send AT command and return response
 
-    def _send_command_with_check(self, command, expected_response=None, read_delay=0.05):
-        """Send AT command and check response"""
+        Args:
+            command: Command to send (without \r)
+            read_delay: Time to wait for response
+
+        Returns:
+            Response content (without suffix) on success, None on failure
+        """
         response = self.serial_connection.write_and_read(command + "\r", read_delay=read_delay)
 
         if response.endswith(":A"):
@@ -493,7 +492,7 @@ class Dragonfly:
         if system_info:
             self.log.info(f"System info: {system_info}")
 
-    def set_emission_filter(self, port, position):
+    def set_emission_filter(self, port: int, position: int) -> int | None:
         """Set emission filter wheel position
 
         Args:
@@ -501,10 +500,10 @@ class Dragonfly:
             position: Target position (1-8 typically)
         """
         command = f"AT_FW_POS,{port},{position}"
-        response = self._send_command_with_check(command, f"{position}:A")
+        response = self._send_command(command)
         return position if response else None
 
-    def get_emission_filter(self, port):
+    def get_emission_filter(self, port: int) -> int | None:
         """Get current emission filter wheel position
 
         Args:
@@ -516,17 +515,17 @@ class Dragonfly:
         response = self._send_command(f"AT_FW_POS,{port},?")
         return int(response) if response and response.isdigit() else None
 
-    def set_port_selection_dichroic(self, position):
+    def set_port_selection_dichroic(self, position: int) -> int | None:
         """Set port selection dichroic position
 
         Args:
             position: Target position
         """
         command = f"AT_PS_POS,1,{position}"
-        response = self._send_command_with_check(command, f"{position}:A")
+        response = self._send_command(command)
         return position if response else None
 
-    def get_port_selection_dichroic(self):
+    def get_port_selection_dichroic(self) -> int | None:
         """Get current port selection dichroic position
 
         Returns:
@@ -535,17 +534,17 @@ class Dragonfly:
         response = self._send_command("AT_PS_POS,1,?")
         return int(response) if response and response.isdigit() else None
 
-    def set_modality(self, modality):
+    def set_modality(self, modality: str) -> str | None:
         """Set imaging modality
 
         Args:
             modality: Modality string (e.g., 'CONFOCAL', 'BF', etc.)
         """
         command = f"AT_MODALITY,{modality}"
-        response = self._send_command_with_check(command, f"{modality}:A")
+        response = self._send_command(command)
         return modality if response else None
 
-    def get_modality(self):
+    def get_modality(self) -> str | None:
         """Get current imaging modality
 
         Returns:
@@ -553,20 +552,21 @@ class Dragonfly:
         """
         return self._send_command("AT_MODALITY,?")
 
-    def set_disk_motor_state(self, run):
+    def set_disk_motor_state(self, run: bool) -> bool | None:
         """Start or stop the spinning disk motor
 
         Args:
             run: True to start, False to stop
         """
         if run:
-            response = self._send_command_with_check("AT_MS_RUN", ":A", read_delay=0.5)
-            return bool(response)
+            response = self._send_command("AT_MS_RUN", read_delay=2)
+            response = bool(self.set_disk_speed(self.spinning_disk_max_speed)) and bool(response)
+            return response
         else:
-            # To stop, set speed to 0
-            return self.set_disk_speed(0)
+            response = self._send_command("AT_MS_STOP", read_delay=1)
+            return bool(response)
 
-    def get_disk_motor_state(self):
+    def get_disk_motor_state(self) -> bool | None:
         """Get spinning disk motor state
 
         Returns:
@@ -575,7 +575,7 @@ class Dragonfly:
         speed = self.get_disk_speed()
         return speed > 0 if speed is not None else None
 
-    def set_disk_speed(self, speed):
+    def set_disk_speed(self, speed: int) -> int | None:
         """Set spinning disk motor speed
 
         Args:
@@ -585,10 +585,10 @@ class Dragonfly:
             Set speed or None if error
         """
         command = f"AT_MS,{speed}"
-        response = self._send_command_with_check(command, f"{speed}:A", read_delay=0.1)
+        response = self._send_command(command, read_delay=0.1)
         return speed if response else None
 
-    def get_disk_speed(self):
+    def get_disk_speed(self) -> int | None:
         """Get current spinning disk motor speed
 
         Returns:
@@ -597,7 +597,7 @@ class Dragonfly:
         response = self._send_command("AT_MS,?")
         return int(response) if response and response.isdigit() else None
 
-    def set_filter_wheel_speed(self, port, speed):
+    def set_filter_wheel_speed(self, port: int, speed: int) -> int | None:
         """Set filter wheel rotation speed
 
         Args:
@@ -605,33 +605,29 @@ class Dragonfly:
             speed: Speed setting
         """
         command = f"AT_FW_SPEED,{port},{speed}"
-        response = self._send_command_with_check(command, f"{speed}:A")
+        response = self._send_command(command)
         return speed if response else None
 
-    def set_field_aperture_wheel_position(self, port, position):
+    def set_field_aperture_wheel_position(self, position: int) -> int | None:
         """Set aperture position
 
         Args:
-            port: Aperture port number
             position: Target position
         """
-        command = f"AT_AP_POS,{port},{position}"
-        response = self._send_command_with_check(command, f"{position}:A")
+        command = f"AT_AP_POS,1,{position}"
+        response = self._send_command(command)
         return position if response else None
 
-    def get_field_aperture_wheel_position(self, port):
+    def get_field_aperture_wheel_position(self) -> int | None:
         """Get current aperture position
-
-        Args:
-            port: Aperture port number
 
         Returns:
             Current position or None if error
         """
-        response = self._send_command(f"AT_AP_POS,{port},?")
+        response = self._send_command(f"AT_AP_POS,1,?")
         return int(response) if response and response.isdigit() else None
 
-    def get_component_info(self, component_type, port, index=None):
+    def _get_component_info(self, component_type: str, port: int, index: int | None = None) -> str | None:
         """Get information about a component
 
         Args:
@@ -648,6 +644,29 @@ class Dragonfly:
             command = f"AT_{component_type}_INFO,{port},?"
 
         return self._send_command(command)
+
+    def get_emission_filter_info(self, port: int) -> list[str]:
+        response = self._send_command(f"AT_FW_COMPO,{port},?")
+        available = response.split(",")[1]  # Not sure about the format of the response. Need to confirm.
+        if available == "0":
+            return []
+        else:
+            info = []
+            for i in range(1, 8):  # Assume there are 8 positions on the emission filter wheel
+                info.append(str(i) + ":" + self._get_component_info("FW", port, i))
+            return info
+
+    def get_field_aperture_info(self) -> list[str]:
+        info = []
+        for i in range(1, 11):  # There are 10 positions on the field aperture wheel
+            info.append(self._get_component_info("AP", 1, i))
+        return info
+
+    def get_port_selection_dichroic_info(self) -> list[str]:
+        info = []
+        for i in range(1, 5):  # There are 4 positions for the port selection dichroic
+            info.append(self._get_component_info("PS", 1, i))
+        return info
 
     def close(self):
         """Close serial connection"""
@@ -681,37 +700,37 @@ class Dragonfly_Simulation:
         self.log.info(f"Max disk speed: {self.spinning_disk_max_speed}")
         self.log.info("System info: Simulation System")
 
-    def set_emission_filter(self, port, position):
+    def set_emission_filter(self, port: int, position: int) -> int | None:
         """Set emission filter wheel position"""
         self.emission_filter_positions[port] = position
         self.log.debug(f"Set emission filter port {port} to position {position}")
         return position
 
-    def get_emission_filter(self, port):
+    def get_emission_filter(self, port: int) -> int | None:
         """Get current emission filter wheel position"""
         return self.emission_filter_positions.get(port, 1)
 
-    def set_port_selection_dichroic(self, position):
+    def set_port_selection_dichroic(self, position: int) -> int | None:
         """Set port selection dichroic position"""
         self.dichroic_position = position
         self.log.debug(f"Set dichroic to position {position}")
         return position
 
-    def get_port_selection_dichroic(self):
+    def get_port_selection_dichroic(self) -> int | None:
         """Get current port selection dichroic position"""
         return self.dichroic_position
 
-    def set_modality(self, modality):
+    def set_modality(self, modality: str) -> str | None:
         """Set imaging modality"""
         self.current_modality = modality
         self.log.debug(f"Set modality to {modality}")
         return modality
 
-    def get_modality(self):
+    def get_modality(self) -> str | None:
         """Get current imaging modality"""
         return self.current_modality
 
-    def set_disk_motor_state(self, run):
+    def set_disk_motor_state(self, run: bool) -> bool | None:
         """Start or stop the spinning disk motor"""
         if run:
             self.disk_motor_running = True
@@ -724,39 +743,48 @@ class Dragonfly_Simulation:
             self.log.debug("Stopped disk motor")
             return True
 
-    def get_disk_motor_state(self):
+    def get_disk_motor_state(self) -> bool | None:
         """Get spinning disk motor state"""
         return self.disk_motor_running
 
-    def set_disk_speed(self, speed):
+    def set_disk_speed(self, speed: int) -> int | None:
         """Set spinning disk motor speed"""
         self.disk_speed = speed
         self.disk_motor_running = speed > 0
         self.log.debug(f"Set disk speed to {speed} RPM")
         return speed
 
-    def get_disk_speed(self):
+    def get_disk_speed(self) -> int | None:
         """Get current spinning disk motor speed"""
         return self.disk_speed
 
-    def set_filter_wheel_speed(self, port, speed):
+    def set_filter_wheel_speed(self, port: int, speed: int) -> int | None:
         """Set filter wheel rotation speed"""
         self.log.debug(f"Set filter wheel port {port} speed to {speed}")
         return speed
 
-    def set_field_aperture_wheel_position(self, port, position):
+    def set_field_aperture_wheel_position(self, port: int, position: int) -> int | None:
         """Set aperture position"""
         self.field_aperture_positions[port] = position
         self.log.debug(f"Set field aperture port {port} to position {position}")
         return position
 
-    def get_field_aperture_wheel_position(self, port):
+    def get_field_aperture_wheel_position(self) -> int | None:
         """Get current aperture position"""
-        return self.field_aperture_positions.get(port, 1)
+        return self.field_aperture_positions.get(1, 1)
 
-    def get_component_info(self, component_type, port, index=None):
+    def _get_component_info(self, component_type: str, port: int, index: int | None = None) -> str | None:
         """Get information about a component"""
         return f"Component {component_type} Port {port} - Simulation"
+
+    def get_emission_filter_info(self, port: int) -> list[str]:
+        return range(1, 9)
+
+    def get_field_aperture_info(self) -> list[str]:
+        return range(1, 11)
+
+    def get_port_selection_dichroic_info(self) -> list[str]:
+        return range(1, 5)
 
     def close(self):
         """Close the simulated connection"""
