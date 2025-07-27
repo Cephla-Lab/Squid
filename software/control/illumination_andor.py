@@ -332,7 +332,7 @@ class AndorLaser(LightSource):
         if not serial_numbers:
             raise RuntimeError(f"No laser devices found with VID:PID {self.vid:04x}:{self.pid:04x}")
 
-        print(f"Found {len(serial_numbers)} laser units: {serial_numbers}")
+        log.info(f"Found {len(serial_numbers)} laser units: {serial_numbers}")
 
         # Add each unit and connect to query line setup
         for serial_number in serial_numbers:
