@@ -348,16 +348,17 @@ class AndorLaser(LightSource):
         # Query line setup for each connected unit
         for unit_id, connected in connection_results.items():
             if not connected:
-                print(f"Warning: Failed to connect to unit {unit_id}, skipping line setup query")
-                continue
+                log.error(f"Failed to connect to unit {unit_id}")
+                raise RuntimeError(f"Failed to connect to unit {unit_id}")
 
             try:
                 # Query and populate line setup
                 line_to_wavelength = self._get_laser_line_setup(unit_id)
                 self.units[unit_id].line_to_wavelength = line_to_wavelength
-                print(f"Unit {unit_id} configured with lines: {line_to_wavelength}")
+                log.info(f"Unit {unit_id} configured with lines: {line_to_wavelength}")
             except Exception as e:
-                print(f"Warning: Failed to get line setup for unit {unit_id}: {e}")
+                log.error(f"Failed to get line setup for unit {unit_id}: {e}")
+                raise RuntimeError(f"Failed to get line setup for unit {unit_id}")
 
         # Build channel mappings from all available lines
         self.channel_mappings = {
@@ -384,15 +385,15 @@ class AndorLaser(LightSource):
                 if wavelength in self.channel_mappings:
                     if self.channel_mappings[wavelength] is None:
                         self.channel_mappings[wavelength] = (unit_id, line)
-                        print(f"Mapped channel {wavelength}nm to unit {unit_id}, line {line}")
+                        log.info(f"Mapped channel {wavelength}nm to unit {unit_id}, line {line}")
                     else:
                         log.warning(f"Multiple units have wavelength {wavelength}nm, using first found")
                 else:
-                    print(f"Warning: Wavelength {wavelength}nm from unit {unit_id} not in supported channels")
+                    log.error(f"Wavelength {wavelength}nm from unit {unit_id} not in supported channels")
 
         # Show final channel mapping
         active_channels = {ch: mapping for ch, mapping in self.channel_mappings.items() if mapping is not None}
-        print(f"Active channels: {active_channels}")
+        log.info(f"Active channels: {active_channels}")
 
         # Initialize all connected units (set all lines to off)
         for unit_id in self.units:
@@ -434,7 +435,8 @@ class AndorLaser(LightSource):
 
         # Send command
         if not AndorLaser._send_command(unit, command):
-            return False
+            log.error(f"Failed to send command to unit {unit_id}")
+            raise RuntimeError(f"Failed to send command to unit {unit_id}")
 
         # Read response
         response = AndorLaser._read_response(unit, 1)
@@ -442,11 +444,11 @@ class AndorLaser(LightSource):
             if response[0] == LaserCommands.SET_TRANSMISSION:
                 return True
             elif response[0] == LaserCommands.ERROR_RESPONSE:
-                print(f"Error response from unit {unit_id}")
-                return False
+                log.error(f"Error response from unit {unit_id}")
+                raise RuntimeError(f"Error response from unit {unit_id}")
 
-        print(f"Timeout or invalid response from unit {unit_id}")
-        return False
+        log.error(f"Timeout or invalid response from unit {unit_id}")
+        raise RuntimeError(f"Timeout or invalid response from unit {unit_id}")
 
     def get_intensity(self, channel: int) -> float:
         """
@@ -488,11 +490,11 @@ class AndorLaser(LightSource):
                 # Convert to percentage
                 return transmission / 10.0
             elif response[0] == LaserCommands.ERROR_RESPONSE:
-                print(f"Error response from unit {unit_id}")
-                return None
+                log.error(f"Error response from unit {unit_id}")
+                raise RuntimeError(f"Error response from unit {unit_id}")
 
-        print(f"Timeout or invalid response from unit {unit_id}")
-        return None
+        log.error(f"Timeout or invalid response from unit {unit_id}")
+        raise RuntimeError(f"Timeout or invalid response from unit {unit_id}")
 
     def set_intensity_control_mode(self, mode: IntensityControlMode):
         raise NotImplementedError("Changing intensity control mode is not supported for Andor laser units")
@@ -555,6 +557,7 @@ class AndorLaser(LightSource):
         return bool(line_bit)
 
     def shut_down(self):
-        for unit_id in self.units:
-            self._set_lines_to_off(unit_id)
+        for channel, mapping in self.channel_mappings.items():
+            if mapping is not None:
+                self.set_intensity(channel, 0.0)
         self._disconnect()
