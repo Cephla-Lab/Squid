@@ -416,8 +416,8 @@ class AndorLaser(LightSource):
 
         try:
             unit_id, line = self.channel_mappings[channel]
-        except KeyError:
-            raise ValueError(f"channel: {channel} is not configured")
+        except (KeyError, TypeError):
+            raise ValueError(f"channel: {channel} is not configured or improperly mapped")
 
         unit = self.units[unit_id]
         if not unit.device_handle:
