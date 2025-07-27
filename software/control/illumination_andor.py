@@ -537,7 +537,7 @@ class AndorLaser(LightSource):
         if not response or len(response) < 2:
             raise RuntimeError(f"Invalid or timeout response from unit {unit_id}")
 
-        if response[0] != LaserCommands.SET_SHUTTER_STATE:
+        if response[0] != LaserCommands.READ_SHUTTER_STATE:
             if response[0] == LaserCommands.ERROR_RESPONSE:
                 raise RuntimeError(f"Error response from unit {unit_id} for read shutter state")
             else:
