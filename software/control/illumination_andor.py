@@ -550,7 +550,7 @@ class AndorLaser(LightSource):
         line_bit = (status_byte >> line) & 0x01
 
         if self.debug:
-            print(f"Unit {unit_id} shutter status byte: 0x{status_byte:02x}, line {line} state: {bool(line_bit)}")
+            log.debug(f"Unit {unit_id} shutter status byte: 0x{status_byte:02x}, line {line} state: {bool(line_bit)}")
 
         return bool(line_bit)
 
