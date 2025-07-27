@@ -386,7 +386,7 @@ class AndorLaser(LightSource):
                         self.channel_mappings[wavelength] = (unit_id, line)
                         print(f"Mapped channel {wavelength}nm to unit {unit_id}, line {line}")
                     else:
-                        print(f"Warning: Multiple units have wavelength {wavelength}nm, using first found")
+                        log.warning(f"Multiple units have wavelength {wavelength}nm, using first found")
                 else:
                     print(f"Warning: Wavelength {wavelength}nm from unit {unit_id} not in supported channels")
 
