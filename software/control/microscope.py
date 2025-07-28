@@ -218,7 +218,9 @@ class Microscope:
                 raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
             stage = CephlaStage(low_level_devices.microcontroller, stage_config)
 
-        addons = MicroscopeAddons.build_from_global_config(stage, low_level_devices.microcontroller, simulated=simulated)
+        addons = MicroscopeAddons.build_from_global_config(
+            stage, low_level_devices.microcontroller, simulated=simulated
+        )
 
         cam_trigger_log = squid.logging.get_logger("camera hw functions")
 
