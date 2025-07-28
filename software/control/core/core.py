@@ -505,13 +505,19 @@ class LiveController(QObject):
                     self.microscope.cellx.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
 
         # set emission filter position
-        if ENABLE_SPINNING_DISK_CONFOCAL:
+        if ENABLE_SPINNING_DISK_CONFOCAL and not USE_DRAGONFLY:
             try:
                 self.microscope.xlight.set_emission_filter(
                     XLIGHT_EMISSION_FILTER_MAPPING[illumination_source],
                     extraction=False,
                     validate=XLIGHT_VALIDATE_WHEEL_POS,
                 )
+            except Exception as e:
+                print("not setting emission filter position due to " + str(e))
+
+        if USE_DRAGONFLY:
+            try:
+                self.microscope.dragonfly.set_emission_filter(self.currentConfiguration.emission_filter_position)
             except Exception as e:
                 print("not setting emission filter position due to " + str(e))
 
