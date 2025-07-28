@@ -335,9 +335,6 @@ class Microscope:
         self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
         if self.addons.camera_focus:
-            self.addons.camera_focus = squid.camera.utils.get_camera(
-                squid.config.get_autofocus_camera_config(), simulated=self._simulated
-            )
             self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
             self.addons.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
