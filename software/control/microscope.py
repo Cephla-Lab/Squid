@@ -54,11 +54,21 @@ class MicroscopeAddons:
     ) -> "MicroscopeAddons":
 
         xlight = None
-        if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
+        if control._def.ENABLE_SPINNING_DISK_CONFOCAL and not control._def.USE_DRAGONFLY:
+            # For user compatibility, when ENABLE_SPINNING_DISK_CONFOCAL is True, we use XLight/Cicero on default.
+            # This needs to be changed when we figure out better machine configuration structure.
             xlight = (
                 serial_peripherals.XLight(control._def.XLIGHT_SERIAL_NUMBER, control._def.XLIGHT_SLEEP_TIME_FOR_WHEEL)
                 if not simulated
                 else serial_peripherals.XLight_Simulation()
+            )
+
+        dragonfly = None
+        if control._def.ENABLE_SPINNING_DISK_CONFOCAL and control.def.USE_DRAGONFLY:
+            dragonfly = (
+                serial_peripherals.Dragonfly(SN=control._def.DRAGONFLY_SERIAL_NUMBER)
+                if not simulated
+                else serial_peripherals.Dragonfly_Simulation()
             )
 
         nl5 = None
@@ -155,6 +165,7 @@ class MicroscopeAddons:
     def __init__(
         self,
         xlight: Optional[serial_peripherals.XLight] = None,
+        dragonfly: Optional[serial_peripherals.Dragonfly] = None,
         nl5: Optional[NL5] = None,
         cellx: Optional[serial_peripherals.CellX] = None,
         emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterController] = None,
@@ -274,6 +285,15 @@ class Microscope:
                 ShutterControlMode.TTL,
                 LightSourceType.CELESTA,
                 celesta,
+            )
+        elif control._def.USE_ANDOR_LASER_CONTROL and not simulated:
+            andor_laser = illumination_andor.AndorLaser(ANDOR_LASER_VID, ANDOR_LASER_PID)
+            illuminationController = IlluminationController(
+                low_level_devices.microcontroller,
+                IntensityControlMode.Software,
+                ShutterControlMode.TTL,
+                LightSourceType.AndorLaser,
+                andor_laser,
             )
         else:
             illumination_controller = IlluminationController(low_level_devices.microcontroller)
