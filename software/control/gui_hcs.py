@@ -395,7 +395,7 @@ class HighContentScreeningGui(QMainWindow):
         self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
         self.camera.enable_callbacks(enabled=True)
 
-        if SUPPORT_LASER_AUTOFOCUS:
+        if self.camera_focus:
             self.camera_focus.set_acquisition_mode(
                 squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER
             )  # self.camera.set_continuous_acquisition()
