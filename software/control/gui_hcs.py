@@ -22,6 +22,7 @@ from control.core.configuration_mananger import ConfigurationManager
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.contrast_manager import ContrastManager
+from control.core.multi_point_controller import MultiPointController
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
@@ -300,7 +301,7 @@ class HighContentScreeningGui(QMainWindow):
         self.scanCoordinates = core.ScanCoordinates(
             objectiveStore=self.objectiveStore, navigationViewer=self.navigationViewer, stage=self.stage
         )
-        self.multipointController = core.MultiPointController(
+        self.multipointController = MultiPointController(
             self.camera,
             self.stage,
             self.piezo,

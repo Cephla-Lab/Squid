@@ -9,6 +9,7 @@ import squid.abc
 
 import control._def
 from control.microscope import Microscope
+from control.core.multi_point_controller import MultiPointController
 from tests.tools import get_repo_root, get_test_piezo_stage
 
 
@@ -76,12 +77,12 @@ def get_test_navigation_viewer(objective_store: control.core.objective_store.Obj
     return control.core.core.NavigationViewer(objective_store, camera_pixel_size)
 
 
-def get_test_multi_point_controller(microscope: Microscope) -> control.core.core.MultiPointController:
+def get_test_multi_point_controller(microscope: Microscope) -> MultiPointController:
     live_controller = get_test_live_controller(
         microscope=microscope, starting_objective=microscope.objective_store.default_objective
     )
 
-    multi_point_controller = control.core.core.MultiPointController(
+    multi_point_controller = MultiPointController(
         camera=microscope.camera,
         stage=microscope.stage,
         microcontroller=microscope.low_level_drivers.microcontroller,
