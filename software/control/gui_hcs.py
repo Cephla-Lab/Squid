@@ -453,6 +453,22 @@ class HighContentScreeningGui(QMainWindow):
                 self.log.error("Error initializing CELESTA")
                 raise
 
+        if USE_ANDOR_LASER_CONTROL:
+            try:
+                import control.illumination_andor as illumination_andor
+
+                self.andor_laser = illumination_andor.AndorLaser(ANDOR_LASER_VID, ANDOR_LASER_PID)
+                self.illuminationController = IlluminationController(
+                    self.microcontroller,
+                    IntensityControlMode.Software,
+                    ShutterControlMode.TTL,
+                    LightSourceType.AndorLaser,
+                    self.andor_laser,
+                )
+            except Exception:
+                self.log.error("Error initializing Andor Laser")
+                raise
+
         if USE_ZABER_EMISSION_FILTER_WHEEL:
             try:
                 self.emission_filter_wheel = serial_peripherals.FilterController(
