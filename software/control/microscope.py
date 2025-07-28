@@ -63,7 +63,7 @@ class Microscope(QObject):
                 self.laserAutofocusController = microscope.laserAutofocusController
             self.slidePositionController = microscope.slidePositionController
 
-            if ENABLE_SPINNING_DISK_CONFOCAL:
+            if ENABLE_SPINNING_DISK_CONFOCAL and not USE_DRAGONFLY:
                 self.xlight = microscope.xlight
 
             if ENABLE_NL5:
@@ -222,7 +222,7 @@ class Microscope(QObject):
                 sn=PRIOR_STAGE_SN, stage_config=squid.config.get_stage_config()
             )
 
-        if ENABLE_SPINNING_DISK_CONFOCAL:
+        if ENABLE_SPINNING_DISK_CONFOCAL and not USE_DRAGONFLY:
             try:
                 self.xlight = serial_peripherals.XLight(XLIGHT_SERIAL_NUMBER, XLIGHT_SLEEP_TIME_FOR_WHEEL)
             except Exception:
@@ -302,7 +302,7 @@ class Microscope(QObject):
                 raise
 
     def initialize_simulation_objects(self):
-        if ENABLE_SPINNING_DISK_CONFOCAL:
+        if ENABLE_SPINNING_DISK_CONFOCAL and not USE_DRAGONFLY:
             self.xlight = serial_peripherals.XLight_Simulation()
         if ENABLE_NL5:
             import control.NL5 as NL5
