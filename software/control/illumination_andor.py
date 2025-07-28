@@ -361,33 +361,32 @@ class AndorLaser(LightSource):
                 raise RuntimeError(f"Failed to get line setup for unit {unit_id}")
 
         # Build channel mappings from all available lines
-        self.channel_mappings = {
-            405: None,
-            470: None,
-            488: None,
-            545: None,
-            550: None,
-            555: None,
-            561: None,
-            638: None,
-            640: None,
-            730: None,
-            735: None,
-            750: None,
-        }
+        # Define channel groups - channels in same group map to same laser line
+        channel_groups = [
+            [405],  # Group 1
+            [470, 488],  # Group 2
+            [545, 550, 555, 561],  # Group 3
+            [638, 640],  # Group 4
+            [730, 735, 750],  # Group 5
+        ]
 
-        # Map available lines to channels
+        # Initialize all channels as unmapped
+        self.channel_mappings = {wl: None for group in channel_groups for wl in group}
+
+        # Map available lines to channel groups
         for unit_id, unit in self.units.items():
             if not unit.device_handle:
-                continue  # Skip disconnected units
+                continue
 
             for line, wavelength in unit.line_to_wavelength.items():
-                if wavelength in self.channel_mappings:
-                    if self.channel_mappings[wavelength] is None:
-                        self.channel_mappings[wavelength] = (unit_id, line)
-                        log.info(f"Mapped channel {wavelength}nm to unit {unit_id}, line {line}")
-                    else:
-                        log.warning(f"Multiple units have wavelength {wavelength}nm, using first found")
+                # Find the group containing this wavelength
+                group = next((g for g in channel_groups if wavelength in g), None)
+
+                if group:
+                    # Map all channels in this group to the same line
+                    for wl in group:
+                        self.channel_mappings[wl] = (unit_id, line)
+                    log.info(f"Mapped channels {group} to unit {unit_id}, line {line}")
                 else:
                     log.error(f"Wavelength {wavelength}nm from unit {unit_id} not in supported channels")
 
@@ -455,8 +454,7 @@ class AndorLaser(LightSource):
         Read current laser intensity for a specific line.
 
         Args:
-            unit_id: ID of the laser unit
-            line: Zero-based line number
+            channel: wavelength of the channel to get
 
         Returns:
             Intensity percentage (0.0 - 100.0) or None if error
@@ -515,6 +513,15 @@ class AndorLaser(LightSource):
         raise NotImplementedError("Setting shutter state in software is not supported for Andor laser units")
 
     def get_shutter_state(self, channel: int) -> bool:
+        """
+        Get the shutter state for a specific channel.
+
+        Args:
+            channel: wavelength of the channel to get
+
+        Returns:
+            True if the shutter is open, False if it is closed
+        """
         if channel not in self.channel_mappings:
             raise ValueError(f"Unknown channel: {channel}")
 
@@ -557,7 +564,8 @@ class AndorLaser(LightSource):
         return bool(line_bit)
 
     def shut_down(self):
-        for channel, mapping in self.channel_mappings.items():
-            if mapping is not None:
-                self.set_intensity(channel, 0.0)
+        for unit_id in self.units:
+            for wavelength in self.units[unit_id].line_to_wavelength.values():
+                self.set_intensity(wavelength, 0.0)
+
         self._disconnect()
