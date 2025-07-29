@@ -2,7 +2,7 @@ import hid
 import struct
 import time
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 
 from squid.abc import LightSource
@@ -32,7 +32,7 @@ class LaserUnit:
     product_id: int
     serial_number: str  # Required to distinguish between units
     device_handle: Optional[hid.device] = None
-    line_to_wavelength: Dict[int, int] = {}  # {line_number: wavelength}
+    line_to_wavelength: Dict[int, int] = field(default_factory=dict)  # {line_number: wavelength}
 
 
 class AndorLaser(LightSource):
@@ -107,7 +107,9 @@ class AndorLaser(LightSource):
         self.units[unit_id] = unit
         return True
 
-    def _connect(self) -> Dict[str, bool]:
+    def _connect(
+        self,
+    ) -> Dict[str, bool]:
         """
         Connect to all configured laser units.
 
@@ -303,8 +305,8 @@ class AndorLaser(LightSource):
             wavelength_raw = (response[i] << 8) | response[i + 1]
 
             if wavelength_raw == 0:
-                # Zero indicates end of valid lines
-                break
+                line_number += 1
+                continue
 
             # Convert from (nm * 10) to nm
             wavelength = wavelength_raw // 10
@@ -400,24 +402,18 @@ class AndorLaser(LightSource):
                 if not self._set_lines_to_off(unit_id):
                     raise RuntimeError(f"Failed to initialize shutter state for unit {unit_id}")
 
-    def set_intensity(self, channel: int, intensity: float) -> bool:
+    def set_intensity(self, channel: Tuple[int, int], intensity: float) -> bool:
         """
         Set laser intensity for a specific line.
 
         Args:
-            channel: wavelength of the channel to set
+            channel: tuple of (unit_id, line)
             intensity: Intensity percentage (0.0 - 100.0)
 
         Returns:
             True if command was successful
         """
-        if channel not in self.channel_mappings:
-            raise ValueError(f"Unknown channel: {channel}")
-
-        try:
-            unit_id, line = self.channel_mappings[channel]
-        except (KeyError, TypeError):
-            raise ValueError(f"channel: {channel} is not configured or improperly mapped")
+        unit_id, line = channel
 
         unit = self.units[unit_id]
         if not unit.device_handle:
@@ -449,23 +445,17 @@ class AndorLaser(LightSource):
         log.error(f"Timeout or invalid response from unit {unit_id}")
         raise RuntimeError(f"Timeout or invalid response from unit {unit_id}")
 
-    def get_intensity(self, channel: int) -> float:
+    def get_intensity(self, channel: Tuple[int, int]) -> float:
         """
         Read current laser intensity for a specific line.
 
         Args:
-            channel: wavelength of the channel to get
+            channel: tuple of (unit_id, line)
 
         Returns:
             Intensity percentage (0.0 - 100.0) or None if error
         """
-        if channel not in self.channel_mappings:
-            raise ValueError(f"Unknown channel: {channel}")
-
-        try:
-            unit_id, line = self.channel_mappings[channel]
-        except (KeyError, TypeError):
-            raise ValueError(f"channel: {channel} is not configured")
+        unit_id, line = channel
 
         unit = self.units[unit_id]
         if not unit.device_handle:
@@ -495,41 +485,37 @@ class AndorLaser(LightSource):
         raise RuntimeError(f"Timeout or invalid response from unit {unit_id}")
 
     def set_intensity_control_mode(self, mode: IntensityControlMode):
-        raise NotImplementedError("Changing intensity control mode is not supported for Andor laser units")
+        if mode != IntensityControlMode.Software:
+            raise NotImplementedError("Changing intensity control mode is not supported for Andor laser units")
 
     def get_intensity_control_mode(self) -> IntensityControlMode:
         return self.intensity_control_mode
 
     def set_shutter_control_mode(self, mode: ShutterControlMode):
-        raise NotImplementedError("Changing shutter control mode is not supported for Andor laser units")
+        if mode != ShutterControlMode.TTL:
+            raise NotImplementedError("Changing shutter control mode is not supported for Andor laser units")
 
     def get_shutter_control_mode(self) -> ShutterControlMode:
         return self.shutter_control_mode
 
-    def set_shutter_state(self, channel: int, state: bool):
+    def set_shutter_state(self, channel: Tuple[int, int], state: bool):
         """
         We will use TTL to control on/off so we don't need to do anything here.
         """
         raise NotImplementedError("Setting shutter state in software is not supported for Andor laser units")
 
-    def get_shutter_state(self, channel: int) -> bool:
+    def get_shutter_state(self, channel: Tuple[int, int]) -> bool:
         """
         Get the shutter state for a specific channel.
 
         Args:
-            channel: wavelength of the channel to get
+            channel: tuple of (unit_id, line)
 
         Returns:
             True if the shutter is open, False if it is closed
         """
-        if channel not in self.channel_mappings:
-            raise ValueError(f"Unknown channel: {channel}")
+        unit_id, line = channel
 
-        mapping = self.channel_mappings[channel]
-        if mapping is None:
-            raise ValueError(f"Channel {channel} is not configured")
-
-        unit_id, line = mapping
         unit = self.units[unit_id]
         if not unit.device_handle:
             raise RuntimeError(f"Unit {unit_id} is not connected")
