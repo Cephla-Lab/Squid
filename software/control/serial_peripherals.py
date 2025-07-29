@@ -505,14 +505,14 @@ class Dragonfly:
         response = self._send_command(command)
         return position if response else None
 
-    def get_emission_filter(self, port: int) -> int | None:
+    def get_emission_filter(self, port: int) -> int:
         """Get current emission filter wheel position
 
         Args:
             port: Filter wheel port number (typically 1)
 
         Returns:
-            Current position or None if error
+            Current position
         """
         response = self._send_command(f"AT_FW_POS,{port},?")
         if response and response.isdigit():
@@ -530,11 +530,11 @@ class Dragonfly:
         response = self._send_command(command)
         return position if response else None
 
-    def get_port_selection_dichroic(self) -> int | None:
+    def get_port_selection_dichroic(self) -> int:
         """Get current port selection dichroic position
 
         Returns:
-            Current position or None if error
+            Current position
         """
         response = self._send_command("AT_PS_POS,1,?")
         if response and response.isdigit():
