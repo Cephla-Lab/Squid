@@ -549,7 +549,7 @@ class Dragonfly:
         Returns:
             Current camera port (1 or 2)
         """
-        if not self.ps_info or len(self.ps_info) < self.current_port_selection_dichroic:
+        if not self.ps_info or not (1 <= self.current_port_selection_dichroic <= len(self.ps_info)):
             raise ValueError(f"Port selection dichroic info does not match current position: {self.ps_info}")
 
         if self.ps_info[self.current_port_selection_dichroic - 1].endswith("100% Pass"):
