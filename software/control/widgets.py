@@ -991,9 +991,9 @@ class DragonflyConfocalWidget(QWidget):
         self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
 
     def init_ui(self):
-        main_layout = QVBoxLayout(self)
+        main_layout = QVBoxLayout()
 
-        layout_confocal = QHBoxLayout(self)
+        layout_confocal = QHBoxLayout()
         # Row 1: Switch to Confocal button, Disk Motor button, Dichroic dropdown
         self.btn_toggle_confocal = QPushButton("Switch to Confocal")
         self.btn_disk_motor = QPushButton("Disk Motor On")
@@ -1009,7 +1009,7 @@ class DragonflyConfocalWidget(QWidget):
         layout_confocal.addWidget(dichroic_label)
         layout_confocal.addWidget(self.dropdown_dichroic)
 
-        layout_wheels = QGridLayout(self)
+        layout_wheels = QGridLayout()
         # Row 2: Camera Port 1 Emission Filter and Field Aperture
         port1_emission_label = QLabel("Port 1 Emission Filter")
         self.dropdown_port1_emission_filter = QComboBox(self)
