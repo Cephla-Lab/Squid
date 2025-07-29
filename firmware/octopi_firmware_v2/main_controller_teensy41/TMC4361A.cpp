@@ -29,6 +29,7 @@
 */
 
 #include "TMC4361A.h"
+#include "TMC4361A_Constants.h"
 
 // => SPI wrapper
 // Send [length] bytes stored in the [data] array over SPI and overwrite [data]
@@ -157,6 +158,8 @@ void tmc4361A_init(TMC4361ATypeDef *tmc4361A, uint8_t channel, ConfigurationType
   tmc4361A->config->channel      = channel;
   tmc4361A->config->configIndex  = 0;
   tmc4361A->config->state        = CONFIG_READY;
+
+  tmc4361A->ramp_mode = TMC4361A_RAMP_SSHAPE; 
 
   int i;
   for (i = 0; i < TMC4361A_REGISTER_COUNT; i++)

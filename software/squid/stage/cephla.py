@@ -107,6 +107,18 @@ class CephlaStage(AbstractStage):
                 self._calc_move_timeout(abs_mm - self.get_pos().y_mm, self.get_config().Y_AXIS.MAX_SPEED)
             )
 
+    def move_xy_to(self, x_abs_mm: float, y_abs_mm: float, blocking: bool = True):
+        self._microcontroller.move_xy_to_usteps(
+            self._config.X_AXIS.convert_real_units_to_ustep(x_abs_mm),
+            self._config.Y_AXIS.convert_real_units_to_ustep(y_abs_mm),
+        )
+
+        if blocking:
+            x_timeout = self._calc_move_timeout(x_abs_mm - self.get_pos().x_mm, self.get_config().X_AXIS.MAX_SPEED)
+            y_timeout = self._calc_move_timeout(y_abs_mm - self.get_pos().y_mm, self.get_config().Y_AXIS.MAX_SPEED)
+
+            self._microcontroller.wait_till_operation_is_completed(max(x_timeout, y_timeout))
+
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         # From Hongquan, we want the z axis to rest on the "up" (wrt gravity) direction of gravity. So if we
         # are moving in the negative (down) z direction, we need to move past our mark a bit then

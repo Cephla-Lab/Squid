@@ -508,6 +508,10 @@ class Microcontroller:
             self.log.debug("Resetting and initializing microcontroller.")
             self.reset()
             time.sleep(0.5)
+
+            # Need set the parameter before initialization
+            self.initizlize_sramp_of_axes()
+
             if USE_SQUID_FILTERWHEEL:
                 self.init_filter_wheel()
                 time.sleep(0.5)
@@ -563,6 +567,17 @@ class Microcontroller:
         # so any responses will look like they are for command id 0.  Force that
         # here.
         self._cmd_id = 0
+
+    def initizlize_sramp_of_axes(self):
+        # initialize axes sramp mode
+        self.set_sramp_mode(AXIS.X, X_AXIS_SRAMP_MODE)
+        self.wait_till_operation_is_completed()
+        self.set_sramp_mode(AXIS.Y, Y_AXIS_SRAMP_MODE)
+        self.wait_till_operation_is_completed()
+        self.set_sramp_mode(AXIS.Z, Z_AXIS_SRAMP_MODE)
+        self.wait_till_operation_is_completed()
+        self.set_sramp_mode(AXIS.W, W_AXIS_SRAMP_MODE)
+        self.wait_till_operation_is_completed()
 
     def initialize_drivers(self):
         self._cmd_id = 0
@@ -685,6 +700,24 @@ class Microcontroller:
         cmd[3] = (payload >> 16) & 0xFF
         cmd[4] = (payload >> 8) & 0xFF
         cmd[5] = payload & 0xFF
+        self.send_command(cmd)
+
+    def move_xy_to_usteps(self, xusteps, yusteps):
+        xpayload = self._int_to_payload(xusteps, 4)
+        ypayload = self._int_to_payload(yusteps, 4)
+
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.MOVETO_XY
+        cmd[2] = xpayload >> 24
+        cmd[3] = (xpayload >> 16) & 0xFF
+        cmd[4] = (xpayload >> 8) & 0xFF
+        cmd[5] = xpayload & 0xFF
+
+        cmd[6] = ypayload >> 24
+        cmd[7] = (ypayload >> 16) & 0xFF
+        cmd[8] = (ypayload >> 8) & 0xFF
+        cmd[9] = ypayload & 0xFF
+
         self.send_command(cmd)
 
     def move_z_usteps(self, usteps):
@@ -964,6 +997,9 @@ class Microcontroller:
         self.wait_till_operation_is_completed()
         self.set_max_velocity_acceleration(AXIS.W, MAX_VELOCITY_W_mm, MAX_ACCELERATION_W_mm)
         self.wait_till_operation_is_completed()
+        # initialize axes sramp mode
+        self.set_sramp_mode(AXIS.W, W_AXIS_SRAMP_MODE)
+        self.wait_till_operation_is_completed()
 
     def ack_joystick_button_pressed(self):
         cmd = bytearray(self.tx_buffer_length)
@@ -995,6 +1031,13 @@ class Microcontroller:
         cmd[1] = CMD_SET.SET_PIN_LEVEL
         cmd[2] = pin
         cmd[3] = level
+        self.send_command(cmd)
+
+    def set_sramp_mode(self, axis, mode):
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_SRAMP_MOD
+        cmd[2] = axis
+        cmd[3] = mode
         self.send_command(cmd)
 
     def turn_on_AF_laser(self):

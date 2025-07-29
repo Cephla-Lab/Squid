@@ -769,8 +769,7 @@ class AutoFocusController(QObject):
 
         for coord in [coord1, coord2, coord3]:
             print(f"Navigating to coordinates ({coord[0]},{coord[1]}) to sample for focus map")
-            self.stage.move_x_to(coord[0])
-            self.stage.move_y_to(coord[1])
+            self.stage.move_xy_to(coord[0], coord[1])
 
             print("Autofocusing")
             self.autofocus(True)
@@ -1837,8 +1836,7 @@ class MultiPointController(QObject):
                 self.autofocusController.set_focus_map_use(True)
 
                 # Return to center position
-                self.stage.move_x_to(x_center)
-                self.stage.move_y_to(y_center)
+                self.stage.move_xy_to(x_center, y_center)
 
             except ValueError:
                 self._log.exception("Invalid coordinates for autofocus plane, aborting.")
@@ -1915,8 +1913,7 @@ class MultiPointController(QObject):
             if "current" in self.scanCoordinates.region_centers:
                 region_center = self.scanCoordinates.region_centers["current"]
                 try:
-                    self.stage.move_x_to(region_center[0])
-                    self.stage.move_y_to(region_center[1])
+                    self.stage.move_xy_to(region_center[0], region_center[1])
                     self.stage.move_z_to(region_center[2])
                 except:
                     self._log.error("Failed to move to center of current region")
