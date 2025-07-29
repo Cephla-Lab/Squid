@@ -517,7 +517,9 @@ class LiveController(QObject):
 
         if USE_DRAGONFLY:
             try:
-                self.microscope.dragonfly.set_emission_filter(self.currentConfiguration.emission_filter_position)
+                self.microscope.dragonfly.set_emission_filter(
+                    self.microscope.dragonfly.get_camera_port(), self.currentConfiguration.emission_filter_position
+                )
             except Exception as e:
                 print("not setting emission filter position due to " + str(e))
 

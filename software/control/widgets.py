@@ -962,13 +962,9 @@ class DragonflyConfocalWidget(QWidget):
             if current_port2_filter is not None:
                 self.dropdown_port2_emission_filter.setCurrentText(str(current_port2_filter))
 
-            current_port1_aperture = self.dragonfly.get_field_aperture_wheel_position(1)
-            if current_port1_aperture is not None:
-                self.dropdown_port1_field_aperture.setCurrentText(str(current_port1_aperture))
-
-            current_port2_aperture = self.dragonfly.get_field_aperture_wheel_position(2)
-            if current_port2_aperture is not None:
-                self.dropdown_port2_field_aperture.setCurrentText(str(current_port2_aperture))
+            current_field_aperture = self.dragonfly.get_field_aperture_wheel_position()
+            if current_field_aperture is not None:
+                self.dropdown_field_aperture.setCurrentText(str(current_field_aperture))
 
             motor_state = self.dragonfly.get_disk_motor_state()
             if motor_state is not None:

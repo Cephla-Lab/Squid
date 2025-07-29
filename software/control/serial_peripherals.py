@@ -437,6 +437,8 @@ class Dragonfly:
         # Exit standby mode
         self._send_command("AT_STANDBY,0")
         self._send_command("AT_DC_SLCT,1")
+        self.get_port_selection_dichroic()
+        self.ps_info = self.get_port_selection_dichroic_info()
 
     def _send_command(self, command: str, read_delay: float = 0.05) -> str | None:
         """Send AT command and return response
@@ -503,17 +505,20 @@ class Dragonfly:
         response = self._send_command(command)
         return position if response else None
 
-    def get_emission_filter(self, port: int) -> int | None:
+    def get_emission_filter(self, port: int) -> int:
         """Get current emission filter wheel position
 
         Args:
             port: Filter wheel port number (typically 1)
 
         Returns:
-            Current position or None if error
+            Current position
         """
         response = self._send_command(f"AT_FW_POS,{port},?")
-        return int(response) if response and response.isdigit() else None
+        if response and response.isdigit():
+            return int(response)
+        else:
+            raise ValueError(f"Unknown emission filter position: {response}")
 
     def set_port_selection_dichroic(self, position: int) -> int | None:
         """Set port selection dichroic position
@@ -525,14 +530,34 @@ class Dragonfly:
         response = self._send_command(command)
         return position if response else None
 
-    def get_port_selection_dichroic(self) -> int | None:
+    def get_port_selection_dichroic(self) -> int:
         """Get current port selection dichroic position
 
         Returns:
-            Current position or None if error
+            Current position
         """
         response = self._send_command("AT_PS_POS,1,?")
-        return int(response) if response and response.isdigit() else None
+        if response and response.isdigit():
+            self.current_port_selection_dichroic = int(response)
+            return self.current_port_selection_dichroic
+        else:
+            raise ValueError(f"Unknown port selection dichroic position: {response}")
+
+    def get_camera_port(self) -> int:
+        """Get current camera port
+
+        Returns:
+            Current camera port (1 or 2)
+        """
+        if not self.ps_info or not (1 <= self.current_port_selection_dichroic <= len(self.ps_info)):
+            raise ValueError(f"Port selection dichroic info does not match current position: {self.ps_info}")
+
+        if self.ps_info[self.current_port_selection_dichroic - 1].endswith("100% Pass"):
+            return 1
+        elif self.ps_info[self.current_port_selection_dichroic - 1].endswith("100% Reflect"):
+            return 2
+        else:
+            raise ValueError(f"Unknown camera port: {self.ps_info[self.current_port_selection_dichroic - 1]}")
 
     def set_modality(self, modality: str) -> str | None:
         """Set imaging modality
@@ -719,6 +744,13 @@ class Dragonfly_Simulation:
     def get_port_selection_dichroic(self) -> int | None:
         """Get current port selection dichroic position"""
         return self.dichroic_position
+
+    def get_camera_port(self) -> int:
+        """Get current camera port"""
+        if self.dichroic_position == 1:
+            return 1
+        else:
+            return 2
 
     def set_modality(self, modality: str) -> str | None:
         """Set imaging modality"""
