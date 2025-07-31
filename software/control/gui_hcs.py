@@ -80,15 +80,29 @@ from control.custom_multipoint_widget import TemplateMultiPointWidget
 class MovementUpdater(QObject):
     position_after_move = Signal(squid.abc.Pos)
     position = Signal(squid.abc.Pos)
+    piezo_z_um = Signal(float)
 
-    def __init__(self, stage: AbstractStage, movement_threshhold_mm=0.0001, *args, **kwargs):
+    def __init__(
+        self, stage: AbstractStage, piezo: Optional[PiezoStage], movement_threshhold_mm=0.0001, *args, **kwargs
+    ):
         super().__init__(*args, **kwargs)
-        self.stage = stage
+        self.stage: AbstractStage = stage
+        self.piezo: Optional[PiezoStage] = piezo
         self.movement_threshhold_mm = movement_threshhold_mm
-        self.previous_pos = None
+        self.previous_pos: Optional[squid.abc.Pos] = None
+        self.previous_piezo_pos: Optional[float] = None
         self.sent_after_stopped = False
 
     def do_update(self):
+        if self.piezo:
+            if not self.previous_piezo_pos:
+                self.previous_piezo_pos = self.piezo.position
+            else:
+                current_piezo_position = self.piezo.position
+                if self.previous_piezo_pos != current_piezo_position:
+                    self.previous_piezo_pos = current_piezo_position
+                    self.piezo_z_um.emit(current_piezo_position)
+
         pos = self.stage.get_pos()
         # Doing previous_pos initialization like this means we technically miss the first real update,
         # but that's okay since this is intended to be run frequently in the background.
@@ -302,17 +316,13 @@ class HighContentScreeningGui(QMainWindow):
             objectiveStore=self.objectiveStore, navigationViewer=self.navigationViewer, stage=self.stage
         )
         self.multipointController = MultiPointController(
-            self.camera,
-            self.stage,
-            self.piezo,
-            self.microcontroller,
+            self.microscope,
             self.liveController,
             self.autofocusController,
             self.objectiveStore,
             self.channelConfigurationManager,
             scan_coordinates=self.scanCoordinates,
             fluidics=self.fluidics,
-            parent=self,
         )
 
     def setup_hardware(self):
@@ -857,7 +867,7 @@ class HighContentScreeningGui(QMainWindow):
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.update_ui_for_mode)
         if self.piezoWidget:
-            self.multipointController.signal_z_piezo_um.connect(self.piezoWidget.update_displacement_um_display)
+            self.movement_updater.piezo_z_um.connect(self.piezoWidget.update_displacement_um_display)
         self.multipointController.signal_set_display_tabs.connect(self.setAcquisitionDisplayTabs)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)

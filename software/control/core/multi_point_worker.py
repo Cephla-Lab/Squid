@@ -25,10 +25,11 @@ from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.piezo import PiezoStage
 from control.utils_config import ChannelMode
-from squid.abc import AbstractCamera, CameraFrame
+from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.logging
 import control.core.job_processing
 from control.core.job_processing import CaptureInfo, SaveImageJob, Job, JobImage, JobRunner, JobResult
+from squid.config import CameraPixelFormat
 
 try:
     from control.multipoint_custom_script_entry_v2 import *
@@ -39,8 +40,6 @@ except:
 
 
 class MultiPointWorker:
-
-    # finished = Signal()
     # image_to_display = Signal(np.ndarray)
     # spectrum_to_display = Signal(np.ndarray)
     # image_to_display_multi = Signal(np.ndarray, int)
@@ -49,14 +48,11 @@ class MultiPointWorker:
     # signal_current_configuration = Signal(ChannelMode)
     # signal_register_current_fov = Signal(float, float)
     # signal_z_piezo_um = Signal(float)
-    # napari_layers_init = Signal(int, int, object)
-    # napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
     # signal_acquisition_progress = Signal(int, int, int)
     # signal_region_progress = Signal(int, int)
 
     def __init__(
         self,
-        multiPointController,
         scope: Microscope,
         live_controller: LiveController,
         auto_focus_controller: Optional[AutoFocusController],
@@ -68,36 +64,33 @@ class MultiPointWorker:
         extra_job_classes: list[type[Job]] | None = None,
         abort_on_failed_jobs: bool = True,
     ):
-        self.multiPointController = multiPointController
         self._log = squid.logging.get_logger(__class__.__name__)
         self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
-        self.start_time = 0
         self.camera: AbstractCamera = scope.camera
         self.microcontroller: Microcontroller = scope.low_level_drivers.microcontroller
-        self.stage: squid.abc.AbstractStage = self.multiPointController.stage
+        self.stage: squid.abc.AbstractStage = scope.stage
         self.piezo: Optional[PiezoStage] = scope.addons.piezo_stage
         self.liveController = live_controller
         self.autofocusController: Optional[AutoFocusController] = auto_focus_controller
         self.laser_auto_focus_controller: Optional[LaserAutofocusController] = laser_auto_focus_controller
         self.objectiveStore: ObjectiveStore = objective_store
         self.channelConfigurationManager: ChannelConfigurationManager = channel_configuration_mananger
+
         self.params: AcquisitionParameters = acquisition_parameters
         self.callbacks = callbacks
 
-        self.NX = self.multiPointController.NX
-        self.NY = self.multiPointController.NY
-        self.NZ = self.multiPointController.NZ
-        self.Nt = self.multiPointController.Nt
-        self.deltaX = self.multiPointController.deltaX
-        self.deltaY = self.multiPointController.deltaY
-        self.deltaZ = self.multiPointController.deltaZ
-        self.dt = self.multiPointController.deltat
-        self.do_autofocus = self.multiPointController.do_autofocus
-        self.do_reflection_af = self.multiPointController.do_reflection_af
-        self.use_piezo = self.multiPointController.use_piezo
-        self.display_resolution_scaling = self.multiPointController.display_resolution_scaling
+        self.NZ = self.params.NZ
+        self.deltaZ = self.params.deltaZ
 
-        self.experiment_ID = self.multiPointController.experiment_ID
+        self.Nt = self.params.Nt
+        self.dt = self.params.deltat
+
+        self.do_autofocus = self.params.do_autofocus
+        self.do_reflection_af = self.params.do_reflection_af
+        self.use_piezo = self.params.use_piezo
+        self.display_resolution_scaling = self.params.display_resolution_scaling
+
+        self.experiment_ID = self.params.experiment_ID
         self.base_path = self.multiPointController.base_path
         self.selected_configurations = self.multiPointController.selected_configurations
 
@@ -114,7 +107,6 @@ class MultiPointWorker:
         self.z_range = self.multiPointController.z_range
         self.fluidics = self.multiPointController.fluidics
 
-        self.headless = self.multiPointController.headless
         self.microscope = self.multiPointController.parent
         self.performance_mode = self.microscope and self.microscope.performance_mode
 
@@ -123,8 +115,6 @@ class MultiPointWorker:
         self.t_dpc = []
         self.t_inf = []
         self.t_over = []
-
-        self.init_napari_layers = not USE_NAPARI_FOR_MULTIPOINT
 
         self.count = 0
 
@@ -171,7 +161,7 @@ class MultiPointWorker:
     def run(self):
         this_image_callback_id = None
         try:
-            self.start_time = time.perf_counter_ns()
+            start_time = time.perf_counter_ns()
             self.camera.start_streaming()
             this_image_callback_id = self.camera.add_frame_callback(self._image_callback)
 
@@ -216,14 +206,12 @@ class MultiPointWorker:
                             break
                         self._sleep(0.001)
 
-            elapsed_time = time.perf_counter_ns() - self.start_time
+            elapsed_time = time.perf_counter_ns() - start_time
             self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
 
             # Since we use callback based acquisition, make sure to wait for any final images to come in
             self._wait_for_outstanding_callback_images()
-            self._log.info(
-                f"Time taken for acquisition/processing: {(time.perf_counter_ns() - self.start_time) / 1e9} [s]"
-            )
+            self._log.info(f"Time taken for acquisition/processing: {(time.perf_counter_ns() - start_time) / 1e9} [s]")
         except TimeoutError as te:
             self._log.error(f"Operation timed out during acquisition, aborting acquisition!")
             self._log.error(te)
@@ -237,8 +225,7 @@ class MultiPointWorker:
                 self.camera.remove_frame_callback(this_image_callback_id)
 
             self._finish_jobs()
-        if not self.headless:
-            self.finished.emit()
+            self.callbacks.signal_acquisition_finished()
 
     def _wait_for_outstanding_callback_images(self):
         # If there are outstanding frames, wait for them to come in.
@@ -350,7 +337,6 @@ class MultiPointWorker:
             x = np.array(x).astype(float)
             y = np.array(y).astype(float)
             z = np.array(z).astype(float)
-            self.multiPointController.signal_coordinates.emit(x, y, z, region)
 
         utils.create_done_file(current_path)
         # TODO(imo): If anything throws above, we don't re-enable the joystick
@@ -652,8 +638,6 @@ class MultiPointWorker:
                 with self._timing.get_timer("image_to_display*.emit"):
                     self.callbacks.signal_new_image(camera_frame, info)
 
-                with self._timing.get_timer("update_napari"):
-                    self.update_napari(image, info)
         finally:
             self._image_callback_idle.set()
 
@@ -785,22 +769,6 @@ class MultiPointWorker:
             print("constructing RGB image")
             self.construct_rgb_image(images, file_ID, current_path, config, k)
 
-    def update_napari(self, image, capture_info: CaptureInfo):
-        if not self.performance_mode and (USE_NAPARI_FOR_MOSAIC_DISPLAY or USE_NAPARI_FOR_MULTIPOINT):
-
-            if not self.init_napari_layers:
-                print("init napari layers")
-                self.init_napari_layers = True
-                self.napari_layers_init.emit(image.shape[0], image.shape[1], image.dtype)
-            objective_magnification = str(int(self.objectiveStore.get_current_objective_info()["magnification"]))
-            self.napari_layers_update.emit(
-                image,
-                capture_info.position.x_mm,
-                capture_info.position.y_mm,
-                capture_info.z_index,
-                objective_magnification + "x " + capture_info.configuration.name,
-            )
-
     @staticmethod
     def handle_rgb_generation(current_round_images, capture_info: CaptureInfo):
         keys_to_check = ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]
@@ -842,10 +810,16 @@ class MultiPointWorker:
                 round(images[channel].shape[1] * self.display_resolution_scaling),
                 round(images[channel].shape[0] * self.display_resolution_scaling),
             )
-            self.image_to_display.emit(image_to_display)
-            self.image_to_display_multi.emit(image_to_display, capture_info.configuration.illumination_source)
-
-            self.update_napari(images[channel], capture_info)
+            self.callbacks.signal_new_image(
+                CameraFrame(
+                    self.image_count,
+                    capture_info.capture_time,
+                    image_to_display,
+                    CameraFrameFormat.RAW,
+                    CameraPixelFormat.MONO16,
+                ),
+                capture_info,
+            )
 
             file_name = (
                 capture_info.file_id
@@ -868,10 +842,15 @@ class MultiPointWorker:
             round(width * self.display_resolution_scaling),
             round(height * self.display_resolution_scaling),
         )
-        self.image_to_display.emit(image_to_display)
-        self.image_to_display_multi.emit(image_to_display, capture_info.configuration.illumination_source)
-
-        self.update_napari(rgb_image, capture_info)
+        self.callbacks.signal_new_image(
+            CameraFrame(
+                self.image_count,
+                capture_info.capture_time,
+                image_to_display,
+                CameraFrameFormat.RGB,
+                CameraPixelFormat.RGB48,
+            )
+        )
 
         # write the RGB image
         print("writing RGB image")
@@ -901,8 +880,6 @@ class MultiPointWorker:
                 self.liveController.trigger_mode == TriggerMode.SOFTWARE
             ):  # for hardware trigger, delay is in waiting for the last row to start exposure
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-            if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
-                self.signal_z_piezo_um.emit(self.z_piezo_um)
         else:
             self.stage.move_z(self.deltaZ)
             self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
@@ -915,8 +892,6 @@ class MultiPointWorker:
                 self.liveController.trigger_mode == TriggerMode.SOFTWARE
             ):  # for hardware trigger, delay is in waiting for the last row to start exposure
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-            if MULTIPOINT_PIEZO_UPDATE_DISPLAY:
-                self.signal_z_piezo_um.emit(self.z_piezo_um)
         else:
             if self.z_stacking_config == "FROM CENTER":
                 rel_z_to_start = -self.deltaZ * (self.NZ - 1) + self.deltaZ * round((self.NZ - 1) / 2)

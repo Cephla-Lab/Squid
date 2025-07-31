@@ -1093,6 +1093,15 @@ class ScanCoordinates(QObject):
         else:
             self._log.info(f"Region Out of Bounds: {region_id}")
 
+    def add_single_fov_region(self, region_id, center_x, center_y, center_z):
+        if not self.validate_coordinates(center_x, center_y):
+            raise ValueError(f"FOV with center (x,y)={center_x},{center_y} is not valid, cannot add region.")
+
+        self.region_centers[region_id] = [center_x, center_y, center_z]
+        self.region_fov_coordinates[region_id] = [(center_x, center_y)]
+        self.navigationViewer.register_fov_to_image(center_x, center_y)
+        self.signal_scan_coordinates_updated.emit()
+
     def add_flexible_region_with_step_size(self, region_id, center_x, center_y, center_z, Nx, Ny, dx, dy):
         """Convert grid parameters NX, NY to FOV coordinates based on dx, dy"""
         grid_width_mm = (Nx - 1) * dx
