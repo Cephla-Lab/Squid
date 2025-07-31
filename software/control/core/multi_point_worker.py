@@ -3,25 +3,26 @@ import queue
 import threading
 import time
 from typing import List, Optional, Tuple, Type
-from dataclasses import dataclass
 from datetime import datetime
 
-import cv2
 import imageio as iio
-import pydantic
-import tifffile
 import numpy as np
-from numpy.typing import NDArray
 import pandas as pd
 
-import control.utils
-
-os.environ["QT_API"] = "pyqt5"
-from qtpy.QtCore import Signal, QObject
-from PyQt5.QtWidgets import QApplication
-
 from control._def import *
-from control import utils, utils_acquisition
+from control import utils
+from control.core.channel_configuration_mananger import ChannelConfigurationManager
+from control.core.core import LaserAutofocusController, AutoFocusController
+from control.core.live_controller import LiveController
+from control.core.multi_point_controller import (
+    AcquisitionParameters,
+    MultiPointControllerFunctions,
+    OverallProgressUpdate,
+    RegionProgressUpdate,
+)
+from control.core.objective_store import ObjectiveStore
+from control.microcontroller import Microcontroller
+from control.microscope import Microscope
 from control.piezo import PiezoStage
 from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, CameraFrame
@@ -37,39 +38,52 @@ except:
     pass
 
 
-class MultiPointWorker(QObject):
+class MultiPointWorker:
 
-    finished = Signal()
-    image_to_display = Signal(np.ndarray)
-    spectrum_to_display = Signal(np.ndarray)
-    image_to_display_multi = Signal(np.ndarray, int)
-    # This should connect to UI updates only - it should not trigger a liveController.set_microscope_mode!
-    # We call liveController.set_microscope_mode ourselves.
-    signal_current_configuration = Signal(ChannelMode)
-    signal_register_current_fov = Signal(float, float)
-    signal_z_piezo_um = Signal(float)
-    napari_layers_init = Signal(int, int, object)
-    napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
-    signal_acquisition_progress = Signal(int, int, int)
-    signal_region_progress = Signal(int, int)
+    # finished = Signal()
+    # image_to_display = Signal(np.ndarray)
+    # spectrum_to_display = Signal(np.ndarray)
+    # image_to_display_multi = Signal(np.ndarray, int)
+    # # This should connect to UI updates only - it should not trigger a liveController.set_microscope_mode!
+    # # We call liveController.set_microscope_mode ourselves.
+    # signal_current_configuration = Signal(ChannelMode)
+    # signal_register_current_fov = Signal(float, float)
+    # signal_z_piezo_um = Signal(float)
+    # napari_layers_init = Signal(int, int, object)
+    # napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
+    # signal_acquisition_progress = Signal(int, int, int)
+    # signal_region_progress = Signal(int, int)
 
     def __init__(
-        self, multiPointController, extra_job_classes: list[type[Job]] | None = None, abort_on_failed_jobs: bool = True
+        self,
+        multiPointController,
+        scope: Microscope,
+        live_controller: LiveController,
+        auto_focus_controller: Optional[AutoFocusController],
+        laser_auto_focus_controller: Optional[LaserAutofocusController],
+        objective_store: ObjectiveStore,
+        channel_configuration_mananger: ChannelConfigurationManager,
+        acquisition_parameters: AcquisitionParameters,
+        callbacks: MultiPointControllerFunctions,
+        extra_job_classes: list[type[Job]] | None = None,
+        abort_on_failed_jobs: bool = True,
     ):
-        QObject.__init__(self)
         self.multiPointController = multiPointController
         self._log = squid.logging.get_logger(__class__.__name__)
-        self._timing = control.utils.TimingManager("MultiPointWorker Timer Manager")
+        self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
         self.start_time = 0
-        self.camera: AbstractCamera = self.multiPointController.camera
-        self.microcontroller = self.multiPointController.microcontroller
-        self.usb_spectrometer = self.multiPointController.usb_spectrometer
+        self.camera: AbstractCamera = scope.camera
+        self.microcontroller: Microcontroller = scope.low_level_drivers.microcontroller
         self.stage: squid.abc.AbstractStage = self.multiPointController.stage
-        self.piezo: PiezoStage = self.multiPointController.piezo
-        self.liveController = self.multiPointController.liveController
-        self.autofocusController = self.multiPointController.autofocusController
-        self.objectiveStore = self.multiPointController.objectiveStore
-        self.channelConfigurationManager = self.multiPointController.channelConfigurationManager
+        self.piezo: Optional[PiezoStage] = scope.addons.piezo_stage
+        self.liveController = live_controller
+        self.autofocusController: Optional[AutoFocusController] = auto_focus_controller
+        self.laser_auto_focus_controller: Optional[LaserAutofocusController] = laser_auto_focus_controller
+        self.objectiveStore: ObjectiveStore = objective_store
+        self.channelConfigurationManager: ChannelConfigurationManager = channel_configuration_mananger
+        self.params: AcquisitionParameters = acquisition_parameters
+        self.callbacks = callbacks
+
         self.NX = self.multiPointController.NX
         self.NY = self.multiPointController.NY
         self.NZ = self.multiPointController.NZ
@@ -80,12 +94,15 @@ class MultiPointWorker(QObject):
         self.dt = self.multiPointController.deltat
         self.do_autofocus = self.multiPointController.do_autofocus
         self.do_reflection_af = self.multiPointController.do_reflection_af
+        self.use_piezo = self.multiPointController.use_piezo
         self.display_resolution_scaling = self.multiPointController.display_resolution_scaling
+
         self.experiment_ID = self.multiPointController.experiment_ID
         self.base_path = self.multiPointController.base_path
         self.selected_configurations = self.multiPointController.selected_configurations
-        self.use_piezo = self.multiPointController.use_piezo
+
         self.timestamp_acquisition_started = self.multiPointController.timestamp_acquisition_started
+
         self.time_point = 0
         self.af_fov_count = 0
         self.num_fovs = 0
@@ -276,7 +293,7 @@ class MultiPointWorker(QObject):
 
         # for each time point, create a new folder
         current_path = os.path.join(self.base_path, self.experiment_ID, f"{self.time_point:0{FILE_ID_PADDING}}")
-        utils.ensure_directory_exists(current_path)
+        utils.ensure_directory_exists(str(current_path))
 
         slide_path = os.path.join(self.base_path, self.experiment_ID)
 
@@ -419,9 +436,14 @@ class MultiPointWorker(QObject):
         n_regions = len(self.scan_region_coords_mm)
 
         for region_index, (region_id, coordinates) in enumerate(self.scan_region_fov_coords_mm.items()):
-
-            self.signal_acquisition_progress.emit(region_index + 1, n_regions, self.time_point)
-
+            self.callbacks.signal_overall_progress(
+                OverallProgressUpdate(
+                    current_region=region_index + 1,
+                    total_regions=n_regions,
+                    current_timepoint=self.time_point,
+                    total_timepoints=self.Nt,
+                )
+            )
             self.num_fovs = len(coordinates)
             self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
 
@@ -483,14 +505,14 @@ class MultiPointWorker(QObject):
 
                 # acquire image
                 with self._timing.get_timer("acquire_camera_image"):
-                    if "USB Spectrometer" not in config.name and "RGB" not in config.name:
+                    # TODO(imo): This really should not look for a string in a user configurable name.  We
+                    # need some proper flag on the config to signal this instead...
+                    if "RGB" in config.name:
+                        self.acquire_rgb_image(config, file_ID, current_path, current_round_images, z_level)
+                    else:
                         self.acquire_camera_image(
                             config, file_ID, current_path, z_level, region_id=region_id, fov=fov, config_idx=config_idx
                         )
-                    elif "RGB" in config.name:
-                        self.acquire_rgb_image(config, file_ID, current_path, current_round_images, z_level)
-                    else:
-                        self.acquire_spectrometer_data(config, file_ID, current_path)
 
                 if self.NZ == 1:  # TODO: handle z offset for z stack
                     self.handle_z_offset(config, False)
@@ -501,11 +523,13 @@ class MultiPointWorker(QObject):
                     + config_idx
                     + 1
                 )
-                self.signal_region_progress.emit(current_image, self.total_scans)
+                self.callbacks.signal_region_progress(
+                    RegionProgressUpdate(current_fov=current_image, region_fovs=self.total_scans)
+                )
 
             # updates coordinates df
             self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov)
-            self.signal_register_current_fov.emit(acquire_pos.x_mm, acquire_pos.y_mm)
+            self.callbacks.signal_current_fov(acquire_pos.x_mm, acquire_pos.y_mm)
 
             # check if the acquisition should be aborted
             if self.multiPointController.abort_acqusition_requested:
@@ -521,7 +545,7 @@ class MultiPointWorker(QObject):
             self.move_z_back_after_stack()
 
     def _select_config(self, config: ChannelMode):
-        self.signal_current_configuration.emit(config)
+        self.callbacks.signal_current_configuration(config)
         self.liveController.set_microscope_mode(config)
         self.wait_till_operation_is_completed()
 
@@ -619,15 +643,14 @@ class MultiPointWorker(QObject):
                                 return
 
                 height, width = image.shape[:2]
-                with self._timing.get_timer("crop_image"):
-                    image_to_display = utils.crop_image(
-                        image,
-                        round(width * self.display_resolution_scaling),
-                        round(height * self.display_resolution_scaling),
-                    )
+                # with self._timing.get_timer("crop_image"):
+                #     image_to_display = utils.crop_image(
+                #         image,
+                #         round(width * self.display_resolution_scaling),
+                #         round(height * self.display_resolution_scaling),
+                #     )
                 with self._timing.get_timer("image_to_display*.emit"):
-                    self.image_to_display.emit(image_to_display)
-                    self.image_to_display_multi.emit(image_to_display, info.configuration.illumination_source)
+                    self.callbacks.signal_new_image(camera_frame, info)
 
                 with self._timing.get_timer("update_napari"):
                     self.update_napari(image, info)
@@ -713,13 +736,10 @@ class MultiPointWorker(QObject):
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
             self.liveController.turn_off_illumination()
 
-        with self._timing.get_timer("QApplication.processEvents"):
-            if not self.headless:
-                QApplication.processEvents()
-
     def _sleep(self, sec):
-        self._log.debug(f"Sleeping for {sec} [s]")
-        self.thread().usleep(max(1, round(sec * 1e6)))
+        time_to_sleep = max(sec, 1e-6)
+        self._log.debug(f"Sleeping for {time_to_sleep} [s]")
+        time.sleep(time_to_sleep)
 
     def acquire_rgb_image(self, config, file_ID, current_path, current_round_images, k):
         # go through the channels
@@ -764,16 +784,6 @@ class MultiPointWorker(QObject):
             # If monochrome, reconstruct RGB image
             print("constructing RGB image")
             self.construct_rgb_image(images, file_ID, current_path, config, k)
-
-    def acquire_spectrometer_data(self, config, file_ID, current_path):
-        if self.usb_spectrometer is not None:
-            for l in range(N_SPECTRUM_PER_POINT):
-                data = self.usb_spectrometer.read_spectrum()
-                self.spectrum_to_display.emit(data)
-                saving_path = os.path.join(
-                    current_path, file_ID + "_" + str(config.name).replace(" ", "_") + "_" + str(l) + ".csv"
-                )
-                np.savetxt(saving_path, data, delimiter=",")
 
     def update_napari(self, image, capture_info: CaptureInfo):
         if not self.performance_mode and (USE_NAPARI_FOR_MOSAIC_DISPLAY or USE_NAPARI_FOR_MULTIPOINT):

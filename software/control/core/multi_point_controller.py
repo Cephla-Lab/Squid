@@ -1,37 +1,102 @@
+import json
+import os
+import tempfile
+import time
 from dataclasses import dataclass
-from typing import Callable
+from datetime import datetime
+from threading import Thread
+from typing import Callable, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 
+from control import utils, utils_acquisition
+from control._def import (
+    Acquisition,
+    MULTIPOINT_USE_PIEZO_FOR_ZSTACKS,
+    Z_STACKING_CONFIG,
+    Z_STACKING_CONFIG_MAP,
+    OBJECTIVES,
+    DEFAULT_OBJECTIVE,
+    TUBE_LENS_MM,
+    MERGE_CHANNELS,
+    TriggerMode,
+    RESUME_LIVE_AFTER_ACQUISITION,
+)
+from control.core.channel_configuration_mananger import ChannelConfigurationManager
+from control.core.core import AutoFocusController, ScanCoordinates
+from control.core.job_processing import CaptureInfo
+from control.core.live_controller import LiveController
+from control.core.multi_point_worker import MultiPointWorker
+from control.core.objective_store import ObjectiveStore
+from control.microcontroller import Microcontroller
+from control.piezo import PiezoStage
 from control.utils_config import ChannelMode
-from squid.abc import CameraFrame
+from squid.abc import CameraFrame, AbstractCamera, AbstractStage
+import squid.logging
+
+
+@dataclass
+class AcquisitionParameters:
+    pass
+
+
+@dataclass
+class OverallProgressUpdate:
+    current_region: int
+    total_regions: int
+
+    current_timepoint: int
+    total_timepoints: int
+
+
+@dataclass
+class RegionProgressUpdate:
+    current_fov: int
+    region_fovs: int
 
 
 @dataclass
 class MultiPointControllerFunctions:
+    signal_acquisition_start: Callable[[AcquisitionParameters], None]  # todo acqui params as arg
     signal_acquisition_finished: Callable[[], None]
-    signal_new_image: Callable[[CameraFrame], None]
+    signal_new_image: Callable[[CameraFrame, CaptureInfo], None]
     signal_new_spectrum: Callable[[np.ndarray], None]
     signal_current_configuration: Callable[[ChannelMode], None]
     signal_current_fov: Callable[[float, float], None]
+    signal_overall_progress: Callable[[OverallProgressUpdate], None]
+    signal_region_progress: Callable[[RegionProgressUpdate], None]
 
 
+class MultiPointController:
+    # acquisition_finished = Signal()
+    # image_to_display = Signal(np.ndarray) # replace with signal_new_image
+    # image_to_display_multi = Signal(np.ndarray, int) # replace with signal_new_image
+    # spectrum_to_display = Signal(np.ndarray)
+    # signal_current_configuration = Signal(ChannelMode)
+    # signal_register_current_fov = Signal(float, float)
+    # signal_stitcher = Signal(str)  # Replace with signal_acquisition_finished
+    # napari_layers_init = Signal(int, int, object)
+    # napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
+    # signal_set_display_tabs = Signal(list, int)
+    # signal_z_piezo_um = Signal(float)
+    # signal_acquisition_progress = Signal(int, int, int)
+    # signal_region_progress = Signal(int, int)
+    # signal_coordinates = Signal(np.ndarray, np.ndarray, np.ndarray, np.ndarray)  # x, y, z, region
 
-class MultiPointController(QObject):
-    acquisition_finished = Signal()
-    image_to_display = Signal(np.ndarray) # replace with signal_new_image
-    image_to_display_multi = Signal(np.ndarray, int) # replace with signal_new_image
-    spectrum_to_display = Signal(np.ndarray)
-    signal_current_configuration = Signal(ChannelMode)
-    signal_register_current_fov = Signal(float, float)
-    signal_stitcher = Signal(str)  # Replace with signal_acquisition_finished
-    napari_layers_init = Signal(int, int, object)
-    napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
-    signal_set_display_tabs = Signal(list, int)
-    signal_z_piezo_um = Signal(float)
-    signal_acquisition_progress = Signal(int, int, int)
-    signal_region_progress = Signal(int, int)
-    signal_coordinates = Signal(np.ndarray, np.ndarray, np.ndarray, np.ndarray)  # x, y, z, region
+    @dataclass
+    class AcquisitionParams:
+        NX: int
+        NY: int
+        NZ: int
+        Nt: int
+        deltaX: float
+        deltaY: float
+        deltaZ: float
+        deltat: float
+
+        do_autofocus: bool
+        do_reflection_autofocus: bool
 
     def __init__(
         self,
@@ -43,13 +108,11 @@ class MultiPointController(QObject):
         autofocus_controller: AutoFocusController,
         objective_store: ObjectiveStore,
         channel_configuration_manager: ChannelConfigurationManager,
-        usb_spectrometer=None,
         scan_coordinates: Optional[ScanCoordinates] = None,
         fluidics=None,
         parent=None,
         headless=False,
     ):
-        QObject.__init__(self)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.camera: AbstractCamera = camera
         self.stage: AbstractStage = stage
@@ -60,7 +123,7 @@ class MultiPointController(QObject):
         self.objectiveStore: ObjectiveStore = objective_store
         self.channelConfigurationManager: ChannelConfigurationManager = channel_configuration_manager
         self.multiPointWorker: Optional[MultiPointWorker] = None
-        self.thread: Optional[QThread] = None
+        self.thread: Optional[Thread] = None
         self.NX = 1
         self.NY = 1
         self.NZ = 1
@@ -84,7 +147,6 @@ class MultiPointController(QObject):
         self.base_path = None
         self.use_piezo = MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
         self.selected_configurations = []
-        self.usb_spectrometer = usb_spectrometer
         self.scanCoordinates = scan_coordinates
         self.scan_region_names = []
         self.scan_region_coords_mm = []
@@ -250,7 +312,7 @@ class MultiPointController(QObject):
 
             non_merged_images = self.Nt * self.NZ * all_regions_coord_count * len(self.selected_configurations)
             # When capturing merged images, we capture 1 per fov (where all the configurations are merged)
-            merged_images = self.Nt * self.NZ * all_regions_coord_count if control._def.MERGE_CHANNELS else 0
+            merged_images = self.Nt * self.NZ * all_regions_coord_count if MERGE_CHANNELS else 0
 
             return non_merged_images + merged_images
         except AttributeError:
@@ -374,13 +436,6 @@ class MultiPointController(QObject):
         # We need callbacks, because we trigger and then use callbacks for image processing.  This
         # lets us do overlapping triggering (soon).
         self.camera.enable_callbacks(True)
-
-        if self.usb_spectrometer != None:
-            if self.usb_spectrometer.streaming_started == True and self.usb_spectrometer.streaming_paused == False:
-                self.usb_spectrometer.pause_streaming()
-                self.usb_spectrometer_was_streaming = True
-            else:
-                self.usb_spectrometer_was_streaming = False
 
         # set current tabs
         if not self.run_acquisition_current_fov:
@@ -515,10 +570,6 @@ class MultiPointController(QObject):
         # re-enable live if it's previously on
         if self.liveController_was_live_before_multipoint and RESUME_LIVE_AFTER_ACQUISITION:
             self.liveController.start_live()
-
-        if self.usb_spectrometer != None:
-            if self.usb_spectrometer_was_streaming:
-                self.usb_spectrometer.resume_streaming()
 
         # emit the acquisition finished signal to enable the UI
         if self.parent is not None:

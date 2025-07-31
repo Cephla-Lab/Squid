@@ -159,84 +159,68 @@ def multipoint_custom_script_entry(multiPointWorker, time_point, current_path, c
 
         # iterate through selected modes
         for config in multiPointWorker.selected_configurations:
+            if time_point % 10 != 0:
 
-            if "USB Spectrometer" not in config.name:
-
-                if time_point % 10 != 0:
-
-                    if "Fluorescence" in config.name:
-                        # only do fluorescence every 10th timepoint
-                        continue
-
-                # update the current configuration
-                multiPointWorker.signal_current_configuration.emit(config)
-                multiPointWorker.wait_till_operation_is_completed()
-                # trigger acquisition (including turning on the illumination)
-                if multiPointWorker.liveController.trigger_mode == TriggerMode.SOFTWARE:
-                    multiPointWorker.liveController.turn_on_illumination()
-                    multiPointWorker.wait_till_operation_is_completed()
-                    multiPointWorker.camera.send_trigger()
-                elif multiPointWorker.liveController.trigger_mode == TriggerMode.HARDWARE:
-                    multiPointWorker.microcontroller.send_hardware_trigger(
-                        control_illumination=True, illumination_on_time_us=multiPointWorker.camera.exposure_time * 1000
-                    )
-                # read camera frame
-                image = multiPointWorker.camera.read_frame()
-                if image is None:
-                    print("multiPointWorker.camera.read_frame() returned None")
+                if "Fluorescence" in config.name:
+                    # only do fluorescence every 10th timepoint
                     continue
-                # tunr of the illumination if using software trigger
-                if multiPointWorker.liveController.trigger_mode == TriggerMode.SOFTWARE:
-                    multiPointWorker.liveController.turn_off_illumination()
-                # process the image -  @@@ to move to camera
-                image = utils.crop_image(image, multiPointWorker.crop_width, multiPointWorker.crop_height)
-                # multiPointWorker.image_to_display.emit(cv2.resize(image,(round(multiPointWorker.crop_width*multiPointWorker.display_resolution_scaling), round(multiPointWorker.crop_height*multiPointWorker.display_resolution_scaling)),cv2.INTER_LINEAR))
-                image_to_display = utils.crop_image(
-                    image,
-                    round(multiPointWorker.crop_width * multiPointWorker.display_resolution_scaling),
-                    round(multiPointWorker.crop_height * multiPointWorker.display_resolution_scaling),
+
+            # update the current configuration
+            multiPointWorker.signal_current_configuration.emit(config)
+            multiPointWorker.wait_till_operation_is_completed()
+            # trigger acquisition (including turning on the illumination)
+            if multiPointWorker.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                multiPointWorker.liveController.turn_on_illumination()
+                multiPointWorker.wait_till_operation_is_completed()
+                multiPointWorker.camera.send_trigger()
+            elif multiPointWorker.liveController.trigger_mode == TriggerMode.HARDWARE:
+                multiPointWorker.microcontroller.send_hardware_trigger(
+                    control_illumination=True, illumination_on_time_us=multiPointWorker.camera.exposure_time * 1000
                 )
-                multiPointWorker.image_to_display.emit(image_to_display)
-                multiPointWorker.image_to_display_multi.emit(image_to_display, config.illumination_source)
-                if image.dtype == np.uint16:
-                    saving_path = os.path.join(
-                        current_path, file_ID + "_" + str(config.name).replace(" ", "_") + ".tiff"
-                    )
-                    if multiPointWorker.camera.is_color:
-                        if "BF LED matrix" in config.name:
-                            if MULTIPOINT_BF_SAVING_OPTION == "RGB2GRAY":
-                                image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-                            elif MULTIPOINT_BF_SAVING_OPTION == "Green Channel Only":
-                                image = image[:, :, 1]
-                    iio.imwrite(saving_path, image)
-                else:
-                    saving_path = os.path.join(
-                        current_path,
-                        file_ID + "_" + str(config.name).replace(" ", "_") + "." + Acquisition.IMAGE_FORMAT,
-                    )
-                    if multiPointWorker.camera.is_color:
-                        if "BF LED matrix" in config.name:
-                            if MULTIPOINT_BF_SAVING_OPTION == "Raw":
-                                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-                            elif MULTIPOINT_BF_SAVING_OPTION == "RGB2GRAY":
-                                image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-                            elif MULTIPOINT_BF_SAVING_OPTION == "Green Channel Only":
-                                image = image[:, :, 1]
-                        else:
-                            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-                    cv2.imwrite(saving_path, image)
-                QApplication.processEvents()
-
+            # read camera frame
+            image = multiPointWorker.camera.read_frame()
+            if image is None:
+                print("multiPointWorker.camera.read_frame() returned None")
+                continue
+            # tunr of the illumination if using software trigger
+            if multiPointWorker.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                multiPointWorker.liveController.turn_off_illumination()
+            # process the image -  @@@ to move to camera
+            image = utils.crop_image(image, multiPointWorker.crop_width, multiPointWorker.crop_height)
+            # multiPointWorker.image_to_display.emit(cv2.resize(image,(round(multiPointWorker.crop_width*multiPointWorker.display_resolution_scaling), round(multiPointWorker.crop_height*multiPointWorker.display_resolution_scaling)),cv2.INTER_LINEAR))
+            image_to_display = utils.crop_image(
+                image,
+                round(multiPointWorker.crop_width * multiPointWorker.display_resolution_scaling),
+                round(multiPointWorker.crop_height * multiPointWorker.display_resolution_scaling),
+            )
+            multiPointWorker.image_to_display.emit(image_to_display)
+            multiPointWorker.image_to_display_multi.emit(image_to_display, config.illumination_source)
+            if image.dtype == np.uint16:
+                saving_path = os.path.join(current_path, file_ID + "_" + str(config.name).replace(" ", "_") + ".tiff")
+                if multiPointWorker.camera.is_color:
+                    if "BF LED matrix" in config.name:
+                        if MULTIPOINT_BF_SAVING_OPTION == "RGB2GRAY":
+                            image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+                        elif MULTIPOINT_BF_SAVING_OPTION == "Green Channel Only":
+                            image = image[:, :, 1]
+                iio.imwrite(saving_path, image)
             else:
-
-                if multiPointWorker.usb_spectrometer != None:
-                    for l in range(N_SPECTRUM_PER_POINT):
-                        data = multiPointWorker.usb_spectrometer.read_spectrum()
-                        multiPointWorker.spectrum_to_display.emit(data)
-                        saving_path = os.path.join(
-                            current_path, file_ID + "_" + str(config.name).replace(" ", "_") + "_" + str(l) + ".csv"
-                        )
-                        np.savetxt(saving_path, data, delimiter=",")
+                saving_path = os.path.join(
+                    current_path,
+                    file_ID + "_" + str(config.name).replace(" ", "_") + "." + Acquisition.IMAGE_FORMAT,
+                )
+                if multiPointWorker.camera.is_color:
+                    if "BF LED matrix" in config.name:
+                        if MULTIPOINT_BF_SAVING_OPTION == "Raw":
+                            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                        elif MULTIPOINT_BF_SAVING_OPTION == "RGB2GRAY":
+                            image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+                        elif MULTIPOINT_BF_SAVING_OPTION == "Green Channel Only":
+                            image = image[:, :, 1]
+                    else:
+                        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(saving_path, image)
+            QApplication.processEvents()
 
         # add the coordinate of the current location
         new_row = pd.DataFrame(

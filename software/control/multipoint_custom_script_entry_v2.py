@@ -130,12 +130,10 @@ def acquire_single_z_plane(worker, current_path, region_id, fov, i, j, z_level, 
 def acquire_image_for_configuration(worker, config, file_ID, current_path, current_round_images, i, j, z_level):
     worker.handle_z_offset(config, True)  # Added this line to perform config z-offset
 
-    if "USB Spectrometer" not in config.name and "RGB" not in config.name:
-        acquire_camera_image(worker, config, file_ID, current_path, current_round_images, i, j, z_level)
-    elif "RGB" in config.name:
+    if "RGB" in config.name:
         acquire_rgb_image(worker, config, file_ID, current_path, current_round_images, i, j, z_level)
     else:
-        acquire_spectrometer_data(worker, config, file_ID, current_path, i, j, z_level)
+        acquire_camera_image(worker, config, file_ID, current_path, current_round_images, i, j, z_level)
 
     worker.handle_z_offset(config, False)  # Added this line to undo z-offset
 
@@ -275,15 +273,6 @@ def construct_rgb_image(worker, images, file_ID, current_path, config, i, j, z_l
         f"{file_ID}_BF_LED_matrix_full_RGB{'.tiff' if rgb_image.dtype == np.uint16 else '.' + Acquisition.IMAGE_FORMAT}"
     )
     iio.imwrite(os.path.join(current_path, file_name), rgb_image)
-
-
-def acquire_spectrometer_data(worker, config, file_ID, current_path, i, j, z_level):
-    if worker.usb_spectrometer is not None:
-        for l in range(N_SPECTRUM_PER_POINT):
-            data = worker.usb_spectrometer.read_spectrum()
-            worker.spectrum_to_display.emit(data)
-            saving_path = os.path.join(current_path, f"{file_ID}_{config.name.replace(' ', '_')}_{l}.csv")
-            np.savetxt(saving_path, data, delimiter=",")
 
 
 def update_coordinates_dataframe(worker, region_id, z_level, fov, i, j):

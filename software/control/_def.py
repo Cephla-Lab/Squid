@@ -576,9 +576,6 @@ DEFAULT_Z_POS_MM = 2
 WELLPLATE_OFFSET_X_mm = 0  # x offset adjustment for using different plates
 WELLPLATE_OFFSET_Y_mm = 0  # y offset adjustment for using different plates
 
-# for USB spectrometer
-N_SPECTRUM_PER_POINT = 5
-
 # focus measure operator
 FOCUS_MEASURE_OPERATOR = FocusMeasureOperator.LAPE
 
