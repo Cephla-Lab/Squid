@@ -2456,8 +2456,6 @@ class FlexibleMultiPointWidget(QFrame):
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
     signal_acquisition_shape = Signal(int, float)  # Nz, dz
-    signal_stitcher_z_levels = Signal(int)  # live Nz
-    signal_stitcher_widget = Signal(bool)  # signal start stitcher
 
     def __init__(
         self,
@@ -2825,8 +2823,6 @@ class FlexibleMultiPointWidget(QFrame):
         if HAS_OBJECTIVE_PIEZO:
             grid_af.addWidget(self.checkbox_usePiezo)
         grid_af.addWidget(self.checkbox_set_z_range)
-        if ENABLE_STITCHER:
-            grid_af.addWidget(self.checkbox_stitchOutput)
 
         grid_config = QHBoxLayout()
         grid_config.addWidget(self.list_configurations)
@@ -2891,14 +2887,12 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_NX.valueChanged.connect(self.multipointController.set_NX)
         self.entry_NY.valueChanged.connect(self.multipointController.set_NY)
         self.entry_NZ.valueChanged.connect(self.multipointController.set_NZ)
-        self.entry_NZ.valueChanged.connect(self.signal_stitcher_z_levels.emit)
         self.entry_Nt.valueChanged.connect(self.multipointController.set_Nt)
         self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
-        self.checkbox_stitchOutput.toggled.connect(self.display_stitcher_widget)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
@@ -3102,8 +3096,9 @@ class FlexibleMultiPointWidget(QFrame):
             self.eta_timer.stop()
 
     def update_fov_positions(self):
-        if self.parent.recordTabWidget.currentWidget() != self:
+        if not self.isVisible():
             return
+
         if self.scanCoordinates.has_regions():
             self.scanCoordinates.clear_regions()
 
@@ -3150,9 +3145,6 @@ class FlexibleMultiPointWidget(QFrame):
     def emit_selected_channels(self):
         selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
         self.signal_acquisition_channels.emit(selected_channels)
-
-    def display_stitcher_widget(self, checked):
-        self.signal_stitcher_widget.emit(checked)
 
     def toggle_acquisition(self, pressed):
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
@@ -3707,8 +3699,6 @@ class WellplateMultiPointWidget(QFrame):
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
     signal_acquisition_shape = Signal(int, float)  # acquisition Nz, dz
-    signal_stitcher_z_levels = Signal(int)  # live Nz
-    signal_stitcher_widget = Signal(bool)  # start stitching
     signal_manual_shape_mode = Signal(bool)  # enable manual shape layer on mosaic display
 
     def __init__(
@@ -3996,8 +3986,6 @@ class WellplateMultiPointWidget(QFrame):
         if HAS_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
         options_layout.addWidget(self.checkbox_set_z_range)
-        if ENABLE_STITCHER:
-            options_layout.addWidget(self.checkbox_stitchOutput)
 
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
@@ -4045,7 +4033,6 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_useFocusMap.toggled.connect(self.multipointController.set_manual_focus_map_flag)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
-        self.checkbox_stitchOutput.toggled.connect(self.display_stitcher_widget)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
@@ -4054,8 +4041,6 @@ class WellplateMultiPointWidget(QFrame):
         self.eta_timer.timeout.connect(self.update_eta_display)
         if not self.performance_mode:
             self.napariMosaicWidget.signal_layers_initialized.connect(self.enable_manual_ROI)
-        self.entry_NZ.valueChanged.connect(self.signal_stitcher_z_levels.emit)
-        # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
         # Connect save/clear coordinates button
         self.btn_save_scan_coordinates.clicked.connect(self.on_save_or_clear_coordinates_clicked)
@@ -4545,9 +4530,6 @@ class WellplateMultiPointWidget(QFrame):
     def emit_selected_channels(self):
         selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
         self.signal_acquisition_channels.emit(selected_channels)
-
-    def display_stitcher_widget(self, checked):
-        self.signal_stitcher_widget.emit(checked)
 
     def toggle_coordinate_controls(self, has_coordinates: bool):
         """Toggle button text and control states based on whether coordinates are loaded"""
@@ -6068,232 +6050,6 @@ class FocusMapWidget(QFrame):
         """Handle resize events to maintain button sizing"""
         super().resizeEvent(event)
         self.update_z_btn.setFixedWidth(self.edit_point_btn.width())
-
-
-class StitcherWidget(QFrame):
-
-    def __init__(self, objectiveStore, channelConfigurationManager, contrastManager, *args, **kwargs):
-        super(StitcherWidget, self).__init__(*args, **kwargs)
-        self.objectiveStore = objectiveStore
-        self.channelConfigurationManager = channelConfigurationManager
-        self.contrastManager = contrastManager
-        self.stitcherThread = None
-        self.output_path = ""
-        self.initUI()
-
-    def initUI(self):
-        self.setFrameStyle(QFrame.Panel | QFrame.Raised)  # Set frame style
-        self.layout = QVBoxLayout(self)
-        self.rowLayout1 = QHBoxLayout()
-        self.rowLayout2 = QHBoxLayout()
-
-        # Use registration checkbox
-        self.useRegistrationCheck = QCheckBox("Registration")
-        self.useRegistrationCheck.toggled.connect(self.onRegistrationCheck)
-        self.rowLayout1.addWidget(self.useRegistrationCheck)
-        self.rowLayout1.addStretch()
-
-        # Apply flatfield correction checkbox
-        self.applyFlatfieldCheck = QCheckBox("Flatfield Correction")
-        self.rowLayout1.addWidget(self.applyFlatfieldCheck)
-        self.rowLayout1.addStretch()
-
-        # Output format dropdown
-        self.outputFormatLabel = QLabel("Output Format", self)
-        self.outputFormatCombo = QComboBox(self)
-        self.outputFormatCombo.addItem("OME-ZARR")
-        self.outputFormatCombo.addItem("OME-TIFF")
-        self.rowLayout1.addWidget(self.outputFormatLabel)
-        self.rowLayout1.addWidget(self.outputFormatCombo)
-
-        # Select registration channel
-        self.registrationChannelLabel = QLabel("Registration Configuration", self)
-        self.registrationChannelLabel.setVisible(False)
-        self.rowLayout2.addWidget(self.registrationChannelLabel)
-        self.registrationChannelCombo = QComboBox(self)
-        self.registrationChannelLabel.setVisible(False)
-        self.registrationChannelCombo.setVisible(False)
-        self.registrationChannelCombo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.rowLayout2.addWidget(self.registrationChannelCombo)
-
-        # Select registration cz-level
-        self.registrationZLabel = QLabel(" Z-Level", self)
-        self.registrationZLabel.setVisible(False)
-        self.rowLayout2.addWidget(self.registrationZLabel)
-        self.registrationZCombo = QSpinBox(self)
-        self.registrationZCombo.setSingleStep(1)
-        self.registrationZCombo.setMinimum(0)
-        self.registrationZCombo.setMaximum(0)
-        self.registrationZCombo.setValue(0)
-        self.registrationZLabel.setVisible(False)
-        self.registrationZCombo.setVisible(False)
-        self.rowLayout2.addWidget(self.registrationZCombo)
-
-        self.layout.addLayout(self.rowLayout1)
-        self.layout.addLayout(self.rowLayout2)
-        self.setLayout(self.layout)
-
-        # Button to view output in Napari
-        self.viewOutputButton = QPushButton("View Output in Napari")
-        self.viewOutputButton.setEnabled(False)  # Initially disabled
-        self.viewOutputButton.setVisible(False)
-        self.viewOutputButton.clicked.connect(self.viewOutputNapari)
-        self.layout.addWidget(self.viewOutputButton)
-
-        # Progress bar
-        progress_row = QHBoxLayout()
-
-        # Status label
-        self.statusLabel = QLabel("Status: Image Acquisition")
-        progress_row.addWidget(self.statusLabel)
-        self.statusLabel.setVisible(False)
-
-        self.progressBar = QProgressBar()
-        progress_row.addWidget(self.progressBar)
-        self.progressBar.setVisible(False)  # Initially hidden
-        self.layout.addLayout(progress_row)
-
-    def setStitcherThread(self, thread):
-        self.stitcherThread = thread
-
-    def onRegistrationCheck(self, checked):
-        self.registrationChannelLabel.setVisible(checked)
-        self.registrationChannelCombo.setVisible(checked)
-        self.registrationZLabel.setVisible(checked)
-        self.registrationZCombo.setVisible(checked)
-
-    def updateRegistrationChannels(self, selected_channels):
-        self.registrationChannelCombo.clear()  # Clear existing items
-        self.registrationChannelCombo.addItems(selected_channels)
-
-    def updateRegistrationZLevels(self, Nz):
-        self.registrationZCombo.setMinimum(0)
-        self.registrationZCombo.setMaximum(Nz - 1)
-
-    def gettingFlatfields(self):
-        self.statusLabel.setText("Status: Calculating Flatfields")
-        self.viewOutputButton.setVisible(False)
-        self.viewOutputButton.setStyleSheet("")
-        self.progressBar.setValue(0)
-        self.statusLabel.setVisible(True)
-        self.progressBar.setVisible(True)
-
-    def startingStitching(self):
-        self.statusLabel.setText("Status: Stitching Scans")
-        self.viewOutputButton.setVisible(False)
-        self.progressBar.setValue(0)
-        self.statusLabel.setVisible(True)
-        self.progressBar.setVisible(True)
-
-    def updateProgressBar(self, value, total):
-        self.progressBar.setMaximum(total)
-        self.progressBar.setValue(value)
-        self.progressBar.setVisible(True)
-
-    def startingSaving(self, stitch_complete=False):
-        if stitch_complete:
-            self.statusLabel.setText("Status: Saving Stitched Acquisition")
-        else:
-            self.statusLabel.setText("Status: Saving Stitched Region")
-        self.statusLabel.setVisible(True)
-        self.progressBar.setRange(0, 0)  # indeterminate mode.
-        self.progressBar.setVisible(True)
-
-    def finishedSaving(self, output_path, dtype):
-        if self.stitcherThread is not None:
-            self.stitcherThread.quit()
-            self.stitcherThread.deleteLater()
-        self.statusLabel.setVisible(False)
-        self.progressBar.setVisible(False)
-        self.viewOutputButton.setVisible(True)
-        self.viewOutputButton.setStyleSheet("background-color: #C2C2FF")
-        self.viewOutputButton.setEnabled(True)
-        try:
-            self.viewOutputButton.clicked.disconnect()
-        except TypeError:
-            pass
-        self.viewOutputButton.clicked.connect(self.viewOutputNapari)
-
-        self.output_path = output_path
-
-    def extractWavelength(self, name):
-        # TODO: Use the 'color' attribute of the ChannelMode object
-        # Split the string and find the wavelength number immediately after "Fluorescence"
-        parts = name.split()
-        if "Fluorescence" in parts:
-            index = parts.index("Fluorescence") + 1
-            if index < len(parts):
-                return parts[index].split()[0]  # Assuming '488 nm Ex' and taking '488'
-        for color in ["R", "G", "B"]:
-            if color in parts or "full_" + color in parts:
-                return color
-        return None
-
-    def generateColormap(self, channel_info):
-        """Convert a HEX value to a normalized RGB tuple."""
-        c0 = (0, 0, 0)
-        c1 = (
-            ((channel_info["hex"] >> 16) & 0xFF) / 255,  # Normalize the Red component
-            ((channel_info["hex"] >> 8) & 0xFF) / 255,  # Normalize the Green component
-            (channel_info["hex"] & 0xFF) / 255,
-        )  # Normalize the Blue component
-        return Colormap(colors=[c0, c1], controls=[0, 1], name=channel_info["name"])
-
-    def updateContrastLimits(self, channel, min_val, max_val):
-        self.contrastManager.update_limits(channel, min_val, max_val)
-
-    def viewOutputNapari(self):
-        try:
-            napari_viewer = napari.Viewer()
-            if ".ome.zarr" in self.output_path:
-                napari_viewer.open(self.output_path, plugin="napari-ome-zarr")
-            else:
-                napari_viewer.open(self.output_path)
-
-            for layer in napari_viewer.layers:
-                layer_name = layer.name.replace("_", " ").replace("full ", "full_")
-                channel_info = CHANNEL_COLORS_MAP.get(
-                    self.extractWavelength(layer_name), {"hex": 0xFFFFFF, "name": "gray"}
-                )
-
-                if channel_info["name"] in AVAILABLE_COLORMAPS:
-                    layer.colormap = AVAILABLE_COLORMAPS[channel_info["name"]]
-                else:
-                    layer.colormap = self.generateColormap(channel_info)
-
-                min_val, max_val = self.contrastManager.get_limits(layer_name)
-                layer.contrast_limits = (min_val, max_val)
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error Opening in Napari", str(e))
-            print(f"An error occurred while opening output in Napari: {e}")
-
-    def resetUI(self):
-        self.output_path = ""
-
-        # Reset UI components to their default states
-        self.applyFlatfieldCheck.setChecked(False)
-        self.outputFormatCombo.setCurrentIndex(0)  # Assuming the first index is the default
-        self.useRegistrationCheck.setChecked(False)
-        self.registrationChannelCombo.clear()  # Clear existing items
-        self.registrationChannelLabel.setVisible(False)
-        self.registrationChannelCombo.setVisible(False)
-
-        # Reset the visibility and state of buttons and labels
-        self.viewOutputButton.setEnabled(False)
-        self.viewOutputButton.setVisible(False)
-        self.progressBar.setValue(0)
-        self.progressBar.setVisible(False)
-        self.statusLabel.setText("Status: Image Acquisition")
-        self.statusLabel.setVisible(False)
-
-    def closeEvent(self, event):
-        if self.stitcherThread is not None:
-            self.stitcherThread.quit()
-            self.stitcherThread.wait()
-            self.stitcherThread.deleteLater()
-            self.stitcherThread = None
-        super().closeEvent(event)
 
 
 class NapariLiveWidget(QWidget):
@@ -9773,7 +9529,24 @@ class SurfacePlotWidget(QWidget):
         self.canvas.mpl_connect("scroll_event", self.on_scroll)
         self.canvas.mpl_connect("button_press_event", self.on_click)
 
-    def plot(self, x: np.array, y: np.array, z: np.array, region: np.array) -> None:
+        self.x = list()
+        self.y = list()
+        self.z = list()
+        self.regions = list()
+
+    def clear(self):
+        self.x.clear()
+        self.y.clear()
+        self.z.clear()
+        self.regions.clear()
+
+    def add_point(self, x: float, y: float, z: float, region: int):
+        self.x.append(x)
+        self.y.append(y)
+        self.z.append(z)
+        self.regions.append(region)
+
+    def plot(self) -> None:
         """
         Plot both surface and scatter points in 3D.
 
@@ -9783,32 +9556,31 @@ class SurfacePlotWidget(QWidget):
             z (np.array): Z coordinates (1D array)
         """
         try:
-            # Store the original coordinates
-            self.x = x
-            self.y = y
-            self.z = z
-
             # Clear previous plot
             self.ax.clear()
 
+            x = np.array(self.x).astype(float)
+            y = np.array(self.y).astype(float)
+            z = np.array(self.z).astype(float)
+            regions = np.array(self.regions)
+
             # plot surface by region
-            for r in np.unique(region):
+            for r in np.unique(regions):
                 try:
-                    mask = region == r
+                    mask = regions == r
                     num_points = np.sum(mask)
                     if num_points >= 4:
                         grid_x, grid_y = np.mgrid[min(x[mask]) : max(x[mask]) : 10j, min(y[mask]) : max(y[mask]) : 10j]
                         grid_z = griddata((x[mask], y[mask]), z[mask], (grid_x, grid_y), method="cubic")
                         self.ax.plot_surface(grid_x, grid_y, grid_z, cmap="viridis", edgecolor="none")
-                        # self.ax.plot_trisurf(x[mask], y[mask], z[mask], cmap='viridis', edgecolor='none')
                     else:
                         self._log.debug(f"Region {r} has only {num_points} point(s), skipping surface interpolation")
                 except Exception as e:
                     raise Exception(f"Cannot plot region {r}: {e}")
 
             # Create scatter plot using original coordinates
-            self.colors = ["r"] * len(self.x)
-            self.scatter = self.ax.scatter(self.x, self.y, self.z, c=self.colors, s=30)
+            self.colors = ["r"] * len(x)
+            self.scatter = self.ax.scatter(x, y, z, c=self.colors, s=30)
 
             # Set labels
             self.ax.set_xlabel("X (mm)")
@@ -9817,9 +9589,9 @@ class SurfacePlotWidget(QWidget):
             self.ax.set_title("Double-click a point to go to that position")
 
             # Force x and y to have same scale
-            max_range = max(np.ptp(self.x), np.ptp(self.y))
-            center_x = np.mean(self.x)
-            center_y = np.mean(self.y)
+            max_range = max(np.ptp(x), np.ptp(y))
+            center_x = np.mean(x)
+            center_y = np.mean(y)
 
             self.ax.set_xlim(center_x - max_range / 2, center_x + max_range / 2)
             self.ax.set_ylim(center_y - max_range / 2, center_y + max_range / 2)

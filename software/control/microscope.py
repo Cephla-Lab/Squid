@@ -3,7 +3,7 @@ import re
 import serial
 from typing import Optional, TypeVar
 
-from control._def import *
+import control._def
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
@@ -30,7 +30,7 @@ import squid.logging
 import squid.stage.cephla
 import squid.stage.utils
 
-if USE_XERYON:
+if control._def.USE_XERYON:
     from control.objective_changer_2_pos_controller import (
         ObjectiveChanger2PosController,
         ObjectiveChanger2PosController_Simulation,
@@ -38,12 +38,12 @@ if USE_XERYON:
 else:
     ObjectiveChanger2PosController = TypeVar("ObjectiveChanger2PosController")
 
-if RUN_FLUIDICS:
+if control._def.RUN_FLUIDICS:
     from control.fluidics import Fluidics
 else:
     Fluidics = TypeVar("Fluidics")
 
-if ENABLE_NL5:
+if control._def.ENABLE_NL5:
     import control.NL5 as NL5
 else:
     NL5 = TypeVar("NL5")
@@ -56,39 +56,43 @@ class MicroscopeAddons:
     ) -> "MicroscopeAddons":
 
         xlight = None
-        if ENABLE_SPINNING_DISK_CONFOCAL:
+        if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
             xlight = (
-                serial_peripherals.XLight(XLIGHT_SERIAL_NUMBER, XLIGHT_SLEEP_TIME_FOR_WHEEL)
+                serial_peripherals.XLight(control._def.XLIGHT_SERIAL_NUMBER, control._def.XLIGHT_SLEEP_TIME_FOR_WHEEL)
                 if not simulated
                 else serial_peripherals.XLight_Simulation()
             )
 
         nl5 = None
-        if ENABLE_NL5:
+        if control._def.ENABLE_NL5:
             nl5 = NL5.NL5() if not simulated else NL5.NL5_Simulation()
 
         cellx = None
-        if ENABLE_CELLX:
-            cellx = serial_peripherals.CellX(CELLX_SN) if not simulated else serial_peripherals.CellX_Simulation()
+        if control._def.ENABLE_CELLX:
+            cellx = (
+                serial_peripherals.CellX(control._def.CELLX_SN)
+                if not simulated
+                else serial_peripherals.CellX_Simulation()
+            )
 
         emission_filter_wheel = None
-        if USE_ZABER_EMISSION_FILTER_WHEEL:
+        if control._def.USE_ZABER_EMISSION_FILTER_WHEEL:
             emission_filter_wheel = (
                 serial_peripherals.FilterController(
-                    FILTER_CONTROLLER_SERIAL_NUMBER, 115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE
+                    control._def.FILTER_CONTROLLER_SERIAL_NUMBER, 115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE
                 )
                 if not simulated
                 else serial_peripherals.FilterController_Simulation(115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE)
             )
-        elif USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
+        elif control._def.USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             emission_filter_wheel = (
-                serial_peripherals.Optospin(SN=FILTER_CONTROLLER_SERIAL_NUMBER)
+                serial_peripherals.Optospin(SN=control._def.FILTER_CONTROLLER_SERIAL_NUMBER)
                 if not simulated
                 else serial_peripherals.Optospin_Simulation(SN=None)
             )
 
         squid_filter_wheel = None
-        if USE_SQUID_FILTERWHEEL:
+        if control._def.USE_SQUID_FILTERWHEEL:
             squid_filter_wheel = (
                 filterwheel.SquidFilterWheelWrapper(microcontroller=micro)
                 if not simulated
@@ -96,44 +100,46 @@ class MicroscopeAddons:
             )
 
         objective_changer = None
-        if USE_XERYON:
+        if control._def.USE_XERYON:
             objective_changer = (
-                ObjectiveChanger2PosController(sn=XERYON_SERIAL_NUMBER, stage=stage)
+                ObjectiveChanger2PosController(sn=control._def.XERYON_SERIAL_NUMBER, stage=stage)
                 if not simulated
-                else ObjectiveChanger2PosController_Simulation(sn=XERYON_SERIAL_NUMBER, stage=stage)
+                else ObjectiveChanger2PosController_Simulation(sn=control._def.XERYON_SERIAL_NUMBER, stage=stage)
             )
 
         camera_focus = None
-        if SUPPORT_LASER_AUTOFOCUS:
+        if control._def.SUPPORT_LASER_AUTOFOCUS:
             camera_focus = squid.camera.utils.get_camera(
                 squid.config.get_autofocus_camera_config(), simulated=simulated
             )
 
         fluidics = None
-        if RUN_FLUIDICS:
-            fluidics = Fluidics(config_path=FLUIDICS_CONFIG_PATH, simulation=simulated)
+        if control._def.RUN_FLUIDICS:
+            fluidics = Fluidics(config_path=control._def.FLUIDICS_CONFIG_PATH, simulation=simulated)
 
         piezo_stage = None
-        if HAS_OBJECTIVE_PIEZO:
+        if control._def.HAS_OBJECTIVE_PIEZO:
             if not micro:
                 raise ValueError("Cannot create PiezoStage without a Microcontroller.")
             piezo_stage = PiezoStage(
                 microcontroller=micro,
                 config={
-                    "OBJECTIVE_PIEZO_HOME_UM": OBJECTIVE_PIEZO_HOME_UM,
-                    "OBJECTIVE_PIEZO_RANGE_UM": OBJECTIVE_PIEZO_RANGE_UM,
-                    "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE": OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE,
-                    "OBJECTIVE_PIEZO_FLIP_DIR": OBJECTIVE_PIEZO_FLIP_DIR,
+                    "OBJECTIVE_PIEZO_HOME_UM": control._def.OBJECTIVE_PIEZO_HOME_UM,
+                    "OBJECTIVE_PIEZO_RANGE_UM": control._def.OBJECTIVE_PIEZO_RANGE_UM,
+                    "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE": control._def.OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE,
+                    "OBJECTIVE_PIEZO_FLIP_DIR": control._def.OBJECTIVE_PIEZO_FLIP_DIR,
                 },
             )
 
         sci_microscopy_led_array = None
-        if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
+        if control._def.SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             # to do: add error handling
             sci_microscopy_led_array = serial_peripherals.SciMicroscopyLEDArray(
-                SCIMICROSCOPY_LED_ARRAY_SN, SCIMICROSCOPY_LED_ARRAY_DISTANCE, SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY
+                control._def.SCIMICROSCOPY_LED_ARRAY_SN,
+                control._def.SCIMICROSCOPY_LED_ARRAY_DISTANCE,
+                control._def.SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY,
             )
-            sci_microscopy_led_array.set_NA(SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
+            sci_microscopy_led_array.set_NA(control._def.SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
 
         return MicroscopeAddons(
             xlight,
@@ -180,17 +186,19 @@ class MicroscopeAddons:
         different variants with different methods.  For now leave as is just to make progress, but
         we need to fix this.
         """
-        if USE_ZABER_EMISSION_FILTER_WHEEL:
+        if control._def.USE_ZABER_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel.start_homing()
-        if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.set_speed(OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ)
+        if control._def.USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
+            self.emission_filter_wheel.set_speed(control._def.OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ)
 
 
 class LowLevelDrivers:
     @staticmethod
     def build_from_global_config(simulated: bool = False) -> "LowLevelDrivers":
         micro_serial_device = (
-            control.microcontroller.get_microcontroller_serial_device(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)
+            control.microcontroller.get_microcontroller_serial_device(
+                version=control._def.CONTROLLER_VERSION, sn=control._def.CONTROLLER_SN
+            )
             if not simulated
             else control.microcontroller.get_microcontroller_serial_device(simulated=True)
         )
@@ -211,8 +219,8 @@ class Microscope:
         low_level_devices = LowLevelDrivers.build_from_global_config(simulated)
 
         stage_config = squid.config.get_stage_config()
-        if USE_PRIOR_STAGE:
-            stage = PriorStage(sn=PRIOR_STAGE_SN, stage_config=stage_config)
+        if control._def.USE_PRIOR_STAGE:
+            stage = PriorStage(sn=control._def.PRIOR_STAGE_SN, stage_config=stage_config)
         else:
             if low_level_devices.microcontroller is None:
                 raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
@@ -227,7 +235,7 @@ class Microscope:
         def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
             # NOTE(imo): If this succeeds, it means we sent the request,
             # but we didn't necessarily get confirmation of success.
-            if addons.nl5 and NL5_USE_DOUT:
+            if addons.nl5 and control._def.NL5_USE_DOUT:
                 addons.nl5.start_acquisition()
             else:
                 illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
@@ -254,13 +262,13 @@ class Microscope:
             hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
         )
 
-        if USE_LDI_SERIAL_CONTROL and not simulated:
+        if control._def.USE_LDI_SERIAL_CONTROL and not simulated:
             ldi = serial_peripherals.LDI()
 
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller, ldi.intensity_mode, ldi.shutter_mode, LightSourceType.LDI, ldi
             )
-        elif USE_CELESTA_ETHENET_CONTROL and not simulated:
+        elif control._def.USE_CELESTA_ETHENET_CONTROL and not simulated:
             celesta = control.celesta.CELESTA()
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
@@ -307,7 +315,7 @@ class Microscope:
         self.objective_store: ObjectiveStore = ObjectiveStore()
         self.channel_configuration_manager: ChannelConfigurationManager = ChannelConfigurationManager()
         self.laser_af_settings_manager: Optional[LaserAFSettingManager] = None
-        if SUPPORT_LASER_AUTOFOCUS:
+        if control._def.SUPPORT_LASER_AUTOFOCUS:
             self.laser_af_settings_manager = LaserAFSettingManager()
 
         self.configuration_manager: ConfigurationManager = ConfigurationManager(
@@ -321,10 +329,13 @@ class Microscope:
         if self.addons.camera_focus:
             self.stream_handler_focus = StreamHandler(handler_functions=NoOpStreamHandlerFunctions)
             self.live_controller_focus = LiveController(
-                microscope=self, control_illumination=False, for_displacement_measurement=True
+                microscope=self,
+                camera=self.addons.camera_focus,
+                control_illumination=False,
+                for_displacement_measurement=True,
             )
 
-        self.live_controller: LiveController = LiveController(microscope=self)
+        self.live_controller: LiveController = LiveController(microscope=self, camera=self.camera)
 
         if not skip_prepare_for_use:
             self._prepare_for_use()
@@ -333,7 +344,9 @@ class Microscope:
         self.low_level_drivers.prepare_for_use()
         self.addons.prepare_for_use()
 
-        self.camera.set_pixel_format(squid.config.CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
+        self.camera.set_pixel_format(
+            squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
+        )
         self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
         if self.addons.camera_focus:
@@ -364,11 +377,11 @@ class Microscope:
 
     def acquire_image(self):
         # turn on illumination and send trigger
-        if self.live_controller.trigger_mode == TriggerMode.SOFTWARE:
+        if self.live_controller.trigger_mode == control._def.TriggerMode.SOFTWARE:
             self.live_controller.turn_on_illumination()
             self.waitForMicrocontroller()
             self.camera.send_trigger()
-        elif self.live_controller.trigger_mode == TriggerMode.HARDWARE:
+        elif self.live_controller.trigger_mode == control._def.TriggerMode.HARDWARE:
             self.low_level_drivers.microcontroller.send_hardware_trigger(
                 control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
             )
@@ -379,15 +392,15 @@ class Microscope:
             print("self.camera.read_frame() returned None")
 
         # turn off the illumination if using software trigger
-        if self.live_controller.trigger_mode == TriggerMode.SOFTWARE:
+        if self.live_controller.trigger_mode == control._def.TriggerMode.SOFTWARE:
             self.live_controller.turn_off_illumination()
 
         return image
 
     def home_xyz(self):
-        if HOMING_ENABLED_Z:
+        if control._def.HOMING_ENABLED_Z:
             self.stage.home(x=False, y=False, z=True, theta=False)
-        if HOMING_ENABLED_X and HOMING_ENABLED_Y:
+        if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
             self.stage.move_x(20)
             self.stage.home(x=False, y=True, z=False, theta=False)
             self.stage.home(x=True, y=False, z=False, theta=False)
@@ -518,24 +531,24 @@ class ScanCoordinatesSiLA2:
                             x_mm = (
                                 wellplate_settings["a1_x_mm"]
                                 + col * wellplate_settings["well_spacing_mm"]
-                                + WELLPLATE_OFFSET_X_mm
+                                + control._def.WELLPLATE_OFFSET_X_mm
                             )
                             y_mm = (
                                 wellplate_settings["a1_y_mm"]
                                 + row * wellplate_settings["well_spacing_mm"]
-                                + WELLPLATE_OFFSET_Y_mm
+                                + control._def.WELLPLATE_OFFSET_Y_mm
                             )
                             self.region_centers[self._index_to_row(row) + str(col + 1)] = (x_mm, y_mm)
                 else:
                     x_mm = (
                         wellplate_settings["a1_x_mm"]
                         + start_col_index * wellplate_settings["well_spacing_mm"]
-                        + WELLPLATE_OFFSET_X_mm
+                        + control._def.WELLPLATE_OFFSET_X_mm
                     )
                     y_mm = (
                         wellplate_settings["a1_y_mm"]
                         + start_row_index * wellplate_settings["well_spacing_mm"]
-                        + WELLPLATE_OFFSET_Y_mm
+                        + control._def.WELLPLATE_OFFSET_Y_mm
                     )
                     self.region_centers[start_row + start_col] = (x_mm, y_mm)
             else:
@@ -557,8 +570,8 @@ class ScanCoordinatesSiLA2:
         return row
 
     def get_wellplate_settings(self, wellplate_format):
-        if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
-            settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
+        if wellplate_format in control._def.WELLPLATE_FORMAT_SETTINGS:
+            settings = control._def.WELLPLATE_FORMAT_SETTINGS[wellplate_format]
         elif wellplate_format == "0":
             settings = {
                 "format": "0",
@@ -574,7 +587,7 @@ class ScanCoordinatesSiLA2:
             }
         else:
             raise ValueError(
-                f"Invalid wellplate format: {wellplate_format}. Expected formats are: {list(WELLPLATE_FORMAT_SETTINGS.keys())} or '0'"
+                f"Invalid wellplate format: {wellplate_format}. Expected formats are: {list(control._def.WELLPLATE_FORMAT_SETTINGS.keys())} or '0'"
             )
         return settings
 
@@ -585,7 +598,7 @@ class ScanCoordinatesSiLA2:
         # if scan_size_mm is None:
         #    scan_size_mm = self.wellplate_settings.well_size_mm
         pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
-        fov_size_mm = (pixel_size_um / 1000) * CAMERA_CONFIG.CROP_WIDTH_UNBINNED
+        fov_size_mm = (pixel_size_um / 1000) * control._def.CAMERA_CONFIG.CROP_WIDTH_UNBINNED
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         steps = math.floor(scan_size_mm / step_size_mm)
@@ -625,7 +638,7 @@ class ScanCoordinatesSiLA2:
                     row.append((x, y))
                     # self.navigationViewer.register_fov_to_image(x, y)
 
-            if FOV_PATTERN == "S-Pattern" and i % 2 == 1:
+            if control._def.FOV_PATTERN == "S-Pattern" and i % 2 == 1:
                 row.reverse()
             scan_coordinates.extend(row)
 

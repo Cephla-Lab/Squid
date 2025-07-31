@@ -6,7 +6,7 @@ import numpy as np
 import cv2
 
 from control import utils
-from control import _def
+import control._def
 from squid.abc import CameraFrame
 
 
@@ -87,7 +87,7 @@ class StreamHandler:
             self.timestamp_last = timestamp_now
             self.fps_real = self.counter
             self.counter = 0
-            if _def.PRINT_CAMERA_FPS:
+            if control._def.PRINT_CAMERA_FPS:
                 print("real camera fps is " + str(self.fps_real))
 
         # crop image
