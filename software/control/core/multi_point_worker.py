@@ -87,12 +87,13 @@ class MultiPointWorker:
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
-        self.scan_region_fov_coords_mm = acquisition_parameters.scan_position_information.scan_region_fov_coords_mm.copy()
+        self.scan_region_fov_coords_mm = (
+            acquisition_parameters.scan_position_information.scan_region_fov_coords_mm.copy()
+        )
         self.scan_region_coords_mm = acquisition_parameters.scan_position_information.scan_region_coords_mm
         self.scan_region_names = acquisition_parameters.scan_position_information.scan_region_names
         self.z_stacking_config = acquisition_parameters.z_stacking_config  # default 'from bottom'
         self.z_range = acquisition_parameters.z_range
-
 
         self.crop = SEGMENTATION_CROP
 
@@ -454,10 +455,7 @@ class MultiPointWorker:
             self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
 
             # laser af characterization mode
-            if (
-                self.laser_auto_focus_controller
-                and self.laser_auto_focus_controller.characterization_mode
-            ):
+            if self.laser_auto_focus_controller and self.laser_auto_focus_controller.characterization_mode:
                 image = self.laser_auto_focus_controller.get_image()
                 saving_path = os.path.join(current_path, file_ID + "_laser af camera" + ".bmp")
                 iio.imwrite(saving_path, image)
@@ -840,7 +838,7 @@ class MultiPointWorker:
         )
         iio.imwrite(os.path.join(capture_info.save_directory, file_name), rgb_image)
 
-    def handle_acquisition_abort(self, current_path, region_id: str="0"):
+    def handle_acquisition_abort(self, current_path, region_id: str = "0"):
         # Move to the current region center
         region_center = self.scan_region_coords_mm[self.scan_region_names.index(region_id)]
         self.move_to_coordinate(region_center)

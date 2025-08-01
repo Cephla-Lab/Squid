@@ -84,6 +84,7 @@ class AcquisitionParameters:
 
     use_fluidics: bool
 
+
 @dataclass
 class OverallProgressUpdate:
     current_region: int
@@ -112,16 +113,16 @@ class MultiPointControllerFunctions:
 
 class MultiPointController:
     def __init__(
-            self,
-            microscope: Microscope,
-            live_controller: LiveController,
-            autofocus_controller: AutoFocusController,
-            objective_store: ObjectiveStore,
-            channel_configuration_manager: ChannelConfigurationManager,
-            callbacks: MultiPointControllerFunctions,
-            scan_coordinates: Optional[ScanCoordinates] = None,
-            laser_autofocus_controller: Optional[LaserAutofocusController] = None,
-            fluidics: Optional[Any] = None,
+        self,
+        microscope: Microscope,
+        live_controller: LiveController,
+        autofocus_controller: AutoFocusController,
+        objective_store: ObjectiveStore,
+        channel_configuration_manager: ChannelConfigurationManager,
+        callbacks: MultiPointControllerFunctions,
+        scan_coordinates: Optional[ScanCoordinates] = None,
+        laser_autofocus_controller: Optional[LaserAutofocusController] = None,
+        fluidics: Optional[Any] = None,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope: Microscope = microscope
@@ -172,7 +173,10 @@ class MultiPointController:
         self.scanCoordinates = scan_coordinates
         self.old_images_per_page = 1
         z_mm_current = self.stage.get_pos().z_mm
-        self.z_range: Tuple[float, float] = (z_mm_current, z_mm_current + self.deltaZ * (self.NZ - 1))  # (start_mm, end_mm)
+        self.z_range: Tuple[float, float] = (
+            z_mm_current,
+            z_mm_current + self.deltaZ * (self.NZ - 1),
+        )  # (start_mm, end_mm)
         self.z_stacking_config = Z_STACKING_CONFIG
 
     def acquisition_in_progress(self):
@@ -341,8 +345,8 @@ class MultiPointController:
         try:
             config = self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)[0]
             if (
-                    self.liveController.trigger_mode == TriggerMode.SOFTWARE
-                    or self.liveController.trigger_mode == TriggerMode.HARDWARE
+                self.liveController.trigger_mode == TriggerMode.SOFTWARE
+                or self.liveController.trigger_mode == TriggerMode.HARDWARE
             ):
                 self.camera.send_trigger()
             test_frame = self.camera.read_camera_frame()
@@ -380,7 +384,7 @@ class MultiPointController:
             width, height = self.camera.get_crop_size()
             bytes_per_pixel = 3 if is_color else 2  # Worst case assumptions: 24 bit color, 16 bit grayscale
 
-            test_image = np.random.randint(2 ** 16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
+            test_image = np.random.randint(2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
 
         # Depending on settings, we modify the image before saving.  This means we need to actually save an image
         # to see how much disk space it takes up.  This can be very wrong (eg: if we compress during saving, then
@@ -433,7 +437,9 @@ class MultiPointController:
                 coordinates_df = pd.concat([coordinates_df, pd.DataFrame([row])], ignore_index=True)
         coordinates_df.to_csv(os.path.join(self.base_path, self.experiment_ID, "coordinates.csv"), index=False)
 
-        self._log.info(f"num fovs: {sum(len(coords) for coords in scan_position_information.scan_region_fov_coords_mm)}")
+        self._log.info(
+            f"num fovs: {sum(len(coords) for coords in scan_position_information.scan_region_fov_coords_mm)}"
+        )
         self._log.info(f"num regions: {len(scan_position_information.scan_region_coords_mm)}")
         self._log.info(f"region ids: {scan_position_information.scan_region_names}")
         self._log.info(f"region centers: {scan_position_information.scan_region_coords_mm}")
@@ -571,7 +577,7 @@ class MultiPointController:
             display_resolution_scaling=self.display_resolution_scaling,
             z_stacking_config=self.z_stacking_config,
             z_range=self.z_range,
-            use_fluidics=self.use_fluidics
+            use_fluidics=self.use_fluidics,
         )
 
     def _on_acquisition_completed(self):
