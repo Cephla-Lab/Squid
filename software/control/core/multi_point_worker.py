@@ -86,21 +86,21 @@ class MultiPointWorker:
         self.dt = self.params.deltat
 
         self.do_autofocus = self.params.do_autofocus
-        self.do_reflection_af = self.params.do_reflection_af
+        self.do_reflection_af = self.params.do_reflection_autofocus
         self.use_piezo = self.params.use_piezo
         self.display_resolution_scaling = self.params.display_resolution_scaling
 
         self.experiment_ID = self.params.experiment_ID
-        self.base_path = self.multiPointController.base_path
-        self.selected_configurations = self.multiPointController.selected_configurations
+        self.base_path = self.params.base_path
+        self.selected_configurations = self.params.selected_configurations
 
-        self.timestamp_acquisition_started = self.multiPointController.timestamp_acquisition_started
+        self.timestamp_acquisition_started = self.params.acquisition_start_time
 
         self.time_point = 0
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
-        self.scan_region_fov_coords_mm = self.multiPointController.scan_region_fov_coords_mm.copy()
+        self.scan_region_fov_coords_mm = self.params.scan_region_fov_coords_mm.copy()
         self.scan_region_coords_mm = self.multiPointController.scan_region_coords_mm
         self.scan_region_names = self.multiPointController.scan_region_names
         self.z_stacking_config = self.multiPointController.z_stacking_config  # default 'from bottom'

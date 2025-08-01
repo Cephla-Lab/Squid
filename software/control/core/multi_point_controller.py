@@ -40,12 +40,27 @@ import squid.logging
 
 
 @dataclass
+class ScanPositionInformation:
+    scan_region_coords_mm: List[Tuple[float, float]]
+    scan_region_names: List[str]
+    scan_region_fovs_coords_mm: Dict[str, List[float, float, float]]
+
+    @staticmethod
+    def from_scan_coordinates(scan_coordinates: ScanCoordinates):
+        return ScanPositionInformation(
+            scan_region_coords_mm=list(scan_coordinates.region_centers.values()),
+            scan_region_names=list(scan_coordinates.region_centers.keys()),
+            scan_region_fovs_coords_mm=dict(scan_coordinates.region_fov_coordinates),
+        )
+
+
+@dataclass
 class AcquisitionParameters:
     experiment_ID: Optional[str]
     base_path: Optional[str]
     selected_configurations: List[ChannelMode]
     acquisition_start_time: float
-    scan_coordinates: ScanCoordinates
+    scan_position_information: ScanPositionInformation
 
     NZ: int
     deltaZ: float
@@ -89,13 +104,6 @@ class MultiPointControllerFunctions:
     signal_region_progress: Callable[[RegionProgressUpdate], None]
 
 
-@dataclass
-class ScanPositionInformation:
-    scan_region_coords_mm: List[Tuple[float, float]]
-    scan_region_names: List[str]
-    scan_region_fovs_coords_mm: Dict[str, List[float, float, float]]
-
-
 class MultiPointController:
     # acquisition_finished = Signal()
     # image_to_display = Signal(np.ndarray) # replace with signal_new_image
@@ -113,16 +121,16 @@ class MultiPointController:
     # signal_coordinates = Signal(np.ndarray, np.ndarray, np.ndarray, np.ndarray)  # x, y, z, region
 
     def __init__(
-        self,
-        microscope: Microscope,
-        live_controller: LiveController,
-        autofocus_controller: AutoFocusController,
-        objective_store: ObjectiveStore,
-        channel_configuration_manager: ChannelConfigurationManager,
-        callbacks: MultiPointControllerFunctions,
-        scan_coordinates: Optional[ScanCoordinates] = None,
-        laser_autofocus_controller: Optional[LaserAutofocusController] = None,
-        fluidics: Optional[Any] = None,
+            self,
+            microscope: Microscope,
+            live_controller: LiveController,
+            autofocus_controller: AutoFocusController,
+            objective_store: ObjectiveStore,
+            channel_configuration_manager: ChannelConfigurationManager,
+            callbacks: MultiPointControllerFunctions,
+            scan_coordinates: Optional[ScanCoordinates] = None,
+            laser_autofocus_controller: Optional[LaserAutofocusController] = None,
+            fluidics: Optional[Any] = None,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope: Microscope = microscope
@@ -142,24 +150,6 @@ class MultiPointController:
 
         z_mm_current = self.stage.get_pos().z_mm
         z_range = (z_mm_current, z_mm_current + self.deltaZ * (self.NZ - 1))  # (start_mm, end_mm)
-
-        self.params: AcquisitionParameters = AcquisitionParameters(
-            experiment_ID=None,
-            base_path=None,
-            selected_configurations=[],
-            acquisition_start_time=0,
-            scan_coordinates=scan_coordinates,
-            NZ=1,
-            deltaZ=Acquisition.DZ / 1000,
-            Nt=1,
-            deltat=0,
-            do_autofocus=False,
-            do_reflection_autofocus=False,
-            use_piezo=MULTIPOINT_USE_PIEZO_FOR_ZSTACKS,
-            display_resolution_scaling=Acquisition.IMAGE_DISPLAY_SCALING_FACTOR,
-            z_stacking_config=Z_STACKING_CONFIG,
-            z_range=z_range,
-        )
 
         self.NZ = 1
         self.Nt = 1
@@ -185,9 +175,6 @@ class MultiPointController:
         self.already_using_fmap = False
         self.selected_configurations = []
         self.scanCoordinates = scan_coordinates
-        self.scan_region_names = []
-        self.scan_region_coords_mm = []
-        self.scan_region_fov_coords_mm = {}
         self.old_images_per_page = 1
         z_mm_current = self.stage.get_pos().z_mm
         self.z_range = [z_mm_current, z_mm_current + self.deltaZ * (self.NZ - 1)]  # [start_mm, end_mm]
@@ -235,7 +222,6 @@ class MultiPointController:
     def set_deltaY(self, delta):
         raise NotImplementedError("This was removed")
 
-    # TODO(imo): This is broken
     def set_deltaZ(self, delta_um):
         self.deltaZ = delta_um / 1000
 
@@ -359,8 +345,8 @@ class MultiPointController:
         try:
             config = self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)[0]
             if (
-                self.liveController.trigger_mode == TriggerMode.SOFTWARE
-                or self.liveController.trigger_mode == TriggerMode.HARDWARE
+                    self.liveController.trigger_mode == TriggerMode.SOFTWARE
+                    or self.liveController.trigger_mode == TriggerMode.HARDWARE
             ):
                 self.camera.send_trigger()
             test_frame = self.camera.read_camera_frame()
@@ -398,7 +384,7 @@ class MultiPointController:
             width, height = self.camera.get_crop_size()
             bytes_per_pixel = 3 if is_color else 2  # Worst case assumptions: 24 bit color, 16 bit grayscale
 
-            test_image = np.random.randint(2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
+            test_image = np.random.randint(2 ** 16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
 
         # Depending on settings, we modify the image before saving.  This means we need to actually save an image
         # to see how much disk space it takes up.  This can be very wrong (eg: if we compress during saving, then
@@ -438,11 +424,7 @@ class MultiPointController:
             )
             self.run_acquisition_current_fov = True
 
-        scan_position_information = ScanPositionInformation(
-            scan_region_coords_mm=list(acquisition_scan_coordinates.region_centers.values()),
-            scan_region_names=list(acquisition_scan_coordinates.region_centers.keys()),
-            scan_region_fovs_coords_mm=dict(acquisition_scan_coordinates.region_fov_coordinates),
-        )
+        scan_position_information = ScanPositionInformation.from_scan_coordinates(acquisition_scan_coordinates)
 
         # Save coordinates to CSV in top level folder
         coordinates_df = pd.DataFrame(columns=["region", "x (mm)", "y (mm)", "z (mm)"])
@@ -564,13 +546,32 @@ class MultiPointController:
             laser_auto_focus_controller=self.laserAutoFocusController,
             objective_store=self.objectiveStore,
             channel_configuration_mananger=self.channelConfigurationManager,
-            acquisition_parameters=self.params,
+            acquisition_parameters=self.build_params(scan_position_information=scan_position_information),
             callbacks=updated_callbacks,
             extra_job_classes=[],
         )
 
         self.thread = Thread(target=self.multiPointWorker.run, name="Acquisition thread", daemon=True)
         self.thread.start()
+
+    def build_params(self, scan_position_information: ScanPositionInformation) -> AcquisitionParameters:
+        return AcquisitionParameters(
+            experiment_ID=self.experiment_ID,
+            base_path=self.base_path,
+            selected_configurations=self.selected_configurations,
+            acquisition_start_time=self.timestamp_acquisition_started,
+            scan_position_information=scan_position_information,
+            NZ=self.NZ,
+            deltaZ=self.deltaZ,
+            Nt=self.Nt,
+            deltat=self.deltat,
+            do_autofocus=self.do_autofocus,
+            do_reflection_autofocus=self.do_reflection_af,
+            use_piezo=self.use_piezo,
+            display_resolution_scaling=self.display_resolution_scaling,
+            z_stacking_config=self.z_stacking_config,
+            z_range=self.z_range,
+        )
 
     def _on_acquisition_completed(self):
         self._log.debug("MultiPointController._on_acquisition_completed called")
