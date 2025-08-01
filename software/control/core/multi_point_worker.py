@@ -2,7 +2,7 @@ import os
 import queue
 import threading
 import time
-from typing import List, Optional, Tuple, Type
+from typing import Callable, List, Optional, Tuple, Type
 from datetime import datetime
 
 import imageio as iio
@@ -31,26 +31,8 @@ import control.core.job_processing
 from control.core.job_processing import CaptureInfo, SaveImageJob, Job, JobImage, JobRunner, JobResult
 from squid.config import CameraPixelFormat
 
-try:
-    from control.multipoint_custom_script_entry_v2 import *
-
-    print("custom multipoint script found")
-except:
-    pass
-
 
 class MultiPointWorker:
-    # image_to_display = Signal(np.ndarray)
-    # spectrum_to_display = Signal(np.ndarray)
-    # image_to_display_multi = Signal(np.ndarray, int)
-    # # This should connect to UI updates only - it should not trigger a liveController.set_microscope_mode!
-    # # We call liveController.set_microscope_mode ourselves.
-    # signal_current_configuration = Signal(ChannelMode)
-    # signal_register_current_fov = Signal(float, float)
-    # signal_z_piezo_um = Signal(float)
-    # signal_acquisition_progress = Signal(int, int, int)
-    # signal_region_progress = Signal(int, int)
-
     def __init__(
         self,
         scope: Microscope,
@@ -61,11 +43,14 @@ class MultiPointWorker:
         channel_configuration_mananger: ChannelConfigurationManager,
         acquisition_parameters: AcquisitionParameters,
         callbacks: MultiPointControllerFunctions,
+        abort_requested_fn: Callable[[], bool],
+        request_abort_fn: Callable[[], None],
         extra_job_classes: list[type[Job]] | None = None,
         abort_on_failed_jobs: bool = True,
     ):
         self._log = squid.logging.get_logger(__class__.__name__)
         self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
+        self.microscope: Microscope = scope
         self.camera: AbstractCamera = scope.camera
         self.microcontroller: Microcontroller = scope.low_level_drivers.microcontroller
         self.stage: squid.abc.AbstractStage = scope.stage
@@ -75,40 +60,39 @@ class MultiPointWorker:
         self.laser_auto_focus_controller: Optional[LaserAutofocusController] = laser_auto_focus_controller
         self.objectiveStore: ObjectiveStore = objective_store
         self.channelConfigurationManager: ChannelConfigurationManager = channel_configuration_mananger
+        self.fluidics = scope.addons.fluidics
+        self.use_fluidics = acquisition_parameters.use_fluidics
 
-        self.params: AcquisitionParameters = acquisition_parameters
-        self.callbacks = callbacks
+        self.callbacks: MultiPointControllerFunctions = callbacks
+        self.abort_requested_fn: Callable[[], bool] = abort_requested_fn
+        self.request_abort_fn: Callable[[], None] = request_abort_fn
+        self.NZ = acquisition_parameters.NZ
+        self.deltaZ = acquisition_parameters.deltaZ
 
-        self.NZ = self.params.NZ
-        self.deltaZ = self.params.deltaZ
+        self.Nt = acquisition_parameters.Nt
+        self.dt = acquisition_parameters.deltat
 
-        self.Nt = self.params.Nt
-        self.dt = self.params.deltat
+        self.do_autofocus = acquisition_parameters.do_autofocus
+        self.do_reflection_af = acquisition_parameters.do_reflection_autofocus
+        self.use_piezo = acquisition_parameters.use_piezo
+        self.display_resolution_scaling = acquisition_parameters.display_resolution_scaling
 
-        self.do_autofocus = self.params.do_autofocus
-        self.do_reflection_af = self.params.do_reflection_autofocus
-        self.use_piezo = self.params.use_piezo
-        self.display_resolution_scaling = self.params.display_resolution_scaling
+        self.experiment_ID = acquisition_parameters.experiment_ID
+        self.base_path = acquisition_parameters.base_path
+        self.selected_configurations = acquisition_parameters.selected_configurations
 
-        self.experiment_ID = self.params.experiment_ID
-        self.base_path = self.params.base_path
-        self.selected_configurations = self.params.selected_configurations
-
-        self.timestamp_acquisition_started = self.params.acquisition_start_time
+        self.timestamp_acquisition_started = acquisition_parameters.acquisition_start_time
 
         self.time_point = 0
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
-        self.scan_region_fov_coords_mm = self.params.scan_region_fov_coords_mm.copy()
-        self.scan_region_coords_mm = self.multiPointController.scan_region_coords_mm
-        self.scan_region_names = self.multiPointController.scan_region_names
-        self.z_stacking_config = self.multiPointController.z_stacking_config  # default 'from bottom'
-        self.z_range = self.multiPointController.z_range
-        self.fluidics = self.multiPointController.fluidics
+        self.scan_region_fov_coords_mm = acquisition_parameters.scan_position_information.scan_region_fov_coords_mm.copy()
+        self.scan_region_coords_mm = acquisition_parameters.scan_position_information.scan_region_coords_mm
+        self.scan_region_names = acquisition_parameters.scan_position_information.scan_region_names
+        self.z_stacking_config = acquisition_parameters.z_stacking_config  # default 'from bottom'
+        self.z_range = acquisition_parameters.z_range
 
-        self.microscope = self.multiPointController.parent
-        self.performance_mode = self.microscope and self.microscope.performance_mode
 
         self.crop = SEGMENTATION_CROP
 
@@ -167,11 +151,11 @@ class MultiPointWorker:
 
             while self.time_point < self.Nt:
                 # check if abort acquisition has been requested
-                if self.multiPointController.abort_acqusition_requested:
+                if self.abort_requested_fn():
                     self._log.debug("In run, abort_acquisition_requested=True")
                     break
 
-                if self.fluidics and self.multiPointController.use_fluidics:
+                if self.fluidics and self.use_fluidics:
                     self.fluidics.update_port(self.time_point)  # use the port in PORT_LIST
                     # For MERFISH, before imaging, run the first 3 sequences (Add probe, wash buffer, imaging buffer)
                     self.fluidics.run_before_imaging()
@@ -180,7 +164,7 @@ class MultiPointWorker:
                 with self._timing.get_timer("run_single_time_point"):
                     self.run_single_time_point()
 
-                if self.fluidics and self.multiPointController.use_fluidics:
+                if self.fluidics and self.use_fluidics:
                     # For MERFISH, after imaging, run the following 2 sequences (Cleavage buffer, SSC rinse)
                     self.fluidics.run_after_imaging()
                     self.fluidics.wait_for_completion()
@@ -201,7 +185,7 @@ class MultiPointWorker:
 
                     # wait until it's time to do the next acquisition
                     while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
-                        if self.multiPointController.abort_acqusition_requested:
+                        if self.abort_requested_fn():
                             self._log.debug("In run wait loop, abort_acquisition_requested=True")
                             break
                         self._sleep(0.001)
@@ -215,7 +199,7 @@ class MultiPointWorker:
         except TimeoutError as te:
             self._log.error(f"Operation timed out during acquisition, aborting acquisition!")
             self._log.error(te)
-            self.multiPointController.request_abort_aquisition()
+            self.request_abort_fn()
         finally:
             # We do this above, but there are some paths that skip the proper end of the acquisition so make
             # sure to always wait for final images here before removing our callback.
@@ -438,7 +422,7 @@ class MultiPointWorker:
                 with self._timing.get_timer("job result summaries"):
                     if not self._summarize_runner_outputs() and self._abort_on_failed_job:
                         self._log.error("Some jobs failed, aborting acquisition because abort_on_failed_job=True")
-                        self.multiPointController.request_abort_aquisition()
+                        self.request_abort_fn()
                         return
 
                 with self._timing.get_timer("move_to_coordinate"):
@@ -446,16 +430,11 @@ class MultiPointWorker:
                 with self._timing.get_timer("acquire_at_position"):
                     self.acquire_at_position(region_id, current_path, fov_count)
 
-                if self.multiPointController.abort_acqusition_requested:
+                if self.abort_requested_fn():
                     self.handle_acquisition_abort(current_path, region_id)
                     return
 
     def acquire_at_position(self, region_id, current_path, fov):
-        if RUN_CUSTOM_MULTIPOINT and "multipoint_custom_script_entry" in globals():
-            print("run custom multipoint")
-            multipoint_custom_script_entry(self, current_path, region_id, fov)
-            return
-
         if not self.perform_autofocus(region_id, fov):
             self._log.error(
                 f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
@@ -476,10 +455,10 @@ class MultiPointWorker:
 
             # laser af characterization mode
             if (
-                self.microscope.laserAutofocusController
-                and self.microscope.laserAutofocusController.characterization_mode
+                self.laser_auto_focus_controller
+                and self.laser_auto_focus_controller.characterization_mode
             ):
-                image = self.microscope.laserAutofocusController.get_image()
+                image = self.laser_auto_focus_controller.get_image()
                 saving_path = os.path.join(current_path, file_ID + "_laser af camera" + ".bmp")
                 iio.imwrite(saving_path, image)
 
@@ -518,7 +497,7 @@ class MultiPointWorker:
             self.callbacks.signal_current_fov(acquire_pos.x_mm, acquire_pos.y_mm)
 
             # check if the acquisition should be aborted
-            if self.multiPointController.abort_acqusition_requested:
+            if self.abort_requested_fn():
                 self.handle_acquisition_abort(current_path, region_id)
 
             # update FOV counter
@@ -556,11 +535,11 @@ class MultiPointWorker:
         else:
             self._log.info("laser reflection af")
             try:
-                self.microscope.laserAutofocusController.move_to_target(0)
+                self.laser_auto_focus_controller.move_to_target(0)
             except Exception as e:
                 file_ID = f"{region_id}_focus_camera.bmp"
                 saving_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
-                iio.imwrite(saving_path, self.microscope.laserAutofocusController.image)
+                iio.imwrite(saving_path, self.laser_auto_focus_controller.image)
                 self._log.error(
                     "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
                     exc_info=e,
@@ -601,13 +580,13 @@ class MultiPointWorker:
                 self._ready_for_next_trigger.set()
                 if not info:
                     self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
-                    self.multiPointController.request_abort_aquisition()
+                    self.request_abort_fn()
                     return
 
                 image = camera_frame.frame
                 if not camera_frame or image is None:
                     self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
-                    self.multiPointController.request_abort_aquisition()
+                    self.request_abort_fn()
                     return
 
                 with self._timing.get_timer("job creation and dispatch"):
@@ -616,7 +595,7 @@ class MultiPointWorker:
                         if job_runner is not None:
                             if not job_runner.dispatch(job):
                                 self._log.error("Failed to dispatch multiprocessing job!")
-                                self.multiPointController.request_abort_aquisition()
+                                self.request_abort_fn()
                                 return
                         else:
                             try:
@@ -625,7 +604,7 @@ class MultiPointWorker:
                                 result = job.run()
                             except Exception:
                                 self._log.exception("Failed to execute job, abandoning acquisition!")
-                                self.multiPointController.request_abort_aquisition()
+                                self.request_abort_fn()
                                 return
 
                 height, width = image.shape[:2]
@@ -660,12 +639,12 @@ class MultiPointWorker:
                 # TODO(imo): This used to use the "reset_image_ready_flag=False" on the read_frame, but oinly the toupcam camera implementation had the
                 #  "reset_image_ready_flag" arg, so this is broken for all other cameras.  Also this used to do some other funky stuff like setting internal camera flags.
                 #   I am pretty sure this is broken!
-                self.microscope.nl5.start_acquisition()
+                self.microscope.addons.nl5.start_acquisition()
         # This is some large timeout that we use just so as to not block forever
         with self._timing.get_timer("_ready_for_next_trigger.wait"):
             if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
                 self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
-                self.multiPointController.request_abort_aquisition()
+                self.request_abort_fn()
                 return
         with self._timing.get_timer("get_ready_for_trigger re-check"):
             # This should be a noop - we have the frame already.  Still, check!
@@ -712,7 +691,7 @@ class MultiPointWorker:
                 non_hw_frame_timeout = 5 * self.camera.get_total_frame_time() / 1e3 + 2
                 if not self._ready_for_next_trigger.wait(non_hw_frame_timeout):
                     self._log.error("Timed out waiting {non_hw_frame_timeout} [s] for a frame, aborting acquisition.")
-                    self.multiPointController.request_abort_aquisition()
+                    self.request_abort_fn()
                     # Let this fall through so we still turn off illumination.  Let the caller actually break out
                     # of the acquisition.
 
@@ -861,7 +840,7 @@ class MultiPointWorker:
         )
         iio.imwrite(os.path.join(capture_info.save_directory, file_name), rgb_image)
 
-    def handle_acquisition_abort(self, current_path, region_id=0):
+    def handle_acquisition_abort(self, current_path, region_id: str="0"):
         # Move to the current region center
         region_center = self.scan_region_coords_mm[self.scan_region_names.index(region_id)]
         self.move_to_coordinate(region_center)

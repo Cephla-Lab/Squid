@@ -43,14 +43,14 @@ import squid.logging
 class ScanPositionInformation:
     scan_region_coords_mm: List[Tuple[float, float]]
     scan_region_names: List[str]
-    scan_region_fovs_coords_mm: Dict[str, List[float, float, float]]
+    scan_region_fov_coords_mm: Dict[str, List[float, float, float]]
 
     @staticmethod
     def from_scan_coordinates(scan_coordinates: ScanCoordinates):
         return ScanPositionInformation(
             scan_region_coords_mm=list(scan_coordinates.region_centers.values()),
             scan_region_names=list(scan_coordinates.region_centers.keys()),
-            scan_region_fovs_coords_mm=dict(scan_coordinates.region_fov_coordinates),
+            scan_region_fov_coords_mm=dict(scan_coordinates.region_fov_coordinates),
         )
 
 
@@ -61,6 +61,12 @@ class AcquisitionParameters:
     selected_configurations: List[ChannelMode]
     acquisition_start_time: float
     scan_position_information: ScanPositionInformation
+
+    # NOTE(imo): I'm pretty sure NX and NY are broken?  They are not used in MPW anywhere.
+    NX: int
+    deltaX: float
+    NY: int
+    deltaY: float
 
     NZ: int
     deltaZ: float
@@ -76,6 +82,7 @@ class AcquisitionParameters:
     z_stacking_config: str
     z_range: Tuple[float, float]
 
+    use_fluidics: bool
 
 @dataclass
 class OverallProgressUpdate:
@@ -97,7 +104,6 @@ class MultiPointControllerFunctions:
     signal_acquisition_start: Callable[[AcquisitionParameters], None]  # todo acqui params as arg
     signal_acquisition_finished: Callable[[], None]
     signal_new_image: Callable[[CameraFrame, CaptureInfo], None]
-    signal_new_spectrum: Callable[[np.ndarray], None]
     signal_current_configuration: Callable[[ChannelMode], None]
     signal_current_fov: Callable[[float, float], None]
     signal_overall_progress: Callable[[OverallProgressUpdate], None]
@@ -105,21 +111,6 @@ class MultiPointControllerFunctions:
 
 
 class MultiPointController:
-    # acquisition_finished = Signal()
-    # image_to_display = Signal(np.ndarray) # replace with signal_new_image
-    # image_to_display_multi = Signal(np.ndarray, int) # replace with signal_new_image
-    # spectrum_to_display = Signal(np.ndarray)
-    # signal_current_configuration = Signal(ChannelMode)
-    # signal_register_current_fov = Signal(float, float)
-    # signal_stitcher = Signal(str)  # Replace with signal_acquisition_finished
-    # napari_layers_init = Signal(int, int, object)
-    # napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
-    # signal_set_display_tabs = Signal(list, int)
-    # signal_z_piezo_um = Signal(float)
-    # signal_acquisition_progress = Signal(int, int, int)
-    # signal_region_progress = Signal(int, int)
-    # signal_coordinates = Signal(np.ndarray, np.ndarray, np.ndarray, np.ndarray)  # x, y, z, region
-
     def __init__(
             self,
             microscope: Microscope,
@@ -151,10 +142,14 @@ class MultiPointController:
         z_mm_current = self.stage.get_pos().z_mm
         z_range = (z_mm_current, z_mm_current + self.deltaZ * (self.NZ - 1))  # (start_mm, end_mm)
 
+        self.NX = 1
+        self.deltaX = Acquisition.DX
+        self.NY = 1
+        self.deltaY = Acquisition.DY
         self.NZ = 1
-        self.Nt = 1
         # TODO(imo): Switch all to consistent mm units
         self.deltaZ = Acquisition.DZ / 1000
+        self.Nt = 1
         self.deltat = 0
 
         self.deltaX = Acquisition.DX
@@ -177,7 +172,7 @@ class MultiPointController:
         self.scanCoordinates = scan_coordinates
         self.old_images_per_page = 1
         z_mm_current = self.stage.get_pos().z_mm
-        self.z_range = [z_mm_current, z_mm_current + self.deltaZ * (self.NZ - 1)]  # [start_mm, end_mm]
+        self.z_range: Tuple[float, float] = (z_mm_current, z_mm_current + self.deltaZ * (self.NZ - 1))  # (start_mm, end_mm)
         self.z_stacking_config = Z_STACKING_CONFIG
 
     def acquisition_in_progress(self):
@@ -189,6 +184,7 @@ class MultiPointController:
         if checked and self.piezo is None:
             raise ValueError("Cannot enable piezo - no piezo stage configured")
         self.use_piezo = checked
+        # TODO(imo): Why do we only allow runtime updates of use_piezo (not all the other params?)
         if self.multiPointWorker:
             self.multiPointWorker.update_use_piezo(checked)
 
@@ -200,13 +196,11 @@ class MultiPointController:
     def set_z_range(self, minZ, maxZ):
         self.z_range = [minZ, maxZ]
 
-    # TODO(imo): This is broken
     def set_NX(self, N):
-        raise NotImplementedError("This was removed")
+        self.NX = N
 
-    # TODO(imo): This is broken
     def set_NY(self, N):
-        raise NotImplementedError("This was removed")
+        self.NY = N
 
     def set_NZ(self, N):
         self.NZ = N
@@ -214,13 +208,11 @@ class MultiPointController:
     def set_Nt(self, N):
         self.Nt = N
 
-    # TODO(imo): This is broken
     def set_deltaX(self, delta):
-        raise NotImplementedError("This was removed")
+        self.deltaX = delta
 
-    # TODO(imo): This is broken
     def set_deltaY(self, delta):
-        raise NotImplementedError("This was removed")
+        self.deltaY = delta
 
     def set_deltaZ(self, delta_um):
         self.deltaZ = delta_um / 1000
@@ -264,6 +256,10 @@ class MultiPointController:
         )  # save the configuration for the experiment
         # Prepare acquisition parameters
         acquisition_parameters = {
+            "dx(mm)": self.deltaX,
+            "Nx": self.NX,
+            "dy(mm)": self.deltaY,
+            "Ny": self.NY,
             "dz(um)": self.deltaZ * 1000 if self.deltaZ != 0 else 1,
             "Nz": self.NZ,
             "dt(s)": self.deltat,
@@ -428,7 +424,7 @@ class MultiPointController:
 
         # Save coordinates to CSV in top level folder
         coordinates_df = pd.DataFrame(columns=["region", "x (mm)", "y (mm)", "z (mm)"])
-        for region_id, coords_list in self.scan_region_fov_coords_mm.items():
+        for region_id, coords_list in scan_position_information.scan_region_fov_coords_mm.items():
             for coord in coords_list:
                 row = {"region": region_id, "x (mm)": coord[0], "y (mm)": coord[1]}
                 # Add z coordinate if available
@@ -437,10 +433,10 @@ class MultiPointController:
                 coordinates_df = pd.concat([coordinates_df, pd.DataFrame([row])], ignore_index=True)
         coordinates_df.to_csv(os.path.join(self.base_path, self.experiment_ID, "coordinates.csv"), index=False)
 
-        self._log.info(f"num fovs: {sum(len(coords) for coords in self.scan_region_fov_coords_mm)}")
-        self._log.info(f"num regions: {len(self.scan_region_coords_mm)}")
-        self._log.info(f"region ids: {self.scan_region_names}")
-        self._log.info(f"region centers: {self.scan_region_coords_mm}")
+        self._log.info(f"num fovs: {sum(len(coords) for coords in scan_position_information.scan_region_fov_coords_mm)}")
+        self._log.info(f"num regions: {len(scan_position_information.scan_region_coords_mm)}")
+        self._log.info(f"region ids: {scan_position_information.scan_region_names}")
+        self._log.info(f"region centers: {scan_position_information.scan_region_coords_mm}")
 
         self.abort_acqusition_requested = False
 
@@ -462,8 +458,8 @@ class MultiPointController:
 
         if self.focus_map:
             self._log.info("Using focus surface for Z interpolation")
-            for region_id in self.scan_region_names:
-                region_fov_coords = self.scan_region_fov_coords_mm[region_id]
+            for region_id in scan_position_information.scan_region_names:
+                region_fov_coords = scan_position_information.scan_region_fov_coords_mm[region_id]
                 # Convert each tuple to list for modification
                 for i, coords in enumerate(region_fov_coords):
                     x, y = coords[:2]  # This handles both (x,y) and (x,y,z) formats
@@ -561,6 +557,10 @@ class MultiPointController:
             selected_configurations=self.selected_configurations,
             acquisition_start_time=self.timestamp_acquisition_started,
             scan_position_information=scan_position_information,
+            NX=self.NX,
+            deltaX=self.deltaX,
+            NY=self.NY,
+            deltaY=self.deltaY,
             NZ=self.NZ,
             deltaZ=self.deltaZ,
             Nt=self.Nt,
@@ -571,6 +571,7 @@ class MultiPointController:
             display_resolution_scaling=self.display_resolution_scaling,
             z_stacking_config=self.z_stacking_config,
             z_range=self.z_range,
+            use_fluidics=self.use_fluidics
         )
 
     def _on_acquisition_completed(self):

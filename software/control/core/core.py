@@ -33,12 +33,6 @@ import control.utils_channel as utils_channel
 import control.utils_config as utils_config
 import squid.logging
 
-try:
-    from control.multipoint_custom_script_entry_v2 import *
-
-    print("custom multipoint script found")
-except:
-    pass
 
 from typing import List, Tuple, Optional, Dict, Any, Callable, TypeVar
 from queue import Queue
