@@ -1,13 +1,13 @@
 # set QT_API environment variable
 import os
 
-from control.NL5Widget import NL5Widget
-from control.filterwheel import SquidFilterWheelWrapper
+from control.core.job_processing import CaptureInfo
 
 os.environ["QT_API"] = "pyqt5"
 import serial
 import time
 from typing import Any, Optional
+import numpy as np
 
 # qt libraries
 from qtpy.QtCore import *
@@ -17,17 +17,26 @@ from qtpy.QtGui import *
 from control._def import *
 
 # app specific libraries
-from control.core.live_controller import LiveController
-from control.core.configuration_mananger import ConfigurationManager
+from control.NL5Widget import NL5Widget
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.laser_af_settings_manager import LaserAFSettingManager
+from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
-from control.core.multi_point_controller import MultiPointController
+from control.core.laser_af_settings_manager import LaserAFSettingManager
+from control.core.live_controller import LiveController
+from control.core.multi_point_controller import (
+    MultiPointController,
+    MultiPointControllerFunctions,
+    AcquisitionParameters,
+    OverallProgressUpdate,
+    RegionProgressUpdate,
+)
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
+from control.filterwheel import SquidFilterWheelWrapper
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
+from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, AbstractStage
 import control.lighting
 import control.microscope
@@ -80,15 +89,29 @@ from control.custom_multipoint_widget import TemplateMultiPointWidget
 class MovementUpdater(QObject):
     position_after_move = Signal(squid.abc.Pos)
     position = Signal(squid.abc.Pos)
+    piezo_z_um = Signal(float)
 
-    def __init__(self, stage: AbstractStage, movement_threshhold_mm=0.0001, *args, **kwargs):
+    def __init__(
+        self, stage: AbstractStage, piezo: Optional[PiezoStage], movement_threshhold_mm=0.0001, *args, **kwargs
+    ):
         super().__init__(*args, **kwargs)
-        self.stage = stage
+        self.stage: AbstractStage = stage
+        self.piezo: Optional[PiezoStage] = piezo
         self.movement_threshhold_mm = movement_threshhold_mm
-        self.previous_pos = None
+        self.previous_pos: Optional[squid.abc.Pos] = None
+        self.previous_piezo_pos: Optional[float] = None
         self.sent_after_stopped = False
 
     def do_update(self):
+        if self.piezo:
+            if not self.previous_piezo_pos:
+                self.previous_piezo_pos = self.piezo.position
+            else:
+                current_piezo_position = self.piezo.position
+                if self.previous_piezo_pos != current_piezo_position:
+                    self.previous_piezo_pos = current_piezo_position
+                    self.piezo_z_um.emit(current_piezo_position)
+
         pos = self.stage.get_pos()
         # Doing previous_pos initialization like this means we technically miss the first real update,
         # but that's okay since this is intended to be run frequently in the background.
@@ -115,6 +138,85 @@ class MovementUpdater(QObject):
         self.position.emit(pos)
 
         self.previous_pos = pos
+
+
+class QtMultiPointController(MultiPointController, QObject):
+    acquisition_finished = Signal()
+    image_to_display = Signal(np.ndarray)
+    image_to_display_multi = Signal(np.ndarray, int)
+    signal_current_configuration = Signal(ChannelMode)
+    signal_register_current_fov = Signal(float, float)
+    signal_stitcher = Signal(str)
+    napari_layers_init = Signal(int, int, object)
+    napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
+    signal_set_display_tabs = Signal(list, int)
+    signal_acquisition_progress = Signal(int, int, int)
+    signal_region_progress = Signal(int, int)
+    signal_coordinates = Signal(np.ndarray, np.ndarray, np.ndarray, np.ndarray)  # x, y, z, region
+
+    def __init__(
+        self,
+        microscope: Microscope,
+        live_controller: LiveController,
+        autofocus_controller: core.AutoFocusController,
+        objective_store: ObjectiveStore,
+        channel_configuration_manager: ChannelConfigurationManager,
+        scan_coordinates: Optional[core.ScanCoordinates] = None,
+        laser_autofocus_controller: Optional[core.LaserAutofocusController] = None,
+        fluidics: Optional[Any] = None,
+    ):
+        callbacks = MultiPointControllerFunctions(
+            signal_acquisition_start=self._signal_acquisition_start_fn,
+            signal_acquisition_finished=self._signal_acquisition_finished_fn,
+            signal_new_image=self._signal_new_image_fn,
+            signal_current_configuration=self._signal_current_configuration_fn,
+            signal_current_fov=self._signal_current_fov_fn,
+            signal_overall_progress=self._signal_overall_progress_fn,
+            signal_region_progress=self._signal_region_progress_fn,
+        )
+        MultiPointController.__init__(
+            self,
+            microscope=microscope,
+            live_controller=live_controller,
+            autofocus_controller=autofocus_controller,
+            objective_store=objective_store,
+            channel_configuration_manager=channel_configuration_manager,
+            callbacks=callbacks,
+            scan_coordinates=scan_coordinates,
+            laser_autofocus_controller=laser_autofocus_controller,
+            fluidics=fluidics,
+        )
+        QObject.__init__(self)
+
+    def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
+        # TODO mpc napari signals
+        if not self.run_acquisition_current_fov:
+            self.signal_set_display_tabs.emit(self.selected_configurations, self.NZ)
+        else:
+            self.signal_set_display_tabs.emit(self.selected_configurations, 2)
+
+    def _signal_acquisition_finished_fn(self):
+        self.acquisition_finished.emit()
+        self.signal_stitcher.emit()
+
+    def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
+        self.image_to_display.emit(frame.frame)
+        self.image_to_display_multi.emit(frame.frame, info.configuration.illumination_source)
+        self.signal_coordinates.emit(info.position.x_mm, info.position.y_mm, info.position.z_mm, info.region_id)
+
+    def _signal_current_configuration_fn(self, channel_mode: ChannelMode):
+        self.signal_current_configuration.emit(channel_mode)
+
+    def _signal_current_fov_fn(self, x_mm: float, y_mm: float):
+        self.signal_register_current_fov.emit(x_mm, y_mm)
+
+    def _signal_overall_progress_fn(self, overall_progress: OverallProgressUpdate):
+        self.signal_acquisition_progress.emit(
+            overall_progress.current_region, overall_progress.total_regions, overall_progress.current_timepoint
+        )
+
+    def _signal_region_progress_fn(self, region_progress: RegionProgressUpdate):
+        self.signal_region_progress.emit(region_progress.current_fov, region_progress.region_fovs)
 
 
 class HighContentScreeningGui(QMainWindow):
@@ -183,6 +285,15 @@ class HighContentScreeningGui(QMainWindow):
         self.napari_connections = {}
         self.well_selector_visible = False  # Add this line to track well selector visibility
 
+        self.multipointController: QtMultiPointController = None
+        self.streamHandler: core.QtStreamHandler = None
+        self.slidePositionController: core.SlidePositionController = None
+        self.autofocusController: core.AutoFocusController = None
+        self.imageSaver: core.ImageSaver = core.ImageSaver()
+        self.imageDisplay: core.ImageDisplay = core.ImageDisplay()
+        self.trackingController: core.TrackingController = None
+        self.navigationViewer: core.NavigationViewer = None
+        self.scanCoordinates: Optional[core.ScanCoordinates] = None
         self.load_objects(is_simulation=is_simulation)
         self.setup_hardware()
 
@@ -276,9 +387,6 @@ class HighContentScreeningGui(QMainWindow):
         self.autofocusController = core.AutoFocusController(
             self.camera, self.stage, self.liveController, self.microcontroller, self.nl5
         )
-
-        self.imageSaver = core.ImageSaver()
-        self.imageDisplay = core.ImageDisplay()
         if ENABLE_TRACKING:
             self.trackingController = core.TrackingController(
                 self.camera,
@@ -301,18 +409,14 @@ class HighContentScreeningGui(QMainWindow):
         self.scanCoordinates = core.ScanCoordinates(
             objectiveStore=self.objectiveStore, navigationViewer=self.navigationViewer, stage=self.stage
         )
-        self.multipointController = MultiPointController(
-            self.camera,
-            self.stage,
-            self.piezo,
-            self.microcontroller,
+        self.multipointController = QtMultiPointController(
+            self.microscope,
             self.liveController,
             self.autofocusController,
             self.objectiveStore,
             self.channelConfigurationManager,
             scan_coordinates=self.scanCoordinates,
             fluidics=self.fluidics,
-            parent=self,
         )
 
     def setup_hardware(self):
@@ -857,7 +961,7 @@ class HighContentScreeningGui(QMainWindow):
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.update_ui_for_mode)
         if self.piezoWidget:
-            self.multipointController.signal_z_piezo_um.connect(self.piezoWidget.update_displacement_um_display)
+            self.movement_updater.piezo_z_um.connect(self.piezoWidget.update_displacement_um_display)
         self.multipointController.signal_set_display_tabs.connect(self.setAcquisitionDisplayTabs)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
