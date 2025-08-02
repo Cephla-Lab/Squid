@@ -5,6 +5,7 @@ import time
 from typing import List, Optional, Tuple, Type
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 import cv2
 import imageio as iio
@@ -27,7 +28,7 @@ from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, CameraFrame
 import squid.logging
 import control.core.job_processing
-from control.core.job_processing import CaptureInfo, SaveImageJob, Job, JobImage, JobRunner, JobResult
+from control.core.job_processing import CaptureInfo, SaveImageJob, SaveOMETiffJob, OMETiffManager, Job, JobImage, JobRunner, JobResult
 
 try:
     from control.multipoint_custom_script_entry_v2 import *
@@ -129,7 +130,7 @@ class MultiPointWorker(QObject):
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
 
-        job_classes = [SaveImageJob]
+        job_classes = [SaveImageJob]  # SaveOMETiffJob handled in main thread
         if extra_job_classes:
             job_classes.extend(extra_job_classes)
 
@@ -238,6 +239,21 @@ class MultiPointWorker(QObject):
 
     def _finish_jobs(self, timeout_s=10):
         self._summarize_runner_outputs()
+
+        # Finalize OME-TIFF writers if needed
+        if FILE_SAVING_OPTION == FileSavingOption.OME_TIFF:
+            try:
+                if hasattr(self, '_ome_tiff_manager'):
+                    num_writers = len(self._ome_tiff_manager._writers)
+                    if num_writers > 0:
+                        self._ome_tiff_manager.cleanup_all()
+                        self._log.info(f"Finalized {num_writers} OME-TIFF writers")
+                    else:
+                        self._log.info("No OME-TIFF writers to finalize")
+                else:
+                    self._log.info("No OME-TIFF manager instance to finalize")
+            except Exception as e:
+                self._log.error(f"Error finalizing OME-TIFF writers: {e}")
 
         self._log.info(
             f"Waiting for jobs to finish on {len(self._job_runners)} job runners before shutting them down..."
@@ -417,6 +433,16 @@ class MultiPointWorker(QObject):
 
     def run_coordinate_acquisition(self, current_path):
         n_regions = len(self.scan_region_coords_mm)
+
+        # Store path for lazy OME-TIFF initialization
+        self._log.info(f"FILE_SAVING_OPTION = {FILE_SAVING_OPTION}, OME_TIFF = {FileSavingOption.OME_TIFF}")
+        if FILE_SAVING_OPTION == FileSavingOption.OME_TIFF:
+            self._log.info("OME-TIFF enabled - will initialize writers lazily when first images arrive")
+            self._ome_tiff_base_path = current_path
+            # Prepare acquisition parameters for lazy initialization
+            self._prepare_ome_tiff_params()
+        else:
+            self._log.info(f"OME-TIFF not enabled, using {FILE_SAVING_OPTION} instead")
 
         for region_index, (region_id, coordinates) in enumerate(self.scan_region_fov_coords_mm.items()):
 
@@ -601,22 +627,28 @@ class MultiPointWorker(QObject):
                     return
 
                 with self._timing.get_timer("job creation and dispatch"):
-                    for job_class, job_runner in self._job_runners:
-                        job = job_class(capture_info=info, capture_image=JobImage(image_array=image))
-                        if job_runner is not None:
-                            if not job_runner.dispatch(job):
-                                self._log.error("Failed to dispatch multiprocessing job!")
-                                self.multiPointController.request_abort_aquisition()
-                                return
-                        else:
-                            try:
-                                # NOTE(imo): We don't have any way of people using results, so for now just
-                                # grab and ignore it.
-                                result = job.run()
-                            except Exception:
-                                self._log.exception("Failed to execute job, abandoning acquisition!")
-                                self.multiPointController.request_abort_aquisition()
-                                return
+                    # Handle OME-TIFF saving directly in main process to avoid multiprocessing issues
+                    if FILE_SAVING_OPTION == FileSavingOption.OME_TIFF:
+                        try:
+                            # Lazy initialization - initialize writer for this FOV if not already done
+                            if not self._initialize_ome_tiff_writer_for_fov(info, image):
+                                self._log.warning(f"Failed to initialize OME-TIFF writer for {info.file_id}, falling back to individual images")
+                                self._dispatch_regular_jobs(info, image)
+                            else:
+                                # Writer initialized, now write the frame
+                                if not hasattr(self, '_ome_tiff_manager'):
+                                    self._ome_tiff_manager = OMETiffManager()
+                                time_point = self._extract_time_point_from_path(info.save_directory)
+                                success = self._ome_tiff_manager.write_frame(info, image, time_point)
+                                if not success:
+                                    self._log.warning(f"Failed to write OME-TIFF frame for {info.file_id}, falling back to individual images")
+                                    self._dispatch_regular_jobs(info, image)
+                        except Exception as e:
+                            self._log.error(f"OME-TIFF processing failed: {e}, falling back to individual images")
+                            self._dispatch_regular_jobs(info, image)
+                    else:
+                        # Regular job processing for non-OME-TIFF modes
+                        self._dispatch_regular_jobs(info, image)
 
                 height, width = image.shape[:2]
                 with self._timing.get_timer("crop_image"):
@@ -914,3 +946,93 @@ class MultiPointWorker(QObject):
                 rel_z_to_start = -self.deltaZ * (self.NZ - 1)
 
             self.stage.move_z(rel_z_to_start)
+
+    def _get_safe_pixel_size(self):
+        """Safely get pixel size from camera with fallback."""
+        try:
+            if hasattr(self.camera, 'get_pixel_size_binned_um'):
+                pixel_size = self.camera.get_pixel_size_binned_um()
+                return pixel_size if pixel_size is not None else 3.45
+            else:
+                return 3.45
+        except Exception as e:
+            self._log.warning(f"Failed to get camera pixel size: {e}, using default 3.45 μm")
+            return 3.45
+    
+    def _extract_time_point_from_path(self, save_directory: str) -> int:
+        """Extract time point from the save directory path."""
+        try:
+            # Extract time point from path like "/path/to/experiment/001/"
+            path_parts = Path(save_directory).parts
+            for part in reversed(path_parts):
+                if part.isdigit():
+                    return int(part)
+            return 0
+        except (ValueError, IndexError, AttributeError, TypeError) as e:
+            self._log.debug(f"Could not extract time point from {save_directory}: {e}")
+            return 0
+    
+    def _dispatch_regular_jobs(self, info: CaptureInfo, image: np.ndarray):
+        """Dispatch regular (non-OME-TIFF) jobs to worker processes."""
+        for job_class, job_runner in self._job_runners:
+            job = job_class(capture_info=info, capture_image=JobImage(image_array=image))
+            if job_runner is not None:
+                if not job_runner.dispatch(job):
+                    self._log.error("Failed to dispatch multiprocessing job!")
+                    self.multiPointController.request_abort_aquisition()
+                    return
+            else:
+                try:
+                    # NOTE(imo): We don't have any way of people using results, so for now just
+                    # grab and ignore it.
+                    result = job.run()
+                except Exception:
+                    self._log.exception("Failed to execute job, abandoning acquisition!")
+                    self.multiPointController.request_abort_aquisition()
+                    return
+    
+    def _prepare_ome_tiff_params(self):
+        """Prepare OME-TIFF acquisition parameters for lazy initialization."""
+        self._ome_tiff_params = {
+            'Nt': self.Nt,
+            'NZ': self.NZ,
+            'selected_configurations': self.selected_configurations,
+            'dt(s)': self.dt if self.dt is not None else 0,
+            'dz(um)': (self.deltaZ * 1000) if self.deltaZ is not None else 1.0,  # Convert to μm
+            'sensor_pixel_size_um': self._get_safe_pixel_size(),
+            'tube_lens_mm': TUBE_LENS_MM if 'TUBE_LENS_MM' in globals() else 50,
+            'objective': self.objectiveStore.get_current_objective_info() if self.objectiveStore else {},
+        }
+        self._log.info("Prepared OME-TIFF parameters for lazy initialization")
+    
+    def _initialize_ome_tiff_writer_for_fov(self, info: CaptureInfo, image: np.ndarray):
+        """Initialize OME-TIFF writer for a specific FOV using actual image dimensions."""
+        try:
+            manager = OMETiffManager()
+            writer_key = manager.get_writer_key(info)
+            
+            # Check if already initialized
+            if writer_key in manager._writers:
+                return True
+                
+            # Use actual image dimensions
+            height, width = image.shape[:2]
+            params = self._ome_tiff_params.copy()
+            params['image_width'] = width
+            params['image_height'] = height
+            
+            self._log.info(f"Lazy initializing OME-TIFF writer for {writer_key} with actual dimensions {width}x{height}")
+            
+            manager.initialize_acquisition(info, params)
+            
+            self._log.info(f"Successfully initialized OME-TIFF writer for {writer_key}")
+            return True
+            
+        except (ValueError, TypeError, OSError, IOError) as e:
+            self._log.error(f"Failed to initialize OME-TIFF writer for {writer_key}: {e}")
+            return False
+        except Exception as e:
+            self._log.error(f"Unexpected error initializing OME-TIFF writer for {writer_key}: {e}")
+            import traceback
+            self._log.error(f"Full traceback: {traceback.format_exc()}")
+            return False
