@@ -1,7 +1,10 @@
 # set QT_API environment variable
 import os
 
+from control.core.auto_focus_controller import AutoFocusController
 from control.core.job_processing import CaptureInfo
+from control.core.laser_auto_focus_controller import LaserAutofocusController
+from control.core.scan_coordinates import ScanCoordinates
 
 os.environ["QT_API"] = "pyqt5"
 import serial
@@ -23,13 +26,12 @@ from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
 from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController
-from control.core.multi_point_controller import (
-    MultiPointController,
+from control.core.multi_point_controller import MultiPointController
+from control.core.multi_point_utils import (
     MultiPointControllerFunctions,
     AcquisitionParameters,
     OverallProgressUpdate,
-    RegionProgressUpdate,
-)
+    RegionProgressUpdate)
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
 from control.filterwheel import SquidFilterWheelWrapper
@@ -92,7 +94,7 @@ class MovementUpdater(QObject):
     piezo_z_um = Signal(float)
 
     def __init__(
-        self, stage: AbstractStage, piezo: Optional[PiezoStage], movement_threshhold_mm=0.0001, *args, **kwargs
+            self, stage: AbstractStage, piezo: Optional[PiezoStage], movement_threshhold_mm=0.0001, *args, **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.stage: AbstractStage = stage
@@ -123,9 +125,9 @@ class MovementUpdater(QObject):
         abs_delta_y = abs(self.previous_pos.y_mm - pos.y_mm)
 
         if (
-            abs_delta_y < self.movement_threshhold_mm
-            and abs_delta_x < self.movement_threshhold_mm
-            and not self.stage.get_state().busy
+                abs_delta_y < self.movement_threshhold_mm
+                and abs_delta_x < self.movement_threshhold_mm
+                and not self.stage.get_state().busy
         ):
             # In here, send all the signals that must be sent once per stop of movement.  AKA once per arriving at a
             # new position for a while.
@@ -155,25 +157,16 @@ class QtMultiPointController(MultiPointController, QObject):
     signal_coordinates = Signal(np.ndarray, np.ndarray, np.ndarray, np.ndarray)  # x, y, z, region
 
     def __init__(
-        self,
-        microscope: Microscope,
-        live_controller: LiveController,
-        autofocus_controller: core.AutoFocusController,
-        objective_store: ObjectiveStore,
-        channel_configuration_manager: ChannelConfigurationManager,
-        scan_coordinates: Optional[core.ScanCoordinates] = None,
-        laser_autofocus_controller: Optional[core.LaserAutofocusController] = None,
-        fluidics: Optional[Any] = None,
+            self,
+            microscope: Microscope,
+            live_controller: LiveController,
+            autofocus_controller: AutoFocusController,
+            objective_store: ObjectiveStore,
+            channel_configuration_manager: ChannelConfigurationManager,
+            scan_coordinates: Optional[ScanCoordinates] = None,
+            laser_autofocus_controller: Optional[LaserAutofocusController] = None,
+            fluidics: Optional[Any] = None,
     ):
-        callbacks = MultiPointControllerFunctions(
-            signal_acquisition_start=self._signal_acquisition_start_fn,
-            signal_acquisition_finished=self._signal_acquisition_finished_fn,
-            signal_new_image=self._signal_new_image_fn,
-            signal_current_configuration=self._signal_current_configuration_fn,
-            signal_current_fov=self._signal_current_fov_fn,
-            signal_overall_progress=self._signal_overall_progress_fn,
-            signal_region_progress=self._signal_region_progress_fn,
-        )
         MultiPointController.__init__(
             self,
             microscope=microscope,
@@ -181,10 +174,17 @@ class QtMultiPointController(MultiPointController, QObject):
             autofocus_controller=autofocus_controller,
             objective_store=objective_store,
             channel_configuration_manager=channel_configuration_manager,
-            callbacks=callbacks,
+            callbacks=MultiPointControllerFunctions(
+                signal_acquisition_start=self._signal_acquisition_start_fn,
+                signal_acquisition_finished=self._signal_acquisition_finished_fn,
+                signal_new_image=self._signal_new_image_fn,
+                signal_current_configuration=self._signal_current_configuration_fn,
+                signal_current_fov=self._signal_current_fov_fn,
+                signal_overall_progress=self._signal_overall_progress_fn,
+                signal_region_progress=self._signal_region_progress_fn,
+            ),
             scan_coordinates=scan_coordinates,
-            laser_autofocus_controller=laser_autofocus_controller,
-            fluidics=fluidics,
+            laser_autofocus_controller=laser_autofocus_controller
         )
         QObject.__init__(self)
 
@@ -224,7 +224,7 @@ class HighContentScreeningGui(QMainWindow):
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
 
     def __init__(
-        self, microscope: control.microscope.Microscope, is_simulation=False, live_only_mode=False, *args, **kwargs
+            self, microscope: control.microscope.Microscope, is_simulation=False, live_only_mode=False, *args, **kwargs
     ):
         super().__init__(*args, **kwargs)
 
@@ -260,7 +260,7 @@ class HighContentScreeningGui(QMainWindow):
         self.displacementMeasurementController: Optional[
             core_displacement_measurement.DisplacementMeasurementController
         ] = None
-        self.laserAutofocusController: Optional[core.LaserAutofocusController] = None
+        self.laserAutofocusController: Optional[LaserAutofocusController] = None
 
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveController_focus_camera = self.microscope.live_controller_focus
@@ -269,7 +269,7 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(show_LUT=False, autoLevels=False)
             self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
-            self.laserAutofocusController = core.LaserAutofocusController(
+            self.laserAutofocusController = LaserAutofocusController(
                 self.microcontroller,
                 self.camera_focus,
                 self.liveController_focus_camera,
@@ -288,12 +288,12 @@ class HighContentScreeningGui(QMainWindow):
         self.multipointController: QtMultiPointController = None
         self.streamHandler: core.QtStreamHandler = None
         self.slidePositionController: core.SlidePositionController = None
-        self.autofocusController: core.AutoFocusController = None
+        self.autofocusController: AutoFocusController = None
         self.imageSaver: core.ImageSaver = core.ImageSaver()
         self.imageDisplay: core.ImageDisplay = core.ImageDisplay()
         self.trackingController: core.TrackingController = None
         self.navigationViewer: core.NavigationViewer = None
-        self.scanCoordinates: Optional[core.ScanCoordinates] = None
+        self.scanCoordinates: Optional[ScanCoordinates] = None
         self.load_objects(is_simulation=is_simulation)
         self.setup_hardware()
 
@@ -384,7 +384,7 @@ class HighContentScreeningGui(QMainWindow):
         self.slidePositionController = core.SlidePositionController(
             self.stage, self.liveController, is_for_wellplate=True
         )
-        self.autofocusController = core.AutoFocusController(
+        self.autofocusController = AutoFocusController(
             self.camera, self.stage, self.liveController, self.microcontroller, self.nl5
         )
         if ENABLE_TRACKING:
@@ -406,7 +406,7 @@ class HighContentScreeningGui(QMainWindow):
             self.navigationViewer = core.NavigationViewer(
                 self.objectiveStore, self.camera.get_pixel_size_unbinned_um(), sample=WELLPLATE_FORMAT
             )
-        self.scanCoordinates = core.ScanCoordinates(
+        self.scanCoordinates = ScanCoordinates(
             objectiveStore=self.objectiveStore, navigationViewer=self.navigationViewer, stage=self.stage
         )
         self.multipointController = QtMultiPointController(
@@ -1091,7 +1091,7 @@ class HighContentScreeningGui(QMainWindow):
         # We provide a few signals about the system's physical movement to other parts of the UI.  Ideally, they other
         # parts would register their interest (instead of us needing to know that they want to hear about the movements
         # here), but as an intermediate pumping it all from one location is better than nothing.
-        self.movement_updater = MovementUpdater(self.stage)
+        self.movement_updater = MovementUpdater(stage=self.stage, piezo=self.piezo)
         self.movement_update_timer = QTimer()
         self.movement_update_timer.setInterval(100)
         self.movement_update_timer.timeout.connect(self.movement_updater.do_update)

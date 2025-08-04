@@ -1,5 +1,3 @@
-from sympy.physics.units import micro
-
 import tests.control.gui_test_stubs as gts
 import pytest
 

@@ -11,10 +11,11 @@ import pandas as pd
 
 from control._def import *
 from control import utils
+from control.core.auto_focus_controller import AutoFocusController
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.core import LaserAutofocusController, AutoFocusController
+from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
-from control.core.multi_point_controller import (
+from control.core.multi_point_utils import (
     AcquisitionParameters,
     MultiPointControllerFunctions,
     OverallProgressUpdate,

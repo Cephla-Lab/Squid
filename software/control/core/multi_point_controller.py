@@ -25,9 +25,12 @@ from control._def import (
     TriggerMode,
     RESUME_LIVE_AFTER_ACQUISITION,
 )
+from control.core.auto_focus_controller import AutoFocusController
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.core import AutoFocusController, ScanCoordinates, LaserAutofocusController
+from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
+from control.core.scan_coordinates import ScanCoordinates
 from control.core.job_processing import CaptureInfo
+from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
 from control.microscope import Microscope
 from control.core.multi_point_worker import MultiPointWorker
@@ -39,77 +42,14 @@ from squid.abc import CameraFrame, AbstractCamera, AbstractStage
 import squid.logging
 
 
-@dataclass
-class ScanPositionInformation:
-    scan_region_coords_mm: List[Tuple[float, float]]
-    scan_region_names: List[str]
-    scan_region_fov_coords_mm: Dict[str, List[float, float, float]]
-
-    @staticmethod
-    def from_scan_coordinates(scan_coordinates: ScanCoordinates):
-        return ScanPositionInformation(
-            scan_region_coords_mm=list(scan_coordinates.region_centers.values()),
-            scan_region_names=list(scan_coordinates.region_centers.keys()),
-            scan_region_fov_coords_mm=dict(scan_coordinates.region_fov_coordinates),
-        )
-
-
-@dataclass
-class AcquisitionParameters:
-    experiment_ID: Optional[str]
-    base_path: Optional[str]
-    selected_configurations: List[ChannelMode]
-    acquisition_start_time: float
-    scan_position_information: ScanPositionInformation
-
-    # NOTE(imo): I'm pretty sure NX and NY are broken?  They are not used in MPW anywhere.
-    NX: int
-    deltaX: float
-    NY: int
-    deltaY: float
-
-    NZ: int
-    deltaZ: float
-    Nt: int
-    deltat: float
-
-    do_autofocus: bool
-    do_reflection_autofocus: bool
-
-    use_piezo: bool
-    display_resolution_scaling: float
-
-    z_stacking_config: str
-    z_range: Tuple[float, float]
-
-    use_fluidics: bool
-
-
-@dataclass
-class OverallProgressUpdate:
-    current_region: int
-    total_regions: int
-
-    current_timepoint: int
-    total_timepoints: int
-
-
-@dataclass
-class RegionProgressUpdate:
-    current_fov: int
-    region_fovs: int
-
-
-@dataclass
-class MultiPointControllerFunctions:
-    signal_acquisition_start: Callable[[AcquisitionParameters], None]  # todo acqui params as arg
-    signal_acquisition_finished: Callable[[], None]
-    signal_new_image: Callable[[CameraFrame, CaptureInfo], None]
-    signal_current_configuration: Callable[[ChannelMode], None]
-    signal_current_fov: Callable[[float, float], None]
-    signal_overall_progress: Callable[[OverallProgressUpdate], None]
-    signal_region_progress: Callable[[RegionProgressUpdate], None]
-
+NoOpCallbacks = MultiPointControllerFunctions(
+    signal_acquisition_start=lambda *a, **kw: None,
+    signal_acquisition_finished=lambda *a, **kw: None,
+    signal_new_image=lambda *a, **kw: None,
+    signal_current_configuration=lambda *a, **kw: None,
+    signal_current_fov=lambda *a, **kw: None,
+    signal_overall_progress=lambda *a, **kw: None,
+    signal_region_progress=lambda *a, **kw: None)
 
 class MultiPointController:
     def __init__(
@@ -122,8 +62,8 @@ class MultiPointController:
         callbacks: MultiPointControllerFunctions,
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
-        fluidics: Optional[Any] = None,
     ):
+        super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope: Microscope = microscope
         self.camera: AbstractCamera = microscope.camera
@@ -137,11 +77,8 @@ class MultiPointController:
         self.channelConfigurationManager: ChannelConfigurationManager = channel_configuration_manager
         self.callbacks: MultiPointControllerFunctions = callbacks
         self.multiPointWorker: Optional[MultiPointWorker] = None
-        self.fluidics: Optional[Any] = fluidics
+        self.fluidics: Optional[Any] = microscope.addons.fluidics
         self.thread: Optional[Thread] = None
-
-        z_mm_current = self.stage.get_pos().z_mm
-        z_range = (z_mm_current, z_mm_current + self.deltaZ * (self.NZ - 1))  # (start_mm, end_mm)
 
         self.NX = 1
         self.deltaX = Acquisition.DX
