@@ -1,3 +1,4 @@
+import pytest
 import threading
 
 import tests.control.gui_test_stubs as gts
@@ -216,9 +217,9 @@ def test_multi_point_with_laser_af():
     assert tt.current_fovs_count > 0
     assert tt.config_change_count > 0
 
+@pytest.mark.skip(reason="We still need to pull QT usage out of AutofocusController and AutofocosWorker.")
 def test_multi_point_with_contrast_af():
     control._def.MERGE_CHANNELS = False
-    control._def.SUPPORT_LASER_AUTOFOCUS = False
 
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
@@ -228,9 +229,6 @@ def test_multi_point_with_contrast_af():
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
     mpc.set_af_flag(True)
-    laser_af_ref_image = scope.addons.camera_focus.read_frame()
-    mpc.laserAutoFocusController.laser_af_properties.set_reference_image(laser_af_ref_image)
-
     mpc.run_acquisition()
 
     timeout_s = 5

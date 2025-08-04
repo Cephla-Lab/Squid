@@ -151,7 +151,7 @@ class QtMultiPointController(MultiPointController, QObject):
     signal_set_display_tabs = Signal(list, int)
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
-    signal_coordinates = Signal(np.ndarray, np.ndarray, np.ndarray, np.ndarray)  # x, y, z, region
+    signal_coordinates = Signal(float, float, float, int)  # x, y, z, region
 
     def __init__(
         self,
@@ -185,8 +185,11 @@ class QtMultiPointController(MultiPointController, QObject):
         )
         QObject.__init__(self)
 
+        self._napari_inited_for_this_acquisition = False
+
     def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
         # TODO mpc napari signals
+        self._napari_inited_for_this_acquisition = False
         if not self.run_acquisition_current_fov:
             self.signal_set_display_tabs.emit(self.selected_configurations, self.NZ)
         else:
@@ -199,6 +202,20 @@ class QtMultiPointController(MultiPointController, QObject):
         self.image_to_display.emit(frame.frame)
         self.image_to_display_multi.emit(frame.frame, info.configuration.illumination_source)
         self.signal_coordinates.emit(info.position.x_mm, info.position.y_mm, info.position.z_mm, info.region_id)
+
+        if not self._napari_inited_for_this_acquisition:
+            self._napari_inited_for_this_acquisition = True
+            self.napari_layers_init.emit(frame.frame.shape[0], frame.frame.shape[1], frame.frame.dtype)
+
+        objective_magnification = str(int(self.objectiveStore.get_current_objective_info()["magnification"]))
+        napri_layer_name = objective_magnification + "x " + info.configuration.name
+        self.napari_layers_update.emit(
+            frame.frame,
+            info.position.x_mm,
+            info.position.y_mm,
+            info.z_index,
+            napri_layer_name
+        )
 
     def _signal_current_configuration_fn(self, channel_mode: ChannelMode):
         self.signal_current_configuration.emit(channel_mode)
@@ -1499,13 +1516,6 @@ class HighContentScreeningGui(QMainWindow):
 
     def onStartLive(self):
         self.imageDisplayTabs.setCurrentIndex(0)
-
-    def connectStitcherSignals(self):
-        self.stitcherThread.update_progress.connect(self.stitcherWidget.updateProgressBar)
-        self.stitcherThread.getting_flatfields.connect(self.stitcherWidget.gettingFlatfields)
-        self.stitcherThread.starting_stitching.connect(self.stitcherWidget.startingStitching)
-        self.stitcherThread.starting_saving.connect(self.stitcherWidget.startingSaving)
-        self.stitcherThread.finished_saving.connect(self.stitcherWidget.finishedSaving)
 
     def move_from_click_image(self, click_x, click_y, image_width, image_height):
         if self.navigationWidget.get_click_to_move_enabled():

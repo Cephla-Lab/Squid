@@ -36,8 +36,9 @@ class AutoFocusController(QObject):
         self.liveController: LiveController = liveController
         self.nl5: Optional[NL5] = nl5
 
-        self.N = None
-        self.deltaZ = None
+        # Start with "Reasonable" defaults.
+        self.N: int = 10
+        self.deltaZ: float = 1.524
         self.crop_width = control._def.AF.CROP_WIDTH
         self.crop_height = control._def.AF.CROP_HEIGHT
         self.autofocus_in_progress = False
