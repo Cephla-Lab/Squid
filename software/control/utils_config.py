@@ -330,16 +330,6 @@ def generate_default_configuration(filename: str) -> None:
             camera_sn="",
             z_offset=0.0,
         ),
-        ChannelMode(
-            id="20",
-            name="USB Spectrometer",
-            exposure_time=20,
-            analog_gain=0,
-            illumination_source=6,
-            illumination_intensity=0,
-            camera_sn="",
-            z_offset=0.0,
-        ),
     ]
 
     config = ChannelConfig(modes=default_modes)

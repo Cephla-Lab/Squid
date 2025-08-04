@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.laser_af_settings_manager import LaserAFSettingManager
-from control._def import OBJECTIVES
+import control._def
 
 
 class ConfigurationManager:
@@ -32,7 +32,7 @@ class ConfigurationManager:
         if not self.base_config_path.exists():
             os.makedirs(self.base_config_path)
             os.makedirs(self.base_config_path / "default_profile")
-            for objective in OBJECTIVES:
+            for objective in control._def.OBJECTIVES:
                 os.makedirs(self.base_config_path / "default_profile" / objective)
         return [d.name for d in self.base_config_path.iterdir() if d.is_dir()]
 
@@ -66,7 +66,7 @@ class ConfigurationManager:
             raise ValueError(f"Profile {profile_name} already exists")
         os.makedirs(new_profile_path)
 
-        objectives = OBJECTIVES
+        objectives = control._def.OBJECTIVES
 
         self.current_profile = profile_name
         if self.channel_manager:

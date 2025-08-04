@@ -6,7 +6,7 @@ from typing import Optional
 
 import squid.logging
 from control.microcontroller import Microcontroller
-from squid.abc import CameraAcquisitionMode
+from squid.abc import CameraAcquisitionMode, AbstractCamera
 
 from control._def import *
 from control import utils_channel
@@ -15,13 +15,16 @@ from control import utils_channel
 class LiveController:
     def __init__(
         self,
-        microscope: "Microscope",  # NOTE(imo): Right now, Microscope needs to import LiveController.  So we can't properly annotate it here.
+        microscope: "Microscope",
+        # NOTE(imo): Right now, Microscope needs to import LiveController.  So we can't properly annotate it here.
+        camera: AbstractCamera,
         control_illumination: bool = True,
         use_internal_timer_for_hardware_trigger: bool = True,
         for_displacement_measurement: bool = False,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope = microscope
+        self.camera: AbstractCamera = camera
         self.currentConfiguration = None
         self.trigger_mode: Optional[TriggerMode] = TriggerMode.SOFTWARE  # @@@ change to None
         self.is_live = False
@@ -165,8 +168,7 @@ class LiveController:
                             time.sleep(
                                 max(
                                     0,
-                                    ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000
-                                    - self.microscope.camera.get_strobe_time() / 1e3,
+                                    ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.get_strobe_time() / 1e3,
                                 )
                             )
             except Exception as e:
@@ -191,8 +193,7 @@ class LiveController:
                         time.sleep(
                             max(
                                 0,
-                                OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000
-                                - self.microscope.camera.get_strobe_time() / 1e3,
+                                OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.get_strobe_time() / 1e3,
                             )
                         )
             except Exception as e:
@@ -206,11 +207,11 @@ class LiveController:
 
     def start_live(self):
         self.is_live = True
-        self.microscope.camera.start_streaming()
+        self.camera.start_streaming()
         if self.trigger_mode == TriggerMode.SOFTWARE or (
             self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
         ):
-            self.microscope.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
+            self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
             self._start_triggerred_acquisition()
         # if controlling the laser displacement measurement camera
         if self.for_displacement_measurement:
@@ -222,7 +223,7 @@ class LiveController:
             if self.trigger_mode == TriggerMode.SOFTWARE:
                 self._stop_triggerred_acquisition()
             if self.trigger_mode == TriggerMode.CONTINUOUS:
-                self.microscope.camera.stop_streaming()
+                self.camera.stop_streaming()
             if (self.trigger_mode == TriggerMode.SOFTWARE) or (
                 self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
             ):
@@ -246,7 +247,7 @@ class LiveController:
 
     # software trigger related
     def trigger_acquisition(self):
-        if not self.microscope.camera.get_ready_for_trigger():
+        if not self.camera.get_ready_for_trigger():
             # TODO(imo): Before, send_trigger would pass silently for this case.  Now
             # we do the same here.  Should this warn?  I didn't add a warning because it seems like
             # we over-trigger as standard practice (eg: we trigger at our exposure time frequency, but
@@ -254,7 +255,7 @@ class LiveController:
             self._trigger_skip_count += 1
             if self._trigger_skip_count % 100 == 1:
                 self._log.debug(
-                    f"Not ready for trigger, skipping (_trigger_skip_count={self._trigger_skip_count}, total frame time = {self.microscope.camera.get_total_frame_time()} [ms])."
+                    f"Not ready for trigger, skipping (_trigger_skip_count={self._trigger_skip_count}, total frame time = {self.camera.get_total_frame_time()} [ms])."
                 )
             return False
 
@@ -265,7 +266,7 @@ class LiveController:
 
         self.trigger_ID = self.trigger_ID + 1
 
-        self.microscope.camera.send_trigger(self.microscope.camera.get_exposure_time())
+        self.camera.send_trigger(self.camera.get_exposure_time())
 
         if self.trigger_mode == TriggerMode.SOFTWARE:
             if self.control_illumination and self.illumination_on == False:
@@ -309,14 +310,14 @@ class LiveController:
                 self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
             ):
                 self._stop_triggerred_acquisition()
-            self.microscope.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+            self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
             if self.is_live:
                 self._start_triggerred_acquisition()
         if mode == TriggerMode.HARDWARE:
             if self.trigger_mode == TriggerMode.SOFTWARE and self.is_live:
                 self._stop_triggerred_acquisition()
-            self.microscope.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
-            self.microscope.camera.set_exposure_time(self.currentConfiguration.exposure_time)
+            self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+            self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
 
             if self.is_live and self.use_internal_timer_for_hardware_trigger:
                 self._start_triggerred_acquisition()
@@ -325,7 +326,7 @@ class LiveController:
                 self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
             ):
                 self._stop_triggerred_acquisition()
-            self.microscope.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
+            self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
         self.trigger_mode = mode
 
     def set_trigger_fps(self, fps):
@@ -348,9 +349,9 @@ class LiveController:
                 self.turn_off_illumination()
 
         # set camera exposure time and analog gain
-        self.microscope.camera.set_exposure_time(self.currentConfiguration.exposure_time)
+        self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
         try:
-            self.microscope.camera.set_analog_gain(self.currentConfiguration.analog_gain)
+            self.camera.set_analog_gain(self.currentConfiguration.analog_gain)
         except NotImplementedError:
             pass
 

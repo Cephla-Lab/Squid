@@ -1,9 +1,10 @@
 from enum import Enum
+from pathlib import Path
 from typing import Any, List, Dict
 
 from control.utils_config import ChannelConfig, ChannelMode
 import control.utils_config as utils_config
-from control._def import *
+import control._def
 import squid.logging
 
 
@@ -22,7 +23,9 @@ class ChannelConfigurationManager:
             ConfigType.CONFOCAL: {},
             ConfigType.WIDEFIELD: {},
         }
-        self.active_config_type = ConfigType.CHANNEL if not ENABLE_SPINNING_DISK_CONFOCAL else ConfigType.CONFOCAL
+        self.active_config_type = (
+            ConfigType.CHANNEL if not control._def.ENABLE_SPINNING_DISK_CONFOCAL else ConfigType.CONFOCAL
+        )
 
     def set_profile_path(self, profile_path: Path) -> None:
         """Set the root path for configurations"""
@@ -40,7 +43,7 @@ class ChannelConfigurationManager:
 
     def load_configurations(self, objective: str) -> None:
         """Load available configurations for an objective"""
-        if ENABLE_SPINNING_DISK_CONFOCAL:
+        if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
             # Load both confocal and widefield configurations
             self._load_xml_config(objective, ConfigType.CONFOCAL)
             self._load_xml_config(objective, ConfigType.WIDEFIELD)
@@ -64,7 +67,7 @@ class ChannelConfigurationManager:
 
     def save_configurations(self, objective: str) -> None:
         """Save configurations based on spinning disk configuration"""
-        if ENABLE_SPINNING_DISK_CONFOCAL:
+        if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
             # Save both confocal and widefield configurations
             self._save_xml_config(objective, ConfigType.CONFOCAL)
             self._save_xml_config(objective, ConfigType.WIDEFIELD)
