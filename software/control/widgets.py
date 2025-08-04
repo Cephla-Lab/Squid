@@ -9545,7 +9545,7 @@ class SurfacePlotWidget(QWidget):
         self.z.append(z)
         self.regions.append(region)
 
-    def plot() -> None:
+    def plot(self) -> None:
         """
         Plot both surface and scatter points in 3D.
 

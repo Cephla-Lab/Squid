@@ -1066,8 +1066,15 @@ class HighContentScreeningGui(QMainWindow):
             )
 
         # Connect to plot xyz data when coordinates are saved
-        self.multipointController.signal_acquisition_start.connect(self.zPlotWidget.clear)
         self.multipointController.signal_coordinates.connect(self.zPlotWidget.add_point)
+        def plot_after_each_region(progress: OverallProgressUpdate):
+            if progress.current_region > 1:
+                self.zPlotWidget.plot()
+            self.zPlotWidget.clear()
+        self.multipointController.signal_acquisition_progress.connect(plot_after_each_region)
+        # Since we don't get a region progress call after the last, make sure there's one last plot for
+        # the final region.
+        self.multipointController.acquisition_finished.connect(self.zPlotWidget.plot)
 
         # Connect well selector button
         if hasattr(self.imageDisplayWindow, "btn_well_selector"):
