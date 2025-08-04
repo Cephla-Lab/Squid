@@ -121,7 +121,10 @@ def get_test_qt_multi_point_controller(microscope: Microscope) -> QtMultiPointCo
 
     return multi_point_controller
 
-def get_test_multi_point_controller(microscope: Microscope, callbacks: MultiPointControllerFunctions = NoOpCallbacks) -> MultiPointController:
+
+def get_test_multi_point_controller(
+    microscope: Microscope, callbacks: MultiPointControllerFunctions = NoOpCallbacks
+) -> MultiPointController:
     live_controller = get_test_live_controller(
         microscope=microscope, starting_objective=microscope.objective_store.default_objective
     )

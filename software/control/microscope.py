@@ -69,7 +69,11 @@ class MicroscopeAddons:
 
         cellx = None
         if control._def.ENABLE_CELLX:
-            cellx = serial_peripherals.CellX(control._def.CELLX_SN) if not simulated else serial_peripherals.CellX_Simulation()
+            cellx = (
+                serial_peripherals.CellX(control._def.CELLX_SN)
+                if not simulated
+                else serial_peripherals.CellX_Simulation()
+            )
 
         emission_filter_wheel = None
         if control._def.USE_ZABER_EMISSION_FILTER_WHEEL:
@@ -131,7 +135,9 @@ class MicroscopeAddons:
         if control._def.SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             # to do: add error handling
             sci_microscopy_led_array = serial_peripherals.SciMicroscopyLEDArray(
-                control._def.SCIMICROSCOPY_LED_ARRAY_SN, control._def.SCIMICROSCOPY_LED_ARRAY_DISTANCE, control._def.SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY
+                control._def.SCIMICROSCOPY_LED_ARRAY_SN,
+                control._def.SCIMICROSCOPY_LED_ARRAY_DISTANCE,
+                control._def.SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY,
             )
             sci_microscopy_led_array.set_NA(control._def.SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
 
@@ -190,7 +196,9 @@ class LowLevelDrivers:
     @staticmethod
     def build_from_global_config(simulated: bool = False) -> "LowLevelDrivers":
         micro_serial_device = (
-            control.microcontroller.get_microcontroller_serial_device(version=control._def.CONTROLLER_VERSION, sn=control._def.CONTROLLER_SN)
+            control.microcontroller.get_microcontroller_serial_device(
+                version=control._def.CONTROLLER_VERSION, sn=control._def.CONTROLLER_SN
+            )
             if not simulated
             else control.microcontroller.get_microcontroller_serial_device(simulated=True)
         )
@@ -336,7 +344,9 @@ class Microscope:
         self.low_level_drivers.prepare_for_use()
         self.addons.prepare_for_use()
 
-        self.camera.set_pixel_format(squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
+        self.camera.set_pixel_format(
+            squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
+        )
         self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
         if self.addons.camera_focus:

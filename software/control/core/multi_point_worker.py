@@ -828,7 +828,7 @@ class MultiPointWorker:
                 CameraFrameFormat.RGB,
                 CameraPixelFormat.RGB48,
             ),
-            capture_info
+            capture_info,
         )
 
         # write the RGB image

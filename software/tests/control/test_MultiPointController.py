@@ -112,6 +112,7 @@ def test_multi_point_controller_disk_space_estimate(qtbot):
     after_size = mpc.get_estimated_acquisition_disk_storage()
     assert after_size > before_size
 
+
 class TestAcquisitionTracker:
     def __init__(self):
         self.started_event = threading.Event()
@@ -130,7 +131,8 @@ class TestAcquisitionTracker:
             signal_current_configuration=self.receive_config,
             signal_current_fov=self.receive_current_fov,
             signal_overall_progress=self.receive_overall_progress,
-            signal_region_progress=self.receive_region_progress)
+            signal_region_progress=self.receive_region_progress,
+        )
 
     def receive_image(self, frame, info):
         self.image_count += 1
@@ -147,6 +149,7 @@ class TestAcquisitionTracker:
     def receive_region_progress(self, progress):
         self.region_progress_seen = True
 
+
 def add_some_coordinates(mpc: MultiPointController):
     stage = mpc.stage
 
@@ -158,15 +161,20 @@ def add_some_coordinates(mpc: MultiPointController):
     max_y = stage.get_config().Y_AXIS.MAX_POSITION
     max_z = stage.get_config().Z_AXIS.MAX_POSITION
 
-    mpc.scanCoordinates.add_single_fov_region("region_1", center_x=min_x + 1.0, center_y=min_y + 1.0, center_z=min_z + 1.0)
-    mpc.scanCoordinates.add_single_fov_region("region_2", center_x=min_x + 0.5, center_y=min_y + 0.5, center_z=min_z + 0.1)
+    mpc.scanCoordinates.add_single_fov_region(
+        "region_1", center_x=min_x + 1.0, center_y=min_y + 1.0, center_z=min_z + 1.0
+    )
+    mpc.scanCoordinates.add_single_fov_region(
+        "region_2", center_x=min_x + 0.5, center_y=min_y + 0.5, center_z=min_z + 0.1
+    )
     mpc.scanCoordinates.add_flexible_region("region_grid", max_x / 2.0, max_y / 2.0, max_z / 2.0, 3, 3, 10)
 
+
 def select_some_configs(mpc: MultiPointController, objective: str):
-    all_config_names = [m.name for m in
-                        mpc.channelConfigurationManager.get_configurations(objective)]
+    all_config_names = [m.name for m in mpc.channelConfigurationManager.get_configurations(objective)]
     first_two_config_names = all_config_names[:2]
     mpc.set_selected_configurations(selected_configurations_name=first_two_config_names)
+
 
 def test_multi_point_controller_basic_acquisition():
     control._def.MERGE_CHANNELS = False
@@ -189,6 +197,7 @@ def test_multi_point_controller_basic_acquisition():
     assert tt.image_count == mpc.get_acquisition_image_count()
     assert tt.current_fovs_count > 0
     assert tt.config_change_count > 0
+
 
 def test_multi_point_with_laser_af():
     control._def.MERGE_CHANNELS = False
@@ -216,6 +225,7 @@ def test_multi_point_with_laser_af():
     assert tt.image_count == mpc.get_acquisition_image_count()
     assert tt.current_fovs_count > 0
     assert tt.config_change_count > 0
+
 
 @pytest.mark.skip(reason="We still need to pull QT usage out of AutofocusController and AutofocosWorker.")
 def test_multi_point_with_contrast_af():

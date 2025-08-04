@@ -212,11 +212,7 @@ class QtMultiPointController(MultiPointController, QObject):
         objective_magnification = str(int(self.objectiveStore.get_current_objective_info()["magnification"]))
         napri_layer_name = objective_magnification + "x " + info.configuration.name
         self.napari_layers_update.emit(
-            frame.frame,
-            info.position.x_mm,
-            info.position.y_mm,
-            info.z_index,
-            napri_layer_name
+            frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
         )
 
     def _signal_current_configuration_fn(self, channel_mode: ChannelMode):
@@ -1067,10 +1063,12 @@ class HighContentScreeningGui(QMainWindow):
 
         # Connect to plot xyz data when coordinates are saved
         self.multipointController.signal_coordinates.connect(self.zPlotWidget.add_point)
+
         def plot_after_each_region(progress: OverallProgressUpdate):
             if progress.current_region > 1:
                 self.zPlotWidget.plot()
             self.zPlotWidget.clear()
+
         self.multipointController.signal_acquisition_progress.connect(plot_after_each_region)
         # Since we don't get a region progress call after the last, make sure there's one last plot for
         # the final region.
