@@ -71,9 +71,6 @@ import control.core.core as core
 import control.microcontroller as microcontroller
 import control.serial_peripherals as serial_peripherals
 
-if ENABLE_STITCHER:
-    import control.stitcher as stitcher
-
 if SUPPORT_LASER_AUTOFOCUS:
     import control.core_displacement_measurement as core_displacement_measurement
 
@@ -149,7 +146,6 @@ class QtMultiPointController(MultiPointController, QObject):
     image_to_display_multi = Signal(np.ndarray, int)
     signal_current_configuration = Signal(ChannelMode)
     signal_register_current_fov = Signal(float, float)
-    signal_stitcher = Signal(str)
     napari_layers_init = Signal(int, int, object)
     napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
     signal_set_display_tabs = Signal(list, int)
@@ -198,7 +194,6 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_acquisition_finished_fn(self):
         self.acquisition_finished.emit()
-        self.signal_stitcher.emit()
 
     def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
         self.image_to_display.emit(frame.frame)
@@ -331,7 +326,6 @@ class HighContentScreeningGui(QMainWindow):
         self.multiPointWithFluidicsWidget: Optional[widgets.MultiPointWithFluidicsWidget] = None
         self.sampleSettingsWidget: Optional[widgets.SampleSettingsWidget] = None
         self.trackingControlWidget: Optional[widgets.TrackingControllerWidget] = None
-        self.stitcherWidget: Optional[widgets.StitcherWidget] = None
         self.napariLiveWidget: Optional[widgets.NapariLiveWidget] = None
         self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
@@ -680,10 +674,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.channelConfigurationManager,
                 show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
             )
-        if ENABLE_STITCHER:
-            self.stitcherWidget = widgets.StitcherWidget(
-                self.objectiveStore, self.channelConfigurationManager, self.contrastManager
-            )
 
         self.setupRecordTabWidget()
         self.setupCameraTabWidget()
@@ -831,10 +821,6 @@ class HighContentScreeningGui(QMainWindow):
 
         layout.addWidget(self.recordTabWidget)
 
-        if ENABLE_STITCHER:
-            layout.addWidget(self.stitcherWidget)
-            self.stitcherWidget.hide()
-
         layout.addWidget(self.sampleSettingsWidget)
         layout.addWidget(self.navigationViewer)
 
@@ -908,30 +894,11 @@ class HighContentScreeningGui(QMainWindow):
         self.streamHandler.signal_new_frame_received.connect(self.liveController.on_new_frame)
         self.streamHandler.packet_image_to_write.connect(self.imageSaver.enqueue)
 
-        if ENABLE_STITCHER:
-            self.multipointController.signal_stitcher.connect(self.startStitcher)
-
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.flexibleMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
-            if ENABLE_STITCHER:
-                self.flexibleMultiPointWidget.signal_stitcher_widget.connect(self.toggleStitcherWidget)
-                self.flexibleMultiPointWidget.signal_acquisition_channels.connect(
-                    self.stitcherWidget.updateRegistrationChannels
-                )
-                self.flexibleMultiPointWidget.signal_stitcher_z_levels.connect(
-                    self.stitcherWidget.updateRegistrationZLevels
-                )
 
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellplateMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
-            if ENABLE_STITCHER:
-                self.wellplateMultiPointWidget.signal_stitcher_widget.connect(self.toggleStitcherWidget)
-                self.wellplateMultiPointWidget.signal_acquisition_channels.connect(
-                    self.stitcherWidget.updateRegistrationChannels
-                )
-                self.wellplateMultiPointWidget.signal_stitcher_z_levels.connect(
-                    self.stitcherWidget.updateRegistrationZLevels
-                )
 
         if RUN_FLUIDICS:
             self.multiPointWithFluidicsWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
@@ -1342,8 +1309,6 @@ class HighContentScreeningGui(QMainWindow):
 
         self.toggleWellSelector(is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide")
         acquisitionWidget = self.recordTabWidget.widget(index)
-        if ENABLE_STITCHER:
-            self.toggleStitcherWidget(acquisitionWidget.checkbox_stitchOutput.isChecked())
         acquisitionWidget.emit_selected_channels()
 
     def resizeCurrentTab(self, tabWidget):
@@ -1532,47 +1497,8 @@ class HighContentScreeningGui(QMainWindow):
         # display acquisition progress bar during acquisition
         self.recordTabWidget.currentWidget().display_progress_bar(acquisition_started)
 
-    def toggleStitcherWidget(self, checked):
-        if checked:
-            self.stitcherWidget.show()
-        else:
-            self.stitcherWidget.hide()
-
     def onStartLive(self):
         self.imageDisplayTabs.setCurrentIndex(0)
-
-    def startStitcher(self, acquisition_path):
-        acquisitionWidget = self.recordTabWidget.currentWidget()
-        if acquisitionWidget.checkbox_stitchOutput.isChecked():
-            apply_flatfield = self.stitcherWidget.applyFlatfieldCheck.isChecked()
-            use_registration = self.stitcherWidget.useRegistrationCheck.isChecked()
-            registration_channel = self.stitcherWidget.registrationChannelCombo.currentText()
-            registration_z_level = self.stitcherWidget.registrationZCombo.value()
-            overlap_percent = self.wellplateMultiPointWidget.entry_overlap.value()
-            output_name = acquisitionWidget.lineEdit_experimentID.text() or "stitched"
-            output_format = (
-                ".ome.zarr" if self.stitcherWidget.outputFormatCombo.currentText() == "OME-ZARR" else ".ome.tiff"
-            )
-
-            stitcher_class = (
-                stitcher.CoordinateStitcher
-                if self.recordTabWidget.currentIndex() == self.recordTabWidget.indexOf(self.wellplateMultiPointWidget)
-                else stitcher.Stitcher
-            )
-            self.stitcherThread = stitcher_class(
-                input_folder=acquisition_path,
-                output_name=output_name,
-                output_format=output_format,
-                apply_flatfield=apply_flatfield,
-                overlap_percent=overlap_percent,
-                use_registration=use_registration,
-                registration_channel=registration_channel,
-                registration_z_level=registration_z_level,
-            )
-
-            self.stitcherWidget.setStitcherThread(self.stitcherThread)
-            self.connectStitcherSignals()
-            self.stitcherThread.start()
 
     def connectStitcherSignals(self):
         self.stitcherThread.update_progress.connect(self.stitcherWidget.updateProgressBar)
@@ -1635,8 +1561,6 @@ class HighContentScreeningGui(QMainWindow):
         if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel.set_emission_filter(1)
             self.emission_filter_wheel.close()
-        if ENABLE_STITCHER:
-            self.stitcherWidget.closeEvent(event)
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveController_focus_camera.stop_live()
             self.imageDisplayWindow_focus.close()
