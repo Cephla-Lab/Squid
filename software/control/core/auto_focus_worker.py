@@ -16,6 +16,7 @@ from squid.abc import AbstractCamera, AbstractStage
 
 AutoFocusController = TypeVar("AutoFocusController")
 
+
 class AutofocusWorker(QObject):
     finished = Signal()
     image_to_display = Signal(np.ndarray)
@@ -66,7 +67,11 @@ class AutofocusWorker(QObject):
                 self.camera.send_trigger()
                 image = self.camera.read_frame()
             elif self.liveController.trigger_mode == control._def.TriggerMode.HARDWARE:
-                if "Fluorescence" in self.liveController.currentConfiguration.name and control._def.ENABLE_NL5 and control._def.NL5_USE_DOUT:
+                if (
+                    "Fluorescence" in self.liveController.currentConfiguration.name
+                    and control._def.ENABLE_NL5
+                    and control._def.NL5_USE_DOUT
+                ):
                     self.nl5.start_acquisition()
                     # TODO(imo): This used to use the "reset_image_ready_flag=False" arg, but oinly the toupcam camera implementation had the
                     #  "reset_image_ready_flag" arg, so this is broken for all other cameras.

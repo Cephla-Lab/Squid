@@ -9,6 +9,7 @@ import control._def
 from squid.abc import AbstractStage
 import squid.logging
 
+
 class ScanCoordinates(QObject):
     signal_scan_coordinates_updated = Signal()
 

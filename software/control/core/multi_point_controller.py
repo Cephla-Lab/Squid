@@ -35,7 +35,9 @@ NoOpCallbacks = MultiPointControllerFunctions(
     signal_current_configuration=lambda *a, **kw: None,
     signal_current_fov=lambda *a, **kw: None,
     signal_overall_progress=lambda *a, **kw: None,
-    signal_region_progress=lambda *a, **kw: None)
+    signal_region_progress=lambda *a, **kw: None,
+)
+
 
 class MultiPointController:
     def __init__(

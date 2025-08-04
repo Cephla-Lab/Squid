@@ -23,7 +23,9 @@ class ChannelConfigurationManager:
             ConfigType.CONFOCAL: {},
             ConfigType.WIDEFIELD: {},
         }
-        self.active_config_type = ConfigType.CHANNEL if not control._def.ENABLE_SPINNING_DISK_CONFOCAL else ConfigType.CONFOCAL
+        self.active_config_type = (
+            ConfigType.CHANNEL if not control._def.ENABLE_SPINNING_DISK_CONFOCAL else ConfigType.CONFOCAL
+        )
 
     def set_profile_path(self, profile_path: Path) -> None:
         """Set the root path for configurations"""

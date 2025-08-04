@@ -31,7 +31,8 @@ from control.core.multi_point_utils import (
     MultiPointControllerFunctions,
     AcquisitionParameters,
     OverallProgressUpdate,
-    RegionProgressUpdate)
+    RegionProgressUpdate,
+)
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
 from control.filterwheel import SquidFilterWheelWrapper
@@ -94,7 +95,7 @@ class MovementUpdater(QObject):
     piezo_z_um = Signal(float)
 
     def __init__(
-            self, stage: AbstractStage, piezo: Optional[PiezoStage], movement_threshhold_mm=0.0001, *args, **kwargs
+        self, stage: AbstractStage, piezo: Optional[PiezoStage], movement_threshhold_mm=0.0001, *args, **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.stage: AbstractStage = stage
@@ -125,9 +126,9 @@ class MovementUpdater(QObject):
         abs_delta_y = abs(self.previous_pos.y_mm - pos.y_mm)
 
         if (
-                abs_delta_y < self.movement_threshhold_mm
-                and abs_delta_x < self.movement_threshhold_mm
-                and not self.stage.get_state().busy
+            abs_delta_y < self.movement_threshhold_mm
+            and abs_delta_x < self.movement_threshhold_mm
+            and not self.stage.get_state().busy
         ):
             # In here, send all the signals that must be sent once per stop of movement.  AKA once per arriving at a
             # new position for a while.
@@ -157,15 +158,15 @@ class QtMultiPointController(MultiPointController, QObject):
     signal_coordinates = Signal(np.ndarray, np.ndarray, np.ndarray, np.ndarray)  # x, y, z, region
 
     def __init__(
-            self,
-            microscope: Microscope,
-            live_controller: LiveController,
-            autofocus_controller: AutoFocusController,
-            objective_store: ObjectiveStore,
-            channel_configuration_manager: ChannelConfigurationManager,
-            scan_coordinates: Optional[ScanCoordinates] = None,
-            laser_autofocus_controller: Optional[LaserAutofocusController] = None,
-            fluidics: Optional[Any] = None,
+        self,
+        microscope: Microscope,
+        live_controller: LiveController,
+        autofocus_controller: AutoFocusController,
+        objective_store: ObjectiveStore,
+        channel_configuration_manager: ChannelConfigurationManager,
+        scan_coordinates: Optional[ScanCoordinates] = None,
+        laser_autofocus_controller: Optional[LaserAutofocusController] = None,
+        fluidics: Optional[Any] = None,
     ):
         MultiPointController.__init__(
             self,
@@ -184,7 +185,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_region_progress=self._signal_region_progress_fn,
             ),
             scan_coordinates=scan_coordinates,
-            laser_autofocus_controller=laser_autofocus_controller
+            laser_autofocus_controller=laser_autofocus_controller,
         )
         QObject.__init__(self)
 
@@ -224,7 +225,7 @@ class HighContentScreeningGui(QMainWindow):
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
 
     def __init__(
-            self, microscope: control.microscope.Microscope, is_simulation=False, live_only_mode=False, *args, **kwargs
+        self, microscope: control.microscope.Microscope, is_simulation=False, live_only_mode=False, *args, **kwargs
     ):
         super().__init__(*args, **kwargs)
 

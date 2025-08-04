@@ -14,13 +14,13 @@ from control import utils_channel
 
 class LiveController:
     def __init__(
-            self,
-            microscope: "Microscope",
-            # NOTE(imo): Right now, Microscope needs to import LiveController.  So we can't properly annotate it here.
-            camera: AbstractCamera,
-            control_illumination: bool = True,
-            use_internal_timer_for_hardware_trigger: bool = True,
-            for_displacement_measurement: bool = False,
+        self,
+        microscope: "Microscope",
+        # NOTE(imo): Right now, Microscope needs to import LiveController.  So we can't properly annotate it here.
+        camera: AbstractCamera,
+        control_illumination: bool = True,
+        use_internal_timer_for_hardware_trigger: bool = True,
+        for_displacement_measurement: bool = False,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope = microscope
@@ -151,8 +151,8 @@ class LiveController:
         if self.microscope.addons.emission_filter_wheel and self.enable_channel_auto_filter_switching:
             try:
                 if (
-                        self.currentConfiguration.emission_filter_position
-                        != self.microscope.addons.emission_filter_wheel.current_index
+                    self.currentConfiguration.emission_filter_position
+                    != self.microscope.addons.emission_filter_wheel.current_index
                 ):
                     if ZABER_EMISSION_FILTER_WHEEL_BLOCKING_CALL:
                         self.microscope.addons.emission_filter_wheel.set_emission_filter(
@@ -168,22 +168,21 @@ class LiveController:
                             time.sleep(
                                 max(
                                     0,
-                                    ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000
-                                    - self.camera.get_strobe_time() / 1e3,
+                                    ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.get_strobe_time() / 1e3,
                                 )
                             )
             except Exception as e:
                 print("not setting emission filter position due to " + str(e))
 
         if (
-                USE_OPTOSPIN_EMISSION_FILTER_WHEEL
-                and self.enable_channel_auto_filter_switching
-                and OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER == False
+            USE_OPTOSPIN_EMISSION_FILTER_WHEEL
+            and self.enable_channel_auto_filter_switching
+            and OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER == False
         ):
             try:
                 if (
-                        self.currentConfiguration.emission_filter_position
-                        != self.microscope.addons.emission_filter_wheel.current_index
+                    self.currentConfiguration.emission_filter_position
+                    != self.microscope.addons.emission_filter_wheel.current_index
                 ):
                     self.microscope.addons.emission_filter_wheel.set_emission_filter(
                         self.currentConfiguration.emission_filter_position
@@ -194,8 +193,7 @@ class LiveController:
                         time.sleep(
                             max(
                                 0,
-                                OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000
-                                - self.camera.get_strobe_time() / 1e3,
+                                OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.get_strobe_time() / 1e3,
                             )
                         )
             except Exception as e:
@@ -211,7 +209,7 @@ class LiveController:
         self.is_live = True
         self.camera.start_streaming()
         if self.trigger_mode == TriggerMode.SOFTWARE or (
-                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+            self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
         ):
             self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
             self._start_triggerred_acquisition()
@@ -227,7 +225,7 @@ class LiveController:
             if self.trigger_mode == TriggerMode.CONTINUOUS:
                 self.camera.stop_streaming()
             if (self.trigger_mode == TriggerMode.SOFTWARE) or (
-                    self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
             ):
                 self._stop_triggerred_acquisition()
             if self.control_illumination:
@@ -309,7 +307,7 @@ class LiveController:
     def set_trigger_mode(self, mode):
         if mode == TriggerMode.SOFTWARE:
             if self.is_live and (
-                    self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
             ):
                 self._stop_triggerred_acquisition()
             self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
@@ -325,7 +323,7 @@ class LiveController:
                 self._start_triggerred_acquisition()
         if mode == TriggerMode.CONTINUOUS:
             if (self.trigger_mode == TriggerMode.SOFTWARE) or (
-                    self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
             ):
                 self._stop_triggerred_acquisition()
             self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
@@ -333,7 +331,7 @@ class LiveController:
 
     def set_trigger_fps(self, fps):
         if (self.trigger_mode == TriggerMode.SOFTWARE) or (
-                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+            self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
         ):
             self._set_trigger_fps(fps)
 

@@ -21,9 +21,7 @@ from control.microscope import Microscope
 from tests.tools import get_repo_root
 
 
-def get_test_live_controller(
-        microscope: control.microscope.Microscope, starting_objective
-) -> LiveController:
+def get_test_live_controller(microscope: control.microscope.Microscope, starting_objective) -> LiveController:
     controller = LiveController(microscope=microscope, camera=microscope.camera)
 
     controller.set_microscope_mode(
@@ -47,7 +45,7 @@ def get_test_configuration_manager() -> ConfigurationManager:
 
 
 def get_test_illumination_controller(
-        microcontroller: control.microcontroller.Microcontroller,
+    microcontroller: control.microcontroller.Microcontroller,
 ) -> control.lighting.IlluminationController:
     return control.lighting.IlluminationController(
         microcontroller=microcontroller,
@@ -57,10 +55,10 @@ def get_test_illumination_controller(
 
 
 def get_test_autofocus_controller(
-        camera,
-        stage: squid.abc.AbstractStage,
-        live_controller: LiveController,
-        microcontroller: control.microcontroller.Microcontroller,
+    camera,
+    stage: squid.abc.AbstractStage,
+    live_controller: LiveController,
+    microcontroller: control.microcontroller.Microcontroller,
 ):
     return AutoFocusController(
         camera=camera, stage=stage, liveController=live_controller, microcontroller=microcontroller, nl5=None
@@ -75,21 +73,20 @@ def get_test_laser_autofocus_controller(microscope: Microscope):
         stage=microscope.stage,
         piezo=microscope.addons.piezo_stage,
         objectiveStore=microscope.objective_store,
-        laserAFSettingManager=microscope.laser_af_settings_manager)
+        laserAFSettingManager=microscope.laser_af_settings_manager,
+    )
 
 
 def get_test_scan_coordinates(
-        objective_store: control.core.objective_store.ObjectiveStore,
-        navigation_viewer: NavigationViewer,
-        stage: squid.abc.AbstractStage,
+    objective_store: control.core.objective_store.ObjectiveStore,
+    navigation_viewer: NavigationViewer,
+    stage: squid.abc.AbstractStage,
 ):
     return ScanCoordinates(objective_store, navigation_viewer, stage)
 
 
 def get_test_objective_store():
-    return control.core.objective_store.ObjectiveStore(
-        objectives_dict=OBJECTIVES, default_objective=DEFAULT_OBJECTIVE
-    )
+    return control.core.objective_store.ObjectiveStore(objectives_dict=OBJECTIVES, default_objective=DEFAULT_OBJECTIVE)
 
 
 def get_test_navigation_viewer(objective_store: control.core.objective_store.ObjectiveStore, camera_pixel_size: float):
@@ -114,7 +111,7 @@ def get_test_multi_point_controller(microscope: Microscope) -> QtMultiPointContr
             microscope.stage,
         ),
         objective_store=microscope.objective_store,
-        laser_autofocus_controller=get_test_laser_autofocus_controller(microscope)
+        laser_autofocus_controller=get_test_laser_autofocus_controller(microscope),
     )
 
     multi_point_controller.set_base_path("/tmp/")

@@ -321,7 +321,10 @@ class Microscope:
         if self.addons.camera_focus:
             self.stream_handler_focus = StreamHandler(handler_functions=NoOpStreamHandlerFunctions)
             self.live_controller_focus = LiveController(
-                microscope=self, camera=self.addons.camera_focus, control_illumination=False, for_displacement_measurement=True
+                microscope=self,
+                camera=self.addons.camera_focus,
+                control_illumination=False,
+                for_displacement_measurement=True,
             )
 
         self.live_controller: LiveController = LiveController(microscope=self, camera=self.camera)

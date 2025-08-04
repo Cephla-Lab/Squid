@@ -67,6 +67,7 @@ class RegionProgressUpdate:
     current_fov: int
     region_fovs: int
 
+
 @dataclass
 class MultiPointControllerFunctions:
     signal_acquisition_start: Callable[[AcquisitionParameters], None]
