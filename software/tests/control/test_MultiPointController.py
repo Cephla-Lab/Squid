@@ -227,7 +227,7 @@ def test_multi_point_with_laser_af():
     assert tt.config_change_count > 0
 
 
-@pytest.mark.skip(reason="We still need to pull QT usage out of AutofocusController and AutofocosWorker.")
+@pytest.mark.skip(reason="We still need to pull QT usage out of AutofocusController and AutofocusWorker.")
 def test_multi_point_with_contrast_af():
     control._def.MERGE_CHANNELS = False
 

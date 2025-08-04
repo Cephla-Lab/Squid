@@ -190,7 +190,7 @@ class MultiPointWorker:
                         if self.abort_requested_fn():
                             self._log.debug("In run wait loop, abort_acquisition_requested=True")
                             break
-                        self._sleep(0.001)
+                        self._sleep(0.5)
 
             elapsed_time = time.perf_counter_ns() - start_time
             self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
