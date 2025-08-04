@@ -475,6 +475,8 @@ class MultiPointController:
             channel_configuration_mananger=self.channelConfigurationManager,
             acquisition_parameters=self.build_params(scan_position_information=scan_position_information),
             callbacks=updated_callbacks,
+            abort_requested_fn=lambda: self.abort_acqusition_requested,
+            request_abort_fn=self.request_abort_aquisition,
             extra_job_classes=[],
         )
 

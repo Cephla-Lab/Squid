@@ -106,3 +106,25 @@ def test_multi_point_controller_disk_space_estimate(qtbot):
     control._def.MERGE_CHANNELS = True
     after_size = mpc.get_estimated_acquisition_disk_storage()
     assert after_size > before_size
+
+def test_multi_point_controller_basic_acquisition():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    start_pos = scope.stage.get_pos()
+
+    max_x = scope.stage.get_config().X_AXIS.MAX_POSITION
+    max_y = scope.stage.get_config().Y_AXIS.MAX_POSITION
+    max_z = scope.stage.get_config().Z_AXIS.MAX_POSITION
+
+    mpc = gts.get_test_multi_point_controller(microscope=scope)
+    mpc.scanCoordinates.add_single_fov_region("region_1", center_x=start_pos.x_mm, center_y=start_pos.y_mm, center_z=start_pos.z_mm)
+    mpc.scanCoordinates.add_single_fov_region("region_2", center_x=start_pos.x_mm + 0.5, center_y=start_pos.y_mm + 0.5, center_z=start_pos.z_mm + 0.1)
+    mpc.scanCoordinates.add_flexible_region("region_grid", max_x / 2.0, max_y / 2.0, max_z / 2.0, 3, 3, 10)
+
+    all_config_names = [m.name for m in mpc.channelConfigurationManager.get_configurations(scope.objective_store.current_objective)]
+    first_two_config_names = all_config_names[:2]
+
+    mpc.set_selected_configurations(selected_configurations_name=first_two_config_names)
+
+    mpc.run_acquisition()
+
+    mpc.
