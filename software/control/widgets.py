@@ -3096,8 +3096,9 @@ class FlexibleMultiPointWidget(QFrame):
             self.eta_timer.stop()
 
     def update_fov_positions(self):
-        if self.parent.recordTabWidget.currentWidget() != self:
+        if not self.isVisible():
             return
+
         if self.scanCoordinates.has_regions():
             self.scanCoordinates.clear_regions()
 
