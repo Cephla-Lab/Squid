@@ -3,6 +3,7 @@ import threading
 import tests.control.gui_test_stubs as gts
 import control._def
 import control.microscope
+from control.core.multi_point_controller import MultiPointController
 from control.core.multi_point_utils import MultiPointControllerFunctions, AcquisitionParameters
 
 
@@ -110,78 +111,135 @@ def test_multi_point_controller_disk_space_estimate(qtbot):
     after_size = mpc.get_estimated_acquisition_disk_storage()
     assert after_size > before_size
 
-def test_multi_point_controller_basic_acquisition():
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    start_pos = scope.stage.get_pos()
+class TestAcquisitionTracker:
+    def __init__(self):
+        self.started_event = threading.Event()
+        self.finished_event = threading.Event()
+        self.image_count = 0
+        self.config_change_count = 0
+        self.current_fovs_count = 0
+        self.overall_progress_seen = False
+        self.region_progress_seen = False
 
-    max_x = scope.stage.get_config().X_AXIS.MAX_POSITION
-    max_y = scope.stage.get_config().Y_AXIS.MAX_POSITION
-    max_z = scope.stage.get_config().Z_AXIS.MAX_POSITION
+    def get_callbacks(self) -> MultiPointControllerFunctions:
+        return MultiPointControllerFunctions(
+            signal_acquisition_start=lambda params: self.started_event.set(),
+            signal_acquisition_finished=lambda: self.finished_event.set(),
+            signal_new_image=self.receive_image,
+            signal_current_configuration=self.receive_config,
+            signal_current_fov=self.receive_current_fov,
+            signal_overall_progress=self.receive_overall_progress,
+            signal_region_progress=self.receive_region_progress)
 
-    started_event = threading.Event()
-    def mark_started(params: AcquisitionParameters):
-        started_event.set()
+    def receive_image(self, frame, info):
+        self.image_count += 1
 
-    finished_event = threading.Event()
-    def mark_finished():
-        finished_event.set()
+    def receive_config(self, config):
+        self.config_change_count += 1
 
-    image_count = 0
-    def count_images(frame, info):
-        nonlocal image_count
-        image_count += 1
+    def receive_current_fov(self, x_mm, y_mm):
+        self.current_fovs_count += 1
 
-    config_change_count = 0
-    def count_configuration_changes(config):
-        nonlocal config_change_count
-        config_change_count += 1
+    def receive_overall_progress(self, progress):
+        self.overall_progress_seen = True
 
-    current_fovs_count = 0
-    def count_current_fovs(x_mm, y_mm):
-        nonlocal current_fovs_count
-        current_fovs_count += 1
+    def receive_region_progress(self, progress):
+        self.region_progress_seen = True
 
-    overall_progress_seen = False
-    def mark_overall_progress(progress):
-        nonlocal overall_progress_seen
-        overall_progress_seen = True
+def add_some_coordinates(mpc: MultiPointController):
+    stage = mpc.stage
 
-    region_progress_seen = False
-    def mark_region_progress(progress):
-        nonlocal region_progress_seen
-        region_progress_seen = True
+    min_x = stage.get_config().X_AXIS.MIN_POSITION
+    min_y = stage.get_config().Y_AXIS.MIN_POSITION
+    min_z = stage.get_config().Z_AXIS.MIN_POSITION
 
+    max_x = stage.get_config().X_AXIS.MAX_POSITION
+    max_y = stage.get_config().Y_AXIS.MAX_POSITION
+    max_z = stage.get_config().Z_AXIS.MAX_POSITION
 
-    test_mpc_callbacks = MultiPointControllerFunctions(
-        signal_acquisition_start=mark_started,
-        signal_acquisition_finished=mark_finished,
-        signal_new_image=count_images,
-        signal_current_configuration=count_configuration_changes,
-        signal_current_fov=count_current_fovs,
-        signal_overall_progress=mark_overall_progress,
-        signal_region_progress=mark_region_progress
-    )
-
-    mpc = gts.get_test_multi_point_controller(microscope=scope, callbacks=test_mpc_callbacks)
-    mpc.scanCoordinates.add_single_fov_region("region_1", center_x=start_pos.x_mm, center_y=start_pos.y_mm, center_z=start_pos.z_mm)
-    mpc.scanCoordinates.add_single_fov_region("region_2", center_x=start_pos.x_mm + 0.5, center_y=start_pos.y_mm + 0.5, center_z=start_pos.z_mm + 0.1)
+    mpc.scanCoordinates.add_single_fov_region("region_1", center_x=min_x + 1.0, center_y=min_y + 1.0, center_z=min_z + 1.0)
+    mpc.scanCoordinates.add_single_fov_region("region_2", center_x=min_x + 0.5, center_y=min_y + 0.5, center_z=min_z + 0.1)
     mpc.scanCoordinates.add_flexible_region("region_grid", max_x / 2.0, max_y / 2.0, max_z / 2.0, 3, 3, 10)
 
-    all_config_names = [m.name for m in mpc.channelConfigurationManager.get_configurations(scope.objective_store.current_objective)]
+def select_some_configs(mpc: MultiPointController, objective: str):
+    all_config_names = [m.name for m in
+                        mpc.channelConfigurationManager.get_configurations(objective)]
     first_two_config_names = all_config_names[:2]
-
     mpc.set_selected_configurations(selected_configurations_name=first_two_config_names)
+
+def test_multi_point_controller_basic_acquisition():
+    control._def.MERGE_CHANNELS = False
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = TestAcquisitionTracker()
+    mpc = gts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
 
     mpc.run_acquisition()
 
     timeout_s = 5
+    assert tt.started_event.wait(timeout_s)
+    assert tt.finished_event.wait(timeout_s)
 
-    assert started_event.wait(timeout_s)
-    assert finished_event.wait(timeout_s)
+    assert tt.overall_progress_seen
+    assert tt.region_progress_seen
 
-    assert overall_progress_seen
-    assert region_progress_seen
+    assert tt.image_count == mpc.get_acquisition_image_count()
+    assert tt.current_fovs_count > 0
+    assert tt.config_change_count > 0
 
-    assert image_count == mpc.get_acquisition_image_count()
-    assert current_fovs_count > 0
-    assert config_change_count > 0
+def test_multi_point_with_laser_af():
+    control._def.MERGE_CHANNELS = False
+    control._def.SUPPORT_LASER_AUTOFOCUS = True
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = TestAcquisitionTracker()
+
+    mpc = gts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc.set_reflection_af_flag(True)
+    laser_af_ref_image = scope.addons.camera_focus.read_frame()
+    mpc.laserAutoFocusController.laser_af_properties.set_reference_image(laser_af_ref_image)
+
+    mpc.run_acquisition()
+
+    timeout_s = 5
+    assert tt.started_event.wait(timeout_s)
+    assert tt.finished_event.wait(timeout_s)
+
+    assert tt.overall_progress_seen
+    assert tt.region_progress_seen
+
+    assert tt.image_count == mpc.get_acquisition_image_count()
+    assert tt.current_fovs_count > 0
+    assert tt.config_change_count > 0
+
+def test_multi_point_with_contrast_af():
+    control._def.MERGE_CHANNELS = False
+    control._def.SUPPORT_LASER_AUTOFOCUS = False
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = TestAcquisitionTracker()
+
+    mpc = gts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc.set_af_flag(True)
+    laser_af_ref_image = scope.addons.camera_focus.read_frame()
+    mpc.laserAutoFocusController.laser_af_properties.set_reference_image(laser_af_ref_image)
+
+    mpc.run_acquisition()
+
+    timeout_s = 5
+    assert tt.started_event.wait(timeout_s)
+    assert tt.finished_event.wait(timeout_s)
+
+    assert tt.overall_progress_seen
+    assert tt.region_progress_seen
+
+    assert tt.image_count == mpc.get_acquisition_image_count()
+    assert tt.current_fovs_count > 0
+    assert tt.config_change_count > 0

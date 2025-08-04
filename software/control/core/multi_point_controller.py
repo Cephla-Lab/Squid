@@ -466,6 +466,8 @@ class MultiPointController:
 
         updated_callbacks = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
 
+        acquisition_params = self.build_params(scan_position_information=scan_position_information)
+        self.callbacks.signal_acquisition_start(acquisition_params)
         self.multiPointWorker = MultiPointWorker(
             scope=self.microscope,
             live_controller=self.liveController,
@@ -473,7 +475,7 @@ class MultiPointController:
             laser_auto_focus_controller=self.laserAutoFocusController,
             objective_store=self.objectiveStore,
             channel_configuration_mananger=self.channelConfigurationManager,
-            acquisition_parameters=self.build_params(scan_position_information=scan_position_information),
+            acquisition_parameters=acquisition_params,
             callbacks=updated_callbacks,
             abort_requested_fn=lambda: self.abort_acqusition_requested,
             request_abort_fn=self.request_abort_aquisition,
