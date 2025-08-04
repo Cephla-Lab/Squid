@@ -38,8 +38,8 @@ class AutoFocusController(QObject):
 
         self.N = None
         self.deltaZ = None
-        self.crop_width = control.def_.AF.CROP_WIDTH
-        self.crop_height = control.def_.AF.CROP_HEIGHT
+        self.crop_width = control._def.AF.CROP_WIDTH
+        self.crop_height = control._def.AF.CROP_HEIGHT
         self.autofocus_in_progress = False
         self.focus_map_coords = []
         self.use_focus_map = False

@@ -45,7 +45,7 @@ class LaserAutofocusController(QObject):
         self.piezo = piezo
         self.objectiveStore = objectiveStore
         self.laserAFSettingManager = laserAFSettingManager
-        self.characterization_mode = LASER_AF_CHARACTERIZATION_MODE
+        self.characterization_mode = control._def.LASER_AF_CHARACTERIZATION_MODE
 
         self.is_initialized = False
 
