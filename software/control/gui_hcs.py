@@ -142,6 +142,7 @@ class MovementUpdater(QObject):
 
 class QtMultiPointController(MultiPointController, QObject):
     acquisition_finished = Signal()
+    signal_acquisition_start = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
     signal_current_configuration = Signal(ChannelMode)
@@ -194,6 +195,7 @@ class QtMultiPointController(MultiPointController, QObject):
             self.signal_set_display_tabs.emit(self.selected_configurations, self.NZ)
         else:
             self.signal_set_display_tabs.emit(self.selected_configurations, 2)
+        self.signal_acquisition_start.emit()
 
     def _signal_acquisition_finished_fn(self):
         self.acquisition_finished.emit()
@@ -1064,7 +1066,8 @@ class HighContentScreeningGui(QMainWindow):
             )
 
         # Connect to plot xyz data when coordinates are saved
-        self.multipointController.signal_coordinates.connect(self.zPlotWidget.plot)
+        self.multipointController.signal_acquisition_start.connect(self.zPlotWidget.clear)
+        self.multipointController.signal_coordinates.connect(self.zPlotWidget.add_point)
 
         # Connect well selector button
         if hasattr(self.imageDisplayWindow, "btn_well_selector"):

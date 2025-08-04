@@ -9528,7 +9528,24 @@ class SurfacePlotWidget(QWidget):
         self.canvas.mpl_connect("scroll_event", self.on_scroll)
         self.canvas.mpl_connect("button_press_event", self.on_click)
 
-    def plot(self, x: np.array, y: np.array, z: np.array, region: np.array) -> None:
+        self.x = list()
+        self.y = list()
+        self.z = list()
+        self.regions = list()
+
+    def clear(self):
+        self.x.clear()
+        self.y.clear()
+        self.z.clear()
+        self.regions.clear()
+
+    def add_point(self, x: float, y: float, z: float, region: int):
+        self.x.append(x)
+        self.y.append(y)
+        self.z.append(z)
+        self.regions.append(region)
+
+    def plot() -> None:
         """
         Plot both surface and scatter points in 3D.
 
@@ -9538,32 +9555,31 @@ class SurfacePlotWidget(QWidget):
             z (np.array): Z coordinates (1D array)
         """
         try:
-            # Store the original coordinates
-            self.x = x
-            self.y = y
-            self.z = z
-
             # Clear previous plot
             self.ax.clear()
 
+            x = np.array(self.x).astype(float)
+            y = np.array(self.y).astype(float)
+            z = np.array(self.z).astype(float)
+            regions = np.array(self.regions)
+
             # plot surface by region
-            for r in np.unique(region):
+            for r in np.unique(regions):
                 try:
-                    mask = region == r
+                    mask = regions == r
                     num_points = np.sum(mask)
                     if num_points >= 4:
                         grid_x, grid_y = np.mgrid[min(x[mask]) : max(x[mask]) : 10j, min(y[mask]) : max(y[mask]) : 10j]
                         grid_z = griddata((x[mask], y[mask]), z[mask], (grid_x, grid_y), method="cubic")
                         self.ax.plot_surface(grid_x, grid_y, grid_z, cmap="viridis", edgecolor="none")
-                        # self.ax.plot_trisurf(x[mask], y[mask], z[mask], cmap='viridis', edgecolor='none')
                     else:
                         self._log.debug(f"Region {r} has only {num_points} point(s), skipping surface interpolation")
                 except Exception as e:
                     raise Exception(f"Cannot plot region {r}: {e}")
 
             # Create scatter plot using original coordinates
-            self.colors = ["r"] * len(self.x)
-            self.scatter = self.ax.scatter(self.x, self.y, self.z, c=self.colors, s=30)
+            self.colors = ["r"] * len(x)
+            self.scatter = self.ax.scatter(x, y, z, c=self.colors, s=30)
 
             # Set labels
             self.ax.set_xlabel("X (mm)")
@@ -9572,9 +9588,9 @@ class SurfacePlotWidget(QWidget):
             self.ax.set_title("Double-click a point to go to that position")
 
             # Force x and y to have same scale
-            max_range = max(np.ptp(self.x), np.ptp(self.y))
-            center_x = np.mean(self.x)
-            center_y = np.mean(self.y)
+            max_range = max(np.ptp(x), np.ptp(y))
+            center_x = np.mean(x)
+            center_y = np.mean(y)
 
             self.ax.set_xlim(center_x - max_range / 2, center_x + max_range / 2)
             self.ax.set_ylim(center_y - max_range / 2, center_y + max_range / 2)
