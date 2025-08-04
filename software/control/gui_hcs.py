@@ -945,7 +945,9 @@ class HighContentScreeningGui(QMainWindow):
             self.is_live_scan_grid_on = True
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.update_ui_for_mode)
-        self.multipointController.acquisition_finished.connect(lambda: self.wellplateMultiPointWidget.update_live_coordinates(self.stage.get_pos()))
+        self.multipointController.acquisition_finished.connect(
+            lambda: self.wellplateMultiPointWidget.update_live_coordinates(self.stage.get_pos())
+        )
         if self.piezoWidget:
             self.movement_updater.piezo_z_um.connect(self.piezoWidget.update_displacement_um_display)
         self.multipointController.signal_set_display_tabs.connect(self.setAcquisitionDisplayTabs)
