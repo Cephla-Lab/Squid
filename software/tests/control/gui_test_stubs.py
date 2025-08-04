@@ -15,6 +15,8 @@ from control.core.core import NavigationViewer
 from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
+from control.core.multi_point_controller import MultiPointController, NoOpCallbacks
+from control.core.multi_point_utils import MultiPointControllerFunctions
 from control.core.scan_coordinates import ScanCoordinates
 from control.gui_hcs import QtMultiPointController
 from control.microscope import Microscope
@@ -93,7 +95,7 @@ def get_test_navigation_viewer(objective_store: control.core.objective_store.Obj
     return NavigationViewer(objective_store, camera_pixel_size)
 
 
-def get_test_multi_point_controller(microscope: Microscope) -> QtMultiPointController:
+def get_test_qt_multi_point_controller(microscope: Microscope) -> QtMultiPointController:
     live_controller = get_test_live_controller(
         microscope=microscope, starting_objective=microscope.objective_store.default_objective
     )
@@ -110,6 +112,33 @@ def get_test_multi_point_controller(microscope: Microscope) -> QtMultiPointContr
             get_test_navigation_viewer(microscope.objective_store, microscope.camera.get_pixel_size_unbinned_um()),
             microscope.stage,
         ),
+        objective_store=microscope.objective_store,
+        laser_autofocus_controller=get_test_laser_autofocus_controller(microscope),
+    )
+
+    multi_point_controller.set_base_path("/tmp/")
+    multi_point_controller.start_new_experiment("unit test experiment (qt)")
+
+    return multi_point_controller
+
+def get_test_multi_point_controller(microscope: Microscope, callbacks: MultiPointControllerFunctions = NoOpCallbacks) -> MultiPointController:
+    live_controller = get_test_live_controller(
+        microscope=microscope, starting_objective=microscope.objective_store.default_objective
+    )
+
+    multi_point_controller = MultiPointController(
+        microscope=microscope,
+        live_controller=live_controller,
+        autofocus_controller=get_test_autofocus_controller(
+            microscope.camera, microscope.stage, live_controller, microscope.low_level_drivers.microcontroller
+        ),
+        channel_configuration_manager=microscope.channel_configuration_manager,
+        scan_coordinates=get_test_scan_coordinates(
+            microscope.objective_store,
+            get_test_navigation_viewer(microscope.objective_store, microscope.camera.get_pixel_size_unbinned_um()),
+            microscope.stage,
+        ),
+        callbacks=callbacks,
         objective_store=microscope.objective_store,
         laser_autofocus_controller=get_test_laser_autofocus_controller(microscope),
     )

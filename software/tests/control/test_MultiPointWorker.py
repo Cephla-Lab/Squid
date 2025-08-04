@@ -10,7 +10,7 @@ import control.microscope
 )
 def test_multi_point_worker_with_default_config(qtbot):
     scope = control.microscope.Microscope.build_from_global_config(True)
-    multi_point_controller = gts.get_test_multi_point_controller(microscope=scope)
+    multi_point_controller = gts.get_test_qt_multi_point_controller(microscope=scope)
     multi_point_controller.run_acquisition()
     multi_point_controller.request_abort_aquisition()
     scope.close()
@@ -30,7 +30,7 @@ def test_multi_point_worker_init_bugs(qtbot):
 
     USE_NAPARI_FOR_MULTIPOINT = False
     scope_false = control.microscope.Microscope.build_from_global_config(True)
-    multi_point_controller_for_false = gts.get_test_multi_point_controller(microscope=scope_false)
+    multi_point_controller_for_false = gts.get_test_qt_multi_point_controller(microscope=scope_false)
     multi_point_controller_for_false.run_acquisition()
     multi_point_controller_for_false.request_abort_aquisition()
     # This will throw if the attribute doesn't exist
@@ -38,7 +38,7 @@ def test_multi_point_worker_init_bugs(qtbot):
 
     USE_NAPARI_FOR_MULTIPOINT = True
     scope_true = control.microscope.Microscope.build_from_global_config(True)
-    multi_point_controller_for_true = gts.get_test_multi_point_controller(microscope=scope_true)
+    multi_point_controller_for_true = gts.get_test_qt_multi_point_controller(microscope=scope_true)
     multi_point_controller_for_true.run_acquisition()
     multi_point_controller_for_true.request_abort_aquisition()
     # This will throw if the attribute doesn't exist
