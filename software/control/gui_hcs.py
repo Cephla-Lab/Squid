@@ -199,6 +199,8 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_acquisition_finished_fn(self):
         self.acquisition_finished.emit()
+        finish_pos = self.stage.get_pos()
+        self.signal_register_current_fov.emit(finish_pos.x_mm, finish_pos.y_mm)
 
     def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
         self.image_to_display.emit(frame.frame)

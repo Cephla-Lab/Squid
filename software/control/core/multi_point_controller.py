@@ -104,6 +104,8 @@ class MultiPointController:
         )  # (start_mm, end_mm)
         self.z_stacking_config = control._def.Z_STACKING_CONFIG
 
+        self._start_position: Optional[squid.abc.Pos] = None
+
     def acquisition_in_progress(self):
         if self.thread and self.thread.is_alive() and self.multiPointWorker:
             return True
@@ -335,6 +337,7 @@ class MultiPointController:
             return
 
         self._log.info("start multipoint")
+        self._start_position = self.stage.get_pos()
 
         acquisition_scan_coordinates = self.scanCoordinates
         self.run_acquisition_current_fov = False
@@ -533,16 +536,12 @@ class MultiPointController:
 
         if self.run_acquisition_current_fov:
             self.run_acquisition_current_fov = False
-        else:
-            # move back to the center of the current region if using "glass slide"
-            if "current" in self.scanCoordinates.region_centers:
-                region_center = self.scanCoordinates.region_centers["current"]
-                try:
-                    self.stage.move_x_to(region_center[0])
-                    self.stage.move_y_to(region_center[1])
-                    self.stage.move_z_to(region_center[2])
-                except:
-                    self._log.error("Failed to move to center of current region")
+
+        if self._start_position:
+            self.stage.move_x_to(self._start_position.x_mm)
+            self.stage.move_y_to(self._start_position.y_mm)
+            self.stage.move_z_to(self._start_position.z_mm)
+            self._start_position = None
 
         self.callbacks.signal_acquisition_finished()
 
