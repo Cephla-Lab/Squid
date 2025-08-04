@@ -210,7 +210,9 @@ def test_multi_point_with_laser_af():
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
     mpc.set_reflection_af_flag(True)
+    scope.addons.camera_focus.send_trigger()
     laser_af_ref_image = scope.addons.camera_focus.read_frame()
+    assert laser_af_ref_image is not None
     mpc.laserAutoFocusController.laser_af_properties.set_reference_image(laser_af_ref_image)
 
     mpc.run_acquisition()
