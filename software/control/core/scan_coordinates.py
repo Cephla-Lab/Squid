@@ -5,8 +5,7 @@ import numpy as np
 from PyQt5.QtCore import QObject
 from qtpy.QtCore import Signal
 
-from control._def import SOFTWARE_POS_LIMIT, CAMERA_CONFIG, WELL_SIZE_MM, WELL_SPACING_MM, WELLPLATE_OFFSET_Y_mm, \
-    A1_Y_MM, WELLPLATE_FORMAT, ACQUISITION_PATTERN, FOV_PATTERN, A1_X_MM, WELLPLATE_OFFSET_X_mm
+import control._def
 from squid.abc import AbstractStage
 import squid.logging
 
@@ -21,15 +20,15 @@ class ScanCoordinates(QObject):
         self.navigationViewer = navigationViewer
         self.stage = stage
         self.well_selector = None
-        self.acquisition_pattern = ACQUISITION_PATTERN
-        self.fov_pattern = FOV_PATTERN
-        self.format = WELLPLATE_FORMAT
-        self.a1_x_mm = A1_X_MM
-        self.a1_y_mm = A1_Y_MM
-        self.wellplate_offset_x_mm = WELLPLATE_OFFSET_X_mm
-        self.wellplate_offset_y_mm = WELLPLATE_OFFSET_Y_mm
-        self.well_spacing_mm = WELL_SPACING_MM
-        self.well_size_mm = WELL_SIZE_MM
+        self.acquisition_pattern = control._def.ACQUISITION_PATTERN
+        self.fov_pattern = control._def.FOV_PATTERN
+        self.format = control._def.WELLPLATE_FORMAT
+        self.a1_x_mm = control._def.A1_X_MM
+        self.a1_y_mm = control._def.A1_Y_MM
+        self.wellplate_offset_x_mm = control._def.WELLPLATE_OFFSET_X_mm
+        self.wellplate_offset_y_mm = control._def.WELLPLATE_OFFSET_Y_mm
+        self.well_spacing_mm = control._def.WELL_SPACING_MM
+        self.well_size_mm = control._def.WELL_SIZE_MM
         self.a1_x_pixel = None
         self.a1_y_pixel = None
         self.number_of_skip = None
@@ -146,7 +145,7 @@ class ScanCoordinates(QObject):
         pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
         # TODO: In the future software cropping size may be changed when program is running,
         # so we may want to use the crop_width from the camera object here.
-        fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
+        fov_size_mm = pixel_size_um * control._def.CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
 
@@ -263,7 +262,7 @@ class ScanCoordinates(QObject):
     def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
         """Convert grid parameters NX, NY to FOV coordinates based on overlap"""
         pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
-        fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
+        fov_size_mm = pixel_size_um * control._def.CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Calculate total grid size
@@ -336,7 +335,7 @@ class ScanCoordinates(QObject):
             return []
 
         pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
-        fov_size_mm = pixel_size_um * CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
+        fov_size_mm = pixel_size_um * control._def.CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Ensure shape_coords is a numpy array
@@ -493,8 +492,8 @@ class ScanCoordinates(QObject):
 
     def validate_coordinates(self, x, y):
         return (
-            SOFTWARE_POS_LIMIT.X_NEGATIVE <= x <= SOFTWARE_POS_LIMIT.X_POSITIVE
-            and SOFTWARE_POS_LIMIT.Y_NEGATIVE <= y <= SOFTWARE_POS_LIMIT.Y_POSITIVE
+            control._def.SOFTWARE_POS_LIMIT.X_NEGATIVE <= x <= control._def.SOFTWARE_POS_LIMIT.X_POSITIVE
+            and control._def.SOFTWARE_POS_LIMIT.Y_NEGATIVE <= y <= control._def.SOFTWARE_POS_LIMIT.Y_POSITIVE
         )
 
     def sort_coordinates(self):

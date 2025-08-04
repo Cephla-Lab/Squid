@@ -9,7 +9,7 @@ from PyQt5.QtCore import QObject
 from qtpy.QtCore import Signal
 
 from control import utils
-from control._def import LASER_AF_CHARACTERIZATION_MODE, MULTIPOINT_PIEZO_DELAY_MS, LASER_AF_DISPLAY_SPOT_IMAGE
+import control._def
 from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
@@ -191,7 +191,7 @@ class LaserAutofocusController(QObject):
         # Move to first position and measure
         self._move_z(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
         if self.piezo is not None:
-            time.sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+            time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
         result = self._get_laser_spot_centroid()
         if result is None:
@@ -207,7 +207,7 @@ class LaserAutofocusController(QObject):
 
         # Move to second position and measure
         self._move_z(self.laser_af_properties.pixel_to_um_calibration_distance)
-        time.sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+        time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
         result = self._get_laser_spot_centroid()
         if result is None:
@@ -232,7 +232,7 @@ class LaserAutofocusController(QObject):
         # move back to initial position
         self._move_z(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
         if self.piezo is not None:
-            time.sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+            time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
         # Calculate conversion factor
         if x1 - x0 == 0:
@@ -579,7 +579,7 @@ class LaserAutofocusController(QObject):
                 continue
 
         # optionally display the image
-        if LASER_AF_DISPLAY_SPOT_IMAGE:
+        if control._def.LASER_AF_DISPLAY_SPOT_IMAGE:
             self.image_to_display.emit(image)
 
         # Check if we got enough successful detections

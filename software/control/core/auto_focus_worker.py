@@ -8,7 +8,7 @@ import time
 import numpy as np
 
 from control import utils
-from control._def import SLEEP_TIME_S, TriggerMode, ENABLE_NL5, FOCUS_MEASURE_OPERATOR, AF, NL5_USE_DOUT
+import control._def
 from control.core.live_controller import LiveController
 from control.microcontroller import Microcontroller
 from control.microscope import NL5
@@ -42,7 +42,7 @@ class AutofocusWorker(QObject):
 
     def wait_till_operation_is_completed(self):
         while self.microcontroller.is_busy():
-            time.sleep(SLEEP_TIME_S)
+            time.sleep(control._def.SLEEP_TIME_S)
 
     def run_autofocus(self):
         # @@@ to add: increase gain, decrease exposure time
@@ -60,13 +60,13 @@ class AutofocusWorker(QObject):
             self.stage.move_z(self.deltaZ)
             steps_moved = steps_moved + 1
             # trigger acquisition (including turning on the illumination) and read frame
-            if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+            if self.liveController.trigger_mode == control._def.TriggerMode.SOFTWARE:
                 self.liveController.turn_on_illumination()
                 self.wait_till_operation_is_completed()
                 self.camera.send_trigger()
                 image = self.camera.read_frame()
-            elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-                if "Fluorescence" in self.liveController.currentConfiguration.name and ENABLE_NL5 and NL5_USE_DOUT:
+            elif self.liveController.trigger_mode == control._def.TriggerMode.HARDWARE:
+                if "Fluorescence" in self.liveController.currentConfiguration.name and control._def.ENABLE_NL5 and control._def.NL5_USE_DOUT:
                     self.nl5.start_acquisition()
                     # TODO(imo): This used to use the "reset_image_ready_flag=False" arg, but oinly the toupcam camera implementation had the
                     #  "reset_image_ready_flag" arg, so this is broken for all other cameras.
@@ -79,7 +79,7 @@ class AutofocusWorker(QObject):
             if image is None:
                 continue
             # tunr of the illumination if using software trigger
-            if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+            if self.liveController.trigger_mode == control._def.TriggerMode.SOFTWARE:
                 self.liveController.turn_off_illumination()
 
             image = utils.crop_image(image, self.crop_width, self.crop_height)
@@ -87,13 +87,13 @@ class AutofocusWorker(QObject):
 
             QApplication.processEvents()
             timestamp_0 = time.time()
-            focus_measure = utils.calculate_focus_measure(image, FOCUS_MEASURE_OPERATOR)
+            focus_measure = utils.calculate_focus_measure(image, control._def.FOCUS_MEASURE_OPERATOR)
             timestamp_1 = time.time()
             print("             calculating focus measure took " + str(timestamp_1 - timestamp_0) + " second")
             focus_measure_vs_z[i] = focus_measure
             print(i, focus_measure)
             focus_measure_max = max(focus_measure, focus_measure_max)
-            if focus_measure < focus_measure_max * AF.STOP_THRESHOLD:
+            if focus_measure < focus_measure_max * control._def.AF.STOP_THRESHOLD:
                 break
 
         QApplication.processEvents()

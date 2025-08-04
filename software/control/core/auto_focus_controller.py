@@ -8,7 +8,7 @@ from qtpy.QtCore import Signal
 import numpy as np
 
 from control import utils
-from control._def import AF
+import control._def
 from control.core.auto_focus_worker import AutofocusWorker
 from control.core.live_controller import LiveController
 from control.microcontroller import Microcontroller
@@ -38,8 +38,8 @@ class AutoFocusController(QObject):
 
         self.N = None
         self.deltaZ = None
-        self.crop_width = AF.CROP_WIDTH
-        self.crop_height = AF.CROP_HEIGHT
+        self.crop_width = control.def_.AF.CROP_WIDTH
+        self.crop_height = control.def_.AF.CROP_HEIGHT
         self.autofocus_in_progress = False
         self.focus_map_coords = []
         self.use_focus_map = False

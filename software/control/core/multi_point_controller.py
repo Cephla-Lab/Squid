@@ -4,32 +4,19 @@ import os
 import pathlib
 import tempfile
 import time
-from dataclasses import dataclass
 from datetime import datetime
 from threading import Thread
-from typing import Callable, Optional, Tuple, Any, List, Dict
+from typing import Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
 
 from control import utils, utils_acquisition
-from control._def import (
-    Acquisition,
-    MULTIPOINT_USE_PIEZO_FOR_ZSTACKS,
-    Z_STACKING_CONFIG,
-    Z_STACKING_CONFIG_MAP,
-    OBJECTIVES,
-    DEFAULT_OBJECTIVE,
-    TUBE_LENS_MM,
-    MERGE_CHANNELS,
-    TriggerMode,
-    RESUME_LIVE_AFTER_ACQUISITION,
-)
+import control._def
 from control.core.auto_focus_controller import AutoFocusController
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
 from control.core.scan_coordinates import ScanCoordinates
-from control.core.job_processing import CaptureInfo
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
 from control.microscope import Microscope
@@ -37,7 +24,6 @@ from control.core.multi_point_worker import MultiPointWorker
 from control.core.objective_store import ObjectiveStore
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
-from control.utils_config import ChannelMode
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
 import squid.logging
 
@@ -81,22 +67,22 @@ class MultiPointController:
         self.thread: Optional[Thread] = None
 
         self.NX = 1
-        self.deltaX = Acquisition.DX
+        self.deltaX = control._def.Acquisition.DX
         self.NY = 1
-        self.deltaY = Acquisition.DY
+        self.deltaY = control._def.Acquisition.DY
         self.NZ = 1
         # TODO(imo): Switch all to consistent mm units
-        self.deltaZ = Acquisition.DZ / 1000
+        self.deltaZ = control._def.Acquisition.DZ / 1000
         self.Nt = 1
         self.deltat = 0
 
-        self.deltaX = Acquisition.DX
-        self.deltaY = Acquisition.DY
+        self.deltaX = control._def.Acquisition.DX
+        self.deltaY = control._def.Acquisition.DY
 
         self.do_autofocus = False
         self.do_reflection_af = False
-        self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
-        self.use_piezo = MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
+        self.display_resolution_scaling = control._def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
+        self.use_piezo = control._def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
         self.experiment_ID = None
         self.use_manual_focus_map = False
         self.base_path = None
@@ -114,7 +100,7 @@ class MultiPointController:
             z_mm_current,
             z_mm_current + self.deltaZ * (self.NZ - 1),
         )  # (start_mm, end_mm)
-        self.z_stacking_config = Z_STACKING_CONFIG
+        self.z_stacking_config = control._def.Z_STACKING_CONFIG
 
     def acquisition_in_progress(self):
         if self.thread and self.thread.is_alive() and self.multiPointWorker:
@@ -130,8 +116,8 @@ class MultiPointController:
             self.multiPointWorker.update_use_piezo(checked)
 
     def set_z_stacking_config(self, z_stacking_config_index):
-        if z_stacking_config_index in Z_STACKING_CONFIG_MAP:
-            self.z_stacking_config = Z_STACKING_CONFIG_MAP[z_stacking_config_index]
+        if z_stacking_config_index in control._def.Z_STACKING_CONFIG_MAP:
+            self.z_stacking_config = control._def.Z_STACKING_CONFIG_MAP[z_stacking_config_index]
         print(f"z-stacking configuration set to {self.z_stacking_config}")
 
     def set_z_range(self, minZ, maxZ):
@@ -218,16 +204,16 @@ class MultiPointController:
             acquisition_parameters["objective"]["name"] = current_objective
         except:
             try:
-                objective_info = OBJECTIVES[DEFAULT_OBJECTIVE]
+                objective_info = control._def.OBJECTIVES[control._def.DEFAULT_OBJECTIVE]
                 acquisition_parameters["objective"] = {}
                 for k in objective_info.keys():
                     acquisition_parameters["objective"][k] = objective_info[k]
-                acquisition_parameters["objective"]["name"] = DEFAULT_OBJECTIVE
+                acquisition_parameters["objective"]["name"] = control._def.DEFAULT_OBJECTIVE
             except:
                 pass
         # TODO: USE OBJECTIVE STORE DATA
         acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
-        acquisition_parameters["tube_lens_mm"] = TUBE_LENS_MM
+        acquisition_parameters["tube_lens_mm"] = control._def.TUBE_LENS_MM
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
         f.close()
@@ -264,7 +250,7 @@ class MultiPointController:
 
             non_merged_images = self.Nt * self.NZ * all_regions_coord_count * len(self.selected_configurations)
             # When capturing merged images, we capture 1 per fov (where all the configurations are merged)
-            merged_images = self.Nt * self.NZ * all_regions_coord_count if MERGE_CHANNELS else 0
+            merged_images = self.Nt * self.NZ * all_regions_coord_count if control._def.MERGE_CHANNELS else 0
 
             return non_merged_images + merged_images
         except AttributeError:
@@ -282,8 +268,8 @@ class MultiPointController:
         try:
             config = self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)[0]
             if (
-                self.liveController.trigger_mode == TriggerMode.SOFTWARE
-                or self.liveController.trigger_mode == TriggerMode.HARDWARE
+                self.liveController.trigger_mode == control._def.TriggerMode.SOFTWARE
+                or self.liveController.trigger_mode == control._def.TriggerMode.HARDWARE
             ):
                 self.camera.send_trigger()
             test_frame = self.camera.read_camera_frame()
@@ -532,7 +518,7 @@ class MultiPointController:
         self.camera.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
 
         # re-enable live if it's previously on
-        if self.liveController_was_live_before_multipoint and RESUME_LIVE_AFTER_ACQUISITION:
+        if self.liveController_was_live_before_multipoint and control._def.RESUME_LIVE_AFTER_ACQUISITION:
             self.liveController.start_live()
 
         # emit the acquisition finished signal to enable the UI
