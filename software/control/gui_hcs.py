@@ -652,7 +652,7 @@ class HighContentScreeningGui(QMainWindow):
             self.channelConfigurationManager,
             self.scanCoordinates,
             self.focusMapWidget,
-            tab_widget=self.recordTabWidget
+            tab_widget=self.recordTabWidget,
         )
         self.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(
             self.stage,
@@ -664,7 +664,7 @@ class HighContentScreeningGui(QMainWindow):
             self.focusMapWidget,
             self.napariMosaicDisplayWidget,
             tab_widget=self.recordTabWidget,
-            well_selection_widget=self.wellSelectionWidget
+            well_selection_widget=self.wellSelectionWidget,
         )
         if USE_TEMPLATE_MULTIPOINT:
             self.templateMultiPointWidget = TemplateMultiPointWidget(
