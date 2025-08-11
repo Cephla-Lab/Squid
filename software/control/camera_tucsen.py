@@ -38,22 +38,26 @@ class ModeFL26BW(Enum):
     SENBIN = (0, 1)
 
 
+class ModeAries(Enum):
+    """
+    Aries modes values are a combination of image mode and binning.
+    Store setting values for (TUCIDC_IMGMODESELECT, TUIDC_RESOLUTION) here
+    """
+
+    HDR = 0
+    SPEED = 1
+    SENSITIVITY = 2
+
+
+class TucsenModelProperties(pydantic.BaseModel):
+    binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
+    binning_to_set_value: Dict[Tuple[int, int], int]
+    mode_to_line_rate_us: Dict[Union[Mode400BSIV3, ModeFL26BW, ModeAries], float]
+    pixel_size_um: float
+    is_genicam: bool
+
+
 class TucsenCamera(AbstractCamera):
-
-    _MODE_TO_LINE_RATE_US = {
-        Mode400BSIV3.HDR: 11.2,
-        Mode400BSIV3.CMS: 11.2,
-        Mode400BSIV3.HIGH_SPEED: 7.2,
-        ModeFL26BW.STANDARD: 34.67,
-        ModeFL26BW.LOW_NOISE: 69.3,
-        ModeFL26BW.SENBIN: 12.58,
-    }
-
-    _MODEL_TO_PIXEL_SIZE_UM = {
-        TucsenCameraModel.DHYANA_400BSI_V3: 6.5,
-        TucsenCameraModel.FL26_BW: 3.76,
-    }
-
     @staticmethod
     def _get_sn_by_model(camera_model: TucsenCameraModel) -> str:
         TUCAMINIT = TUCAM_INIT(0, "./".encode("utf-8"))
@@ -122,7 +126,7 @@ class TucsenCamera(AbstractCamera):
         else:
             log.info("Open Tucsen camera success!")
 
-        return TUCAMOPEN.hIdxTUCam  # TODO: return model specific properties after we support more models
+        return TUCAMOPEN.hIdxTUCam
 
     def __init__(
         self,
@@ -149,16 +153,19 @@ class TucsenCamera(AbstractCamera):
         self._is_streaming = threading.Event()
 
         self._camera = TucsenCamera._open(index=0)
+        self._model_properties = self._get_model_properties(self._config.camera_model)
+
         self._binning = self._config.default_binning
         if self._config.camera_model == TucsenCameraModel.FL26_BW:
             self._camera_mode = ModeFL26BW.STANDARD if self._config.default_binning == (1, 1) else ModeFL26BW.SENBIN
             # Low noise mode is not supported for FL26BW model yet.
-        else:
+        elif self._config.camera_model == TucsenCameraModel.DHYANA_400BSI_V3:
             self._camera_mode = Mode400BSIV3.HDR  # HDR as default
 
         self._m_frame = None  # image buffer
         # We need to keep trigger attribute for starting and stopping streaming
         self._trigger_attr = TUCAM_TRIGGER_ATTR()
+        self._capture_mode_genicam = TUCAM_CAPTURE_MODES.TUCCM_SEQUENCE.value
 
         self._configure_camera()
 
@@ -172,6 +179,75 @@ class TucsenCamera(AbstractCamera):
         self._terminate_temperature_event = threading.Event()
         self.temperature_reading_thread = threading.Thread(target=self._check_temperature, daemon=True)
         self.temperature_reading_thread.start()
+
+    @staticmethod
+    def _get_model_properties(self, camera_model: TucsenCameraModel) -> TucsenModelProperties:
+        if camera_model == TucsenCameraModel.DHYANA_400BSI_V3:
+            binning_to_resolution = {
+                0: (2048, 2048),
+                # 1: (2048, 2048),  # Code 1 is enhance mode, which will modify pixel values. We don't use it.
+                2: (1024, 1024),
+                3: (512, 512),
+            }
+            binning_to_set_value = {
+                (1, 1): 0,
+                (2, 2): 2,
+                (4, 4): 3,
+            }
+            mode_to_line_rate_us = {
+                Mode400BSIV3.HDR: 11.2,
+                Mode400BSIV3.CMS: 11.2,
+                Mode400BSIV3.HIGH_SPEED: 7.2,
+            }
+            pixel_size_um = 6.5
+            is_genicam = False
+        elif camera_model == TucsenCameraModel.FL26_BW:
+            # TODO: Support binning for FL26BW model
+            binning_to_resolution = {}
+            binning_to_set_value = {}
+            mode_to_line_rate_us = {
+                ModeFL26BW.STANDARD: 34.67,
+                ModeFL26BW.LOW_NOISE: 69.3,
+                ModeFL26BW.SENBIN: 12.58,
+            }
+            pixel_size_um = 3.76
+            is_genicam = False
+        elif camera_model == TucsenCameraModel.ARIES_6506 or camera_model == TucsenCameraModel.ARIES_6510:
+            binning_to_set_value = {
+                (1, 1): 0,
+                (2, 2): 1,
+                (4, 4): 2,
+            }
+            mode_to_line_rate_us = {
+                ModeAries.HDR: 11.2,
+                ModeAries.SPEED: 7.2,
+                ModeAries.SENSITIVITY: 11.2,
+            }
+            pixel_size_um = 6.5
+            is_genicam = True
+            if camera_model == TucsenCameraModel.ARIES_6506:
+                binning_to_resolution = {
+                    (1, 1): (2400, 2400),
+                    (2, 2): (1200, 1200),
+                    (4, 4): (600, 600),
+                }
+            elif camera_model == TucsenCameraModel.ARIES_6510:
+                binning_to_resolution = {
+                    (1, 1): (3200, 3200),
+                    (2, 2): (1600, 1600),
+                    (4, 4): (800, 800),
+                }
+        else:
+            raise ValueError(f"Unsupported camera model: {camera_model}")
+
+        model_properties = TucsenModelProperties(
+            binning_to_resolution=binning_to_resolution,
+            binning_to_set_value=binning_to_set_value,
+            mode_to_line_rate_us=mode_to_line_rate_us,
+            pixel_size_um=pixel_size_um,
+            is_genicam=is_genicam,
+        )
+        return model_properties
 
     def _configure_camera(self):
         # TODO: Add support for FL26BW model
@@ -188,7 +264,8 @@ class TucsenCamera(AbstractCamera):
         if self._m_frame is None:
             self._allocate_buffer()
 
-        if TUCAM_Cap_Start(self._camera, self._trigger_attr.nTgrMode) != TUCAMRET.TUCAMRET_SUCCESS:
+        trigger_mode = self._capture_mode_genicam if self._model_properties.is_genicam else self._trigger_attr.nTgrMode
+        if TUCAM_Cap_Start(self._camera, trigger_mode) != TUCAMRET.TUCAMRET_SUCCESS:
             TUCAM_Buf_Release(self._camera)
             raise CameraError("Failed to start streaming")
 
@@ -355,11 +432,16 @@ class TucsenCamera(AbstractCamera):
         else:
             adjusted_exposure_time = exposure_time_ms
 
-        if (
-            TUCAM_Prop_SetValue(self._camera, TUCAM_IDPROP.TUIDP_EXPOSURETM.value, c_double(adjusted_exposure_time), 0)
-            != TUCAMRET.TUCAMRET_SUCCESS
-        ):
-            raise CameraError("Failed to set exposure time")
+        if self._model_properties.is_genicam:
+            self._set_genicam_parameter("ExposureTime", adjusted_exposure_time, TUELEM_TYPE.TU_ElemFloat.value)
+        else:
+            if (
+                TUCAM_Prop_SetValue(
+                    self._camera, TUCAM_IDPROP.TUIDP_EXPOSURETM.value, c_double(adjusted_exposure_time), 0
+                )
+                != TUCAMRET.TUCAMRET_SUCCESS
+            ):
+                raise CameraError("Failed to set exposure time")
 
         self._exposure_time_ms = exposure_time_ms
         self._trigger_sent.clear()
@@ -368,13 +450,17 @@ class TucsenCamera(AbstractCamera):
         return self._exposure_time_ms
 
     def get_exposure_limits(self) -> Tuple[float, float]:
-        prop = TUCAM_PROP_ATTR()
-        prop.idProp = TUCAM_IDPROP.TUIDP_EXPOSURETM.value
-        prop.nIdxChn = 0
-        if TUCAM_Prop_GetAttr(self._camera, pointer(prop)) != TUCAMRET.TUCAMRET_SUCCESS:
-            raise CameraError("Failed to get exposure time limits")
-        self._log.info(f"Exposure limits: {prop.dbValMin}, {prop.dbValMax}")
-        return prop.dbValMin, prop.dbValMax
+        if self._model_properties.is_genicam:
+            param_info = self._get_genicam_parameter("ExposureTime", TUELEM_TYPE.TU_ElemFloat.value)
+            return param_info["min"], param_info["max"]
+        else:
+            prop = TUCAM_PROP_ATTR()
+            prop.idProp = TUCAM_IDPROP.TUIDP_EXPOSURETM.value
+            prop.nIdxChn = 0
+            if TUCAM_Prop_GetAttr(self._camera, pointer(prop)) != TUCAMRET.TUCAMRET_SUCCESS:
+                raise CameraError("Failed to get exposure time limits")
+            self._log.info(f"Exposure limits: {prop.dbValMin}, {prop.dbValMax}")
+            return prop.dbValMin, prop.dbValMax
 
     def _calculate_strobe_delay(self):
         # Line rate: FL 26BW: 34.67 us for standard resolution; 69.3 us for low noise; 12.58 us for SenBin
@@ -382,12 +468,18 @@ class TucsenCamera(AbstractCamera):
         # Right now we are only using 400BSI V3's HDR mode.
         # TODO: Support more modes.
         _, _, _, height = self.get_region_of_interest()
-        readout_time_ms = TucsenCamera._MODE_TO_LINE_RATE_US[self._camera_mode] * height * self._binning[1] / 1000.0
+        readout_time_ms = (
+            self._model_properties.mode_to_line_rate_us[self._camera_mode] * height * self._binning[1] / 1000.0
+        )
 
-        trigger_attr = TUCAM_TRIGGER_ATTR()
-        if TUCAM_Cap_GetTrigger(self._camera, pointer(trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
-            raise CameraError("Failed to get trigger delay")
-        trigger_delay_ms = trigger_attr.nDelayTm
+        if self._model_properties.is_genicam:
+            param_info = self._get_genicam_parameter("TriggerInputDelay", TUELEM_TYPE.TU_ElemInteger.value)
+            trigger_delay_ms = param_info["value"] / 1000.0  # read in us, convert to ms
+        else:
+            trigger_attr = TUCAM_TRIGGER_ATTR()
+            if TUCAM_Cap_GetTrigger(self._camera, pointer(trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
+                raise CameraError("Failed to get trigger delay")
+            trigger_delay_ms = trigger_attr.nDelayTm
 
         self._strobe_delay_ms = readout_time_ms + trigger_delay_ms
 
@@ -419,19 +511,6 @@ class TucsenCamera(AbstractCamera):
         self._allocate_buffer()
         self._calculate_strobe_delay()
 
-    _BINNING_TO_BINNING_CODE_400BSIV3 = {
-        (1, 1): 0,
-        (2, 2): 2,
-        (4, 4): 3,
-    }
-
-    _BINNING_CODE_TO_RESOLUTION_400BSIV3 = {
-        0: (2048, 2048),
-        # 1: (2048, 2048),  # Code 1 is enhance mode, which will modify pixel values. We don't use it.
-        2: (1024, 1024),
-        3: (512, 512),
-    }
-
     def _raw_set_resolution(self, bin_value: int):
         with self._pause_streaming():
             if (
@@ -443,11 +522,16 @@ class TucsenCamera(AbstractCamera):
                 self._camera_mode = ModeFL26BW.STANDARD if bin_value == 0 else ModeFL26BW.SENBIN
             self._update_internal_settings()
 
+    def _raw_set_binning_genicam(self, binning_value: int):
+        with self._pause_streaming():
+            self._set_genicam_parameter("BinningSelector", binning_value, TUELEM_TYPE.TU_ElemEnumeration.value)
+            self._update_internal_settings()
+
     def set_binning(self, binning_factor_x: int, binning_factor_y: int):
         # TODO: Add support for FL26BW model
-        if not (binning_factor_x, binning_factor_y) in TucsenCamera._BINNING_TO_BINNING_CODE_400BSIV3:
+        if not (binning_factor_x, binning_factor_y) in self._model_properties.binning_to_set_value:
             raise CameraError(f"No binning option exists for {binning_factor_x}x{binning_factor_y}")
-        self._raw_set_resolution(TucsenCamera._BINNING_TO_BINNING_CODE_400BSIV3[(binning_factor_x, binning_factor_y)])
+        self._raw_set_resolution(self._model_properties.binning_to_set_value[(binning_factor_x, binning_factor_y)])
         self._binning = (binning_factor_x, binning_factor_y)
 
     def get_binning(self) -> Tuple[int, int]:
@@ -455,7 +539,7 @@ class TucsenCamera(AbstractCamera):
 
     def get_binning_options(self) -> Sequence[Tuple[int, int]]:
         # TODO: Add support for FL26BW model
-        return TucsenCamera._BINNING_TO_BINNING_CODE_400BSIV3.keys()
+        return self._model_properties.binning_to_set_value.keys()
 
     def get_resolution(self) -> Tuple[int, int]:
         # TODO: Add support for FL26BW model
@@ -465,11 +549,10 @@ class TucsenCamera(AbstractCamera):
             != TUCAMRET.TUCAMRET_SUCCESS
         ):
             raise CameraError("Failed to get resolution")
-        return TucsenCamera._BINNING_CODE_TO_RESOLUTION_400BSIV3[idx.value]
+        return self._model_properties.binning_to_resolution[idx.value]
 
     def get_pixel_size_unbinned_um(self) -> float:
-        model = self._config.camera_model
-        return TucsenCamera._MODEL_TO_PIXEL_SIZE_UM[model]
+        return self._model_properties.pixel_size_um
 
     def get_pixel_size_binned_um(self) -> float:
         return self.get_pixel_size_unbinned_um() * self.get_binning()[0]
@@ -509,38 +592,70 @@ class TucsenCamera(AbstractCamera):
         raise NotImplementedError("Black levels are not implemented for the Tucsen driver.")
 
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
-        roi_attr = TUCAM_ROI_ATTR()
-        roi_attr.bEnable = 1
-        # These values must be a multiple of 4. When using 11bit mode, they must be a multiple of 32 (not supported yet).
-        roi_attr.nHOffset = control.utils.truncate_to_interval(offset_x, 4)
-        roi_attr.nVOffset = control.utils.truncate_to_interval(offset_y, 4)
-        roi_attr.nWidth = control.utils.truncate_to_interval(width, 4)
-        roi_attr.nHeight = control.utils.truncate_to_interval(height, 4)
+        # TODO: limit range of values to be within the camera's capabilities
+        if self._model_properties.is_genicam:
+            nHOffset = control.utils.truncate_to_interval(offset_x, 8)
+            nVOffset = control.utils.truncate_to_interval(offset_y, 2)
+            nWidth = control.utils.truncate_to_interval(width, 8)
+            nHeight = control.utils.truncate_to_interval(height, 2)
+        else:
+            roi_attr = TUCAM_ROI_ATTR()
+            roi_attr.bEnable = 1
+            # These values must be a multiple of 4. When using 11bit mode, they must be a multiple of 32 (not supported yet).
+            roi_attr.nHOffset = control.utils.truncate_to_interval(offset_x, 4)
+            roi_attr.nVOffset = control.utils.truncate_to_interval(offset_y, 4)
+            roi_attr.nWidth = control.utils.truncate_to_interval(width, 4)
+            roi_attr.nHeight = control.utils.truncate_to_interval(height, 4)
 
         with self._pause_streaming():
-            if TUCAM_Cap_SetROI(self._camera, roi_attr) != TUCAMRET.TUCAMRET_SUCCESS:
-                raise CameraError(
-                    f"Failed to set ROI: {roi_attr.nHOffset}, {roi_attr.nVOffset}, {roi_attr.nWidth}, {roi_attr.nHeight}"
-                )
+            if self._model_properties.is_genicam:
+                self._set_genicam_parameter("MultiROIOffsetX", nHOffset, TUELEM_TYPE.TU_ElemInteger.value)
+                self._set_genicam_parameter("MultiROIOffsetY", nVOffset, TUELEM_TYPE.TU_ElemInteger.value)
+                self._set_genicam_parameter("MultiROIWidth", nWidth, TUELEM_TYPE.TU_ElemInteger.value)
+                self._set_genicam_parameter("MultiROIHeight", nHeight, TUELEM_TYPE.TU_ElemInteger.value)
+            else:
+                if TUCAM_Cap_SetROI(self._camera, roi_attr) != TUCAMRET.TUCAMRET_SUCCESS:
+                    raise CameraError(
+                        f"Failed to set ROI: {roi_attr.nHOffset}, {roi_attr.nVOffset}, {roi_attr.nWidth}, {roi_attr.nHeight}"
+                    )
             self._update_internal_settings()
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
-        roi_attr = TUCAM_ROI_ATTR()
-        if TUCAM_Cap_GetROI(self._camera, pointer(roi_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
-            raise CameraError("Failed to get ROI")
-        return (roi_attr.nHOffset, roi_attr.nVOffset, roi_attr.nWidth, roi_attr.nHeight)
+        if self._model_properties.is_genicam:
+            h_offset = self._get_genicam_parameter("MultiROIOffsetX", TUELEM_TYPE.TU_ElemInteger.value)
+            v_offset = self._get_genicam_parameter("MultiROIOffsetY", TUELEM_TYPE.TU_ElemInteger.value)
+            width = self._get_genicam_parameter("MultiROIWidth", TUELEM_TYPE.TU_ElemInteger.value)
+            height = self._get_genicam_parameter("MultiROIHeight", TUELEM_TYPE.TU_ElemInteger.value)
+            return (h_offset["value"], v_offset["value"], width["value"], height["value"])
+        else:
+            roi_attr = TUCAM_ROI_ATTR()
+            if TUCAM_Cap_GetROI(self._camera, pointer(roi_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
+                raise CameraError("Failed to get ROI")
+            return (roi_attr.nHOffset, roi_attr.nVOffset, roi_attr.nWidth, roi_attr.nHeight)
 
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
         self._log.debug(f"Setting acquisition mode to {acquisition_mode}")
         with self._pause_streaming():
-            if TUCAM_Cap_GetTrigger(self._camera, pointer(self._trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
+            if (
+                not self._model_properties.is_genicam
+                and TUCAM_Cap_GetTrigger(self._camera, pointer(self._trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS
+            ):
                 raise CameraError("Failed to get trigger attributes")
             if acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
-                self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_SOFTWARE.value
+                if self._model_properties.is_genicam:
+                    self._set_genicam_parameter("TriggerMode", 2, TUELEM_TYPE.TU_ElemEnumeration.value)
+                else:
+                    self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_SOFTWARE.value
             elif acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
-                self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_SEQUENCE.value
+                if self._model_properties.is_genicam:
+                    self._set_genicam_parameter("TriggerMode", 0, TUELEM_TYPE.TU_ElemEnumeration.value)
+                else:
+                    self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_SEQUENCE.value
             elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
-                self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_STANDARD.value
+                if self._model_properties.is_genicam:
+                    self._set_genicam_parameter("TriggerMode", 1, TUELEM_TYPE.TU_ElemEnumeration.value)
+                else:
+                    self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_STANDARD.value
             else:
                 raise ValueError(f"Unhandled {acquisition_mode=}")
             self._trigger_attr.nBufFrames = 1
@@ -551,16 +666,27 @@ class TucsenCamera(AbstractCamera):
 
     def get_acquisition_mode(self) -> CameraAcquisitionMode:
         trigger_attr = TUCAM_TRIGGER_ATTR()
-        if TUCAM_Cap_GetTrigger(self._camera, pointer(trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
+        if (
+            not self._model_properties.is_genicam
+            and TUCAM_Cap_GetTrigger(self._camera, pointer(trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS
+        ):
             raise CameraError("Failed to get acquisition mode")
-        if trigger_attr.nTgrMode == TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_SOFTWARE.value:
-            return CameraAcquisitionMode.SOFTWARE_TRIGGER
-        elif trigger_attr.nTgrMode == TUCAM_CAPTURE_MODES.TUCCM_SEQUENCE.value:
-            return CameraAcquisitionMode.CONTINUOUS
-        elif trigger_attr.nTgrMode == TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_STANDARD.value:
-            return CameraAcquisitionMode.HARDWARE_TRIGGER
+        if self._model_properties.is_genicam:
+            if self._get_genicam_parameter("TriggerMode", TUELEM_TYPE.TU_ElemEnumeration.value)["value"] == 2:
+                return CameraAcquisitionMode.SOFTWARE_TRIGGER
+            elif self._get_genicam_parameter("TriggerMode", TUELEM_TYPE.TU_ElemEnumeration.value)["value"] == 0:
+                return CameraAcquisitionMode.CONTINUOUS
+            elif self._get_genicam_parameter("TriggerMode", TUELEM_TYPE.TU_ElemEnumeration.value)["value"] == 1:
+                return CameraAcquisitionMode.HARDWARE_TRIGGER
         else:
-            raise ValueError(f"Unknown tucsen trigger source mode {trigger_attr.nTgrMode=}")
+            if trigger_attr.nTgrMode == TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_SOFTWARE.value:
+                return CameraAcquisitionMode.SOFTWARE_TRIGGER
+            elif trigger_attr.nTgrMode == TUCAM_CAPTURE_MODES.TUCCM_SEQUENCE.value:
+                return CameraAcquisitionMode.CONTINUOUS
+            elif trigger_attr.nTgrMode == TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_STANDARD.value:
+                return CameraAcquisitionMode.HARDWARE_TRIGGER
+            else:
+                raise ValueError(f"Unknown tucsen trigger source mode {trigger_attr.nTgrMode=}")
 
     def set_temperature_reading_callback(self, func: Callable):
         self.temperature_reading_callback = func
@@ -575,14 +701,17 @@ class TucsenCamera(AbstractCamera):
             raise
 
     def get_temperature(self) -> float:
-        t = c_double(0)
-        if (
-            TUCAM_Prop_GetValue(self._camera, TUCAM_IDPROP.TUIDP_TEMPERATURE.value, pointer(t), 0)
-            != TUCAMRET.TUCAMRET_SUCCESS
-        ):
-            self._log.exception("Failed to get temperature")
-            raise
-        return t.value
+        if self._model_properties.is_genicam:
+            return self._get_genicam_parameter("DeviceTemperature", TUELEM_TYPE.TU_ElemFloat.value)["value"]
+        else:
+            t = c_double(0)
+            if (
+                TUCAM_Prop_GetValue(self._camera, TUCAM_IDPROP.TUIDP_TEMPERATURE.value, pointer(t), 0)
+                != TUCAMRET.TUCAMRET_SUCCESS
+            ):
+                self._log.exception("Failed to get temperature")
+                raise
+            return t.value
 
     def _check_temperature(self):
         while not self._terminate_temperature_event.is_set():
@@ -624,7 +753,14 @@ class TucsenCamera(AbstractCamera):
 
     def set_auto_exposure(self, enable=False):
         value = 1 if enable else 0
-        TUCAM_Capa_SetValue(self._camera, TUCAM_IDCAPA.TUIDC_ATEXPOSURE.value, value)
+        if self._model_properties.is_genicam:
+            self._set_genicam_parameter("ExposureAuto", value, TUELEM_TYPE.TU_ElemEnumeration.value)
+        else:
+            if (
+                TUCAM_Capa_SetValue(self._camera, TUCAM_IDCAPA.TUIDC_ATEXPOSURE.value, value)
+                != TUCAMRET.TUCAMRET_SUCCESS
+            ):
+                raise CameraError("Failed to set auto exposure")
 
         if enable:
             self.log.info("Auto exposure enabled")
@@ -653,3 +789,241 @@ class TucsenCamera(AbstractCamera):
             raise CameraError("Failed to get analog gain")
 
         return gain_value.value
+
+    def _get_genicam_parameter(self, param_name: str) -> Dict[str, any]:
+        """
+        Get a GenICam parameter value and its attributes.
+
+        Args:
+            param_name: Name of the parameter (e.g., "ExposureTime", "AnalogGain")
+
+        Returns:
+            Dictionary containing parameter info including type, value, min, max, access rights, etc.
+
+        Raises:
+            CameraError: If the camera doesn't support GenICam or if parameter retrieval fails
+        """
+        if not self._model_properties.is_genicam:
+            raise CameraError("This camera model does not support GenICam interface")
+
+        # Element type names for logging
+        elem_type_names = [
+            "Value",
+            "Base",
+            "Integer",
+            "Boolean",
+            "Command",
+            "Float",
+            "String",
+            "Register",
+            "Category",
+            "Enumeration",
+            "EnumEntry",
+            "Port",
+        ]
+
+        # Access mode names
+        access_names = ["NI", "NA", "WO", "RO", "RW"]
+
+        # Create element structure
+        node = TUCAM_ELEMENT()
+        node.pName = param_name.encode("utf-8")
+
+        # Get element attributes
+        result = TUCAM_GenICam_ElementAttr(self._camera, pointer(node), node.pName, TUXML_DEVICE.TU_CAMERA_XML.value)
+        if result != TUCAMRET.TUCAMRET_SUCCESS:
+            raise CameraError(f"Failed to get GenICam parameter attributes for '{param_name}'")
+
+        # Prepare return dictionary
+        param_info = {
+            "name": param_name,
+            "type": elem_type_names[node.Type] if node.Type < len(elem_type_names) else "Unknown",
+            "type_value": node.Type,
+            "access": access_names[node.Access] if node.Access < len(access_names) else "Unknown",
+            "level": node.Level,
+        }
+
+        # Get value based on type
+        elemtype = TUELEM_TYPE
+
+        try:
+            # Boolean type
+            if node.Type == elemtype.TU_ElemBoolean.value:
+                param_info["value"] = bool(node.uValue.Int64.nVal)
+                param_info["min"] = 0
+                param_info["max"] = 1
+
+            # Integer or Command type
+            elif node.Type in [elemtype.TU_ElemInteger.value, elemtype.TU_ElemCommand.value]:
+                param_info["value"] = node.uValue.Int64.nVal
+                param_info["min"] = node.uValue.Int64.nMin
+                param_info["max"] = node.uValue.Int64.nMax
+
+            # Float type
+            elif node.Type == elemtype.TU_ElemFloat.value:
+                param_info["value"] = node.uValue.Double.dbVal
+                param_info["min"] = node.uValue.Double.dbMin
+                param_info["max"] = node.uValue.Double.dbMax
+
+            # String or Register type
+            elif node.Type in [elemtype.TU_ElemString.value, elemtype.TU_ElemRegister.value]:
+                # Allocate buffer for string value
+                buf = create_string_buffer(node.uValue.Int64.nMax + 1)
+                memset(buf, 0, node.uValue.Int64.nMax + 1)
+                node.pTransfer = cast(buf, c_char_p)
+
+                # Get the string value
+                result = TUCAM_GenICam_GetElementValue(self._camera, pointer(node), TUXML_DEVICE.TU_CAMERA_XML.value)
+                if result != TUCAMRET.TUCAMRET_SUCCESS:
+                    raise CameraError(f"Failed to get string value for parameter '{param_name}'")
+
+                param_info["value"] = node.pTransfer.decode("utf-8") if node.pTransfer else ""
+                param_info["max_length"] = node.uValue.Int64.nMax
+
+            # Enumeration type
+            elif node.Type == elemtype.TU_ElemEnumeration.value:
+                param_info["value_index"] = node.uValue.Int64.nVal
+                param_info["min"] = node.uValue.Int64.nMin
+                param_info["max"] = node.uValue.Int64.nMax
+
+                # Get enum entries
+                if node.pEntries:
+                    strlist = ctypes.cast(node.pEntries, ctypes.POINTER(ctypes.c_char_p))
+                    entries = []
+                    num_entries = node.uValue.Int64.nMax - node.uValue.Int64.nMin + 1
+                    for i in range(num_entries):
+                        if strlist[i]:
+                            entries.append(strlist[i].decode("utf-8"))
+                    param_info["enum_entries"] = entries
+                    param_info["value"] = (
+                        entries[node.uValue.Int64.nVal] if 0 <= node.uValue.Int64.nVal < len(entries) else None
+                    )
+
+            else:
+                param_info["value"] = None
+                self._log.warning(f"Unsupported GenICam parameter type: {node.Type}")
+
+        except Exception as e:
+            self._log.exception(f"Error getting GenICam parameter '{param_name}': {e}")
+            raise CameraError(f"Failed to get GenICam parameter '{param_name}': {str(e)}")
+
+        return param_info
+
+    def _set_genicam_parameter(self, param_name: str, value: any, param_type: int) -> bool:
+        """
+        Set a GenICam parameter value.
+
+        Args:
+            param_name: Name of the parameter (e.g., "ExposureTime", "AnalogGain")
+            value: Value to set (type depends on parameter)
+            param_type: Parameter type from TUELEM_TYPE (e.g., TU_ElemFloat)
+
+        Returns:
+            True if successful
+
+        Raises:
+            CameraError: If the camera doesn't support GenICam or if parameter setting fails
+
+        Example:
+            from control.TUCam import TUELEM_TYPE
+
+            camera.set_genicam_parameter("ExposureTime", 5.0, TUELEM_TYPE.TU_ElemFloat.value)
+            camera.set_genicam_parameter("BlackLevel", 100, TUELEM_TYPE.TU_ElemInteger.value)
+            camera.set_genicam_parameter("ReverseX", True, TUELEM_TYPE.TU_ElemBoolean.value)
+            camera.set_genicam_parameter("AnalogGain", 1, TUELEM_TYPE.TU_ElemEnumeration.value)
+        """
+        if not self._model_properties.is_genicam:
+            raise CameraError("This camera model does not support GenICam interface")
+
+        # Element type names for logging
+        elem_type_names = [
+            "Value",
+            "Base",
+            "Integer",
+            "Boolean",
+            "Command",
+            "Float",
+            "String",
+            "Register",
+            "Category",
+            "Enumeration",
+            "EnumEntry",
+            "Port",
+        ]
+
+        # Create element structure
+        node = TUCAM_ELEMENT()
+        node.pName = param_name.encode("utf-8")
+        node.Type = param_type
+
+        elemtype = TUELEM_TYPE
+
+        try:
+            # Boolean type
+            if node.Type == elemtype.TU_ElemBoolean.value:
+                node.uValue.Int64.nVal = 1 if value else 0
+                result = TUCAM_GenICam_SetElementValue(self._camera, pointer(node), TUXML_DEVICE.TU_CAMERA_XML.value)
+                if result != TUCAMRET.TUCAMRET_SUCCESS:
+                    raise CameraError(f"Failed to set boolean parameter '{param_name}'")
+                self._log.info(f"[{elem_type_names[node.Type]}] Set {param_name} = {bool(node.uValue.Int64.nVal)}")
+
+            # Command type
+            elif node.Type == elemtype.TU_ElemCommand.value:
+                node.uValue.Int64.nVal = int(value)
+                result = TUCAM_GenICam_SetElementValue(self._camera, pointer(node), TUXML_DEVICE.TU_CAMERA_XML.value)
+                if result != TUCAMRET.TUCAMRET_SUCCESS:
+                    raise CameraError(f"Failed to execute command '{param_name}'")
+                self._log.info(f"[{elem_type_names[node.Type]}] Executed command {param_name}")
+
+            # Integer type
+            elif node.Type == elemtype.TU_ElemInteger.value:
+                node.uValue.Int64.nVal = int(value)
+
+                result = TUCAM_GenICam_SetElementValue(self._camera, pointer(node), TUXML_DEVICE.TU_CAMERA_XML.value)
+                if result != TUCAMRET.TUCAMRET_SUCCESS:
+                    raise CameraError(f"Failed to set integer parameter '{param_name}'")
+                self._log.info(f"[{elem_type_names[node.Type]}] Set {param_name} = {node.uValue.Int64.nVal}")
+
+            # Float type
+            elif node.Type == elemtype.TU_ElemFloat.value:
+                node.uValue.Double.dbVal = float(value)
+
+                result = TUCAM_GenICam_SetElementValue(self._camera, pointer(node), TUXML_DEVICE.TU_CAMERA_XML.value)
+                if result != TUCAMRET.TUCAMRET_SUCCESS:
+                    raise CameraError(f"Failed to set float parameter '{param_name}'")
+                self._log.info(f"[{elem_type_names[node.Type]}] Set {param_name} = {node.uValue.Double.dbVal}")
+
+            # String or Register type
+            elif node.Type in [elemtype.TU_ElemString.value, elemtype.TU_ElemRegister.value]:
+                # Convert value to bytes and set
+                node.pTransfer = str(value).encode("utf-8")
+                result = TUCAM_GenICam_SetElementValue(self._camera, pointer(node), TUXML_DEVICE.TU_CAMERA_XML.value)
+                if result != TUCAMRET.TUCAMRET_SUCCESS:
+                    raise CameraError(f"Failed to set string parameter '{param_name}'")
+                self._log.info(f"[{elem_type_names[node.Type]}] Set {param_name} = {value}")
+
+            # Enumeration type
+            elif node.Type == elemtype.TU_ElemEnumeration.value:
+                # For enums without querying, we can only set by index
+                if not isinstance(value, int):
+                    raise ValueError(
+                        f"When setting enum parameter '{param_name}' without querying, value must be an integer index"
+                    )
+
+                node.uValue.Int64.nVal = int(value)
+
+                result = TUCAM_GenICam_SetElementValue(self._camera, pointer(node), TUXML_DEVICE.TU_CAMERA_XML.value)
+                if result != TUCAMRET.TUCAMRET_SUCCESS:
+                    raise CameraError(f"Failed to set enum parameter '{param_name}'")
+                self._log.info(f"[{elem_type_names[node.Type]}] Set {param_name} = index {value}")
+
+            else:
+                raise ValueError(f"Unsupported GenICam parameter type: {node.Type}")
+
+        except Exception as e:
+            if isinstance(e, CameraError):
+                raise
+            self._log.exception(f"Error setting GenICam parameter '{param_name}': {e}")
+            raise CameraError(f"Failed to set GenICam parameter '{param_name}': {str(e)}")
+
+        return True
