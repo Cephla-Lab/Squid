@@ -401,9 +401,13 @@ class Microscope:
         if control._def.HOMING_ENABLED_Z:
             self.stage.home(x=False, y=False, z=True, theta=False)
         if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
-            self.stage.move_x(20)
-            self.stage.home(x=False, y=True, z=False, theta=False)
+            self._log.info("Moving y+20, then x->home->+50 to make sure system is clear for homing.")
+            self.stage.move_y(20)
             self.stage.home(x=True, y=False, z=False, theta=False)
+            self.stage.move_x(50)
+
+            self._log.info("Homing the Y axis...")
+            self.stage.home(x=False, y=True, z=False, theta=False)
 
     def move_x(self, distance, blocking=True):
         self.stage.move_x(distance, blocking=blocking)

@@ -125,8 +125,8 @@ def main(args):
     scope.setup_hardware()
 
     # Do manual homing, and again using the scope helper
-    scope.stage.home(x=False, y=False, z=True, theta=False, blocking=True)
-    scope.stage.home(x=True, y=True, z=False, theta=False, blocking=True)
+    # scope.stage.home(x=False, y=False, z=True, theta=False, blocking=True)
+    # scope.stage.home(x=True, y=True, z=False, theta=False, blocking=True)
 
     scope.home_xyz()
 
