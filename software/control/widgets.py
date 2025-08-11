@@ -3555,7 +3555,7 @@ class WellplateMultiPointWidget(QFrame):
         scanCoordinates,
         focusMapWidget=None,
         napariMosaicWidget=None,
-        tab_widget: Optional[QtTabWidget] = None,
+        tab_widget: Optional[QTabWidget] = None,
         well_selection_widget: Optional[WellSelectionWidget] = None,
         *args,
         **kwargs,
@@ -3594,7 +3594,7 @@ class WellplateMultiPointWidget(QFrame):
         # Add state tracking for coordinates
         self.has_loaded_coordinates = False
 
-        self.tab_widget: Optional[QtTabWidget] = tab_widget
+        self.tab_widget: Optional[QTabWidget] = tab_widget
         self.well_selection_widget: Optional[WellSelectionWidget] = well_selection_widget
 
     def add_components(self):
