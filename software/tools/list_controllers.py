@@ -1,4 +1,3 @@
-import serial
 import serial.tools.list_ports
 
 print("\n")

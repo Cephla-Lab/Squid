@@ -31,7 +31,7 @@ def main(args):
     if args.verbose:
         squid.logging.set_stdout_log_level(logging.DEBUG)
 
-    scope = Microscope(is_simulation=False)
+    scope: Microscope = Microscope.build_from_global_config(False)
 
     if args.home:
         home(scope)
