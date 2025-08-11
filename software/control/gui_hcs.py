@@ -652,7 +652,6 @@ class HighContentScreeningGui(QMainWindow):
             self.channelConfigurationManager,
             self.scanCoordinates,
             self.focusMapWidget,
-            tab_widget=self.recordTabWidget,
         )
         self.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(
             self.stage,

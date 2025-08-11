@@ -3772,6 +3772,8 @@ class WellplateMultiPointWidget(QFrame):
         else:
             self.napariMosaicWidget = napariMosaicWidget
             self.performance_mode = False
+        self.tab_widget: Optional[QTabWidget] = tab_widget
+        self.well_selection_widget: Optional[WellSelectionWidget] = well_selection_widget
         self.base_path_is_set = False
         self.well_selected = False
         self.num_regions = 0
@@ -3791,9 +3793,6 @@ class WellplateMultiPointWidget(QFrame):
 
         # Add state tracking for coordinates
         self.has_loaded_coordinates = False
-
-        self.tab_widget: Optional[QTabWidget] = tab_widget
-        self.well_selection_widget: Optional[WellSelectionWidget] = well_selection_widget
 
     def add_components(self):
         self.entry_well_coverage = QDoubleSpinBox()
