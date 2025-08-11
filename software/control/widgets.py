@@ -108,147 +108,6 @@ class CollapsibleGroupBox(QGroupBox):
         self.content_widget.setVisible(state)
 
 
-"""
-# Planning to replace this with a better design
-class ConfigEditorForAcquisitions(QDialog):
-    def __init__(self, configManager, only_z_offset=True):
-        super().__init__()
-
-        self.config = configManager
-
-        self.only_z_offset = only_z_offset
-
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area_widget = QWidget()
-        self.scroll_area_layout = QVBoxLayout()
-        self.scroll_area_widget.setLayout(self.scroll_area_layout)
-        self.scroll_area.setWidget(self.scroll_area_widget)
-
-        self.save_config_button = QPushButton("Save Config")
-        self.save_config_button.clicked.connect(self.save_config)
-        self.save_to_file_button = QPushButton("Save to File")
-        self.save_to_file_button.clicked.connect(self.save_to_file)
-        self.load_config_button = QPushButton("Load Config from File")
-        self.load_config_button.clicked.connect(lambda: self.load_config_from_file(None))
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.scroll_area)
-        layout.addWidget(self.save_config_button)
-        layout.addWidget(self.save_to_file_button)
-        layout.addWidget(self.load_config_button)
-
-        self.config_value_widgets = {}
-
-        self.setLayout(layout)
-        self.setWindowTitle("Configuration Editor")
-        self.init_ui(only_z_offset)
-
-    def init_ui(self, only_z_offset=None):
-        if only_z_offset is None:
-            only_z_offset = self.only_z_offset
-        self.groups = {}
-        for section in self.config.configurations:
-            if not only_z_offset:
-                group_box = CollapsibleGroupBox(section.name)
-            else:
-                group_box = QGroupBox(section.name)
-
-            group_layout = QVBoxLayout()
-
-            section_value_widgets = {}
-
-            self.groups[str(section.id)] = group_box
-
-            for option in section.__dict__.keys():
-                if option.startswith("_") and option.endswith("_options"):
-                    continue
-                if option == "id":
-                    continue
-                if only_z_offset and option != "z_offset":
-                    continue
-                option_value = str(getattr(section, option))
-                option_name = QLabel(option)
-                option_layout = QHBoxLayout()
-                option_layout.addWidget(option_name)
-                if f"_{option}_options" in list(section.__dict__.keys()):
-                    option_value_list = getattr(section, f"_{option}_options")
-                    values = option_value_list.strip("[]").split(",")
-                    for i in range(len(values)):
-                        values[i] = values[i].strip()
-                    if option_value not in values:
-                        values.append(option_value)
-                    combo_box = QComboBox()
-                    combo_box.addItems(values)
-                    combo_box.setCurrentText(option_value)
-                    option_layout.addWidget(combo_box)
-                    section_value_widgets[option] = combo_box
-                else:
-                    option_input = QLineEdit(option_value)
-                    option_layout.addWidget(option_input)
-                    section_value_widgets[option] = option_input
-                group_layout.addLayout(option_layout)
-
-            self.config_value_widgets[str(section.id)] = section_value_widgets
-            if not only_z_offset:
-                group_box.content.addLayout(group_layout)
-            else:
-                group_box.setLayout(group_layout)
-
-            self.scroll_area_layout.addWidget(group_box)
-
-    def save_config(self):
-        for section in self.config.configurations:
-            for option in section.__dict__.keys():
-                if option.startswith("_") and option.endswith("_options"):
-                    continue
-                old_val = getattr(section, option)
-                if option == "id":
-                    continue
-                elif option == "camera_sn":
-                    option_name_in_xml = "CameraSN"
-                else:
-                    option_name_in_xml = option.replace("_", " ").title().replace(" ", "")
-                try:
-                    widget = self.config_value_widgets[str(section.id)][option]
-                except KeyError:
-                    continue
-                if type(widget) is QLineEdit:
-                    self.config.update_configuration(section.id, option_name_in_xml, widget.text())
-                else:
-                    self.config.update_configuration(section.id, option_name_in_xml, widget.currentText())
-        self.config.configurations = []
-        self.config.read_configurations()
-
-    def save_to_file(self):
-        self.save_config()
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Acquisition Config File", "", "XML Files (*.xml);;All Files (*)"
-        )
-        if file_path:
-            if not self.config.write_configuration(file_path):
-                QMessageBox.warning(
-                    self, "Warning", f"Failed to write config to file '{file_path}'.  Check permissions!"
-                )
-
-    def load_config_from_file(self, only_z_offset=None):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Acquisition Config File", "", "XML Files (*.xml);;All Files (*)"
-        )
-        if file_path:
-            self.config.config_filename = file_path
-            self.config.configurations = []
-            self.config.read_configurations()
-            # Clear and re-initialize the UI
-            self.scroll_area_widget.deleteLater()
-            self.scroll_area_widget = QWidget()
-            self.scroll_area_layout = QVBoxLayout()
-            self.scroll_area_widget.setLayout(self.scroll_area_layout)
-            self.scroll_area.setWidget(self.scroll_area_widget)
-            self.init_ui(only_z_offset)
-"""
-
-
 class ConfigEditor(QDialog):
     def __init__(self, config):
         super().__init__()
@@ -2491,7 +2350,6 @@ class FlexibleMultiPointWidget(QFrame):
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.is_current_acquisition_widget = False
         self.acquisition_in_place = False
-        self.parent = self.multipointController.parent
 
     def add_components(self):
         self.btn_setSavingDir = QPushButton("Browse")
@@ -3372,20 +3230,6 @@ class FlexibleMultiPointWidget(QFrame):
             self.table_location_list.blockSignals(False)
             self.dropdown_location_list.blockSignals(False)
 
-    # def create_point_id(self):
-    #     self.scanCoordinates.get_selected_wells()
-    #     if len(self.scanCoordinates.region_centers.keys()) == 0:
-    #         print('Select a well first.')
-    #         return None
-
-    #     name = self.scanCoordinates.region_centers.keys()[0]
-    #     location_split_names = [int(x.split('-')[1]) for x in self.location_ids if x.split('-')[0] == name]
-    #     if len(location_split_names) > 0:
-    #         new_id = f'{name}-{np.max(location_split_names)+1}'
-    #     else:
-    #         new_id = f'{name}-0'
-    #     return new_id
-
     def next(self):
         index = self.dropdown_location_list.currentIndex()
         # max_index = self.dropdown_location_list.count() - 1
@@ -3711,6 +3555,8 @@ class WellplateMultiPointWidget(QFrame):
         scanCoordinates,
         focusMapWidget=None,
         napariMosaicWidget=None,
+        tab_widget: Optional[QtTabWidget] = None,
+        well_selection_widget: Optional[WellSelectionWidget] = None,
         *args,
         **kwargs,
     ):
@@ -3735,7 +3581,6 @@ class WellplateMultiPointWidget(QFrame):
         self.manual_shape = None
         self.eta_seconds = 0
         self.is_current_acquisition_widget = False
-        self.parent = self.multipointController.parent
 
         # TODO (hl): these along with update_live_coordinates need to move out of this class
         self._last_update_time = 0
@@ -3748,6 +3593,9 @@ class WellplateMultiPointWidget(QFrame):
 
         # Add state tracking for coordinates
         self.has_loaded_coordinates = False
+
+        self.tab_widget: Optional[QtTabWidget] = tab_widget
+        self.well_selection_widget: Optional[WellSelectionWidget] = well_selection_widget
 
     def add_components(self):
         self.entry_well_coverage = QDoubleSpinBox()
@@ -4219,7 +4067,7 @@ class WellplateMultiPointWidget(QFrame):
             self.update_coordinates()
 
     def update_manual_shape(self, shapes_data_mm):
-        if self.parent.recordTabWidget.currentWidget() != self:
+        if self.tab_widget and self.tab_widget.currentWidget() != self:
             return
 
         if shapes_data_mm and len(shapes_data_mm) > 0:
@@ -4304,7 +4152,7 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_maxZ.blockSignals(False)
 
     def update_coordinates(self):
-        if hasattr(self.parent, "recordTabWidget") and self.parent.recordTabWidget.currentWidget() != self:
+        if self.tab_widget and self.tab_widget.currentWidget() != self:
             return
         scan_size_mm = self.entry_scan_size.value()
         overlap_percent = self.entry_overlap.value()
@@ -4322,7 +4170,7 @@ class WellplateMultiPointWidget(QFrame):
             self.scanCoordinates.set_well_coordinates(scan_size_mm, overlap_percent, shape)
 
     def update_well_coordinates(self, selected):
-        if self.parent.recordTabWidget.currentWidget() != self:
+        if self.tab_widget and self.tab_widget.currentWidget() != self:
             return
         if selected:
             scan_size_mm = self.entry_scan_size.value()
@@ -4333,7 +4181,7 @@ class WellplateMultiPointWidget(QFrame):
             self.scanCoordinates.clear_regions()
 
     def update_live_coordinates(self, pos: squid.abc.Pos):
-        if hasattr(self.parent, "recordTabWidget") and self.parent.recordTabWidget.currentWidget() != self:
+        if self.tab_widget and self.tab_widget.currentWidget() != self:
             return
         # Don't update scan coordinates if we're navigating focus points. A temporary fix for focus map with glass slide.
         # This disables updating scanning grid when focus map is checked
@@ -4541,7 +4389,7 @@ class WellplateMultiPointWidget(QFrame):
             self.entry_well_coverage.setEnabled(False)
             self.entry_overlap.setEnabled(False)
             # Disable well selector
-            self.parent.wellSelectionWidget.setEnabled(False)
+            self.well_selection_widget.setEnabled(False)
         else:
             self.btn_save_scan_coordinates.setText("Save Coordinates")
             # Re-enable scan controls when coordinates are cleared
@@ -4553,7 +4401,7 @@ class WellplateMultiPointWidget(QFrame):
                 self.entry_well_coverage.setEnabled(True)
             self.entry_overlap.setEnabled(True)
             # Re-enable well selector
-            self.parent.wellSelectionWidget.setEnabled(True)
+            self.well_selection_widget.setEnabled(True)
 
         self.has_loaded_coordinates = has_coordinates
 
@@ -4713,7 +4561,6 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.eta_seconds = 0
         self.nRound = 0
         self.is_current_acquisition_widget = False
-        self.parent = self.multipointController.parent
 
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -7375,54 +7222,6 @@ class TrackingControllerWidget(QFrame):
         self.trackingController.update_pixel_size(pixel_size_xy)
         print(f"pixel size is {pixel_size_xy:.2f} μm")
 
-    """
-        # connections
-        self.checkbox_withAutofocus.stateChanged.connect(self.trackingController.set_af_flag)
-        self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
-        self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
-        self.trackingController.trackingStopped.connect(self.acquisition_is_finished)
-
-    def set_saving_dir(self):
-        dialog = QFileDialog()
-        save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self.plateReadingController.set_base_path(save_dir_base)
-        self.lineEdit_savingDir.setText(save_dir_base)
-        self.base_path_is_set = True
-
-    def toggle_acquisition(self,pressed):
-        if self.base_path_is_set == False:
-            self.btn_startAcquisition.setChecked(False)
-            msg = QMessageBox()
-            msg.setText("Please choose base saving directory first")
-            msg.exec_()
-            return
-        if pressed:
-            # @@@ to do: add a widgetManger to enable and disable widget
-            # @@@ to do: emit signal to widgetManager to disable other widgets
-            self.setEnabled_all(False)
-            self.trackingController.start_new_experiment(self.lineEdit_experimentID.text())
-            self.trackingController.set_selected_configurations((item.text() for item in self.list_configurations.selectedItems()))
-            self.trackingController.set_selected_columns(list(map(int,[item.text() for item in self.list_columns.selectedItems()])))
-            self.trackingController.run_acquisition()
-        else:
-            self.trackingController.stop_acquisition() # to implement
-            pass
-
-    def acquisition_is_finished(self):
-        self.btn_startAcquisition.setChecked(False)
-        self.setEnabled_all(True)
-
-    def setEnabled_all(self,enabled,exclude_btn_startAcquisition=False):
-        self.btn_setSavingDir.setEnabled(enabled)
-        self.lineEdit_savingDir.setEnabled(enabled)
-        self.lineEdit_experimentID.setEnabled(enabled)
-        self.list_columns.setEnabled(enabled)
-        self.list_configurations.setEnabled(enabled)
-        self.checkbox_withAutofocus.setEnabled(enabled)
-        if exclude_btn_startAcquisition is not True:
-            self.btn_startAcquisition.setEnabled(enabled)
-    """
-
 
 class PlateReaderAcquisitionWidget(QFrame):
     def __init__(
@@ -8700,9 +8499,8 @@ class CalibrationLiveViewer(QWidget):
     signal_calibration_viewer_click = Signal(int, int, int, int)
     signal_mouse_moved = Signal(int, int)
 
-    def __init__(self, parent=None):
+    def __init__(self):
         super().__init__()
-        self.parent = parent
         self.initial_zoom_set = False
         self.initUI()
 
