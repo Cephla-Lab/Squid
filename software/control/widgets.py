@@ -7050,6 +7050,8 @@ class NapariMosaicDisplayWidget(QWidget):
         # Make sure we rescale the shape layer if we have it.
         if "Manual ROI" in self.viewer.layers:
             self.update_shape_layer_position(prev_top_left, self.top_left_coordinate)
+            if self.shape_layer:
+                self.shape_layer.refresh()
 
     def updateLayer(self, layer, image, x_mm, y_mm, k, prev_top_left):
         # calculate new mosaic size and position
