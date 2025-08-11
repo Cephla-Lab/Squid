@@ -196,8 +196,15 @@ def main(args):
 
     # Running a really simple acquisition
     live_controller = LiveController(scope, scope.camera)
+    live_controller.set_microscope_mode(
+        scope.channel_configuration_manager.get_configurations(scope.objective_store.current_objective)[0]
+    )
     af_controller = AutoFocusController(
-        camera=scope.camera, stage=scope.stage, liveController=live_controller, microcontroller=scope.low_level_drivers.microcontroller, nl5=None
+        camera=scope.camera,
+        stage=scope.stage,
+        liveController=live_controller,
+        microcontroller=scope.low_level_drivers.microcontroller,
+        nl5=None,
     )
 
     mpc_tracker = MpcTestTracker()
