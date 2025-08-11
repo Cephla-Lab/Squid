@@ -184,10 +184,10 @@ class TucsenCamera(AbstractCamera):
     def _get_model_properties(self, camera_model: TucsenCameraModel) -> TucsenModelProperties:
         if camera_model == TucsenCameraModel.DHYANA_400BSI_V3:
             binning_to_resolution = {
-                0: (2048, 2048),
-                # 1: (2048, 2048),  # Code 1 is enhance mode, which will modify pixel values. We don't use it.
-                2: (1024, 1024),
-                3: (512, 512),
+                (1, 1): (2048, 2048),
+                # (1, 1): (2048, 2048),  # Code 1 is enhance mode, which will modify pixel values. We don't use it.
+                (2, 2): (1024, 1024),
+                (4, 4): (512, 512),
             }
             binning_to_set_value = {
                 (1, 1): 0,
