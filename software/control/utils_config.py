@@ -102,6 +102,27 @@ class LaserAFConfig(BaseModel):
         return data
 
 
+class AdditionalParams(BaseModel):
+    """Pydantic model for additional acquisition configuration parameters"""
+
+    main_camera_crop: Optional[dict] = None
+    xlight_illumination_iris: Optional[float] = None
+    xlight_emission_iris: Optional[float] = None
+
+    @field_validator("main_camera_crop")
+    @classmethod
+    def validate_main_camera_crop(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, dict):
+            raise TypeError("main_camera_crop must be a dict or null")
+        required = {"x_offset", "y_offset", "width", "height"}
+        missing = required.difference(v.keys())
+        if missing:
+            raise ValueError(f"main_camera_crop is missing required keys: {sorted(missing)}")
+        return v
+
+
 class ChannelMode(BaseXmlModel, tag="mode"):
     """Channel configuration model"""
 

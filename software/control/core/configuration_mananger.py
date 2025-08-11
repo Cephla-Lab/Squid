@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.laser_af_settings_manager import LaserAFSettingManager
+from control.core.additional_params_manager import AdditionalParamsManager
 from control._def import OBJECTIVES
 
 
@@ -13,6 +14,7 @@ class ConfigurationManager:
     def __init__(
         self,
         channel_manager: ChannelConfigurationManager,
+        additional_params_manager: AdditionalParamsManager,
         laser_af_manager: Optional[LaserAFSettingManager] = None,
         base_config_path: Path = Path("acquisition_configurations"),
         profile: str = "default_profile",
@@ -23,6 +25,7 @@ class ConfigurationManager:
         self.available_profiles = self._get_available_profiles()
 
         self.channel_manager = channel_manager
+        self.additional_params_manager = additional_params_manager
         self.laser_af_manager = laser_af_manager
 
         self.load_profile(profile)
@@ -49,6 +52,8 @@ class ConfigurationManager:
         self.current_profile = profile_name
         if self.channel_manager:
             self.channel_manager.set_profile_path(profile_path)
+        if self.additional_params_manager:
+            self.additional_params_manager.set_profile_path(profile_path)
         if self.laser_af_manager:
             self.laser_af_manager.set_profile_path(profile_path)
 
@@ -56,6 +61,8 @@ class ConfigurationManager:
         for objective in self._get_available_objectives(profile_path):
             if self.channel_manager:
                 self.channel_manager.load_configurations(objective)
+            if self.additional_params_manager:
+                self.additional_params_manager.load_configurations(objective)
             if self.laser_af_manager:
                 self.laser_af_manager.load_configurations(objective)
 
@@ -71,6 +78,8 @@ class ConfigurationManager:
         self.current_profile = profile_name
         if self.channel_manager:
             self.channel_manager.set_profile_path(new_profile_path)
+        if self.additional_params_manager:
+            self.additional_params_manager.set_profile_path(new_profile_path)
         if self.laser_af_manager:
             self.laser_af_manager.set_profile_path(new_profile_path)
 
@@ -78,6 +87,8 @@ class ConfigurationManager:
             os.makedirs(new_profile_path / objective)
             if self.channel_manager:
                 self.channel_manager.save_configurations(objective)
+            if self.additional_params_manager:
+                self.additional_params_manager.save_configurations(objective)
             if self.laser_af_manager:
                 self.laser_af_manager.save_configurations(objective)
 
