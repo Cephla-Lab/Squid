@@ -6804,7 +6804,6 @@ class NapariMultiChannelWidget(QWidget):
             layer.refresh()
 
     def activate(self):
-        print("ACTIVATING NAPARI MULTICHANNEL WIDGET")
         self.viewer.window.activate()
 
 
@@ -7079,10 +7078,10 @@ class NapariMosaicDisplayWidget(QWidget):
                         new_data[y_offset:y_end, x_offset:x_end] = mosaic.data[: y_end - y_offset, : x_end - x_offset]
                     mosaic.data = new_data
 
-            if "Manual ROI" in self.viewer.layers:
-                self.update_shape_layer_position(prev_top_left, self.top_left_coordinate)
+        if "Manual ROI" in self.viewer.layers:
+            self.update_shape_layer_position(prev_top_left, self.top_left_coordinate)
 
-            self.resetView()
+        self.resetView()
 
         # insert new image
         y_pos = int(math.floor((y_mm - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
