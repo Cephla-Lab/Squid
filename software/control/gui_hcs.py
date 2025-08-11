@@ -428,6 +428,7 @@ class HighContentScreeningGui(QMainWindow):
             self.objectiveStore,
             self.channelConfigurationManager,
             scan_coordinates=self.scanCoordinates,
+            laser_autofocus_controller=self.laserAutofocusController,
             fluidics=self.fluidics,
         )
 
