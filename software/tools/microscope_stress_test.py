@@ -197,7 +197,7 @@ def main(args):
     # Running a really simple acquisition
     live_controller = LiveController(scope, scope.camera)
     af_controller = AutoFocusController(
-        scope.camera, scope.stage, live_controller, scope.low_level_drivers.microcontroller
+        camera=scope.camera, stage=scope.stage, liveController=live_controller, microcontroller=scope.low_level_drivers.microcontroller, nl5=None
     )
 
     mpc_tracker = MpcTestTracker()
@@ -215,6 +215,13 @@ def main(args):
         callbacks=mpc_tracker.get_callbacks(),
         scan_coordinates=simple_scan_coordinates,
         laser_autofocus_controller=None,
+    )
+
+    mpc.set_selected_configurations(
+        [
+            m.name
+            for m in scope.channel_configuration_manager.get_configurations(scope.objective_store.current_objective)
+        ]
     )
 
     mpc.run_acquisition(False)
