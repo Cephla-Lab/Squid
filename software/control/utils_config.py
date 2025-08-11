@@ -88,10 +88,12 @@ class LaserAFConfig(BaseModel):
             self.reference_image = None
             self.reference_image_shape = None
             self.reference_image_dtype = None
+            self.has_reference = False
             return
         self.reference_image = base64.b64encode(image.tobytes()).decode("utf-8")
         self.reference_image_shape = image.shape
         self.reference_image_dtype = str(image.dtype)
+        self.has_reference = True
 
     def model_dump(self, serialize=False, **kwargs):
         """Ensure proper serialization of enums to strings"""
