@@ -538,10 +538,17 @@ class MultiPointController:
             self.run_acquisition_current_fov = False
 
         if self._start_position:
-            self.stage.move_x_to(self._start_position.x_mm)
-            self.stage.move_y_to(self._start_position.y_mm)
-            self.stage.move_z_to(self._start_position.z_mm)
+            x_mm = self._start_position.x_mm
+            y_mm = self._start_position.y_mm
+            z_mm = self._start_position.z_mm
+            self._log.info(f"Moving back to start position: (x,y,z) [mm] = ({x_mm}, {y_mm}, {z_mm})")
+            self.stage.move_x_to(x_mm)
+            self.stage.move_y_to(y_mm)
+            self.stage.move_z_to(z_mm)
             self._start_position = None
+
+        ending_pos = self.stage.get_pos()
+        self.callbacks.signal_current_fov(ending_pos.x_mm, ending_pos.y_mm)
 
         self.callbacks.signal_acquisition_finished()
 

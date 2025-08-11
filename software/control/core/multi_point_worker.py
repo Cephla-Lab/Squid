@@ -259,75 +259,32 @@ class MultiPointWorker:
         self.microcontroller.wait_till_operation_is_completed()
 
     def run_single_time_point(self):
-        start = time.time()
-        self.microcontroller.enable_joystick(False)
+        try:
+            start = time.time()
+            self.microcontroller.enable_joystick(False)
 
-        self._log.debug("multipoint acquisition - time point " + str(self.time_point + 1))
+            self._log.debug("multipoint acquisition - time point " + str(self.time_point + 1))
 
-        # for each time point, create a new folder
-        current_path = os.path.join(self.base_path, self.experiment_ID, f"{self.time_point:0{FILE_ID_PADDING}}")
-        utils.ensure_directory_exists(str(current_path))
+            # for each time point, create a new folder
+            current_path = os.path.join(self.base_path, self.experiment_ID, f"{self.time_point:0{FILE_ID_PADDING}}")
+            utils.ensure_directory_exists(str(current_path))
 
-        slide_path = os.path.join(self.base_path, self.experiment_ID)
+            # create a dataframe to save coordinates
+            self.initialize_coordinates_dataframe()
 
-        # create a dataframe to save coordinates
-        self.initialize_coordinates_dataframe()
+            # init z parameters, z range
+            self.initialize_z_stack()
 
-        # init z parameters, z range
-        self.initialize_z_stack()
+            with self._timing.get_timer("run_coordinate_acquisition"):
+                self.run_coordinate_acquisition(current_path)
 
-        with self._timing.get_timer("run_coordinate_acquisition"):
-            self.run_coordinate_acquisition(current_path)
+            # finished region scan
+            self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
 
-        # finished region scan
-        self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
-
-        # Emit the xyz data for plotting
-        if len(self.coordinates_pd) > 1:
-            x = self.coordinates_pd["x (mm)"].values
-            y = self.coordinates_pd["y (mm)"].values
-
-            # When performing a z-stack (NZ > 1), only use the bottom z position for each (x,y) location
-            if self.NZ > 1:
-                # Create a copy to avoid modifying the original dataframe
-                plot_df = self.coordinates_pd.copy()
-
-                # Group by x, y, region and get the minimum z value for each group
-                if "z_piezo (um)" in plot_df.columns:
-                    # Calculate total z for grouping
-                    plot_df["total_z"] = plot_df["z (um)"] + plot_df["z_piezo (um)"]
-                    # Group by x, y, region and get indices of minimum z values
-                    idx = plot_df.groupby(["x (mm)", "y (mm)", "region"])["total_z"].idxmin()
-                    # Filter the dataframe to only include bottom z positions
-                    plot_df = plot_df.loc[idx]
-                    z = plot_df["z (um)"].values + plot_df["z_piezo (um)"].values
-                else:
-                    # Group by x, y, region and get indices of minimum z values
-                    idx = plot_df.groupby(["x (mm)", "y (mm)", "region"])["z (um)"].idxmin()
-                    # Filter the dataframe to only include bottom z positions
-                    plot_df = plot_df.loc[idx]
-                    z = plot_df["z (um)"].values
-
-                # Get the filtered x, y, region values
-                x = plot_df["x (mm)"].values
-                y = plot_df["y (mm)"].values
-                region = plot_df["region"].values
-            else:
-                # For single z acquisitions, use all points as before
-                if "z_piezo (um)" in self.coordinates_pd.columns:
-                    z = self.coordinates_pd["z (um)"].values + self.coordinates_pd["z_piezo (um)"].values
-                else:
-                    z = self.coordinates_pd["z (um)"].values
-                region = self.coordinates_pd["region"].values
-
-            x = np.array(x).astype(float)
-            y = np.array(y).astype(float)
-            z = np.array(z).astype(float)
-
-        utils.create_done_file(current_path)
-        # TODO(imo): If anything throws above, we don't re-enable the joystick
-        self.microcontroller.enable_joystick(True)
-        self._log.debug(f"Single time point took: {time.time() - start} [s]")
+            utils.create_done_file(current_path)
+            self._log.debug(f"Single time point took: {time.time() - start} [s]")
+        finally:
+            self.microcontroller.enable_joystick(True)
 
     def initialize_z_stack(self):
         # z stacking config
@@ -433,7 +390,7 @@ class MultiPointWorker:
                     self.acquire_at_position(region_id, current_path, fov_count)
 
                 if self.abort_requested_fn():
-                    self.handle_acquisition_abort(current_path, region_id)
+                    self.handle_acquisition_abort(current_path)
                     return
 
     def acquire_at_position(self, region_id, current_path, fov):
@@ -497,7 +454,7 @@ class MultiPointWorker:
 
             # check if the acquisition should be aborted
             if self.abort_requested_fn():
-                self.handle_acquisition_abort(current_path, region_id)
+                self.handle_acquisition_abort(current_path)
 
             # update FOV counter
             self.af_fov_count = self.af_fov_count + 1
@@ -840,11 +797,7 @@ class MultiPointWorker:
         )
         iio.imwrite(os.path.join(capture_info.save_directory, file_name), rgb_image)
 
-    def handle_acquisition_abort(self, current_path, region_id: str = "0"):
-        # Move to the current region center
-        region_center = self.scan_region_coords_mm[self.scan_region_names.index(region_id)]
-        self.move_to_coordinate(region_center)
-
+    def handle_acquisition_abort(self, current_path):
         # Save coordinates.csv
         self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
         self.microcontroller.enable_joystick(True)
