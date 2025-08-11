@@ -7047,6 +7047,10 @@ class NapariMosaicDisplayWidget(QWidget):
         layer.contrast_limits = (scaled_min, scaled_max)
         layer.refresh()
 
+        # Make sure we rescale the shape layer if we have it.
+        if "Manual ROI" in self.viewer.layers:
+            self.update_shape_layer_position(prev_top_left, self.top_left_coordinate)
+
     def updateLayer(self, layer, image, x_mm, y_mm, k, prev_top_left):
         # calculate new mosaic size and position
         mosaic_height = int(math.ceil((self.viewer_extents[1] - self.viewer_extents[0]) / self.viewer_pixel_size_mm))
@@ -7078,10 +7082,10 @@ class NapariMosaicDisplayWidget(QWidget):
                         new_data[y_offset:y_end, x_offset:x_end] = mosaic.data[: y_end - y_offset, : x_end - x_offset]
                     mosaic.data = new_data
 
-        if "Manual ROI" in self.viewer.layers:
-            self.update_shape_layer_position(prev_top_left, self.top_left_coordinate)
+            if "Manual ROI" in self.viewer.layers:
+                self.update_shape_layer_position(prev_top_left, self.top_left_coordinate)
 
-        self.resetView()
+            self.resetView()
 
         # insert new image
         y_pos = int(math.floor((y_mm - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
@@ -7190,7 +7194,6 @@ class NapariMosaicDisplayWidget(QWidget):
         self.signal_clear_viewer.emit()
 
     def activate(self):
-        print("ACTIVATING NAPARI MOSAIC WIDGET")
         self.viewer.window.activate()
 
 
