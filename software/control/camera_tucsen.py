@@ -184,10 +184,10 @@ class TucsenCamera(AbstractCamera):
     def _get_model_properties(camera_model: TucsenCameraModel) -> TucsenModelProperties:
         if camera_model == TucsenCameraModel.DHYANA_400BSI_V3:
             binning_to_resolution = {
-                (1, 1): (2048, 2048),
-                # (1, 1): (2048, 2048),  # Code 1 is enhance mode, which will modify pixel values. We don't use it.
-                (2, 2): (1024, 1024),
-                (4, 4): (512, 512),
+                0: (2048, 2048),
+                # 1: (2048, 2048),  # Code 1 is enhance mode, which will modify pixel values. We don't use it.
+                2: (1024, 1024),
+                3: (512, 512),
             }
             binning_to_set_value = {
                 (1, 1): 0,
@@ -531,7 +531,12 @@ class TucsenCamera(AbstractCamera):
         # TODO: Add support for FL26BW model
         if not (binning_factor_x, binning_factor_y) in self._model_properties.binning_to_set_value:
             raise CameraError(f"No binning option exists for {binning_factor_x}x{binning_factor_y}")
-        self._raw_set_resolution(self._model_properties.binning_to_set_value[(binning_factor_x, binning_factor_y)])
+        if self._model_properties.is_genicam:
+            self._raw_set_binning_genicam(
+                self._model_properties.binning_to_set_value[(binning_factor_x, binning_factor_y)]
+            )
+        else:
+            self._raw_set_resolution(self._model_properties.binning_to_set_value[(binning_factor_x, binning_factor_y)])
         self._binning = (binning_factor_x, binning_factor_y)
 
     def get_binning(self) -> Tuple[int, int]:
@@ -543,13 +548,16 @@ class TucsenCamera(AbstractCamera):
 
     def get_resolution(self) -> Tuple[int, int]:
         # TODO: Add support for FL26BW model
-        idx = c_int(0)
-        if (
-            TUCAM_Capa_GetValue(self._camera, TUCAM_IDCAPA.TUIDC_RESOLUTION.value, pointer(idx))
-            != TUCAMRET.TUCAMRET_SUCCESS
-        ):
-            raise CameraError("Failed to get resolution")
-        return self._model_properties.binning_to_resolution[idx.value]
+        if self._model_properties.is_genicam:
+            return self._model_properties.binning_to_resolution[self._binning]
+        else:
+            idx = c_int(0)
+            if (
+                TUCAM_Capa_GetValue(self._camera, TUCAM_IDCAPA.TUIDC_RESOLUTION.value, pointer(idx))
+                != TUCAMRET.TUCAMRET_SUCCESS
+            ):
+                raise CameraError("Failed to get resolution")
+            return self._model_properties.binning_to_resolution[idx.value]
 
     def get_pixel_size_unbinned_um(self) -> float:
         return self._model_properties.pixel_size_um
