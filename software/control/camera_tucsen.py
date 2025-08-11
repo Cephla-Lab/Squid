@@ -181,7 +181,7 @@ class TucsenCamera(AbstractCamera):
         self.temperature_reading_thread.start()
 
     @staticmethod
-    def _get_model_properties(self, camera_model: TucsenCameraModel) -> TucsenModelProperties:
+    def _get_model_properties(camera_model: TucsenCameraModel) -> TucsenModelProperties:
         if camera_model == TucsenCameraModel.DHYANA_400BSI_V3:
             binning_to_resolution = {
                 (1, 1): (2048, 2048),
