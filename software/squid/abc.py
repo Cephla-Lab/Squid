@@ -315,6 +315,11 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         self._frame_callbacks: List[Tuple[int, Callable[[CameraFrame], None]]] = []
         self._frame_callbacks_enabled = True
 
+        # Software crop is applied after hardware crop (setting ROI). The ratio is based on size after hardware crop.
+        # Default is 1.0, which means no software crop.
+        self._software_crop_width_ratio = 1.0
+        self._software_crop_height_ratio = 1.0
+
     @contextmanager
     def _pause_streaming(self):
         was_streaming = self.get_is_streaming()
@@ -557,12 +562,21 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
     def get_crop_size(self) -> Tuple[int, int]:
         """
-        Returns the final crop size of the image.
+        Returns the final crop size of the image (after software crop).
         """
         binning_x, binning_y = self.get_binning()
         crop_width = int(self._config.crop_width / binning_x) if self._config.crop_width else None
         crop_height = int(self._config.crop_height / binning_y) if self._config.crop_height else None
+        crop_width = int(crop_width * self._software_crop_width_ratio)
+        crop_height = int(crop_height * self._software_crop_height_ratio)
         return crop_width, crop_height
+
+    def set_crop_size_ratio(self, width_ratio: float, height_ratio: float):
+        """
+        Set the software crop size ratio.
+        """
+        self._software_crop_width_ratio = width_ratio
+        self._software_crop_height_ratio = height_ratio
 
     def read_frame(self) -> Optional[np.ndarray]:
         """
