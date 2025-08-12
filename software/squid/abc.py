@@ -571,7 +571,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         crop_height = int(crop_height * self._software_crop_height_ratio)
         return crop_width, crop_height
 
-    def set_crop_size_ratio(self, width_ratio: float, height_ratio: float):
+    def set_software_crop_ratio(self, width_ratio: float, height_ratio: float):
         """
         Set the software crop size ratio.
         """
