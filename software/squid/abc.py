@@ -574,8 +574,13 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
     def set_software_crop_ratio(self, width_ratio: float, height_ratio: float):
         """
-        Set the software crop size ratio.
+        Set the software crop ratio. The final image size will be the hardware crop size multiplied by the
+        software crop ratio rounded to the nearest integer.
         """
+        if not (0 < width_ratio <= 1):
+            raise ValueError(f"width_ratio must be > 0 and <= 1, got {width_ratio}")
+        if not (0 < height_ratio <= 1):
+            raise ValueError(f"height_ratio must be > 0 and <= 1, got {height_ratio}")
         self._software_crop_width_ratio = width_ratio
         self._software_crop_height_ratio = height_ratio
 
