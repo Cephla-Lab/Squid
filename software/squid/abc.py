@@ -568,7 +568,8 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         crop_width = int(self._config.crop_width / binning_x) if self._config.crop_width else None
         crop_height = int(self._config.crop_height / binning_y) if self._config.crop_height else None
         crop_width = int(crop_width * self._software_crop_width_ratio)
-        crop_height = int(crop_height * self._software_crop_height_ratio)
+        crop_width = int(crop_width * self._software_crop_width_ratio) if crop_width is not None else None
+        crop_height = int(crop_height * self._software_crop_height_ratio) if crop_height is not None else None
         return crop_width, crop_height
 
     def set_software_crop_ratio(self, width_ratio: float, height_ratio: float):
