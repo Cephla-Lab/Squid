@@ -719,7 +719,7 @@ class LaserAutofocusSettingWidget(QWidget):
         self.liveController.trigger_acquisition()
 
         try:
-            frame = self.liveController.microscope.camera.read_frame()
+            frame = self.liveController.camera.read_frame()
         finally:
             self.liveController.microscope.low_level_drivers.microcontroller.turn_off_AF_laser()
             self.liveController.microscope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
