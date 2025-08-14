@@ -571,6 +571,12 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         crop_height = int(crop_height * self._software_crop_height_ratio) if crop_height is not None else None
         return crop_width, crop_height
 
+    def get_fov_size_mm(self) -> float:
+        """
+        Returns the size of the camera field of view in millimeters (after ROI and software crop).
+        """
+        return self.get_crop_size()[0] * self.get_pixel_size_binned_um() / 1000
+
     def set_software_crop_ratio(self, width_ratio: float, height_ratio: float):
         """
         Set the software crop ratio. The final image size will be the hardware crop size multiplied by the

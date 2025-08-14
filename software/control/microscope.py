@@ -599,6 +599,7 @@ class ScanCoordinatesSiLA2:
         #    scan_size_mm = self.wellplate_settings.well_size_mm
         pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera_sensor_pixel_size_um
         fov_size_mm = (pixel_size_um / 1000) * control._def.CAMERA_CONFIG.CROP_WIDTH_UNBINNED
+        # We are not taking software cropping into account here. Need to fix it when we merge this into ScanCoordinates.
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         steps = math.floor(scan_size_mm / step_size_mm)
