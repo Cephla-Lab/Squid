@@ -4245,12 +4245,7 @@ class WellplateMultiPointWidget(QFrame):
     def get_effective_well_size(self):
         well_size = self.scanCoordinates.well_size_mm
         if self.combobox_shape.currentText() == "Circle":
-            pixel_size_um = (
-                self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
-            )
-            # TODO: In the future software cropping size may be changed when program is running,
-            # so we may want to use the crop_width from the camera object here.
-            fov_size_mm = (pixel_size_um / 1000) * CAMERA_CONFIG.CROP_WIDTH_UNBINNED
+            fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
             return well_size + fov_size_mm * (1 + math.sqrt(2))
         return well_size
 

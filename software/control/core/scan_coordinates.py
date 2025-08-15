@@ -143,10 +143,7 @@ class ScanCoordinates(QObject):
 
     def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
         """add region based on user inputs"""
-        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
-        # TODO: In the future software cropping size may be changed when program is running,
-        # so we may want to use the crop_width from the camera object here.
-        fov_size_mm = pixel_size_um * control._def.CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
+        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
 
@@ -262,8 +259,7 @@ class ScanCoordinates(QObject):
 
     def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
         """Convert grid parameters NX, NY to FOV coordinates based on overlap"""
-        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
-        fov_size_mm = pixel_size_um * control._def.CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
+        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Calculate total grid size
@@ -335,8 +331,7 @@ class ScanCoordinates(QObject):
             self._log.error("Invalid manual ROI data")
             return []
 
-        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera_sensor_pixel_size_um
-        fov_size_mm = pixel_size_um * control._def.CAMERA_CONFIG.CROP_WIDTH_UNBINNED / 1000
+        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Ensure shape_coords is a numpy array

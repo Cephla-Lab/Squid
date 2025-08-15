@@ -109,7 +109,7 @@ def get_test_qt_multi_point_controller(microscope: Microscope) -> QtMultiPointCo
         channel_configuration_manager=microscope.channel_configuration_manager,
         scan_coordinates=get_test_scan_coordinates(
             microscope.objective_store,
-            get_test_navigation_viewer(microscope.objective_store, microscope.camera.get_pixel_size_unbinned_um()),
+            get_test_navigation_viewer(microscope.objective_store, microscope.camera),
             microscope.stage,
         ),
         objective_store=microscope.objective_store,
@@ -138,7 +138,7 @@ def get_test_multi_point_controller(
         channel_configuration_manager=microscope.channel_configuration_manager,
         scan_coordinates=get_test_scan_coordinates(
             microscope.objective_store,
-            get_test_navigation_viewer(microscope.objective_store, microscope.camera.get_pixel_size_unbinned_um()),
+            get_test_navigation_viewer(microscope.objective_store, microscope.camera),
             microscope.stage,
         ),
         callbacks=callbacks,

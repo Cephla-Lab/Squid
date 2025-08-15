@@ -411,13 +411,9 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageDisplayWindow,
             )
         if WELLPLATE_FORMAT == "glass slide" and IS_HCS:
-            self.navigationViewer = core.NavigationViewer(
-                self.objectiveStore, self.camera.get_pixel_size_unbinned_um(), sample="4 glass slide"
-            )
+            self.navigationViewer = core.NavigationViewer(self.objectiveStore, self.camera, sample="4 glass slide")
         else:
-            self.navigationViewer = core.NavigationViewer(
-                self.objectiveStore, self.camera.get_pixel_size_unbinned_um(), sample=WELLPLATE_FORMAT
-            )
+            self.navigationViewer = core.NavigationViewer(self.objectiveStore, self.camera, sample=WELLPLATE_FORMAT)
         self.scanCoordinates = ScanCoordinates(
             objectiveStore=self.objectiveStore, navigationViewer=self.navigationViewer, stage=self.stage
         )

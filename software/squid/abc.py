@@ -315,6 +315,11 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         self._frame_callbacks: List[Tuple[int, Callable[[CameraFrame], None]]] = []
         self._frame_callbacks_enabled = True
 
+        # Software crop is applied after hardware crop (setting ROI). The ratio is based on size after hardware crop.
+        # Default is 1.0, which means no software crop.
+        self._software_crop_width_ratio = 1.0
+        self._software_crop_height_ratio = 1.0
+
     @contextmanager
     def _pause_streaming(self):
         was_streaming = self.get_is_streaming()
@@ -557,12 +562,32 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
     def get_crop_size(self) -> Tuple[int, int]:
         """
-        Returns the final crop size of the image.
+        Returns the final crop size of the image (after software crop).
         """
         binning_x, binning_y = self.get_binning()
         crop_width = int(self._config.crop_width / binning_x) if self._config.crop_width else None
         crop_height = int(self._config.crop_height / binning_y) if self._config.crop_height else None
+        crop_width = int(crop_width * self._software_crop_width_ratio) if crop_width is not None else None
+        crop_height = int(crop_height * self._software_crop_height_ratio) if crop_height is not None else None
         return crop_width, crop_height
+
+    def get_fov_size_mm(self) -> float:
+        """
+        Returns the size of the camera field of view in millimeters (after ROI and software crop).
+        """
+        return self.get_crop_size()[0] * self.get_pixel_size_binned_um() / 1000
+
+    def set_software_crop_ratio(self, width_ratio: float, height_ratio: float):
+        """
+        Set the software crop ratio. The final image size will be the hardware crop size multiplied by the
+        software crop ratio rounded to the nearest integer.
+        """
+        if not (0 < width_ratio <= 1):
+            raise ValueError(f"width_ratio must be > 0 and <= 1, got {width_ratio}")
+        if not (0 < height_ratio <= 1):
+            raise ValueError(f"height_ratio must be > 0 and <= 1, got {height_ratio}")
+        self._software_crop_width_ratio = width_ratio
+        self._software_crop_height_ratio = height_ratio
 
     def read_frame(self) -> Optional[np.ndarray]:
         """
