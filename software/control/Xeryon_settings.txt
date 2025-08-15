@@ -10,7 +10,7 @@ PROP=250   % Set the proportional control factor for region 1
 PRO2=90    % Set the proportional control factor for region 2
 MPRO=250   % Set the maximum proportional control factor
 INTF=15    % Set the controller integral factor
-MASS=500   % Set the load mass
+MASS=300   % Set the load mass
 MMAS=1000  % Set the maximum load mass
 ZON1=0.01  % Set the width of region 1
 ZON2=1     % Set the width of region 2
@@ -22,13 +22,13 @@ ACCE=65500 % Set the acceleration (m/s²)
 DECE=255   % Set the deceleration (m/s²)
 
 ILIM=3000  % Set the lower hard limit
-ELIM=10000 % Set the error limit
+ELIM=100000 % Set the error limit
 ENCD=0     % Set the encoder direction
 ACTD=0     % Set the actuation direction
-ENCO=-69   % Set the encoder offset
+ENCO=-70  % Set the encoder offset
 
-PTOL=2     % Set position tolerance 1
-PTO2=4     % Set position tolerance 2
+PTOL=1     % Set position tolerance 1
+PTO2=3     % Set position tolerance 2
 TOUT=1000  % Set timeout 1 (ms)
 TOU2=60    % Set safety timeout 2 (s)
 TOU3=0     % Set safety timeout 3 (s)

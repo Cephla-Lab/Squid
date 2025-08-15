@@ -29,6 +29,7 @@ class ObjectiveChanger2PosController:
         self.position2_offset = XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM
 
     def home(self):
+        self.axisX.stopScan()
         self.axisX.findIndex()
 
     def moveToZero(self):
