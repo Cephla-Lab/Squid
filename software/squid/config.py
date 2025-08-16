@@ -204,6 +204,8 @@ class ToupcamCameraModel(enum.Enum):
 class TucsenCameraModel(enum.Enum):
     FL26_BW = "FL26-BW"
     DHYANA_400BSI_V3 = "DHYANA-400BSI-V3"
+    ARIES_6506 = "ARIES-6506"
+    ARIES_6510 = "ARIES-6510"
 
     @staticmethod
     def from_string(cam_string: str) -> Optional["TucsenCameraModel"]:
