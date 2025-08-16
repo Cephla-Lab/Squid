@@ -161,6 +161,11 @@ class TucsenCamera(AbstractCamera):
             # Low noise mode is not supported for FL26BW model yet.
         elif self._config.camera_model == TucsenCameraModel.DHYANA_400BSI_V3:
             self._camera_mode = Mode400BSIV3.HDR  # HDR as default
+        elif (
+            self._config.camera_model == TucsenCameraModel.ARIES_6506
+            or self._config.camera_model == TucsenCameraModel.ARIES_6510
+        ):
+            self._camera_mode = ModeAries.HDR  # HDR as default
 
         self._m_frame = None  # image buffer
         # We need to keep trigger attribute for starting and stopping streaming
@@ -200,6 +205,7 @@ class TucsenCamera(AbstractCamera):
                 Mode400BSIV3.HIGH_SPEED: 7.2,
             }
             pixel_size_um = 6.5
+            has_temperature_control = True
             is_genicam = False
         elif camera_model == TucsenCameraModel.FL26_BW:
             # TODO: Support binning for FL26BW model
@@ -211,6 +217,7 @@ class TucsenCamera(AbstractCamera):
                 ModeFL26BW.SENBIN: 12.58,
             }
             pixel_size_um = 3.76
+            has_temperature_control = True
             is_genicam = False
         elif camera_model == TucsenCameraModel.ARIES_6506 or camera_model == TucsenCameraModel.ARIES_6510:
             binning_to_set_value = {
@@ -224,6 +231,7 @@ class TucsenCamera(AbstractCamera):
                 ModeAries.SENSITIVITY: 11.2,
             }
             pixel_size_um = 6.5
+            has_temperature_control = False
             is_genicam = True
             if camera_model == TucsenCameraModel.ARIES_6506:
                 binning_to_resolution = {
@@ -245,6 +253,7 @@ class TucsenCamera(AbstractCamera):
             binning_to_set_value=binning_to_set_value,
             mode_to_line_rate_us=mode_to_line_rate_us,
             pixel_size_um=pixel_size_um,
+            has_temperature_control=has_temperature_control,
             is_genicam=is_genicam,
         )
         return model_properties
@@ -252,7 +261,8 @@ class TucsenCamera(AbstractCamera):
     def _configure_camera(self):
         # TODO: Add support for FL26BW model
         # TODO: For 400BSI V3, we use the default HDR mode for now.
-        self.set_temperature(self._config.default_temperature)
+        if self._model_properties.has_temperature_control:
+            self.set_temperature(self._config.default_temperature)
         self.set_binning(*self._config.default_binning)
         # TODO: Set default roi
 
@@ -433,7 +443,9 @@ class TucsenCamera(AbstractCamera):
             adjusted_exposure_time = exposure_time_ms
 
         if self._model_properties.is_genicam:
-            self._set_genicam_parameter("ExposureTime", adjusted_exposure_time, TUELEM_TYPE.TU_ElemFloat.value)
+            self._set_genicam_parameter(
+                "ExposureTime", int(adjusted_exposure_time * 1000), TUELEM_TYPE.TU_ElemInteger.value
+            )
         else:
             if (
                 TUCAM_Prop_SetValue(
@@ -451,7 +463,7 @@ class TucsenCamera(AbstractCamera):
 
     def get_exposure_limits(self) -> Tuple[float, float]:
         if self._model_properties.is_genicam:
-            param_info = self._get_genicam_parameter("ExposureTime", TUELEM_TYPE.TU_ElemFloat.value)
+            param_info = self._get_genicam_parameter("ExposureTime")
             return param_info["min"], param_info["max"]
         else:
             prop = TUCAM_PROP_ATTR()
@@ -473,7 +485,7 @@ class TucsenCamera(AbstractCamera):
         )
 
         if self._model_properties.is_genicam:
-            param_info = self._get_genicam_parameter("TriggerInputDelay", TUELEM_TYPE.TU_ElemInteger.value)
+            param_info = self._get_genicam_parameter("TriggerInputDelay")
             trigger_delay_ms = param_info["value"] / 1000.0  # read in us, convert to ms
         else:
             trigger_attr = TUCAM_TRIGGER_ATTR()
@@ -630,11 +642,11 @@ class TucsenCamera(AbstractCamera):
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
         if self._model_properties.is_genicam:
-            h_offset = self._get_genicam_parameter("MultiROIOffsetX", TUELEM_TYPE.TU_ElemInteger.value)
-            v_offset = self._get_genicam_parameter("MultiROIOffsetY", TUELEM_TYPE.TU_ElemInteger.value)
-            width = self._get_genicam_parameter("MultiROIWidth", TUELEM_TYPE.TU_ElemInteger.value)
-            height = self._get_genicam_parameter("MultiROIHeight", TUELEM_TYPE.TU_ElemInteger.value)
-            return (h_offset["value"], v_offset["value"], width["value"], height["value"])
+            h_offset = self._get_genicam_parameter("MultiROIOffsetX")["value"]
+            v_offset = self._get_genicam_parameter("MultiROIOffsetY")["value"]
+            width = self._get_genicam_parameter("MultiROIWidth")["value"]
+            height = self._get_genicam_parameter("MultiROIHeight")["value"]
+            return (h_offset, v_offset, width, height)
         else:
             roi_attr = TUCAM_ROI_ATTR()
             if TUCAM_Cap_GetROI(self._camera, pointer(roi_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
@@ -673,20 +685,17 @@ class TucsenCamera(AbstractCamera):
             self.set_exposure_time(self._exposure_time_ms)
 
     def get_acquisition_mode(self) -> CameraAcquisitionMode:
-        trigger_attr = TUCAM_TRIGGER_ATTR()
-        if (
-            not self._model_properties.is_genicam
-            and TUCAM_Cap_GetTrigger(self._camera, pointer(trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS
-        ):
-            raise CameraError("Failed to get acquisition mode")
         if self._model_properties.is_genicam:
-            if self._get_genicam_parameter("TriggerMode", TUELEM_TYPE.TU_ElemEnumeration.value)["value"] == 2:
+            if self._get_genicam_parameter("TriggerMode")["value"] == "Software":
                 return CameraAcquisitionMode.SOFTWARE_TRIGGER
-            elif self._get_genicam_parameter("TriggerMode", TUELEM_TYPE.TU_ElemEnumeration.value)["value"] == 0:
+            elif self._get_genicam_parameter("TriggerMode")["value"] == "FreeRunning":
                 return CameraAcquisitionMode.CONTINUOUS
-            elif self._get_genicam_parameter("TriggerMode", TUELEM_TYPE.TU_ElemEnumeration.value)["value"] == 1:
+            elif self._get_genicam_parameter("TriggerMode")["value"] == "Standard":
                 return CameraAcquisitionMode.HARDWARE_TRIGGER
         else:
+            trigger_attr = TUCAM_TRIGGER_ATTR()
+            if TUCAM_Cap_GetTrigger(self._camera, pointer(trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
+                raise CameraError("Failed to get acquisition mode")
             if trigger_attr.nTgrMode == TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_SOFTWARE.value:
                 return CameraAcquisitionMode.SOFTWARE_TRIGGER
             elif trigger_attr.nTgrMode == TUCAM_CAPTURE_MODES.TUCCM_SEQUENCE.value:
@@ -710,7 +719,7 @@ class TucsenCamera(AbstractCamera):
 
     def get_temperature(self) -> float:
         if self._model_properties.is_genicam:
-            return self._get_genicam_parameter("DeviceTemperature", TUELEM_TYPE.TU_ElemFloat.value)["value"]
+            return self._get_genicam_parameter("DeviceTemperature")["value"]
         else:
             t = c_double(0)
             if (
