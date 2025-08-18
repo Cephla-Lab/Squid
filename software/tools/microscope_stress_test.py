@@ -3,12 +3,8 @@ import threading
 import time
 from dataclasses import dataclass
 
-from toolz.curried import update_in
-
 from control.core.auto_focus_controller import AutoFocusController
-from control.core.core import NavigationViewer
 from control.core.job_processing import CaptureInfo
-from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.multi_point_utils import (
     MultiPointControllerFunctions,
@@ -73,30 +69,37 @@ class MpcTestTracker:
             self._last_update_time = time.time()
 
     def start_fn(self, params: AcquisitionParameters):
+        self._update()
         with self._update_lock:
             self._start_count += 1
 
     def finish_fn(self):
+        self._update()
         with self._update_lock:
             self._finish_count += 1
 
     def config_fn(self, mode: ChannelMode):
+        self._update()
         with self._update_lock:
             self._config_count += 1
 
     def new_image_fn(self, frame: CameraFrame, info: CaptureInfo):
+        self._update()
         with self._update_lock:
             self._image_count += 1
 
     def fov_fn(self, x_mm: float, y_mm: float):
+        self._update()
         with self._update_lock:
             self._fov_count += 1
 
     def region_progress(self, progress: RegionProgressUpdate):
+        self._update()
         with self._update_lock:
             self._region_count += 1
 
     def overall_progress(self, progress: OverallProgressUpdate):
+        self._update()
         with self._update_lock:
             self._overall_progress_count += 1
 
@@ -204,7 +207,6 @@ def main(args):
     )
 
     mpc_tracker = MpcTestTracker()
-    nav_viewer = NavigationViewer(scope.objective_store, scope.camera.get_pixel_size_unbinned_um())
     simple_scan_coordinates = ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
     simple_scan_coordinates.add_single_fov_region("single_fov_1", x_max / 2.0, y_max / 2.0, z_max / 2.0)
     simple_scan_coordinates.add_flexible_region("flexible_region", x_max / 3.0, y_max / 3.0, z_max / 3.0, 2, 2)
@@ -220,20 +222,23 @@ def main(args):
         laser_autofocus_controller=None,
     )
 
-    mpc.set_selected_configurations(
-        [
-            m.name
-            for m in scope.channel_configuration_manager.get_configurations(scope.objective_store.current_objective)
+    config_names_to_acquire =         [
+            "BF LED matrix full",
+            "DF LED matrix",
+            "Fluorescence 405 nm Ex",
+            "Fluorescence 561 nm Ex"
         ]
-    )
-
+    mpc.set_selected_configurations(config_names_to_acquire)
+    mpc.set_base_path("/tmp")
+    mpc.start_new_experiment("stress_experiment")
     mpc.run_acquisition(False)
-    update_timeout_s = 1.0
+    update_timeout_s = 5.0
 
     try:
         while mpc_tracker.counts.finishes <= 0:
             if time.time() - mpc_tracker.last_update_time > update_timeout_s:
-                raise TimeoutError("Acquisition timed out!")
+                raise TimeoutError(f"Didn't see an acquisition update after {update_timeout_s}, failing.")
+            time.sleep(0.1)
     except TimeoutError:
         mpc.request_abort_aquisition()
 
@@ -247,13 +252,13 @@ def main(args):
     if counts.starts != 1:
         log.error("Saw more than 1 start!")
 
-    if counts.fovs * counts.configs != counts.images:
+    if counts.fovs * len(config_names_to_acquire) != counts.images:
         log.error("fov*config != images")
 
-    if counts.regions != len(simple_scan_coordinates.region_centers):
-        log.error("region update does not match region center count")
+    if counts.regions != counts.images:
+        log.error("region update does not match image count")
 
-        scope.close()
+    scope.close()
 
 
 if __name__ == "__main__":

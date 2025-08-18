@@ -202,6 +202,9 @@ class MultiPointWorker:
             self._log.error(f"Operation timed out during acquisition, aborting acquisition!")
             self._log.error(te)
             self.request_abort_fn()
+        except Exception as e:
+            self._log.exception(e)
+            raise
         finally:
             # We do this above, but there are some paths that skip the proper end of the acquisition so make
             # sure to always wait for final images here before removing our callback.
@@ -429,7 +432,7 @@ class MultiPointWorker:
                     # TODO(imo): This really should not look for a string in a user configurable name.  We
                     # need some proper flag on the config to signal this instead...
                     if "RGB" in config.name:
-                        self.acquire_rgb_image(config, file_ID, current_path, current_round_images, z_level)
+                        self.acquire_rgb_image(config, file_ID, current_path, z_level, region_id, fov)
                     else:
                         self.acquire_camera_image(
                             config, file_ID, current_path, z_level, region_id=region_id, fov=fov, config_idx=config_idx
@@ -660,7 +663,7 @@ class MultiPointWorker:
         self._log.debug(f"Sleeping for {time_to_sleep} [s]")
         time.sleep(time_to_sleep)
 
-    def acquire_rgb_image(self, config, file_ID, current_path, current_round_images, k):
+    def acquire_rgb_image(self, config, file_ID, current_path, k, region_id, fov):
         # go through the channels
         rgb_channels = ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]
         images = {}
@@ -695,14 +698,26 @@ class MultiPointWorker:
         # Check if the image is RGB or monochrome
         i_size = images["BF LED matrix full_R"].shape
 
+        current_capture_info = CaptureInfo(
+            position=self.stage.get_pos(),
+            z_index=k,
+            capture_time=time.time(),
+            configuration=config,
+            save_directory=current_path,
+            file_id=file_ID,
+            region_id=region_id,
+            fov=fov,
+            configuration_idx=config.id,
+        )
+
         if len(i_size) == 3:
             # If already RGB, write and emit individual channels
             print("writing R, G, B channels")
-            self.handle_rgb_channels(images, file_ID, current_path, config, k)
+            self.handle_rgb_channels(images, current_capture_info)
         else:
             # If monochrome, reconstruct RGB image
             print("constructing RGB image")
-            self.construct_rgb_image(images, file_ID, current_path, config, k)
+            self.construct_rgb_image(images, current_capture_info)
 
     @staticmethod
     def handle_rgb_generation(current_round_images, capture_info: CaptureInfo):
