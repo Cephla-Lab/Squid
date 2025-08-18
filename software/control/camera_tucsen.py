@@ -759,7 +759,10 @@ class TucsenCamera(AbstractCamera):
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
             self._hw_trigger_fn(illumination_time)
         elif self.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER:
-            TUCAM_Cap_DoSoftwareTrigger(self._camera)
+            if self._model_properties.is_genicam:
+                self._set_genicam_parameter("TriggerSoftwarePulse", 1, TUELEM_TYPE.TU_ElemCommand.value)
+            else:
+                TUCAM_Cap_DoSoftwareTrigger(self._camera)
             self._last_trigger_timestamp = time.time()
             self._trigger_sent.set()
 
