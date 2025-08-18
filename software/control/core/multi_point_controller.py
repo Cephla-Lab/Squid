@@ -343,8 +343,9 @@ class MultiPointController:
         self.run_acquisition_current_fov = False
         if acquire_current_fov:
             pos = self.stage.get_pos()
+            # No callback - we don't want to clobber existing info with this one off fov acquisition
             acquisition_scan_coordinates = ScanCoordinates(
-                self.scanCoordinates.objectiveStore, self.scanCoordinates.navigationViewer, self.scanCoordinates.stage
+                self.scanCoordinates.objectiveStore, self.scanCoordinates.stage, self.scanCoordinates._camera
             )
             acquisition_scan_coordinates.clear_regions()
             acquisition_scan_coordinates.add_single_fov_region(

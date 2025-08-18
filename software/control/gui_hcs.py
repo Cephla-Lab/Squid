@@ -4,7 +4,13 @@ import os
 from control.core.auto_focus_controller import AutoFocusController
 from control.core.job_processing import CaptureInfo
 from control.core.laser_auto_focus_controller import LaserAutofocusController
-from control.core.scan_coordinates import ScanCoordinates
+from control.core.scan_coordinates import (
+    ScanCoordinates,
+    ScanCoordinatesUpdate,
+    AddScanCoordinateRegion,
+    RemovedScanCoordinateRegion,
+    ClearedScanCoordinates,
+)
 
 os.environ["QT_API"] = "pyqt5"
 import serial
@@ -414,8 +420,24 @@ class HighContentScreeningGui(QMainWindow):
             self.navigationViewer = core.NavigationViewer(self.objectiveStore, self.camera, sample="4 glass slide")
         else:
             self.navigationViewer = core.NavigationViewer(self.objectiveStore, self.camera, sample=WELLPLATE_FORMAT)
+
+            def scan_coordinate_callback(update: ScanCoordinatesUpdate):
+                if isinstance(update, AddScanCoordinateRegion):
+                    for fov in update.fov_centers:
+                        self.navigationViewer.register_fov_to_image(fov.x_mm, fov.y_mm)
+                elif isinstance(update, RemovedScanCoordinateRegion):
+                    for fov in update.fov_centers:
+                        self.navigationViewer.deregister_fov_to_image(fov.x_mm, fov.y_mm)
+                elif isinstance(update, ClearedScanCoordinates):
+                    self.navigationViewer.clear_overlay()
+                if self.focusMapWidget:
+                    self.focusMapWidget.on_regions_updated()
+
         self.scanCoordinates = ScanCoordinates(
-            objectiveStore=self.objectiveStore, navigationViewer=self.navigationViewer, stage=self.stage
+            objectiveStore=self.objectiveStore,
+            stage=self.stage,
+            camera=self.camera,
+            update_callback=scan_coordinate_callback,
         )
         self.multipointController = QtMultiPointController(
             self.microscope,

@@ -1,25 +1,60 @@
+from dataclasses import dataclass
 import itertools
 import math
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
-from PyQt5.QtCore import QObject
-from qtpy.QtCore import Signal
 
 import control._def
-from squid.abc import AbstractStage
+from control.core.objective_store import ObjectiveStore
+from squid.abc import AbstractStage, AbstractCamera
 import squid.logging
 
 
-class ScanCoordinates(QObject):
-    signal_scan_coordinates_updated = Signal()
+@dataclass
+class ScanCoordinatesUpdate:
+    pass
 
-    def __init__(self, objectiveStore, navigationViewer, stage: AbstractStage):
-        QObject.__init__(self)
+
+@dataclass
+class FovCenter:
+    x_mm: float
+    y_mm: float
+
+    @staticmethod
+    def from_scan_coordinates(scan_coordinates: List[Tuple[float, float]]) -> List["FovCenter"]:
+        return [FovCenter(x_mm=sc[0], y_mm=sc[1]) for sc in scan_coordinates]
+
+
+@dataclass
+class RemovedScanCoordinateRegion(ScanCoordinatesUpdate):
+    fov_centers: List[FovCenter]
+
+
+@dataclass
+class AddScanCoordinateRegion(ScanCoordinatesUpdate):
+    fov_centers: List[FovCenter]
+
+
+@dataclass
+class ClearedScanCoordinates(ScanCoordinatesUpdate):
+    pass
+
+
+class ScanCoordinates:
+    def __init__(
+        self,
+        objectiveStore: ObjectiveStore,
+        stage: AbstractStage,
+        camera: AbstractCamera,
+        update_callback: Callable[[ScanCoordinatesUpdate], None] = None,
+    ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         # Wellplate settings
         self.objectiveStore = objectiveStore
-        self.navigationViewer = navigationViewer
-        self.stage = stage
+        self.stage: AbstractStage = stage
+        self._camera: AbstractCamera = camera
+        self._update_callback: Optional[Callable[[ScanCoordinatesUpdate], None]] = update_callback
         self.well_selector = None
         self.acquisition_pattern = control._def.ACQUISITION_PATTERN
         self.fov_pattern = control._def.FOV_PATTERN
@@ -122,9 +157,9 @@ class ScanCoordinates(QObject):
         self.clear_regions()
         if manual_shapes is not None:
             # Handle manual ROIs
-            manual_region_added = False
+            scan_coordinates = None
             for i, shape_coords in enumerate(manual_shapes):
-                scan_coordinates = self.add_manual_region(shape_coords, overlap_percent)
+                scan_coordinates = self.get_points_for_manual_region(shape_coords, overlap_percent)
                 if scan_coordinates:
                     if len(manual_shapes) <= 1:
                         region_name = f"manual"
@@ -134,16 +169,17 @@ class ScanCoordinates(QObject):
                     self.region_centers[region_name] = [center[0], center[1]]
                     self.region_shapes[region_name] = "Manual"
                     self.region_fov_coordinates[region_name] = scan_coordinates
-                    manual_region_added = True
                     self._log.info(f"Added Manual Region: {region_name}")
-            if manual_region_added:
-                self.signal_scan_coordinates_updated.emit()
+            if scan_coordinates:
+                self._update_callback(
+                    AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
+                )
         else:
             self._log.info("No Manual ROI found")
 
     def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
         """add region based on user inputs"""
-        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera.get_fov_size_mm()
+        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self._camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
 
@@ -173,7 +209,6 @@ class ScanCoordinates(QObject):
                     x = center_x + (j - half_steps_width) * step_size_mm
                     if self.validate_coordinates(x, y):
                         row.append((x, y))
-                        self.navigationViewer.register_fov_to_image(x, y)
                 if self.fov_pattern == "S-Pattern" and i % 2 == 1:
                     row.reverse()
                 scan_coordinates.extend(row)
@@ -217,7 +252,6 @@ class ScanCoordinates(QObject):
                     ):
                         if self.validate_coordinates(x, y):
                             row.append((x, y))
-                            self.navigationViewer.register_fov_to_image(x, y)
 
                 if self.fov_pattern == "S-Pattern" and i % 2 == 1:
                     row.reverse()
@@ -226,16 +260,16 @@ class ScanCoordinates(QObject):
         if not scan_coordinates and shape == "Circle":
             if self.validate_coordinates(center_x, center_y):
                 scan_coordinates.append((center_x, center_y))
-                self.navigationViewer.register_fov_to_image(center_x, center_y)
 
         self.region_shapes[well_id] = shape
         self.region_centers[well_id] = [float(center_x), float(center_y), float(self.stage.get_pos().z_mm)]
         self.region_fov_coordinates[well_id] = scan_coordinates
-        self.signal_scan_coordinates_updated.emit()
+        self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)))
         self._log.info(f"Added Region: {well_id}")
 
     def remove_region(self, well_id):
         if well_id in self.region_centers:
+            removed_fov_centers: List[FovCenter] = []
             del self.region_centers[well_id]
 
             if well_id in self.region_shapes:
@@ -244,22 +278,21 @@ class ScanCoordinates(QObject):
             if well_id in self.region_fov_coordinates:
                 region_scan_coordinates = self.region_fov_coordinates.pop(well_id)
                 for coord in region_scan_coordinates:
-                    self.navigationViewer.deregister_fov_to_image(coord[0], coord[1])
+                    removed_fov_centers.append(FovCenter(x_mm=coord[0], y_mm=coord[2]))
 
             self._log.info(f"Removed Region: {well_id}")
-            self.signal_scan_coordinates_updated.emit()
+            self._update_callback(RemovedScanCoordinateRegion(fov_centers=removed_fov_centers))
 
     def clear_regions(self):
         self.region_centers.clear()
         self.region_shapes.clear()
         self.region_fov_coordinates.clear()
-        self.navigationViewer.clear_overlay()
-        self.signal_scan_coordinates_updated.emit()
+        self._update_callback(ClearedScanCoordinates())
         self._log.info("Cleared All Regions")
 
     def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
         """Convert grid parameters NX, NY to FOV coordinates based on overlap"""
-        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera.get_fov_size_mm()
+        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self._camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Calculate total grid size
@@ -274,7 +307,6 @@ class ScanCoordinates(QObject):
                 x = center_x - grid_width_mm / 2 + j * step_size_mm
                 if self.validate_coordinates(x, y):
                     row.append((x, y))
-                    self.navigationViewer.register_fov_to_image(x, y)
 
             if self.fov_pattern == "S-Pattern" and i % 2 == 1:  # reverse even rows
                 row.reverse()
@@ -285,7 +317,9 @@ class ScanCoordinates(QObject):
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
             self.region_fov_coordinates[region_id] = scan_coordinates
-            self.signal_scan_coordinates_updated.emit()
+            self._update_callback(
+                AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
+            )
         else:
             self._log.info(f"Region Out of Bounds: {region_id}")
 
@@ -295,8 +329,7 @@ class ScanCoordinates(QObject):
 
         self.region_centers[region_id] = [center_x, center_y, center_z]
         self.region_fov_coordinates[region_id] = [(center_x, center_y)]
-        self.navigationViewer.register_fov_to_image(center_x, center_y)
-        self.signal_scan_coordinates_updated.emit()
+        self._update_callback(AddScanCoordinateRegion(fov_centers=[FovCenter(x_mm=center_x, y_mm=center_y)]))
 
     def add_flexible_region_with_step_size(self, region_id, center_x, center_y, center_z, Nx, Ny, dx, dy):
         """Convert grid parameters NX, NY to FOV coordinates based on dx, dy"""
@@ -314,24 +347,25 @@ class ScanCoordinates(QObject):
             for x in x_range:
                 if self.validate_coordinates(x, y):
                     row.append((x, y))
-                    self.navigationViewer.register_fov_to_image(x, y)
             scan_coordinates.extend(row)
 
         if scan_coordinates:  # Only add region if there are valid coordinates
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
             self.region_fov_coordinates[region_id] = scan_coordinates
-            self.signal_scan_coordinates_updated.emit()
+            self._update_callback(
+                AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
+            )
         else:
             print(f"Region Out of Bounds: {region_id}")
 
-    def add_manual_region(self, shape_coords, overlap_percent):
+    def get_points_for_manual_region(self, shape_coords, overlap_percent):
         """Add region from manually drawn polygon shape"""
         if shape_coords is None or len(shape_coords) < 3:
             self._log.error("Invalid manual ROI data")
             return []
 
-        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.navigationViewer.camera.get_fov_size_mm()
+        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self._camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Ensure shape_coords is a numpy array
@@ -405,10 +439,6 @@ class ScanCoordinates(QObject):
                 mask = sorted_points[:, 1] == unique_y[i]
                 sorted_points[mask] = sorted_points[mask][::-1]
 
-        # Register FOVs
-        for x, y in sorted_points:
-            self.navigationViewer.register_fov_to_image(x, y)
-
         return sorted_points.tolist()
 
     def add_template_region(
@@ -423,13 +453,13 @@ class ScanCoordinates(QObject):
         """Add a region based on a template of x and y coordinates"""
         scan_coordinates = []
         for i in range(len(template_x_mm)):
-            x = x_mm + template_x_mm[i]
-            y = y_mm + template_y_mm[i]
+            x = float(x_mm + template_x_mm[i])
+            y = float(y_mm + template_y_mm[i])
             if self.validate_coordinates(x, y):
                 scan_coordinates.append((x, y))
-                self.navigationViewer.register_fov_to_image(x, y)
         self.region_centers[region_id] = [x_mm, y_mm, z_mm]
         self.region_fov_coordinates[region_id] = scan_coordinates
+        self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)))
 
     def region_contains_coordinate(self, region_id: str, x: float, y: float) -> bool:
         # TODO: check for manual region
