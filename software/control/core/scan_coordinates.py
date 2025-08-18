@@ -54,7 +54,9 @@ class ScanCoordinates:
         self.objectiveStore = objectiveStore
         self.stage: AbstractStage = stage
         self.camera: AbstractCamera = camera
-        self._update_callback: Callable[[ScanCoordinatesUpdate], None] = update_callback if update_callback else lambda update: None
+        self._update_callback: Callable[[ScanCoordinatesUpdate], None] = (
+            update_callback if update_callback else lambda update: None
+        )
         self.well_selector = None
         self.acquisition_pattern = control._def.ACQUISITION_PATTERN
         self.fov_pattern = control._def.FOV_PATTERN

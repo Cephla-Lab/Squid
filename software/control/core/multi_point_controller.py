@@ -347,7 +347,7 @@ class MultiPointController:
             acquisition_scan_coordinates = ScanCoordinates(
                 objectiveStore=self.scanCoordinates.objectiveStore,
                 stage=self.scanCoordinates.stage,
-                camera=self.scanCoordinates.camera
+                camera=self.scanCoordinates.camera,
             )
             acquisition_scan_coordinates.clear_regions()
             acquisition_scan_coordinates.add_single_fov_region(
