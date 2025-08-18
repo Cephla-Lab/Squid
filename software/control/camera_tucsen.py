@@ -363,7 +363,7 @@ class TucsenCamera(AbstractCamera):
                 try:
                     TUCAM_Buf_WaitForFrame(self._camera, pointer(self._m_frame), c_int32(wait_time_ms))
                 except Exception:
-                    pass
+                    continue
 
                 if self._m_frame is None or self._m_frame.pBuffer is None or self._m_frame.pBuffer == 0:
                     self._log.error("Invalid frame buffer")
@@ -678,9 +678,10 @@ class TucsenCamera(AbstractCamera):
                     self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_STANDARD.value
             else:
                 raise ValueError(f"Unhandled {acquisition_mode=}")
-            self._trigger_attr.nBufFrames = 1
-            if TUCAM_Cap_SetTrigger(self._camera, self._trigger_attr) != TUCAMRET.TUCAMRET_SUCCESS:
-                raise CameraError("Failed to set acquisition mode")
+            if not self._model_properties.is_genicam:
+                self._trigger_attr.nBufFrames = 1
+                if TUCAM_Cap_SetTrigger(self._camera, self._trigger_attr) != TUCAMRET.TUCAMRET_SUCCESS:
+                    raise CameraError("Failed to set acquisition mode")
             self._update_internal_settings()
             self.set_exposure_time(self._exposure_time_ms)
 
@@ -692,6 +693,8 @@ class TucsenCamera(AbstractCamera):
                 return CameraAcquisitionMode.CONTINUOUS
             elif self._get_genicam_parameter("TriggerMode")["value"] == "Standard":
                 return CameraAcquisitionMode.HARDWARE_TRIGGER
+            else:
+                raise ValueError(f"Unknown tucsen trigger source mode {trigger_value}")
         else:
             trigger_attr = TUCAM_TRIGGER_ATTR()
             if TUCAM_Cap_GetTrigger(self._camera, pointer(trigger_attr)) != TUCAMRET.TUCAMRET_SUCCESS:
