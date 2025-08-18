@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 import itertools
 import math
-from typing import Callable, List, Optional, Tuple
+import re
+from typing import Callable, List, Tuple
 
 import numpy as np
 
@@ -280,7 +281,7 @@ class ScanCoordinates:
             if well_id in self.region_fov_coordinates:
                 region_scan_coordinates = self.region_fov_coordinates.pop(well_id)
                 for coord in region_scan_coordinates:
-                    removed_fov_centers.append(FovCenter(x_mm=coord[0], y_mm=coord[2]))
+                    removed_fov_centers.append(FovCenter(x_mm=coord[0], y_mm=coord[1]))
 
             self._log.info(f"Removed Region: {well_id}")
             self._update_callback(RemovedScanCoordinateRegion(fov_centers=removed_fov_centers))
@@ -629,3 +630,153 @@ class ScanCoordinates:
                 self.region_centers[region_id].append(new_z)
 
         self._log.info(f"Updated z-level to {new_z} for region:{region_id}, fov:{fov}")
+
+
+class ScanCoordinatesSiLA2(ScanCoordinates):
+    def __init__(
+        self,
+        objectiveStore: ObjectiveStore,
+        stage: AbstractStage,
+        camera: AbstractCamera,
+        update_callback: Callable[[ScanCoordinatesUpdate], None],
+    ):
+        super().__init__(objectiveStore=objectiveStore, stage=stage, camera=camera, update_callback=update_callback)
+
+    def get_scan_coordinates_from_selected_wells(
+        self, wellplate_format, well_name, scan_size_mm=None, overlap_percent=10
+    ):
+        wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
+        self.get_selected_well_coordinates(well_name, wellplate_settings)
+
+        if wellplate_format in ["384 well plate", "1536 well plate"]:
+            well_shape = "Square"
+        else:
+            well_shape = "Circle"
+
+        if scan_size_mm is None:
+            scan_size_mm = wellplate_settings["well_size_mm"]
+
+        for k, v in self.region_centers.items():
+            coords = self.create_region_coordinates(v[0], v[1], scan_size_mm, overlap_percent, well_shape)
+            self.region_fov_coordinates[k] = coords
+
+    def get_selected_well_coordinates(self, well_names, wellplate_settings):
+        """
+        Given a comma separated list of well names in A1 format, return the coordinates for the wells (wrt the A1 corner)
+        """
+        pattern = r"([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)"
+        descriptions = well_names.split(",")
+
+        def row_to_index(row):
+            index = 0
+            for char in row:
+                index = index * 26 + (ord(char.upper()) - ord("A") + 1)
+            return index - 1
+
+        def index_to_row(index):
+            index += 1
+            row = ""
+            while index > 0:
+                index -= 1
+                row = chr(index % 26 + ord("A")) + row
+                index //= 26
+            return row
+
+        for desc in descriptions:
+            match = re.match(pattern, desc.strip())
+            if match:
+                start_row, start_col, end_row, end_col = match.groups()
+                start_row_index = row_to_index(start_row)
+                start_col_index = int(start_col) - 1
+
+                if end_row and end_col:  # It's a range
+                    end_row_index = row_to_index(end_row)
+                    end_col_index = int(end_col) - 1
+                    for row in range(min(start_row_index, end_row_index), max(start_row_index, end_row_index) + 1):
+                        cols = range(min(start_col_index, end_col_index), max(start_col_index, end_col_index) + 1)
+                        # Reverse column order for alternating rows if needed
+                        if (row - start_row_index) % 2 == 1:
+                            cols = reversed(cols)
+
+                        for col in cols:
+                            x_mm = (
+                                wellplate_settings["a1_x_mm"]
+                                + col * wellplate_settings["well_spacing_mm"]
+                                + control._def.WELLPLATE_OFFSET_X_mm
+                            )
+                            y_mm = (
+                                wellplate_settings["a1_y_mm"]
+                                + row * wellplate_settings["well_spacing_mm"]
+                                + control._def.WELLPLATE_OFFSET_Y_mm
+                            )
+                            self.region_centers[index_to_row(row) + str(col + 1)] = (x_mm, y_mm)
+                else:
+                    x_mm = (
+                        wellplate_settings["a1_x_mm"]
+                        + start_col_index * wellplate_settings["well_spacing_mm"]
+                        + control._def.WELLPLATE_OFFSET_X_mm
+                    )
+                    y_mm = (
+                        wellplate_settings["a1_y_mm"]
+                        + start_row_index * wellplate_settings["well_spacing_mm"]
+                        + control._def.WELLPLATE_OFFSET_Y_mm
+                    )
+                    self.region_centers[start_row + start_col] = (x_mm, y_mm)
+            else:
+                raise ValueError(f"Invalid well format: {desc}. Expected format is 'A1' or 'A1:B2' for ranges.")
+
+    def create_region_coordinates(self, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
+        fov_size_mm = self.camera.get_fov_size_mm()
+        # We are not taking software cropping into account here. Need to fix it when we merge this into ScanCoordinates.
+        step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
+
+        steps = math.floor(scan_size_mm / step_size_mm)
+        if shape == "Circle":
+            tile_diagonal = math.sqrt(2) * fov_size_mm
+            if steps % 2 == 1:  # for odd steps
+                actual_scan_size_mm = (steps - 1) * step_size_mm + tile_diagonal
+            else:  # for even steps
+                actual_scan_size_mm = math.sqrt(
+                    ((steps - 1) * step_size_mm + fov_size_mm) ** 2 + (step_size_mm + fov_size_mm) ** 2
+                )
+
+            if actual_scan_size_mm > scan_size_mm:
+                actual_scan_size_mm -= step_size_mm
+                steps -= 1
+        else:
+            actual_scan_size_mm = (steps - 1) * step_size_mm + fov_size_mm
+
+        steps = max(1, steps)  # Ensure at least one step
+
+        scan_coordinates = []
+        half_steps = (steps - 1) / 2
+        radius_squared = (scan_size_mm / 2) ** 2
+        fov_size_mm_half = fov_size_mm / 2
+
+        def is_in_circle(x, y, center_x, center_y, radius_squared, fov_size_mm_half):
+            corners = [
+                (x - fov_size_mm_half, y - fov_size_mm_half),
+                (x + fov_size_mm_half, y - fov_size_mm_half),
+                (x - fov_size_mm_half, y + fov_size_mm_half),
+                (x + fov_size_mm_half, y + fov_size_mm_half),
+            ]
+            return all((cx - center_x) ** 2 + (cy - center_y) ** 2 <= radius_squared for cx, cy in corners)
+
+        for i in range(steps):
+            row = []
+            y = center_y + (i - half_steps) * step_size_mm
+            for j in range(steps):
+                x = center_x + (j - half_steps) * step_size_mm
+                if shape == "Square" or (
+                    shape == "Circle" and is_in_circle(x, y, center_x, center_y, radius_squared, fov_size_mm_half)
+                ):
+                    row.append((x, y))
+
+            if control._def.FOV_PATTERN == "S-Pattern" and i % 2 == 1:
+                row.reverse()
+            scan_coordinates.extend(row)
+
+        if not scan_coordinates and shape == "Circle":
+            scan_coordinates.append((center_x, center_y))
+
+        return scan_coordinates

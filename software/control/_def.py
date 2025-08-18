@@ -801,6 +801,30 @@ SAMPLE_FORMATS_CSV_PATH = "sample_formats.csv"
 
 OBJECTIVES, WELLPLATE_FORMAT_SETTINGS = load_formats()
 
+
+def get_wellplate_settings(wellplate_format):
+    if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
+        settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
+    elif wellplate_format == "0":
+        settings = {
+            "format": "0",
+            "a1_x_mm": 0,
+            "a1_y_mm": 0,
+            "a1_x_pixel": 0,
+            "a1_y_pixel": 0,
+            "well_size_mm": 0,
+            "well_spacing_mm": 0,
+            "number_of_skip": 0,
+            "rows": 1,
+            "cols": 1,
+        }
+    else:
+        raise ValueError(
+            f"Invalid wellplate format: {wellplate_format}. Expected formats are: {list(WELLPLATE_FORMAT_SETTINGS.keys())} or '0'"
+        )
+    return settings
+
+
 # limit switch
 X_HOME_SWITCH_POLARITY = LIMIT_SWITCH_POLARITY.X_HOME
 Y_HOME_SWITCH_POLARITY = LIMIT_SWITCH_POLARITY.Y_HOME
