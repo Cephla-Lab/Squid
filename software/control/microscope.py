@@ -1,5 +1,3 @@
-import math
-import re
 import serial
 from typing import Optional, TypeVar
 
@@ -473,12 +471,6 @@ class Microscope:
 
     def set_objective(self, objective):
         self.objective_store.set_current_objective(objective)
-
-    def set_coordinates(self, wellplate_format, selected, scan_size_mm, overlap_percent):
-        self.scanCoordinates = ScanCoordinatesSiLA2(self.objective_store, self.camera.get_pixel_size_unbinned_um())
-        self.scanCoordinates.get_scan_coordinates_from_selected_wells(
-            wellplate_format, selected, scan_size_mm, overlap_percent
-        )
 
     def set_illumination_intensity(self, channel, intensity, objective=None):
         if objective is None:
