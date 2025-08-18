@@ -268,7 +268,7 @@ class Microscope:
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller, ldi.intensity_mode, ldi.shutter_mode, LightSourceType.LDI, ldi
             )
-        elif control._def.USE_CELESTA_ETHENET_CONTROL and not simulated:
+        elif control._def.USE_CELESTA_ETHERNET_CONTROL and not simulated:
             celesta = control.celesta.CELESTA()
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
