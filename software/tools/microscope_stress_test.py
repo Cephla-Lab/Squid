@@ -222,12 +222,12 @@ def main(args):
         laser_autofocus_controller=None,
     )
 
-    config_names_to_acquire =         [
-            "BF LED matrix full",
-            "DF LED matrix",
-            "Fluorescence 405 nm Ex",
-            "Fluorescence 561 nm Ex"
-        ]
+    config_names_to_acquire = [
+        "BF LED matrix full",
+        "DF LED matrix",
+        "Fluorescence 405 nm Ex",
+        "Fluorescence 561 nm Ex",
+    ]
     mpc.set_selected_configurations(config_names_to_acquire)
     mpc.set_base_path("/tmp")
     mpc.start_new_experiment("stress_experiment")
