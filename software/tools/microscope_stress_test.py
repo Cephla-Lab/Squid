@@ -195,14 +195,10 @@ def main(args):
         log.info(f"Counter with {label=} saw {count} counts with {desired_frames=}")
 
     # Running a really simple acquisition
-    live_controller = LiveController(scope, scope.camera)
-    live_controller.set_microscope_mode(
-        scope.channel_configuration_manager.get_configurations(scope.objective_store.current_objective)[0]
-    )
     af_controller = AutoFocusController(
         camera=scope.camera,
         stage=scope.stage,
-        liveController=live_controller,
+        liveController=scope.live_controller,
         microcontroller=scope.low_level_drivers.microcontroller,
         nl5=None,
     )
@@ -215,7 +211,7 @@ def main(args):
 
     mpc = MultiPointController(
         microscope=scope,
-        live_controller=live_controller,
+        live_controller=scope.live_controller,
         autofocus_controller=af_controller,
         objective_store=scope.objective_store,
         channel_configuration_manager=scope.channel_configuration_manager,
