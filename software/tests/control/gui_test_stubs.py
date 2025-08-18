@@ -81,10 +81,10 @@ def get_test_laser_autofocus_controller(microscope: Microscope):
 
 def get_test_scan_coordinates(
     objective_store: control.core.objective_store.ObjectiveStore,
-    navigation_viewer: NavigationViewer,
     stage: squid.abc.AbstractStage,
+    camera: squid.abc.AbstractCamera
 ):
-    return ScanCoordinates(objective_store, navigation_viewer, stage)
+    return ScanCoordinates(objectiveStore=objective_store, stage=stage, camera=camera)
 
 
 def get_test_objective_store():
@@ -109,8 +109,8 @@ def get_test_qt_multi_point_controller(microscope: Microscope) -> QtMultiPointCo
         channel_configuration_manager=microscope.channel_configuration_manager,
         scan_coordinates=get_test_scan_coordinates(
             microscope.objective_store,
-            get_test_navigation_viewer(microscope.objective_store, microscope.camera),
             microscope.stage,
+            microscope.camera
         ),
         objective_store=microscope.objective_store,
         laser_autofocus_controller=get_test_laser_autofocus_controller(microscope),
@@ -137,9 +137,9 @@ def get_test_multi_point_controller(
         ),
         channel_configuration_manager=microscope.channel_configuration_manager,
         scan_coordinates=get_test_scan_coordinates(
-            microscope.objective_store,
-            get_test_navigation_viewer(microscope.objective_store, microscope.camera),
-            microscope.stage,
+            objective_store=microscope.objective_store,
+            stage=microscope.stage,
+            camera=microscope.camera
         ),
         callbacks=callbacks,
         objective_store=microscope.objective_store,

@@ -5619,6 +5619,7 @@ class FocusMapWidget(QFrame):
     def __init__(self, stage: AbstractStage, navigationViewer, scanCoordinates, focusMap):
         super().__init__()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
+        self._allow_updating_focus_points_on_signal = True
 
         # Store controllers
         self.stage = stage
@@ -5634,8 +5635,6 @@ class FocusMapWidget(QFrame):
         self.make_connections()
         self.setEnabled(False)
         self.add_margin = True  # margin for focus grid makes it smaller, but will avoid points at the borders
-
-        self._allow_updating_focus_points_on_signal = True
 
     def setup_ui(self):
         """Create and arrange UI components"""

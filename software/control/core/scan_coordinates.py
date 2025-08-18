@@ -53,8 +53,8 @@ class ScanCoordinates:
         # Wellplate settings
         self.objectiveStore = objectiveStore
         self.stage: AbstractStage = stage
-        self._camera: AbstractCamera = camera
-        self._update_callback: Optional[Callable[[ScanCoordinatesUpdate], None]] = update_callback
+        self.camera: AbstractCamera = camera
+        self._update_callback: Callable[[ScanCoordinatesUpdate], None] = update_callback if update_callback else lambda update: None
         self.well_selector = None
         self.acquisition_pattern = control._def.ACQUISITION_PATTERN
         self.fov_pattern = control._def.FOV_PATTERN
@@ -179,7 +179,7 @@ class ScanCoordinates:
 
     def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
         """add region based on user inputs"""
-        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self._camera.get_fov_size_mm()
+        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
 
@@ -292,7 +292,7 @@ class ScanCoordinates:
 
     def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
         """Convert grid parameters NX, NY to FOV coordinates based on overlap"""
-        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self._camera.get_fov_size_mm()
+        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Calculate total grid size
@@ -365,7 +365,7 @@ class ScanCoordinates:
             self._log.error("Invalid manual ROI data")
             return []
 
-        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self._camera.get_fov_size_mm()
+        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Ensure shape_coords is a numpy array

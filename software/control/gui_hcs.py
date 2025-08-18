@@ -421,17 +421,17 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.navigationViewer = core.NavigationViewer(self.objectiveStore, self.camera, sample=WELLPLATE_FORMAT)
 
-            def scan_coordinate_callback(update: ScanCoordinatesUpdate):
-                if isinstance(update, AddScanCoordinateRegion):
-                    for fov in update.fov_centers:
-                        self.navigationViewer.register_fov_to_image(fov.x_mm, fov.y_mm)
-                elif isinstance(update, RemovedScanCoordinateRegion):
-                    for fov in update.fov_centers:
-                        self.navigationViewer.deregister_fov_to_image(fov.x_mm, fov.y_mm)
-                elif isinstance(update, ClearedScanCoordinates):
-                    self.navigationViewer.clear_overlay()
-                if self.focusMapWidget:
-                    self.focusMapWidget.on_regions_updated()
+        def scan_coordinate_callback(update: ScanCoordinatesUpdate):
+            if isinstance(update, AddScanCoordinateRegion):
+                for fov in update.fov_centers:
+                    self.navigationViewer.register_fov_to_image(fov.x_mm, fov.y_mm)
+            elif isinstance(update, RemovedScanCoordinateRegion):
+                for fov in update.fov_centers:
+                    self.navigationViewer.deregister_fov_to_image(fov.x_mm, fov.y_mm)
+            elif isinstance(update, ClearedScanCoordinates):
+                self.navigationViewer.clear_overlay()
+            if self.focusMapWidget:
+                self.focusMapWidget.on_regions_updated()
 
         self.scanCoordinates = ScanCoordinates(
             objectiveStore=self.objectiveStore,

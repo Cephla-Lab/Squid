@@ -205,7 +205,7 @@ def main(args):
 
     mpc_tracker = MpcTestTracker()
     nav_viewer = NavigationViewer(scope.objective_store, scope.camera.get_pixel_size_unbinned_um())
-    simple_scan_coordinates = ScanCoordinates(scope.objective_store, nav_viewer, scope.stage)
+    simple_scan_coordinates = ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
     simple_scan_coordinates.add_single_fov_region("single_fov_1", x_max / 2.0, y_max / 2.0, z_max / 2.0)
     simple_scan_coordinates.add_flexible_region("flexible_region", x_max / 3.0, y_max / 3.0, z_max / 3.0, 2, 2)
 

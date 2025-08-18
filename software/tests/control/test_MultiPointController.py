@@ -176,7 +176,7 @@ def select_some_configs(mpc: MultiPointController, objective: str):
     mpc.set_selected_configurations(selected_configurations_name=first_two_config_names)
 
 
-def test_multi_point_controller_basic_acquisition():
+def test_multi_point_controller_basic_acquisition(qtbot):
     control._def.MERGE_CHANNELS = False
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
