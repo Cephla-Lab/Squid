@@ -54,6 +54,7 @@ class TucsenModelProperties(pydantic.BaseModel):
     binning_to_set_value: Dict[Tuple[int, int], int]
     mode_to_line_rate_us: Dict[Union[Mode400BSIV3, ModeFL26BW, ModeAries], float]
     pixel_size_um: float
+    has_temperature_control: bool
     is_genicam: bool
 
 
@@ -363,7 +364,7 @@ class TucsenCamera(AbstractCamera):
                 try:
                     TUCAM_Buf_WaitForFrame(self._camera, pointer(self._m_frame), c_int32(wait_time_ms))
                 except Exception:
-                    continue
+                    pass
 
                 if self._m_frame is None or self._m_frame.pBuffer is None or self._m_frame.pBuffer == 0:
                     self._log.error("Invalid frame buffer")
