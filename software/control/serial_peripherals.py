@@ -447,7 +447,7 @@ class Dragonfly:
         self.get_config()
 
         # Exit standby mode
-        self._send_command("AT_STANDBY,0")
+        self._send_command("AT_STANDBY,0", read_delay=10)
         self._send_command("AT_DC_SLCT,1")
         self.set_disk_speed(self.spinning_disk_max_speed)
         self.get_port_selection_dichroic()
@@ -578,7 +578,7 @@ class Dragonfly:
             modality: Modality string (e.g., 'CONFOCAL', 'BF', etc.)
         """
         command = f"AT_MODALITY,{modality}"
-        self._send_command(command)
+        self._send_command(command, read_delay=2)
 
     def get_modality(self) -> str:
         """Get current imaging modality
