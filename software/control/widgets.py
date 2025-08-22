@@ -1052,16 +1052,14 @@ class DragonflyConfocalWidget(QWidget):
         try:
             if self.confocal_mode:
                 # Switch to widefield
-                result = self.dragonfly.set_modality("BF")  # or whatever widefield mode string is
-                if result:
-                    self.confocal_mode = False
-                    self.btn_toggle_confocal.setText("Switch to Confocal")
+                self.dragonfly.set_modality("BF")  # or whatever widefield mode string is
+                self.confocal_mode = False
+                self.btn_toggle_confocal.setText("Switch to Confocal")
             else:
                 # Switch to confocal
-                result = self.dragonfly.set_modality("CONFOCAL")
-                if result:
-                    self.confocal_mode = True
-                    self.btn_toggle_confocal.setText("Switch to Widefield")
+                self.dragonfly.set_modality("CONFOCAL")
+                self.confocal_mode = True
+                self.btn_toggle_confocal.setText("Switch to Widefield")
 
             self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
         except Exception as e:
