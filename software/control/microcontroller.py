@@ -606,6 +606,14 @@ class Microcontroller:
         cmd[5] = min(int(b * 255), 255)
         self.send_command(cmd)
 
+    def set_continuous_triggering(self, enabled: bool, low_ms: int, high_ms: int, trigger_output_ch=0):
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_CONTINUOUS_HARDWARE_TRIGGERING
+        cmd[2] = trigger_output_ch
+        cmd[3] = 1 if enabled else 0
+        cmd[4] = low_ms
+        cmd[5] = high_ms
+
     def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
         illumination_on_time_us = int(illumination_on_time_us)
         cmd = bytearray(self.tx_buffer_length)
