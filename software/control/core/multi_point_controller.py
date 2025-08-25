@@ -524,7 +524,8 @@ class MultiPointController:
                 self.autofocusController.focus_map_coords.append((x, y, z))
             self.autofocusController.use_focus_map = self.already_using_fmap
         self.callbacks.signal_current_configuration(self.configuration_before_running_multipoint)
-        self.liveController.set_microscope_mode(self.configuration_before_running_multipoint)
+        if self.configuration_before_running_multipoint:
+            self.liveController.set_microscope_mode(self.configuration_before_running_multipoint)
 
         # Restore callbacks to pre-acquisition state
         self.camera.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
