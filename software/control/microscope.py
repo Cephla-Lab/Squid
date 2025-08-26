@@ -19,6 +19,7 @@ from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage
 from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
 import control.celesta
+import control.illumination_andor
 import control.filterwheel as filterwheel
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
@@ -289,8 +290,10 @@ class Microscope:
                 celesta,
             )
         elif control._def.USE_ANDOR_LASER_CONTROL and not simulated:
-            andor_laser = illumination_andor.AndorLaser(ANDOR_LASER_VID, ANDOR_LASER_PID)
-            illuminationController = IlluminationController(
+            andor_laser = control.illumination_andor.AndorLaser(
+                control._def.ANDOR_LASER_VID, control._def.ANDOR_LASER_PID
+            )
+            illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
                 IntensityControlMode.Software,
                 ShutterControlMode.TTL,
