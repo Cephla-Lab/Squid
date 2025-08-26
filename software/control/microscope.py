@@ -64,7 +64,7 @@ class MicroscopeAddons:
             )
 
         dragonfly = None
-        if control._def.ENABLE_SPINNING_DISK_CONFOCAL and control.def.USE_DRAGONFLY:
+        if control._def.ENABLE_SPINNING_DISK_CONFOCAL and control._def.USE_DRAGONFLY:
             dragonfly = (
                 serial_peripherals.Dragonfly(SN=control._def.DRAGONFLY_SERIAL_NUMBER)
                 if not simulated
