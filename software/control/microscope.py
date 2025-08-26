@@ -55,7 +55,7 @@ class MicroscopeAddons:
 
         xlight = None
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL and not control._def.USE_DRAGONFLY:
-            # TODO:For user compatibility, when ENABLE_SPINNING_DISK_CONFOCAL is True, we use XLight/Cicero on default.
+            # TODO: For user compatibility, when ENABLE_SPINNING_DISK_CONFOCAL is True, we use XLight/Cicero on default.
             # This needs to be changed when we figure out better machine configuration structure.
             xlight = (
                 serial_peripherals.XLight(control._def.XLIGHT_SERIAL_NUMBER, control._def.XLIGHT_SLEEP_TIME_FOR_WHEEL)
@@ -151,6 +151,7 @@ class MicroscopeAddons:
 
         return MicroscopeAddons(
             xlight,
+            dragonfly,
             nl5,
             cellx,
             emission_filter_wheel,
@@ -177,6 +178,7 @@ class MicroscopeAddons:
         sci_microscopy_led_array: Optional[SciMicroscopyLEDArray] = None,
     ):
         self.xlight: Optional[serial_peripherals.XLight] = xlight
+        self.dragonfly: Optional[serial_peripherals.Dragonfly] = dragonfly
         self.nl5: Optional[NL5] = nl5
         self.cellx: Optional[serial_peripherals.CellX] = cellx
         self.emission_filter_wheel = emission_filter_wheel
