@@ -255,6 +255,7 @@ class HighContentScreeningGui(QMainWindow):
         self.microcontroller: Microcontroller = microscope.low_level_drivers.microcontroller
 
         self.xlight: Optional[serial_peripherals.XLight] = microscope.addons.xlight
+        self.dragonfly: Optional[serial_peripherals.Dragonfly] = microscope.addons.dragonfly
         self.nl5: Optional[Any] = microscope.addons.nl5
         self.cellx: Optional[serial_peripherals.CellX] = microscope.addons.cellx
         self.emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterController] = (
@@ -532,7 +533,12 @@ class HighContentScreeningGui(QMainWindow):
     def load_widgets(self):
         # Initialize all GUI widgets
         if ENABLE_SPINNING_DISK_CONFOCAL:
-            self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
+            # TODO: For user compatibility, when ENABLE_SPINNING_DISK_CONFOCAL is True, we use XLight/Cicero on default.
+            # This needs to be changed when we figure out better machine configuration structure.
+            if USE_DRAGONFLY:
+                self.spinningDiskConfocalWidget = widgets.DragonflyConfocalWidget(self.dragonfly)
+            else:
+                self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
         if ENABLE_NL5:
             import control.NL5Widget as NL5Widget
 

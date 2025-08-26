@@ -982,6 +982,197 @@ class SpinningDiskConfocalWidget(QWidget):
         self.enable_all_buttons(True)
 
 
+class DragonflyConfocalWidget(QWidget):
+
+    signal_toggle_confocal_widefield = Signal(bool)
+
+    def __init__(self, dragonfly):
+        super(DragonflyConfocalWidget, self).__init__()
+
+        self.dragonfly = dragonfly
+
+        self.init_ui()
+
+        # Initialize current states from hardware
+        try:
+            current_modality = self.dragonfly.get_modality()
+            self.confocal_mode = current_modality == "CONFOCAL" if current_modality else False
+
+            current_dichroic = self.dragonfly.get_port_selection_dichroic()
+            if current_dichroic is not None:
+                self.dropdown_dichroic.setCurrentText(str(current_dichroic))
+
+            current_port1_filter = self.dragonfly.get_emission_filter(1)
+            if current_port1_filter is not None:
+                self.dropdown_port1_emission_filter.setCurrentText(str(current_port1_filter))
+
+            current_port2_filter = self.dragonfly.get_emission_filter(2)
+            if current_port2_filter is not None:
+                self.dropdown_port2_emission_filter.setCurrentText(str(current_port2_filter))
+
+            current_field_aperture = self.dragonfly.get_field_aperture_wheel_position()
+            if current_field_aperture is not None:
+                self.dropdown_field_aperture.setCurrentText(str(current_field_aperture))
+
+            motor_state = self.dragonfly.get_disk_motor_state()
+            if motor_state is not None:
+                self.btn_disk_motor.setChecked(motor_state)
+
+        except Exception as e:
+            print(f"Error initializing widget state: {e}")
+
+        # Set initial button text
+        if self.confocal_mode:
+            self.btn_toggle_confocal.setText("Switch to Widefield")
+        else:
+            self.btn_toggle_confocal.setText("Switch to Confocal")
+
+        # Connect signals
+        self.btn_toggle_confocal.clicked.connect(self.toggle_confocal_mode)
+        self.btn_disk_motor.clicked.connect(self.toggle_disk_motor)
+        self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
+        self.dropdown_port1_emission_filter.currentIndexChanged.connect(self.set_port1_emission_filter)
+        self.dropdown_port2_emission_filter.currentIndexChanged.connect(self.set_port2_emission_filter)
+        self.dropdown_field_aperture.currentIndexChanged.connect(self.set_field_aperture)
+
+        # Emit initial state
+        self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
+
+    def init_ui(self):
+        main_layout = QVBoxLayout()
+
+        layout_confocal = QHBoxLayout()
+        # Row 1: Switch to Confocal button, Disk Motor button, Dichroic dropdown
+        self.btn_toggle_confocal = QPushButton("Switch to Confocal")
+        self.btn_disk_motor = QPushButton("Disk Motor On")
+        self.btn_disk_motor.setCheckable(True)
+
+        dichroic_label = QLabel("Port Selection")
+        dichroic_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        self.dropdown_dichroic = QComboBox(self)
+        self.dropdown_dichroic.addItems(self.dragonfly.get_port_selection_dichroic_info())
+
+        layout_confocal.addWidget(self.btn_toggle_confocal)
+        layout_confocal.addWidget(self.btn_disk_motor)
+        layout_confocal.addWidget(dichroic_label)
+        layout_confocal.addWidget(self.dropdown_dichroic)
+
+        layout_wheels = QGridLayout()
+        # Row 2: Camera Port 1 Emission Filter and Field Aperture
+        port1_emission_label = QLabel("Port 1 Emission Filter")
+        self.dropdown_port1_emission_filter = QComboBox(self)
+        self.dropdown_port1_emission_filter.addItems(self.dragonfly.get_emission_filter_info(1))
+
+        port1_aperture_label = QLabel("Field Aperture")
+        self.dropdown_field_aperture = QComboBox(self)
+        self.dropdown_field_aperture.addItems(self.dragonfly.get_field_aperture_info())
+
+        layout_wheels.addWidget(port1_emission_label, 0, 0)
+        layout_wheels.addWidget(self.dropdown_port1_emission_filter, 0, 1)
+        layout_wheels.addWidget(port1_aperture_label, 0, 2)
+        layout_wheels.addWidget(self.dropdown_field_aperture, 0, 3)
+
+        # Row 3: Camera Port 2 Emission Filter and Field Aperture
+        port2_emission_label = QLabel("Port 2 Emission Filter")
+        self.dropdown_port2_emission_filter = QComboBox(self)
+        self.dropdown_port2_emission_filter.addItems(self.dragonfly.get_emission_filter_info(2))
+
+        layout_wheels.addWidget(port2_emission_label, 1, 0)
+        layout_wheels.addWidget(self.dropdown_port2_emission_filter, 1, 1)
+
+        main_layout.addLayout(layout_confocal)
+        main_layout.addLayout(layout_wheels)
+
+        self.setLayout(main_layout)
+
+    def enable_all_buttons(self, enable: bool):
+        """Enable or disable all controls"""
+        self.btn_toggle_confocal.setEnabled(enable)
+        self.btn_disk_motor.setEnabled(enable)
+        self.dropdown_dichroic.setEnabled(enable)
+        self.dropdown_port1_emission_filter.setEnabled(enable)
+        self.dropdown_port2_emission_filter.setEnabled(enable)
+        self.dropdown_field_aperture.setEnabled(enable)
+
+    def toggle_confocal_mode(self):
+        """Toggle between confocal and widefield modes"""
+        self.enable_all_buttons(False)
+        try:
+            if self.confocal_mode:
+                # Switch to widefield
+                self.dragonfly.set_modality("BF")  # or whatever widefield mode string is
+                self.confocal_mode = False
+                self.btn_toggle_confocal.setText("Switch to Confocal")
+            else:
+                # Switch to confocal
+                self.dragonfly.set_modality("CONFOCAL")
+                self.confocal_mode = True
+                self.btn_toggle_confocal.setText("Switch to Widefield")
+
+            self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
+        except Exception as e:
+            print(f"Error toggling confocal mode: {e}")
+        finally:
+            self.enable_all_buttons(True)
+
+    def toggle_disk_motor(self):
+        """Toggle disk motor on/off"""
+        self.enable_all_buttons(False)
+        try:
+            if self.btn_disk_motor.isChecked():
+                self.dragonfly.set_disk_motor_state(True)
+            else:
+                self.dragonfly.set_disk_motor_state(False)
+        except Exception as e:
+            print(f"Error toggling disk motor: {e}")
+        finally:
+            self.enable_all_buttons(True)
+
+    def set_dichroic(self, index):
+        """Set dichroic position"""
+        self.enable_all_buttons(False)
+        try:
+            selected_pos = self.dropdown_dichroic.currentIndex()
+            self.dragonfly.set_port_selection_dichroic(selected_pos + 1)
+        except Exception as e:
+            print(f"Error setting dichroic: {e}")
+        finally:
+            self.enable_all_buttons(True)
+
+    def set_port1_emission_filter(self, index):
+        """Set port 1 emission filter position"""
+        self.enable_all_buttons(False)
+        try:
+            selected_pos = self.dropdown_port1_emission_filter.currentIndex()
+            self.dragonfly.set_emission_filter(1, selected_pos + 1)
+        except Exception as e:
+            print(f"Error setting port 1 emission filter: {e}")
+        finally:
+            self.enable_all_buttons(True)
+
+    def set_port2_emission_filter(self, index):
+        """Set port 2 emission filter position"""
+        self.enable_all_buttons(False)
+        try:
+            selected_pos = self.dropdown_port2_emission_filter.currentIndex()
+            self.dragonfly.set_emission_filter(2, selected_pos + 1)
+        except Exception as e:
+            print(f"Error setting port 2 emission filter: {e}")
+        finally:
+            self.enable_all_buttons(True)
+
+    def set_field_aperture(self, index):
+        """Set port 1 field aperture position"""
+        self.enable_all_buttons(False)
+        try:
+            selected_pos = self.dropdown_field_aperture.currentIndex()
+            self.dragonfly.set_field_aperture_wheel_position(selected_pos + 1)
+        except Exception as e:
+            print(f"Error setting port 1 field aperture: {e}")
+        finally:
+            self.enable_all_buttons(True)
+
+
 class ObjectivesWidget(QWidget):
     signal_objective_changed = Signal()
 

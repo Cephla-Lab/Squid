@@ -157,6 +157,7 @@ class CameraVariant(enum.Enum):
     PHOTOMETRICS = "PHOTOMETRICS"
     TIS = "TIS"
     GXIPY = "GXIPY"
+    ANDOR = "ANDOR"
 
     @staticmethod
     def from_string(cam_string: str) -> Optional["CameraVariant"]:
@@ -220,6 +221,7 @@ class TucsenCameraModel(enum.Enum):
 
 class HamamatsuCameraModel(enum.Enum):
     C15440_20UP = "C15440-20UP"
+    C14440_20UP = "C14440-20UP"
 
     @staticmethod
     def from_string(cam_string: str) -> Optional["HamamatsuCameraModel"]:
@@ -242,6 +244,20 @@ class PhotometricsCameraModel(enum.Enum):
         """
         try:
             return PhotometricsCameraModel[cam_string.upper()]
+        except KeyError:
+            return None
+
+
+class AndorCameraModel(enum.Enum):
+    ZYLA_4_2P_USB3_C = "ZYLA-4.2P-USB3-C"  # ZL41 Cell 4.2
+
+    @staticmethod
+    def from_string(cam_string: str) -> Optional["AndorCameraModel"]:
+        """
+        Attempts to convert the given string to an Andor camera model.  This ignores all letter cases.
+        """
+        try:
+            return AndorCameraModel[cam_string.upper()]
         except KeyError:
             return None
 
@@ -317,7 +333,14 @@ class CameraConfig(pydantic.BaseModel):
     # Specific camera model. This will be used to determine the model-specific parameters, because one camera class may
     # support multiple models from the same brand.
     camera_model: Optional[
-        Union[GxipyCameraModel, TucsenCameraModel, ToupcamCameraModel, HamamatsuCameraModel, PhotometricsCameraModel]
+        Union[
+            GxipyCameraModel,
+            TucsenCameraModel,
+            ToupcamCameraModel,
+            HamamatsuCameraModel,
+            PhotometricsCameraModel,
+            AndorCameraModel,
+        ]
     ] = None
 
     # The serial number of the camera. You may use this to select a specific camera to open if there are multiple
@@ -378,6 +401,8 @@ def _old_camera_variant_to_enum(old_string) -> CameraVariant:
         return CameraVariant.TUCSEN
     elif old_string == "Photometrics":
         return CameraVariant.PHOTOMETRICS
+    elif old_string == "Andor":
+        return CameraVariant.ANDOR
     elif old_string == "Default":
         return CameraVariant.GXIPY
     raise ValueError(f"Unknown old camera type {old_string=}")
