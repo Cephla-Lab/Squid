@@ -482,12 +482,6 @@ class HighContentScreeningGui(QMainWindow):
             if USE_ZABER_EMISSION_FILTER_WHEEL:
                 self.emission_filter_wheel.wait_for_homing_complete()
 
-            if HAS_OBJECTIVE_PIEZO:
-                OUTPUT_GAINS.CHANNEL7_GAIN = OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE == 5
-            div = 1 if OUTPUT_GAINS.REFDIV else 0
-            gains = sum(getattr(OUTPUT_GAINS, f"CHANNEL{i}_GAIN") << i for i in range(8))
-            self.microcontroller.configure_dac80508_refdiv_and_gain(div, gains)
-            self.microcontroller.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
         except TimeoutError as e:
             # If we can't recover from a timeout, at least do our best to make sure the system is left in a safe
             # and restartable state.

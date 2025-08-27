@@ -208,7 +208,12 @@ class LowLevelDrivers:
         self.microcontroller: Optional[Microcontroller] = microcontroller
 
     def prepare_for_use(self):
-        pass
+        if self.microcontroller and control._def.HAS_OBJECTIVE_PIEZO:
+            # Configure DAC gains for objective piezo
+            control._def.OUTPUT_GAINS.CHANNEL7_GAIN = control._def.OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE == 5
+            div = 1 if control._def.OUTPUT_GAINS.REFDIV else 0
+            gains = sum(getattr(control._def.OUTPUT_GAINS, f"CHANNEL{i}_GAIN") << i for i in range(8))
+            self.microcontroller.configure_dac80508_refdiv_and_gain(div, gains)
 
 
 class Microscope:
