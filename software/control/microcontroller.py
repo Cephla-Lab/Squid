@@ -514,6 +514,7 @@ class Microcontroller:
             self.initialize_drivers()
             time.sleep(0.5)
             self.configure_actuators()
+            self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
             if USE_SQUID_FILTERWHEEL:
                 self.configure_squidfilter()
             time.sleep(0.5)
