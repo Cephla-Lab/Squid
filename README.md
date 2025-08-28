@@ -1,4 +1,4 @@
-# Squid (formerly [octopi-research](https://github.com/hongquanli/octopi-research))
+# Squid (formerly octopi-research)
 [![scopes](https://github.com/Alpaca233/assets/blob/main/Squid%20scopes.png)](https://cephla.com/)
 
 The Squid repo provides firmware and software for controlling [Cephla](https://cephla.com/)'s Squid microscope.
@@ -17,16 +17,9 @@ Specifications of Squid microscope: [link](https://drive.google.com/file/d/17UNS
 Follow the most recent development and share how you use Squid on [Cephla forum](https://forum.squid-imaging.org/)
 
 See related work and applications on: www.squid-imaging.org
-## User Interface and Main Features
-TODO: images
+## User Interface
+![ui](https://github.com/Alpaca233/assets/blob/main/gui.png)
 
-Acquisition
-
-Mosaic view
-
-Laser auto-focus
-
-Fluidics control
 ## How to Start
 ### Software
 #### • Setting up and run Squid software on Linux
