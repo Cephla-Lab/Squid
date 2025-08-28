@@ -1,24 +1,23 @@
 # Squid (formerly [octopi-research](https://github.com/hongquanli/octopi-research))
-![alt text](https://cdn.prod.website-files.com/68228d7b099844b42c2ee743/682db8eed5a5528c985453ce_1-p-500.png)![alt text](https://cdn.prod.website-files.com/68228d7b099844b42c2ee743/682db8eda67fddf09aa92047_2-p-500.png)
-TODO: images
+[![scopes](https://github.com/Alpaca233/assets/blob/main/Squid%20scopes.png)](https://cephla.com/)
 
 The Squid repo provides firmware and software for controlling [Cephla](https://cephla.com/)'s Squid microscope.
 
 Applications include:
-- slide scanner for digital pathology
-- time lapse imaging with 2D or 3D tiling
-- spatial omics that involves multicolor and multi-round imaging
-- tracking microscopy
-- computational microscopy, including label free microscopy using phase/polarization/reflectance + deep learning
-- super resolution microscopy
-- light sheet microscopy
+- Slide scanner for digital pathology
+- Time lapse imaging with 2D or 3D tiling
+- Spatial omics that involves multicolor and multi-round imaging
+- Tracking microscopy
+- Computational microscopy, including label free microscopy using phase/polarization/reflectance + deep learning
+- Super resolution microscopy
+- Light sheet microscopy
 
 Specifications of Squid microscope: [link](https://drive.google.com/file/d/17UNSiwup-NDPrC1WH6AqDNlK4GmBZlK2/view)
 
 Follow the most recent development and share how you use Squid on [Cephla forum](https://forum.squid-imaging.org/)
 
-See related Work and applications on: www.squid-imaging.org
-## User Interface and Features
+See related work and applications on: www.squid-imaging.org
+## User Interface and Main Features
 TODO: images
 
 Acquisition
@@ -30,26 +29,34 @@ Laser auto-focus
 Fluidics control
 ## How to Start
 ### Software
-#### Setting up and run Squid software on Linux
+#### • Setting up and run Squid software on Linux
 Ubuntu 22.04 is the most tested platform. Other Linux systems should work but performance is not guaranteed.
 
 See [README](https://github.com/Cephla-Lab/Squid/blob/master/software/README.md) in `/software` directory for instructions.
 
 After installation, you can run `python3 /software/tools/script_create_desktop_shortcut.py` to create a shortcut on Desktop.
-#### Setting up and run Squid software on Windows
+#### • Setting up and run Squid software on Windows
 See this [post](https://forum.squid-imaging.org/t/setting-up-the-software-on-a-windows-computer/77) on Cephla forum for Windows instructions.
 
-If your Squid has a laser auto-focus module, you will need to install the driver for the laser auto-focus camera and reboot the computer. [Download](TODO: link)
+If your Squid has a laser auto-focus module, you will need to install the [driver](https://drive.google.com/drive/folders/1wq0QocIqeD-ZyYgHUPIJ1efOPiPq-fom?usp=sharing) for the laser auto-focus camera and **reboot** the computer.
 
 After installation, you can follow this [post](https://forum.squid-imaging.org/t/setting-up-desktop-shortcut-on-a-windows-computer/94) to create a shortcut on Desktop.
-#### Setting up Cephla image stitcher
+#### • Setting up Cephla image stitcher
 See the [image-stitcher repo](https://github.com/Cephla-Lab/image-stitcher)
+
+#### • User manual
+Software SOP: [link](https://cephla.notion.site/Squid-user-manual-2025-06-2102dfbf6ae48034bb3bf56641f1c8c7?pvs=143)
+
+Fluidics acquisition SOP: [link](https://cephla.notion.site/User-manual-for-fluidics-imaging-21c2dfbf6ae48036aa0ef633ef155530)
+
+New version coming soon!
 
 ### Firmware
 Usually firmware should be already uploaded to the controller. If you do need to re-upload firmware, you may follow the instructions in this [post](https://forum.squid-imaging.org/t/setting-up-arduino-teensyduino-ide-for-uploading-firmware/36).
 
-Latest firmware for main controller: https://github.com/Cephla-Lab/Squid/tree/master/firmware/octopi_firmware_v2/main_controller_teensy41
-Latest firmware for joystick controller: https://github.com/Cephla-Lab/Squid/tree/master/firmware/octopi_firmware_v2/control_panel_teensyLC
+- Latest firmware for main controller: https://github.com/Cephla-Lab/Squid/tree/master/firmware/octopi_firmware_v2/main_controller_teensy41
+
+- Latest firmware for joystick controller: https://github.com/Cephla-Lab/Squid/tree/master/firmware/octopi_firmware_v2/control_panel_teensyLC
 
 ## Open-source Assets
 ![alt text](https://i.imgur.com/Gjwh02y.png)
@@ -61,8 +68,6 @@ Latest firmware for joystick controller: https://github.com/Cephla-Lab/Squid/tre
   
 ## References
 [1] Hongquan Li, Deepak Krishnamurthy, Ethan Li, Pranav Vyas, Nibha Akireddy, Chew Chai, Manu Prakash, "**Squid: Simplifying Quantitative Imaging Platform Development and Deployment**." BiorXiv [ link | [website](https://squid-imaging.org)]
-
-For scale-free vertical tracking microscopy, check out our work at:
 
 [2] Deepak Krishnamurthy, Hongquan Li, François Benoit du Rey, Pierre Cambournac, Adam G. Larson, Ethan Li, and Manu Prakash. "**Scale-free vertical tracking microscopy.**" Nature Methods 17, no. 10 (2020): 1040-1051. [ [link](https://www.nature.com/articles/s41592-020-0924-7) | [website](https://gravitymachine.org) ]
 
