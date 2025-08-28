@@ -21,6 +21,7 @@ class CephlaStage(AbstractStage):
     def __init__(self, microcontroller: control.microcontroller.Microcontroller, stage_config: StageConfig):
         super().__init__(stage_config)
         self._microcontroller = microcontroller
+        self._homing_done = False
 
         # TODO(imo): configure theta here?  Do we ever have theta?
         self._configure_axis(_def.AXIS.X, stage_config.X_AXIS)
@@ -263,3 +264,9 @@ class CephlaStage(AbstractStage):
 
         if theta_neg_rad or theta_pos_rad:
             raise ValueError("Setting limits for the theta axis is not supported on the CephlaStage")
+
+    def _move_to_loading_position_impl(self):
+        pass
+
+    def _move_to_scanning_position_impl(self):
+        pass

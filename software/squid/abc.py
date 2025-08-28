@@ -5,6 +5,7 @@ from typing import Callable, Optional, Tuple, Sequence, List
 import abc
 import enum
 import time
+import threading
 
 import pydantic
 import numpy as np
@@ -201,6 +202,111 @@ class AbstractStage(metaclass=abc.ABCMeta):
         theta_neg_rad: Optional[float] = None,
     ):
         pass
+
+    @abc.abstractmethod
+    def retract_z(self, blocking: bool = True):
+        """
+        Retract the objective so it is safe to move the stage.
+        """
+        pass
+
+    @abc.abstractmethod
+    def restore_z(self, blocking: bool = True):
+        """
+        Restore the z position so the objective is ready to be used.
+        """
+        pass
+
+    @abc.abstractmethod
+    def _move_to_loading_position_impl(self, **kwargs):
+        """
+        Implement the actual stage movement to loading position here.
+        """
+        pass
+
+    @abc.abstractmethod
+    def _move_to_scanning_position_impl(self, **kwargs):
+        """
+        Implement the actual stage movement to scanning position here.
+        """
+        pass
+
+    def _threaded_move_helper(
+        self, operation: Callable, callback: Optional[Callable[[bool, Optional[str]], None]] = None, **kwargs
+    ):
+        """
+        Helper function to move the stage to a position in a separate thread, and notify the callback when done.
+
+        Args:
+            operation: The operation to execute.
+            callback: The callback to notify when the operation is done.
+        Returns:
+            threading.Thread: The thread that is executing the operation.
+        """
+        method_name = operation.__name__
+
+        def _threaded_move():
+            try:
+                self._log.info(f"Executing {method_name}...")
+                operation(**kwargs)
+                self._log.info(f"Successfully executed {method_name}")
+                if callback:
+                    callback(True, None)
+            except NotImplementedError as e:
+                error_msg = str(e)
+                self._log.warning(error_msg)
+                if callback:
+                    callback(False, error_msg)
+            except Exception as e:
+                error_msg = f"Failed to execute {method_name}: {str(e)}"
+                self._log.error(error_msg)
+                if callback:
+                    callback(False, error_msg)
+
+        thread = threading.Thread(target=_threaded_move, name=method_name)
+        thread.daemon = True
+        thread.start()
+        return thread
+
+    def to_loading_position(
+        self, blocking: bool = True, callback: Optional[Callable[[bool, Optional[str]], None]] = None, **kwargs
+    ):
+        """Move the stage to loading position so it is clear for loading a sample.
+        Args:
+            blocking: If True, wait for the move to complete before returning.
+                      If False, return immediately and run the operation in a separate thread. callback will be called when done.
+            callback: Optional callback function called when movement completes.
+                     Receives (success: bool, error_message: Optional[str])
+            **kwargs: Additional arguments to pass to the operation.
+        Returns:
+            threading.Thread: The thread handling the movement. None if blocking is True.
+        """
+        if blocking:
+            self._log.info(f"Moving to loading position. Blocking is True.")
+            self._move_to_loading_position_impl(**kwargs)
+            self._log.info("Successfully moved to loading position")
+        else:
+            return self._threaded_move_helper(self._move_to_loading_position_impl, callback, **kwargs)
+
+    def to_scanning_position(
+        self, blocking: bool = True, callback: Optional[Callable[[bool, Optional[str]], None]] = None, **kwargs
+    ):
+        """Move the stage back to scanning position from loading position.
+        Args:
+            blocking: If True, wait for the move to complete before returning.
+                      If False, return immediately and run the operation in a separate thread. callback will be called when done.
+            callback: Optional callback function called when movement completes.
+                     Receives (success: bool, error_message: Optional[str])
+            **kwargs: Additional arguments to pass to the operation.
+        Returns:
+            threading.Thread: The thread handling the movement. None if blocking is True.
+        """
+        if blocking:
+            self._log.info(f"Moving to scanning position. Blocking is True.")
+            self._move_to_scanning_position_impl(**kwargs)
+            self._log.info("Successfully moved to scanning position")
+        else:
+            return self._threaded_move_helper(self._move_to_scanning_position_impl, callback, **kwargs)
 
     def get_config(self) -> StageConfig:
         return self._config
