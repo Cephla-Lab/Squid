@@ -1,11 +1,10 @@
-# Squid (formerly octopi-research)
+# Squid (formerly [octopi-research](https://github.com/hongquanli/octopi-research))
+![alt text](https://cdn.prod.website-files.com/68228d7b099844b42c2ee743/682db8eed5a5528c985453ce_1-p-500.png)![alt text](https://cdn.prod.website-files.com/68228d7b099844b42c2ee743/682db8eda67fddf09aa92047_2-p-500.png)
+TODO: images
 
-![alt text](https://i.imgur.com/Gjwh02y.png)
+The Squid repo provides firmware and software for controlling [Cephla](https://cephla.com/)'s Squid microscope.
 
-## Introduction
-Squid (Simplifying Quantitive Imaging Development and Deployment) provides a full suite of hardware and software components for rapidly configuring high-performance microscopes tailored to users' applications with reduced cost, effort and turnaround time. Besides increasing accessibility of research microscopes and available microscope hours to labs, it is also designed to simplify development and dissemination of new or otherwise advanced microscopy techniques.
-
-Applications include
+Applications include:
 - slide scanner for digital pathology
 - time lapse imaging with 2D or 3D tiling
 - spatial omics that involves multicolor and multi-round imaging
@@ -14,17 +13,52 @@ Applications include
 - super resolution microscopy
 - light sheet microscopy
 
-## Assets
-- main software repo: [GitHub](https://github.com/hongquanli/octopi-research) (this repo)
+Specifications of Squid microscope: [link](https://drive.google.com/file/d/17UNSiwup-NDPrC1WH6AqDNlK4GmBZlK2/view)
+
+Follow the most recent development and share how you use Squid on [Cephla forum](https://forum.squid-imaging.org/)
+
+See related Work and applications on: www.squid-imaging.org
+## User Interface and Features
+TODO: images
+
+Acquisition
+
+Mosaic view
+
+Laser auto-focus
+
+Fluidics control
+## How to Start
+### Software
+#### Setting up and run Squid software on Linux
+Ubuntu 22.04 is the most tested platform. Other Linux systems should work but performance is not guaranteed.
+
+See [README](https://github.com/Cephla-Lab/Squid/blob/master/software/README.md) in `/software` directory for instructions.
+
+After installation, you can run `python3 /software/tools/script_create_desktop_shortcut.py` to create a shortcut on Desktop.
+#### Setting up and run Squid software on Windows
+See this [post](https://forum.squid-imaging.org/t/setting-up-the-software-on-a-windows-computer/77) on Cephla forum for Windows instructions.
+
+If your Squid has a laser auto-focus module, you will need to install the driver for the laser auto-focus camera and reboot the computer. [Download](TODO: link)
+
+After installation, you can follow this [post](https://forum.squid-imaging.org/t/setting-up-desktop-shortcut-on-a-windows-computer/94) to create a shortcut on Desktop.
+#### Setting up Cephla image stitcher
+See the [image-stitcher repo](https://github.com/Cephla-Lab/image-stitcher)
+
+### Firmware
+Usually firmware should be already uploaded to the controller. If you do need to re-upload firmware, you may follow the instructions in this [post](https://forum.squid-imaging.org/t/setting-up-arduino-teensyduino-ide-for-uploading-firmware/36).
+
+Latest firmware for main controller: https://github.com/Cephla-Lab/Squid/tree/master/firmware/octopi_firmware_v2/main_controller_teensy41
+Latest firmware for joystick controller: https://github.com/Cephla-Lab/Squid/tree/master/firmware/octopi_firmware_v2/control_panel_teensyLC
+
+## Open-source Assets
+![alt text](https://i.imgur.com/Gjwh02y.png)
 - tracking software repo: [GitHub](https://github.com/prakashlab/squid-tracking)
 - CAD models/photos of assembled squids: [Google Drive](https://drive.google.com/drive/folders/1JdVp34HtERGpBCBlFX6jFDwMUdeBLCEx?usp=sharing)
 - BOM for the microscope, including CAD files for CNC machining: [link](https://docs.google.com/spreadsheets/d/1WA64HySj9I7XROtTXuaRvjlbhHXRGspvoxb_20CWDR8/edit?usp=drivesdk)
 - BOM for the multicolor laser engine: [link](https://docs.google.com/spreadsheets/d/1hEM6PsxZPTp1LY3cpxUJOS3Q1YLQN-xniF33ZddFj9U/edit#gid=1175873468)
 - BOM for the control panel: [link](https://docs.google.com/spreadsheets/d/1z2HjibIG9PHffiDsbuzQXmvf2gSFMduHrXkPwDbcXRY/edit?usp=sharing)
-
-## Early Results, Related Work and Possible Applications
-Refer to our website: www.squid-imaging.org
-
+  
 ## References
 [1] Hongquan Li, Deepak Krishnamurthy, Ethan Li, Pranav Vyas, Nibha Akireddy, Chew Chai, Manu Prakash, "**Squid: Simplifying Quantitative Imaging Platform Development and Deployment**." BiorXiv [ link | [website](https://squid-imaging.org)]
 
@@ -34,6 +68,3 @@ For scale-free vertical tracking microscopy, check out our work at:
 
 ## Acknowledgement
 The Squid software was developed with structuring inspiration from [Tempesta-RedSTED](https://github.com/jonatanalvelid/Tempesta-RedSTED). The laser engine is inspired by [https://github.com/ries-lab/LaserEngine](https://github.com/ries-lab/LaserEngine). 
-
-## Software Instructions
-The microscope is controled by an Arduino Due and a computer running Ubuntu. The computer can be one of the Nvidia Jetson platforms (e.g. Jetson Nano, Jetson Xavier NX) or a regular laptop/workstation. Instructions for using the firmware and software can be found in the respective folders.
