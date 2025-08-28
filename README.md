@@ -25,13 +25,13 @@ See related work and applications on: www.squid-imaging.org
 #### • Setting up and run Squid software on Linux
 Ubuntu 22.04 is the most tested platform. Other Linux systems should work but performance is not guaranteed.
 
-See [README](https://github.com/Cephla-Lab/Squid/blob/master/software/README.md) in `/software` directory for instructions.
+See [README](https://github.com/Cephla-Lab/Squid/blob/master/software/README.md) in `/software` directory for instructions. Toupcam and laser auto-focus camera dependencies will be installed automatically when you run the setup script.
 
 After installation, you can run `python3 /software/tools/script_create_desktop_shortcut.py` to create a shortcut on Desktop.
 #### • Setting up and run Squid software on Windows
 See this [post](https://forum.squid-imaging.org/t/setting-up-the-software-on-a-windows-computer/77) on Cephla forum for Windows instructions.
 
-If your Squid has a laser auto-focus module, you will need to install the [driver](https://drive.google.com/drive/folders/1wq0QocIqeD-ZyYgHUPIJ1efOPiPq-fom?usp=sharing) for the laser auto-focus camera and **reboot** the computer.
+If your Squid has a laser auto-focus module, you will need to install the [driver](https://drive.google.com/drive/folders/1wq0QocIqeD-ZyYgHUPIJ1efOPiPq-fom?usp=sharing) for the laser auto-focus camera and **reboot** the computer. You may also need to install the driver for the main camera you use.
 
 After installation, you can follow this [post](https://forum.squid-imaging.org/t/setting-up-desktop-shortcut-on-a-windows-computer/94) to create a shortcut on Desktop.
 #### • Setting up Cephla image stitcher
