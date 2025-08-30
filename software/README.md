@@ -130,6 +130,19 @@ Follow the instructions during the installation.
 
 </details>
 
+<details>
+<summary>Installing fluidics module</summary>
+
+Link to the fluidics software repo: https://github.com/Alpaca233/fluidics_v2
+
+In the Squid repo, run
+```
+git submodule init
+git submodule update
+```
+
+</details>
+
 ## Configuring the software
 Copy the .ini file associated with the microscope configuration to the software folder. Make modifications as needed (e.g. `camera_type`, `support_laser_autofocus`,`focus_camera_exposure_time_ms`)
 
