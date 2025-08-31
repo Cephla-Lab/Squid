@@ -255,7 +255,7 @@ class Microscope:
 
         camera = squid.camera.utils.get_camera(
             config=squid.config.get_camera_config(),
-            simulated=simulated,
+            simulated=True,
             hw_trigger_fn=acquisition_camera_hw_trigger_fn,
             hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
         )
