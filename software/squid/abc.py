@@ -268,7 +268,7 @@ class AbstractStage(metaclass=abc.ABCMeta):
         thread.start()
         return thread
 
-    def to_loading_position(
+    def move_to_loading_position(
         self, blocking: bool = True, callback: Optional[Callable[[bool, Optional[str]], None]] = None, **kwargs
     ):
         """Move the stage to loading position so it is clear for loading a sample.
@@ -288,7 +288,7 @@ class AbstractStage(metaclass=abc.ABCMeta):
         else:
             return self._threaded_move_helper(self._move_to_loading_position_impl, callback, **kwargs)
 
-    def to_scanning_position(
+    def move_to_scanning_position(
         self, blocking: bool = True, callback: Optional[Callable[[bool, Optional[str]], None]] = None, **kwargs
     ):
         """Move the stage back to scanning position from loading position.

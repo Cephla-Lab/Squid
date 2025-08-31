@@ -377,38 +377,40 @@ class StageUtils(QDialog):
 
     def switch_position(self):
         """Switch between loading and scanning positions."""
-        was_live = self.liveController.is_live
-        if was_live:
+        self._was_live = self.liveController.is_live
+        if self._was_live:
             self.liveController.stop_live()
         self.signal_threaded_stage_move_started.emit()
         if self.slide_position != "loading":
             self.stage.move_to_loading_position(
-                blocking=False, callback=self.callback_loading_position_reached, is_wellplate=self.is_wellplate
+                blocking=False, callback=self._callback_loading_position_reached, is_wellplate=self.is_wellplate
             )
         else:
             self.stage.move_to_scanning_position(
-                blocking=False, callback=self.callback_scanning_position_reached, is_wellplate=self.is_wellplate
+                blocking=False, callback=self._callback_scanning_position_reached, is_wellplate=self.is_wellplate
             )
         self.btn_load_slide.setEnabled(False)
-        if was_live:
-            self.liveController.start_live()
 
-    def callback_loading_position_reached(self, success: bool, error_message: Optional[str]):
+    def _callback_loading_position_reached(self, success: bool, error_message: Optional[str]):
         """Handle slide loading position reached signal."""
         self.slide_position = "loading"
         self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
+        if self._was_live:
+            self.liveController.start_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
 
-    def callback_scanning_position_reached(self, success: bool, error_message: Optional[str]):
+    def _callback_scanning_position_reached(self, success: bool, error_message: Optional[str]):
         """Handle slide scanning position reached signal."""
         self.slide_position = "scanning"
         self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
+        if self._was_live:
+            self.liveController.start_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_scanning_position_reached.emit()
