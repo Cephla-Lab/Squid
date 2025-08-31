@@ -204,7 +204,7 @@ class AbstractStage(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def retract_z(self, blocking: bool = True):
+    def retract_z(self, z_mm: float, blocking: bool = True):
         """
         Retract the objective so it is safe to move the stage.
         """

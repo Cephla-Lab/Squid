@@ -306,7 +306,6 @@ class HighContentScreeningGui(QMainWindow):
 
         self.multipointController: QtMultiPointController = None
         self.streamHandler: core.QtStreamHandler = None
-        self.slidePositionController: core.SlidePositionController = None
         self.autofocusController: AutoFocusController = None
         self.imageSaver: core.ImageSaver = core.ImageSaver()
         self.imageDisplay: core.ImageDisplay = core.ImageDisplay()
@@ -399,9 +398,6 @@ class HighContentScreeningGui(QMainWindow):
     def load_objects(self, is_simulation):
         self.streamHandler = core.QtStreamHandler(accept_new_frame_fn=lambda: self.liveController.is_live)
 
-        self.slidePositionController = core.SlidePositionController(
-            self.stage, self.liveController, is_for_wellplate=True
-        )
         self.autofocusController = AutoFocusController(
             self.camera, self.stage, self.liveController, self.microcontroller, self.nl5
         )
@@ -477,8 +473,6 @@ class HighContentScreeningGui(QMainWindow):
 
             self.microscope.home_xyz()
 
-            if HOMING_ENABLED_X and HOMING_ENABLED_Y:
-                self.slidePositionController.homing_done = True
             if USE_ZABER_EMISSION_FILTER_WHEEL:
                 self.emission_filter_wheel.wait_for_homing_complete()
 
@@ -563,9 +557,9 @@ class HighContentScreeningGui(QMainWindow):
             autolevel=True,
         )
         self.navigationWidget = widgets.NavigationWidget(
-            self.stage, self.slidePositionController, widget_configuration=f"{WELLPLATE_FORMAT} well plate"
+            self.stage, widget_configuration=f"{WELLPLATE_FORMAT} well plate"
         )
-        self.stageUtils = widgets.StageUtils(self.stage, self.slidePositionController)
+        self.stageUtils = widgets.StageUtils(self.stage, self.liveController, is_wellplate=True)
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
         if self.piezo:
@@ -1387,7 +1381,7 @@ class HighContentScreeningGui(QMainWindow):
                 )
                 self.is_live_scan_grid_on = True
             self.log.debug("live scan grid connected.")
-            self.setupSlidePositionController(is_for_wellplate=False)
+            self.stageUtils.is_wellplate = False
         else:
             self.toggleWellSelector(True)
             if self.is_live_scan_grid_on:  # disconnect live scan grid for wellplate
@@ -1396,7 +1390,7 @@ class HighContentScreeningGui(QMainWindow):
                 )
                 self.is_live_scan_grid_on = False
             self.log.debug("live scan grid disconnected.")
-            self.setupSlidePositionController(is_for_wellplate=True)
+            self.stageUtils.is_wellplate = True
 
             # replace and reconnect new well selector
             if format_ == "1536 well plate":
@@ -1412,49 +1406,34 @@ class HighContentScreeningGui(QMainWindow):
             self.scanCoordinates.clear_regions()
             self.wellplateMultiPointWidget.set_default_scan_size()
 
-    def setupSlidePositionController(self, is_for_wellplate):
-        self.slidePositionController.setParent(None)
-        self.slidePositionController.deleteLater()
-        self.slidePositionController = core.SlidePositionController(
-            self.stage, self.liveController, is_for_wellplate=is_for_wellplate
-        )
-        self.connectSlidePositionController()
-        self.stageUtils.replace_slide_controller(self.slidePositionController)
-
     def connectSlidePositionController(self):
-        self.slidePositionController.signal_slide_loading_position_reached.connect(
-            self.stageUtils.slot_slide_loading_position_reached
-        )
         if ENABLE_FLEXIBLE_MULTIPOINT:
-            self.slidePositionController.signal_slide_loading_position_reached.connect(
+            self.stageUtils.signal_loading_position_reached.connect(
                 self.flexibleMultiPointWidget.disable_the_start_aquisition_button
             )
         if ENABLE_WELLPLATE_MULTIPOINT:
-            self.slidePositionController.signal_slide_loading_position_reached.connect(
+            self.stageUtils.signal_loading_position_reached.connect(
                 self.wellplateMultiPointWidget.disable_the_start_aquisition_button
             )
         if RUN_FLUIDICS:
-            self.slidePositionController.signal_slide_loading_position_reached.connect(
+            self.stageUtils.signal_loading_position_reached.connect(
                 self.multiPointWithFluidicsWidget.disable_the_start_aquisition_button
             )
 
-        self.slidePositionController.signal_slide_scanning_position_reached.connect(
-            self.stageUtils.slot_slide_scanning_position_reached
-        )
         if ENABLE_FLEXIBLE_MULTIPOINT:
-            self.slidePositionController.signal_slide_scanning_position_reached.connect(
+            self.stageUtils.signal_scanning_position_reached.connect(
                 self.flexibleMultiPointWidget.enable_the_start_aquisition_button
             )
         if ENABLE_WELLPLATE_MULTIPOINT:
-            self.slidePositionController.signal_slide_scanning_position_reached.connect(
+            self.stageUtils.signal_scanning_position_reached.connect(
                 self.wellplateMultiPointWidget.enable_the_start_aquisition_button
             )
         if RUN_FLUIDICS:
-            self.slidePositionController.signal_slide_scanning_position_reached.connect(
+            self.stageUtils.signal_scanning_position_reached.connect(
                 self.multiPointWithFluidicsWidget.enable_the_start_aquisition_button
             )
 
-        self.slidePositionController.signal_clear_slide.connect(self.navigationViewer.clear_slide)
+        self.stageUtils.signal_scanning_position_reached.connect(self.navigationViewer.clear_slide)
 
     def replaceWellSelectionWidget(self, new_widget):
         self.wellSelectionWidget.setParent(None)
@@ -1596,7 +1575,7 @@ class HighContentScreeningGui(QMainWindow):
         self.camera.close()
 
         # retract z
-        self.stage.move_z_to(0.1)
+        self.stage.retract_z(z_mm=OBJECTIVE_RETRACTED_POS_MM)
 
         # reset objective changer
         if USE_XERYON:
