@@ -298,7 +298,8 @@ class LiveController:
         self._log.debug(f"Setting {fps_trigger=}")
         self.fps_trigger = fps_trigger
         self.timer_trigger_interval = (1 / self.fps_trigger) * 1000
-        self._start_new_timer()
+        if self.is_live:
+            self._start_new_timer()
 
     def _stop_triggerred_acquisition(self):
         self._stop_existing_timer()
