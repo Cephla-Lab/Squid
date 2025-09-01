@@ -16,9 +16,6 @@ class Stats:
         self.callback_frame_count = 0
         self.last_callback_frame_time = time.time()
 
-        self.read_frame_count = 0
-        self.last_read_frame_time = time.time()
-
         self.start_time = time.time()
         self._update_lock = threading.Lock()
 
@@ -37,11 +34,6 @@ class Stats:
             self.callback_frame_count += 1
             self.last_callback_frame_time = time.time()
 
-    def read_frame(self):
-        with self._update_lock:
-            self.read_frame_count += 1
-            self.last_read_frame_time = time.time()
-
     def _summary_line(self, label, count, last_frame):
         elapsed = last_frame - self.start_time
         return f"{label}: {count} in {elapsed:.3f} [s] ({count / elapsed:.3f} [Hz])\n"
@@ -54,7 +46,6 @@ class Stats:
         return (
             f"Stats (elapsed = {time.time() - self.start_time} [s]:\n"
             f"  {self._summary_line('callback', self.callback_frame_count, self.last_callback_frame_time)}"
-            f"  {self._summary_line('read frame', self.read_frame_count, self.last_read_frame_time)}"
         )
 
 
@@ -102,20 +93,19 @@ def main(args):
         stats.callback_frame()
 
     log.info("Registering frame callback...")
-    callback_id = cam.add_frame_callback(frame_callback)
-
+    cam.add_frame_callback(frame_callback)
     cam.set_exposure_time(args.exposure)
 
-    if software_trigger:
-        cam.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
-    elif args.hardware_trigger:
-        cam.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+    # TODO(imo): When cameras officially support LEVEL_TRIGGER we need to add and implement that in the cameras.  For
+    # now, always use HARDWARE_TRIGGER and figure it out behind the scenes.
+    cam.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
 
     log.info("Starting streaming...")
     cam.start_streaming()
     stats.start()
 
-    end_time = time.time() + args.runtime
+    end_time = time.time() + args.max_runtime
 
     log.info(
         (
@@ -128,19 +118,26 @@ def main(args):
     )
 
     try:
-        while time.time() < end_time:
-            if use_trigger and cam.get_ready_for_trigger():
+
+        if args.batch_mode:
+            frame_time = cam.get_total_frame_time()
+            high_ms = 1
+            low_ms = int(frame_time - high_ms)
+
+            log.debug(f"Sending continuous triggering request to micro for: {args.frame_count=}, {low_ms=} [ms], {high_ms=} [ms]")
+            microcontroller.set_continuous_triggering(args.frame_count, low_ms, high_ms, 0, False)
+        while time.time() < end_time and stats.callback_frame_count < args.frame_count:
+            if not args.batch_mode and cam.get_ready_for_trigger():
                 log.debug("Sending trigger...")
                 cam.send_trigger()
                 log.debug("Trigger sent....")
 
-            read_frame = cam.read_camera_frame()
-            log.debug(f"Read frame with id={read_frame.frame_id}")
-            stats.read_frame()
-
             stats.report_if_on_interval(args.report_interval)
+            time.sleep(0.0001)
 
     finally:
+        if args.batch_mode:
+            microcontroller.cancel_continuous_triggering()
         log.info("Stopping streaming...")
         cam.stop_streaming()
         return 0
@@ -152,14 +149,9 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(description="hammer a camera to test it.")
 
-    ap.add_argument("--runtime", type=float, help="Time, in s, to run the test for.", default=60)
+    ap.add_argument("--frame_count", type=float, help="The number of frames to try to capture", default=100)
     ap.add_argument(
-        "--continuous", action="store_true", help="Use continuous (internal to cam) triggering, not software trigger."
-    )
-    ap.add_argument(
-        "--hardware_trigger",
-        action="store_true",
-        help="Use the hardware trigger, not software trigger (requires microcontroller)",
+        "--batch_mode", action="store_true", help="Ask the microcontroller to trigger all the frames (in a row) for us."
     )
     ap.add_argument("--exposure", type=float, help="The exposure time in ms", default=1)
     ap.add_argument("--report_interval", type=int, help="Report every this many frames captured.", default=100)
@@ -171,6 +163,7 @@ if __name__ == "__main__":
         choices=["hamamatsu", "toupcam", "gxipy", "simulated"],
         help="The type of camera to create and use for this test.",
     )
+    ap.add_argument("--max_runtime", type=float, help="The maximum runtime before timing out.", default=60)
 
     args = ap.parse_args()
 

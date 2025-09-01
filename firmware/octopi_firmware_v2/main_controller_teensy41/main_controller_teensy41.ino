@@ -69,6 +69,7 @@ static const int SET_STROBE_DELAY = 31;
 static const int SET_AXIS_DISABLE_ENABLE = 32;
 static const int SET_PIN_LEVEL = 41;
 static const int SET_CONTINUOUS_HARDWARE_TRIGGERING = 42;
+static const int CANCEL_CONTINUOUS_HARDWARE_TRIGGERING = 43;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;
 static const int RESET = 255;
@@ -91,6 +92,7 @@ static const int AXES_XY = 4;
 static const int AXIS_W = 5;
 
 static const int BIT_POS_JOYSTICK_BUTTON = 0;
+static const int BIT_POS_CONTINUOUS_TRIGGER_ENABLED = 1;
 
 static const int LIM_CODE_X_POSITIVE = 0;
 static const int LIM_CODE_X_NEGATIVE = 1;
@@ -578,19 +580,23 @@ struct continuous_hardware_triggering_state {
     bool enabled;
     uint8_t low_ms;
     uint8_t high_ms;
+    bool illuminate_on_low;
 
     uint32_t last_transition_us;
     bool last_was_high;
 };
 
-static struct continuous_hardware_triggering_state cont_trig_state = {
+static struct continuous_hardware_triggering_state DEFAULT_CONTINUOUS_TRIGGERING_STATE = {
     .enabled = false,
     .low_ms = 50,
     .high_ms = 50,
+    .illuminate_on_low = true,
 
     .last_transition_us = 0,
     .last_was_high = false
 };
+
+static struct continuous_hardware_triggering_state cont_trig_state = DEFAULT_CONTINUOUS_TRIGGERING_STATE;
 
 void ISR_strobeTimer()
 {
@@ -607,9 +613,11 @@ void ISR_strobeTimer()
         need_transition = true;
       }
 
+      uint8_t illumination_on_level = cont_trig_state.illuminate_on_low ? LOW : HIGH;
+
       if (need_transition) {
         // If this is a transition to low, we also want to turn on illumination.  Otherwise turn it off.
-        if (next_level == LOW) {
+        if (next_level == illumination_on_level) {
           turn_on_illumination();
         } else {
           turn_off_illumination();
@@ -1649,23 +1657,32 @@ void loop() {
         case SET_CONTINUOUS_HARDWARE_TRIGGERING:
         {
           uint8_t channel = buffer_rx[2];
-          bool enabled = buffer_rx[3] > 0;
-          uint8_t low_ms = buffer_rx[4];
-          uint8_t high_ms = buffer_rx[5];
+          uint8_t low_ms = buffer_rx[3];
+          uint8_t high_ms = buffer_rx[4];
+          uint8_t illuminate_on_low = buffer_rx[5] > 0;
+          uint16_t frame_count = (uint32_t)(buffer_rx[6] << 8 | buffer_rx[7]);
 
           noInterrupts();
-          cont_trig_state.enabled = enabled;
+          cont_trig_state.enabled = true;
           cont_trig_state.low_ms = low_ms;
           cont_trig_state.high_ms = high_ms;
+          cont_trig_state.illuminate_on_low = illuminate_on_low;
 
           digitalWrite(camera_trigger_pins[channel], LOW);
           trigger_output_level[channel] = LOW;
           cont_trig_state.last_transition_us = micros();
           cont_trig_state.last_was_high = false;
-          // This assumes low is the exposure state.  If high is the trigger state then this needs to change.
-          illumination_on_time[channel] = low_ms;
+          long cont_illum_time = 1000 * (illuminate_on_low ? low_ms : high_ms);
+          illumination_on_time[channel] = cont_illum_time;
           interrupts();
-
+          break;
+        }
+        case CANCEL_CONTINUOUS_HARDWARE_TRIGGERING:
+        {
+          noInterrupts();
+          cont_trig_state.enabled = false;
+          interrupts();
+          break;
         }
         case CONFIGURE_STAGE_PID:
           {
@@ -1806,6 +1823,7 @@ void loop() {
             is_preparing_for_homing_Z = false;
             is_preparing_for_homing_W = false;
             cmd_id = 0;
+            cont_trig_state = DEFAULT_CONTINUOUS_TRIGGERING_STATE;
             break;
           }
         default:
@@ -2209,8 +2227,11 @@ void loop() {
     if (joystick_button_pressed && millis() - joystick_button_pressed_timestamp > 1000)
       joystick_button_pressed = false;
 
-    buffer_tx[18] &= ~ (1 << BIT_POS_JOYSTICK_BUTTON); // clear the joystick button bit
-    buffer_tx[18] = buffer_tx[18] | joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON;
+    // Entry 18 is a bunch of state bits.  We reset them every time, so just clear to 0 here.
+    buffer_tx[18] = 0;
+    noInterrupts(); // Hold interrupts for the cont_trigger_state check
+    buffer_tx[18] = (joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON) | (cont_trigger_state.enabled << BIT_POS_CONTINUOUS_TRIGGER_ENABLED);
+    interrupts();
 
    // Calculate and fill out the checksum.  NOTE: This must be after all other buffer_tx modifications are done!
    uint8_t checksum = crc8ccitt(buffer_tx, MSG_LENGTH - 1);
