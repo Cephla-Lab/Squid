@@ -130,7 +130,9 @@ class AbstractCephlaMicroSerial(abc.ABC):
 
 class SimSerial(AbstractCephlaMicroSerial):
     @staticmethod
-    def response_bytes_for(command_id, execution_status, x, y, z, theta, joystick_button, switch) -> bytes:
+    def response_bytes_for(
+        command_id, execution_status, x, y, z, theta, joystick_button, continuous_triggering
+    ) -> bytes:
         """
         - command ID (1 byte)
         - execution status (1 byte)
@@ -144,7 +146,9 @@ class SimSerial(AbstractCephlaMicroSerial):
         """
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
-        button_state = joystick_button << BIT_POS_JOYSTICK_BUTTON | switch << BIT_POS_SWITCH
+        button_state = (
+            joystick_button << BIT_POS_JOYSTICK_BUTTON | continuous_triggering << BIT_POS_CONTINUOUS_TRIGGERING
+        )
         reserved_state = 0  # This is just filler for the 4 reserved bytes.
         response = bytearray(
             struct.pack(">BBiiiiBi", command_id, execution_status, x, y, z, theta, button_state, reserved_state)
@@ -165,7 +169,7 @@ class SimSerial(AbstractCephlaMicroSerial):
         self.z = 0
         self.theta = 0
         self.joystick_button = False
-        self.switch = False
+        self.continuous_triggering = False
 
         self._closed = False
 
@@ -221,7 +225,7 @@ class SimSerial(AbstractCephlaMicroSerial):
                 self.z,
                 self.theta,
                 self.joystick_button,
-                self.switch,
+                self.continuous_triggering,
             )
         )
 
@@ -476,7 +480,7 @@ class Microcontroller:
         self.z_pos = 0  # unit: microstep or encoder resolution
         self.w_pos = 0  # unit: microstep or encoder resolution
         self.theta_pos = 0  # unit: microstep or encoder resolution
-        self.button_and_switch_state = 0
+        self.button_switch_and_other_bits_state = 0
         self.joystick_button_pressed = 0
         # This is used to keep track of whether or not we should emit joystick events to the joystick listeners,
         # and can be changed with enable_joystick(...)
@@ -490,6 +494,8 @@ class Microcontroller:
         # These are called in our busy loop, and so should return immediately!
         self.joystick_event_listeners = []
         self.switch_state = 0
+
+        self.continuous_triggering_enabled: bool = False
 
         self.last_command = None
         self.last_command_send_timestamp = time.time()
@@ -604,6 +610,38 @@ class Microcontroller:
         cmd[3] = min(int(g * 255), 255)
         cmd[4] = min(int(r * 255), 255)
         cmd[5] = min(int(b * 255), 255)
+        self.send_command(cmd)
+
+    def set_continuous_triggering(
+        self, frame_count: int, triggered_ms: int, not_triggered_ms: int, trigger_output_ch: int = 0
+    ):
+        if frame_count <= 0:
+            raise ValueError(f"frame_count must be >0 but is: {frame_count}")
+
+        if triggered_ms <= 0 or triggered_ms > 255:
+            raise ValueError(f"triggered_ms must be >0 and <255, but is: {triggered_ms}")
+
+        if not_triggered_ms <= 0 or not_triggered_ms > 255:
+            raise ValueError(f"not_triggered_ms must be >0 and <255, but is: {not_triggered_ms}")
+
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_CONTINUOUS_HARDWARE_TRIGGERING
+        cmd[2] = trigger_output_ch & 0xFF
+        cmd[3] = triggered_ms & 0xFF
+        cmd[4] = not_triggered_ms & 0xFF
+        payload = self._int_to_payload(frame_count, 2)
+        cmd[5] = (payload >> 8) & 0xFF
+        cmd[6] = payload & 0xFF
+
+        self.log.debug(
+            f"Sending continuous triggering request to micro for: {frame_count=}, {triggered_ms=} [ms], {not_triggered_ms=} [ms], {trigger_output_ch=}"
+        )
+        self.send_command(cmd)
+
+    def cancel_continuous_triggering(self):
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.CANCEL_CONTINUOUS_TRIGGERING
+        self.log.debug("Canceling continuous triggering...")
         self.send_command(cmd)
 
     def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
@@ -1110,7 +1148,7 @@ class Microcontroller:
                 - Y pos (4 bytes)
                 - Z pos (4 bytes)
                 - Theta (4 bytes)
-                - buttons and switches (1 byte)
+                - buttons, switches, and other bit fields (1 byte)
                 - reserved (4 bytes)
                 - CRC (1 byte)
                 """
@@ -1161,9 +1199,9 @@ class Microcontroller:
                     msg[14:18], MicrocontrollerDef.N_BYTES_POS
                 )  # unit: microstep or encoder resolution
 
-                self.button_and_switch_state = msg[18]
+                self.button_switch_and_other_bits_state = msg[18]
                 # joystick button
-                tmp = self.button_and_switch_state & (1 << BIT_POS_JOYSTICK_BUTTON)
+                tmp = self.button_switch_and_other_bits_state & (1 << BIT_POS_JOYSTICK_BUTTON)
                 joystick_button_pressed = tmp > 0
                 if self.joystick_button_pressed != joystick_button_pressed:
                     if self.joystick_listener_events_enabled:
@@ -1176,9 +1214,8 @@ class Microcontroller:
                         self.ack_joystick_button_pressed()
                 self.joystick_button_pressed = joystick_button_pressed
 
-                # switch
-                tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
-                self.switch_state = tmp > 0
+                tmp = self.button_switch_and_other_bits_state & (1 << BIT_POS_CONTINUOUS_TRIGGERING)
+                self.continuous_triggering_enabled = tmp > 0
 
                 with self._received_packet_cv:
                     self._received_packet_cv.notify_all()
@@ -1192,7 +1229,7 @@ class Microcontroller:
         return self.x_pos, self.y_pos, self.z_pos, self.theta_pos
 
     def get_button_and_switch_state(self):
-        return self.button_and_switch_state
+        return self.button_switch_and_other_bits_state
 
     def is_busy(self):
         return self.mcu_cmd_execution_in_progress
@@ -1224,7 +1261,7 @@ class Microcontroller:
             payload = signed_int
         else:
             payload = 2 ** (8 * number_of_bytes) + signed_int  # find two's completement
-        return payload
+        return int(payload)
 
     @staticmethod
     def _payload_to_int(payload, number_of_bytes):
