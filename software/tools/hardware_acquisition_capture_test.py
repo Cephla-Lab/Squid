@@ -130,7 +130,7 @@ def main(args):
 
         if args.batch_mode:
             frame_time = cam.get_total_frame_time()
-            triggered_ms = 10
+            triggered_ms = args.trigger_ms
             not_triggered_ms = int(math.ceil(frame_time) - math.ceil(triggered_ms) + round(args.extra_not_triggered_ms))
 
             microcontroller.set_continuous_triggering(args.frame_count, triggered_ms, not_triggered_ms, 0)
@@ -175,8 +175,9 @@ if __name__ == "__main__":
     )
     ap.add_argument("--max_runtime", type=float, help="The maximum runtime before timing out.", default=60)
     ap.add_argument(
-        "--extra_not_triggered_ms", type=float, help="Extra time, in ms, to add between triggers.", default=0
+        "--extra_not_triggered_ms", type=int, help="Extra time, in ms, to add between triggers.", default=0
     )
+    ap.add_argument("--trigger_ms", type=int, help="The time to spend in trigger state", default=1)
     args = ap.parse_args()
 
     sys.exit(main(args))
