@@ -578,22 +578,24 @@ void set_illumination_led_matrix(int source, uint8_t r, uint8_t g, uint8_t b)
 /*********************** Continuous hardware triggering (debug / test setup only!) *************************/
 struct continuous_hardware_triggering_state {
     bool enabled;
-    uint8_t low_ms;
-    uint8_t high_ms;
-    bool illuminate_on_low;
+    uint32_t triggered_us;
+    uint32_t not_triggered_us;
+    uint8_t trigger_channel;
+    uint16_t requested_frames;
 
-    uint32_t last_transition_us;
-    bool last_was_high;
+    elapsedMicros us_since_last_transition;
+    uint32_t frames_so_far;
 };
 
 static struct continuous_hardware_triggering_state DEFAULT_CONTINUOUS_TRIGGERING_STATE = {
     .enabled = false,
-    .low_ms = 50,
-    .high_ms = 50,
-    .illuminate_on_low = true,
+    .triggered_us = 50000,
+    .not_triggered_us = 50000,
+    .trigger_channel = 0,
+    .requested_frames = 0,
 
-    .last_transition_us = 0,
-    .last_was_high = false
+    .us_since_last_transition = 0,
+    .frames_so_far = 0
 };
 
 static struct continuous_hardware_triggering_state cont_trig_state = DEFAULT_CONTINUOUS_TRIGGERING_STATE;
@@ -602,29 +604,42 @@ void ISR_strobeTimer()
 {
   for (int camera_channel = 0; camera_channel < 6; camera_channel++)
   {
+    // NOTE(imo): micros is not safe for general usage.  It overflows every ~70 mins.
     uint32_t now_us = micros();  // Capture now once so we don't leak time below.  This means we pretend all events below happen at this captured instant.
+    
     // If we're in continuous triggering mode, ignore other strobing requests and control the illumination ourselves.
     if (cont_trig_state.enabled) {
-      uint8_t next_level = cont_trig_state.last_was_high ? LOW : HIGH;
-      bool need_transition = false;
-      if (next_level == LOW && cont_trig_state.last_transition_us + cont_trig_state.high_ms >= now_us) {
-        need_transition = true;
-      } else if (next_level == HIGH && cont_trig_state.last_transition_us + cont_trig_state.low_ms >= now_us) {
-        need_transition = true;
+      if (cont_trig_state.trigger_channel != camera_channel) {
+        continue;
       }
 
-      uint8_t illumination_on_level = cont_trig_state.illuminate_on_low ? LOW : HIGH;
+
+
+      uint8_t current_level = trigger_output_level[camera_channel];
+      uint8_t next_level = current_level == HIGH ? LOW : HIGH;
+
+      uint32_t this_interval = current_level == HIGH ? cont_trig_state.not_triggered_us : cont_trig_state.triggered_us;
+      unsigned long elapsed_us = cont_trig_state.us_since_last_transition;
+      bool need_transition = elapsed_us > (unsigned long)(this_interval);
 
       if (need_transition) {
         // If this is a transition to low, we also want to turn on illumination.  Otherwise turn it off.
-        if (next_level == illumination_on_level) {
+        // NOTE(imo): LOW corresponds to 5V, HIGH to 0V
+        if (next_level == LOW) {
           turn_on_illumination();
+          cont_trig_state.frames_so_far++;
         } else {
           turn_off_illumination();
         }
+
         digitalWrite(camera_trigger_pins[camera_channel], next_level);
-        cont_trig_state.last_was_high = next_level != HIGH;
-        cont_trig_state.last_transition_us = now_us;
+        trigger_output_level[camera_channel] = next_level;
+        cont_trig_state.us_since_last_transition = 0;
+
+        // We finished our last trigger if we just went down to 0V (HIGH), and we've seen as many frames as requested.
+        if (cont_trig_state.frames_so_far >= cont_trig_state.requested_frames && next_level == HIGH) {
+          cont_trig_state.enabled = false;
+        } 
       }
     } else {
       // strobe pulse
@@ -1656,23 +1671,24 @@ void loop() {
           }
         case SET_CONTINUOUS_HARDWARE_TRIGGERING:
         {
-          uint8_t channel = buffer_rx[2];
-          uint8_t low_ms = buffer_rx[3];
-          uint8_t high_ms = buffer_rx[4];
-          uint8_t illuminate_on_low = buffer_rx[5] > 0;
-          uint16_t frame_count = (uint32_t)(buffer_rx[6] << 8 | buffer_rx[7]);
+          uint8_t channel = buffer_rx[2] & 0x0f;
+          uint8_t triggered_ms = buffer_rx[3];
+          uint8_t not_triggered_ms = buffer_rx[4];
+          uint16_t frame_count = (uint32_t)(buffer_rx[5] << 8 | buffer_rx[6]);
 
           noInterrupts();
           cont_trig_state.enabled = true;
-          cont_trig_state.low_ms = low_ms;
-          cont_trig_state.high_ms = high_ms;
-          cont_trig_state.illuminate_on_low = illuminate_on_low;
+          cont_trig_state.triggered_us = 1000 * (uint32_t)(6);
+          cont_trig_state.not_triggered_us = 1000 * (uint32_t)(11);
+          cont_trig_state.trigger_channel = channel;
+          cont_trig_state.requested_frames = frame_count;
 
-          digitalWrite(camera_trigger_pins[channel], LOW);
-          trigger_output_level[channel] = LOW;
-          cont_trig_state.last_transition_us = micros();
-          cont_trig_state.last_was_high = false;
-          long cont_illum_time = 1000 * (illuminate_on_low ? low_ms : high_ms);
+          // NOTE(imo): HIGH pulls the line down to 0V, LOW lets it float to 5V.
+          digitalWrite(camera_trigger_pins[channel], HIGH);
+          cont_trig_state.frames_so_far = 0;
+          trigger_output_level[channel] = HIGH;
+          cont_trig_state.us_since_last_transition = 0;
+          long cont_illum_time = cont_trig_state.triggered_us + cont_trig_state.not_triggered_us;
           illumination_on_time[channel] = cont_illum_time;
           interrupts();
           break;
@@ -1837,10 +1853,15 @@ void loop() {
   for (int camera_channel = 0; camera_channel < 6; camera_channel++)
   {
     // end the trigger pulse
-    if (trigger_output_level[camera_channel] == LOW && (micros() - timestamp_trigger_rising_edge[camera_channel]) >= TRIGGER_PULSE_LENGTH_us )
-    {
-      digitalWrite(camera_trigger_pins[camera_channel], HIGH);
-      trigger_output_level[camera_channel] = HIGH;
+    noInterrupts();
+    bool continuous_triggering = cont_trig_state.enabled && cont_trig_state.trigger_channel == camera_channel;
+    interrupts();
+    if (!continuous_triggering) {
+      if (trigger_output_level[camera_channel] == LOW && (micros() - timestamp_trigger_rising_edge[camera_channel]) >= TRIGGER_PULSE_LENGTH_us )
+      {
+        digitalWrite(camera_trigger_pins[camera_channel], HIGH);
+        trigger_output_level[camera_channel] = HIGH;
+      }
     }
   }
 
@@ -2229,8 +2250,8 @@ void loop() {
 
     // Entry 18 is a bunch of state bits.  We reset them every time, so just clear to 0 here.
     buffer_tx[18] = 0;
-    noInterrupts(); // Hold interrupts for the cont_trigger_state check
-    buffer_tx[18] = (joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON) | (cont_trigger_state.enabled << BIT_POS_CONTINUOUS_TRIGGER_ENABLED);
+    noInterrupts(); // Hold interrupts for the cont_trig_state check
+    buffer_tx[18] = (joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON) | (cont_trig_state.enabled << BIT_POS_CONTINUOUS_TRIGGER_ENABLED);
     interrupts();
 
    // Calculate and fill out the checksum.  NOTE: This must be after all other buffer_tx modifications are done!

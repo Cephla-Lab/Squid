@@ -224,7 +224,6 @@ class CameraAcquisitionMode(enum.Enum):
     SOFTWARE_TRIGGER = "Software Trigger"
     HARDWARE_TRIGGER = "Hardware Trigger"
     CONTINUOUS = "Continuous Acquisition"
-    LEVEL_TRIGGER = "Level Trigger"
 
 
 class CameraFrameFormat(enum.Enum):

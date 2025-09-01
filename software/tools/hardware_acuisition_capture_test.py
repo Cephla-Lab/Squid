@@ -1,4 +1,5 @@
 import logging
+import math
 import threading
 import time
 
@@ -15,6 +16,7 @@ class Stats:
     def __init__(self):
         self.callback_frame_count = 0
         self.last_callback_frame_time = time.time()
+        self._last_report_frame_count = -1
 
         self.start_time = time.time()
         self._update_lock = threading.Lock()
@@ -39,12 +41,17 @@ class Stats:
         return f"{label}: {count} in {elapsed:.3f} [s] ({count / elapsed:.3f} [Hz])\n"
 
     def report_if_on_interval(self, interval):
-        if self.read_frame_count % interval == 0:
-            log.info(self)
+        with self._update_lock:
+            if self.callback_frame_count % interval == 0 and self._last_report_frame_count != self.callback_frame_count:
+                self._last_report_frame_count = self.callback_frame_count
+                self.report()
+
+    def report(self):
+        log.info(self)
 
     def __str__(self):
         return (
-            f"Stats (elapsed = {time.time() - self.start_time} [s]:\n"
+            f"Stats (elapsed = {time.time() - self.start_time} [s]):\n"
             f"  {self._summary_line('callback', self.callback_frame_count, self.last_callback_frame_time)}"
         )
 
@@ -101,6 +108,9 @@ def main(args):
     # now, always use HARDWARE_TRIGGER and figure it out behind the scenes.
     cam.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
 
+    # We just want some illumination enabled so we can see if the firmware is doing its job
+    microcontroller.set_illumination_led_matrix(0, r=0, g=0, b=100)
+
     log.info("Starting streaming...")
     cam.start_streaming()
     stats.start()
@@ -121,11 +131,10 @@ def main(args):
 
         if args.batch_mode:
             frame_time = cam.get_total_frame_time()
-            high_ms = 1
-            low_ms = int(frame_time - high_ms)
+            triggered_ms = 10
+            not_triggered_ms = int(math.ceil(frame_time) - math.ceil(triggered_ms) + round(args.extra_not_triggered_ms))
 
-            log.debug(f"Sending continuous triggering request to micro for: {args.frame_count=}, {low_ms=} [ms], {high_ms=} [ms]")
-            microcontroller.set_continuous_triggering(args.frame_count, low_ms, high_ms, 0, False)
+            microcontroller.set_continuous_triggering(args.frame_count, triggered_ms, not_triggered_ms, 0)
         while time.time() < end_time and stats.callback_frame_count < args.frame_count:
             if not args.batch_mode and cam.get_ready_for_trigger():
                 log.debug("Sending trigger...")
@@ -140,7 +149,9 @@ def main(args):
             microcontroller.cancel_continuous_triggering()
         log.info("Stopping streaming...")
         cam.stop_streaming()
-        return 0
+
+    stats.report()
+    return 0
 
 
 if __name__ == "__main__":
@@ -164,7 +175,7 @@ if __name__ == "__main__":
         help="The type of camera to create and use for this test.",
     )
     ap.add_argument("--max_runtime", type=float, help="The maximum runtime before timing out.", default=60)
-
+    ap.add_argument("--extra_not_triggered_ms", type=float, help="Extra time, in ms, to add between triggers.", default=0)
     args = ap.parse_args()
 
     sys.exit(main(args))
