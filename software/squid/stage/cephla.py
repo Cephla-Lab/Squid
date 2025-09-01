@@ -294,7 +294,11 @@ class CephlaStage(AbstractStage):
             self.retract_z(z_mm=_def.OBJECTIVE_RETRACTED_POS_MM)
             self.wait_for_idle(_def.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
 
-            self.move_x_to(20)
+            # TODO: These values should not be hardcoded as we have stages with different blocks
+            # for opening the clamp. I'm not sure why exactly this piece is designed this way and
+            # how to name the variable properly. Right now they should work for all our stages.
+            self.move_y_to(15)
+            self.move_x_to(35)
             self.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
             self.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
 
