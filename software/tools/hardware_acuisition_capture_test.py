@@ -103,7 +103,6 @@ def main(args):
     cam.add_frame_callback(frame_callback)
     cam.set_exposure_time(args.exposure)
 
-
     # TODO(imo): When cameras officially support LEVEL_TRIGGER we need to add and implement that in the cameras.  For
     # now, always use HARDWARE_TRIGGER and figure it out behind the scenes.
     cam.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
@@ -175,7 +174,9 @@ if __name__ == "__main__":
         help="The type of camera to create and use for this test.",
     )
     ap.add_argument("--max_runtime", type=float, help="The maximum runtime before timing out.", default=60)
-    ap.add_argument("--extra_not_triggered_ms", type=float, help="Extra time, in ms, to add between triggers.", default=0)
+    ap.add_argument(
+        "--extra_not_triggered_ms", type=float, help="Extra time, in ms, to add between triggers.", default=0
+    )
     args = ap.parse_args()
 
     sys.exit(main(args))

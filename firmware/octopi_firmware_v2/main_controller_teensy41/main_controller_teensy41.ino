@@ -604,32 +604,27 @@ void ISR_strobeTimer()
 {
   for (int camera_channel = 0; camera_channel < 6; camera_channel++)
   {
-    // NOTE(imo): micros is not safe for general usage.  It overflows every ~70 mins.
-    uint32_t now_us = micros();  // Capture now once so we don't leak time below.  This means we pretend all events below happen at this captured instant.
-    
     // If we're in continuous triggering mode, ignore other strobing requests and control the illumination ourselves.
     if (cont_trig_state.enabled) {
       if (cont_trig_state.trigger_channel != camera_channel) {
         continue;
       }
 
-
-
-      uint8_t current_level = trigger_output_level[camera_channel];
+      uint8_t current_level = digitalRead(camera_trigger_pins[camera_channel]);
       uint8_t next_level = current_level == HIGH ? LOW : HIGH;
 
-      uint32_t this_interval = current_level == HIGH ? cont_trig_state.not_triggered_us : cont_trig_state.triggered_us;
+      unsigned long this_interval = current_level == HIGH ? cont_trig_state.not_triggered_us : cont_trig_state.triggered_us;
       unsigned long elapsed_us = cont_trig_state.us_since_last_transition;
-      bool need_transition = elapsed_us > (unsigned long)(this_interval);
+      bool need_transition = elapsed_us >= this_interval;
 
       if (need_transition) {
         // If this is a transition to low, we also want to turn on illumination.  Otherwise turn it off.
         // NOTE(imo): LOW corresponds to 5V, HIGH to 0V
         if (next_level == LOW) {
-          turn_on_illumination();
+          //turn_on_illumination();
           cont_trig_state.frames_so_far++;
         } else {
-          turn_off_illumination();
+          //turn_off_illumination();
         }
 
         digitalWrite(camera_trigger_pins[camera_channel], next_level);
@@ -648,7 +643,7 @@ void ISR_strobeTimer()
         if (illumination_on_time[camera_channel] <= 30000)
         {
           // if the illumination on time is smaller than 30 ms, use delayMicroseconds to control the pulse length to avoid pulse length jitter
-          if ( ((now_us - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel]) && strobe_output_level[camera_channel] == LOW )
+          if ( ((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel]) && strobe_output_level[camera_channel] == LOW )
           {
             turn_on_illumination();
             delayMicroseconds(illumination_on_time[camera_channel]);
@@ -659,13 +654,13 @@ void ISR_strobeTimer()
         else
         {
           // start the strobe
-          if ( ((now_us - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel]) && strobe_output_level[camera_channel] == LOW )
+          if ( ((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel]) && strobe_output_level[camera_channel] == LOW )
           {
             turn_on_illumination();
             strobe_output_level[camera_channel] = HIGH;
           }
           // end the strobe
-          if (((now_us - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel] + illumination_on_time[camera_channel]) && strobe_output_level[camera_channel] == HIGH)
+          if (((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel] + illumination_on_time[camera_channel]) && strobe_output_level[camera_channel] == HIGH)
           {
             turn_off_illumination();
             strobe_output_level[camera_channel] = LOW;
@@ -1678,8 +1673,8 @@ void loop() {
 
           noInterrupts();
           cont_trig_state.enabled = true;
-          cont_trig_state.triggered_us = 1000 * (uint32_t)(6);
-          cont_trig_state.not_triggered_us = 1000 * (uint32_t)(11);
+          cont_trig_state.triggered_us = 1000 * (uint32_t)(triggered_ms);
+          cont_trig_state.not_triggered_us = 1000 * (uint32_t)(not_triggered_ms);
           cont_trig_state.trigger_channel = channel;
           cont_trig_state.requested_frames = frame_count;
 

@@ -130,7 +130,9 @@ class AbstractCephlaMicroSerial(abc.ABC):
 
 class SimSerial(AbstractCephlaMicroSerial):
     @staticmethod
-    def response_bytes_for(command_id, execution_status, x, y, z, theta, joystick_button, continuous_triggering) -> bytes:
+    def response_bytes_for(
+        command_id, execution_status, x, y, z, theta, joystick_button, continuous_triggering
+    ) -> bytes:
         """
         - command ID (1 byte)
         - execution status (1 byte)
@@ -144,7 +146,9 @@ class SimSerial(AbstractCephlaMicroSerial):
         """
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
-        button_state = joystick_button << BIT_POS_JOYSTICK_BUTTON | continuous_triggering << BIT_POS_CONTINUOUS_TRIGGERING
+        button_state = (
+            joystick_button << BIT_POS_JOYSTICK_BUTTON | continuous_triggering << BIT_POS_CONTINUOUS_TRIGGERING
+        )
         reserved_state = 0  # This is just filler for the 4 reserved bytes.
         response = bytearray(
             struct.pack(">BBiiiiBi", command_id, execution_status, x, y, z, theta, button_state, reserved_state)
@@ -608,7 +612,9 @@ class Microcontroller:
         cmd[5] = min(int(b * 255), 255)
         self.send_command(cmd)
 
-    def set_continuous_triggering(self, frame_count: int, triggered_ms: int, not_triggered_ms: int, trigger_output_ch: int = 0):
+    def set_continuous_triggering(
+        self, frame_count: int, triggered_ms: int, not_triggered_ms: int, trigger_output_ch: int = 0
+    ):
         if frame_count <= 0:
             raise ValueError(f"frame_count must be >0 but is: {frame_count}")
 
@@ -628,7 +634,8 @@ class Microcontroller:
         cmd[6] = payload & 0xFF
 
         self.log.debug(
-            f"Sending continuous triggering request to micro for: {frame_count=}, {triggered_ms=} [ms], {not_triggered_ms=} [ms], {trigger_output_ch=}")
+            f"Sending continuous triggering request to micro for: {frame_count=}, {triggered_ms=} [ms], {not_triggered_ms=} [ms], {trigger_output_ch=}"
+        )
         self.send_command(cmd)
 
     def cancel_continuous_triggering(self):
@@ -1255,7 +1262,6 @@ class Microcontroller:
         else:
             payload = 2 ** (8 * number_of_bytes) + signed_int  # find two's completement
         return int(payload)
-
 
     @staticmethod
     def _payload_to_int(payload, number_of_bytes):
