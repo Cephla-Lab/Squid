@@ -1,5 +1,5 @@
 # Squid
-[![scopes](https://github.com/Alpaca233/assets/blob/main/Squid%20scopes.png)](https://cephla.com/)
+[![scopes](https://github.com/Alpaca233/assets/blob/main/Squid/scopes.png)](https://cephla.com/)
 
 The Squid repo provides firmware and software for controlling [Cephla](https://cephla.com/)'s Squid microscope.
 
@@ -19,7 +19,7 @@ Follow the most recent development and share how you use Squid on [Cephla forum]
 
 See related work and applications on: www.cephla.com, www.squid-imaging.org
 ## User Interface
-![ui](https://github.com/Alpaca233/assets/blob/main/gui.png)
+![ui](https://github.com/Alpaca233/assets/blob/main/Squid/gui.png)
 
 ## How to Start
 ### Software
