@@ -21,6 +21,8 @@ class CephlaStage(AbstractStage):
     def __init__(self, microcontroller: control.microcontroller.Microcontroller, stage_config: StageConfig):
         super().__init__(stage_config)
         self._microcontroller = microcontroller
+        self._homing_done = False
+        self._previous_z_pos = None
 
         # TODO(imo): configure theta here?  Do we ever have theta?
         self._configure_axis(_def.AXIS.X, stage_config.X_AXIS)
@@ -263,3 +265,58 @@ class CephlaStage(AbstractStage):
 
         if theta_neg_rad or theta_pos_rad:
             raise ValueError("Setting limits for the theta axis is not supported on the CephlaStage")
+
+    def retract_z(self, z_mm: float, blocking: bool = True):
+        if self._previous_z_pos is not None:
+            self._log.warning("Retract z already called, cannot call again")
+            return
+        self._previous_z_pos = self.get_pos().z_mm
+        self.move_z_to(z_mm, blocking=blocking)
+
+    def restore_z(self, blocking: bool = True):
+        if self._previous_z_pos is not None:
+            self.move_z_to(self._previous_z_pos, blocking=blocking)
+            self._previous_z_pos = None
+        else:
+            raise ValueError("No previous z position to restore to")
+
+    def _move_to_loading_position_impl(self, is_wellplate: bool):
+        # Set our limits to something large.  Then later reset them back to the safe values.
+        if is_wellplate:
+            a_large_limit_mm = 100
+            self.set_limits(
+                x_pos_mm=a_large_limit_mm,
+                x_neg_mm=-a_large_limit_mm,
+                y_pos_mm=a_large_limit_mm,
+                y_neg_mm=-a_large_limit_mm,
+            )
+
+            self.retract_z(z_mm=_def.OBJECTIVE_RETRACTED_POS_MM)
+            self.wait_for_idle(_def.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+
+            # TODO: These values should not be hardcoded as we have stages with different blocks
+            # for opening the clamp. I'm not sure why exactly this piece is designed this way and
+            # how to name the variable properly. Right now they should work for all our stages.
+            self.move_y_to(15)
+            self.move_x_to(35)
+            self.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
+            self.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
+
+            self.set_limits(
+                x_pos_mm=self.get_config().X_AXIS.MAX_POSITION,
+                x_neg_mm=self.get_config().X_AXIS.MIN_POSITION,
+                y_pos_mm=self.get_config().Y_AXIS.MAX_POSITION,
+                y_neg_mm=self.get_config().Y_AXIS.MIN_POSITION,
+            )
+        else:
+            self.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
+            self.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
+
+    def _move_to_scanning_position_impl(self, is_wellplate: bool):
+        if is_wellplate:
+            self.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
+            self.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
+            self.restore_z(blocking=True)
+        else:
+            self.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
+            self.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)

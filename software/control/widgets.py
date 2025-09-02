@@ -249,20 +249,21 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
 class StageUtils(QDialog):
     """Dialog containing microscope utility functions like homing, zeroing, and slide positioning."""
 
-    def __init__(self, stage: AbstractStage, slidePositionController=None, parent=None):
+    signal_threaded_stage_move_started = Signal()
+    signal_loading_position_reached = Signal()
+    signal_scanning_position_reached = Signal()
+
+    def __init__(self, stage: AbstractStage, liveController: LiveController, is_wellplate: bool, parent=None):
         super().__init__(parent)
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.stage = stage
-        self.slidePositionController = slidePositionController
+        self.liveController = liveController
+        self.is_wellplate = is_wellplate
         self.slide_position = None
 
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
         self.setup_ui()
-
-        # Connect slide position controller signals if available
-        if self.slidePositionController:
-            self.setup_slide_position_signals()
 
     def setup_ui(self):
         """Setup the UI components."""
@@ -337,15 +338,6 @@ class StageUtils(QDialog):
 
         self.setLayout(main_layout)
 
-    def setup_slide_position_signals(self):
-        """Connect slide position controller signals."""
-        self.slidePositionController.signal_slide_loading_position_reached.connect(
-            self.slot_slide_loading_position_reached
-        )
-        self.slidePositionController.signal_slide_scanning_position_reached.connect(
-            self.slot_slide_scanning_position_reached
-        )
-
     def home_x(self):
         """Home X axis with confirmation dialog."""
         self._show_confirmation_dialog(x=True, y=False, z=False, theta=False)
@@ -385,35 +377,43 @@ class StageUtils(QDialog):
 
     def switch_position(self):
         """Switch between loading and scanning positions."""
-        if not self.slidePositionController:
-            QMessageBox.warning(self, "Warning", "Slide position controller not available")
-            return
-
+        self._was_live = self.liveController.is_live
+        if self._was_live:
+            self.liveController.stop_live()
+        self.signal_threaded_stage_move_started.emit()
         if self.slide_position != "loading":
-            self.slidePositionController.move_to_slide_loading_position()
+            self.stage.move_to_loading_position(
+                blocking=False, callback=self._callback_loading_position_reached, is_wellplate=self.is_wellplate
+            )
         else:
-            self.slidePositionController.move_to_slide_scanning_position()
+            self.stage.move_to_scanning_position(
+                blocking=False, callback=self._callback_scanning_position_reached, is_wellplate=self.is_wellplate
+            )
         self.btn_load_slide.setEnabled(False)
 
-    def slot_slide_loading_position_reached(self):
+    def _callback_loading_position_reached(self, success: bool, error_message: Optional[str]):
         """Handle slide loading position reached signal."""
         self.slide_position = "loading"
         self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
+        if self._was_live:
+            self.liveController.start_live()
+        if not success:
+            QMessageBox.warning(self, "Error", error_message)
+        self.signal_loading_position_reached.emit()
 
-    def slot_slide_scanning_position_reached(self):
+    def _callback_scanning_position_reached(self, success: bool, error_message: Optional[str]):
         """Handle slide scanning position reached signal."""
         self.slide_position = "scanning"
         self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
-
-    def replace_slide_controller(self, slidePositionController):
-        """Replace the slide position controller."""
-        self.slidePositionController = slidePositionController
-        if self.slidePositionController:
-            self.setup_slide_position_signals()
+        if self._was_live:
+            self.liveController.start_live()
+        if not success:
+            QMessageBox.warning(self, "Error", error_message)
+        self.signal_scanning_position_reached.emit()
 
 
 class LaserAutofocusSettingWidget(QWidget):
@@ -2113,7 +2113,6 @@ class NavigationWidget(QFrame):
     def __init__(
         self,
         stage: AbstractStage,
-        slidePositionController=None,
         main=None,
         widget_configuration="full",
         *args,
@@ -2122,7 +2121,6 @@ class NavigationWidget(QFrame):
         super().__init__(*args, **kwargs)
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.stage = stage
-        self.slidePositionController = slidePositionController
         self.widget_configuration = widget_configuration
         self.slide_position = None
         self.add_components()
