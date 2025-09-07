@@ -8502,7 +8502,7 @@ class WellplateCalibration(QDialog):
         # Add left column to main layout
         layout.addLayout(left_layout)
 
-        self.live_viewer = CalibrationLiveViewer(parent=self)
+        self.live_viewer = CalibrationLiveViewer()
         self.streamHandler.image_to_display.connect(self.live_viewer.display_image)
 
         if not self.was_live:
