@@ -568,6 +568,16 @@ class LaserAutofocusController(QObject):
                 else:
                     x, y = result
 
+                if (
+                    self.laser_af_properties.has_reference
+                    and abs(x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
+                    > self.laser_af_properties.laser_af_range
+                ):
+                    self._log.warning(
+                        f"Spot detected at ({x:.1f}, {y:.1f}) is out of range ({self.laser_af_properties.laser_af_range:.1f} μm)"
+                    )
+                    continue
+
                 tmp_x += x
                 tmp_y += y
                 successful_detections += 1
