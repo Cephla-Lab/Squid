@@ -253,11 +253,11 @@ class StageUtils(QDialog):
     signal_loading_position_reached = Signal()
     signal_scanning_position_reached = Signal()
 
-    def __init__(self, stage: AbstractStage, liveController: LiveController, is_wellplate: bool, parent=None):
+    def __init__(self, stage: AbstractStage, live_controller: LiveController, is_wellplate: bool, parent=None):
         super().__init__(parent)
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.stage = stage
-        self.liveController = liveController
+        self.live_controller = live_controller
         self.is_wellplate = is_wellplate
         self.slide_position = None
 
@@ -377,9 +377,9 @@ class StageUtils(QDialog):
 
     def switch_position(self):
         """Switch between loading and scanning positions."""
-        self._was_live = self.liveController.is_live
+        self._was_live = self.live_controller.is_live
         if self._was_live:
-            self.liveController.stop_live()
+            self.live_controller.stop_live()
         self.signal_threaded_stage_move_started.emit()
         if self.slide_position != "loading":
             self.stage.move_to_loading_position(
@@ -398,7 +398,7 @@ class StageUtils(QDialog):
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live:
-            self.liveController.start_live()
+            self.live_controller.start_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
@@ -410,7 +410,7 @@ class StageUtils(QDialog):
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live:
-            self.liveController.start_live()
+            self.live_controller.start_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_scanning_position_reached.emit()
