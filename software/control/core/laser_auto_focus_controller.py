@@ -643,9 +643,3 @@ class LaserAutofocusController(QObject):
                 self.microcontroller.wait_till_operation_is_completed()
             except TimeoutError:
                 self._log.exception("Failed to turn off AF laser after get_image!")
-
-    def clear_reference(self):
-        """Clear reference position"""
-        self.has_reference = False
-        self.reference_crop = None
-        self._log.info("Reference spot position cleared")
