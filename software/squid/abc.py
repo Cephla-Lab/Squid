@@ -204,20 +204,6 @@ class AbstractStage(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def retract_z(self, z_mm: float, blocking: bool = True):
-        """
-        Retract the objective so it is safe to move the stage.
-        """
-        pass
-
-    @abc.abstractmethod
-    def restore_z(self, blocking: bool = True):
-        """
-        Restore the z position so the objective is ready to be used.
-        """
-        pass
-
-    @abc.abstractmethod
     def _move_to_loading_position_impl(self, **kwargs):
         """
         Implement the actual stage movement to loading position here.

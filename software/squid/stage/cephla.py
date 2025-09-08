@@ -22,7 +22,7 @@ class CephlaStage(AbstractStage):
         super().__init__(stage_config)
         self._microcontroller = microcontroller
         self._homing_done = False
-        self._previous_z_pos = None
+        self._scanning_position_z_mm = None
 
         # TODO(imo): configure theta here?  Do we ever have theta?
         self._configure_axis(_def.AXIS.X, stage_config.X_AXIS)
@@ -266,20 +266,6 @@ class CephlaStage(AbstractStage):
         if theta_neg_rad or theta_pos_rad:
             raise ValueError("Setting limits for the theta axis is not supported on the CephlaStage")
 
-    def retract_z(self, z_mm: float, blocking: bool = True):
-        if self._previous_z_pos is not None:
-            self._log.warning("Retract z already called, cannot call again")
-            return
-        self._previous_z_pos = self.get_pos().z_mm
-        self.move_z_to(z_mm, blocking=blocking)
-
-    def restore_z(self, blocking: bool = True):
-        if self._previous_z_pos is not None:
-            self.move_z_to(self._previous_z_pos, blocking=blocking)
-            self._previous_z_pos = None
-        else:
-            raise ValueError("No previous z position to restore to")
-
     def _move_to_loading_position_impl(self, is_wellplate: bool):
         # Set our limits to something large.  Then later reset them back to the safe values.
         if is_wellplate:
@@ -291,7 +277,8 @@ class CephlaStage(AbstractStage):
                 y_neg_mm=-a_large_limit_mm,
             )
 
-            self.retract_z(z_mm=_def.OBJECTIVE_RETRACTED_POS_MM)
+            self._scanning_position_z_mm = self.get_pos().z_mm
+            self.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
             self.wait_for_idle(_def.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
 
             # TODO: These values should not be hardcoded as we have stages with different blocks
@@ -316,7 +303,9 @@ class CephlaStage(AbstractStage):
         if is_wellplate:
             self.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
             self.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
-            self.restore_z(blocking=True)
+            if self._scanning_position_z_mm is not None:
+                self.move_z_to(self._scanning_position_z_mm)
+            self._scanning_position_z_mm = None
         else:
             self.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
             self.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)

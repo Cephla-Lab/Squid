@@ -1575,7 +1575,7 @@ class HighContentScreeningGui(QMainWindow):
         self.camera.close()
 
         # retract z
-        self.stage.retract_z(z_mm=OBJECTIVE_RETRACTED_POS_MM)
+        self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
 
         # reset objective changer
         if USE_XERYON:
