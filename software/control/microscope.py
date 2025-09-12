@@ -17,6 +17,7 @@ from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.serial_peripherals import SciMicroscopyLEDArray
 from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
+from squid.stage.asi import ASIStage
 from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
 import control.celesta
@@ -347,6 +348,8 @@ class Microscope:
         stage_config = squid.config.get_stage_config()
         if control._def.USE_PRIOR_STAGE:
             stage = PriorStage(sn=control._def.PRIOR_STAGE_SN, stage_config=stage_config)
+        elif control._def.USE_ASI_STAGE:
+            stage = ASIStage(sn=control._def.ASI_STAGE_SN, stage_config=stage_config)
         else:
             if low_level_devices.microcontroller is None:
                 raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
