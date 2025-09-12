@@ -32,6 +32,8 @@ import control.filterwheel as filterwheel
 
 if USE_PRIOR_STAGE:
     import squid.stage.prior
+elif USE_ASI_STAGE:
+    import squid.stage.asi
 else:
     import squid.stage.cephla
 from control.piezo import PiezoStage
@@ -387,6 +389,10 @@ class HighContentScreeningGui(QMainWindow):
         if USE_PRIOR_STAGE:
             self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(
                 sn=PRIOR_STAGE_SN, stage_config=squid.config.get_stage_config()
+            )
+        elif USE_ASI_STAGE:
+            self.stage: squid.abc.AbstractStage = squid.stage.asi.ASIStage(
+                sn=ASI_STAGE_SN, stage_config=squid.config.get_stage_config()
             )
 
         else:

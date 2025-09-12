@@ -221,6 +221,10 @@ class Microscope(QObject):
             self.stage: squid.abc.AbstractStage = squid.stage.prior.PriorStage(
                 sn=PRIOR_STAGE_SN, stage_config=squid.config.get_stage_config()
             )
+        elif USE_ASI_STAGE:
+            self.stage: squid.abc.AbstractStage = squid.stage.asi.ASIStage(
+                sn=ASI_STAGE_SN, stage_config=squid.config.get_stage_config()
+            )
 
         if ENABLE_SPINNING_DISK_CONFOCAL and not USE_DRAGONFLY:
             try:
