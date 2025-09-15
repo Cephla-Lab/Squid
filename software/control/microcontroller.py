@@ -816,7 +816,7 @@ class Microcontroller:
 
     def configure_stage_pid(self, axis, transitions_per_revolution, flip_direction=False):
         if not isinstance(transitions_per_revolution, int):
-            raise ValueError(f"transitions_per_revolution must be an integer, but is: {transitions_per_revolution}")
+            self.log.warning(f"transitions_per_revolution must be an integer, truncating: {transitions_per_revolution}")
 
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.CONFIGURE_STAGE_PID
