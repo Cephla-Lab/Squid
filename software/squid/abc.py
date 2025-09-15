@@ -5,6 +5,7 @@ from typing import Callable, Optional, Tuple, Sequence, List
 import abc
 import enum
 import time
+import threading
 
 import pydantic
 import numpy as np
@@ -200,6 +201,20 @@ class AbstractStage(metaclass=abc.ABCMeta):
         theta_pos_rad: Optional[float] = None,
         theta_neg_rad: Optional[float] = None,
     ):
+        pass
+
+    @abc.abstractmethod
+    def move_to_loading_position(self, blocking: bool = True):
+        """
+        Move the stage to loading position so it is clear for loading a sample.
+        """
+        pass
+
+    @abc.abstractmethod
+    def move_to_scanning_position(self, blocking: bool = True):
+        """
+        Move the stage back to scanning position from loading position.
+        """
         pass
 
     def get_config(self) -> StageConfig:
