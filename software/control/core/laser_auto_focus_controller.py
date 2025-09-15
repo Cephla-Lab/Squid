@@ -574,7 +574,7 @@ class LaserAutofocusController(QObject):
                     > self.laser_af_properties.laser_af_range
                 ):
                     self._log.warning(
-                        f"Spot detected at ({x:.1f}, {y:.1f}) is out of range ({self.laser_af_properties.laser_af_range:.1f} μm)"
+                        f"Spot detected at ({x:.1f}, {y:.1f}) is out of range ({self.laser_af_properties.laser_af_range:.1f} μm), skipping it."
                     )
                     continue
 
