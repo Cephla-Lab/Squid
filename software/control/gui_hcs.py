@@ -147,7 +147,7 @@ class MovementUpdater(QObject):
 
 
 class QtAutoFocusController(AutoFocusController, QObject):
-    finished = Signal()
+    autofocusFinished = Signal()
     image_to_display = Signal(np.ndarray)
 
     def __init__(
@@ -165,7 +165,7 @@ class QtAutoFocusController(AutoFocusController, QObject):
             stage,
             liveController,
             microcontroller,
-            lambda: self.finished.emit(),
+            lambda: self.autofocusFinished.emit(),
             lambda image: self.image_to_display.emit(image),
             nl5,
         )

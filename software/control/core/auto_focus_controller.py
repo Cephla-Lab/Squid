@@ -101,6 +101,7 @@ class AutoFocusController:
                 self._finished_fn()
                 raise RuntimeError("Previous focus thread failed to join")
 
+        self._keep_running.set()
         self._autofocus_worker = AutofocusWorker(
             self, self._on_autofocus_completed, self._image_to_display_fn, self._keep_running
         )

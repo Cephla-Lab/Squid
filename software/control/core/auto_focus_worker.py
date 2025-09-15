@@ -65,6 +65,7 @@ class AutofocusWorker:
         image = None
         for i in range(self.N):
             if not self._keep_running.is_set():
+                self._log.warning("Signal to abort autofocus received, aborting!")
                 # This aborts and then we report our best focus so far
                 break
             self.stage.move_z(self.deltaZ)
