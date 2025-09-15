@@ -146,6 +146,31 @@ class MovementUpdater(QObject):
         self.previous_pos = pos
 
 
+class QtAutoFocusController(AutoFocusController, QObject):
+    finished = Signal()
+    image_to_display = Signal(np.ndarray)
+
+    def __init__(
+        self,
+        camera: AbstractCamera,
+        stage: AbstractStage,
+        liveController: LiveController,
+        microcontroller: Microcontroller,
+        nl5: Optional[control.microscope.NL5],
+    ):
+        QObject.__init__(self)
+        AutoFocusController.__init__(
+            self,
+            camera,
+            stage,
+            liveController,
+            microcontroller,
+            lambda: self.finished.emit(),
+            lambda image: self.image_to_display.emit(image),
+            nl5,
+        )
+
+
 class QtMultiPointController(MultiPointController, QObject):
     acquisition_finished = Signal()
     signal_acquisition_start = Signal()
@@ -403,7 +428,7 @@ class HighContentScreeningGui(QMainWindow):
         self.slidePositionController = core.SlidePositionController(
             self.stage, self.liveController, is_for_wellplate=True
         )
-        self.autofocusController = AutoFocusController(
+        self.autofocusController = QtAutoFocusController(
             self.camera, self.stage, self.liveController, self.microcontroller, self.nl5
         )
         if ENABLE_TRACKING:

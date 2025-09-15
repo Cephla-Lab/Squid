@@ -1,10 +1,9 @@
-import tests.control.gui_test_stubs as gts
-import pytest
+import tests.control.test_stubs as ts
 import control._def
 
 
 def test_objective_store():
-    objective_store = gts.get_test_objective_store()
+    objective_store = ts.get_test_objective_store()
     objective1 = {
         "name": "10x",
         "magnification": 10,
