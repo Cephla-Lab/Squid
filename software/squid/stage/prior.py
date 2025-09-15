@@ -302,8 +302,8 @@ class PriorStage(AbstractStage):
     def get_config(self) -> StageConfig:
         return super().get_config()
 
-    def _move_to_loading_position_impl(self):
+    def move_to_loading_position(self):
         raise NotImplementedError("Moving to loading position is not supported for Prior stage")
 
-    def _move_to_scanning_position_impl(self):
+    def move_to_scanning_position(self):
         raise NotImplementedError("Moving to scanning position is not supported for Prior stage")

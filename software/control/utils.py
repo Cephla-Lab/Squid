@@ -6,6 +6,7 @@ import sys
 import shutil
 import statistics
 import time
+import threading
 from dataclasses import dataclass
 
 import cv2
@@ -15,7 +16,7 @@ import numpy as np
 from scipy.ndimage import label, gaussian_filter
 from scipy import signal
 import os
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Callable
 
 from control._def import (
     LASER_AF_Y_WINDOW,
@@ -435,6 +436,44 @@ def get_available_disk_space(directory: pathlib.Path) -> int:
     (total, used, free) = shutil.disk_usage(directory)
 
     return free
+
+
+def threaded_operation_helper(
+    operation: Callable, callback: Optional[Callable[[bool, Optional[str]], None]] = None, **kwargs
+):
+    """
+    Helper function to execute an operation in a separate thread, and notify the callback when done.
+
+    Args:
+        operation: The operation to execute.
+        callback: The callback to notify when the operation is done.
+    Returns:
+        threading.Thread: The thread that is executing the operation.
+    """
+    method_name = operation.__name__
+
+    def _threaded_operation():
+        try:
+            _log.info(f"Executing {method_name}...")
+            operation(**kwargs)
+            _log.info(f"Successfully executed {method_name}")
+            if callback:
+                callback(True, None)
+        except NotImplementedError as e:
+            error_msg = str(e)
+            _log.warning(error_msg)
+            if callback:
+                callback(False, error_msg)
+        except Exception as e:
+            error_msg = f"Failed to execute {method_name}: {str(e)}"
+            _log.error(error_msg)
+            if callback:
+                callback(False, error_msg)
+
+    thread = threading.Thread(target=_threaded_operation, name=method_name)
+    thread.daemon = True
+    thread.start()
+    return thread
 
 
 def get_directory_disk_usage(directory: pathlib.Path) -> int:

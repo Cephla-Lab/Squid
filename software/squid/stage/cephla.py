@@ -1,8 +1,9 @@
 import math
-from typing import Optional
+from typing import Optional, Callable
 
 import control.microcontroller
 import control._def as _def
+import control.utils as utils
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig, AxisConfig
 
@@ -309,3 +310,57 @@ class CephlaStage(AbstractStage):
         else:
             self.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
             self.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
+
+    def move_to_loading_position(
+        self,
+        blocking: bool = True,
+        callback: Optional[Callable[[bool, Optional[str]], None]] = None,
+        is_wellplate: bool = True,
+    ):
+        """Move the stage to loading position so it is clear for loading a sample.
+        Args:
+            blocking: If True, wait for the move to complete before returning.
+                      If False, return immediately and run the operation in a separate thread. callback will be called when done.
+            callback: Optional callback function called when movement completes.
+                     Receives (success: bool, error_message: Optional[str])
+            **kwargs: Additional arguments to pass to the operation.
+        Returns:
+            threading.Thread: The thread handling the movement. None if blocking is True.
+        """
+        if blocking and callback:
+            raise ValueError("Callback is not supported when blocking is True")
+        if blocking:
+            self._log.info(f"Moving to loading position. Blocking is True.")
+            self._move_to_loading_position_impl(is_wellplate)
+            self._log.info("Successfully moved to loading position")
+        else:
+            return utils.threaded_operation_helper(
+                self._move_to_loading_position_impl, callback, is_wellplate=is_wellplate
+            )
+
+    def move_to_scanning_position(
+        self,
+        blocking: bool = True,
+        callback: Optional[Callable[[bool, Optional[str]], None]] = None,
+        is_wellplate: bool = True,
+    ):
+        """Move the stage back to scanning position from loading position.
+        Args:
+            blocking: If True, wait for the move to complete before returning.
+                      If False, return immediately and run the operation in a separate thread. callback will be called when done.
+            callback: Optional callback function called when movement completes.
+                     Receives (success: bool, error_message: Optional[str])
+            **kwargs: Additional arguments to pass to the operation.
+        Returns:
+            threading.Thread: The thread handling the movement. None if blocking is True.
+        """
+        if blocking and callback:
+            raise ValueError("Callback is not supported when blocking is True")
+        if blocking:
+            self._log.info(f"Moving to scanning position. Blocking is True.")
+            self._move_to_scanning_position_impl(is_wellplate)
+            self._log.info("Successfully moved to scanning position")
+        else:
+            return utils.threaded_operation_helper(
+                self._move_to_scanning_position_impl, callback, is_wellplate=is_wellplate
+            )
