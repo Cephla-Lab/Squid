@@ -4046,6 +4046,12 @@ class WellplateMultiPointWidget(QFrame):
         # Add state tracking for coordinates
         self.has_loaded_coordinates = False
 
+        # Add state tracking for Z parameters
+        self.stored_z_params = {"dz": None, "nz": None, "z_min": None, "z_max": None, "set_z_range": False}
+
+        # Add state tracking for Time parameters
+        self.stored_time_params = {"dt": None, "nt": None}
+
     def add_components(self):
         self.entry_well_coverage = QDoubleSpinBox()
         self.entry_well_coverage.setKeyboardTracking(False)
@@ -4292,20 +4298,51 @@ class WellplateMultiPointWidget(QFrame):
         grid = QGridLayout()
 
         # dz and Nz
-        dz_layout = QHBoxLayout()
-        dz_layout.addWidget(QLabel("dz"))
-        dz_layout.addWidget(self.entry_deltaZ)
-        dz_layout.addWidget(QLabel("Nz"))
-        dz_layout.addWidget(self.entry_NZ)
-        grid.addLayout(dz_layout, 0, 0)
+        self.dz_layout = QHBoxLayout()
+        self.dz_layout.addWidget(QLabel("dz"))
+        self.dz_layout.addWidget(self.entry_deltaZ)
+        self.dz_layout.addWidget(QLabel("Nz"))
+        self.dz_layout.addWidget(self.entry_NZ)
+        grid.addLayout(self.dz_layout, 0, 0)
 
         # dt and Nt
-        dt_layout = QHBoxLayout()
-        dt_layout.addWidget(QLabel("dt"))
-        dt_layout.addWidget(self.entry_dt)
-        dt_layout.addWidget(QLabel("Nt"))
-        dt_layout.addWidget(self.entry_Nt)
-        grid.addLayout(dt_layout, 0, 2)
+        self.dt_layout = QHBoxLayout()
+        self.dt_layout.addWidget(QLabel("dt"))
+        self.dt_layout.addWidget(self.entry_dt)
+        self.dt_layout.addWidget(QLabel("Nt"))
+        self.dt_layout.addWidget(self.entry_Nt)
+        grid.addLayout(self.dt_layout, 0, 2)
+
+        # Create informational labels for when modes are not selected
+        self.z_not_selected_label = QLabel("Z stack not selected")
+        self.z_not_selected_label.setAlignment(Qt.AlignCenter)
+        self.z_not_selected_label.setStyleSheet(
+            """
+            QLabel {
+                background-color: palette(button);
+                border: 1px solid palette(mid);
+                border-radius: 4px;
+                padding: 0px;
+                color: palette(text);
+            }
+        """
+        )
+        self.z_not_selected_label.setVisible(False)
+
+        self.time_not_selected_label = QLabel("Time lapse not selected")
+        self.time_not_selected_label.setAlignment(Qt.AlignCenter)
+        self.time_not_selected_label.setStyleSheet(
+            """
+            QLabel {
+                background-color: palette(button);
+                border: 1px solid palette(mid);
+                border-radius: 4px;
+                padding: 0px;
+                color: palette(text);
+            }
+        """
+        )
+        self.time_not_selected_label.setVisible(False)
 
         # Z-min
         self.z_min_layout = QHBoxLayout()
@@ -4357,6 +4394,10 @@ class WellplateMultiPointWidget(QFrame):
         spacer_widget.setFixedWidth(2)
         grid.addWidget(spacer_widget, 0, 1)
 
+        # Add informational labels to grid (initially hidden)
+        grid.addWidget(self.z_not_selected_label, 0, 0)
+        grid.addWidget(self.time_not_selected_label, 0, 2)
+
         # Set column stretches
         grid.setColumnStretch(0, 1)  # Middle spacer
         grid.setColumnStretch(1, 0)  # Middle spacer
@@ -4370,6 +4411,15 @@ class WellplateMultiPointWidget(QFrame):
         row_progress_layout.addWidget(self.eta_label)
         main_layout.addLayout(row_progress_layout)
         self.toggle_z_range_controls(self.checkbox_set_z_range.isChecked())
+
+        # Initialize Z and Time controls visibility based on checkbox states
+        if not self.checkbox_z.isChecked():
+            self.hide_z_controls()
+        if not self.checkbox_time.isChecked():
+            self.hide_time_controls()
+
+        # Update control visibility based on both states
+        self.update_control_visibility()
 
         # Connections
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
@@ -4453,14 +4503,161 @@ class WellplateMultiPointWidget(QFrame):
     def on_z_toggled(self, checked):
         """Handle Z checkbox toggle"""
         self.update_tab_styles()
-        # Add logic to enable/disable Z-related controls
+
+        if checked:
+            # Z Stack enabled - restore stored parameters and show controls
+            self.restore_z_parameters()
+            self.show_z_controls(True)
+        else:
+            # Z Stack disabled - store current parameters and hide controls
+            self.store_z_parameters()
+            self.hide_z_controls()
+
+        # Update visibility based on both Z and Time states
+        self.update_control_visibility()
+
         print(f"Z acquisition {'enabled' if checked else 'disabled'}")
 
     def on_time_toggled(self, checked):
         """Handle Time checkbox toggle"""
         self.update_tab_styles()
-        # Add logic to enable/disable time-related controls
+
+        if checked:
+            # Time lapse enabled - restore stored parameters and show controls
+            self.restore_time_parameters()
+            self.show_time_controls(True)
+        else:
+            # Time lapse disabled - store current parameters and hide controls
+            self.store_time_parameters()
+            self.hide_time_controls()
+
+        # Update visibility based on both Z and Time states
+        self.update_control_visibility()
+
         print(f"Time acquisition {'enabled' if checked else 'disabled'}")
+
+    def store_z_parameters(self):
+        """Store current Z parameters before hiding controls"""
+        self.stored_z_params["dz"] = self.entry_deltaZ.value()
+        self.stored_z_params["nz"] = self.entry_NZ.value()
+        self.stored_z_params["z_min"] = self.entry_minZ.value()
+        self.stored_z_params["z_max"] = self.entry_maxZ.value()
+        self.stored_z_params["set_z_range"] = self.checkbox_set_z_range.isChecked()
+
+    def restore_z_parameters(self):
+        """Restore stored Z parameters when showing controls"""
+        if self.stored_z_params["dz"] is not None:
+            self.entry_deltaZ.setValue(self.stored_z_params["dz"])
+        if self.stored_z_params["nz"] is not None:
+            self.entry_NZ.setValue(self.stored_z_params["nz"])
+        if self.stored_z_params["z_min"] is not None:
+            self.entry_minZ.setValue(self.stored_z_params["z_min"])
+        if self.stored_z_params["z_max"] is not None:
+            self.entry_maxZ.setValue(self.stored_z_params["z_max"])
+        self.checkbox_set_z_range.setChecked(self.stored_z_params["set_z_range"])
+
+    def hide_z_controls(self):
+        """Hide Z-related controls and set single-slice parameters"""
+        # Hide dz/Nz widgets
+        for i in range(self.dz_layout.count()):
+            widget = self.dz_layout.itemAt(i).widget()
+            if widget:
+                widget.setVisible(False)
+
+        # Hide Z-range checkbox
+        self.checkbox_set_z_range.setVisible(False)
+
+        # Hide Z-min/Z-max controls
+        for layout in (self.z_min_layout, self.z_max_layout):
+            for i in range(layout.count()):
+                widget = layout.itemAt(i).widget()
+                if widget:
+                    widget.setVisible(False)
+
+        # Set single-slice parameters
+        current_z = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        self.entry_NZ.setValue(1)
+        self.entry_minZ.setValue(current_z)
+        self.entry_maxZ.setValue(current_z)
+        self.checkbox_set_z_range.setChecked(False)
+
+    def show_z_controls(self, visible):
+        """Show Z-related controls"""
+        # Show dz/Nz widgets
+        for i in range(self.dz_layout.count()):
+            widget = self.dz_layout.itemAt(i).widget()
+            if widget:
+                widget.setVisible(visible)
+
+        # Show Z-range checkbox
+        self.checkbox_set_z_range.setVisible(visible)
+
+        # Show/hide Z-min/Z-max based on checkbox state
+        self.toggle_z_range_controls(self.checkbox_set_z_range.isChecked())
+
+    def store_time_parameters(self):
+        """Store current Time parameters before hiding controls"""
+        self.stored_time_params["dt"] = self.entry_dt.value()
+        self.stored_time_params["nt"] = self.entry_Nt.value()
+
+    def restore_time_parameters(self):
+        """Restore stored Time parameters when showing controls"""
+        if self.stored_time_params["dt"] is not None:
+            self.entry_dt.setValue(self.stored_time_params["dt"])
+        if self.stored_time_params["nt"] is not None:
+            self.entry_Nt.setValue(self.stored_time_params["nt"])
+
+    def hide_time_controls(self):
+        """Hide Time-related controls and set single-timepoint parameters"""
+        # Hide dt/Nt widgets
+        for i in range(self.dt_layout.count()):
+            widget = self.dt_layout.itemAt(i).widget()
+            if widget:
+                widget.setVisible(False)
+
+        # Set single-timepoint parameters
+        self.entry_dt.setValue(0)
+        self.entry_Nt.setValue(1)
+
+    def show_time_controls(self, visible):
+        """Show Time-related controls"""
+        # Show dt/Nt widgets
+        for i in range(self.dt_layout.count()):
+            widget = self.dt_layout.itemAt(i).widget()
+            if widget:
+                widget.setVisible(visible)
+
+    def update_control_visibility(self):
+        """Update visibility of controls and informational labels based on Z and Time states"""
+        z_checked = self.checkbox_z.isChecked()
+        time_checked = self.checkbox_time.isChecked()
+
+        if time_checked and not z_checked:
+            # Time lapse selected but Z stack not - show "Z stack not selected" message
+            self.z_not_selected_label.setVisible(True)
+            # Hide actual Z controls
+            for i in range(self.dz_layout.count()):
+                widget = self.dz_layout.itemAt(i).widget()
+                if widget:
+                    widget.setVisible(False)
+        elif z_checked and not time_checked:
+            # Z stack selected but Time lapse not - show "Time lapse not selected" message
+            self.time_not_selected_label.setVisible(True)
+            # Hide actual Time controls
+            for i in range(self.dt_layout.count()):
+                widget = self.dt_layout.itemAt(i).widget()
+                if widget:
+                    widget.setVisible(False)
+        else:
+            # Both selected or both unselected - hide informational labels
+            self.z_not_selected_label.setVisible(False)
+            self.time_not_selected_label.setVisible(False)
+
+            # Show/hide actual controls based on individual states
+            if z_checked:
+                self.show_z_controls(True)
+            if time_checked:
+                self.show_time_controls(True)
 
     def update_region_progress(self, current_fov, num_fovs):
         self.progress_bar.setMaximum(num_fovs)
