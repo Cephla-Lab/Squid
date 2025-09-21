@@ -5345,6 +5345,10 @@ class WellplateMultiPointWidget(QFrame):
         if enabled:
             self.update_scan_control_ui()
 
+            # Restore mode dropdown states based on their respective checkboxes
+            self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
+            self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
+
     def disable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(False)
 
