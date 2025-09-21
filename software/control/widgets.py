@@ -4047,7 +4047,7 @@ class WellplateMultiPointWidget(QFrame):
         self.has_loaded_coordinates = False
 
         # Add state tracking for Z parameters
-        self.stored_z_params = {"dz": None, "nz": None, "z_min": None, "z_max": None, "set_z_range": False}
+        self.stored_z_params = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": "From Bottom"}
 
         # Add state tracking for Time parameters
         self.stored_time_params = {"dt": None, "nt": None}
@@ -4186,9 +4186,6 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
 
-        self.checkbox_set_z_range = QCheckBox("Set Z-range")
-        self.checkbox_set_z_range.toggled.connect(self.toggle_z_range_controls)
-
         self.checkbox_stitchOutput = QCheckBox("Stitch Scans")
         self.checkbox_stitchOutput.setChecked(False)
 
@@ -4216,7 +4213,7 @@ class WellplateMultiPointWidget(QFrame):
         # XY Tab
         self.xy_frame = QFrame()
 
-        self.checkbox_xy = QCheckBox("XY Scan")
+        self.checkbox_xy = QCheckBox("XY")
         self.checkbox_xy.setChecked(True)
 
         self.combobox_xy_mode = QComboBox()
@@ -4232,19 +4229,23 @@ class WellplateMultiPointWidget(QFrame):
         # Z Tab
         self.z_frame = QFrame()
 
-        self.checkbox_z = QCheckBox("Z Stack")
+        self.checkbox_z = QCheckBox("Z")
         self.checkbox_z.setChecked(False)
+
+        self.combobox_z_mode = QComboBox()
+        self.combobox_z_mode.addItems(["From Bottom", "Set Range"])
+        self.combobox_z_mode.setEnabled(False)  # Initially disabled since Z is unchecked
 
         z_layout = QHBoxLayout()
         z_layout.setContentsMargins(8, 4, 8, 4)
         z_layout.addWidget(self.checkbox_z)
-        z_layout.addStretch()  # Fill horizontal space
+        z_layout.addWidget(self.combobox_z_mode)
         self.z_frame.setLayout(z_layout)
 
         # Time Tab
         self.time_frame = QFrame()
 
-        self.checkbox_time = QCheckBox("Time Lapse")
+        self.checkbox_time = QCheckBox("Time")
         self.checkbox_time.setChecked(False)
 
         time_layout = QHBoxLayout()
@@ -4378,7 +4379,6 @@ class WellplateMultiPointWidget(QFrame):
         options_layout.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
-        options_layout.addWidget(self.checkbox_set_z_range)
 
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
@@ -4410,7 +4410,7 @@ class WellplateMultiPointWidget(QFrame):
         row_progress_layout.addWidget(self.progress_bar)
         row_progress_layout.addWidget(self.eta_label)
         main_layout.addLayout(row_progress_layout)
-        self.toggle_z_range_controls(self.checkbox_set_z_range.isChecked())
+        self.toggle_z_range_controls(False)  # Initially hide Z-range controls
 
         # Initialize Z and Time controls visibility based on checkbox states
         if not self.checkbox_z.isChecked():
@@ -4456,6 +4456,7 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_xy.toggled.connect(self.on_xy_toggled)
         self.combobox_xy_mode.currentTextChanged.connect(self.on_xy_mode_changed)
         self.checkbox_z.toggled.connect(self.on_z_toggled)
+        self.combobox_z_mode.currentTextChanged.connect(self.on_z_mode_changed)
         self.checkbox_time.toggled.connect(self.on_time_toggled)
 
     def enable_manual_ROI(self, enable):
@@ -4504,6 +4505,9 @@ class WellplateMultiPointWidget(QFrame):
         """Handle Z checkbox toggle"""
         self.update_tab_styles()
 
+        # Enable/disable the Z mode dropdown
+        self.combobox_z_mode.setEnabled(checked)
+
         if checked:
             # Z Stack enabled - restore stored parameters and show controls
             self.restore_z_parameters()
@@ -4517,6 +4521,12 @@ class WellplateMultiPointWidget(QFrame):
         self.update_control_visibility()
 
         print(f"Z acquisition {'enabled' if checked else 'disabled'}")
+
+    def on_z_mode_changed(self, mode):
+        """Handle Z mode dropdown change"""
+        # Show/hide Z-min/Z-max controls based on mode
+        self.toggle_z_range_controls(mode == "Set Range")
+        print(f"Z mode changed to: {mode}")
 
     def on_time_toggled(self, checked):
         """Handle Time checkbox toggle"""
@@ -4542,7 +4552,7 @@ class WellplateMultiPointWidget(QFrame):
         self.stored_z_params["nz"] = self.entry_NZ.value()
         self.stored_z_params["z_min"] = self.entry_minZ.value()
         self.stored_z_params["z_max"] = self.entry_maxZ.value()
-        self.stored_z_params["set_z_range"] = self.checkbox_set_z_range.isChecked()
+        self.stored_z_params["z_mode"] = self.combobox_z_mode.currentText()
 
     def restore_z_parameters(self):
         """Restore stored Z parameters when showing controls"""
@@ -4554,7 +4564,7 @@ class WellplateMultiPointWidget(QFrame):
             self.entry_minZ.setValue(self.stored_z_params["z_min"])
         if self.stored_z_params["z_max"] is not None:
             self.entry_maxZ.setValue(self.stored_z_params["z_max"])
-        self.checkbox_set_z_range.setChecked(self.stored_z_params["set_z_range"])
+        self.combobox_z_mode.setCurrentText(self.stored_z_params["z_mode"])
 
     def hide_z_controls(self):
         """Hide Z-related controls and set single-slice parameters"""
@@ -4563,9 +4573,6 @@ class WellplateMultiPointWidget(QFrame):
             widget = self.dz_layout.itemAt(i).widget()
             if widget:
                 widget.setVisible(False)
-
-        # Hide Z-range checkbox
-        self.checkbox_set_z_range.setVisible(False)
 
         # Hide Z-min/Z-max controls
         for layout in (self.z_min_layout, self.z_max_layout):
@@ -4579,7 +4586,7 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_NZ.setValue(1)
         self.entry_minZ.setValue(current_z)
         self.entry_maxZ.setValue(current_z)
-        self.checkbox_set_z_range.setChecked(False)
+        self.combobox_z_mode.setCurrentText("From Bottom")
 
     def show_z_controls(self, visible):
         """Show Z-related controls"""
@@ -4589,11 +4596,8 @@ class WellplateMultiPointWidget(QFrame):
             if widget:
                 widget.setVisible(visible)
 
-        # Show Z-range checkbox
-        self.checkbox_set_z_range.setVisible(visible)
-
-        # Show/hide Z-min/Z-max based on checkbox state
-        self.toggle_z_range_controls(self.checkbox_set_z_range.isChecked())
+        # Show/hide Z-min/Z-max based on dropdown selection
+        self.toggle_z_range_controls(self.combobox_z_mode.currentText() == "Set Range")
 
     def store_time_parameters(self):
         """Store current Time parameters before hiding controls"""
@@ -5008,7 +5012,7 @@ class WellplateMultiPointWidget(QFrame):
             Nx = Ny = int(math.sqrt(total_positions))
             dx_mm = dy_mm = scan_size_mm / (Nx - 1) if Nx > 1 else scan_size_mm
 
-            if self.checkbox_set_z_range.isChecked():
+            if self.combobox_z_mode.currentText() == "Set Range":
                 # Set Z-range (convert from μm to mm)
                 minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
                 maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
