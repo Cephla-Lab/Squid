@@ -4039,10 +4039,6 @@ class WellplateMultiPointWidget(QFrame):
         self._last_x_mm = None
         self._last_y_mm = None
 
-        self.add_components()
-        self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        self.set_default_scan_size()
-
         # Add state tracking for coordinates
         self.has_loaded_coordinates = False
 
@@ -4051,6 +4047,19 @@ class WellplateMultiPointWidget(QFrame):
 
         # Add state tracking for Time parameters
         self.stored_time_params = {"dt": None, "nt": None}
+
+        # Add state tracking for XY mode parameters
+        self.stored_xy_params = {
+            "Current Position": {"scan_size": None, "coverage": None, "scan_shape": None},
+            "Select Wells": {"scan_size": None, "coverage": None, "scan_shape": None},
+        }
+
+        # Track previous XY mode for parameter storage
+        self._previous_xy_mode = None
+
+        self.add_components()
+        self.setFrameStyle(QFrame.Panel | QFrame.Raised)
+        self.set_default_scan_size()
 
     def add_components(self):
         self.entry_well_coverage = QDoubleSpinBox()
@@ -4283,18 +4292,23 @@ class WellplateMultiPointWidget(QFrame):
         main_layout.addLayout(tabs_layout)
 
         # Scan Shape, FOV overlap, and Save / Load Scan Coordinates
-        row_2_layout = QGridLayout()
-        row_2_layout.addWidget(QLabel("Scan Shape"), 0, 0)
-        row_2_layout.addWidget(self.combobox_shape, 0, 1)
-        row_2_layout.addWidget(QLabel("Scan Size"), 0, 2)
-        row_2_layout.addWidget(self.entry_scan_size, 0, 3)
-        row_2_layout.addWidget(QLabel("Coverage"), 0, 4)
-        row_2_layout.addWidget(self.entry_well_coverage, 0, 5)
-        row_2_layout.addWidget(QLabel("FOV Overlap"), 1, 0)
-        row_2_layout.addWidget(self.entry_overlap, 1, 1)
-        row_2_layout.addWidget(self.btn_save_scan_coordinates, 1, 2, 1, 2)
-        row_2_layout.addWidget(self.btn_load_scan_coordinates, 1, 4, 1, 2)
-        main_layout.addLayout(row_2_layout)
+        self.row_2_layout = QGridLayout()
+        self.scan_shape_label = QLabel("Scan Shape")
+        self.scan_size_label = QLabel("Scan Size")
+        self.coverage_label = QLabel("Coverage")
+        self.fov_overlap_label = QLabel("FOV Overlap")
+
+        self.row_2_layout.addWidget(self.scan_shape_label, 0, 0)
+        self.row_2_layout.addWidget(self.combobox_shape, 0, 1)
+        self.row_2_layout.addWidget(self.scan_size_label, 0, 2)
+        self.row_2_layout.addWidget(self.entry_scan_size, 0, 3)
+        self.row_2_layout.addWidget(self.coverage_label, 0, 4)
+        self.row_2_layout.addWidget(self.entry_well_coverage, 0, 5)
+        self.row_2_layout.addWidget(self.fov_overlap_label, 1, 0)
+        self.row_2_layout.addWidget(self.entry_overlap, 1, 1)
+        self.row_2_layout.addWidget(self.btn_save_scan_coordinates, 1, 2, 1, 2)
+        self.row_2_layout.addWidget(self.btn_load_scan_coordinates, 1, 4, 1, 2)
+        main_layout.addLayout(self.row_2_layout)
 
         grid = QGridLayout()
 
@@ -4421,6 +4435,12 @@ class WellplateMultiPointWidget(QFrame):
         # Update control visibility based on both states
         self.update_control_visibility()
 
+        # Initialize scan controls visibility based on XY checkbox state
+        self.update_scan_control_ui()
+
+        # Initialize previous XY mode tracking
+        self._previous_xy_mode = self.combobox_xy_mode.currentText()
+
         # Connections
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
@@ -4493,13 +4513,141 @@ class WellplateMultiPointWidget(QFrame):
         """Handle XY checkbox toggle"""
         self.combobox_xy_mode.setEnabled(checked)
         self.update_tab_styles()
-        # Add logic to enable/disable XY-related controls
+
+        # Show/hide scan shape and coordinate controls
+        self.update_scan_control_ui()
+
+        if not checked:
+            # When XY is unchecked, set coordinates to current position
+            self.set_coordinates_to_current_position()
+        else:
+            # When XY is checked, update coordinates normally
+            self.update_coordinates()
+
         print(f"XY acquisition {'enabled' if checked else 'disabled'}")
 
     def on_xy_mode_changed(self, mode):
         """Handle XY mode dropdown change"""
         print(f"XY mode changed to: {mode}")
-        # Add logic to handle different XY modes
+
+        # Store current mode's parameters before switching (if we know the previous mode)
+        # We need to track the previous mode to store its parameters
+        if hasattr(self, "_previous_xy_mode") and self._previous_xy_mode in ["Current Position", "Select Wells"]:
+            self.store_xy_mode_parameters(self._previous_xy_mode)
+
+        # Restore parameters for the new mode
+        if mode in ["Current Position", "Select Wells"]:
+            self.restore_xy_mode_parameters(mode)
+
+        # Update UI based on the new mode
+        self.update_scan_control_ui()
+
+        # Store the current mode as previous for next time
+        self._previous_xy_mode = mode
+
+        if mode == "Current Position":
+            # When "Current Position" is selected, set coordinates to current position
+            self.set_coordinates_to_current_position()
+        else:
+            # For other modes, update coordinates normally
+            self.update_coordinates()
+
+    def update_scan_control_ui(self):
+        """Update scan control UI based on XY checkbox and mode selection"""
+        xy_checked = self.checkbox_xy.isChecked()
+        xy_mode = self.combobox_xy_mode.currentText()
+
+        # List of widgets to show/hide based on XY checkbox
+        widgets_to_toggle = [
+            self.scan_shape_label,
+            self.combobox_shape,
+            self.scan_size_label,
+            self.entry_scan_size,
+            self.coverage_label,
+            self.entry_well_coverage,
+            self.fov_overlap_label,
+            self.entry_overlap,
+            self.btn_save_scan_coordinates,
+            self.btn_load_scan_coordinates,
+        ]
+
+        for widget in widgets_to_toggle:
+            widget.setVisible(xy_checked)
+
+        # Handle coverage field based on XY mode
+        if xy_checked:
+            if xy_mode in ["Current Position", "Manual"]:
+                # For Current Position and Manual modes, coverage should be N/A and disabled
+                self.entry_well_coverage.blockSignals(True)
+                self.entry_well_coverage.setRange(0, 0)  # Allow 0 for N/A mode
+                self.entry_well_coverage.setValue(0)  # Set to 0 for N/A indicator
+                self.entry_well_coverage.setEnabled(False)
+                self.entry_well_coverage.setSuffix(" (N/A)")
+                self.entry_well_coverage.blockSignals(False)
+                if xy_mode == "Manual":
+                    # hide the row of scan shape, scan size and coverage
+                    self.scan_shape_label.setVisible(False)
+                    self.combobox_shape.setVisible(False)
+                    self.scan_size_label.setVisible(False)
+                    self.entry_scan_size.setVisible(False)
+                    self.coverage_label.setVisible(False)
+                    self.entry_well_coverage.setVisible(False)
+                elif xy_mode == "Current Position":
+                    # show the row of scan shape, scan size and coverage
+                    self.scan_shape_label.setVisible(True)
+                    self.combobox_shape.setVisible(True)
+                    self.scan_size_label.setVisible(True)
+                    self.entry_scan_size.setVisible(True)
+                    self.coverage_label.setVisible(True)
+                    self.entry_well_coverage.setVisible(True)
+            elif xy_mode == "Select Wells":
+                # For Select Wells mode, coverage should be enabled
+                self.entry_well_coverage.blockSignals(True)
+                self.entry_well_coverage.setRange(1, 999.99)  # Restore normal range
+                self.entry_well_coverage.setSuffix("%")
+
+                # Restore stored coverage value for Select Wells mode
+                if self.stored_xy_params["Select Wells"]["coverage"] is not None:
+                    self.entry_well_coverage.setValue(self.stored_xy_params["Select Wells"]["coverage"])
+                else:
+                    self.entry_well_coverage.setValue(100)  # Set to default if no stored value
+
+                self.entry_well_coverage.blockSignals(False)
+
+                # Enable coverage unless it's glass slide mode
+                if "glass slide" not in self.navigationViewer.sample:
+                    self.entry_well_coverage.setEnabled(True)
+                else:
+                    self.entry_well_coverage.setEnabled(False)
+
+                # show the row of scan shape, scan size and coverage
+                self.scan_shape_label.setVisible(True)
+                self.combobox_shape.setVisible(True)
+                self.scan_size_label.setVisible(True)
+                self.entry_scan_size.setVisible(True)
+                self.coverage_label.setVisible(True)
+                self.entry_well_coverage.setVisible(True)
+
+    def set_coordinates_to_current_position(self):
+        """Set scan coordinates to current stage position (single FOV)"""
+        if self.tab_widget and self.tab_widget.currentWidget() != self:
+            return
+
+        # Clear existing regions
+        if self.scanCoordinates.has_regions():
+            self.scanCoordinates.clear_regions()
+
+        # Get current position and add it as a single region
+        pos = self.stage.get_pos()
+        x = pos.x_mm
+        y = pos.y_mm
+
+        # Add current position as a single FOV with minimal scan size
+        scan_size_mm = 0.01  # Very small scan size for single FOV
+        overlap_percent = 0  # No overlap needed for single FOV
+        shape = "Square"  # Default shape
+
+        self.scanCoordinates.add_region("current", x, y, scan_size_mm, overlap_percent, shape)
 
     def on_z_toggled(self, checked):
         """Handle Z checkbox toggle"""
@@ -4545,6 +4693,58 @@ class WellplateMultiPointWidget(QFrame):
         self.update_control_visibility()
 
         print(f"Time acquisition {'enabled' if checked else 'disabled'}")
+
+    def store_xy_mode_parameters(self, mode):
+        """Store current scan size, coverage, and shape parameters for the given XY mode"""
+        if mode in self.stored_xy_params:
+            # Always store scan size and scan shape
+            self.stored_xy_params[mode]["scan_size"] = self.entry_scan_size.value()
+            self.stored_xy_params[mode]["scan_shape"] = self.combobox_shape.currentText()
+
+            # Only store coverage for Select Wells mode (Current Position uses N/A)
+            if mode == "Select Wells":
+                self.stored_xy_params[mode]["coverage"] = self.entry_well_coverage.value()
+                print(f">>>>>> Stored coverage for {mode}: {self.stored_xy_params[mode]['coverage']}")
+
+    def restore_xy_mode_parameters(self, mode):
+        """Restore stored scan size, coverage, and shape parameters for the given XY mode"""
+        if mode in self.stored_xy_params:
+            # Restore scan size for both Current Position and Select Wells modes
+            if self.stored_xy_params[mode]["scan_size"] is not None:
+                self.entry_scan_size.blockSignals(True)
+                self.entry_scan_size.setValue(self.stored_xy_params[mode]["scan_size"])
+                self.entry_scan_size.blockSignals(False)
+            else:
+                # Set default values if no stored value exists
+                if mode == "Current Position":
+                    # For current position, use a small default scan size
+                    self.entry_scan_size.blockSignals(True)
+                    self.entry_scan_size.setValue(0.1)  # Small default for single FOV
+                    self.entry_scan_size.blockSignals(False)
+                elif mode == "Select Wells":
+                    # For select wells, use a larger default scan size
+                    self.entry_scan_size.blockSignals(True)
+                    self.entry_scan_size.setValue(1.0)  # Larger default for well coverage
+                    self.entry_scan_size.blockSignals(False)
+
+            # Restore scan shape for both modes
+            if self.stored_xy_params[mode]["scan_shape"] is not None:
+                self.combobox_shape.blockSignals(True)
+                self.combobox_shape.setCurrentText(self.stored_xy_params[mode]["scan_shape"])
+                self.combobox_shape.blockSignals(False)
+            else:
+                # Set default shape if no stored value exists
+                self.combobox_shape.blockSignals(True)
+                if mode == "Current Position":
+                    # For current position, default to Square (simple single FOV)
+                    self.combobox_shape.setCurrentText("Square")
+                elif mode == "Select Wells":
+                    # For select wells, use the format-based default from set_default_shape
+                    self.set_default_shape()
+                self.combobox_shape.blockSignals(False)
+
+            # Coverage restoration for Select Wells mode is handled in update_scan_control_ui()
+            # to avoid conflicts with range setting and UI state management
 
     def store_z_parameters(self):
         """Store current Z parameters before hiding controls"""
@@ -4780,30 +4980,49 @@ class WellplateMultiPointWidget(QFrame):
         self.update()
 
     def set_default_scan_size(self):
-        print("Sample Format:", self.navigationViewer.sample)
-        self.combobox_shape.blockSignals(True)
-        self.entry_well_coverage.blockSignals(True)
-        self.entry_scan_size.blockSignals(True)
+        # change current settings if XY is checked and mode is not "Select Wells"
+        if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Select Wells":
+            print("Sample Format:", self.navigationViewer.sample)
+            self.combobox_shape.blockSignals(True)
+            self.entry_well_coverage.blockSignals(True)
+            self.entry_scan_size.blockSignals(True)
 
-        self.set_default_shape()
+            self.set_default_shape()
 
-        if "glass slide" in self.navigationViewer.sample:
-            self.entry_scan_size.setValue(
-                0.1
-            )  # init to 0.1mm when switching to 'glass slide' (for imaging a single FOV by default)
-            self.entry_scan_size.setEnabled(True)
-            self.entry_well_coverage.setEnabled(False)
+            if "glass slide" in self.navigationViewer.sample:
+                self.entry_scan_size.setValue(
+                    0.1
+                )  # init to 0.1mm when switching to 'glass slide' (for imaging a single FOV by default)
+                self.entry_scan_size.setEnabled(True)
+                self.entry_well_coverage.setEnabled(False)
+            else:
+                self.entry_well_coverage.setEnabled(True)
+                # entry_well_coverage.valueChanged signal will not emit coverage = 100 already
+                self.entry_well_coverage.setValue(100)
+                self.update_scan_size_from_coverage()
+
+            self.update_coordinates()
+
+            self.combobox_shape.blockSignals(False)
+            self.entry_well_coverage.blockSignals(False)
+            self.entry_scan_size.blockSignals(False)
         else:
-            self.entry_well_coverage.setEnabled(True)
-            # entry_well_coverage.valueChanged signal will not emit coverage = 100 already
-            self.entry_well_coverage.setValue(100)
-            self.update_scan_size_from_coverage()
+            # update stored settings for "Select Wells" mode for use later
+            coverage = 100
+            self.stored_xy_params["Select Wells"]["coverage"] = coverage
 
-        self.update_coordinates()
+            # Calculate scan size from well size and coverage
+            if "glass slide" not in self.navigationViewer.sample:
+                effective_well_size = self.get_effective_well_size()
+                scan_size = round((coverage / 100) * effective_well_size, 3)
+                self.stored_xy_params["Select Wells"]["scan_size"] = scan_size
+            else:
+                # For glass slide, use default scan size
+                self.stored_xy_params["Select Wells"]["scan_size"] = 0.1
 
-        self.combobox_shape.blockSignals(False)
-        self.entry_well_coverage.blockSignals(False)
-        self.entry_scan_size.blockSignals(False)
+            self.stored_xy_params["Select Wells"]["scan_shape"] = (
+                "Square" if self.scanCoordinates.format in ["384 well plate", "1536 well plate"] else "Circle"
+            )
 
     def set_default_shape(self):
         if self.scanCoordinates.format in ["384 well plate", "1536 well plate"]:
@@ -4856,6 +5075,7 @@ class WellplateMultiPointWidget(QFrame):
             coverage = round((scan_size / effective_well_size) * 100, 2)
             self.entry_well_coverage.blockSignals(True)
             self.entry_well_coverage.setValue(coverage)
+            print(f" >>>> Updating coverage for {self.combobox_xy_mode.currentText()}: {coverage}")
             self.entry_well_coverage.blockSignals(False)
             print("COVERAGE", coverage)
 
@@ -4929,6 +5149,12 @@ class WellplateMultiPointWidget(QFrame):
     def update_coordinates(self):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
             return
+
+        # If XY is not checked, use current position instead of scan coordinates
+        if not self.checkbox_xy.isChecked():
+            self.set_coordinates_to_current_position()
+            return
+
         scan_size_mm = self.entry_scan_size.value()
         overlap_percent = self.entry_overlap.value()
         shape = self.combobox_shape.currentText()
@@ -4947,6 +5173,12 @@ class WellplateMultiPointWidget(QFrame):
     def update_well_coordinates(self, selected):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
             return
+
+        # If XY is not checked, use current position instead
+        if not self.checkbox_xy.isChecked():
+            self.set_coordinates_to_current_position()
+            return
+
         if selected:
             scan_size_mm = self.entry_scan_size.value()
             overlap_percent = self.entry_overlap.value()
@@ -4962,6 +5194,10 @@ class WellplateMultiPointWidget(QFrame):
         # This disables updating scanning grid when focus map is checked
         if self.focusMapWidget is not None and self.focusMapWidget.enabled:
             return
+        # Don't update live coordinates if XY is not checked - coordinates should stay at current position
+        if not self.checkbox_xy.isChecked():
+            return
+
         x_mm = pos.x_mm
         y_mm = pos.y_mm
         # Check if x_mm or y_mm has changed
@@ -5104,6 +5340,10 @@ class WellplateMultiPointWidget(QFrame):
             if self.scanCoordinates.format == "glass slide":
                 self.entry_well_coverage.setEnabled(False)
 
+        # Restore scan controls visibility based on XY checkbox state
+        if enabled:
+            self.update_scan_control_ui()
+
     def disable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(False)
 
@@ -5165,19 +5405,12 @@ class WellplateMultiPointWidget(QFrame):
             self.entry_well_coverage.setEnabled(False)
             self.entry_overlap.setEnabled(False)
             # Disable well selector
-            self.well_selection_widget.setEnabled(False)
+            if self.well_selection_widget is not None:
+                self.well_selection_widget.setEnabled(False)
         else:
             self.btn_save_scan_coordinates.setText("Save Coordinates")
-            # Re-enable scan controls when coordinates are cleared
-            self.combobox_shape.setEnabled(True)
-            self.entry_scan_size.setEnabled(True)
-            if "glass slide" in self.navigationViewer.sample:
-                self.entry_well_coverage.setEnabled(False)
-            else:
-                self.entry_well_coverage.setEnabled(True)
-            self.entry_overlap.setEnabled(True)
-            # Re-enable well selector
-            self.well_selection_widget.setEnabled(True)
+            # Re-enable scan controls when coordinates are cleared - use update_scan_control_ui for proper logic
+            self.update_scan_control_ui()
 
         self.has_loaded_coordinates = has_coordinates
 
