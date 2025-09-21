@@ -851,23 +851,21 @@ class HighContentScreeningGui(QMainWindow):
         self.resizeCurrentTab(self.cameraTabWidget)
 
     def setup_layout(self):
-        layout = QVBoxLayout()
+        # Create the main controls layout (everything except sampleSettingsWidget and navigation viewer)
+        controls_layout = QVBoxLayout()
 
         if USE_NAPARI_FOR_LIVE_CONTROL and not self.live_only_mode:
-            layout.addWidget(self.navigationWidget)
+            controls_layout.addWidget(self.navigationWidget)
         else:
-            layout.addWidget(self.profileWidget)
-            layout.addWidget(self.liveControlWidget)
+            controls_layout.addWidget(self.profileWidget)
+            controls_layout.addWidget(self.liveControlWidget)
 
-        layout.addWidget(self.cameraTabWidget)
+        controls_layout.addWidget(self.cameraTabWidget)
 
         if SHOW_DAC_CONTROL:
-            layout.addWidget(self.dacControlWidget)
+            controls_layout.addWidget(self.dacControlWidget)
 
-        layout.addWidget(self.recordTabWidget)
-
-        layout.addWidget(self.sampleSettingsWidget)
-        layout.addWidget(self.navigationViewer)
+        controls_layout.addWidget(self.recordTabWidget)
 
         # Add performance mode toggle button
         if not self.live_only_mode:
@@ -875,11 +873,85 @@ class HighContentScreeningGui(QMainWindow):
             self.performanceModeToggle.setCheckable(True)
             self.performanceModeToggle.setChecked(self.performance_mode)
             self.performanceModeToggle.clicked.connect(self.togglePerformanceMode)
-            layout.addWidget(self.performanceModeToggle)
+            controls_layout.addWidget(self.performanceModeToggle)
+
+        # Create a widget to hold the controls layout
+        controls_widget = QWidget()
+        controls_widget.setLayout(controls_layout)
+
+        # Calculate the original width before wrapping in scroll area
+        original_width = controls_widget.minimumSizeHint().width()
+
+        # Create a scroll area for the controls
+        controls_scroll_area = QScrollArea()
+        controls_scroll_area.setWidget(controls_widget)
+        controls_scroll_area.setWidgetResizable(True)
+        controls_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        controls_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # Ensure the scroll area maintains the original width and accounts for scroll bar
+        controls_scroll_area.setMinimumWidth(original_width)
+
+        # Set the scroll area to reserve space for the scroll bar so it doesn't overlap content
+        # This ensures the viewport is sized correctly when the scroll bar appears
+        controls_scroll_area.setFrameStyle(QFrame.NoFrame)  # Remove frame to avoid extra borders
+
+        # Make sure the controls widget gets the full available width minus scroll bar when needed
+        def adjust_controls_width():
+            # Get the viewport width (excludes scroll bar width when visible)
+            viewport_width = controls_scroll_area.viewport().width()
+            # Set the controls widget to use the full viewport width
+            controls_widget.setMinimumWidth(viewport_width)
+            controls_widget.setMaximumWidth(viewport_width)
+
+        # Connect to resize events to maintain proper width
+        controls_scroll_area.resizeEvent = lambda event: (
+            QScrollArea.resizeEvent(controls_scroll_area, event),
+            adjust_controls_width(),
+        )[
+            -1
+        ]  # Call both the original resizeEvent and our adjustment
+
+        # Initial width adjustment
+        adjust_controls_width()
+
+        # Make the sample settings widget have a fixed height
+        self.sampleSettingsWidget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        sample_settings_height = self.sampleSettingsWidget.sizeHint().height()
+        self.sampleSettingsWidget.setFixedHeight(sample_settings_height)
+
+        # Create a combined widget for sample settings and navigation viewer
+        navigation_section_widget = QWidget()
+        navigation_section_layout = QVBoxLayout()
+        navigation_section_layout.setContentsMargins(0, 0, 0, 0)
+        navigation_section_layout.setSpacing(0)
+        navigation_section_layout.addWidget(self.sampleSettingsWidget)
+        navigation_section_layout.addWidget(self.navigationViewer)
+        navigation_section_widget.setLayout(navigation_section_layout)
+
+        # Create a splitter to control the height ratio
+        main_splitter = QSplitter(Qt.Vertical)
+        main_splitter.addWidget(controls_scroll_area)
+        main_splitter.addWidget(navigation_section_widget)  # Combined section with sample settings + navigation
+
+        # Set the splitter ratios: controls get 75%, navigation section gets 25%
+        main_splitter.setStretchFactor(0, 3)  # Controls get 75%
+        main_splitter.setStretchFactor(1, 1)  # Navigation section gets 25%
+
+        # Make the navigation section non-collapsible
+        main_splitter.setCollapsible(1, False)
+
+        # Ensure the splitter maintains the original width
+        main_splitter.setMinimumWidth(original_width)
+
+        # Create the main layout for the central widget
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins to preserve width
+        main_layout.addWidget(main_splitter)
 
         self.centralWidget = QWidget()
-        self.centralWidget.setLayout(layout)
-        self.centralWidget.setFixedWidth(self.centralWidget.minimumSizeHint().width())
+        self.centralWidget.setLayout(main_layout)
+        self.centralWidget.setFixedWidth(original_width)
 
         if SINGLE_WINDOW:
             self.setupSingleWindowLayout()
