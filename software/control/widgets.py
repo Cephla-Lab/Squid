@@ -4167,11 +4167,7 @@ class WellplateMultiPointWidget(QFrame):
 
         # Add a combo box for shape selection
         self.combobox_shape = QComboBox()
-        if self.performance_mode:
-            self.combobox_shape.addItems(["Square", "Circle", "Rectangle"])
-        else:
-            self.combobox_shape.addItems(["Square", "Circle", "Rectangle", "Manual"])
-            self.combobox_shape.model().item(3).setEnabled(False)
+        self.combobox_shape.addItems(["Square", "Circle", "Rectangle"])
         self.combobox_shape.setFixedWidth(btn_width)
         # self.combobox_shape.currentTextChanged.connect(self.on_shape_changed)
 
@@ -4228,6 +4224,9 @@ class WellplateMultiPointWidget(QFrame):
         self.combobox_xy_mode = QComboBox()
         self.combobox_xy_mode.addItems(["Current Position", "Select Wells", "Manual"])
         self.combobox_xy_mode.setEnabled(True)  # Initially enabled since XY is checked
+        # disable manual mode on init (before mosaic is loaded) - identify the index of the manual mode by name
+        _manual_index = self.combobox_xy_mode.findText("Manual")
+        self.combobox_xy_mode.model().item(_manual_index).setEnabled(False)
 
         xy_layout = QHBoxLayout()
         xy_layout.setContentsMargins(8, 4, 8, 4)
@@ -4480,9 +4479,15 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_time.toggled.connect(self.on_time_toggled)
 
     def enable_manual_ROI(self, enable):
-        self.combobox_shape.model().item(3).setEnabled(enable)
+        _manual_index = self.combobox_xy_mode.findText("Manual")
+        self.combobox_xy_mode.model().item(_manual_index).setEnabled(enable)
         if not enable:
-            self.set_default_shape()
+            # disable XY scan
+            self.checkbox_xy.setChecked(False)
+            self.combobox_xy_mode.setCurrentText("Current Position")
+            self.update_scan_control_ui()
+            self.set_coordinates_to_current_position()
+            self.update_coordinates()
 
     def update_tab_styles(self):
         """Update tab frame styles based on checkbox states"""
@@ -4548,6 +4553,8 @@ class WellplateMultiPointWidget(QFrame):
         if mode == "Current Position":
             # When "Current Position" is selected, set coordinates to current position
             self.set_coordinates_to_current_position()
+        elif mode == "Manual":
+            self.signal_manual_shape_mode.emit(True)
         else:
             # For other modes, update coordinates normally
             self.update_coordinates()
@@ -5039,13 +5046,9 @@ class WellplateMultiPointWidget(QFrame):
         return well_size
 
     def reset_coordinates(self):
-        shape = self.combobox_shape.currentText()
-        if shape == "Manual":
-            self.signal_manual_shape_mode.emit(True)
-        else:
-            self.signal_manual_shape_mode.emit(False)
-            self.update_coverage_from_scan_size()
-            self.update_coordinates()
+        if self.combobox_xy_mode.currentText() == "Select Wells":
+            self.update_scan_size_from_coverage()
+        self.update_coordinates()
 
     def update_manual_shape(self, shapes_data_mm):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
@@ -5318,7 +5321,7 @@ class WellplateMultiPointWidget(QFrame):
         self.btn_startAcquisition.setText("Start\n Acquisition ")
         if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
             self.focusMapWidget.disable_updating_focus_points_on_signal()
-        self.reset_coordinates()
+        # self.reset_coordinates() # unclear whether this is needed
         if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
             self.focusMapWidget.update_focus_point_display()
             self.focusMapWidget.enable_updating_focus_points_on_signal()
