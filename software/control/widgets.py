@@ -4206,6 +4206,50 @@ class WellplateMultiPointWidget(QFrame):
         self.btn_snap_images.setCheckable(False)
         self.btn_snap_images.setChecked(False)
 
+        # Add acquisition tabs with checkboxes and frames
+        # XY Tab
+        self.xy_frame = QFrame()
+
+        self.checkbox_xy = QCheckBox("XY Scan")
+        self.checkbox_xy.setChecked(True)
+
+        self.combobox_xy_mode = QComboBox()
+        self.combobox_xy_mode.addItems(["Current Position", "Select Wells", "Manual"])
+        self.combobox_xy_mode.setEnabled(True)  # Initially enabled since XY is checked
+
+        xy_layout = QHBoxLayout()
+        xy_layout.setContentsMargins(8, 4, 8, 4)
+        xy_layout.addWidget(self.checkbox_xy)
+        xy_layout.addWidget(self.combobox_xy_mode)
+        self.xy_frame.setLayout(xy_layout)
+
+        # Z Tab
+        self.z_frame = QFrame()
+
+        self.checkbox_z = QCheckBox("Z Stack")
+        self.checkbox_z.setChecked(False)
+
+        z_layout = QHBoxLayout()
+        z_layout.setContentsMargins(8, 4, 8, 4)
+        z_layout.addWidget(self.checkbox_z)
+        z_layout.addStretch()  # Fill horizontal space
+        self.z_frame.setLayout(z_layout)
+
+        # Time Tab
+        self.time_frame = QFrame()
+
+        self.checkbox_time = QCheckBox("Time Lapse")
+        self.checkbox_time.setChecked(False)
+
+        time_layout = QHBoxLayout()
+        time_layout.setContentsMargins(8, 4, 8, 4)
+        time_layout.addWidget(self.checkbox_time)
+        time_layout.addStretch()  # Fill horizontal space
+        self.time_frame.setLayout(time_layout)
+
+        # Set initial tab styles
+        self.update_tab_styles()
+
         # Main layout
         main_layout = QVBoxLayout()
         self.setLayout(main_layout)
@@ -4222,6 +4266,14 @@ class WellplateMultiPointWidget(QFrame):
         row_1_layout.addWidget(QLabel("Experiment ID"))
         row_1_layout.addWidget(self.lineEdit_experimentID)
         main_layout.addLayout(row_1_layout)
+
+        # Acquisition tabs row
+        tabs_layout = QHBoxLayout()
+        tabs_layout.setSpacing(4)  # Small spacing between frames
+        tabs_layout.addWidget(self.xy_frame, 2)  # Give XY frame more space (weight 2)
+        tabs_layout.addWidget(self.z_frame, 1)  # Z frame gets weight 1
+        tabs_layout.addWidget(self.time_frame, 1)  # Time frame gets weight 1
+        main_layout.addLayout(tabs_layout)
 
         # Scan Shape, FOV overlap, and Save / Load Scan Coordinates
         row_2_layout = QGridLayout()
@@ -4350,10 +4402,65 @@ class WellplateMultiPointWidget(QFrame):
         self.btn_save_scan_coordinates.clicked.connect(self.on_save_or_clear_coordinates_clicked)
         self.btn_load_scan_coordinates.clicked.connect(self.on_load_coordinates_clicked)
 
+        # Connect acquisition tabs
+        self.checkbox_xy.toggled.connect(self.on_xy_toggled)
+        self.combobox_xy_mode.currentTextChanged.connect(self.on_xy_mode_changed)
+        self.checkbox_z.toggled.connect(self.on_z_toggled)
+        self.checkbox_time.toggled.connect(self.on_time_toggled)
+
     def enable_manual_ROI(self, enable):
         self.combobox_shape.model().item(3).setEnabled(enable)
         if not enable:
             self.set_default_shape()
+
+    def update_tab_styles(self):
+        """Update tab frame styles based on checkbox states"""
+        # Active tab style (checked) - uses default Qt active tab colors
+        active_style = """
+            QFrame {
+                background-color: palette(base);
+                border: 1px solid palette(highlight);
+                border-radius: 4px;
+            }
+        """
+
+        # Inactive tab style (unchecked) - uses default Qt inactive tab colors
+        inactive_style = """
+            QFrame {
+                background-color: palette(button);
+                border: 1px solid palette(mid);
+                border-radius: 4px;
+            }
+        """
+
+        # Apply styles based on checkbox states
+        self.xy_frame.setStyleSheet(active_style if self.checkbox_xy.isChecked() else inactive_style)
+        self.z_frame.setStyleSheet(active_style if self.checkbox_z.isChecked() else inactive_style)
+        self.time_frame.setStyleSheet(active_style if self.checkbox_time.isChecked() else inactive_style)
+
+    def on_xy_toggled(self, checked):
+        """Handle XY checkbox toggle"""
+        self.combobox_xy_mode.setEnabled(checked)
+        self.update_tab_styles()
+        # Add logic to enable/disable XY-related controls
+        print(f"XY acquisition {'enabled' if checked else 'disabled'}")
+
+    def on_xy_mode_changed(self, mode):
+        """Handle XY mode dropdown change"""
+        print(f"XY mode changed to: {mode}")
+        # Add logic to handle different XY modes
+
+    def on_z_toggled(self, checked):
+        """Handle Z checkbox toggle"""
+        self.update_tab_styles()
+        # Add logic to enable/disable Z-related controls
+        print(f"Z acquisition {'enabled' if checked else 'disabled'}")
+
+    def on_time_toggled(self, checked):
+        """Handle Time checkbox toggle"""
+        self.update_tab_styles()
+        # Add logic to enable/disable time-related controls
+        print(f"Time acquisition {'enabled' if checked else 'disabled'}")
 
     def update_region_progress(self, current_fov, num_fovs):
         self.progress_bar.setMaximum(num_fovs)
