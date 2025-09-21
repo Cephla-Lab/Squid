@@ -4704,7 +4704,6 @@ class WellplateMultiPointWidget(QFrame):
             # Only store coverage for Select Wells mode (Current Position uses N/A)
             if mode == "Select Wells":
                 self.stored_xy_params[mode]["coverage"] = self.entry_well_coverage.value()
-                print(f">>>>>> Stored coverage for {mode}: {self.stored_xy_params[mode]['coverage']}")
 
     def restore_xy_mode_parameters(self, mode):
         """Restore stored scan size, coverage, and shape parameters for the given XY mode"""
@@ -5075,7 +5074,6 @@ class WellplateMultiPointWidget(QFrame):
             coverage = round((scan_size / effective_well_size) * 100, 2)
             self.entry_well_coverage.blockSignals(True)
             self.entry_well_coverage.setValue(coverage)
-            print(f" >>>> Updating coverage for {self.combobox_xy_mode.currentText()}: {coverage}")
             self.entry_well_coverage.blockSignals(False)
             print("COVERAGE", coverage)
 
