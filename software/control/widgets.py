@@ -4478,16 +4478,9 @@ class WellplateMultiPointWidget(QFrame):
         self.combobox_z_mode.currentTextChanged.connect(self.on_z_mode_changed)
         self.checkbox_time.toggled.connect(self.on_time_toggled)
 
-    def enable_manual_ROI(self, enable):
+    def enable_manual_ROI(self):
         _manual_index = self.combobox_xy_mode.findText("Manual")
-        self.combobox_xy_mode.model().item(_manual_index).setEnabled(enable)
-        if not enable:
-            # disable XY scan
-            self.checkbox_xy.setChecked(False)
-            self.combobox_xy_mode.setCurrentText("Current Position")
-            self.update_scan_control_ui()
-            self.set_coordinates_to_current_position()
-            self.update_coordinates()
+        self.combobox_xy_mode.model().item(_manual_index).setEnabled(True)
 
     def update_tab_styles(self):
         """Update tab frame styles based on checkbox states"""
@@ -4522,10 +4515,7 @@ class WellplateMultiPointWidget(QFrame):
         # Show/hide scan shape and coordinate controls
         self.update_scan_control_ui()
 
-        if not checked:
-            # When XY is unchecked, set coordinates to current position
-            self.set_coordinates_to_current_position()
-        else:
+        if checked:
             # When XY is checked, update coordinates normally
             self.update_coordinates()
 
@@ -4550,13 +4540,9 @@ class WellplateMultiPointWidget(QFrame):
         # Store the current mode as previous for next time
         self._previous_xy_mode = mode
 
-        if mode == "Current Position":
-            # When "Current Position" is selected, set coordinates to current position
-            self.set_coordinates_to_current_position()
-        elif mode == "Manual":
+        if mode == "Manual":
             self.signal_manual_shape_mode.emit(True)
         else:
-            # For other modes, update coordinates normally
             self.update_coordinates()
 
     def update_scan_control_ui(self):
@@ -5160,10 +5146,10 @@ class WellplateMultiPointWidget(QFrame):
         overlap_percent = self.entry_overlap.value()
         shape = self.combobox_shape.currentText()
 
-        if shape == "Manual":
+        if self.combobox_xy_mode.currentText() == "Manual":
             self.scanCoordinates.set_manual_coordinates(self.shapes_mm, overlap_percent)
 
-        elif "glass slide" in self.navigationViewer.sample:
+        elif self.combobox_xy_mode.currentText() == "Current Position":
             pos = self.stage.get_pos()
             self.scanCoordinates.set_live_scan_coordinates(pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape)
         else:
@@ -5231,23 +5217,11 @@ class WellplateMultiPointWidget(QFrame):
                 self.btn_startAcquisition.setChecked(False)
                 return
 
-            scan_size_mm = self.entry_scan_size.value()
-            overlap_percent = self.entry_overlap.value()
-            shape = self.combobox_shape.currentText()
+            # if XY is not checked, use current position
+            if not self.checkbox_xy.isChecked():
+                self.set_coordinates_to_current_position()
 
             self.scanCoordinates.sort_coordinates()
-            if len(self.scanCoordinates.region_centers) == 0:
-                # Use current location if no regions added #TODO FIX
-                pos = self.stage.get_pos()
-                x = pos.x_mm
-                y = pos.y_mm
-                z = pos.z_mm
-                self.scanCoordinates.add_region("current", x, y, scan_size_mm, overlap_percent, shape)
-
-            # Calculate total number of positions for signal emission # not needed ever
-            total_positions = sum(len(coords) for coords in self.scanCoordinates.region_fov_coordinates.values())
-            Nx = Ny = int(math.sqrt(total_positions))
-            dx_mm = dy_mm = scan_size_mm / (Nx - 1) if Nx > 1 else scan_size_mm
 
             if self.combobox_z_mode.currentText() == "Set Range":
                 # Set Z-range (convert from μm to mm)
@@ -7635,7 +7609,7 @@ class NapariMosaicDisplayWidget(QWidget):
 
     signal_coordinates_clicked = Signal(float, float)  # x, y in mm
     signal_clear_viewer = Signal()
-    signal_layers_initialized = Signal(bool)
+    signal_layers_initialized = Signal()
     signal_shape_drawn = Signal(list)
 
     def __init__(self, objectiveStore, camera, contrastManager, parent=None):
@@ -7805,7 +7779,7 @@ class NapariMosaicDisplayWidget(QWidget):
         if not self.viewer.layers:
             # initialize first layer
             self.layers_initialized = True
-            self.signal_layers_initialized.emit(self.layers_initialized)
+            self.signal_layers_initialized.emit()
             self.viewer_pixel_size_mm = image_pixel_size_mm
             self.viewer_extents = [
                 y_mm,
