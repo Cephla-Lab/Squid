@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import sys
 from typing import Optional
@@ -4185,7 +4186,7 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_withAutofocus.setChecked(MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_af_flag(MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
-        self.checkbox_withReflectionAutofocus = QCheckBox("Reflection AF")
+        self.checkbox_withReflectionAutofocus = QCheckBox("Laser AF")
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
@@ -4479,6 +4480,24 @@ class WellplateMultiPointWidget(QFrame):
         self.combobox_z_mode.currentTextChanged.connect(self.on_z_mode_changed)
         self.checkbox_time.toggled.connect(self.on_time_toggled)
 
+        # Load cached acquisition settings
+        self.load_multipoint_widget_config_from_cache()
+
+        # Connect settings saving to relevant value changes
+        self.checkbox_xy.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self.combobox_xy_mode.currentTextChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.checkbox_z.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self.combobox_z_mode.currentTextChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.checkbox_time.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self.entry_overlap.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.entry_dt.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.entry_Nt.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.entry_deltaZ.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.entry_NZ.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.list_configurations.itemSelectionChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.checkbox_withAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self.checkbox_withReflectionAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
+
     def enable_manual_ROI(self):
         _manual_index = self.combobox_xy_mode.findText("Manual")
         self.combobox_xy_mode.model().item(_manual_index).setEnabled(True)
@@ -4489,6 +4508,115 @@ class WellplateMultiPointWidget(QFrame):
             self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position"
         )
         self.signal_toggle_live_scan_grid.emit(enable_live_scan_grid)
+
+    def save_multipoint_widget_config_to_cache(self):
+        """Save current acquisition settings to cache"""
+        try:
+            os.makedirs("cache", exist_ok=True)
+
+            settings = {
+                "xy_enabled": self.checkbox_xy.isChecked(),
+                "xy_mode": self.combobox_xy_mode.currentText(),
+                "z_enabled": self.checkbox_z.isChecked(),
+                "z_mode": self.combobox_z_mode.currentText(),
+                "time_enabled": self.checkbox_time.isChecked(),
+                "fov_overlap": self.entry_overlap.value(),
+                "dt": self.entry_dt.value(),
+                "nt": self.entry_Nt.value(),
+                "dz": self.entry_deltaZ.value(),
+                "nz": self.entry_NZ.value(),
+                "selected_channels": [item.text() for item in self.list_configurations.selectedItems()],
+                "contrast_af": self.checkbox_withAutofocus.isChecked(),
+                "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
+            }
+
+            with open("cache/multipoint_widget_config.json", "w") as f:
+                json.dump(settings, f, indent=2)
+
+        except Exception as e:
+            self._log.warning(f"Failed to save acquisition settings to cache: {e}")
+
+    def load_multipoint_widget_config_from_cache(self):
+        """Load acquisition settings from cache if it exists"""
+        try:
+            cache_file = "cache/multipoint_widget_config.json"
+            if not os.path.exists(cache_file):
+                return
+
+            with open(cache_file, "r") as f:
+                settings = json.load(f)
+
+            # Block signals to prevent triggering save during load
+            self.checkbox_xy.blockSignals(True)
+            self.combobox_xy_mode.blockSignals(True)
+            self.checkbox_z.blockSignals(True)
+            self.combobox_z_mode.blockSignals(True)
+            self.checkbox_time.blockSignals(True)
+            self.entry_overlap.blockSignals(True)
+            self.entry_dt.blockSignals(True)
+            self.entry_Nt.blockSignals(True)
+            self.entry_deltaZ.blockSignals(True)
+            self.entry_NZ.blockSignals(True)
+            self.list_configurations.blockSignals(True)
+            self.checkbox_withAutofocus.blockSignals(True)
+            self.checkbox_withReflectionAutofocus.blockSignals(True)
+
+            # Load settings
+            self.checkbox_xy.setChecked(settings.get("xy_enabled", True))
+
+            xy_mode = settings.get("xy_mode", "Current Position")
+            if xy_mode in ["Current Position", "Select Wells", "Manual"]:
+                self.combobox_xy_mode.setCurrentText(xy_mode)
+
+            self.checkbox_z.setChecked(settings.get("z_enabled", False))
+
+            z_mode = settings.get("z_mode", "From Bottom")
+            if z_mode in ["From Bottom", "Set Range"]:
+                self.combobox_z_mode.setCurrentText(z_mode)
+
+            self.checkbox_time.setChecked(settings.get("time_enabled", False))
+            self.entry_overlap.setValue(settings.get("fov_overlap", 10))
+            self.entry_dt.setValue(settings.get("dt", 0))
+            self.entry_Nt.setValue(settings.get("nt", 1))
+            self.entry_deltaZ.setValue(settings.get("dz", 1.0))
+            self.entry_NZ.setValue(settings.get("nz", 1))
+
+            # Restore selected channels
+            selected_channels = settings.get("selected_channels", [])
+            if selected_channels:
+                self.list_configurations.clearSelection()
+                for i in range(self.list_configurations.count()):
+                    item = self.list_configurations.item(i)
+                    if item.text() in selected_channels:
+                        item.setSelected(True)
+
+            # Restore autofocus settings
+            self.checkbox_withAutofocus.setChecked(settings.get("contrast_af", False))
+            self.checkbox_withReflectionAutofocus.setChecked(settings.get("laser_af", False))
+
+            # Unblock signals
+            self.checkbox_xy.blockSignals(False)
+            self.combobox_xy_mode.blockSignals(False)
+            self.checkbox_z.blockSignals(False)
+            self.combobox_z_mode.blockSignals(False)
+            self.checkbox_time.blockSignals(False)
+            self.entry_overlap.blockSignals(False)
+            self.entry_dt.blockSignals(False)
+            self.entry_Nt.blockSignals(False)
+            self.entry_deltaZ.blockSignals(False)
+            self.entry_NZ.blockSignals(False)
+            self.list_configurations.blockSignals(False)
+            self.checkbox_withAutofocus.blockSignals(False)
+            self.checkbox_withReflectionAutofocus.blockSignals(False)
+
+            # Update UI state based on loaded settings
+            self.update_scan_control_ui()
+            self.update_control_visibility()
+
+            self._log.info("Loaded acquisition settings from cache")
+
+        except Exception as e:
+            self._log.warning(f"Failed to load acquisition settings from cache: {e}")
 
     def update_tab_styles(self):
         """Update tab frame styles based on checkbox states"""
