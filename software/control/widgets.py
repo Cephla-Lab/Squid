@@ -3994,6 +3994,7 @@ class WellplateMultiPointWidget(QFrame):
     signal_acquisition_channels = Signal(list)
     signal_acquisition_shape = Signal(int, float)  # acquisition Nz, dz
     signal_manual_shape_mode = Signal(bool)  # enable manual shape layer on mosaic display
+    signal_toggle_live_scan_grid = Signal(bool)  # enable/disable live scan grid
 
     def __init__(
         self,
@@ -4482,6 +4483,13 @@ class WellplateMultiPointWidget(QFrame):
         _manual_index = self.combobox_xy_mode.findText("Manual")
         self.combobox_xy_mode.model().item(_manual_index).setEnabled(True)
 
+    def initialize_live_scan_grid_state(self):
+        """Initialize live scan grid state - call this after all external connections are made"""
+        enable_live_scan_grid = (
+            self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position"
+        )
+        self.signal_toggle_live_scan_grid.emit(enable_live_scan_grid)
+
     def update_tab_styles(self):
         """Update tab frame styles based on checkbox states"""
         # Active tab style (checked) - uses default Qt active tab colors
@@ -4516,8 +4524,11 @@ class WellplateMultiPointWidget(QFrame):
         self.update_scan_control_ui()
 
         if checked:
-            # When XY is checked, update coordinates normally
-            self.update_coordinates()
+            self.update_coordinates()  # to-do: what does this do? is it needed?
+            if self.combobox_xy_mode.currentText() == "Current Position":
+                self.signal_toggle_live_scan_grid.emit(True)
+        else:
+            self.signal_toggle_live_scan_grid.emit(False)  # disable live scan grid regardless of XY mode
 
         print(f"XY acquisition {'enabled' if checked else 'disabled'}")
 
@@ -4543,7 +4554,12 @@ class WellplateMultiPointWidget(QFrame):
         if mode == "Manual":
             self.signal_manual_shape_mode.emit(True)
         else:
-            self.update_coordinates()
+            self.update_coordinates()  # to-do: what does this do? is it needed?
+
+        if mode == "Current Position":
+            self.signal_toggle_live_scan_grid.emit(True)  # enable live scan grid
+        else:
+            self.signal_toggle_live_scan_grid.emit(False)  # disable live scan grid
 
     def update_scan_control_ui(self):
         """Update scan control UI based on XY checkbox and mode selection"""
@@ -5163,7 +5179,10 @@ class WellplateMultiPointWidget(QFrame):
 
         # If XY is not checked, use current position instead
         if not self.checkbox_xy.isChecked():
-            self.set_coordinates_to_current_position()
+            self.set_coordinates_to_current_position()  # to-do: is it needed?
+            return
+
+        if self.combobox_xy_mode.currentText() != "Select Wells":
             return
 
         if selected:
