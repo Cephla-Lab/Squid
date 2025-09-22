@@ -18,6 +18,7 @@ class Stats:
 
         self.read_frame_count = 0
         self.last_read_frame_time = time.time()
+        self.total_bytes_received = 0
 
         self.start_time = time.time()
         self._update_lock = threading.Lock()
@@ -32,10 +33,11 @@ class Stats:
 
             self.start_time = time.time()
 
-    def callback_frame(self):
+    def callback_frame(self, cf: CameraFrame):
         with self._update_lock:
             self.callback_frame_count += 1
             self.last_callback_frame_time = time.time()
+            self.total_bytes_received += cf.frame.nbytes
 
     def read_frame(self):
         with self._update_lock:
@@ -55,17 +57,30 @@ class Stats:
             f"Stats (elapsed = {time.time() - self.start_time} [s]:\n"
             f"  {self._summary_line('callback', self.callback_frame_count, self.last_callback_frame_time)}"
             f"  {self._summary_line('read frame', self.read_frame_count, self.last_read_frame_time)}"
+            f"  Total Bytes Received: {self.total_bytes_received} ({self.total_bytes_received / self.callback_frame_count} / frame)"
         )
+
+
+def parse_binning(binning_arg: str):
+    """
+    Should be a comma separated 2 tuple of int.
+    """
+    parts = binning_arg.split(",")
+
+    if len(parts) != 2:
+        return None
+
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
 
 
 def main(args):
     if args.verbose:
         squid.logging.set_stdout_log_level(logging.DEBUG)
 
-    if args.continuous and args.hardware_trigger:
-        raise ValueError("Only one of --continuous or --external_trigger is allowed.")
-
-    software_trigger = not args.continuous and not args.hardware_trigger
+    software_trigger = not args.hardware_trigger
     use_trigger = software_trigger or args.hardware_trigger
 
     if args.hardware_trigger:
@@ -98,8 +113,15 @@ def main(args):
         log.error(f"Invalid camera type '{args.camera}'")
         return 1
 
+    binning = parse_binning(args.binning)
+    if not binning:
+        log.error(f"Invalid binning argument: {args.binning}")
+        return 1
+
     default_config = squid.config.get_camera_config()
-    force_this_camera_config = default_config.model_copy(update={"camera_type": camera_type})
+    force_this_camera_config = default_config.model_copy(
+        update={"camera_type": camera_type, "default_binning": binning}
+    )
 
     cam = squid.camera.utils.get_camera(
         force_this_camera_config, simulated, hw_trigger_fn=hw_trigger, hw_set_strobe_delay_ms_fn=strobe_delay_fn
@@ -108,7 +130,7 @@ def main(args):
     stats = Stats()
 
     def frame_callback(frame: CameraFrame):
-        stats.callback_frame()
+        stats.callback_frame(frame)
 
     log.info("Registering frame callback...")
     callback_id = cam.add_frame_callback(frame_callback)
@@ -132,6 +154,7 @@ def main(args):
             f"  Type: {args.camera}\n"
             f"  Resolution: {cam.get_resolution()}\n"
             f"  Exposure Time: {cam.get_exposure_time()} [ms]\n"
+            f"  Binning: {cam.get_binning()}\n"
             f"  Strobe Time: {cam.get_strobe_time()} [ms]\n"
         )
     )
@@ -163,14 +186,17 @@ if __name__ == "__main__":
 
     ap.add_argument("--runtime", type=float, help="Time, in s, to run the test for.", default=60)
     ap.add_argument(
-        "--continuous", action="store_true", help="Use continuous (internal to cam) triggering, not software trigger."
-    )
-    ap.add_argument(
         "--hardware_trigger",
         action="store_true",
         help="Use the hardware trigger, not software trigger (requires microcontroller)",
     )
     ap.add_argument("--exposure", type=float, help="The exposure time in ms", default=1)
+    ap.add_argument(
+        "--binning",
+        type=str,
+        help="A comma separated 2-tuple to use as the camera binning.  EG 1,1 or 2,2",
+        default="1,1",
+    )
     ap.add_argument("--report_interval", type=int, help="Report every this many frames captured.", default=100)
     ap.add_argument("--verbose", action="store_true", help="Turn on debug logging")
     ap.add_argument(
