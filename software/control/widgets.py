@@ -4024,7 +4024,7 @@ class WellplateMultiPointWidget(QFrame):
         # Update scan size entry
         self.entry_scan_size = QDoubleSpinBox()
         self.entry_scan_size.setRange(0.1, 100)
-        self.entry_scan_size.setValue(1)
+        self.entry_scan_size.setValue(0.1)
         self.entry_scan_size.setSuffix(" mm")
 
         self.entry_overlap = QDoubleSpinBox()
@@ -4959,6 +4959,10 @@ class WellplateMultiPointWidget(QFrame):
             self.stored_xy_params["Select Wells"]["scan_shape"] = (
                 "Square" if self.scanCoordinates.format in ["384 well plate", "1536 well plate"] else "Circle"
             )
+
+        # change scan size to single FOV if XY is checked and mode is "Current Position"
+        if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position":
+            self.entry_scan_size.setValue(0.1)
 
     def set_default_shape(self):
         if self.scanCoordinates.format in ["384 well plate", "1536 well plate"]:
