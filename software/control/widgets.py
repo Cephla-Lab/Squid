@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import sys
 from typing import Optional
@@ -3933,6 +3934,7 @@ class WellplateMultiPointWidget(QFrame):
     signal_acquisition_channels = Signal(list)
     signal_acquisition_shape = Signal(int, float)  # acquisition Nz, dz
     signal_manual_shape_mode = Signal(bool)  # enable manual shape layer on mosaic display
+    signal_toggle_live_scan_grid = Signal(bool)  # enable/disable live scan grid
 
     def __init__(
         self,
@@ -3978,12 +3980,27 @@ class WellplateMultiPointWidget(QFrame):
         self._last_x_mm = None
         self._last_y_mm = None
 
+        # Add state tracking for coordinates
+        self.has_loaded_coordinates = False
+
+        # Add state tracking for Z parameters
+        self.stored_z_params = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": "From Bottom"}
+
+        # Add state tracking for Time parameters
+        self.stored_time_params = {"dt": None, "nt": None}
+
+        # Add state tracking for XY mode parameters
+        self.stored_xy_params = {
+            "Current Position": {"scan_size": None, "coverage": None, "scan_shape": None},
+            "Select Wells": {"scan_size": None, "coverage": None, "scan_shape": None},
+        }
+
+        # Track previous XY mode for parameter storage
+        self._previous_xy_mode = None
+
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.set_default_scan_size()
-
-        # Add state tracking for coordinates
-        self.has_loaded_coordinates = False
 
     def add_components(self):
         self.entry_well_coverage = QDoubleSpinBox()
@@ -4008,7 +4025,7 @@ class WellplateMultiPointWidget(QFrame):
         # Update scan size entry
         self.entry_scan_size = QDoubleSpinBox()
         self.entry_scan_size.setRange(0.1, 100)
-        self.entry_scan_size.setValue(1)
+        self.entry_scan_size.setValue(0.1)
         self.entry_scan_size.setSuffix(" mm")
 
         self.entry_overlap = QDoubleSpinBox()
@@ -4084,11 +4101,7 @@ class WellplateMultiPointWidget(QFrame):
 
         # Add a combo box for shape selection
         self.combobox_shape = QComboBox()
-        if self.performance_mode:
-            self.combobox_shape.addItems(["Square", "Circle", "Rectangle"])
-        else:
-            self.combobox_shape.addItems(["Square", "Circle", "Rectangle", "Manual"])
-            self.combobox_shape.model().item(3).setEnabled(False)
+        self.combobox_shape.addItems(["Square", "Circle", "Rectangle"])
         self.combobox_shape.setFixedWidth(btn_width)
         # self.combobox_shape.currentTextChanged.connect(self.on_shape_changed)
 
@@ -4105,15 +4118,12 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_withAutofocus.setChecked(MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_af_flag(MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
-        self.checkbox_withReflectionAutofocus = QCheckBox("Reflection AF")
+        self.checkbox_withReflectionAutofocus = QCheckBox("Laser AF")
         self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
         self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
 
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
-
-        self.checkbox_set_z_range = QCheckBox("Set Z-range")
-        self.checkbox_set_z_range.toggled.connect(self.toggle_z_range_controls)
 
         self.checkbox_stitchOutput = QCheckBox("Stitch Scans")
         self.checkbox_stitchOutput.setChecked(False)
@@ -4138,6 +4148,57 @@ class WellplateMultiPointWidget(QFrame):
         self.btn_snap_images.setCheckable(False)
         self.btn_snap_images.setChecked(False)
 
+        # Add acquisition tabs with checkboxes and frames
+        # XY Tab
+        self.xy_frame = QFrame()
+
+        self.checkbox_xy = QCheckBox("XY")
+        self.checkbox_xy.setChecked(True)
+
+        self.combobox_xy_mode = QComboBox()
+        self.combobox_xy_mode.addItems(["Current Position", "Select Wells", "Manual"])
+        self.combobox_xy_mode.setEnabled(True)  # Initially enabled since XY is checked
+        # disable manual mode on init (before mosaic is loaded) - identify the index of the manual mode by name
+        _manual_index = self.combobox_xy_mode.findText("Manual")
+        self.combobox_xy_mode.model().item(_manual_index).setEnabled(False)
+
+        xy_layout = QHBoxLayout()
+        xy_layout.setContentsMargins(8, 4, 8, 4)
+        xy_layout.addWidget(self.checkbox_xy)
+        xy_layout.addWidget(self.combobox_xy_mode)
+        self.xy_frame.setLayout(xy_layout)
+
+        # Z Tab
+        self.z_frame = QFrame()
+
+        self.checkbox_z = QCheckBox("Z")
+        self.checkbox_z.setChecked(False)
+
+        self.combobox_z_mode = QComboBox()
+        self.combobox_z_mode.addItems(["From Bottom", "Set Range"])
+        self.combobox_z_mode.setEnabled(False)  # Initially disabled since Z is unchecked
+
+        z_layout = QHBoxLayout()
+        z_layout.setContentsMargins(8, 4, 8, 4)
+        z_layout.addWidget(self.checkbox_z)
+        z_layout.addWidget(self.combobox_z_mode)
+        self.z_frame.setLayout(z_layout)
+
+        # Time Tab
+        self.time_frame = QFrame()
+
+        self.checkbox_time = QCheckBox("Time")
+        self.checkbox_time.setChecked(False)
+
+        time_layout = QHBoxLayout()
+        time_layout.setContentsMargins(8, 4, 8, 4)
+        time_layout.addWidget(self.checkbox_time)
+        time_layout.addStretch()  # Fill horizontal space
+        self.time_frame.setLayout(time_layout)
+
+        # Set initial tab styles
+        self.update_tab_styles()
+
         # Main layout
         main_layout = QVBoxLayout()
         self.setLayout(main_layout)
@@ -4155,37 +4216,81 @@ class WellplateMultiPointWidget(QFrame):
         row_1_layout.addWidget(self.lineEdit_experimentID)
         main_layout.addLayout(row_1_layout)
 
+        # Acquisition tabs row
+        tabs_layout = QHBoxLayout()
+        tabs_layout.setSpacing(4)  # Small spacing between frames
+        tabs_layout.addWidget(self.xy_frame, 2)  # Give XY frame more space (weight 2)
+        tabs_layout.addWidget(self.z_frame, 1)  # Z frame gets weight 1
+        tabs_layout.addWidget(self.time_frame, 1)  # Time frame gets weight 1
+        main_layout.addLayout(tabs_layout)
+
         # Scan Shape, FOV overlap, and Save / Load Scan Coordinates
-        row_2_layout = QGridLayout()
-        row_2_layout.addWidget(QLabel("Scan Shape"), 0, 0)
-        row_2_layout.addWidget(self.combobox_shape, 0, 1)
-        row_2_layout.addWidget(QLabel("Scan Size"), 0, 2)
-        row_2_layout.addWidget(self.entry_scan_size, 0, 3)
-        row_2_layout.addWidget(QLabel("Coverage"), 0, 4)
-        row_2_layout.addWidget(self.entry_well_coverage, 0, 5)
-        row_2_layout.addWidget(QLabel("FOV Overlap"), 1, 0)
-        row_2_layout.addWidget(self.entry_overlap, 1, 1)
-        row_2_layout.addWidget(self.btn_save_scan_coordinates, 1, 2, 1, 2)
-        row_2_layout.addWidget(self.btn_load_scan_coordinates, 1, 4, 1, 2)
-        main_layout.addLayout(row_2_layout)
+        self.row_2_layout = QGridLayout()
+        self.scan_shape_label = QLabel("Scan Shape")
+        self.scan_size_label = QLabel("Scan Size")
+        self.coverage_label = QLabel("Coverage")
+        self.fov_overlap_label = QLabel("FOV Overlap")
+
+        self.row_2_layout.addWidget(self.scan_shape_label, 0, 0)
+        self.row_2_layout.addWidget(self.combobox_shape, 0, 1)
+        self.row_2_layout.addWidget(self.scan_size_label, 0, 2)
+        self.row_2_layout.addWidget(self.entry_scan_size, 0, 3)
+        self.row_2_layout.addWidget(self.coverage_label, 0, 4)
+        self.row_2_layout.addWidget(self.entry_well_coverage, 0, 5)
+        self.row_2_layout.addWidget(self.fov_overlap_label, 1, 0)
+        self.row_2_layout.addWidget(self.entry_overlap, 1, 1)
+        self.row_2_layout.addWidget(self.btn_save_scan_coordinates, 1, 2, 1, 2)
+        self.row_2_layout.addWidget(self.btn_load_scan_coordinates, 1, 4, 1, 2)
+        main_layout.addLayout(self.row_2_layout)
 
         grid = QGridLayout()
 
         # dz and Nz
-        dz_layout = QHBoxLayout()
-        dz_layout.addWidget(QLabel("dz"))
-        dz_layout.addWidget(self.entry_deltaZ)
-        dz_layout.addWidget(QLabel("Nz"))
-        dz_layout.addWidget(self.entry_NZ)
-        grid.addLayout(dz_layout, 0, 0)
+        self.dz_layout = QHBoxLayout()
+        self.dz_layout.addWidget(QLabel("dz"))
+        self.dz_layout.addWidget(self.entry_deltaZ)
+        self.dz_layout.addWidget(QLabel("Nz"))
+        self.dz_layout.addWidget(self.entry_NZ)
+        grid.addLayout(self.dz_layout, 0, 0)
 
         # dt and Nt
-        dt_layout = QHBoxLayout()
-        dt_layout.addWidget(QLabel("dt"))
-        dt_layout.addWidget(self.entry_dt)
-        dt_layout.addWidget(QLabel("Nt"))
-        dt_layout.addWidget(self.entry_Nt)
-        grid.addLayout(dt_layout, 0, 2)
+        self.dt_layout = QHBoxLayout()
+        self.dt_layout.addWidget(QLabel("dt"))
+        self.dt_layout.addWidget(self.entry_dt)
+        self.dt_layout.addWidget(QLabel("Nt"))
+        self.dt_layout.addWidget(self.entry_Nt)
+        grid.addLayout(self.dt_layout, 0, 2)
+
+        # Create informational labels for when modes are not selected
+        self.z_not_selected_label = QLabel("Z stack not selected")
+        self.z_not_selected_label.setAlignment(Qt.AlignCenter)
+        self.z_not_selected_label.setStyleSheet(
+            """
+            QLabel {
+                background-color: palette(button);
+                border: 1px solid palette(mid);
+                border-radius: 4px;
+                padding: 0px;
+                color: palette(text);
+            }
+        """
+        )
+        self.z_not_selected_label.setVisible(False)
+
+        self.time_not_selected_label = QLabel("Time lapse not selected")
+        self.time_not_selected_label.setAlignment(Qt.AlignCenter)
+        self.time_not_selected_label.setStyleSheet(
+            """
+            QLabel {
+                background-color: palette(button);
+                border: 1px solid palette(mid);
+                border-radius: 4px;
+                padding: 0px;
+                color: palette(text);
+            }
+        """
+        )
+        self.time_not_selected_label.setVisible(False)
 
         # Z-min
         self.z_min_layout = QHBoxLayout()
@@ -4221,7 +4326,6 @@ class WellplateMultiPointWidget(QFrame):
         options_layout.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
-        options_layout.addWidget(self.checkbox_set_z_range)
 
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
@@ -4237,6 +4341,10 @@ class WellplateMultiPointWidget(QFrame):
         spacer_widget.setFixedWidth(2)
         grid.addWidget(spacer_widget, 0, 1)
 
+        # Add informational labels to grid (initially hidden)
+        grid.addWidget(self.z_not_selected_label, 0, 0)
+        grid.addWidget(self.time_not_selected_label, 0, 2)
+
         # Set column stretches
         grid.setColumnStretch(0, 1)  # Middle spacer
         grid.setColumnStretch(1, 0)  # Middle spacer
@@ -4249,7 +4357,22 @@ class WellplateMultiPointWidget(QFrame):
         row_progress_layout.addWidget(self.progress_bar)
         row_progress_layout.addWidget(self.eta_label)
         main_layout.addLayout(row_progress_layout)
-        self.toggle_z_range_controls(self.checkbox_set_z_range.isChecked())
+        self.toggle_z_range_controls(False)  # Initially hide Z-range controls
+
+        # Initialize Z and Time controls visibility based on checkbox states
+        if not self.checkbox_z.isChecked():
+            self.hide_z_controls()
+        if not self.checkbox_time.isChecked():
+            self.hide_time_controls()
+
+        # Update control visibility based on both states
+        self.update_control_visibility()
+
+        # Initialize scan controls visibility based on XY checkbox state
+        self.update_scan_control_ui()
+
+        # Initialize previous XY mode tracking
+        self._previous_xy_mode = self.combobox_xy_mode.currentText()
 
         # Connections
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
@@ -4282,10 +4405,531 @@ class WellplateMultiPointWidget(QFrame):
         self.btn_save_scan_coordinates.clicked.connect(self.on_save_or_clear_coordinates_clicked)
         self.btn_load_scan_coordinates.clicked.connect(self.on_load_coordinates_clicked)
 
-    def enable_manual_ROI(self, enable):
-        self.combobox_shape.model().item(3).setEnabled(enable)
-        if not enable:
-            self.set_default_shape()
+        # Connect acquisition tabs
+        self.checkbox_xy.toggled.connect(self.on_xy_toggled)
+        self.combobox_xy_mode.currentTextChanged.connect(self.on_xy_mode_changed)
+        self.checkbox_z.toggled.connect(self.on_z_toggled)
+        self.combobox_z_mode.currentTextChanged.connect(self.on_z_mode_changed)
+        self.checkbox_time.toggled.connect(self.on_time_toggled)
+
+        # Load cached acquisition settings
+        self.load_multipoint_widget_config_from_cache()
+
+        # Connect settings saving to relevant value changes
+        self.checkbox_xy.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self.combobox_xy_mode.currentTextChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.checkbox_z.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self.combobox_z_mode.currentTextChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.checkbox_time.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self.entry_overlap.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.entry_dt.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.entry_Nt.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.entry_deltaZ.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.entry_NZ.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.list_configurations.itemSelectionChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.checkbox_withAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
+        self.checkbox_withReflectionAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
+
+    def enable_manual_ROI(self):
+        _manual_index = self.combobox_xy_mode.findText("Manual")
+        self.combobox_xy_mode.model().item(_manual_index).setEnabled(True)
+
+    def initialize_live_scan_grid_state(self):
+        """Initialize live scan grid state - call this after all external connections are made"""
+        enable_live_scan_grid = (
+            self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position"
+        )
+        self.signal_toggle_live_scan_grid.emit(enable_live_scan_grid)
+
+    def save_multipoint_widget_config_to_cache(self):
+        """Save current acquisition settings to cache"""
+        try:
+            os.makedirs("cache", exist_ok=True)
+
+            settings = {
+                "xy_enabled": self.checkbox_xy.isChecked(),
+                "xy_mode": self.combobox_xy_mode.currentText(),
+                "z_enabled": self.checkbox_z.isChecked(),
+                "z_mode": self.combobox_z_mode.currentText(),
+                "time_enabled": self.checkbox_time.isChecked(),
+                "fov_overlap": self.entry_overlap.value(),
+                "dt": self.entry_dt.value(),
+                "nt": self.entry_Nt.value(),
+                "dz": self.entry_deltaZ.value(),
+                "nz": self.entry_NZ.value(),
+                "selected_channels": [item.text() for item in self.list_configurations.selectedItems()],
+                "contrast_af": self.checkbox_withAutofocus.isChecked(),
+                "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
+            }
+
+            with open("cache/multipoint_widget_config.json", "w") as f:
+                json.dump(settings, f, indent=2)
+
+        except Exception as e:
+            self._log.warning(f"Failed to save acquisition settings to cache: {e}")
+
+    def load_multipoint_widget_config_from_cache(self):
+        """Load acquisition settings from cache if it exists"""
+        try:
+            cache_file = "cache/multipoint_widget_config.json"
+            if not os.path.exists(cache_file):
+                return
+
+            with open(cache_file, "r") as f:
+                settings = json.load(f)
+
+            # Block signals to prevent triggering save during load
+            self.checkbox_xy.blockSignals(True)
+            self.combobox_xy_mode.blockSignals(True)
+            self.checkbox_z.blockSignals(True)
+            self.combobox_z_mode.blockSignals(True)
+            self.checkbox_time.blockSignals(True)
+            self.entry_overlap.blockSignals(True)
+            self.entry_dt.blockSignals(True)
+            self.entry_Nt.blockSignals(True)
+            self.entry_deltaZ.blockSignals(True)
+            self.entry_NZ.blockSignals(True)
+            self.list_configurations.blockSignals(True)
+            self.checkbox_withAutofocus.blockSignals(True)
+            self.checkbox_withReflectionAutofocus.blockSignals(True)
+
+            # Load settings
+            self.checkbox_xy.setChecked(settings.get("xy_enabled", True))
+
+            xy_mode = settings.get("xy_mode", "Current Position")
+            if xy_mode in ["Current Position", "Select Wells", "Manual"]:
+                self.combobox_xy_mode.setCurrentText(xy_mode)
+
+            self.checkbox_z.setChecked(settings.get("z_enabled", False))
+
+            z_mode = settings.get("z_mode", "From Bottom")
+            if z_mode in ["From Bottom", "Set Range"]:
+                self.combobox_z_mode.setCurrentText(z_mode)
+
+            self.checkbox_time.setChecked(settings.get("time_enabled", False))
+            self.entry_overlap.setValue(settings.get("fov_overlap", 10))
+            self.entry_dt.setValue(settings.get("dt", 0))
+            self.entry_Nt.setValue(settings.get("nt", 1))
+            self.entry_deltaZ.setValue(settings.get("dz", 1.0))
+            self.entry_NZ.setValue(settings.get("nz", 1))
+
+            # Restore selected channels
+            selected_channels = settings.get("selected_channels", [])
+            if selected_channels:
+                self.list_configurations.clearSelection()
+                for i in range(self.list_configurations.count()):
+                    item = self.list_configurations.item(i)
+                    if item.text() in selected_channels:
+                        item.setSelected(True)
+
+            # Restore autofocus settings
+            self.checkbox_withAutofocus.setChecked(settings.get("contrast_af", False))
+            self.checkbox_withReflectionAutofocus.setChecked(settings.get("laser_af", False))
+
+            # Unblock signals
+            self.checkbox_xy.blockSignals(False)
+            self.combobox_xy_mode.blockSignals(False)
+            self.checkbox_z.blockSignals(False)
+            self.combobox_z_mode.blockSignals(False)
+            self.checkbox_time.blockSignals(False)
+            self.entry_overlap.blockSignals(False)
+            self.entry_dt.blockSignals(False)
+            self.entry_Nt.blockSignals(False)
+            self.entry_deltaZ.blockSignals(False)
+            self.entry_NZ.blockSignals(False)
+            self.list_configurations.blockSignals(False)
+            self.checkbox_withAutofocus.blockSignals(False)
+            self.checkbox_withReflectionAutofocus.blockSignals(False)
+
+            # Update UI state based on loaded settings
+            self.update_scan_control_ui()
+            self.update_control_visibility()
+
+            self._log.info("Loaded acquisition settings from cache")
+
+        except Exception as e:
+            self._log.warning(f"Failed to load acquisition settings from cache: {e}")
+
+    def update_tab_styles(self):
+        """Update tab frame styles based on checkbox states"""
+        # Active tab style (checked) - uses default Qt active tab colors
+        active_style = """
+            QFrame {
+                background-color: palette(base);
+                border: 1px solid palette(highlight);
+                border-radius: 4px;
+            }
+        """
+
+        # Inactive tab style (unchecked) - uses default Qt inactive tab colors
+        inactive_style = """
+            QFrame {
+                background-color: palette(button);
+                border: 1px solid palette(mid);
+                border-radius: 4px;
+            }
+        """
+
+        # Apply styles based on checkbox states
+        self.xy_frame.setStyleSheet(active_style if self.checkbox_xy.isChecked() else inactive_style)
+        self.z_frame.setStyleSheet(active_style if self.checkbox_z.isChecked() else inactive_style)
+        self.time_frame.setStyleSheet(active_style if self.checkbox_time.isChecked() else inactive_style)
+
+    def on_xy_toggled(self, checked):
+        """Handle XY checkbox toggle"""
+        self.combobox_xy_mode.setEnabled(checked)
+        self.update_tab_styles()
+
+        # Show/hide scan shape and coordinate controls
+        self.update_scan_control_ui()
+
+        if checked:
+            self.update_coordinates()  # to-do: what does this do? is it needed?
+            if self.combobox_xy_mode.currentText() == "Current Position":
+                self.signal_toggle_live_scan_grid.emit(True)
+        else:
+            self.signal_toggle_live_scan_grid.emit(False)  # disable live scan grid regardless of XY mode
+
+        print(f"XY acquisition {'enabled' if checked else 'disabled'}")
+
+    def on_xy_mode_changed(self, mode):
+        """Handle XY mode dropdown change"""
+        print(f"XY mode changed to: {mode}")
+
+        # Store current mode's parameters before switching (if we know the previous mode)
+        # We need to track the previous mode to store its parameters
+        if hasattr(self, "_previous_xy_mode") and self._previous_xy_mode in ["Current Position", "Select Wells"]:
+            self.store_xy_mode_parameters(self._previous_xy_mode)
+
+        # Restore parameters for the new mode
+        if mode in ["Current Position", "Select Wells"]:
+            self.restore_xy_mode_parameters(mode)
+
+        # Update UI based on the new mode
+        self.update_scan_control_ui()
+
+        # Store the current mode as previous for next time
+        self._previous_xy_mode = mode
+
+        if mode == "Manual":
+            self.signal_manual_shape_mode.emit(True)
+        else:
+            self.update_coordinates()  # to-do: what does this do? is it needed?
+
+        if mode == "Current Position":
+            self.signal_toggle_live_scan_grid.emit(True)  # enable live scan grid
+        else:
+            self.signal_toggle_live_scan_grid.emit(False)  # disable live scan grid
+
+    def update_scan_control_ui(self):
+        """Update scan control UI based on XY checkbox and mode selection"""
+        xy_checked = self.checkbox_xy.isChecked()
+        xy_mode = self.combobox_xy_mode.currentText()
+
+        # List of widgets to show/hide based on XY checkbox
+        widgets_to_toggle = [
+            self.scan_shape_label,
+            self.combobox_shape,
+            self.scan_size_label,
+            self.entry_scan_size,
+            self.coverage_label,
+            self.entry_well_coverage,
+            self.fov_overlap_label,
+            self.entry_overlap,
+            self.btn_save_scan_coordinates,
+            self.btn_load_scan_coordinates,
+        ]
+
+        for widget in widgets_to_toggle:
+            widget.setVisible(xy_checked)
+
+        # Handle coverage field based on XY mode
+        if xy_checked:
+            if xy_mode in ["Current Position", "Manual"]:
+                # For Current Position and Manual modes, coverage should be N/A and disabled
+                self.entry_well_coverage.blockSignals(True)
+                self.entry_well_coverage.setRange(0, 0)  # Allow 0 for N/A mode
+                self.entry_well_coverage.setValue(0)  # Set to 0 for N/A indicator
+                self.entry_well_coverage.setEnabled(False)
+                self.entry_well_coverage.setSuffix(" (N/A)")
+                self.entry_well_coverage.blockSignals(False)
+                if xy_mode == "Manual":
+                    # hide the row of scan shape, scan size and coverage
+                    self.scan_shape_label.setVisible(False)
+                    self.combobox_shape.setVisible(False)
+                    self.scan_size_label.setVisible(False)
+                    self.entry_scan_size.setVisible(False)
+                    self.coverage_label.setVisible(False)
+                    self.entry_well_coverage.setVisible(False)
+                elif xy_mode == "Current Position":
+                    # show the row of scan shape, scan size and coverage
+                    self.scan_shape_label.setVisible(True)
+                    self.combobox_shape.setVisible(True)
+                    self.scan_size_label.setVisible(True)
+                    self.entry_scan_size.setVisible(True)
+                    self.coverage_label.setVisible(True)
+                    self.entry_well_coverage.setVisible(True)
+            elif xy_mode == "Select Wells":
+                # For Select Wells mode, coverage should be enabled
+                self.entry_well_coverage.blockSignals(True)
+                self.entry_well_coverage.setRange(1, 999.99)  # Restore normal range
+                self.entry_well_coverage.setSuffix("%")
+
+                # Restore stored coverage value for Select Wells mode
+                if self.stored_xy_params["Select Wells"]["coverage"] is not None:
+                    self.entry_well_coverage.setValue(self.stored_xy_params["Select Wells"]["coverage"])
+                else:
+                    self.entry_well_coverage.setValue(100)  # Set to default if no stored value
+
+                self.entry_well_coverage.blockSignals(False)
+
+                # Enable coverage unless it's glass slide mode
+                if "glass slide" not in self.navigationViewer.sample:
+                    self.entry_well_coverage.setEnabled(True)
+                else:
+                    self.entry_well_coverage.setEnabled(False)
+
+                # show the row of scan shape, scan size and coverage
+                self.scan_shape_label.setVisible(True)
+                self.combobox_shape.setVisible(True)
+                self.scan_size_label.setVisible(True)
+                self.entry_scan_size.setVisible(True)
+                self.coverage_label.setVisible(True)
+                self.entry_well_coverage.setVisible(True)
+
+    def set_coordinates_to_current_position(self):
+        """Set scan coordinates to current stage position (single FOV)"""
+        if self.tab_widget and self.tab_widget.currentWidget() != self:
+            return
+
+        # Clear existing regions
+        if self.scanCoordinates.has_regions():
+            self.scanCoordinates.clear_regions()
+
+        # Get current position and add it as a single region
+        pos = self.stage.get_pos()
+        x = pos.x_mm
+        y = pos.y_mm
+
+        # Add current position as a single FOV with minimal scan size
+        scan_size_mm = 0.01  # Very small scan size for single FOV
+        overlap_percent = 0  # No overlap needed for single FOV
+        shape = "Square"  # Default shape
+
+        self.scanCoordinates.add_region("current", x, y, scan_size_mm, overlap_percent, shape)
+
+    def on_z_toggled(self, checked):
+        """Handle Z checkbox toggle"""
+        self.update_tab_styles()
+
+        # Enable/disable the Z mode dropdown
+        self.combobox_z_mode.setEnabled(checked)
+
+        if checked:
+            # Z Stack enabled - restore stored parameters and show controls
+            self.restore_z_parameters()
+            self.show_z_controls(True)
+        else:
+            # Z Stack disabled - store current parameters and hide controls
+            self.store_z_parameters()
+            self.hide_z_controls()
+
+        # Update visibility based on both Z and Time states
+        self.update_control_visibility()
+
+        print(f"Z acquisition {'enabled' if checked else 'disabled'}")
+
+    def on_z_mode_changed(self, mode):
+        """Handle Z mode dropdown change"""
+        # Show/hide Z-min/Z-max controls based on mode
+        self.toggle_z_range_controls(mode == "Set Range")
+        print(f"Z mode changed to: {mode}")
+
+    def on_time_toggled(self, checked):
+        """Handle Time checkbox toggle"""
+        self.update_tab_styles()
+
+        if checked:
+            # Time lapse enabled - restore stored parameters and show controls
+            self.restore_time_parameters()
+            self.show_time_controls(True)
+        else:
+            # Time lapse disabled - store current parameters and hide controls
+            self.store_time_parameters()
+            self.hide_time_controls()
+
+        # Update visibility based on both Z and Time states
+        self.update_control_visibility()
+
+        print(f"Time acquisition {'enabled' if checked else 'disabled'}")
+
+    def store_xy_mode_parameters(self, mode):
+        """Store current scan size, coverage, and shape parameters for the given XY mode"""
+        if mode in self.stored_xy_params:
+            # Always store scan size and scan shape
+            self.stored_xy_params[mode]["scan_size"] = self.entry_scan_size.value()
+            self.stored_xy_params[mode]["scan_shape"] = self.combobox_shape.currentText()
+
+            # Only store coverage for Select Wells mode (Current Position uses N/A)
+            if mode == "Select Wells":
+                self.stored_xy_params[mode]["coverage"] = self.entry_well_coverage.value()
+
+    def restore_xy_mode_parameters(self, mode):
+        """Restore stored scan size, coverage, and shape parameters for the given XY mode"""
+        if mode in self.stored_xy_params:
+            # Restore scan size for both Current Position and Select Wells modes
+            if self.stored_xy_params[mode]["scan_size"] is not None:
+                self.entry_scan_size.blockSignals(True)
+                self.entry_scan_size.setValue(self.stored_xy_params[mode]["scan_size"])
+                self.entry_scan_size.blockSignals(False)
+            else:
+                # Set default values if no stored value exists
+                if mode == "Current Position":
+                    # For current position, use a small default scan size
+                    self.entry_scan_size.blockSignals(True)
+                    self.entry_scan_size.setValue(0.1)  # Small default for single FOV
+                    self.entry_scan_size.blockSignals(False)
+                elif mode == "Select Wells":
+                    # For select wells, use a larger default scan size
+                    self.entry_scan_size.blockSignals(True)
+                    self.entry_scan_size.setValue(1.0)  # Larger default for well coverage
+                    self.entry_scan_size.blockSignals(False)
+
+            # Restore scan shape for both modes
+            if self.stored_xy_params[mode]["scan_shape"] is not None:
+                self.combobox_shape.blockSignals(True)
+                self.combobox_shape.setCurrentText(self.stored_xy_params[mode]["scan_shape"])
+                self.combobox_shape.blockSignals(False)
+            else:
+                # Set default shape if no stored value exists
+                self.combobox_shape.blockSignals(True)
+                if mode == "Current Position":
+                    # For current position, default to Square (simple single FOV)
+                    self.combobox_shape.setCurrentText("Square")
+                elif mode == "Select Wells":
+                    # For select wells, use the format-based default from set_default_shape
+                    self.set_default_shape()
+                self.combobox_shape.blockSignals(False)
+
+            # Coverage restoration for Select Wells mode is handled in update_scan_control_ui()
+            # to avoid conflicts with range setting and UI state management
+
+    def store_z_parameters(self):
+        """Store current Z parameters before hiding controls"""
+        self.stored_z_params["dz"] = self.entry_deltaZ.value()
+        self.stored_z_params["nz"] = self.entry_NZ.value()
+        self.stored_z_params["z_min"] = self.entry_minZ.value()
+        self.stored_z_params["z_max"] = self.entry_maxZ.value()
+        self.stored_z_params["z_mode"] = self.combobox_z_mode.currentText()
+
+    def restore_z_parameters(self):
+        """Restore stored Z parameters when showing controls"""
+        if self.stored_z_params["dz"] is not None:
+            self.entry_deltaZ.setValue(self.stored_z_params["dz"])
+        if self.stored_z_params["nz"] is not None:
+            self.entry_NZ.setValue(self.stored_z_params["nz"])
+        if self.stored_z_params["z_min"] is not None:
+            self.entry_minZ.setValue(self.stored_z_params["z_min"])
+        if self.stored_z_params["z_max"] is not None:
+            self.entry_maxZ.setValue(self.stored_z_params["z_max"])
+        self.combobox_z_mode.setCurrentText(self.stored_z_params["z_mode"])
+
+    def hide_z_controls(self):
+        """Hide Z-related controls and set single-slice parameters"""
+        # Hide dz/Nz widgets
+        for i in range(self.dz_layout.count()):
+            widget = self.dz_layout.itemAt(i).widget()
+            if widget:
+                widget.setVisible(False)
+
+        # Hide Z-min/Z-max controls
+        for layout in (self.z_min_layout, self.z_max_layout):
+            for i in range(layout.count()):
+                widget = layout.itemAt(i).widget()
+                if widget:
+                    widget.setVisible(False)
+
+        # Set single-slice parameters
+        current_z = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        self.entry_NZ.setValue(1)
+        self.entry_minZ.setValue(current_z)
+        self.entry_maxZ.setValue(current_z)
+        self.combobox_z_mode.setCurrentText("From Bottom")
+
+    def show_z_controls(self, visible):
+        """Show Z-related controls"""
+        # Show dz/Nz widgets
+        for i in range(self.dz_layout.count()):
+            widget = self.dz_layout.itemAt(i).widget()
+            if widget:
+                widget.setVisible(visible)
+
+        # Show/hide Z-min/Z-max based on dropdown selection
+        self.toggle_z_range_controls(self.combobox_z_mode.currentText() == "Set Range")
+
+    def store_time_parameters(self):
+        """Store current Time parameters before hiding controls"""
+        self.stored_time_params["dt"] = self.entry_dt.value()
+        self.stored_time_params["nt"] = self.entry_Nt.value()
+
+    def restore_time_parameters(self):
+        """Restore stored Time parameters when showing controls"""
+        if self.stored_time_params["dt"] is not None:
+            self.entry_dt.setValue(self.stored_time_params["dt"])
+        if self.stored_time_params["nt"] is not None:
+            self.entry_Nt.setValue(self.stored_time_params["nt"])
+
+    def hide_time_controls(self):
+        """Hide Time-related controls and set single-timepoint parameters"""
+        # Hide dt/Nt widgets
+        for i in range(self.dt_layout.count()):
+            widget = self.dt_layout.itemAt(i).widget()
+            if widget:
+                widget.setVisible(False)
+
+        # Set single-timepoint parameters
+        self.entry_dt.setValue(0)
+        self.entry_Nt.setValue(1)
+
+    def show_time_controls(self, visible):
+        """Show Time-related controls"""
+        # Show dt/Nt widgets
+        for i in range(self.dt_layout.count()):
+            widget = self.dt_layout.itemAt(i).widget()
+            if widget:
+                widget.setVisible(visible)
+
+    def update_control_visibility(self):
+        """Update visibility of controls and informational labels based on Z and Time states"""
+        z_checked = self.checkbox_z.isChecked()
+        time_checked = self.checkbox_time.isChecked()
+
+        if time_checked and not z_checked:
+            # Time lapse selected but Z stack not - show "Z stack not selected" message
+            self.z_not_selected_label.setVisible(True)
+            # Hide actual Z controls
+            for i in range(self.dz_layout.count()):
+                widget = self.dz_layout.itemAt(i).widget()
+                if widget:
+                    widget.setVisible(False)
+        elif z_checked and not time_checked:
+            # Z stack selected but Time lapse not - show "Time lapse not selected" message
+            self.time_not_selected_label.setVisible(True)
+            # Hide actual Time controls
+            for i in range(self.dt_layout.count()):
+                widget = self.dt_layout.itemAt(i).widget()
+                if widget:
+                    widget.setVisible(False)
+        else:
+            # Both selected or both unselected - hide informational labels
+            self.z_not_selected_label.setVisible(False)
+            self.time_not_selected_label.setVisible(False)
+
+            # Show/hide actual controls based on individual states
+            if z_checked:
+                self.show_z_controls(True)
+            if time_checked:
+                self.show_time_controls(True)
 
     def update_region_progress(self, current_fov, num_fovs):
         self.progress_bar.setMaximum(num_fovs)
@@ -4400,30 +5044,53 @@ class WellplateMultiPointWidget(QFrame):
         self.update()
 
     def set_default_scan_size(self):
-        print("Sample Format:", self.navigationViewer.sample)
-        self.combobox_shape.blockSignals(True)
-        self.entry_well_coverage.blockSignals(True)
-        self.entry_scan_size.blockSignals(True)
+        # change current settings if XY is checked and mode is not "Select Wells"
+        if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Select Wells":
+            print("Sample Format:", self.navigationViewer.sample)
+            self.combobox_shape.blockSignals(True)
+            self.entry_well_coverage.blockSignals(True)
+            self.entry_scan_size.blockSignals(True)
 
-        self.set_default_shape()
+            self.set_default_shape()
 
-        if "glass slide" in self.navigationViewer.sample:
-            self.entry_scan_size.setValue(
-                0.1
-            )  # init to 0.1mm when switching to 'glass slide' (for imaging a single FOV by default)
-            self.entry_scan_size.setEnabled(True)
-            self.entry_well_coverage.setEnabled(False)
+            if "glass slide" in self.navigationViewer.sample:
+                self.entry_scan_size.setValue(
+                    0.1
+                )  # init to 0.1mm when switching to 'glass slide' (for imaging a single FOV by default)
+                self.entry_scan_size.setEnabled(True)
+                self.entry_well_coverage.setEnabled(False)
+            else:
+                self.entry_well_coverage.setEnabled(True)
+                # entry_well_coverage.valueChanged signal will not emit coverage = 100 already
+                self.entry_well_coverage.setValue(100)
+                self.update_scan_size_from_coverage()
+
+            self.update_coordinates()
+
+            self.combobox_shape.blockSignals(False)
+            self.entry_well_coverage.blockSignals(False)
+            self.entry_scan_size.blockSignals(False)
         else:
-            self.entry_well_coverage.setEnabled(True)
-            # entry_well_coverage.valueChanged signal will not emit coverage = 100 already
-            self.entry_well_coverage.setValue(100)
-            self.update_scan_size_from_coverage()
+            # update stored settings for "Select Wells" mode for use later
+            coverage = 100
+            self.stored_xy_params["Select Wells"]["coverage"] = coverage
 
-        self.update_coordinates()
+            # Calculate scan size from well size and coverage
+            if "glass slide" not in self.navigationViewer.sample:
+                effective_well_size = self.get_effective_well_size()
+                scan_size = round((coverage / 100) * effective_well_size, 3)
+                self.stored_xy_params["Select Wells"]["scan_size"] = scan_size
+            else:
+                # For glass slide, use default scan size
+                self.stored_xy_params["Select Wells"]["scan_size"] = 0.1
 
-        self.combobox_shape.blockSignals(False)
-        self.entry_well_coverage.blockSignals(False)
-        self.entry_scan_size.blockSignals(False)
+            self.stored_xy_params["Select Wells"]["scan_shape"] = (
+                "Square" if self.scanCoordinates.format in ["384 well plate", "1536 well plate"] else "Circle"
+            )
+
+        # change scan size to single FOV if XY is checked and mode is "Current Position"
+        if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position":
+            self.entry_scan_size.setValue(0.1)
 
     def set_default_shape(self):
         if self.scanCoordinates.format in ["384 well plate", "1536 well plate"]:
@@ -4441,13 +5108,9 @@ class WellplateMultiPointWidget(QFrame):
         return well_size
 
     def reset_coordinates(self):
-        shape = self.combobox_shape.currentText()
-        if shape == "Manual":
-            self.signal_manual_shape_mode.emit(True)
-        else:
-            self.signal_manual_shape_mode.emit(False)
-            self.update_coverage_from_scan_size()
-            self.update_coordinates()
+        if self.combobox_xy_mode.currentText() == "Select Wells":
+            self.update_scan_size_from_coverage()
+        self.update_coordinates()
 
     def update_manual_shape(self, shapes_data_mm):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
@@ -4537,14 +5200,20 @@ class WellplateMultiPointWidget(QFrame):
     def update_coordinates(self):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
             return
+
+        # If XY is not checked, use current position instead of scan coordinates
+        if not self.checkbox_xy.isChecked():
+            self.set_coordinates_to_current_position()
+            return
+
         scan_size_mm = self.entry_scan_size.value()
         overlap_percent = self.entry_overlap.value()
         shape = self.combobox_shape.currentText()
 
-        if shape == "Manual":
+        if self.combobox_xy_mode.currentText() == "Manual":
             self.scanCoordinates.set_manual_coordinates(self.shapes_mm, overlap_percent)
 
-        elif "glass slide" in self.navigationViewer.sample:
+        elif self.combobox_xy_mode.currentText() == "Current Position":
             pos = self.stage.get_pos()
             self.scanCoordinates.set_live_scan_coordinates(pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape)
         else:
@@ -4555,6 +5224,15 @@ class WellplateMultiPointWidget(QFrame):
     def update_well_coordinates(self, selected):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
             return
+
+        # If XY is not checked, use current position instead
+        if not self.checkbox_xy.isChecked():
+            self.set_coordinates_to_current_position()  # to-do: is it needed?
+            return
+
+        if self.combobox_xy_mode.currentText() != "Select Wells":
+            return
+
         if selected:
             scan_size_mm = self.entry_scan_size.value()
             overlap_percent = self.entry_overlap.value()
@@ -4570,6 +5248,10 @@ class WellplateMultiPointWidget(QFrame):
         # This disables updating scanning grid when focus map is checked
         if self.focusMapWidget is not None and self.focusMapWidget.enabled:
             return
+        # Don't update live coordinates if XY is not checked - coordinates should stay at current position
+        if not self.checkbox_xy.isChecked():
+            return
+
         x_mm = pos.x_mm
         y_mm = pos.y_mm
         # Check if x_mm or y_mm has changed
@@ -4602,25 +5284,13 @@ class WellplateMultiPointWidget(QFrame):
                 self.btn_startAcquisition.setChecked(False)
                 return
 
-            scan_size_mm = self.entry_scan_size.value()
-            overlap_percent = self.entry_overlap.value()
-            shape = self.combobox_shape.currentText()
+            # if XY is not checked, use current position
+            if not self.checkbox_xy.isChecked():
+                self.set_coordinates_to_current_position()
 
             self.scanCoordinates.sort_coordinates()
-            if len(self.scanCoordinates.region_centers) == 0:
-                # Use current location if no regions added #TODO FIX
-                pos = self.stage.get_pos()
-                x = pos.x_mm
-                y = pos.y_mm
-                z = pos.z_mm
-                self.scanCoordinates.add_region("current", x, y, scan_size_mm, overlap_percent, shape)
 
-            # Calculate total number of positions for signal emission # not needed ever
-            total_positions = sum(len(coords) for coords in self.scanCoordinates.region_fov_coordinates.values())
-            Nx = Ny = int(math.sqrt(total_positions))
-            dx_mm = dy_mm = scan_size_mm / (Nx - 1) if Nx > 1 else scan_size_mm
-
-            if self.checkbox_set_z_range.isChecked():
+            if self.combobox_z_mode.currentText() == "Set Range":
                 # Set Z-range (convert from μm to mm)
                 minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
                 maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
@@ -4692,7 +5362,7 @@ class WellplateMultiPointWidget(QFrame):
         self.btn_startAcquisition.setText("Start\n Acquisition ")
         if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
             self.focusMapWidget.disable_updating_focus_points_on_signal()
-        self.reset_coordinates()
+        # self.reset_coordinates() # unclear whether this is needed
         if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
             self.focusMapWidget.update_focus_point_display()
             self.focusMapWidget.enable_updating_focus_points_on_signal()
@@ -4710,6 +5380,14 @@ class WellplateMultiPointWidget(QFrame):
 
             if self.scanCoordinates.format == "glass slide":
                 self.entry_well_coverage.setEnabled(False)
+
+        # Restore scan controls visibility based on XY checkbox state
+        if enabled:
+            self.update_scan_control_ui()
+
+            # Restore mode dropdown states based on their respective checkboxes
+            self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
+            self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
 
     def disable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(False)
@@ -4772,19 +5450,12 @@ class WellplateMultiPointWidget(QFrame):
             self.entry_well_coverage.setEnabled(False)
             self.entry_overlap.setEnabled(False)
             # Disable well selector
-            self.well_selection_widget.setEnabled(False)
+            if self.well_selection_widget is not None:
+                self.well_selection_widget.setEnabled(False)
         else:
             self.btn_save_scan_coordinates.setText("Save Coordinates")
-            # Re-enable scan controls when coordinates are cleared
-            self.combobox_shape.setEnabled(True)
-            self.entry_scan_size.setEnabled(True)
-            if "glass slide" in self.navigationViewer.sample:
-                self.entry_well_coverage.setEnabled(False)
-            else:
-                self.entry_well_coverage.setEnabled(True)
-            self.entry_overlap.setEnabled(True)
-            # Re-enable well selector
-            self.well_selection_widget.setEnabled(True)
+            # Re-enable scan controls when coordinates are cleared - use update_scan_control_ui for proper logic
+            self.update_scan_control_ui()
 
         self.has_loaded_coordinates = has_coordinates
 
@@ -6997,7 +7668,7 @@ class NapariMosaicDisplayWidget(QWidget):
 
     signal_coordinates_clicked = Signal(float, float)  # x, y in mm
     signal_clear_viewer = Signal()
-    signal_layers_initialized = Signal(bool)
+    signal_layers_initialized = Signal()
     signal_shape_drawn = Signal(list)
 
     def __init__(self, objectiveStore, camera, contrastManager, parent=None):
@@ -7167,7 +7838,7 @@ class NapariMosaicDisplayWidget(QWidget):
         if not self.viewer.layers:
             # initialize first layer
             self.layers_initialized = True
-            self.signal_layers_initialized.emit(self.layers_initialized)
+            self.signal_layers_initialized.emit()
             self.viewer_pixel_size_mm = image_pixel_size_mm
             self.viewer_extents = [
                 y_mm,

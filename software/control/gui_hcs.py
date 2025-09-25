@@ -326,6 +326,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self.live_only_mode = live_only_mode or LIVE_ONLY_MODE
         self.is_live_scan_grid_on = False
+        self.live_scan_grid_was_on = None
         self.performance_mode = False
         self.napari_connections = {}
         self.well_selector_visible = False  # Add this line to track well selector visibility
@@ -387,6 +388,9 @@ class HighContentScreeningGui(QMainWindow):
         self.load_widgets()
         self.setup_layout()
         self.make_connections()
+
+        # Initialize live scan grid state
+        self.wellplateMultiPointWidget.initialize_live_scan_grid_state()
 
         # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
         if HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
@@ -1016,6 +1020,7 @@ class HighContentScreeningGui(QMainWindow):
 
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellplateMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+            self.wellplateMultiPointWidget.signal_toggle_live_scan_grid.connect(self.toggle_live_scan_grid)
 
         if RUN_FLUIDICS:
             self.multiPointWithFluidicsWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
@@ -1038,16 +1043,8 @@ class HighContentScreeningGui(QMainWindow):
             self.objectivesWidget.signal_objective_changed.connect(self.flexibleMultiPointWidget.update_fov_positions)
         # TODO(imo): Fix position updates after removal of navigation controller
         self.movement_updater.position_after_move.connect(self.navigationViewer.draw_fov_current_location)
-        if WELLPLATE_FORMAT == "glass slide":
-            # TODO(imo): This well place logic is duplicated below in onWellPlateChanged.  We should change it to only exist in 1 location.
-            # self.movement_updater.sent_after_stopped.connect(self.wellplateMultiPointWidget.set_live_scan_coordinates)
-            self.movement_updater.position_after_move.connect(self.wellplateMultiPointWidget.update_live_coordinates)
-            self.is_live_scan_grid_on = True
         self.multipointController.signal_register_current_fov.connect(self.navigationViewer.register_fov)
         self.multipointController.signal_current_configuration.connect(self.liveControlWidget.update_ui_for_mode)
-        self.multipointController.acquisition_finished.connect(
-            lambda: self.wellplateMultiPointWidget.update_live_coordinates(self.stage.get_pos())
-        )
         if self.piezoWidget:
             self.movement_updater.piezo_z_um.connect(self.piezoWidget.update_displacement_um_display)
         self.multipointController.signal_set_display_tabs.connect(self.setAcquisitionDisplayTabs)
@@ -1426,7 +1423,7 @@ class HighContentScreeningGui(QMainWindow):
         self.scanCoordinates.clear_regions()
 
         if is_wellplate_acquisition:
-            if self.wellplateMultiPointWidget.combobox_shape.currentText() == "Manual":
+            if self.wellplateMultiPointWidget.combobox_xy_mode.currentText() == "Manual":
                 # trigger manual shape update
                 if self.wellplateMultiPointWidget.shapes_mm:
                     self.wellplateMultiPointWidget.update_manual_shape(self.wellplateMultiPointWidget.shapes_mm)
@@ -1478,21 +1475,9 @@ class HighContentScreeningGui(QMainWindow):
         # TODO(imo): Not sure why glass slide is so special here?  It seems like it's just a "1 well plate".
         if format_ == "glass slide":
             self.toggleWellSelector(False)
-            if not self.is_live_scan_grid_on:  # connect live scan grid for glass slide
-                self.movement_updater.position_after_move.connect(
-                    self.wellplateMultiPointWidget.update_live_coordinates
-                )
-                self.is_live_scan_grid_on = True
-            self.log.debug("live scan grid connected.")
             self.setupSlidePositionController(is_for_wellplate=False)
         else:
             self.toggleWellSelector(True)
-            if self.is_live_scan_grid_on:  # disconnect live scan grid for wellplate
-                self.movement_updater.position_after_move.disconnect(
-                    self.wellplateMultiPointWidget.update_live_coordinates
-                )
-                self.is_live_scan_grid_on = False
-            self.log.debug("live scan grid disconnected.")
             self.setupSlidePositionController(is_for_wellplate=True)
 
             # replace and reconnect new well selector
@@ -1508,6 +1493,14 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_WELLPLATE_MULTIPOINT:  # reset regions onto new wellplate with default size/shape
             self.scanCoordinates.clear_regions()
             self.wellplateMultiPointWidget.set_default_scan_size()
+
+    def toggle_live_scan_grid(self, on):
+        if on:
+            self.movement_updater.position_after_move.connect(self.wellplateMultiPointWidget.update_live_coordinates)
+            self.is_live_scan_grid_on = True
+        else:
+            self.movement_updater.position_after_move.disconnect(self.wellplateMultiPointWidget.update_live_coordinates)
+            self.is_live_scan_grid_on = False
 
     def setupSlidePositionController(self, is_for_wellplate):
         self.slidePositionController.setParent(None)
@@ -1589,20 +1582,17 @@ class HighContentScreeningGui(QMainWindow):
         if acquisition_started:
             self.log.info("STARTING ACQUISITION")
             if self.is_live_scan_grid_on:  # disconnect live scan grid during acquisition
-                self.movement_updater.position_after_move.disconnect(
-                    self.wellplateMultiPointWidget.update_live_coordinates
-                )
-                self.is_live_scan_grid_on = False
+                self.toggle_live_scan_grid(on=False)
+                self.live_scan_grid_was_on = True
         else:
             self.log.info("FINISHED ACQUISITION")
-            if not self.is_live_scan_grid_on and "glass slide" in self.wellplateFormatWidget.wellplate_format:
-                self.movement_updater.position_after_move.connect(
-                    self.wellplateMultiPointWidget.update_live_coordinates
-                )
-                self.is_live_scan_grid_on = True
+            if self.live_scan_grid_was_on:  # reconnect live scan grid if was on before acquisition
+                self.toggle_live_scan_grid(on=True)
+                self.live_scan_grid_was_on = False
 
         # click to move off during acquisition
         self.navigationWidget.set_click_to_move(not acquisition_started)
+        print(f" >>>>> click to move set to {not acquisition_started}")
 
         # disable other acqusiition tabs during acquisition
         current_index = self.recordTabWidget.currentIndex()
