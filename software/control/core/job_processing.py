@@ -3,6 +3,7 @@ import multiprocessing
 import queue
 import os
 import time
+import json
 from typing import Optional, Generic, TypeVar
 from uuid import uuid4
 
@@ -87,8 +88,23 @@ class SaveImageJob(Job):
             output_path = os.path.join(
                 info.save_directory, f"{info.region_id}_{info.fov:0{_def.FILE_ID_PADDING}}_stack.tiff"
             )
+            # Ensure channel information is preserved across common TIFF readers by:
+            # - embedding full metadata as JSON in ImageDescription (description=)
+            # - setting PageName (tag 285) to the channel name via extratags
+            description = json.dumps(metadata)
+            page_name = str(info.configuration.name)
+
+            # extratags format: (code, dtype, count, value, writeonce)
+            # PageName (285) expects ASCII; dtype 's' denotes a null-terminated string in tifffile
+            extratags = [(285, "s", 0, page_name, False)]
+
             with tifffile.TiffWriter(output_path, append=True) as tiff_writer:
-                tiff_writer.write(image, metadata=metadata)
+                tiff_writer.write(
+                    image,
+                    metadata=metadata,
+                    description=description,
+                    extratags=extratags,
+                )
         else:
             saved_image = utils_acquisition.save_image(
                 image=image,
