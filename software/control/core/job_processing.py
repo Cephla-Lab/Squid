@@ -89,7 +89,7 @@ class SaveImageJob(Job):
             }
             # Add requested fields: human-readable time and optional piezo position
             try:
-                metadata["time"] = datetime.fromtimestamp(info.capture_time).strftime("%Y-%m-%d_%H-%M-%S.%f")
+                metadata["time"] = datetime.fromtimestamp(info.capture_time).strftime("%Y-%m-%d %H:%M:%S.%f")
             except Exception:
                 metadata["time"] = info.capture_time
             if info.z_piezo_um is not None:
