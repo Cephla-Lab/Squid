@@ -27,13 +27,13 @@ class CaptureInfo:
     position: squid.abc.Pos
     z_index: int
     capture_time: float
-    z_piezo_um: Optional[float] = None
     configuration: ChannelMode
     save_directory: str
     file_id: str
     region_id: int
     fov: int
     configuration_idx: int
+    z_piezo_um: Optional[float] = None
 
 
 @dataclass()
