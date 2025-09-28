@@ -100,19 +100,16 @@ def _acquire_file_lock(lock_path: str):
         lock_file.close()
 
 
-def _temp_paths_for_capture(info: CaptureInfo, base_name: str) -> tuple[str, str]:
-    base_identifier = info.experiment_path or info.save_directory
-    key = f"{base_identifier}:{base_name}"
-    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
-    temp_dir = tempfile.gettempdir()
-    memmap_path = os.path.join(temp_dir, f"ome_{digest}_tczyx.dat")
-    metadata_path = os.path.join(temp_dir, f"ome_{digest}_metadata.json")
-    return memmap_path, metadata_path
-
-
 def _ome_output_folder(info: CaptureInfo) -> str:
     base_dir = info.experiment_path or os.path.dirname(info.save_directory)
     return os.path.join(base_dir, "ome_tiff")
+
+
+def _metadata_temp_path(info: CaptureInfo, base_name: str) -> str:
+    base_identifier = info.experiment_path or info.save_directory
+    key = f"{base_identifier}:{base_name}"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+    return os.path.join(tempfile.gettempdir(), f"ome_{digest}_metadata.json")
 
 
 def _load_metadata(metadata_path: str) -> Optional[Dict[str, Any]]:
@@ -148,11 +145,11 @@ def _initialize_metadata(info: CaptureInfo, image: np.ndarray) -> Dict[str, Any]
     channel_names = info.channel_names or []
     return {
         "dtype": np.dtype(image.dtype).str,
-        "axes": "TCZYX",
+        "axes": "TZCYX",
         "shape": [
             int(info.total_time_points),
-            int(info.total_channels),
             int(info.total_z_levels),
+            int(info.total_channels),
             int(image.shape[-2]),
             int(image.shape[-1]),
         ],
@@ -188,21 +185,144 @@ def _update_plane_metadata(metadata: Dict[str, Any], info: CaptureInfo) -> Dict[
     return metadata
 
 
-def _build_ome_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+def _metadata_for_imwrite(metadata: Dict[str, Any]) -> Dict[str, Any]:
     channel_names = metadata.get("channel_names") or []
-    ome_metadata: Dict[str, Any] = {
-        "axes": "TCZYX",
-        "Channel": [{"Name": name} for name in channel_names] if channel_names else [],
+    meta: Dict[str, Any] = {"axes": "TZCYX"}
+    if channel_names:
+        meta["Channel"] = {"Name": channel_names}
+    return meta
+
+
+def _build_base_ome_xml(metadata: Dict[str, Any]) -> str:
+    import xml.etree.ElementTree as ET
+
+    ns = "http://www.openmicroscopy.org/Schemas/OME/2016-06"
+    ET.register_namespace("", ns)
+
+    dtype_map = {
+        "uint8": "uint8",
+        "uint16": "uint16",
+        "uint32": "uint32",
+        "int8": "int8",
+        "int16": "int16",
+        "int32": "int32",
+        "float32": "float",
+        "float64": "double",
     }
 
-    planes = metadata.get("planes", {})
-    if planes:
-        ome_metadata["Plane"] = sorted(
-            planes.values(),
-            key=lambda plane: (plane.get("TheT", 0), plane.get("TheC", 0), plane.get("TheZ", 0)),
+    dtype_str = np.dtype(metadata["dtype"]).name
+    ome_type = dtype_map.get(dtype_str, dtype_str)
+    size_t, size_c, size_z, size_y, size_x = metadata["shape"]
+
+    root = ET.Element("{ns}OME".format(ns="{" + ns + "}"), attrib={"Creator": "Squid"})
+    image = ET.SubElement(root, "{ns}Image".format(ns="{" + ns + "}"), attrib={"ID": "Image:0"})
+    if metadata.get("start_time") is not None:
+        try:
+            acq_time = datetime.fromtimestamp(metadata["start_time"]).isoformat()
+            image.set("AcquisitionDate", acq_time)
+        except Exception:
+            pass
+    pixels = ET.SubElement(
+        image,
+        "{ns}Pixels".format(ns="{" + ns + "}"),
+        attrib={
+            "ID": "Pixels:0",
+            "DimensionOrder": "TCZYX",
+            "Type": ome_type,
+            "SizeT": str(size_t),
+            "SizeC": str(size_c),
+            "SizeZ": str(size_z),
+            "SizeY": str(size_y),
+            "SizeX": str(size_x),
+        },
+    )
+
+    channel_names = metadata.get("channel_names") or []
+    if not channel_names:
+        channel_names = [f"Channel {idx}" for idx in range(size_c)]
+
+    for idx, name in enumerate(channel_names):
+        ET.SubElement(
+            pixels,
+            "{ns}Channel".format(ns="{" + ns + "}"),
+            attrib={
+                "ID": f"Channel:0:{idx}",
+                "Name": name,
+                "SamplesPerPixel": "1",
+            },
         )
 
-    return ome_metadata
+    xml_body = ET.tostring(root, encoding="unicode")
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + xml_body
+
+
+def _augment_ome_xml(existing_xml: Optional[str], metadata: Dict[str, Any]) -> str:
+    import xml.etree.ElementTree as ET
+
+    if existing_xml:
+        root = ET.fromstring(existing_xml)
+    else:
+        existing_xml = _build_base_ome_xml(metadata)
+        root = ET.fromstring(existing_xml)
+
+    ns = {"ome": "http://www.openmicroscopy.org/Schemas/OME/2016-06"}
+    ET.register_namespace("", ns["ome"])
+
+    image = root.find("ome:Image", ns)
+    if image is None:
+        return existing_xml or ""
+
+    if metadata.get("start_time") is not None:
+        try:
+            acq_time = datetime.fromtimestamp(metadata["start_time"]).isoformat()
+            image.set("AcquisitionDate", acq_time)
+        except Exception:
+            pass
+
+    pixels = image.find("ome:Pixels", ns)
+    if pixels is None:
+        return existing_xml or ""
+
+    channel_names = metadata.get("channel_names") or []
+    if channel_names:
+        existing_channels = list(pixels.findall("ome:Channel", ns))
+        if len(existing_channels) == len(channel_names):
+            for elem, name in zip(existing_channels, channel_names):
+                elem.set("Name", name)
+        else:
+            for elem in existing_channels:
+                pixels.remove(elem)
+            for idx, name in enumerate(channel_names):
+                ET.SubElement(
+                    pixels,
+                    "{http://www.openmicroscopy.org/Schemas/OME/2016-06}Channel",
+                    attrib={
+                        "ID": f"Channel:0:{idx}",
+                        "Name": name,
+                        "SamplesPerPixel": "1",
+                    },
+                )
+
+    for elem in list(pixels.findall("ome:Plane", ns)):
+        pixels.remove(elem)
+
+    planes = metadata.get("planes", {})
+    ordered_planes = sorted(
+        planes.values(),
+        key=lambda p: (p.get("TheT", 0), p.get("TheC", 0), p.get("TheZ", 0)),
+    )
+
+    for plane in ordered_planes:
+        ET.SubElement(
+            pixels,
+            "{http://www.openmicroscopy.org/Schemas/OME/2016-06}Plane",
+            attrib={key: str(value) for key, value in plane.items()},
+        )
+
+    xml_body = ET.tostring(root, encoding="unicode")
+    if not xml_body.startswith("<?xml"):
+        xml_body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + xml_body
+    return xml_body
 
 
 class SaveImageJob(Job):
@@ -275,21 +395,30 @@ class SaveImageJob(Job):
 
         base_name = _ome_base_name(info)
         output_path = os.path.join(ome_folder, base_name + "_stack.ome.tiff")
-        memmap_path, metadata_path = _temp_paths_for_capture(info, base_name)
+        metadata_path = _metadata_temp_path(info, base_name)
         lock_path = _metadata_lock_path(metadata_path)
 
         with _acquire_file_lock(lock_path):
             metadata = _load_metadata(metadata_path)
             if metadata is None:
                 metadata = _initialize_metadata(info, image)
-                mode = "w+"
+                target_dtype = np.dtype(metadata["dtype"])
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                tifffile.imwrite(
+                    output_path,
+                    shape=tuple(metadata["shape"]),
+                    dtype=target_dtype,
+                    metadata=_metadata_for_imwrite(metadata),
+                    ome=True,
+                )
             else:
                 expected_shape = tuple(metadata["shape"])
                 if expected_shape[-2:] != image.shape[-2:]:
                     raise ValueError("Image dimensions do not match existing OME memmap stack")
                 if not metadata.get("channel_names") and info.channel_names:
                     metadata["channel_names"] = info.channel_names
-                mode = "r+"
+
             target_dtype = np.dtype(metadata["dtype"])
             image_to_store = image if image.dtype == target_dtype else image.astype(target_dtype)
 
@@ -299,14 +428,16 @@ class SaveImageJob(Job):
             shape = tuple(metadata["shape"])
             if not (0 <= time_point < shape[0]):
                 raise ValueError("Time point index out of range for OME stack")
-            if not (0 <= channel_index < shape[1]):
-                raise ValueError("Channel index out of range for OME stack")
-            if not (0 <= z_index < shape[2]):
+            if not (0 <= z_index < shape[1]):
                 raise ValueError("Z index out of range for OME stack")
+            if not (0 <= channel_index < shape[2]):
+                raise ValueError("Channel index out of range for OME stack")
 
-            stack = np.memmap(memmap_path, dtype=target_dtype, mode=mode, shape=shape)
+            stack = tifffile.memmap(output_path, dtype=target_dtype, mode="r+")
+            if stack.shape != shape:
+                stack.shape = shape
             try:
-                stack[time_point, channel_index, z_index, :, :] = image_to_store
+                stack[time_point, z_index, channel_index, :, :] = image_to_store
                 stack.flush()
             finally:
                 del stack
@@ -322,26 +453,15 @@ class SaveImageJob(Job):
             if metadata["saved_count"] >= metadata["expected_count"]:
                 metadata["completed"] = True
                 _write_metadata(metadata_path, metadata)
-                stack = np.memmap(memmap_path, dtype=target_dtype, mode="r", shape=shape)
-                try:
-                    tczyx_view = np.asarray(stack)
-                    ome_metadata = _build_ome_metadata(metadata)
-                    tifffile.imwrite(
-                        output_path,
-                        tczyx_view,
-                        ome=True,
-                        metadata=ome_metadata,
-                    )
-                finally:
-                    del stack
-                if os.path.exists(memmap_path):
-                    os.remove(memmap_path)
+                with tifffile.TiffFile(output_path) as tif:
+                    current_xml = tif.ome_metadata
+                ome_xml = _augment_ome_xml(current_xml, metadata)
+                tifffile.tiffcomment(output_path, ome_xml)
                 if os.path.exists(metadata_path):
                     os.remove(metadata_path)
 
         if os.path.exists(lock_path):
             os.remove(lock_path)
-
 
 # These are debugging jobs - they should not be used in normal usage!
 class HangForeverJob(Job):

@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import types
+import warnings
 import time
 from pathlib import Path
 
@@ -125,14 +126,23 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
 
             import tifffile
 
-            with tifffile.TiffFile(output_path) as tif:
-                data = tif.asarray()
-                assert data.shape == (total_timepoints, total_channels, total_z, *shape)
-                for t in range(total_timepoints):
-                    for c in range(total_channels):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with tifffile.TiffFile(output_path) as tif:
+                    series = tif.series[0]
+                    assert series.axes.upper() == "TZCYX"
+                    data = series.asarray()
+                    assert data.shape == (total_timepoints, total_z, total_channels, *shape)
+                    for t in range(total_timepoints):
                         for z in range(total_z):
-                            expected = (t + 1) * 10 + z + c
-                            np.testing.assert_array_equal(data[t, c, z], expected)
+                            for c in range(total_channels):
+                                expected = (t + 1) * 10 + z + c
+                                np.testing.assert_array_equal(data[t, z, c], expected)
+
+                    ome_xml = tif.ome_metadata or ""
+                    assert "DimensionOrder=\"XYCZT\"" in ome_xml
+
+            assert not caught
 
             ome_dir_contents = list((experiment_dir / "ome_tiff").iterdir())
             assert all(path.suffix != ".json" for path in ome_dir_contents)
