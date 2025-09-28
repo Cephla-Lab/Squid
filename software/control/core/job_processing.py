@@ -24,7 +24,7 @@ from control import _def, utils_acquisition
 import squid.abc
 import squid.logging
 from control.utils_config import ChannelMode
-from . import ome_tiff_writer
+from . import utils_ome_tiff_writer as ome_tiff_writer
 
 
 # NOTE(imo): We want this to be fast.  But pydantic does not support numpy serialization natively, which means
