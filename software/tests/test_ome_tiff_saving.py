@@ -115,6 +115,10 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                             total_channels=total_channels,
                             channel_names=channel_names,
                             experiment_path=str(experiment_dir),
+                            time_increment_s=1.5,
+                            physical_size_z_um=4.5,
+                            physical_size_x_um=0.75,
+                            physical_size_y_um=0.8,
                         )
                         job = SaveImageJob(
                             capture_info=capture_info,
@@ -150,6 +154,13 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                     assert pixels.get("SizeT") == str(total_timepoints)
                     assert pixels.get("SizeC") == str(total_channels)
                     assert pixels.get("SizeZ") == str(total_z)
+                    assert float(pixels.get("TimeIncrement", "nan")) == pytest.approx(1.5)
+                    assert float(pixels.get("PhysicalSizeZ", "nan")) == pytest.approx(4.5)
+                    assert float(pixels.get("PhysicalSizeX", "nan")) == pytest.approx(0.75)
+                    assert float(pixels.get("PhysicalSizeY", "nan")) == pytest.approx(0.8)
+                    assert pixels.get("PhysicalSizeXUnit") == "µm"
+                    assert pixels.get("PhysicalSizeYUnit") == "µm"
+                    assert pixels.get("PhysicalSizeZUnit") == "µm"
                     plane_map = {
                         (
                             int(plane.get("TheT", "0")),
@@ -164,12 +175,19 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                         for z in range(total_z):
                             for c in range(total_channels):
                                 plane = plane_map[(t, z, c)]
+                                if "PositionX" in plane:
+                                    assert float(plane.get("PositionX", "nan")) == pytest.approx(float(t))
+                                    assert plane.get("PositionXUnit") == "mm"
+                                if "PositionY" in plane:
+                                    assert float(plane.get("PositionY", "nan")) == pytest.approx(float(c))
+                                    assert plane.get("PositionYUnit") == "mm"
                                 expected_stage_um = float(z) * 1000.0
                                 expected_piezo_um = float(z) * 10.0
                                 expected_total_um = expected_stage_um + expected_piezo_um
                                 assert float(plane.get("PositionZ", "nan")) == pytest.approx(
                                     expected_total_um, rel=1e-6
                                 )
+                                assert float(plane.get("DeltaT", "nan")) >= 0.0
 
             assert not caught
 

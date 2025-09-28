@@ -63,6 +63,14 @@ def validate_capture_info(info: "CaptureInfo", image: np.ndarray) -> None:
 
 def initialize_metadata(info: "CaptureInfo", image: np.ndarray) -> Dict[str, Any]:
     channel_names = info.channel_names or []
+    time_increment = float(info.time_increment_s) if info.time_increment_s is not None else None
+    time_increment_unit = "s" if time_increment is not None else None
+    physical_size_z = float(info.physical_size_z_um) if info.physical_size_z_um is not None else None
+    physical_size_z_unit = "µm" if physical_size_z is not None else None
+    physical_size_x = float(info.physical_size_x_um) if info.physical_size_x_um is not None else None
+    physical_size_x_unit = "µm" if physical_size_x is not None else None
+    physical_size_y = float(info.physical_size_y_um) if info.physical_size_y_um is not None else None
+    physical_size_y_unit = "µm" if physical_size_y is not None else None
     return {
         "dtype": np.dtype(image.dtype).str,
         "axes": "TZCYX",
@@ -80,6 +88,14 @@ def initialize_metadata(info: "CaptureInfo", image: np.ndarray) -> Dict[str, Any
         "planes": {},
         "start_time": info.capture_time,
         "completed": False,
+        "time_increment": time_increment,
+        "time_increment_unit": time_increment_unit,
+        "physical_size_z": physical_size_z,
+        "physical_size_z_unit": physical_size_z_unit,
+        "physical_size_x": physical_size_x,
+        "physical_size_x_unit": physical_size_x_unit,
+        "physical_size_y": physical_size_y,
+        "physical_size_y_unit": physical_size_y_unit,
     }
 
 
@@ -93,8 +109,10 @@ def update_plane_metadata(metadata: Dict[str, Any], info: "CaptureInfo") -> Dict
     if info.position is not None:
         if getattr(info.position, "x_mm", None) is not None:
             plane_data["PositionX"] = float(info.position.x_mm)
+            plane_data["PositionXUnit"] = "mm"
         if getattr(info.position, "y_mm", None) is not None:
             plane_data["PositionY"] = float(info.position.y_mm)
+            plane_data["PositionYUnit"] = "mm"
 
     stepper_z_um: Optional[float] = None
     if info.position is not None and getattr(info.position, "z_mm", None) is not None:
@@ -118,6 +136,18 @@ def metadata_for_imwrite(metadata: Dict[str, Any]) -> Dict[str, Any]:
     meta: Dict[str, Any] = {"axes": "TZCYX"}
     if channel_names:
         meta["Channel"] = {"Name": channel_names}
+    if metadata.get("time_increment") is not None:
+        meta["TimeIncrement"] = float(metadata["time_increment"])
+        meta["TimeIncrementUnit"] = metadata.get("time_increment_unit", "s")
+    if metadata.get("physical_size_z") is not None:
+        meta["PhysicalSizeZ"] = float(metadata["physical_size_z"])
+        meta["PhysicalSizeZUnit"] = metadata.get("physical_size_z_unit", "µm")
+    if metadata.get("physical_size_x") is not None:
+        meta["PhysicalSizeX"] = float(metadata["physical_size_x"])
+        meta["PhysicalSizeXUnit"] = metadata.get("physical_size_x_unit", "µm")
+    if metadata.get("physical_size_y") is not None:
+        meta["PhysicalSizeY"] = float(metadata["physical_size_y"])
+        meta["PhysicalSizeYUnit"] = metadata.get("physical_size_y_unit", "µm")
     return meta
 
 
@@ -210,6 +240,19 @@ def augment_ome_xml(existing_xml: Optional[str], metadata: Dict[str, Any]) -> st
     pixels = image.find("ome:Pixels", ns)
     if pixels is None:
         return existing_xml or ""
+
+    if metadata.get("time_increment") is not None:
+        pixels.set("TimeIncrement", str(metadata["time_increment"]))
+        pixels.set("TimeIncrementUnit", metadata.get("time_increment_unit", "s"))
+    if metadata.get("physical_size_z") is not None:
+        pixels.set("PhysicalSizeZ", str(metadata["physical_size_z"]))
+        pixels.set("PhysicalSizeZUnit", metadata.get("physical_size_z_unit", "µm"))
+    if metadata.get("physical_size_x") is not None:
+        pixels.set("PhysicalSizeX", str(metadata["physical_size_x"]))
+        pixels.set("PhysicalSizeXUnit", metadata.get("physical_size_x_unit", "µm"))
+    if metadata.get("physical_size_y") is not None:
+        pixels.set("PhysicalSizeY", str(metadata["physical_size_y"]))
+        pixels.set("PhysicalSizeYUnit", metadata.get("physical_size_y_unit", "µm"))
 
     channel_names = metadata.get("channel_names") or []
     if channel_names:

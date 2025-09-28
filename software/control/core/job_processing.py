@@ -3,6 +3,8 @@ import multiprocessing
 import queue
 import os
 import time
+import json
+from datetime import datetime
 from contextlib import contextmanager
 from typing import Optional, Generic, TypeVar, List, Dict, Any
 from uuid import uuid4
@@ -45,6 +47,10 @@ class CaptureInfo:
     total_channels: Optional[int] = None
     channel_names: Optional[List[str]] = None
     experiment_path: Optional[str] = None
+    time_increment_s: Optional[float] = None
+    physical_size_z_um: Optional[float] = None
+    physical_size_x_um: Optional[float] = None
+    physical_size_y_um: Optional[float] = None
 
 
 @dataclass()
@@ -229,7 +235,7 @@ class SaveImageJob(Job):
                 with tifffile.TiffFile(output_path) as tif:
                     current_xml = tif.ome_metadata
                 ome_xml = ome_tiff_writer.augment_ome_xml(current_xml, metadata)
-                tifffile.tiffcomment(output_path, ome_xml)
+                tifffile.tiffcomment(output_path, ome_xml.encode("utf-8"))
                 if os.path.exists(metadata_path):
                     os.remove(metadata_path)
 
