@@ -187,6 +187,7 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                                 assert float(plane.get("PositionZ", "nan")) == pytest.approx(
                                     expected_total_um, rel=1e-6
                                 )
+                                assert plane.get("PositionZUnit") == "µm"
                                 assert float(plane.get("DeltaT", "nan")) >= 0.0
 
             assert not caught

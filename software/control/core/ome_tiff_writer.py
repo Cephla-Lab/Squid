@@ -126,7 +126,7 @@ def update_plane_metadata(metadata: Dict[str, Any], info: "CaptureInfo") -> Dict
     if stepper_z_um is not None or piezo_z_um is not None:
         total_z_um = (stepper_z_um or 0.0) + (piezo_z_um or 0.0)
         plane_data["PositionZ"] = total_z_um
-        # plane_data["PositionZUnit"] = "µm" # this is causing issues with OME-TIFF readers
+        plane_data["PositionZUnit"] = "µm"
 
     return metadata
 
