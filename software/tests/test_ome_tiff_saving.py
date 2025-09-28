@@ -145,6 +145,11 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
 
                     ns = {"ome": "http://www.openmicroscopy.org/Schemas/OME/2016-06"}
                     root = ET.fromstring(ome_xml)
+                    pixels = root.find("ome:Image/ome:Pixels", ns)
+                    assert pixels is not None
+                    assert pixels.get("SizeT") == str(total_timepoints)
+                    assert pixels.get("SizeC") == str(total_channels)
+                    assert pixels.get("SizeZ") == str(total_z)
                     plane_map = {
                         (
                             int(plane.get("TheT", "0")),
@@ -162,9 +167,9 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                                 expected_stage_um = float(z) * 1000.0
                                 expected_piezo_um = float(z) * 10.0
                                 expected_total_um = expected_stage_um + expected_piezo_um
-                                assert plane.get("PositionZUnit") == "um"
-                                assert float(plane.get("PositionZ", "nan")) == pytest.approx(expected_total_um, rel=1e-6)
-                                assert float(plane.get("PositionZPiezo", "nan")) == pytest.approx(expected_piezo_um, rel=1e-6)
+                                assert float(plane.get("PositionZ", "nan")) == pytest.approx(
+                                    expected_total_um, rel=1e-6
+                                )
 
             assert not caught
 

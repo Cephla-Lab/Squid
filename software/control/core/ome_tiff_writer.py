@@ -93,10 +93,8 @@ def update_plane_metadata(metadata: Dict[str, Any], info: "CaptureInfo") -> Dict
     if info.position is not None:
         if getattr(info.position, "x_mm", None) is not None:
             plane_data["PositionX"] = float(info.position.x_mm)
-            plane_data["PositionXUnit"] = "mm"
         if getattr(info.position, "y_mm", None) is not None:
             plane_data["PositionY"] = float(info.position.y_mm)
-            plane_data["PositionYUnit"] = "mm"
 
     stepper_z_um: Optional[float] = None
     if info.position is not None and getattr(info.position, "z_mm", None) is not None:
@@ -105,14 +103,12 @@ def update_plane_metadata(metadata: Dict[str, Any], info: "CaptureInfo") -> Dict
     piezo_z_um = float(info.z_piezo_um) if info.z_piezo_um is not None else None
     if metadata.get("start_time") is not None and info.capture_time is not None:
         plane_data["DeltaT"] = float(info.capture_time - metadata["start_time"])
-    if info.z_piezo_um is not None:
-        plane_data["PositionZPiezo"] = float(info.z_piezo_um)
     metadata.setdefault("planes", {})[plane_key] = plane_data
 
     if stepper_z_um is not None or piezo_z_um is not None:
         total_z_um = (stepper_z_um or 0.0) + (piezo_z_um or 0.0)
         plane_data["PositionZ"] = total_z_um
-        plane_data["PositionZUnit"] = "um"
+        # plane_data["PositionZUnit"] = "µm" # this is causing issues with OME-TIFF readers
 
     return metadata
 
