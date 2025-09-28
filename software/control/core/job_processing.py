@@ -1,13 +1,9 @@
 import abc
-import hashlib
 import multiprocessing
 import queue
 import os
-import tempfile
 import time
 from contextlib import contextmanager
-from datetime import datetime
-import json
 from typing import Optional, Generic, TypeVar, List, Dict, Any
 from uuid import uuid4
 
@@ -22,10 +18,11 @@ import imageio as iio
 import numpy as np
 import tifffile
 
-from control import _def, utils_acquisition, utils
+from control import _def, utils_acquisition
 import squid.abc
 import squid.logging
 from control.utils_config import ChannelMode
+from . import ome_tiff_writer
 
 
 # NOTE(imo): We want this to be fast.  But pydantic does not support numpy serialization natively, which means
@@ -100,230 +97,6 @@ def _acquire_file_lock(lock_path: str):
         lock_file.close()
 
 
-def _ome_output_folder(info: CaptureInfo) -> str:
-    base_dir = info.experiment_path or os.path.dirname(info.save_directory)
-    return os.path.join(base_dir, "ome_tiff")
-
-
-def _metadata_temp_path(info: CaptureInfo, base_name: str) -> str:
-    base_identifier = info.experiment_path or info.save_directory
-    key = f"{base_identifier}:{base_name}"
-    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
-    return os.path.join(tempfile.gettempdir(), f"ome_{digest}_metadata.json")
-
-
-def _load_metadata(metadata_path: str) -> Optional[Dict[str, Any]]:
-    if not os.path.exists(metadata_path):
-        return None
-    with open(metadata_path, "r", encoding="utf-8") as metadata_file:
-        return json.load(metadata_file)
-
-
-def _write_metadata(metadata_path: str, metadata: Dict[str, Any]) -> None:
-    with open(metadata_path, "w", encoding="utf-8") as metadata_file:
-        json.dump(metadata, metadata_file)
-
-
-def _ome_base_name(info: CaptureInfo) -> str:
-    return f"{info.region_id}_{info.fov:0{_def.FILE_ID_PADDING}}"
-
-
-def _validate_capture_info_for_ome(info: CaptureInfo, image: np.ndarray) -> None:
-    if info.time_point is None:
-        raise ValueError("CaptureInfo.time_point is required for OME-TIFF saving")
-    if info.total_time_points is None:
-        raise ValueError("CaptureInfo.total_time_points is required for OME-TIFF saving")
-    if info.total_z_levels is None:
-        raise ValueError("CaptureInfo.total_z_levels is required for OME-TIFF saving")
-    if info.total_channels is None:
-        raise ValueError("CaptureInfo.total_channels is required for OME-TIFF saving")
-    if image.ndim != 2:
-        raise NotImplementedError("OME-TIFF saving currently supports 2D grayscale images only")
-
-
-def _initialize_metadata(info: CaptureInfo, image: np.ndarray) -> Dict[str, Any]:
-    channel_names = info.channel_names or []
-    return {
-        "dtype": np.dtype(image.dtype).str,
-        "axes": "TZCYX",
-        "shape": [
-            int(info.total_time_points),
-            int(info.total_z_levels),
-            int(info.total_channels),
-            int(image.shape[-2]),
-            int(image.shape[-1]),
-        ],
-        "channel_names": channel_names,
-        "written_indices": [],
-        "saved_count": 0,
-        "expected_count": int(info.total_time_points) * int(info.total_z_levels) * int(info.total_channels),
-        "planes": {},
-        "start_time": info.capture_time,
-        "completed": False,
-    }
-
-
-def _update_plane_metadata(metadata: Dict[str, Any], info: CaptureInfo) -> Dict[str, Any]:
-    plane_key = f"{info.time_point}-{info.configuration_idx}-{info.z_index}"
-    plane_data = {
-        "TheT": int(info.time_point),
-        "TheZ": int(info.z_index),
-        "TheC": int(info.configuration_idx),
-    }
-    if info.position is not None:
-        if getattr(info.position, "x_mm", None) is not None:
-            plane_data["PositionX"] = float(info.position.x_mm)
-        if getattr(info.position, "y_mm", None) is not None:
-            plane_data["PositionY"] = float(info.position.y_mm)
-        if getattr(info.position, "z_mm", None) is not None:
-            plane_data["PositionZ"] = float(info.position.z_mm)
-    if metadata.get("start_time") is not None and info.capture_time is not None:
-        plane_data["DeltaT"] = float(info.capture_time - metadata["start_time"])
-    if info.z_piezo_um is not None:
-        plane_data["PositionZPiezo"] = float(info.z_piezo_um)
-    metadata.setdefault("planes", {})[plane_key] = plane_data
-    return metadata
-
-
-def _metadata_for_imwrite(metadata: Dict[str, Any]) -> Dict[str, Any]:
-    channel_names = metadata.get("channel_names") or []
-    meta: Dict[str, Any] = {"axes": "TZCYX"}
-    if channel_names:
-        meta["Channel"] = {"Name": channel_names}
-    return meta
-
-
-def _build_base_ome_xml(metadata: Dict[str, Any]) -> str:
-    import xml.etree.ElementTree as ET
-
-    ns = "http://www.openmicroscopy.org/Schemas/OME/2016-06"
-    ET.register_namespace("", ns)
-
-    dtype_map = {
-        "uint8": "uint8",
-        "uint16": "uint16",
-        "uint32": "uint32",
-        "int8": "int8",
-        "int16": "int16",
-        "int32": "int32",
-        "float32": "float",
-        "float64": "double",
-    }
-
-    dtype_str = np.dtype(metadata["dtype"]).name
-    ome_type = dtype_map.get(dtype_str, dtype_str)
-    size_t, size_c, size_z, size_y, size_x = metadata["shape"]
-
-    root = ET.Element("{ns}OME".format(ns="{" + ns + "}"), attrib={"Creator": "Squid"})
-    image = ET.SubElement(root, "{ns}Image".format(ns="{" + ns + "}"), attrib={"ID": "Image:0"})
-    if metadata.get("start_time") is not None:
-        try:
-            acq_time = datetime.fromtimestamp(metadata["start_time"]).isoformat()
-            image.set("AcquisitionDate", acq_time)
-        except Exception:
-            pass
-    pixels = ET.SubElement(
-        image,
-        "{ns}Pixels".format(ns="{" + ns + "}"),
-        attrib={
-            "ID": "Pixels:0",
-            "DimensionOrder": "TCZYX",
-            "Type": ome_type,
-            "SizeT": str(size_t),
-            "SizeC": str(size_c),
-            "SizeZ": str(size_z),
-            "SizeY": str(size_y),
-            "SizeX": str(size_x),
-        },
-    )
-
-    channel_names = metadata.get("channel_names") or []
-    if not channel_names:
-        channel_names = [f"Channel {idx}" for idx in range(size_c)]
-
-    for idx, name in enumerate(channel_names):
-        ET.SubElement(
-            pixels,
-            "{ns}Channel".format(ns="{" + ns + "}"),
-            attrib={
-                "ID": f"Channel:0:{idx}",
-                "Name": name,
-                "SamplesPerPixel": "1",
-            },
-        )
-
-    xml_body = ET.tostring(root, encoding="unicode")
-    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + xml_body
-
-
-def _augment_ome_xml(existing_xml: Optional[str], metadata: Dict[str, Any]) -> str:
-    import xml.etree.ElementTree as ET
-
-    if existing_xml:
-        root = ET.fromstring(existing_xml)
-    else:
-        existing_xml = _build_base_ome_xml(metadata)
-        root = ET.fromstring(existing_xml)
-
-    ns = {"ome": "http://www.openmicroscopy.org/Schemas/OME/2016-06"}
-    ET.register_namespace("", ns["ome"])
-
-    image = root.find("ome:Image", ns)
-    if image is None:
-        return existing_xml or ""
-
-    if metadata.get("start_time") is not None:
-        try:
-            acq_time = datetime.fromtimestamp(metadata["start_time"]).isoformat()
-            image.set("AcquisitionDate", acq_time)
-        except Exception:
-            pass
-
-    pixels = image.find("ome:Pixels", ns)
-    if pixels is None:
-        return existing_xml or ""
-
-    channel_names = metadata.get("channel_names") or []
-    if channel_names:
-        existing_channels = list(pixels.findall("ome:Channel", ns))
-        if len(existing_channels) == len(channel_names):
-            for elem, name in zip(existing_channels, channel_names):
-                elem.set("Name", name)
-        else:
-            for elem in existing_channels:
-                pixels.remove(elem)
-            for idx, name in enumerate(channel_names):
-                ET.SubElement(
-                    pixels,
-                    "{http://www.openmicroscopy.org/Schemas/OME/2016-06}Channel",
-                    attrib={
-                        "ID": f"Channel:0:{idx}",
-                        "Name": name,
-                        "SamplesPerPixel": "1",
-                    },
-                )
-
-    for elem in list(pixels.findall("ome:Plane", ns)):
-        pixels.remove(elem)
-
-    planes = metadata.get("planes", {})
-    ordered_planes = sorted(
-        planes.values(),
-        key=lambda p: (p.get("TheT", 0), p.get("TheC", 0), p.get("TheZ", 0)),
-    )
-
-    for plane in ordered_planes:
-        ET.SubElement(
-            pixels,
-            "{http://www.openmicroscopy.org/Schemas/OME/2016-06}Plane",
-            attrib={key: str(value) for key, value in plane.items()},
-        )
-
-    xml_body = ET.tostring(root, encoding="unicode")
-    if not xml_body.startswith("<?xml"):
-        xml_body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + xml_body
-    return xml_body
-
 
 class SaveImageJob(Job):
     def run(self) -> bool:
@@ -388,20 +161,20 @@ class SaveImageJob(Job):
         return True
 
     def _save_ome_tiff(self, image: np.ndarray, info: CaptureInfo) -> None:
-        _validate_capture_info_for_ome(info, image)
+        ome_tiff_writer.validate_capture_info(info, image)
 
-        ome_folder = _ome_output_folder(info)
-        utils.ensure_directory_exists(ome_folder)
+        ome_folder = ome_tiff_writer.ome_output_folder(info)
+        ome_tiff_writer.ensure_output_directory(ome_folder)
 
-        base_name = _ome_base_name(info)
+        base_name = ome_tiff_writer.ome_base_name(info)
         output_path = os.path.join(ome_folder, base_name + "_stack.ome.tiff")
-        metadata_path = _metadata_temp_path(info, base_name)
+        metadata_path = ome_tiff_writer.metadata_temp_path(info, base_name)
         lock_path = _metadata_lock_path(metadata_path)
 
         with _acquire_file_lock(lock_path):
-            metadata = _load_metadata(metadata_path)
+            metadata = ome_tiff_writer.load_metadata(metadata_path)
             if metadata is None:
-                metadata = _initialize_metadata(info, image)
+                metadata = ome_tiff_writer.initialize_metadata(info, image)
                 target_dtype = np.dtype(metadata["dtype"])
                 if os.path.exists(output_path):
                     os.remove(output_path)
@@ -409,7 +182,7 @@ class SaveImageJob(Job):
                     output_path,
                     shape=tuple(metadata["shape"]),
                     dtype=target_dtype,
-                    metadata=_metadata_for_imwrite(metadata),
+                    metadata=ome_tiff_writer.metadata_for_imwrite(metadata),
                     ome=True,
                 )
             else:
@@ -442,24 +215,26 @@ class SaveImageJob(Job):
             finally:
                 del stack
 
-            metadata = _update_plane_metadata(metadata, info)
+            metadata = ome_tiff_writer.update_plane_metadata(metadata, info)
             index_key = f"{time_point}-{channel_index}-{z_index}"
             if index_key not in metadata["written_indices"]:
                 metadata["written_indices"].append(index_key)
                 metadata["saved_count"] = len(metadata["written_indices"])
 
-            _write_metadata(metadata_path, metadata)
+            ome_tiff_writer.write_metadata(metadata_path, metadata)
 
             if metadata["saved_count"] >= metadata["expected_count"]:
                 metadata["completed"] = True
-                _write_metadata(metadata_path, metadata)
+                ome_tiff_writer.write_metadata(metadata_path, metadata)
                 with tifffile.TiffFile(output_path) as tif:
                     current_xml = tif.ome_metadata
-                ome_xml = _augment_ome_xml(current_xml, metadata)
+                ome_xml = ome_tiff_writer.augment_ome_xml(current_xml, metadata)
                 tifffile.tiffcomment(output_path, ome_xml)
                 if os.path.exists(metadata_path):
                     os.remove(metadata_path)
 
+        if os.path.exists(lock_path):
+            os.remove(lock_path)
         if os.path.exists(lock_path):
             os.remove(lock_path)
 
