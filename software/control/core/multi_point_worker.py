@@ -80,6 +80,7 @@ class MultiPointWorker:
 
         self.experiment_ID = acquisition_parameters.experiment_ID
         self.base_path = acquisition_parameters.base_path
+        self.experiment_path = os.path.join(self.base_path or "", self.experiment_ID or "")
         self.selected_configurations = acquisition_parameters.selected_configurations
 
         self.timestamp_acquisition_started = acquisition_parameters.acquisition_start_time
@@ -269,7 +270,9 @@ class MultiPointWorker:
             self._log.debug("multipoint acquisition - time point " + str(self.time_point + 1))
 
             # for each time point, create a new folder
-            current_path = os.path.join(self.base_path, self.experiment_ID, f"{self.time_point:0{FILE_ID_PADDING}}")
+            if self.experiment_path:
+                utils.ensure_directory_exists(str(self.experiment_path))
+            current_path = os.path.join(self.experiment_path, f"{self.time_point:0{FILE_ID_PADDING}}")
             utils.ensure_directory_exists(str(current_path))
 
             # create a dataframe to save coordinates
@@ -628,6 +631,12 @@ class MultiPointWorker:
                 region_id=region_id,
                 fov=fov,
                 configuration_idx=config_idx,
+                time_point=self.time_point,
+                total_time_points=self.Nt,
+                total_z_levels=self.NZ,
+                total_channels=len(self.selected_configurations),
+                channel_names=[cfg.name for cfg in self.selected_configurations],
+                experiment_path=self.experiment_path,
             )
             self._current_capture_info = current_capture_info
         with self._timing.get_timer("send_trigger"):
@@ -710,6 +719,12 @@ class MultiPointWorker:
             region_id=region_id,
             fov=fov,
             configuration_idx=config.id,
+            time_point=self.time_point,
+            total_time_points=self.Nt,
+            total_z_levels=self.NZ,
+            total_channels=len(self.selected_configurations),
+            channel_names=[cfg.name for cfg in self.selected_configurations],
+            experiment_path=self.experiment_path,
         )
 
         if len(i_size) == 3:
