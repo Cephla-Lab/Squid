@@ -93,8 +93,10 @@ def update_plane_metadata(metadata: Dict[str, Any], info: "CaptureInfo") -> Dict
     if info.position is not None:
         if getattr(info.position, "x_mm", None) is not None:
             plane_data["PositionX"] = float(info.position.x_mm)
+            plane_data["PositionXUnit"] = "mm"
         if getattr(info.position, "y_mm", None) is not None:
             plane_data["PositionY"] = float(info.position.y_mm)
+            plane_data["PositionYUnit"] = "mm"
 
     stepper_z_um: Optional[float] = None
     if info.position is not None and getattr(info.position, "z_mm", None) is not None:
