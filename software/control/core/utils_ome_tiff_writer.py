@@ -185,7 +185,7 @@ def build_base_ome_xml(metadata: Dict[str, Any]) -> str:
         "{ns}Pixels".format(ns="{" + ns + "}"),
         attrib={
             "ID": "Pixels:0",
-            "DimensionOrder": "TCZYX",
+            "DimensionOrder": "TZCYX",
             "Type": ome_type,
             "SizeT": str(size_t),
             "SizeC": str(size_c),
