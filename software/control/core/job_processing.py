@@ -241,8 +241,6 @@ class SaveImageJob(Job):
 
         if os.path.exists(lock_path):
             os.remove(lock_path)
-        if os.path.exists(lock_path):
-            os.remove(lock_path)
 
 
 # These are debugging jobs - they should not be used in normal usage!
