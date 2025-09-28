@@ -122,7 +122,7 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                         )
                         assert job.run()
 
-            output_path = experiment_dir / "ome_tiff" / "1_0_stack.ome.tiff"
+            output_path = experiment_dir / "ome_tiff" / "1_0.ome.tiff"
             assert output_path.exists(), "Stack file should be created after all planes are written"
 
             import tifffile

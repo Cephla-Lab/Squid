@@ -167,7 +167,7 @@ class SaveImageJob(Job):
         ome_tiff_writer.ensure_output_directory(ome_folder)
 
         base_name = ome_tiff_writer.ome_base_name(info)
-        output_path = os.path.join(ome_folder, base_name + "_stack.ome.tiff")
+        output_path = os.path.join(ome_folder, base_name + ".ome.tiff")
         metadata_path = ome_tiff_writer.metadata_temp_path(info, base_name)
         lock_path = _metadata_lock_path(metadata_path)
 
