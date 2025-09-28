@@ -1,6 +1,9 @@
-"""Tests for the OME-TIFF memmap saving pipeline."""
-
 from __future__ import annotations
+
+MM_TO_UM = 1000.0
+PIEZO_STEP_UM = 10.0
+
+"""Tests for the OME-TIFF memmap saving pipeline."""
 
 import os
 import sys
@@ -108,7 +111,7 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                             region_id=1,
                             fov=0,
                             configuration_idx=c,
-                            z_piezo_um=float(z) * 10.0,
+                            z_piezo_um=float(z) * PIEZO_STEP_UM,
                             time_point=t,
                             total_time_points=total_timepoints,
                             total_z_levels=total_z,
@@ -181,8 +184,8 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                                 if "PositionY" in plane:
                                     assert float(plane.get("PositionY", "nan")) == pytest.approx(float(c))
                                     assert plane.get("PositionYUnit") == "mm"
-                                expected_stage_um = float(z) * 1000.0
-                                expected_piezo_um = float(z) * 10.0
+                                expected_stage_um = float(z) * MM_TO_UM
+                                expected_piezo_um = float(z) * PIEZO_STEP_UM
                                 expected_total_um = expected_stage_um + expected_piezo_um
                                 assert float(plane.get("PositionZ", "nan")) == pytest.approx(
                                     expected_total_um, rel=1e-6
