@@ -76,9 +76,7 @@ def initialize_metadata(info: "CaptureInfo", image: np.ndarray) -> Dict[str, Any
         "channel_names": channel_names,
         "written_indices": [],
         "saved_count": 0,
-        "expected_count": int(info.total_time_points)
-        * int(info.total_z_levels)
-        * int(info.total_channels),
+        "expected_count": int(info.total_time_points) * int(info.total_z_levels) * int(info.total_channels),
         "planes": {},
         "start_time": info.capture_time,
         "completed": False,
@@ -175,7 +173,7 @@ def build_base_ome_xml(metadata: Dict[str, Any]) -> str:
         )
 
     xml_body = ET.tostring(root, encoding="unicode")
-    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + xml_body
+    return '<?xml version="1.0" encoding="UTF-8"?>' + xml_body
 
 
 def augment_ome_xml(existing_xml: Optional[str], metadata: Dict[str, Any]) -> str:
@@ -243,7 +241,7 @@ def augment_ome_xml(existing_xml: Optional[str], metadata: Dict[str, Any]) -> st
 
     xml_body = ET.tostring(root, encoding="unicode")
     if not xml_body.startswith("<?xml"):
-        xml_body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + xml_body
+        xml_body = '<?xml version="1.0" encoding="UTF-8"?>' + xml_body
     return xml_body
 
 

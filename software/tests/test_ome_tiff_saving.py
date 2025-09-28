@@ -140,7 +140,7 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                                 np.testing.assert_array_equal(data[t, z, c], expected)
 
                     ome_xml = tif.ome_metadata or ""
-                    assert "DimensionOrder=\"XYCZT\"" in ome_xml
+                    assert 'DimensionOrder="XYCZT"' in ome_xml
 
             assert not caught
 

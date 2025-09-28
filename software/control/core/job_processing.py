@@ -97,7 +97,6 @@ def _acquire_file_lock(lock_path: str):
         lock_file.close()
 
 
-
 class SaveImageJob(Job):
     def run(self) -> bool:
         is_color = len(self.image_array().shape) > 2
@@ -161,6 +160,7 @@ class SaveImageJob(Job):
         return True
 
     def _save_ome_tiff(self, image: np.ndarray, info: CaptureInfo) -> None:
+        # with reference to Talley's https://github.com/pymmcore-plus/pymmcore-plus/blob/main/src/pymmcore_plus/mda/handlers/_ome_tiff_writer.py and Christoph's https://forum.image.sc/t/how-to-create-an-image-series-ome-tiff-from-python/42730/7
         ome_tiff_writer.validate_capture_info(info, image)
 
         ome_folder = ome_tiff_writer.ome_output_folder(info)
@@ -237,6 +237,7 @@ class SaveImageJob(Job):
             os.remove(lock_path)
         if os.path.exists(lock_path):
             os.remove(lock_path)
+
 
 # These are debugging jobs - they should not be used in normal usage!
 class HangForeverJob(Job):
