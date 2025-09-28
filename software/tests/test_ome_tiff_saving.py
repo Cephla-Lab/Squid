@@ -7,6 +7,7 @@ import sys
 import tempfile
 import types
 import warnings
+import xml.etree.ElementTree as ET
 import time
 from pathlib import Path
 
@@ -84,8 +85,8 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
             positions = [
                 squid.abc.Pos(x_mm=float(t), y_mm=float(c), z_mm=float(z), theta_rad=None)
                 for t in range(total_timepoints)
-                for c in range(total_channels)
                 for z in range(total_z)
+                for c in range(total_channels)
             ]
 
             pos_iter = iter(positions)
@@ -107,7 +108,7 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                             region_id=1,
                             fov=0,
                             configuration_idx=c,
-                            z_piezo_um=None,
+                            z_piezo_um=float(z) * 10.0,
                             time_point=t,
                             total_time_points=total_timepoints,
                             total_z_levels=total_z,
@@ -141,6 +142,29 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
 
                     ome_xml = tif.ome_metadata or ""
                     assert 'DimensionOrder="XYCZT"' in ome_xml
+
+                    ns = {"ome": "http://www.openmicroscopy.org/Schemas/OME/2016-06"}
+                    root = ET.fromstring(ome_xml)
+                    plane_map = {
+                        (
+                            int(plane.get("TheT", "0")),
+                            int(plane.get("TheZ", "0")),
+                            int(plane.get("TheC", "0")),
+                        ): plane
+                        for plane in root.findall(".//ome:Plane", ns)
+                    }
+                    assert len(plane_map) == total_timepoints * total_z * total_channels
+
+                    for t in range(total_timepoints):
+                        for z in range(total_z):
+                            for c in range(total_channels):
+                                plane = plane_map[(t, z, c)]
+                                expected_stage_um = float(z) * 1000.0
+                                expected_piezo_um = float(z) * 10.0
+                                expected_total_um = expected_stage_um + expected_piezo_um
+                                assert plane.get("PositionZUnit") == "um"
+                                assert float(plane.get("PositionZ", "nan")) == pytest.approx(expected_total_um, rel=1e-6)
+                                assert float(plane.get("PositionZPiezo", "nan")) == pytest.approx(expected_piezo_um, rel=1e-6)
 
             assert not caught
 
