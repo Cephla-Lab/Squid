@@ -261,11 +261,13 @@ class FileSavingOption(Enum):
     INDIVIDUAL_IMAGES: Save each image as a separate file. Format is defined in Acquisition.IMAGE_FORMAT.
     TODO: Move all file saving related settings to this enum.
     MULTI_PAGE_TIFF: Save all images from a single FOV as a single multi-page TIFF file.
+    OME_TIFF: Save data to OME-TIFF stacks with full metadata.
     TODO: Add zarr saving options.
     """
 
     INDIVIDUAL_IMAGES = "INDIVIDUAL_IMAGES"
     MULTI_PAGE_TIFF = "MULTI_PAGE_TIFF"
+    OME_TIFF = "OME_TIFF"
 
     @staticmethod
     def convert_to_enum(option: Union[str, "FileSavingOption"]) -> "FileSavingOption":
@@ -645,6 +647,9 @@ USE_LDI_SERIAL_CONTROL = False
 LDI_INTENSITY_MODE = "PC"
 LDI_SHUTTER_MODE = "PC"
 USE_CELESTA_ETHERNET_CONTROL = False
+USE_ANDOR_LASER_CONTROL = False
+ANDOR_LASER_VID = 0x1BDB
+ANDOR_LASER_PID = 0x0300
 
 XLIGHT_EMISSION_FILTER_MAPPING = {
     405: 1,
@@ -658,6 +663,10 @@ XLIGHT_SLEEP_TIME_FOR_WHEEL = 0.25
 XLIGHT_VALIDATE_WHEEL_POS = False
 XLIGHT_ILLUMINATION_IRIS_DEFAULT = 100
 XLIGHT_EMISSION_IRIS_DEFAULT = 100
+
+# Dragonfly integration
+USE_DRAGONFLY = False
+DRAGONFLY_SERIAL_NUMBER = "00000000"
 
 # Confocal.nl NL5 integration
 ENABLE_NL5 = False

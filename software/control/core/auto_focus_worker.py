@@ -1,12 +1,10 @@
-from typing import Optional, TypeVar
+import threading
+from typing import Callable, Optional, TypeVar
 
-from PyQt5.QtCore import QObject
-from PyQt5.QtWidgets import QApplication
-from qtpy.QtCore import Signal
 import time
-
 import numpy as np
 
+import squid.logging
 from control import utils
 import control._def
 from control.core.live_controller import LiveController
@@ -17,13 +15,19 @@ from squid.abc import AbstractCamera, AbstractStage
 AutoFocusController = TypeVar("AutoFocusController")
 
 
-class AutofocusWorker(QObject):
-    finished = Signal()
-    image_to_display = Signal(np.ndarray)
-
-    def __init__(self, autofocusController):
-        QObject.__init__(self)
+class AutofocusWorker:
+    def __init__(
+        self,
+        autofocusController,
+        finished_fn: Callable[[], None],
+        image_to_display_fn: Callable[[np.ndarray], None],
+        keep_running: threading.Event,
+    ):
         self.autofocusController: AutoFocusController = autofocusController
+        self._finished_fn = finished_fn
+        self._image_to_display_fn = image_to_display_fn
+        self._keep_running: threading.Event = keep_running
+        self._log = squid.logging.get_logger(self.__class__.__name__)
 
         self.camera: AbstractCamera = self.autofocusController.camera
         self.microcontroller: Microcontroller = self.autofocusController.microcontroller
@@ -38,8 +42,10 @@ class AutofocusWorker(QObject):
         self.crop_height = self.autofocusController.crop_height
 
     def run(self):
-        self.run_autofocus()
-        self.finished.emit()
+        try:
+            self.run_autofocus()
+        finally:
+            self._finished_fn()
 
     def wait_till_operation_is_completed(self):
         while self.microcontroller.is_busy():
@@ -58,6 +64,10 @@ class AutofocusWorker(QObject):
         steps_moved = 0
         image = None
         for i in range(self.N):
+            if not self._keep_running.is_set():
+                self._log.warning("Signal to abort autofocus received, aborting!")
+                # This aborts and then we report our best focus so far
+                break
             self.stage.move_z(self.deltaZ)
             steps_moved = steps_moved + 1
             # trigger acquisition (including turning on the illumination) and read frame
@@ -88,20 +98,17 @@ class AutofocusWorker(QObject):
                 self.liveController.turn_off_illumination()
 
             image = utils.crop_image(image, self.crop_width, self.crop_height)
-            self.image_to_display.emit(image)
+            self._image_to_display_fn(image)
 
-            QApplication.processEvents()
             timestamp_0 = time.time()
             focus_measure = utils.calculate_focus_measure(image, control._def.FOCUS_MEASURE_OPERATOR)
             timestamp_1 = time.time()
-            print("             calculating focus measure took " + str(timestamp_1 - timestamp_0) + " second")
+            self._log.info("             calculating focus measure took " + str(timestamp_1 - timestamp_0) + " second")
             focus_measure_vs_z[i] = focus_measure
-            print(i, focus_measure)
+            self._log.debug(f"{i} {focus_measure}")
             focus_measure_max = max(focus_measure, focus_measure_max)
             if focus_measure < focus_measure_max * control._def.AF.STOP_THRESHOLD:
                 break
-
-        QApplication.processEvents()
 
         # maneuver for achiving uniform step size and repeatability when using open-loop control
         self.stage.move_z(-steps_moved * self.deltaZ)
@@ -109,10 +116,8 @@ class AutofocusWorker(QObject):
         idx_in_focus = focus_measure_vs_z.index(max(focus_measure_vs_z))
         self.stage.move_z((idx_in_focus + 1) * self.deltaZ)
 
-        QApplication.processEvents()
-
         # move to the calculated in-focus position
         if idx_in_focus == 0:
-            print("moved to the bottom end of the AF range")
+            self._log.info("moved to the bottom end of the AF range")
         if idx_in_focus == self.N - 1:
-            print("moved to the top end of the AF range")
+            self._log.info("moved to the top end of the AF range")

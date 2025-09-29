@@ -138,15 +138,24 @@ class LiveController:
                     self.microscope.addons.cellx.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
 
         # set emission filter position
-        if ENABLE_SPINNING_DISK_CONFOCAL and self.microscope.addons.xlight:
-            try:
-                self.microscope.addons.xlight.set_emission_filter(
-                    XLIGHT_EMISSION_FILTER_MAPPING[illumination_source],
-                    extraction=False,
-                    validate=XLIGHT_VALIDATE_WHEEL_POS,
-                )
-            except Exception as e:
-                print("not setting emission filter position due to " + str(e))
+        if ENABLE_SPINNING_DISK_CONFOCAL:
+            if self.microscope.addons.xlight and not USE_DRAGONFLY:
+                try:
+                    self.microscope.addons.xlight.set_emission_filter(
+                        XLIGHT_EMISSION_FILTER_MAPPING[illumination_source],
+                        extraction=False,
+                        validate=XLIGHT_VALIDATE_WHEEL_POS,
+                    )
+                except Exception as e:
+                    print("not setting emission filter position due to " + str(e))
+            elif USE_DRAGONFLY and self.microscope.addons.dragonfly:
+                try:
+                    self.microscope.addons.dragonfly.set_emission_filter(
+                        self.microscope.addons.dragonfly.get_camera_port(),
+                        self.currentConfiguration.emission_filter_position,
+                    )
+                except Exception as e:
+                    print("not setting emission filter position due to " + str(e))
 
         if self.microscope.addons.emission_filter_wheel and self.enable_channel_auto_filter_switching:
             try:
@@ -298,7 +307,8 @@ class LiveController:
         self._log.debug(f"Setting {fps_trigger=}")
         self.fps_trigger = fps_trigger
         self.timer_trigger_interval = (1 / self.fps_trigger) * 1000
-        self._start_new_timer()
+        if self.is_live:
+            self._start_new_timer()
 
     def _stop_triggerred_acquisition(self):
         self._stop_existing_timer()

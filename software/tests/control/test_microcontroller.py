@@ -3,6 +3,7 @@ import time
 import pytest
 import control._def
 import control.microcontroller
+from control.microcontroller import Microcontroller
 
 
 def get_test_micro() -> control.microcontroller.Microcontroller:
@@ -205,3 +206,14 @@ def test_home_directions():
             assert test_micro.last_command[3] == d.value
 
     test_micro.close()
+
+
+def test_payload_helpers():
+    assert isinstance(Microcontroller._int_to_payload(10, 1), int)
+    assert isinstance(Microcontroller._int_to_payload(1.1, 2), int)
+    assert Microcontroller._int_to_payload(1.1, 2) == 1
+    assert Microcontroller._int_to_payload(2**16 - 1, 2) == 2**16 - 1
+    assert Microcontroller._int_to_payload(2**16, 2) == 2**16
+
+    assert Microcontroller._payload_to_int([0x00, 0x00, 0x00, 0xFF, 0xFF], 5) == 2**16 - 1
+    assert Microcontroller._payload_to_int([0xFF, 0xFF], 2) == -1

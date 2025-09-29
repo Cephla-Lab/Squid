@@ -514,6 +514,7 @@ class Microcontroller:
             self.initialize_drivers()
             time.sleep(0.5)
             self.configure_actuators()
+            self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
             if USE_SQUID_FILTERWHEEL:
                 self.configure_squidfilter()
             time.sleep(0.5)
@@ -814,6 +815,9 @@ class Microcontroller:
         self.send_command(cmd)
 
     def configure_stage_pid(self, axis, transitions_per_revolution, flip_direction=False):
+        if not isinstance(transitions_per_revolution, int):
+            self.log.warning(f"transitions_per_revolution must be an integer, truncating: {transitions_per_revolution}")
+
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.CONFIGURE_STAGE_PID
         cmd[2] = axis
@@ -1218,21 +1222,22 @@ class Microcontroller:
                 raise self.last_command_aborted_error
 
     @staticmethod
-    def _int_to_payload(signed_int, number_of_bytes):
-        if signed_int >= 0:
-            payload = signed_int
+    def _int_to_payload(signed_int, number_of_bytes) -> int:
+        actually_signed_int = int(round(signed_int))
+        if actually_signed_int >= 0:
+            payload = actually_signed_int
         else:
-            payload = 2 ** (8 * number_of_bytes) + signed_int  # find two's completement
-        return payload
+            payload = 2 ** (8 * number_of_bytes) + actually_signed_int  # find two's complement
+        return int(payload)
 
     @staticmethod
-    def _payload_to_int(payload, number_of_bytes):
+    def _payload_to_int(payload, number_of_bytes) -> int:
         signed = 0
         for i in range(number_of_bytes):
             signed = signed + int(payload[i]) * (256 ** (number_of_bytes - 1 - i))
         if signed >= 256**number_of_bytes / 2:
             signed = signed - 256**number_of_bytes
-        return signed
+        return int(signed)
 
     def set_dac80508_scaling_factor_for_illumination(self, illumination_intensity_factor):
         if illumination_intensity_factor > 1:

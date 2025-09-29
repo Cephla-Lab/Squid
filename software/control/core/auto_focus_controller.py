@@ -1,12 +1,11 @@
+import threading
 import time
-from typing import Optional
-
-from PyQt5.QtCore import QObject, QThread
-from PyQt5.QtWidgets import QApplication
-from qtpy.QtCore import Signal
+from threading import Thread
+from typing import Optional, Callable
 
 import numpy as np
 
+import squid.logging
 from control import utils
 import control._def
 from control.core.auto_focus_worker import AutofocusWorker
@@ -16,24 +15,27 @@ from control.microscope import NL5
 from squid.abc import AbstractCamera, AbstractStage
 
 
-class AutoFocusController(QObject):
-    z_pos = Signal(float)
-    autofocusFinished = Signal()
-    image_to_display = Signal(np.ndarray)
-
+class AutoFocusController:
     def __init__(
         self,
         camera: AbstractCamera,
         stage: AbstractStage,
         liveController: LiveController,
         microcontroller: Microcontroller,
+        finished_fn: Callable[[], None],
+        image_to_display_fn: Callable[[np.ndarray], None],
         nl5: Optional[NL5],
     ):
-        QObject.__init__(self)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._autofocus_worker: Optional[AutofocusWorker] = None
+        self._focus_thread: Optional[Thread] = None
+        self._keep_running = threading.Event()
         self.camera: AbstractCamera = camera
         self.stage: AbstractStage = stage
         self.microcontroller: Microcontroller = microcontroller
         self.liveController: LiveController = liveController
+        self._finished_fn = finished_fn
+        self._image_to_display_fn = image_to_display_fn
         self.nl5: Optional[NL5] = nl5
 
         # Start with "Reasonable" defaults.
@@ -56,7 +58,6 @@ class AutoFocusController(QObject):
         self.crop_height = crop_height
 
     def autofocus(self, focus_map_override=False):
-        # TODO(imo): We used to have the joystick button wired up to autofocus, but took it out in a refactor.  It needs to be restored.
         if self.use_focus_map and (not focus_map_override):
             self.autofocus_in_progress = True
 
@@ -65,10 +66,10 @@ class AutoFocusController(QObject):
 
             # z here is in mm because that's how the navigation controller stores it
             target_z = utils.interpolate_plane(*self.focus_map_coords[:3], (pos.x_mm, pos.y_mm))
-            print(f"Interpolated target z as {target_z} mm from focus map, moving there.")
+            self._log.info(f"Interpolated target z as {target_z} mm from focus map, moving there.")
             self.stage.move_z_to(target_z)
             self.autofocus_in_progress = False
-            self.autofocusFinished.emit()
+            self._finished_fn()
             return
         # stop live
         if self.liveController.is_live:
@@ -87,28 +88,25 @@ class AutoFocusController(QObject):
         self.autofocus_in_progress = True
 
         # create a QThread object
-        try:
-            if self.thread.isRunning():
-                print("*** autofocus thread is still running ***")
-                self.thread.terminate()
-                self.thread.wait()
-                print("*** autofocus threaded manually stopped ***")
-        except:
-            pass
-        self.thread = QThread(parent=self)
-        # create a worker object
-        self.autofocusWorker = AutofocusWorker(self)
-        # move the worker to the thread
-        self.autofocusWorker.moveToThread(self.thread)
-        # connect signals and slots
-        self.thread.started.connect(self.autofocusWorker.run)
-        self.autofocusWorker.finished.connect(self._on_autofocus_completed)
-        self.autofocusWorker.finished.connect(self.autofocusWorker.deleteLater)
-        self.autofocusWorker.finished.connect(self.thread.quit)
-        self.autofocusWorker.image_to_display.connect(self.slot_image_to_display)
-        self.thread.finished.connect(self.thread.quit)
-        # start the thread
-        self.thread.start()
+        if self._focus_thread and self._focus_thread.is_alive():
+            self._keep_running.clear()
+            try:
+                self._focus_thread.join(1.0)
+            except RuntimeError as e:
+                self._log.exception("Critical error joining previous autofocus thread.")
+                self._finished_fn()
+                raise e
+            if self._focus_thread.is_alive():
+                self._log.error("Previous focus thread failed to join!")
+                self._finished_fn()
+                raise RuntimeError("Previous focus thread failed to join")
+
+        self._keep_running.set()
+        self._autofocus_worker = AutofocusWorker(
+            self, self._on_autofocus_completed, self._image_to_display_fn, self._keep_running
+        )
+        self._focus_thread = Thread(target=self._autofocus_worker.run, daemon=True)
+        self._focus_thread.start()
 
     def _on_autofocus_completed(self):
         # re-enable callback
@@ -120,29 +118,24 @@ class AutoFocusController(QObject):
             self.liveController.start_live()
 
         # emit the autofocus finished signal to enable the UI
-        self.autofocusFinished.emit()
-        QApplication.processEvents()
-        print("autofocus finished")
+        self._finished_fn()
+        self._log.info("autofocus finished")
 
         # update the state
         self.autofocus_in_progress = False
 
-    def slot_image_to_display(self, image):
-        self.image_to_display.emit(image)
-
     def wait_till_autofocus_has_completed(self):
         while self.autofocus_in_progress:
-            QApplication.processEvents()
             time.sleep(0.005)
-        print("autofocus wait has completed, exit wait")
+        self._log.info("autofocus wait has completed, exit wait")
 
     def set_focus_map_use(self, enable):
         if not enable:
-            print("Disabling focus map.")
+            self._log.info("Disabling focus map.")
             self.use_focus_map = False
             return
         if len(self.focus_map_coords) < 3:
-            print("Not enough coordinates (less than 3) for focus map generation, disabling focus map.")
+            self._log.error("Not enough coordinates (less than 3) for focus map generation, disabling focus map.")
             self.use_focus_map = False
             return
         x1, y1, _ = self.focus_map_coords[0]
@@ -151,12 +144,12 @@ class AutoFocusController(QObject):
 
         detT = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
         if detT == 0:
-            print("Your 3 x-y coordinates are linear, cannot use to interpolate, disabling focus map.")
+            self._log.error("Your 3 x-y coordinates are linear, cannot use to interpolate, disabling focus map.")
             self.use_focus_map = False
             return
 
         if enable:
-            print("Enabling focus map.")
+            self._log.info("Enabling focus map.")
             self.use_focus_map = True
 
     def clear_focus_map(self):
@@ -180,25 +173,25 @@ class AutoFocusController(QObject):
         self.focus_map_coords = []
 
         for coord in [coord1, coord2, coord3]:
-            print(f"Navigating to coordinates ({coord[0]},{coord[1]}) to sample for focus map")
+            self._log.info(f"Navigating to coordinates ({coord[0]},{coord[1]}) to sample for focus map")
             self.stage.move_x_to(coord[0])
             self.stage.move_y_to(coord[1])
 
-            print("Autofocusing")
+            self._log.info("Autofocusing")
             self.autofocus(True)
             self.wait_till_autofocus_has_completed()
             pos = self.stage.get_pos()
 
-            print(f"Adding coordinates ({pos.x_mm},{pos.y_mm},{pos.z_mm}) to focus map")
+            self._log.info(f"Adding coordinates ({pos.x_mm},{pos.y_mm},{pos.z_mm}) to focus map")
             self.focus_map_coords.append((pos.x_mm, pos.y_mm, pos.z_mm))
 
-        print("Generated focus map.")
+        self._log.info("Generated focus map.")
 
     def add_current_coords_to_focus_map(self):
         if len(self.focus_map_coords) >= 3:
-            print("Replacing last coordinate on focus map.")
+            self._log.info("Replacing last coordinate on focus map.")
         self.stage.wait_for_idle(timeout_s=0.5)
-        print("Autofocusing")
+        self._log.info("Autofocusing")
         self.autofocus(True)
         self.wait_till_autofocus_has_completed()
         pos = self.stage.get_pos()
@@ -219,4 +212,4 @@ class AutoFocusController(QObject):
         if len(self.focus_map_coords) >= 3:
             self.focus_map_coords.pop()
         self.focus_map_coords.append((x, y, z))
-        print(f"Added triple ({x},{y},{z}) to focus map")
+        self._log.info(f"Added triple ({x},{y},{z}) to focus map")

@@ -1,16 +1,16 @@
-import pytest
 import threading
 
-import tests.control.gui_test_stubs as gts
 import control._def
 import control.microscope
 from control.core.multi_point_controller import MultiPointController
 from control.core.multi_point_utils import MultiPointControllerFunctions, AcquisitionParameters
 
+import tests.control.test_stubs as ts
 
-def test_multi_point_controller_image_count_calculation(qtbot):
+
+def test_multi_point_controller_image_count_calculation():
     scope = control.microscope.Microscope.build_from_global_config(True)
-    mpc = gts.get_test_qt_multi_point_controller(microscope=scope)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
 
     control._def.MERGE_CHANNELS = False
     all_configuration_names = [
@@ -61,9 +61,9 @@ def test_multi_point_controller_image_count_calculation(qtbot):
     assert mpc.get_acquisition_image_count() == final_number_of_fov * (all_config_count + 1)
 
 
-def test_multi_point_controller_disk_space_estimate(qtbot):
+def test_multi_point_controller_disk_space_estimate():
     scope = control.microscope.Microscope.build_from_global_config(True)
-    mpc = gts.get_test_qt_multi_point_controller(microscope=scope)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
 
     control._def.MERGE_CHANNELS = False
     all_configuration_names = [
@@ -176,11 +176,11 @@ def select_some_configs(mpc: MultiPointController, objective: str):
     mpc.set_selected_configurations(selected_configurations_name=first_two_config_names)
 
 
-def test_multi_point_controller_basic_acquisition(qtbot):
+def test_multi_point_controller_basic_acquisition():
     control._def.MERGE_CHANNELS = False
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
-    mpc = gts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
 
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
@@ -205,7 +205,7 @@ def test_multi_point_with_laser_af():
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
 
-    mpc = gts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
 
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
@@ -229,14 +229,13 @@ def test_multi_point_with_laser_af():
     assert tt.config_change_count > 0
 
 
-@pytest.mark.skip(reason="We still need to pull QT usage out of AutofocusController and AutofocusWorker.")
 def test_multi_point_with_contrast_af():
     control._def.MERGE_CHANNELS = False
 
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
 
-    mpc = gts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
 
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)

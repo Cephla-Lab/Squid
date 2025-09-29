@@ -146,6 +146,31 @@ class MovementUpdater(QObject):
         self.previous_pos = pos
 
 
+class QtAutoFocusController(AutoFocusController, QObject):
+    autofocusFinished = Signal()
+    image_to_display = Signal(np.ndarray)
+
+    def __init__(
+        self,
+        camera: AbstractCamera,
+        stage: AbstractStage,
+        liveController: LiveController,
+        microcontroller: Microcontroller,
+        nl5: Optional[control.microscope.NL5],
+    ):
+        QObject.__init__(self)
+        AutoFocusController.__init__(
+            self,
+            camera,
+            stage,
+            liveController,
+            microcontroller,
+            lambda: self.autofocusFinished.emit(),
+            lambda image: self.image_to_display.emit(image),
+            nl5,
+        )
+
+
 class QtMultiPointController(MultiPointController, QObject):
     acquisition_finished = Signal()
     signal_acquisition_start = Signal()
@@ -255,6 +280,7 @@ class HighContentScreeningGui(QMainWindow):
         self.microcontroller: Microcontroller = microscope.low_level_drivers.microcontroller
 
         self.xlight: Optional[serial_peripherals.XLight] = microscope.addons.xlight
+        self.dragonfly: Optional[serial_peripherals.Dragonfly] = microscope.addons.dragonfly
         self.nl5: Optional[Any] = microscope.addons.nl5
         self.cellx: Optional[serial_peripherals.CellX] = microscope.addons.cellx
         self.emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterController] = (
@@ -397,8 +423,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def load_objects(self, is_simulation):
         self.streamHandler = core.QtStreamHandler(accept_new_frame_fn=lambda: self.liveController.is_live)
-
-        self.autofocusController = AutoFocusController(
+        self.autofocusController = QtAutoFocusController(
             self.camera, self.stage, self.liveController, self.microcontroller, self.nl5
         )
         if ENABLE_TRACKING:
@@ -476,12 +501,6 @@ class HighContentScreeningGui(QMainWindow):
             if USE_ZABER_EMISSION_FILTER_WHEEL:
                 self.emission_filter_wheel.wait_for_homing_complete()
 
-            if HAS_OBJECTIVE_PIEZO:
-                OUTPUT_GAINS.CHANNEL7_GAIN = OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE == 5
-            div = 1 if OUTPUT_GAINS.REFDIV else 0
-            gains = sum(getattr(OUTPUT_GAINS, f"CHANNEL{i}_GAIN") << i for i in range(8))
-            self.microcontroller.configure_dac80508_refdiv_and_gain(div, gains)
-            self.microcontroller.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
         except TimeoutError as e:
             # If we can't recover from a timeout, at least do our best to make sure the system is left in a safe
             # and restartable state.
@@ -526,7 +545,12 @@ class HighContentScreeningGui(QMainWindow):
     def load_widgets(self):
         # Initialize all GUI widgets
         if ENABLE_SPINNING_DISK_CONFOCAL:
-            self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
+            # TODO: For user compatibility, when ENABLE_SPINNING_DISK_CONFOCAL is True, we use XLight/Cicero on default.
+            # This needs to be changed when we figure out better machine configuration structure.
+            if USE_DRAGONFLY:
+                self.spinningDiskConfocalWidget = widgets.DragonflyConfocalWidget(self.dragonfly)
+            else:
+                self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
         if ENABLE_NL5:
             import control.NL5Widget as NL5Widget
 

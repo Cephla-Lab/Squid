@@ -79,6 +79,12 @@ def get_camera(
             camera = control.camera_photometrics.PhotometricsCamera(
                 config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
             )
+        elif config.camera_type == CameraVariant.ANDOR:
+            import control.camera_andor
+
+            camera = control.camera_andor.AndorCamera(
+                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+            )
         elif config.camera_type == CameraVariant.TIS:
             import control.camera_TIS
 

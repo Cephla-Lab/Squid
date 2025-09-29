@@ -568,6 +568,16 @@ class LaserAutofocusController(QObject):
                 else:
                     x, y = result
 
+                if (
+                    self.laser_af_properties.has_reference
+                    and abs(x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
+                    > self.laser_af_properties.laser_af_range
+                ):
+                    self._log.warning(
+                        f"Spot detected at ({x:.1f}, {y:.1f}) is out of range ({self.laser_af_properties.laser_af_range:.1f} μm), skipping it."
+                    )
+                    continue
+
                 tmp_x += x
                 tmp_y += y
                 successful_detections += 1
@@ -633,9 +643,3 @@ class LaserAutofocusController(QObject):
                 self.microcontroller.wait_till_operation_is_completed()
             except TimeoutError:
                 self._log.exception("Failed to turn off AF laser after get_image!")
-
-    def clear_reference(self):
-        """Clear reference position"""
-        self.has_reference = False
-        self.reference_crop = None
-        self._log.info("Reference spot position cleared")
