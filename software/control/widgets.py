@@ -10,6 +10,7 @@ from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 import control.utils as utils
 from squid.abc import AbstractStage, AbstractCamera
+from squid.stage.utils import move_to_loading_position, move_to_scanning_position
 from squid.config import CameraPixelFormat
 
 # set QT_API environment variable
@@ -382,12 +383,18 @@ class StageUtils(QDialog):
             self.live_controller.stop_live()
         self.signal_threaded_stage_move_started.emit()
         if self.slide_position != "loading":
-            self.stage.move_to_loading_position(
-                blocking=False, callback=self._callback_loading_position_reached, is_wellplate=self.is_wellplate
+            move_to_loading_position(
+                self.stage,
+                blocking=False,
+                callback=self._callback_loading_position_reached,
+                is_wellplate=self.is_wellplate,
             )
         else:
-            self.stage.move_to_scanning_position(
-                blocking=False, callback=self._callback_scanning_position_reached, is_wellplate=self.is_wellplate
+            move_to_scanning_position(
+                self.stage,
+                blocking=False,
+                callback=self._callback_scanning_position_reached,
+                is_wellplate=self.is_wellplate,
             )
         self.btn_load_slide.setEnabled(False)
 

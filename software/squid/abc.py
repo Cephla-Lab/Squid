@@ -203,20 +203,6 @@ class AbstractStage(metaclass=abc.ABCMeta):
     ):
         pass
 
-    @abc.abstractmethod
-    def move_to_loading_position(self, blocking: bool = True):
-        """
-        Move the stage to loading position so it is clear for loading a sample.
-        """
-        pass
-
-    @abc.abstractmethod
-    def move_to_scanning_position(self, blocking: bool = True):
-        """
-        Move the stage back to scanning position from loading position.
-        """
-        pass
-
     def get_config(self) -> StageConfig:
         return self._config
 
