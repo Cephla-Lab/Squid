@@ -6916,7 +6916,7 @@ class NapariMultiChannelWidget(QWidget):
         self.layers_initialized = True
         self.update_layer_count = 0
 
-    def updateLayers(self, image, x, y, k, channel_name):
+    def updateLayers(self, image, x, y, k, channel_name, info=None):
         """Updates the appropriate slice of the canvas with the new image data."""
         rgb = len(image.shape) == 3
 
@@ -7144,7 +7144,7 @@ class NapariMosaicDisplayWidget(QWidget):
         )
         return Colormap(colors=[c0, c1], controls=[0, 1], name=channel_info["name"])
 
-    def updateMosaic(self, image, x_mm, y_mm, k, channel_name):
+    def updateMosaic(self, image, x_mm, y_mm, k, channel_name, info=None):
         # calculate pixel size
         pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
         downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um))

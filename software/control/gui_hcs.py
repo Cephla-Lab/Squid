@@ -50,6 +50,7 @@ from squid.abc import AbstractCamera, AbstractStage
 import control.lighting
 import control.microscope
 import control.widgets as widgets
+from control.nd_view_widget import NapariNDViewWidget
 import pyqtgraph.dockarea as dock
 import squid.abc
 import squid.camera.utils
@@ -179,7 +180,7 @@ class QtMultiPointController(MultiPointController, QObject):
     signal_current_configuration = Signal(ChannelMode)
     signal_register_current_fov = Signal(float, float)
     napari_layers_init = Signal(int, int, object)
-    napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
+    napari_layers_update = Signal(np.ndarray, float, float, int, str, object)  # image, x_mm, y_mm, k, channel, info
     signal_set_display_tabs = Signal(list, int)
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
@@ -245,7 +246,7 @@ class QtMultiPointController(MultiPointController, QObject):
         objective_magnification = str(int(self.objectiveStore.get_current_objective_info()["magnification"]))
         napri_layer_name = objective_magnification + "x " + info.configuration.name
         self.napari_layers_update.emit(
-            frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
+            frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name, info
         )
 
     def _signal_current_configuration_fn(self, channel_mode: ChannelMode):
@@ -379,6 +380,7 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
         self.napariMultiChannelWidget: Optional[widgets.NapariMultiChannelWidget] = None
+        self.ndViewWidget: Optional[NapariNDViewWidget] = None
         self.imageArrayDisplayWindow: Optional[core.ImageArrayDisplayWindow] = None
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
 
@@ -751,6 +753,10 @@ class HighContentScreeningGui(QMainWindow):
                     self.objectiveStore, self.camera, self.contrastManager
                 )
                 self.imageDisplayTabs.addTab(self.napariMultiChannelWidget, "Multichannel Acquisition")
+                self.ndViewWidget = NapariNDViewWidget(
+                    self.objectiveStore, self.camera, self.contrastManager
+                )
+                self.imageDisplayTabs.addTab(self.ndViewWidget, "ND View")
             else:
                 self.imageArrayDisplayWindow = core.ImageArrayDisplayWindow()
                 self.imageDisplayTabs.addTab(self.imageArrayDisplayWindow.widget, "Multichannel Acquisition")
@@ -1129,6 +1135,7 @@ class HighContentScreeningGui(QMainWindow):
             "napariLiveWidget": [],
             "napariMultiChannelWidget": [],
             "napariMosaicDisplayWidget": [],
+            "ndViewWidget": [],
         }
 
         # Setup live view connections
@@ -1175,6 +1182,11 @@ class HighContentScreeningGui(QMainWindow):
                     (self.multipointController.napari_layers_init, self.napariMultiChannelWidget.initLayers),
                     (self.multipointController.napari_layers_update, self.napariMultiChannelWidget.updateLayers),
                 ]
+                if self.ndViewWidget:
+                    self.napari_connections["ndViewWidget"] = [
+                        (self.multipointController.napari_layers_init, self.ndViewWidget.initLayers),
+                        (self.multipointController.napari_layers_update, self.ndViewWidget.updateLayers),
+                    ]
 
                 if ENABLE_FLEXIBLE_MULTIPOINT:
                     self.napari_connections["napariMultiChannelWidget"].extend(
@@ -1189,6 +1201,19 @@ class HighContentScreeningGui(QMainWindow):
                             ),
                         ]
                     )
+                    if self.ndViewWidget:
+                        self.napari_connections["ndViewWidget"].extend(
+                            [
+                                (
+                                    self.flexibleMultiPointWidget.signal_acquisition_channels,
+                                    self.ndViewWidget.initChannels,
+                                ),
+                                (
+                                    self.flexibleMultiPointWidget.signal_acquisition_shape,
+                                    self.ndViewWidget.initLayersShape,
+                                ),
+                            ]
+                        )
 
                 if ENABLE_WELLPLATE_MULTIPOINT:
                     self.napari_connections["napariMultiChannelWidget"].extend(
@@ -1203,6 +1228,19 @@ class HighContentScreeningGui(QMainWindow):
                             ),
                         ]
                     )
+                    if self.ndViewWidget:
+                        self.napari_connections["ndViewWidget"].extend(
+                            [
+                                (
+                                    self.wellplateMultiPointWidget.signal_acquisition_channels,
+                                    self.ndViewWidget.initChannels,
+                                ),
+                                (
+                                    self.wellplateMultiPointWidget.signal_acquisition_shape,
+                                    self.ndViewWidget.initLayersShape,
+                                ),
+                            ]
+                        )
                 if RUN_FLUIDICS:
                     self.napari_connections["napariMultiChannelWidget"].extend(
                         [
@@ -1216,6 +1254,19 @@ class HighContentScreeningGui(QMainWindow):
                             ),
                         ]
                     )
+                    if self.ndViewWidget:
+                        self.napari_connections["ndViewWidget"].extend(
+                            [
+                                (
+                                    self.multiPointWithFluidicsWidget.signal_acquisition_channels,
+                                    self.ndViewWidget.initChannels,
+                                ),
+                                (
+                                    self.multiPointWithFluidicsWidget.signal_acquisition_shape,
+                                    self.ndViewWidget.initLayersShape,
+                                ),
+                            ]
+                        )
             else:
                 self.multipointController.image_to_display_multi.connect(self.imageArrayDisplayWindow.display_image)
 
