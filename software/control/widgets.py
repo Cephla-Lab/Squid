@@ -3265,7 +3265,8 @@ class FlexibleMultiPointWidget(QFrame):
         self.location_list[index, 2] = z_mm
         self.scanCoordinates.region_centers[self.location_ids[index]][2] = z_mm
         self.scanCoordinates.region_fov_coordinates[self.location_ids[index]] = [
-            (coord[0], coord[1], z_mm) for coord in self.scanCoordinates.region_fov_coordinates[self.location_ids[index]]
+            (coord[0], coord[1], z_mm)
+            for coord in self.scanCoordinates.region_fov_coordinates[self.location_ids[index]]
         ]
         location_str = f"x:{round(self.location_list[index,0],3)} mm  y:{round(self.location_list[index,1],3)} mm  z:{round(z_mm * 1000.0,3)} μm"
         self.dropdown_location_list.setItemText(index, location_str)
