@@ -309,7 +309,7 @@ class ScanCoordinates:
             for j in range(Nx):
                 x = center_x - grid_width_mm / 2 + j * step_size_mm
                 if self.validate_coordinates(x, y):
-                    row.append((x, y))
+                    row.append((x, y, center_z))
 
             if self.fov_pattern == "S-Pattern" and i % 2 == 1:  # reverse even rows
                 row.reverse()

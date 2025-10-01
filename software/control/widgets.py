@@ -2780,7 +2780,8 @@ class FlexibleMultiPointWidget(QFrame):
         self.table_location_list.setColumnCount(4)
         header_labels = ["x", "y", "z", "ID"]
         self.table_location_list.setHorizontalHeaderLabels(header_labels)
-        self.btn_show_table_location_list = QPushButton("Edit")  # Open / Edit
+        # self.btn_show_table_location_list = QPushButton("Edit")  # Open / Edit
+        self.btn_update_z = QPushButton("Update Z")
 
         self.entry_deltaX = QDoubleSpinBox()
         self.entry_deltaX.setMinimum(0)
@@ -2972,9 +2973,7 @@ class FlexibleMultiPointWidget(QFrame):
         temp3.addWidget(QLabel("Location List"))
         temp3.addWidget(self.dropdown_location_list)
         self.grid_location_list_line1.addLayout(temp3, 0, 0, 1, 6)  # Span across all columns except the last
-        self.grid_location_list_line1.addWidget(
-            self.btn_show_table_location_list, 0, 6, 1, 2
-        )  # Align with other buttons
+        self.grid_location_list_line1.addWidget(self.btn_update_z, 0, 6, 1, 2)  # Align with other buttons
 
         self.grid_location_list_line2 = QGridLayout()
         # Make all buttons span 2 columns for consistent width
@@ -3167,7 +3166,8 @@ class FlexibleMultiPointWidget(QFrame):
 
         self.table_location_list.cellClicked.connect(self.cell_was_clicked)
         self.table_location_list.cellChanged.connect(self.cell_was_changed)
-        self.btn_show_table_location_list.clicked.connect(self.table_location_list.show)
+        # self.btn_show_table_location_list.clicked.connect(self.table_location_list.show)
+        self.btn_update_z.clicked.connect(self.update_z)
         self.dropdown_location_list.currentIndexChanged.connect(self.go_to)
 
         self.shortcut = QShortcut(QKeySequence(";"), self)
@@ -3258,6 +3258,16 @@ class FlexibleMultiPointWidget(QFrame):
     def update_z_max(self, z_pos_um):
         if z_pos_um > self.entry_maxZ.value():
             self.entry_maxZ.setValue(z_pos_um)
+
+    def update_z(self):
+        z_mm = self.stage.get_pos().z_mm
+        index = self.dropdown_location_list.currentIndex()
+        self.location_list[index, 2] = z_mm
+        self.scanCoordinates.region_centers[self.location_ids[index]][2] = z_mm
+        for coord in self.scanCoordinates.region_fov_coordinates[self.location_ids[index]]:
+            coord = (coord[0], coord[1], z_mm)
+        location_str = f"x:{round(self.location_list[index,0],3)} mm  y:{round(self.location_list[index,1],3)} mm  z:{round(z_mm * 1000.0,3)} μm"
+        self.dropdown_location_list.setItemText(index, location_str)
 
     def update_Nz(self):
         z_min = self.entry_minZ.value()
@@ -3593,6 +3603,7 @@ class FlexibleMultiPointWidget(QFrame):
             for coord in self.scanCoordinates.region_fov_coordinates.pop(region_id, []):
                 self.navigationViewer.deregister_fov_to_image(coord[0], coord[1])
 
+            """
             # Reindex remaining regions and update UI
             for i in range(index, len(self.location_ids)):
                 old_id = self.location_ids[i]
@@ -3610,6 +3621,7 @@ class FlexibleMultiPointWidget(QFrame):
                 location_str = f"x:{round(x, 3)} mm  y:{round(y, 3)} mm  z:{round(z * 1000, 1)} μm"
                 self.dropdown_location_list.setItemText(i, location_str)
                 self.table_location_list.setItem(i, 3, QTableWidgetItem(new_id))
+            """
 
             # Clear overlay if no locations remain
             if len(self.location_list) == 0:
@@ -3772,7 +3784,7 @@ class FlexibleMultiPointWidget(QFrame):
     def export_location_list(self):
         file_path, _ = QFileDialog.getSaveFileName(self, "Export Location List", "", "CSV Files (*.csv);;All Files (*)")
         if file_path:
-            location_list_df = pd.DataFrame(self.location_list, columns=["x (mm)", "y (mm)", "z (um)"])
+            location_list_df = pd.DataFrame(self.location_list, columns=["x (mm)", "y (mm)", "z (mm)"])
             location_list_df["ID"] = self.location_ids
             location_list_df["i"] = 0
             location_list_df["j"] = 0
@@ -3785,7 +3797,7 @@ class FlexibleMultiPointWidget(QFrame):
             location_list_df = pd.read_csv(file_path)
             location_list_df_relevant = None
             try:
-                location_list_df_relevant = location_list_df[["x (mm)", "y (mm)", "z (um)"]]
+                location_list_df_relevant = location_list_df[["x (mm)", "y (mm)", "z (mm)"]]
             except KeyError:
                 self._log.error("Improperly formatted location list being imported")
                 return
@@ -3797,7 +3809,7 @@ class FlexibleMultiPointWidget(QFrame):
             for index, row in location_list_df_relevant.iterrows():
                 x = row["x (mm)"]
                 y = row["y (mm)"]
-                z = row["z (um)"]
+                z = row["z (mm)"]
                 region_id = row["ID"]
                 if not np.any(np.all(self.location_list[:, :2] == [x, y], axis=1)):
                     location_str = (
@@ -3806,7 +3818,7 @@ class FlexibleMultiPointWidget(QFrame):
                         + "mm  y:"
                         + str(round(y, 3))
                         + "mm  z:"
-                        + str(round(1000 * z, 1))
+                        + str(round(1000.0 * z, 3))
                         + "μm"
                     )
                     self.dropdown_location_list.addItem(location_str)
