@@ -1090,8 +1090,8 @@ class HighContentScreeningGui(QMainWindow):
         # Connect to plot xyz data when coordinates are saved
         self.multipointController.signal_coordinates.connect(self.zPlotWidget.add_point)
 
-        def plot_after_each_region(progress: OverallProgressUpdate):
-            if progress.current_region > 1:
+        def plot_after_each_region(current_region: int, total_regions: int, current_timepoint: int):
+            if current_region > 1:
                 self.zPlotWidget.plot()
             self.zPlotWidget.clear()
 
