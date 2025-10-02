@@ -2774,13 +2774,13 @@ class FlexibleMultiPointWidget(QFrame):
 
         self.btn_export_locations = QPushButton("Export Location List")
         self.btn_import_locations = QPushButton("Import Location List")
+        self.btn_show_table_location_list = QPushButton("Edit")  # Open / Edit
 
         # editable points table
         self.table_location_list = QTableWidget()
         self.table_location_list.setColumnCount(4)
         header_labels = ["x", "y", "z", "ID"]
         self.table_location_list.setHorizontalHeaderLabels(header_labels)
-        # self.btn_show_table_location_list = QPushButton("Edit")  # Open / Edit
         self.btn_update_z = QPushButton("Update Z")
 
         self.entry_deltaX = QDoubleSpinBox()
@@ -2983,8 +2983,9 @@ class FlexibleMultiPointWidget(QFrame):
         self.grid_location_list_line2.addWidget(self.btn_clear, 1, 6, 1, 2)
 
         self.grid_location_list_line3 = QGridLayout()
-        self.grid_location_list_line3.addWidget(self.btn_import_locations, 2, 0, 1, 4)
-        self.grid_location_list_line3.addWidget(self.btn_export_locations, 2, 4, 1, 4)
+        self.grid_location_list_line3.addWidget(self.btn_import_locations, 2, 0, 1, 3)
+        self.grid_location_list_line3.addWidget(self.btn_export_locations, 2, 3, 1, 3)
+        self.grid_location_list_line3.addWidget(self.btn_show_table_location_list, 2, 6, 1, 2)
 
         # Create spacer items
         EDGE_SPACING = 4  # Adjust this value as needed
@@ -3166,7 +3167,7 @@ class FlexibleMultiPointWidget(QFrame):
 
         self.table_location_list.cellClicked.connect(self.cell_was_clicked)
         self.table_location_list.cellChanged.connect(self.cell_was_changed)
-        # self.btn_show_table_location_list.clicked.connect(self.table_location_list.show)
+        self.btn_show_table_location_list.clicked.connect(self.table_location_list.show)
         self.btn_update_z.clicked.connect(self.update_z)
         self.dropdown_location_list.currentIndexChanged.connect(self.go_to)
 
