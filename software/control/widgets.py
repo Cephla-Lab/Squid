@@ -4702,6 +4702,7 @@ class WellplateMultiPointWidget(QFrame):
             self.focusMapWidget.update_focus_point_display()
             self.focusMapWidget.enable_updating_focus_points_on_signal()
         self.setEnabled_all(True)
+        self.toggle_coordinate_controls(self.has_loaded_coordinates)
 
     def setEnabled_all(self, enabled):
         for widget in self.findChildren(QWidget):
