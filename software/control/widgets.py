@@ -4843,22 +4843,22 @@ class WellplateMultiPointWidget(QFrame):
             df = pd.read_csv(file_path)
 
             # Validate CSV format
-            required_columns = ["Region", "X_mm", "Y_mm"]
+            required_columns = ["region", "x (mm)", "y (mm)"]
             if not all(col in df.columns for col in required_columns):
-                raise ValueError("CSV file must contain 'Region', 'X_mm', and 'Y_mm' columns")
+                raise ValueError("CSV file must contain 'region', 'x (mm)', and 'y (mm)' columns")
 
             # Clear existing coordinates
             self.scanCoordinates.clear_regions()
 
             # Load coordinates into scanCoordinates
-            for region_id in df["Region"].unique():
-                region_points = df[df["Region"] == region_id]
-                coords = list(zip(region_points["X_mm"], region_points["Y_mm"]))
+            for region_id in df["region"].unique():
+                region_points = df[df["region"] == region_id]
+                coords = list(zip(region_points["x (mm)"], region_points["y (mm)"]))
                 self.scanCoordinates.region_fov_coordinates[region_id] = coords
 
                 # Calculate and store region center (average of points)
-                center_x = region_points["X_mm"].mean()
-                center_y = region_points["Y_mm"].mean()
+                center_x = region_points["x (mm)"].mean()
+                center_y = region_points["y (mm)"].mean()
                 self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
 
                 # Register FOVs with navigation viewer
@@ -4902,7 +4902,7 @@ class WellplateMultiPointWidget(QFrame):
 
                 # Save to CSV with headers
 
-                df = pd.DataFrame(coordinates, columns=["Region", "X_mm", "Y_mm"])
+                df = pd.DataFrame(coordinates, columns=["region", "x (mm)", "y (mm)"])
                 df.to_csv(file_path, index=False)
 
                 self._log.info(f"Saved scan coordinates to {file_path}")
