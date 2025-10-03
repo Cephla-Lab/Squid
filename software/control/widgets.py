@@ -462,6 +462,7 @@ class LaserAutofocusSettingWidget(QWidget):
         exposure_layout = QHBoxLayout()
         exposure_layout.addWidget(QLabel("Focus Camera Exposure (ms):"))
         self.exposure_spinbox = QDoubleSpinBox()
+        self.exposure_spinbox.setKeyboardTracking(False)
         self.exposure_spinbox.setSingleStep(0.1)
         self.exposure_spinbox.setRange(*self.liveController.microscope.camera.get_exposure_limits())
         self.exposure_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_exposure_time_ms)
@@ -471,6 +472,7 @@ class LaserAutofocusSettingWidget(QWidget):
         analog_gain_layout = QHBoxLayout()
         analog_gain_layout.addWidget(QLabel("Focus Camera Analog Gain:"))
         self.analog_gain_spinbox = QDoubleSpinBox()
+        self.analog_gain_spinbox.setKeyboardTracking(False)
         self.analog_gain_spinbox.setRange(0, 24)
         self.analog_gain_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_analog_gain)
         analog_gain_layout.addWidget(self.analog_gain_spinbox)
@@ -595,6 +597,7 @@ class LaserAutofocusSettingWidget(QWidget):
         box_layout.addWidget(QLabel(label))
 
         spinbox = QDoubleSpinBox()
+        spinbox.setKeyboardTracking(False)
         if allow_none:
             spinbox.setRange(min_val - step, max_val)
             spinbox.setSpecialValueText("None")
@@ -1234,6 +1237,7 @@ class CameraSettingsWidget(QFrame):
 
         # add buttons and input fields
         self.entry_exposureTime = QDoubleSpinBox()
+        self.entry_exposureTime.setKeyboardTracking(False)
         self.entry_exposureTime.setMinimum(self.camera.get_exposure_limits()[0])
         self.entry_exposureTime.setMaximum(self.camera.get_exposure_limits()[1])
         self.entry_exposureTime.setSingleStep(1)
@@ -1300,6 +1304,7 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_height.setFixedWidth(60)
         self.entry_ROI_height.setKeyboardTracking(False)
         self.entry_temperature = QDoubleSpinBox()
+        self.entry_temperature.setKeyboardTracking(False)
         self.entry_temperature.setMaximum(25)
         self.entry_temperature.setMinimum(-50)
         self.entry_temperature.setDecimals(1)
@@ -1383,6 +1388,7 @@ class CameraSettingsWidget(QFrame):
             blacklevel_line.addWidget(QLabel("Black Level"))
 
             self.label_blackLevel = QSpinBox()
+            self.label_blackLevel.setKeyboardTracking(False)
             self.label_blackLevel.setMinimum(0)
             self.label_blackLevel.setMaximum(31)
             self.label_blackLevel.valueChanged.connect(self.update_blacklevel)
@@ -1634,6 +1640,7 @@ class LiveControlWidget(QFrame):
 
         # line 1: fps
         self.entry_triggerFPS = QDoubleSpinBox()
+        self.entry_triggerFPS.setKeyboardTracking(False)
         self.entry_triggerFPS.setMinimum(0.02)
         self.entry_triggerFPS.setMaximum(1000)
         self.entry_triggerFPS.setSingleStep(1)
@@ -1658,6 +1665,7 @@ class LiveControlWidget(QFrame):
 
         # line 3: exposure time and analog gain associated with the current mode
         self.entry_exposureTime = QDoubleSpinBox()
+        self.entry_exposureTime.setKeyboardTracking(False)
         self.entry_exposureTime.setMinimum(self.camera.get_exposure_limits()[0])
         self.entry_exposureTime.setMaximum(self.camera.get_exposure_limits()[1])
         self.entry_exposureTime.setSingleStep(1)
@@ -1666,6 +1674,7 @@ class LiveControlWidget(QFrame):
         self.entry_exposureTime.setSizePolicy(sizePolicy)
 
         self.entry_analogGain = QDoubleSpinBox()
+        self.entry_analogGain.setKeyboardTracking(False)
         # Not all cameras support analog gain, so attempt to get the gain
         # to check this
         try:
@@ -1689,6 +1698,7 @@ class LiveControlWidget(QFrame):
         self.slider_illuminationIntensity.setSingleStep(2)
 
         self.entry_illuminationIntensity = QDoubleSpinBox()
+        self.entry_illuminationIntensity.setKeyboardTracking(False)
         self.entry_illuminationIntensity.setMinimum(0)
         self.entry_illuminationIntensity.setMaximum(100)
         self.entry_illuminationIntensity.setSingleStep(1)
@@ -1697,6 +1707,7 @@ class LiveControlWidget(QFrame):
 
         # line 4: display fps and resolution scaling
         self.entry_displayFPS = QDoubleSpinBox()
+        self.entry_displayFPS.setKeyboardTracking(False)
         self.entry_displayFPS.setMinimum(1)
         self.entry_displayFPS.setMaximum(240)
         self.entry_displayFPS.setSingleStep(1)
@@ -1711,6 +1722,7 @@ class LiveControlWidget(QFrame):
         self.slider_resolutionScaling.setSingleStep(10)
 
         self.label_resolutionScaling = QSpinBox()
+        self.label_resolutionScaling.setKeyboardTracking(False)
         self.label_resolutionScaling.setMinimum(10)
         self.label_resolutionScaling.setMaximum(100)
         self.label_resolutionScaling.setValue(self.slider_resolutionScaling.value())
@@ -1930,6 +1942,7 @@ class PiezoWidget(QFrame):
 
         # Row 2: Increment Double Spin Box, Move Up and Move Down Buttons
         self.increment_spinBox = QDoubleSpinBox(self)
+        self.increment_spinBox.setKeyboardTracking(False)
         self.increment_spinBox.setRange(0.0, 100.0)
         self.increment_spinBox.setDecimals(2)
         self.increment_spinBox.setSingleStep(1)
@@ -2028,6 +2041,7 @@ class RecordingWidget(QFrame):
         self.lineEdit_experimentID = QLineEdit()
 
         self.entry_saveFPS = QDoubleSpinBox()
+        self.entry_saveFPS.setKeyboardTracking(False)
         self.entry_saveFPS.setMinimum(0.02)
         self.entry_saveFPS.setMaximum(1000)
         self.entry_saveFPS.setSingleStep(1)
@@ -2035,6 +2049,7 @@ class RecordingWidget(QFrame):
         self.streamHandler.set_save_fps(1)
 
         self.entry_timeLimit = QSpinBox()
+        self.entry_timeLimit.setKeyboardTracking(False)
         self.entry_timeLimit.setMinimum(-1)
         self.entry_timeLimit.setMaximum(60 * 60 * 24 * 30)
         self.entry_timeLimit.setSingleStep(1)
@@ -2816,6 +2831,7 @@ class FlexibleMultiPointWidget(QFrame):
         # self.entry_NY.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.entry_overlap = QDoubleSpinBox()
+        self.entry_overlap.setKeyboardTracking(False)
         self.entry_overlap.setRange(0, 99)
         self.entry_overlap.setDecimals(1)
         self.entry_overlap.setSuffix(" %")
@@ -2823,6 +2839,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_overlap.setKeyboardTracking(False)
 
         self.entry_deltaZ = QDoubleSpinBox()
+        self.entry_deltaZ.setKeyboardTracking(False)
         self.entry_deltaZ.setMinimum(0)
         self.entry_deltaZ.setMaximum(1000)
         self.entry_deltaZ.setSingleStep(0.1)
@@ -2840,6 +2857,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_NZ.setKeyboardTracking(False)
 
         self.entry_dt = QDoubleSpinBox()
+        self.entry_dt.setKeyboardTracking(False)
         self.entry_dt.setMinimum(0)
         self.entry_dt.setMaximum(12 * 3600)
         self.entry_dt.setSingleStep(1)
@@ -2912,6 +2930,7 @@ class FlexibleMultiPointWidget(QFrame):
 
         # Add new components for Z-range
         self.entry_minZ = QDoubleSpinBox()
+        self.entry_minZ.setKeyboardTracking(False)
         self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
         self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_minZ.setSingleStep(1)  # Step by 1 μm
@@ -2922,6 +2941,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.set_minZ_button.clicked.connect(self.set_z_min)
 
         self.entry_maxZ = QDoubleSpinBox()
+        self.entry_maxZ.setKeyboardTracking(False)
         self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
         self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
@@ -3987,6 +4007,7 @@ class WellplateMultiPointWidget(QFrame):
 
     def add_components(self):
         self.entry_well_coverage = QDoubleSpinBox()
+        self.entry_well_coverage.setKeyboardTracking(False)
         self.entry_well_coverage.setRange(1, 999.99)
         self.entry_well_coverage.setValue(100)
         self.entry_well_coverage.setSuffix("%")
@@ -4007,11 +4028,13 @@ class WellplateMultiPointWidget(QFrame):
 
         # Update scan size entry
         self.entry_scan_size = QDoubleSpinBox()
+        self.entry_scan_size.setKeyboardTracking(False)
         self.entry_scan_size.setRange(0.1, 100)
         self.entry_scan_size.setValue(1)
         self.entry_scan_size.setSuffix(" mm")
 
         self.entry_overlap = QDoubleSpinBox()
+        self.entry_overlap.setKeyboardTracking(False)
         self.entry_overlap.setRange(0, 99)
         self.entry_overlap.setValue(10)
         self.entry_overlap.setSuffix("%")
@@ -4019,6 +4042,7 @@ class WellplateMultiPointWidget(QFrame):
 
         # Add z-min and z-max entries
         self.entry_minZ = QDoubleSpinBox()
+        self.entry_minZ.setKeyboardTracking(False)
         self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
         self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_minZ.setSingleStep(1)  # Step by 1 μm
@@ -4030,6 +4054,7 @@ class WellplateMultiPointWidget(QFrame):
         self.set_minZ_button.clicked.connect(self.set_z_min)
 
         self.entry_maxZ = QDoubleSpinBox()
+        self.entry_maxZ.setKeyboardTracking(False)
         self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
         self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
@@ -4041,6 +4066,7 @@ class WellplateMultiPointWidget(QFrame):
         self.set_maxZ_button.clicked.connect(self.set_z_max)
 
         self.entry_deltaZ = QDoubleSpinBox()
+        self.entry_deltaZ.setKeyboardTracking(False)
         self.entry_deltaZ.setMinimum(0)
         self.entry_deltaZ.setMaximum(1000)
         self.entry_deltaZ.setSingleStep(0.1)
@@ -4058,6 +4084,7 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_NZ.setEnabled(False)
 
         self.entry_dt = QDoubleSpinBox()
+        self.entry_dt.setKeyboardTracking(False)
         self.entry_dt.setMinimum(0)
         self.entry_dt.setMaximum(24 * 3600)
         self.entry_dt.setSingleStep(1)
@@ -4962,6 +4989,7 @@ class MultiPointWithFluidicsWidget(QFrame):
 
         # Z-stack controls
         self.entry_deltaZ = QDoubleSpinBox()
+        self.entry_deltaZ.setKeyboardTracking(False)
         self.entry_deltaZ.setMinimum(0)
         self.entry_deltaZ.setMaximum(1000)
         self.entry_deltaZ.setSingleStep(0.1)
@@ -5856,6 +5884,7 @@ class FocusMapWidget(QFrame):
         point_controls_2 = QHBoxLayout()
         point_controls_2.addWidget(QLabel("Focus Grid:"))
         self.rows_spin = QSpinBox()
+        self.rows_spin.setKeyboardTracking(False)
         self.rows_spin.setRange(1, 10)
         self.rows_spin.setValue(4)
         point_controls_2.addWidget(self.rows_spin)
@@ -5863,6 +5892,7 @@ class FocusMapWidget(QFrame):
         x_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         point_controls_2.addWidget(x_label)
         self.cols_spin = QSpinBox()
+        self.cols_spin.setKeyboardTracking(False)
         self.cols_spin.setRange(1, 10)
         self.cols_spin.setValue(4)
         point_controls_2.addWidget(self.cols_spin)
@@ -5882,6 +5912,7 @@ class FocusMapWidget(QFrame):
         settings_layout.addWidget(self.fit_method_combo)
         settings_layout.addWidget(QLabel("Smoothing:"))
         self.smoothing_spin = QDoubleSpinBox()
+        self.smoothing_spin.setKeyboardTracking(False)
         self.smoothing_spin.setRange(0.01, 1.0)
         self.smoothing_spin.setValue(0.1)
         self.smoothing_spin.setSingleStep(0.05)
@@ -5951,18 +5982,21 @@ class FocusMapWidget(QFrame):
 
             # Add coordinate spinboxes with good precision
             x_spin = QDoubleSpinBox()
+            x_spin.setKeyboardTracking(False)
             x_spin.setRange(SOFTWARE_POS_LIMIT.X_NEGATIVE, SOFTWARE_POS_LIMIT.X_POSITIVE)
             x_spin.setDecimals(3)
             x_spin.setValue(x)
             x_spin.setSuffix(" mm")
 
             y_spin = QDoubleSpinBox()
+            y_spin.setKeyboardTracking(False)
             y_spin.setRange(SOFTWARE_POS_LIMIT.Y_NEGATIVE, SOFTWARE_POS_LIMIT.Y_POSITIVE)
             y_spin.setDecimals(3)
             y_spin.setValue(y)
             y_spin.setSuffix(" mm")
 
             z_spin = QDoubleSpinBox()
+            z_spin.setKeyboardTracking(False)
             z_spin.setRange(
                 SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000, SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
             )  # Convert mm limits to μm
@@ -7425,6 +7459,7 @@ class TrackingControllerWidget(QFrame):
         self.dropdown_tracker.setCurrentText(DEFAULT_TRACKER)
 
         self.entry_tracking_interval = QDoubleSpinBox()
+        self.entry_tracking_interval.setKeyboardTracking(False)
         self.entry_tracking_interval.setMinimum(0)
         self.entry_tracking_interval.setMaximum(30)
         self.entry_tracking_interval.setSingleStep(0.5)
@@ -7840,6 +7875,7 @@ class TriggerControlWidget(QFrame):
 
         # line 1: fps
         self.entry_triggerFPS = QDoubleSpinBox()
+        self.entry_triggerFPS.setKeyboardTracking(False)
         self.entry_triggerFPS.setMinimum(0.02)
         self.entry_triggerFPS.setMaximum(1000)
         self.entry_triggerFPS.setSingleStep(1)
@@ -7905,6 +7941,7 @@ class MultiCameraRecordingWidget(QFrame):
         self.lineEdit_experimentID = QLineEdit()
 
         self.entry_saveFPS = QDoubleSpinBox()
+        self.entry_saveFPS.setKeyboardTracking(False)
         self.entry_saveFPS.setMinimum(0.02)
         self.entry_saveFPS.setMaximum(1000)
         self.entry_saveFPS.setSingleStep(1)
@@ -7913,6 +7950,7 @@ class MultiCameraRecordingWidget(QFrame):
             self.streamHandler[channel].set_save_fps(1)
 
         self.entry_timeLimit = QSpinBox()
+        self.entry_timeLimit.setKeyboardTracking(False)
         self.entry_timeLimit.setMinimum(-1)
         self.entry_timeLimit.setMaximum(60 * 60 * 24 * 30)
         self.entry_timeLimit.setSingleStep(1)
@@ -8432,29 +8470,34 @@ class WellplateCalibration(QDialog):
         self.form_layout.addRow("Sample Name:", self.nameInput)
 
         self.rowsInput = QSpinBox(self)
+        self.rowsInput.setKeyboardTracking(False)
         self.rowsInput.setRange(1, 100)
         self.rowsInput.setValue(8)
         self.form_layout.addRow("# Rows:", self.rowsInput)
 
         self.colsInput = QSpinBox(self)
+        self.colsInput.setKeyboardTracking(False)
         self.colsInput.setRange(1, 100)
         self.colsInput.setValue(12)
         self.form_layout.addRow("# Columns:", self.colsInput)
 
         # Add new inputs for plate dimensions
         self.plateWidthInput = QDoubleSpinBox(self)
+        self.plateWidthInput.setKeyboardTracking(False)
         self.plateWidthInput.setRange(10, 500)  # Adjust range as needed
         self.plateWidthInput.setValue(127.76)  # Default value for a standard 96-well plate
         self.plateWidthInput.setSuffix(" mm")
         self.form_layout.addRow("Plate Width:", self.plateWidthInput)
 
         self.plateHeightInput = QDoubleSpinBox(self)
+        self.plateHeightInput.setKeyboardTracking(False)
         self.plateHeightInput.setRange(10, 500)  # Adjust range as needed
         self.plateHeightInput.setValue(85.48)  # Default value for a standard 96-well plate
         self.plateHeightInput.setSuffix(" mm")
         self.form_layout.addRow("Plate Height:", self.plateHeightInput)
 
         self.wellSpacingInput = QDoubleSpinBox(self)
+        self.wellSpacingInput.setKeyboardTracking(False)
         self.wellSpacingInput.setRange(0.1, 100)
         self.wellSpacingInput.setValue(9)
         self.wellSpacingInput.setSingleStep(0.1)
@@ -9329,6 +9372,7 @@ class LedMatrixSettingsDialog(QDialog):
 
         # Add QDoubleSpinBox for LED intensity (0-1)
         self.NA_spinbox = QDoubleSpinBox()
+        self.NA_spinbox.setKeyboardTracking(False)
         self.NA_spinbox.setRange(0, 1)
         self.NA_spinbox.setSingleStep(0.01)
         self.NA_spinbox.setValue(self.led_array.NA)
