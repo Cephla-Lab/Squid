@@ -367,7 +367,7 @@ class LaserAutofocusController(QObject):
             bool: True if reference was set successfully, False if spot detection failed
         """
         if not self.is_initialized:
-            self._log.exception("Laser autofocus is not initialized, cannot set reference")
+            self._log.error("Laser autofocus is not initialized, cannot set reference")
             return False
 
         # turn on the laser
