@@ -159,6 +159,8 @@ class MultiPointWorker:
 
     def run(self):
         this_image_callback_id = None
+        if CONTRAST_AF_OFFSET:
+            self.contrast_af_offset_z = 0
         try:
             start_time = time.perf_counter_ns()
             self.camera.start_streaming()
@@ -381,6 +383,7 @@ class MultiPointWorker:
 
     def run_coordinate_acquisition(self, current_path):
         n_regions = len(self.scan_region_coords_mm)
+        first_fov = True
 
         for region_index, (region_id, coordinates) in enumerate(self.scan_region_fov_coords_mm.items()):
             self.callbacks.signal_overall_progress(
@@ -404,6 +407,16 @@ class MultiPointWorker:
 
                 with self._timing.get_timer("move_to_coordinate"):
                     self.move_to_coordinate(coordinate_mm)
+                if CONTRAST_AF_OFFSET:
+                    if first_fov:
+                        self.stage.move_z(self.contrast_af_offset_z)
+                        self.do_autofocus = True
+                        self.perform_autofocus(region_id, fov_count)
+                        self.do_autofocus = False
+                        self.contrast_af_offset_z = self.stage.get_pos().z_mm - coordinate_mm[2]
+                        first_fov = False
+                    else:
+                        self.stage.move_z(self.contrast_af_offset_z)
                 with self._timing.get_timer("acquire_at_position"):
                     self.acquire_at_position(region_id, current_path, fov_count)
 
