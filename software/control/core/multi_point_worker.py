@@ -414,6 +414,7 @@ class MultiPointWorker:
                         self.perform_autofocus(region_id, fov_count)
                         self.do_autofocus = False
                         self.contrast_af_offset_z = self.stage.get_pos().z_mm - coordinate_mm[2]
+                        self._log.info("contrast_af_offset_z: " + str(self.contrast_af_offset_z))
                         first_fov = False
                     else:
                         self.stage.move_z(self.contrast_af_offset_z)
