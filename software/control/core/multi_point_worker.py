@@ -408,16 +408,14 @@ class MultiPointWorker:
                 with self._timing.get_timer("move_to_coordinate"):
                     self.move_to_coordinate(coordinate_mm)
                 if CONTRAST_AF_OFFSET:
+                    self.stage.move_z(self.contrast_af_offset_z)
                     if first_fov:
-                        self.stage.move_z(self.contrast_af_offset_z)
                         self.do_autofocus = True
                         self.perform_autofocus(region_id, fov_count)
                         self.do_autofocus = False
                         self.contrast_af_offset_z = self.stage.get_pos().z_mm - coordinate_mm[2]
                         self._log.info("contrast_af_offset_z: " + str(self.contrast_af_offset_z))
                         first_fov = False
-                    else:
-                        self.stage.move_z(self.contrast_af_offset_z)
                 with self._timing.get_timer("acquire_at_position"):
                     self.acquire_at_position(region_id, current_path, fov_count)
 
