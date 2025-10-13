@@ -3716,7 +3716,7 @@ class FlexibleMultiPointWidget(QFrame):
 
     def clear_only_location_list(self):
         self.location_list = np.empty((0, 3), dtype=float)
-        self.location_ids = np.empty((0,), dtype=str)
+        self.location_ids = np.empty((0,), dtype="<U20")
         self.dropdown_location_list.clear()
         self.table_location_list.setRowCount(0)
 
