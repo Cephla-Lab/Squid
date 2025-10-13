@@ -3845,6 +3845,9 @@ class FlexibleMultiPointWidget(QFrame):
             else:
                 location_list_df_relevant["ID"] = "None"
             self.clear_only_location_list()
+
+            self.table_location_list.blockSignals(True)
+            self.dropdown_location_list.blockSignals(True)
             for index, row in location_list_df_relevant.iterrows():
                 x = row["x (mm)"]
                 y = row["y (mm)"]
@@ -3901,6 +3904,8 @@ class FlexibleMultiPointWidget(QFrame):
                         )
                 else:
                     self._log.warning("Duplicate values not added based on x and y.")
+            self.table_location_list.blockSignals(False)
+            self.dropdown_location_list.blockSignals(False)
             self._log.debug(self.location_list)
 
     def on_snap_images(self):
