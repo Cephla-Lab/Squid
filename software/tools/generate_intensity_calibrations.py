@@ -120,7 +120,7 @@ def main():
         print(f"Saved calibration to {output_file}")
 
         # Generate and save calibration plot
-        plot_calibration(calibration_data, wavelength, output_dir)
+        # plot_calibration(calibration_data, wavelength, output_dir)
 
     print("\nCalibration complete!")
 
