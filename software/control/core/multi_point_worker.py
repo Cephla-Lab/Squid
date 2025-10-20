@@ -686,7 +686,7 @@ class MultiPointWorker:
 
     def _sleep(self, sec):
         time_to_sleep = max(sec, 1e-6)
-        self._log.debug(f"Sleeping for {time_to_sleep} [s]")
+        # self._log.debug(f"Sleeping for {time_to_sleep} [s]")
         time.sleep(time_to_sleep)
 
     def acquire_rgb_image(self, config, file_ID, current_path, k, region_id, fov):
