@@ -334,7 +334,7 @@ class MultiPointWorker:
 
         self.coordinates_pd = pd.concat([self.coordinates_pd, new_row], ignore_index=True)
 
-    def move_to_coordinate(self, coordinate_mm):
+    def move_to_coordinate(self, coordinate_mm, region_id, fov):
         print("moving to coordinate", coordinate_mm)
         x_mm = coordinate_mm[0]
         self.stage.move_x_to(x_mm)
@@ -412,7 +412,7 @@ class MultiPointWorker:
                         return
 
                 with self._timing.get_timer("move_to_coordinate"):
-                    self.move_to_coordinate(coordinate_mm)
+                    self.move_to_coordinate(coordinate_mm, region_id, fov_count)
                 with self._timing.get_timer("acquire_at_position"):
                     self.acquire_at_position(region_id, current_path, fov_count)
 
