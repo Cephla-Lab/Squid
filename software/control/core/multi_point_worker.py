@@ -355,8 +355,6 @@ class MultiPointWorker:
         if len(coordinate_mm) == 3:
             z_mm = coordinate_mm[2]
             self.move_to_z_level(z_mm)
-        else:
-            self._log.warning(f"No z coordinate found in coordinate_mm")
 
     def move_to_z_level(self, z_mm):
         print("moving z")
