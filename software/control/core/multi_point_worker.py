@@ -335,7 +335,7 @@ class MultiPointWorker:
         self.coordinates_pd = pd.concat([self.coordinates_pd, new_row], ignore_index=True)
 
     def move_to_coordinate(self, coordinate_mm, region_id, fov):
-        print("moving to coordinate", coordinate_mm)
+        self._log.info(f"moving to coordinate {coordinate_mm}")
         x_mm = coordinate_mm[0]
         self.stage.move_x_to(x_mm)
         self._sleep(SCAN_STABILIZATION_TIME_MS_X / 1000)
@@ -349,6 +349,7 @@ class MultiPointWorker:
             if (region_id, fov) in self._last_time_point_z_pos:
                 last_z_mm = self._last_time_point_z_pos[(region_id, fov)]
                 self.move_to_z_level(last_z_mm)
+                self._log.info(f"Moved to last z position {last_z_mm} [mm]")
                 return
             else:
                 self._log.warning(f"No last z position found for region {region_id}, fov {fov}")
