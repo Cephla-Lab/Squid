@@ -349,13 +349,14 @@ class MultiPointWorker:
             if (region_id, fov) in self._last_time_point_z_pos:
                 last_z_mm = self._last_time_point_z_pos[(region_id, fov)]
                 self.move_to_z_level(last_z_mm)
+                return
             else:
                 self._log.warning(f"No last z position found for region {region_id}, fov {fov}")
-        elif len(coordinate_mm) == 3:
+        if len(coordinate_mm) == 3:
             z_mm = coordinate_mm[2]
             self.move_to_z_level(z_mm)
         else:
-            self._log.warning(f"No z coordinate found in the coordinate")
+            self._log.warning(f"No z coordinate found in coordinate_mm")
 
     def move_to_z_level(self, z_mm):
         print("moving z")
