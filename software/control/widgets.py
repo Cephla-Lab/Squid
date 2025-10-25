@@ -4591,11 +4591,14 @@ class WellplateMultiPointWidget(QFrame):
             self.entry_maxZ.setValue(z_pos_um)
 
     def _reset_reflection_af_reference(self):
-        if (
-            self.checkbox_withReflectionAutofocus.isChecked()
-            and not self.multipointController.laserAutoFocusController.set_reference()
-        ):
-            error_dialog("Failed to set reference for reflection autofocus. Is the laser autofocus initialized?")
+        if self.checkbox_withReflectionAutofocus.isChecked():
+            was_live = self.liveController.is_live
+            if was_live:
+                self.liveController.stop_live()
+            if not self.multipointController.laserAutoFocusController.set_reference():
+                error_dialog("Failed to set reference for reflection autofocus. Is the laser autofocus initialized?")
+            if was_live:
+                self.liveController.start_live()
 
     def init_z(self, z_pos_mm=None):
         # sets initial z range form the current z position used after startup of the GUI
@@ -8257,9 +8260,10 @@ class DisplacementMeasurementWidget(QFrame):
 
 
 class LaserAutofocusControlWidget(QFrame):
-    def __init__(self, laserAutofocusController, main=None, *args, **kwargs):
+    def __init__(self, laserAutofocusController, liveController: LiveController, main=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.laserAutofocusController = laserAutofocusController
+        self.liveController: LiveController = liveController
         self.add_components()
         self.update_init_state()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -8312,7 +8316,7 @@ class LaserAutofocusControlWidget(QFrame):
 
         # make connections
         self.btn_set_reference.clicked.connect(self.on_set_reference_clicked)
-        self.btn_measure_displacement.clicked.connect(self.laserAutofocusController.measure_displacement)
+        self.btn_measure_displacement.clicked.connect(self.on_measure_displacement_clicked)
         self.btn_move_to_target.clicked.connect(self.move_to_target)
         self.laserAutofocusController.signal_displacement_um.connect(self.label_displacement.setNum)
 
@@ -8322,14 +8326,32 @@ class LaserAutofocusControlWidget(QFrame):
         self.btn_move_to_target.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)
 
     def move_to_target(self, target_um):
+        was_live = self.liveController.is_live
+        if was_live:
+            self.liveController.stop_live()
         self.laserAutofocusController.move_to_target(self.entry_target.value())
+        if was_live:
+            self.liveController.start_live()
 
     def on_set_reference_clicked(self):
         """Handle set reference button click"""
+        was_live = self.liveController.is_live
+        if was_live:
+            self.liveController.stop_live()
         success = self.laserAutofocusController.set_reference()
         if success:
             self.btn_measure_displacement.setEnabled(True)
             self.btn_move_to_target.setEnabled(True)
+        if was_live:
+            self.liveController.start_live()
+
+    def on_measure_displacement_clicked(self):
+        was_live = self.liveController.is_live
+        if was_live:
+            self.liveController.stop_live()
+        self.laserAutofocusController.measure_displacement()
+        if was_live:
+            self.liveController.start_live()
 
 
 class WellplateFormatWidget(QWidget):

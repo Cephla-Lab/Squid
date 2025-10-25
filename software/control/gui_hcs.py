@@ -641,7 +641,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.displacementMeasurementController, self.waveformDisplay
             )
             self.laserAutofocusControlWidget: widgets.LaserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(
-                self.laserAutofocusController
+                self.laserAutofocusController, self.liveController
             )
             self.imageDisplayWindow_focus = core.ImageDisplayWindow()
 
