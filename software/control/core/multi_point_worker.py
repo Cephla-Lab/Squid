@@ -101,6 +101,7 @@ class MultiPointWorker:
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
+        self._last_time_point_z_pos = {}
         self.scan_region_fov_coords_mm = (
             acquisition_parameters.scan_position_information.scan_region_fov_coords_mm.copy()
         )
@@ -333,8 +334,8 @@ class MultiPointWorker:
 
         self.coordinates_pd = pd.concat([self.coordinates_pd, new_row], ignore_index=True)
 
-    def move_to_coordinate(self, coordinate_mm):
-        print("moving to coordinate", coordinate_mm)
+    def move_to_coordinate(self, coordinate_mm, region_id, fov):
+        self._log.info(f"moving to coordinate {coordinate_mm}")
         x_mm = coordinate_mm[0]
         self.stage.move_x_to(x_mm)
         self._sleep(SCAN_STABILIZATION_TIME_MS_X / 1000)
@@ -344,6 +345,14 @@ class MultiPointWorker:
         self._sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
 
         # check if z is included in the coordinate
+        if (self.do_reflection_af or self.do_autofocus) and self.time_point > 0:
+            if (region_id, fov) in self._last_time_point_z_pos:
+                last_z_mm = self._last_time_point_z_pos[(region_id, fov)]
+                self.move_to_z_level(last_z_mm)
+                self._log.info(f"Moved to last z position {last_z_mm} [mm]")
+                return
+            else:
+                self._log.warning(f"No last z position found for region {region_id}, fov {fov}")
         if len(coordinate_mm) == 3:
             z_mm = coordinate_mm[2]
             self.move_to_z_level(z_mm)
@@ -403,7 +412,7 @@ class MultiPointWorker:
                         return
 
                 with self._timing.get_timer("move_to_coordinate"):
-                    self.move_to_coordinate(coordinate_mm)
+                    self.move_to_coordinate(coordinate_mm, region_id, fov_count)
                 with self._timing.get_timer("acquire_at_position"):
                     self.acquire_at_position(region_id, current_path, fov_count)
 
@@ -429,6 +438,9 @@ class MultiPointWorker:
             acquire_pos = self.stage.get_pos()
             metadata = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
             self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
+
+            if z_level == 0 and (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
+                self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
 
             # laser af characterization mode
             if self.laser_auto_focus_controller and self.laser_auto_focus_controller.characterization_mode:
