@@ -8325,7 +8325,7 @@ class LaserAutofocusControlWidget(QFrame):
         self.btn_measure_displacement.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)
         self.btn_move_to_target.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)
 
-    def move_to_target(self, target_um):
+    def move_to_target(self):
         was_live = self.liveController.is_live
         if was_live:
             self.liveController.stop_live()
