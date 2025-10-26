@@ -403,7 +403,7 @@ class MultiPointWorker:
             self.num_fovs = len(coordinates)
             self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
 
-            for fov_count, coordinate_mm in enumerate(coordinates):
+            for fov, coordinate_mm in enumerate(coordinates):
                 # Just so the job result queues don't get too big, check and print a summary of intermediate results here
                 with self._timing.get_timer("job result summaries"):
                     if not self._summarize_runner_outputs() and self._abort_on_failed_job:
@@ -412,9 +412,9 @@ class MultiPointWorker:
                         return
 
                 with self._timing.get_timer("move_to_coordinate"):
-                    self.move_to_coordinate(coordinate_mm, region_id, fov_count)
+                    self.move_to_coordinate(coordinate_mm, region_id, fov)
                 with self._timing.get_timer("acquire_at_position"):
-                    self.acquire_at_position(region_id, current_path, fov_count)
+                    self.acquire_at_position(region_id, current_path, fov)
 
                 if self.abort_requested_fn():
                     self.handle_acquisition_abort(current_path)
