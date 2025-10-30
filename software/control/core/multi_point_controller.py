@@ -466,8 +466,8 @@ class MultiPointController:
                 return
 
         def finish_fn():
-            self.callbacks.signal_acquisition_finished()
             self._on_acquisition_completed()
+            self.callbacks.signal_acquisition_finished()
 
         updated_callbacks = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
 
