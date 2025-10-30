@@ -1379,11 +1379,36 @@ class NavigationViewer(QFrame):
         self.view = self.graphics_widget.addViewBox(invertX=not INVERTED_OBJECTIVE, invertY=True)
         self.view.setAspectLocked(True)
 
+        # Create Clear Coordinates button with seamless styling
+        self.btn_clear_coordinates = QPushButton("Clear Coordinates", self.graphics_widget)
+        self.btn_clear_coordinates.clicked.connect(self.clear_slide)
+        self.btn_clear_coordinates.setCursor(Qt.PointingHandCursor)
+        # Position button
+        self.btn_clear_coordinates.adjustSize()
+        self._position_button()
+
         self.grid = QVBoxLayout()
         self.grid.addWidget(self.graphics_widget)
         self.setLayout(self.grid)
         # Connect double-click handler
         self.view.scene().sigMouseClicked.connect(self.handle_mouse_click)
+
+    def _position_button(self):
+        """Position the clear button at the bottom-right corner of the graphics widget"""
+        margin = 10  # Margin from edges
+        button_width = self.btn_clear_coordinates.sizeHint().width()
+        button_height = self.btn_clear_coordinates.sizeHint().height()
+
+        x = self.graphics_widget.width() - button_width - margin
+        y = self.graphics_widget.height() - button_height - margin
+        self.btn_clear_coordinates.move(x, y)
+        self.btn_clear_coordinates.raise_()
+
+    def resizeEvent(self, event):
+        """Reposition button when widget is resized"""
+        super().resizeEvent(event)
+        if hasattr(self, "btn_clear_coordinates"):
+            self._position_button()
 
     def load_background_image(self, image_path):
         self.view.clear()
