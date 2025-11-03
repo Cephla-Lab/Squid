@@ -4036,6 +4036,8 @@ class WellplateMultiPointWidget(QFrame):
         self.eta_seconds = 0
         self.is_current_acquisition_widget = False
 
+        self.shapes_mm = None
+
         # TODO (hl): these along with update_live_coordinates need to move out of this class
         self._last_update_time = 0
         self._last_x_mm = None
