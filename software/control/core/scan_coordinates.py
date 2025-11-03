@@ -173,10 +173,9 @@ class ScanCoordinates:
                     self.region_shapes[region_name] = "Manual"
                     self.region_fov_coordinates[region_name] = scan_coordinates
                     self._log.info(f"Added Manual Region: {region_name}")
-            if scan_coordinates:
-                self._update_callback(
-                    AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
-                )
+                    self._update_callback(
+                        AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
+                    )
         else:
             self._log.info("No Manual ROI found")
 
