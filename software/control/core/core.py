@@ -1380,7 +1380,7 @@ class NavigationViewer(QFrame):
         self.view.setAspectLocked(True)
 
         # Create Clear Coordinates button with seamless styling
-        self.btn_clear_coordinates = QPushButton("Clear Coordinates", self.graphics_widget)
+        self.btn_clear_coordinates = QPushButton("Clear Scan Grid", self.graphics_widget)
         self.btn_clear_coordinates.clicked.connect(self.clear_slide)
         self.btn_clear_coordinates.setCursor(Qt.PointingHandCursor)
         # Position button
