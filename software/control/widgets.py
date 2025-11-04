@@ -4061,6 +4061,9 @@ class WellplateMultiPointWidget(QFrame):
         # Track previous XY mode for parameter storage
         self._previous_xy_mode = None
 
+        # Track XY mode before unchecking, for restoration when re-checking
+        self._xy_mode_before_uncheck = None
+
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.set_default_scan_size()
@@ -4570,6 +4573,16 @@ class WellplateMultiPointWidget(QFrame):
             if xy_mode in ["Current Position", "Select Wells", "Manual"]:
                 self.combobox_xy_mode.setCurrentText(xy_mode)
 
+            # If XY is checked and mode is Manual at startup, uncheck XY and change mode to Current Position
+            if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Manual":
+                self.checkbox_xy.setChecked(False)
+                self.combobox_xy_mode.setCurrentText("Current Position")
+                # Set the "before uncheck" mode to Current Position, so re-checking XY stays at Current Position
+                self._xy_mode_before_uncheck = "Current Position"
+                self._log.info(
+                    "XY was checked with Manual mode at startup - unchecked XY and changed mode to Current Position"
+                )
+
             self.checkbox_z.setChecked(settings.get("z_enabled", False))
 
             z_mode = settings.get("z_mode", "From Bottom")
@@ -4648,6 +4661,29 @@ class WellplateMultiPointWidget(QFrame):
     def on_xy_toggled(self, checked):
         """Handle XY checkbox toggle"""
         self.combobox_xy_mode.setEnabled(checked)
+
+        if not checked:
+            # Store the current mode before unchecking
+            self._xy_mode_before_uncheck = self.combobox_xy_mode.currentText()
+
+            # Switch mode to "Current Position" when unchecking
+            self.combobox_xy_mode.setCurrentText("Current Position")
+        else:
+            # When checking XY, restore previous mode if it exists
+            if self._xy_mode_before_uncheck is not None:
+                # Check if previous mode was Manual
+                if self._xy_mode_before_uncheck == "Manual":
+                    # If mosaic view has been cleared (no shapes), stay at "Current Position"
+                    if self.shapes_mm is None or len(self.shapes_mm) == 0:
+                        self.combobox_xy_mode.setCurrentText("Current Position")
+                        print("Manual mode had no shapes, staying at Current Position")
+                    else:
+                        # Shapes exist, restore Manual mode
+                        self.combobox_xy_mode.setCurrentText("Manual")
+                else:
+                    # For non-Manual modes, always restore
+                    self.combobox_xy_mode.setCurrentText(self._xy_mode_before_uncheck)
+
         self.update_tab_styles()
 
         # Show/hide scan shape and coordinate controls
