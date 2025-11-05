@@ -200,11 +200,12 @@ class MultiPointWorker:
                         break  # no waiting after taking the last time point
 
                     # wait until it's time to do the next acquisition
+                    sleep_time = min(self.dt / 20.0, 0.5)
                     while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
                         if self.abort_requested_fn():
                             self._log.debug("In run wait loop, abort_acquisition_requested=True")
                             break
-                        self._sleep(0.5)
+                        self._sleep(sleep_time)
 
             elapsed_time = time.perf_counter_ns() - start_time
             self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
