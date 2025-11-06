@@ -508,15 +508,10 @@ class Microcontroller:
             self.log.debug("Resetting and initializing microcontroller.")
             self.reset()
             time.sleep(0.5)
-            if USE_SQUID_FILTERWHEEL:
-                self.init_filter_wheel()
-                time.sleep(0.5)
             self.initialize_drivers()
             time.sleep(0.5)
             self.configure_actuators()
             self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
-            if USE_SQUID_FILTERWHEEL:
-                self.configure_squidfilter()
             time.sleep(0.5)
 
     def _warn_if_reads_stale(self):
