@@ -2,6 +2,7 @@ import time
 from typing import List, Dict, Optional
 import squid.logging
 from squid.abc import AbstractFilterWheelController, FilterWheelInfo
+from squid.config import FilterWheelConfig, FilterWheelControllerVariant
 
 
 class SimulatedFilterWheelController(AbstractFilterWheelController):
@@ -100,3 +101,45 @@ class SimulatedFilterWheelController(AbstractFilterWheelController):
         self.log.info("Closing simulated filter wheel controller")
         self._positions.clear()
         self._available_filter_wheels = []
+
+
+def get_filter_wheel_controller(
+    config: FilterWheelConfig,
+    microcontroller=None,  # Type hint would create circular dependency
+    simulated: bool = False,
+) -> AbstractFilterWheelController:
+    """
+    Factory function to create the appropriate filter wheel controller based on configuration.
+
+    Args:
+        config: FilterWheelConfig containing controller type and settings
+        microcontroller: Microcontroller instance (required for SQUID filter wheel)
+        simulated: If True, return a simulated controller regardless of config
+
+    Returns:
+        AbstractFilterWheelController instance
+
+    Raises:
+        ValueError: If controller type is unknown or required dependencies are missing
+    """
+    if simulated:
+        return SimulatedFilterWheelController()
+
+    # Import here to avoid circular dependencies
+    from .cephla import SquidFilterWheel
+    from .optospin import Optospin
+    from .zaber import ZaberFilterController
+
+    if config.controller_type == FilterWheelControllerVariant.SQUID:
+        if microcontroller is None:
+            raise ValueError("SquidFilterWheel requires a microcontroller instance")
+        return SquidFilterWheel(microcontroller=microcontroller, config=config.controller_config)
+
+    elif config.controller_type == FilterWheelControllerVariant.ZABER:
+        return ZaberFilterController(config=config.controller_config)
+
+    elif config.controller_type == FilterWheelControllerVariant.OPTOSPIN:
+        return Optospin(config=config.controller_config)
+
+    else:
+        raise ValueError(f"Unknown or unsupported filter wheel controller type: {config.controller_type}")
