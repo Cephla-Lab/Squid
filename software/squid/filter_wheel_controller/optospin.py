@@ -4,19 +4,28 @@ import serial
 import serial.tools.list_ports
 from typing import List, Dict, Optional
 
-from control._def import OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ
 import squid.logging
 from squid.abc import AbstractFilterWheelController, FilterWheelInfo, FilterControllerError
+from squid.config import OptospinFilterWheelConfig
 
 
 class Optospin(AbstractFilterWheelController):
-    def __init__(self, SN, baudrate=115200, timeout=1, max_retries=3, retry_delay=0.5):
-        self.log = squid.logging.get_logger(self.__class__.__name__)
+    # Default connection parameters (not configurable via _def.py)
+    DEFAULT_BAUDRATE = 115200
+    DEFAULT_TIMEOUT = 1
+    DEFAULT_MAX_RETRIES = 3
+    DEFAULT_RETRY_DELAY = 0.5
 
-        optospin_port = [p.device for p in serial.tools.list_ports.comports() if SN == p.serial_number]
-        self.ser = serial.Serial(optospin_port[0], baudrate=baudrate, timeout=timeout)
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
+    def __init__(self, config: OptospinFilterWheelConfig):
+        self.log = squid.logging.get_logger(self.__class__.__name__)
+        self._config = config
+
+        optospin_port = [
+            p.device for p in serial.tools.list_ports.comports() if config.serial_number == p.serial_number
+        ]
+        if not optospin_port:
+            raise ValueError(f"No Optospin device found with serial number: {config.serial_number}")
+        self.ser = serial.Serial(optospin_port[0], baudrate=self.DEFAULT_BAUDRATE, timeout=self.DEFAULT_TIMEOUT)
         self._available_filter_wheels = []
 
     def _send_command(self, command, data=None):
@@ -24,7 +33,7 @@ class Optospin(AbstractFilterWheelController):
             data = []
         full_command = struct.pack(">H", command) + bytes(data)
 
-        for attempt in range(self.max_retries):
+        for attempt in range(self.DEFAULT_MAX_RETRIES):
             try:
                 self.ser.write(full_command)
                 response = self.ser.read(2)
@@ -46,15 +55,15 @@ class Optospin(AbstractFilterWheelController):
 
             except (serial.SerialTimeoutException, Exception) as e:
                 self.log.error(f"Attempt {attempt + 1} failed: {str(e)}")
-                if attempt < self.max_retries - 1:
-                    self.log.error(f"Retrying in {self.retry_delay} seconds...")
-                    time.sleep(self.retry_delay)
+                if attempt < self.DEFAULT_MAX_RETRIES - 1:
+                    self.log.error(f"Retrying in {self.DEFAULT_RETRY_DELAY} seconds...")
+                    time.sleep(self.DEFAULT_RETRY_DELAY)
                 else:
-                    raise FilterControllerError(f"Command failed after {self.max_retries} attempts: {str(e)}")
+                    raise FilterControllerError(f"Command failed after {self.DEFAULT_MAX_RETRIES} attempts: {str(e)}")
 
     def initialize(self, filter_wheel_indices: List[int]):
         self._available_filter_wheels = filter_wheel_indices
-        self.set_speed(OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ)
+        self.set_speed(self._config.speed_hz)
 
     @property
     def available_filter_wheels(self) -> List[int]:

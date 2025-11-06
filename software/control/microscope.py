@@ -25,6 +25,7 @@ import control.microcontroller
 import control.serial_peripherals as serial_peripherals
 import squid.camera.utils
 import squid.config
+import squid.filter_wheel_controller.utils
 import squid.logging
 import squid.stage.cephla
 import squid.stage.utils
@@ -85,27 +86,10 @@ class MicroscopeAddons:
             )
 
         emission_filter_wheel = None
-        if control._def.USE_ZABER_EMISSION_FILTER_WHEEL:
-            emission_filter_wheel = (
-                serial_peripherals.FilterController(
-                    control._def.FILTER_CONTROLLER_SERIAL_NUMBER, 115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE
-                )
-                if not simulated
-                else serial_peripherals.FilterController_Simulation(115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE)
-            )
-        elif control._def.USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-            emission_filter_wheel = (
-                serial_peripherals.Optospin(SN=control._def.FILTER_CONTROLLER_SERIAL_NUMBER)
-                if not simulated
-                else serial_peripherals.Optospin_Simulation(SN=None)
-            )
-
-        squid_filter_wheel = None
-        if control._def.USE_SQUID_FILTERWHEEL:
-            squid_filter_wheel = (
-                filterwheel.SquidFilterWheelWrapper(microcontroller=micro)
-                if not simulated
-                else filterwheel.SquidFilterWheelWrapper_Simulation(None)
+        fw_config = squid.config.get_filter_wheel_config()
+        if fw_config:
+            emission_filter_wheel = squid.filter_wheel_controller.utils.get_filter_wheel_controller(
+                fw_config, microcontroller=micro, simulated=simulated
             )
 
         objective_changer = None
@@ -156,7 +140,6 @@ class MicroscopeAddons:
             nl5,
             cellx,
             emission_filter_wheel,
-            squid_filter_wheel,
             objective_changer,
             camera_focus,
             fluidics,
@@ -170,8 +153,7 @@ class MicroscopeAddons:
         dragonfly: Optional[serial_peripherals.Dragonfly] = None,
         nl5: Optional[NL5] = None,
         cellx: Optional[serial_peripherals.CellX] = None,
-        emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterController] = None,
-        filter_wheel: Optional[SquidFilterWheelWrapper] = None,
+        emission_filter_wheel: Optional[AbstractFilterWheelController] = None,
         objective_changer: Optional[ObjectiveChanger2PosController] = None,
         camera_focus: Optional[AbstractCamera] = None,
         fluidics: Optional[Fluidics] = None,
@@ -183,7 +165,6 @@ class MicroscopeAddons:
         self.nl5: Optional[NL5] = nl5
         self.cellx: Optional[serial_peripherals.CellX] = cellx
         self.emission_filter_wheel = emission_filter_wheel
-        self.filter_wheel = filter_wheel
         self.objective_changer = objective_changer
         self.camera_focus: Optional[AbstractCamera] = camera_focus
         self.fluidics = fluidics
@@ -193,17 +174,10 @@ class MicroscopeAddons:
     def prepare_for_use(self):
         """
         Prepare all the addon hardware for immediate use.
-
-        NOTE(imo): The emission_filter wheel is confusing - there's no base class but it can be multiple
-        different variants with different methods.  For now leave as is just to make progress, but
-        we need to fix this.
         """
-        if control._def.USE_ZABER_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.start_homing()
-        if control._def.USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.set_speed(control._def.OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ)
-        if self.piezo_stage:
-            self.piezo_stage.home()
+        if control._def.USE_EMISSION_FILTER_WHEEL:
+            self.emission_filter_wheel.home()
+            self.emission_filter_wheel.initialize(control._def.EMISSION_FILTER_WHEEL_INDICES)
 
 
 class LowLevelDrivers:

@@ -5,6 +5,7 @@ import serial
 from serial.tools import list_ports
 import squid.logging
 from squid.abc import AbstractFilterWheelController, FilterWheelInfo, FilterControllerError
+from squid.config import ZaberFilterWheelConfig
 
 
 class ZaberFilterController(AbstractFilterWheelController):
@@ -18,26 +19,30 @@ class ZaberFilterController(AbstractFilterWheelController):
     MAX_RETRIES = 3
     COMMAND_TIMEOUT = 1  # seconds
 
-    def __init__(self, serial_number: str, baudrate: int, bytesize: int, parity: str, stopbits: int):
+    # Default serial connection parameters (not configurable via _def.py)
+    DEFAULT_BAUDRATE = 115200
+    DEFAULT_BYTESIZE = 8
+    DEFAULT_PARITY = serial.PARITY_NONE
+    DEFAULT_STOPBITS = serial.STOPBITS_ONE
+
+    def __init__(self, config: ZaberFilterWheelConfig):
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.current_position = 0
         self.current_index = 1
-        self.serial = self._initialize_serial(serial_number, baudrate, bytesize, parity, stopbits)
+        self.serial = self._initialize_serial(config.serial_number)
         self._homing_started = threading.Event()
         self._available_filter_wheels = []
 
-    def _initialize_serial(
-        self, serial_number: str, baudrate: int, bytesize: int, parity: str, stopbits: int
-    ) -> serial.Serial:
+    def _initialize_serial(self, serial_number: str) -> serial.Serial:
         ports = [p.device for p in list_ports.comports() if serial_number == p.serial_number]
         if not ports:
             raise ValueError(f"No device found with serial number: {serial_number}")
         return serial.Serial(
             ports[0],
-            baudrate=baudrate,
-            bytesize=bytesize,
-            parity=parity,
-            stopbits=stopbits,
+            baudrate=self.DEFAULT_BAUDRATE,
+            bytesize=self.DEFAULT_BYTESIZE,
+            parity=self.DEFAULT_PARITY,
+            stopbits=self.DEFAULT_STOPBITS,
             timeout=self.COMMAND_TIMEOUT,
         )
 
