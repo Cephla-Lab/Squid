@@ -18,6 +18,11 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self._config = config
         self.microcontroller = microcontroller
 
+        self.microcontroller.init_filter_wheel()
+        time.sleep(0.5)
+        self.microcontroller.configure_squidfilter()
+        time.sleep(0.5)
+
         # emission filter position
         self.w_pos_index = self._config.min_index
         self._available_filter_wheels = []

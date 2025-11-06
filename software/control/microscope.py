@@ -9,18 +9,16 @@ from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
-from control.filterwheel import SquidFilterWheelWrapper
 
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.serial_peripherals import SciMicroscopyLEDArray
-from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage
+from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
 from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
 import control.celesta
 import control.illumination_andor
-import control.filterwheel as filterwheel
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
 import squid.camera.utils

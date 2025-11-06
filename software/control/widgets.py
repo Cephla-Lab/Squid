@@ -11,7 +11,7 @@ from control.core.multi_point_controller import MultiPointController
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 import control.utils as utils
-from squid.abc import AbstractStage, AbstractCamera
+from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position
 from squid.config import CameraPixelFormat
 

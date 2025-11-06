@@ -41,12 +41,11 @@ from control.core.multi_point_utils import (
 )
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
-from control.filterwheel import SquidFilterWheelWrapper
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.utils_config import ChannelMode
-from squid.abc import AbstractCamera, AbstractStage
+from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 import control.lighting
 import control.microscope
 import control.widgets as widgets
@@ -58,8 +57,6 @@ import squid.logging
 import squid.stage.utils
 
 log = squid.logging.get_logger(__name__)
-
-import control.filterwheel as filterwheel
 
 if USE_PRIOR_STAGE:
     import squid.stage.prior
@@ -286,7 +283,6 @@ class HighContentScreeningGui(QMainWindow):
         self.emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterController] = (
             microscope.addons.emission_filter_wheel
         )
-        self.squid_filter_wheel: Optional[SquidFilterWheelWrapper] = microscope.addons.filter_wheel
         self.objective_changer: Optional[Any] = microscope.addons.objective_changer
         self.camera_focus: Optional[AbstractCamera] = microscope.addons.camera_focus
         self.fluidics: Optional[Fluidics] = microscope.addons.fluidics
@@ -521,10 +517,6 @@ class HighContentScreeningGui(QMainWindow):
             self.camera_focus.add_frame_callback(self.streamHandler_focus_camera.get_frame_callback())
             self.camera_focus.enable_callbacks(enabled=True)
             self.camera_focus.start_streaming()
-
-        if self.squid_filter_wheel:
-            if SQUID_FILTERWHEEL_HOMING_ENABLED:
-                self.squid_filter_wheel.homing()
 
         if self.objective_changer:
             self.objective_changer.home()
