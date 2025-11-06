@@ -23,6 +23,8 @@ class SimulatedFilterWheelController(AbstractFilterWheelController):
         self.slots_per_wheel = slots_per_wheel
         self.simulate_delays = simulate_delays
         self._positions: Dict[int, int] = {}
+        self._delay_ms: float = 50.0
+        self._delay_offset_ms: float = 0.0
 
     def initialize(self, filter_wheel_indices: List[int]):
         """Initialize the filter wheels."""
@@ -66,7 +68,9 @@ class SimulatedFilterWheelController(AbstractFilterWheelController):
             self.log.info(f"Homing filter wheel {wheel_index}...")
 
             if self.simulate_delays:
-                time.sleep(0.5)
+                # Homing takes longer than normal movement
+                homing_delay_s = (self._delay_ms + self._delay_offset_ms) * 5 / 1000
+                time.sleep(max(0, homing_delay_s))
 
             self._positions[wheel_index] = 1
             self.log.info(f"Filter wheel {wheel_index} homed successfully")
@@ -88,7 +92,8 @@ class SimulatedFilterWheelController(AbstractFilterWheelController):
                 self.log.info(f"Moving filter wheel {wheel_index} from position {current_pos} to {position}")
 
                 if self.simulate_delays:
-                    time.sleep(0.1)
+                    delay_s = (self._delay_ms + self._delay_offset_ms) / 1000
+                    time.sleep(max(0, delay_s))
 
                 self._positions[wheel_index] = position
 
@@ -101,6 +106,24 @@ class SimulatedFilterWheelController(AbstractFilterWheelController):
         self.log.info("Closing simulated filter wheel controller")
         self._positions.clear()
         self._available_filter_wheels = []
+
+    def set_delay_offset_ms(self, delay_offset_ms: float):
+        """Set the delay offset in milliseconds."""
+        self._delay_offset_ms = delay_offset_ms
+        self.log.debug(f"Set delay offset to {delay_offset_ms} ms")
+
+    def get_delay_offset_ms(self) -> Optional[float]:
+        """Get the current delay offset in milliseconds."""
+        return self._delay_offset_ms
+
+    def set_delay_ms(self, delay_ms: float):
+        """Set the base delay in milliseconds."""
+        self._delay_ms = delay_ms
+        self.log.debug(f"Set base delay to {delay_ms} ms")
+
+    def get_delay_ms(self) -> Optional[float]:
+        """Get the base delay in milliseconds."""
+        return self._delay_ms
 
 
 def get_filter_wheel_controller(

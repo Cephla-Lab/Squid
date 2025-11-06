@@ -500,9 +500,6 @@ class HighContentScreeningGui(QMainWindow):
 
             self.microscope.home_xyz()
 
-            if USE_ZABER_EMISSION_FILTER_WHEEL:
-                self.emission_filter_wheel.wait_for_homing_complete()
-
         except TimeoutError as e:
             # If we can't recover from a timeout, at least do our best to make sure the system is left in a safe
             # and restartable state.
@@ -596,13 +593,10 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore)
 
-        if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
+        if self.emission_filter_wheel:
             self.filterControllerWidget = widgets.FilterControllerWidget(
                 self.emission_filter_wheel, self.liveController
             )
-
-        if USE_SQUID_FILTERWHEEL:
-            self.squidFilterWidget = widgets.SquidFilterWidget(self)
 
         self.recordingControlWidget = widgets.RecordingWidget(self.streamHandler, self.imageSaver)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
@@ -834,10 +828,8 @@ class HighContentScreeningGui(QMainWindow):
             self.cameraTabWidget.addTab(self.nl5Wdiget, "NL5")
         if ENABLE_SPINNING_DISK_CONFOCAL:
             self.cameraTabWidget.addTab(self.spinningDiskConfocalWidget, "Confocal")
-        if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
+        if self.emission_filter_wheel:
             self.cameraTabWidget.addTab(self.filterControllerWidget, "Emission Filter")
-        if USE_SQUID_FILTERWHEEL:
-            self.cameraTabWidget.addTab(self.squidFilterWidget, "Squid Filter")
         self.cameraTabWidget.addTab(self.cameraSettingWidget, "Camera")
         self.cameraTabWidget.addTab(self.autofocusWidget, "Contrast AF")
         if SUPPORT_LASER_AUTOFOCUS:
@@ -1594,10 +1586,8 @@ class HighContentScreeningGui(QMainWindow):
             self.log.error(f"Couldn't cache position while closing.  Ignoring and continuing. Error is: {e}")
         self.movement_update_timer.stop()
 
-        if USE_ZABER_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.set_emission_filter(1)
-        if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.set_emission_filter(1)
+        if self.emission_filter_wheel:
+            self.emission_filter_wheel.set_emission_filter({1, 1})
             self.emission_filter_wheel.close()
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveController_focus_camera.stop_live()

@@ -27,6 +27,8 @@ class Optospin(AbstractFilterWheelController):
             raise ValueError(f"No Optospin device found with serial number: {config.serial_number}")
         self.ser = serial.Serial(optospin_port[0], baudrate=self.DEFAULT_BAUDRATE, timeout=self.DEFAULT_TIMEOUT)
         self._available_filter_wheels = []
+        self._delay_offset_ms = 0
+        self._current_pos = {}
 
     def _send_command(self, command, data=None):
         if data is None:
@@ -96,18 +98,31 @@ class Optospin(AbstractFilterWheelController):
         self._send_command(0x0088, data)
 
     def set_filter_wheel_position(self, positions: Dict[int, int]):
+        if self._config.ttl_trigger:
+            return
         rotor_positions = [0] * 4
         for k, v in positions.items():
             if k not in self._available_filter_wheels:
                 raise ValueError(f"Filter wheel index {k} not found")
+            if v == self._current_pos[k]:
+                continue
             rotor_positions[k - 1] = v
+        if rotor_positions == [0, 0, 0, 0]:  # no change
+            return
+
         self._usb_go(*rotor_positions)
+        for fw in self._available_filter_wheels:
+            self._current_pos[fw] = rotor_positions[fw - 1]
+
+        # delay
+        time.sleep(max(0, (self._config.delay_ms + self._delay_offset_ms) / 1000))
 
     def get_filter_wheel_position(self):
         result = self.get_rotor_positions()
         result_dict = {}
         for i in self._available_filter_wheels:
             result_dict[i] = result[i - 1]
+        self._current_pos = result_dict
         return result_dict
 
     def get_rotor_positions(self):
@@ -125,6 +140,18 @@ class Optospin(AbstractFilterWheelController):
         self.measure_temperatures()
         result = self._send_command(0x00AC)
         return struct.unpack(">BBBB", result)
+
+    def set_delay_offset_ms(self, delay_offset_ms: float):
+        self._delay_offset_ms = delay_offset_ms
+
+    def get_delay_offset_ms(self) -> Optional[float]:
+        return self._delay_offset_ms
+
+    def set_delay_ms(self, delay_ms: float):
+        raise NotImplementedError("Setting delay ms is not supported for Optospin filter wheel controller")
+
+    def get_delay_ms(self) -> Optional[float]:
+        return self._config.delay_ms
 
     def close(self):
         self.ser.close()
