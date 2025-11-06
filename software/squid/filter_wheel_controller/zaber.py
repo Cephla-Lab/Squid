@@ -30,8 +30,10 @@ class ZaberFilterController(AbstractFilterWheelController):
         self.current_position = 0
         self.current_index = 1
         self.serial = self._initialize_serial(config.serial_number)
+        self._config = config
         self._homing_started = threading.Event()
         self._available_filter_wheels = []
+        self._delay_offset_ms = 0
 
     def _initialize_serial(self, serial_number: str) -> serial.Serial:
         ports = [p.device for p in list_ports.comports() if serial_number == p.serial_number]
@@ -176,7 +178,7 @@ class ZaberFilterController(AbstractFilterWheelController):
             raise FilterControllerError("Failed to initiate filter movement")
         self._wait_for_position(target_position, target_index=None, timeout=timeout)
 
-    def set_filter_wheel_position(self, positions: Dict[int, int], blocking: bool = True, timeout: int = 5):
+    def set_filter_wheel_position(self, positions: Dict[int, int], blocking: Optional[bool] = None, timeout: int = 5):
         """
         Set the emission filter to the specified position.
 
@@ -194,6 +196,8 @@ class ZaberFilterController(AbstractFilterWheelController):
         if 1 not in positions:
             raise ValueError("Zaber filter wheel only supports index 1")
         pos = positions[1]
+        if pos == self.current_index:
+            return
 
         if pos is None or pos not in self.VALID_POSITIONS:
             raise ValueError(f"Invalid emission filter wheel index position: {pos}")
@@ -204,9 +208,11 @@ class ZaberFilterController(AbstractFilterWheelController):
         if not success:
             raise FilterControllerError("Failed to initiate filter movement")
 
-        if blocking:
+        if blocking or self._config.blocking_call:
             self._wait_for_position(target_position, pos, timeout)
         else:
+            # delay
+            time.sleep(max(0, (self._config.delay_ms + self._delay_offset_ms) / 1000))
             # Update the current position without waiting
             self.current_position = target_position
             self.current_index = pos
@@ -292,6 +298,18 @@ class ZaberFilterController(AbstractFilterWheelController):
         if not self.wait_for_homing_complete(timeout):
             raise TimeoutError("Filter device homing failed")
         self._homing_started.clear()
+
+    def set_delay_offset_ms(self, delay_offset_ms: float):
+        self._delay_offset_ms = delay_offset_ms
+
+    def get_delay_offset_ms(self) -> Optional[float]:
+        return self._delay_offset_ms
+
+    def set_delay_ms(self, delay_ms: float):
+        raise NotImplementedError("Setting delay ms is not supported for Zaber filter wheel controller")
+
+    def get_delay_ms(self) -> Optional[float]:
+        return self._config.delay_ms
 
     def close(self):
         self.serial.close()

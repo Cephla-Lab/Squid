@@ -92,5 +92,17 @@ class SquidFilterWheel(AbstractFilterWheelController):
     def get_filter_wheel_position(self) -> Dict[int, int]:
         return {1: self.w_pos_index}
 
+    def set_delay_offset_ms(self, delay_offset_ms: float):
+        pass
+
+    def get_delay_offset_ms(self) -> Optional[float]:
+        return 0
+
+    def set_delay_ms(self, delay_ms: float):
+        pass
+
+    def get_delay_ms(self) -> Optional[float]:
+        return 0
+
     def close(self):
         pass

@@ -96,6 +96,26 @@ class AbstractFilterWheelController(ABC):
         pass
 
     @abstractmethod
+    def set_delay_offset_ms(self, delay_offset_ms: float):
+        """Set the delay offset for the filter wheel."""
+        pass
+
+    @abstractmethod
+    def get_delay_offset_ms(self) -> Optional[float]:
+        """Get the delay offset for the filter wheel."""
+        pass
+
+    @abstractmethod
+    def set_delay_ms(self, delay_ms: float):
+        """Set the delay for the filter wheel."""
+        pass
+
+    @abstractmethod
+    def get_delay_ms(self) -> Optional[float]:
+        """Get the delay for the filter wheel."""
+        pass
+
+    @abstractmethod
     def close(self):
         """Close the filter wheel connection."""
         pass

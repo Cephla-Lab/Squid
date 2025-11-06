@@ -175,9 +175,10 @@ class MicroscopeAddons:
         """
         Prepare all the addon hardware for immediate use.
         """
-        if control._def.USE_EMISSION_FILTER_WHEEL:
+        if self.emission_filter_wheel:
+            fw_config = squid.config.get_filter_wheel_config()
+            self.emission_filter_wheel.initialize(fw_config.indices)
             self.emission_filter_wheel.home()
-            self.emission_filter_wheel.initialize(control._def.EMISSION_FILTER_WHEEL_INDICES)
 
 
 class LowLevelDrivers:
