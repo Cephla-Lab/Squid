@@ -164,6 +164,7 @@ class MultiPointWorker:
             start_time = time.perf_counter_ns()
             self.camera.start_streaming()
             this_image_callback_id = self.camera.add_frame_callback(self._image_callback)
+            sleep_time = min(self.dt / 20.0, 0.5)
 
             while self.time_point < self.Nt:
                 # check if abort acquisition has been requested
@@ -200,7 +201,6 @@ class MultiPointWorker:
                         break  # no waiting after taking the last time point
 
                     # wait until it's time to do the next acquisition
-                    sleep_time = min(self.dt / 20.0, 0.5)
                     while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
                         if self.abort_requested_fn():
                             self._log.debug("In run wait loop, abort_acquisition_requested=True")
