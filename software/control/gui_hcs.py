@@ -1579,7 +1579,7 @@ class HighContentScreeningGui(QMainWindow):
         self.movement_update_timer.stop()
 
         if self.emission_filter_wheel:
-            self.emission_filter_wheel.set_emission_filter({1, 1})
+            self.emission_filter_wheel.set_filter_wheel_position({1: 1})
             self.emission_filter_wheel.close()
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveController_focus_camera.stop_live()
