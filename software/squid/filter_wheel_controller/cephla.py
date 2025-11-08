@@ -57,7 +57,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
             slot_names=[str(i) for i in range(self._config.min_index, self._config.max_index + 1)],
         )
 
-    def home(self, index: int):
+    def home(self, index: Optional[int] = None):
         self.microcontroller.home_w()
         # for homing action, need much more timeout time
         self.microcontroller.wait_till_operation_is_completed(15)
