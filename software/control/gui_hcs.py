@@ -41,12 +41,11 @@ from control.core.multi_point_utils import (
 )
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
-from control.filterwheel import SquidFilterWheelWrapper
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.utils_config import ChannelMode
-from squid.abc import AbstractCamera, AbstractStage
+from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 import control.lighting
 import control.microscope
 import control.widgets as widgets
@@ -58,8 +57,6 @@ import squid.logging
 import squid.stage.utils
 
 log = squid.logging.get_logger(__name__)
-
-import control.filterwheel as filterwheel
 
 if USE_PRIOR_STAGE:
     import squid.stage.prior
@@ -286,7 +283,6 @@ class HighContentScreeningGui(QMainWindow):
         self.emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterController] = (
             microscope.addons.emission_filter_wheel
         )
-        self.squid_filter_wheel: Optional[SquidFilterWheelWrapper] = microscope.addons.filter_wheel
         self.objective_changer: Optional[Any] = microscope.addons.objective_changer
         self.camera_focus: Optional[AbstractCamera] = microscope.addons.camera_focus
         self.fluidics: Optional[Fluidics] = microscope.addons.fluidics
@@ -498,9 +494,6 @@ class HighContentScreeningGui(QMainWindow):
 
             self.microscope.home_xyz()
 
-            if USE_ZABER_EMISSION_FILTER_WHEEL:
-                self.emission_filter_wheel.wait_for_homing_complete()
-
         except TimeoutError as e:
             # If we can't recover from a timeout, at least do our best to make sure the system is left in a safe
             # and restartable state.
@@ -522,10 +515,6 @@ class HighContentScreeningGui(QMainWindow):
             self.camera_focus.add_frame_callback(self.streamHandler_focus_camera.get_frame_callback())
             self.camera_focus.enable_callbacks(enabled=True)
             self.camera_focus.start_streaming()
-
-        if self.squid_filter_wheel:
-            if SQUID_FILTERWHEEL_HOMING_ENABLED:
-                self.squid_filter_wheel.homing()
 
         if self.objective_changer:
             self.objective_changer.home()
@@ -594,13 +583,10 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore)
 
-        if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
+        if self.emission_filter_wheel:
             self.filterControllerWidget = widgets.FilterControllerWidget(
                 self.emission_filter_wheel, self.liveController
             )
-
-        if USE_SQUID_FILTERWHEEL:
-            self.squidFilterWidget = widgets.SquidFilterWidget(self)
 
         self.recordingControlWidget = widgets.RecordingWidget(self.streamHandler, self.imageSaver)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
@@ -831,10 +817,8 @@ class HighContentScreeningGui(QMainWindow):
             self.cameraTabWidget.addTab(self.nl5Wdiget, "NL5")
         if ENABLE_SPINNING_DISK_CONFOCAL:
             self.cameraTabWidget.addTab(self.spinningDiskConfocalWidget, "Confocal")
-        if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
+        if self.emission_filter_wheel:
             self.cameraTabWidget.addTab(self.filterControllerWidget, "Emission Filter")
-        if USE_SQUID_FILTERWHEEL:
-            self.cameraTabWidget.addTab(self.squidFilterWidget, "Squid Filter")
         self.cameraTabWidget.addTab(self.cameraSettingWidget, "Camera")
         self.cameraTabWidget.addTab(self.autofocusWidget, "Contrast AF")
         if SUPPORT_LASER_AUTOFOCUS:
@@ -1585,10 +1569,8 @@ class HighContentScreeningGui(QMainWindow):
             self.log.error(f"Couldn't cache position while closing.  Ignoring and continuing. Error is: {e}")
         self.movement_update_timer.stop()
 
-        if USE_ZABER_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.set_emission_filter(1)
-        if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.set_emission_filter(1)
+        if self.emission_filter_wheel:
+            self.emission_filter_wheel.set_filter_wheel_position({1: 1})
             self.emission_filter_wheel.close()
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveController_focus_camera.stop_live()
