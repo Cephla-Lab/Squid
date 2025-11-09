@@ -4118,7 +4118,7 @@ class WellplateMultiPointWidget(QFrame):
 
         self.goto_minZ_button = QPushButton("Go To")
         self.goto_minZ_button.clicked.connect(self.goto_z_min)
-        self.goto_minZ_button.setFixedWidth(60)
+        self.goto_minZ_button.setFixedWidth(50)
 
         self.entry_maxZ = QDoubleSpinBox()
         self.entry_maxZ.setKeyboardTracking(False)
@@ -4134,7 +4134,7 @@ class WellplateMultiPointWidget(QFrame):
 
         self.goto_maxZ_button = QPushButton("Go To")
         self.goto_maxZ_button.clicked.connect(self.goto_z_max)
-        self.goto_maxZ_button.setFixedWidth(60)
+        self.goto_maxZ_button.setFixedWidth(50)
 
         self.entry_deltaZ = QDoubleSpinBox()
         self.entry_deltaZ.setKeyboardTracking(False)
@@ -4277,9 +4277,6 @@ class WellplateMultiPointWidget(QFrame):
         time_layout.addStretch()  # Fill horizontal space
         self.time_frame.setLayout(time_layout)
 
-        # Set initial tab styles
-        self.update_tab_styles()
-
         # Main layout
         main_layout = QVBoxLayout()
         self.setLayout(main_layout)
@@ -4306,7 +4303,11 @@ class WellplateMultiPointWidget(QFrame):
         main_layout.addLayout(tabs_layout)
 
         # Scan Shape, FOV overlap, and Save / Load Scan Coordinates
+        # Frame for orange background
+        self.xy_controls_frame = QFrame()
+
         self.row_2_layout = QGridLayout()
+        self.row_2_layout.setVerticalSpacing(8)  # Add spacing between rows
         self.scan_shape_label = QLabel("Scan Shape")
         self.scan_size_label = QLabel("Scan Size")
         self.coverage_label = QLabel("Coverage")
@@ -4322,17 +4323,26 @@ class WellplateMultiPointWidget(QFrame):
         self.row_2_layout.addWidget(self.entry_overlap, 1, 1)
         self.row_2_layout.addWidget(self.btn_save_scan_coordinates, 1, 2, 1, 2)
         self.row_2_layout.addWidget(self.btn_load_scan_coordinates, 1, 4, 1, 2)
-        main_layout.addLayout(self.row_2_layout)
+
+        self.xy_controls_frame.setLayout(self.row_2_layout)
+        main_layout.addWidget(self.xy_controls_frame)
 
         grid = QGridLayout()
 
-        # dz and Nz
+        # Z controls frame for dz/Nz (left half of row 1) with blue background
+        self.z_controls_dz_frame = QFrame()
+
         self.dz_layout = QHBoxLayout()
         self.dz_layout.addWidget(QLabel("dz"))
         self.dz_layout.addWidget(self.entry_deltaZ)
         self.dz_layout.addWidget(QLabel("Nz"))
         self.dz_layout.addWidget(self.entry_NZ)
-        grid.addLayout(self.dz_layout, 0, 0)
+
+        self.z_controls_dz_frame.setLayout(self.dz_layout)
+        grid.addWidget(self.z_controls_dz_frame, 0, 0)
+
+        # Time controls frame with green background
+        self.time_controls_frame = QFrame()
 
         # dt and Nt
         self.dt_layout = QHBoxLayout()
@@ -4340,7 +4350,9 @@ class WellplateMultiPointWidget(QFrame):
         self.dt_layout.addWidget(self.entry_dt)
         self.dt_layout.addWidget(QLabel("Nt"))
         self.dt_layout.addWidget(self.entry_Nt)
-        grid.addLayout(self.dt_layout, 0, 2)
+
+        self.time_controls_frame.setLayout(self.dt_layout)
+        grid.addWidget(self.time_controls_frame, 0, 2)
 
         # Create informational labels for when modes are not selected
         self.z_not_selected_label = QLabel("Z stack not selected")
@@ -4373,19 +4385,30 @@ class WellplateMultiPointWidget(QFrame):
         )
         self.time_not_selected_label.setVisible(False)
 
+        # Z controls frame for Z-min and Z-max (full row 2) with blue background
+        self.z_controls_range_frame = QFrame()
+        z_range_layout = QHBoxLayout()
+
         # Z-min
         self.z_min_layout = QHBoxLayout()
         self.z_min_layout.addWidget(self.entry_minZ)
         self.z_min_layout.addWidget(self.set_minZ_button)
         self.z_min_layout.addWidget(self.goto_minZ_button)
-        grid.addLayout(self.z_min_layout, 1, 0)
+        z_range_layout.addLayout(self.z_min_layout)
+
+        # Spacer to maintain original spacing between Z-min and Z-max
+        z_range_layout.addStretch()
 
         # Z-max
         self.z_max_layout = QHBoxLayout()
         self.z_max_layout.addWidget(self.entry_maxZ)
         self.z_max_layout.addWidget(self.set_maxZ_button)
         self.z_max_layout.addWidget(self.goto_maxZ_button)
-        grid.addLayout(self.z_max_layout, 1, 2)
+        z_range_layout.addLayout(self.z_max_layout)
+
+        self.z_controls_range_frame.setLayout(z_range_layout)
+        self.z_controls_range_frame.setVisible(False)  # Initially hidden (shown when "Set Range" mode)
+        grid.addWidget(self.z_controls_range_frame, 1, 0, 1, 3)  # Span full row (columns 0, 1, 2)
 
         # Configuration list
         grid.addWidget(self.list_configurations, 2, 0)
@@ -4443,6 +4466,9 @@ class WellplateMultiPointWidget(QFrame):
 
         # Initialize scan controls visibility based on XY checkbox state
         self.update_scan_control_ui()
+
+        # Update tab styles now that all frames are created
+        self.update_tab_styles()
 
         # Initialize previous XY mode tracking
         self._previous_xy_mode = self.combobox_xy_mode.currentText()
@@ -4651,28 +4677,98 @@ class WellplateMultiPointWidget(QFrame):
 
     def update_tab_styles(self):
         """Update tab frame styles based on checkbox states"""
-        # Active tab style (checked) - uses default Qt active tab colors
-        active_style = """
+        # Active tab styles (checked) - custom colors for each tab
+        xy_active_style = """
             QFrame {
-                background-color: palette(base);
+                border: 1px solid #FF8C00;
+                border-radius: 2px;
+            }
+        """
+
+        # Orange background with opaque widget backgrounds to prevent color bleed
+        xy_controls_style = """
+            QFrame {
+                background-color: rgba(255, 140, 0, 0.15);
+            }
+            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
+                background-color: white;
+            }
+            QFrame QPushButton {
+                background-color: palette(button);
+            }
+            QFrame QLabel {
+                background-color: transparent;
+            }
+        """
+
+        z_active_style = """
+            QFrame {
                 border: 1px solid palette(highlight);
-                border-radius: 4px;
+                border-radius: 2px;
+            }
+        """
+
+        # Blue background for Z controls with opaque widget backgrounds
+        z_controls_style = """
+            QFrame {
+                background-color: rgba(0, 120, 215, 0.15);
+            }
+            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
+                background-color: white;
+            }
+            QFrame QPushButton {
+                background-color: palette(button);
+            }
+            QFrame QLabel {
+                background-color: transparent;
+            }
+        """
+
+        time_active_style = """
+            QFrame {
+                border: 1px solid #00A000;
+                border-radius: 2px;
+            }
+        """
+
+        # Green background for Time controls with opaque widget backgrounds
+        time_controls_style = """
+            QFrame {
+                background-color: rgba(0, 160, 0, 0.15);
+            }
+            QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
+                background-color: white;
+            }
+            QFrame QPushButton {
+                background-color: palette(button);
+            }
+            QFrame QLabel {
+                background-color: transparent;
             }
         """
 
         # Inactive tab style (unchecked) - uses default Qt inactive tab colors
         inactive_style = """
             QFrame {
-                background-color: palette(button);
                 border: 1px solid palette(mid);
-                border-radius: 4px;
+                border-radius: 2px;
             }
         """
 
         # Apply styles based on checkbox states
-        self.xy_frame.setStyleSheet(active_style if self.checkbox_xy.isChecked() else inactive_style)
-        self.z_frame.setStyleSheet(active_style if self.checkbox_z.isChecked() else inactive_style)
-        self.time_frame.setStyleSheet(active_style if self.checkbox_time.isChecked() else inactive_style)
+        self.xy_frame.setStyleSheet(xy_active_style if self.checkbox_xy.isChecked() else inactive_style)
+        if hasattr(self, "xy_controls_frame"):
+            self.xy_controls_frame.setStyleSheet(xy_controls_style if self.checkbox_xy.isChecked() else "")
+
+        self.z_frame.setStyleSheet(z_active_style if self.checkbox_z.isChecked() else inactive_style)
+        if hasattr(self, "z_controls_dz_frame"):
+            self.z_controls_dz_frame.setStyleSheet(z_controls_style if self.checkbox_z.isChecked() else "")
+        if hasattr(self, "z_controls_range_frame"):
+            self.z_controls_range_frame.setStyleSheet(z_controls_style if self.checkbox_z.isChecked() else "")
+
+        self.time_frame.setStyleSheet(time_active_style if self.checkbox_time.isChecked() else inactive_style)
+        if hasattr(self, "time_controls_frame"):
+            self.time_controls_frame.setStyleSheet(time_controls_style if self.checkbox_time.isChecked() else "")
 
     def on_xy_toggled(self, checked):
         """Handle XY checkbox toggle"""
@@ -4748,22 +4844,8 @@ class WellplateMultiPointWidget(QFrame):
         xy_checked = self.checkbox_xy.isChecked()
         xy_mode = self.combobox_xy_mode.currentText()
 
-        # List of widgets to show/hide based on XY checkbox
-        widgets_to_toggle = [
-            self.scan_shape_label,
-            self.combobox_shape,
-            self.scan_size_label,
-            self.entry_scan_size,
-            self.coverage_label,
-            self.entry_well_coverage,
-            self.fov_overlap_label,
-            self.entry_overlap,
-            self.btn_save_scan_coordinates,
-            self.btn_load_scan_coordinates,
-        ]
-
-        for widget in widgets_to_toggle:
-            widget.setVisible(xy_checked)
+        # Show/hide the entire XY controls frame based on XY checkbox
+        self.xy_controls_frame.setVisible(xy_checked)
 
         # Handle coverage field based on XY mode
         if xy_checked:
@@ -5130,7 +5212,11 @@ class WellplateMultiPointWidget(QFrame):
             self.eta_timer.stop()
 
     def toggle_z_range_controls(self, is_visible):
-        # Efficiently set visibility for all widgets in both layouts
+        # Show/hide the entire range frame (Z-min and Z-max)
+        if hasattr(self, "z_controls_range_frame"):
+            self.z_controls_range_frame.setVisible(is_visible)
+
+        # Also control individual widgets for compatibility
         for layout in (self.z_min_layout, self.z_max_layout):
             for i in range(layout.count()):
                 widget = layout.itemAt(i).widget()
