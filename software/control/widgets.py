@@ -4113,8 +4113,12 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_minZ.setSuffix(" μm")
         # self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        self.set_minZ_button = QPushButton("Set")
+        self.set_minZ_button = QPushButton("Set Z-min")
         self.set_minZ_button.clicked.connect(self.set_z_min)
+
+        self.goto_minZ_button = QPushButton("Go To")
+        self.goto_minZ_button.clicked.connect(self.goto_z_min)
+        self.goto_minZ_button.setFixedWidth(60)
 
         self.entry_maxZ = QDoubleSpinBox()
         self.entry_maxZ.setKeyboardTracking(False)
@@ -4125,8 +4129,12 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_maxZ.setSuffix(" μm")
         # self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        self.set_maxZ_button = QPushButton("Set")
+        self.set_maxZ_button = QPushButton("Set Z-max")
         self.set_maxZ_button.clicked.connect(self.set_z_max)
+
+        self.goto_maxZ_button = QPushButton("Go To")
+        self.goto_maxZ_button.clicked.connect(self.goto_z_max)
+        self.goto_maxZ_button.setFixedWidth(60)
 
         self.entry_deltaZ = QDoubleSpinBox()
         self.entry_deltaZ.setKeyboardTracking(False)
@@ -4367,25 +4375,17 @@ class WellplateMultiPointWidget(QFrame):
 
         # Z-min
         self.z_min_layout = QHBoxLayout()
-        self.z_min_layout.addWidget(self.set_minZ_button)
-        min_label = QLabel("Z-min")
-        min_label.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-        self.z_min_layout.addWidget(min_label)
         self.z_min_layout.addWidget(self.entry_minZ)
+        self.z_min_layout.addWidget(self.set_minZ_button)
+        self.z_min_layout.addWidget(self.goto_minZ_button)
         grid.addLayout(self.z_min_layout, 1, 0)
 
         # Z-max
         self.z_max_layout = QHBoxLayout()
-        self.z_max_layout.addWidget(self.set_maxZ_button)
-        max_label = QLabel("Z-max")
-        max_label.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-        self.z_max_layout.addWidget(max_label)
         self.z_max_layout.addWidget(self.entry_maxZ)
+        self.z_max_layout.addWidget(self.set_maxZ_button)
+        self.z_max_layout.addWidget(self.goto_maxZ_button)
         grid.addLayout(self.z_max_layout, 1, 2)
-
-        w = max(min_label.sizeHint().width(), max_label.sizeHint().width())
-        min_label.setFixedWidth(w)
-        max_label.setFixedWidth(w)
 
         # Configuration list
         grid.addWidget(self.list_configurations, 2, 0)
@@ -4627,6 +4627,22 @@ class WellplateMultiPointWidget(QFrame):
             # Update UI state based on loaded settings
             self.update_scan_control_ui()
             self.update_control_visibility()
+            self.update_tab_styles()  # Update tab visual styles based on checkbox states
+
+            # Ensure XY mode combobox is properly enabled based on loaded XY state
+            self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
+
+            # Ensure Z controls and Z mode combobox are properly enabled based on loaded Z state
+            self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
+            if self.checkbox_z.isChecked():
+                self.show_z_controls(True)
+                # Also ensure Z range controls are properly toggled based on loaded Z mode
+                if self.combobox_z_mode.currentText() == "Set Range":
+                    self.toggle_z_range_controls(True)
+
+            # Ensure Time controls are properly shown based on loaded Time state
+            if self.checkbox_time.isChecked():
+                self.show_time_controls(True)
 
             self._log.info("Loaded acquisition settings from cache")
 
@@ -5281,6 +5297,14 @@ class WellplateMultiPointWidget(QFrame):
     def set_z_max(self):
         z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
         self.entry_maxZ.setValue(z_value)
+
+    def goto_z_min(self):
+        z_value_mm = self.entry_minZ.value() / 1000  # Convert from μm to mm
+        self.stage.move_z_to(z_value_mm)
+
+    def goto_z_max(self):
+        z_value_mm = self.entry_maxZ.value() / 1000  # Convert from μm to mm
+        self.stage.move_z_to(z_value_mm)
 
     def update_z_min(self, z_pos_um):
         if z_pos_um < self.entry_minZ.value():
