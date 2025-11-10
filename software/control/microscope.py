@@ -202,6 +202,8 @@ class MicroscopeAddons:
             self.emission_filter_wheel.start_homing()
         if control._def.USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
             self.emission_filter_wheel.set_speed(control._def.OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ)
+        if self.piezo_stage:
+            self.piezo_stage.home()
 
 
 class LowLevelDrivers:
