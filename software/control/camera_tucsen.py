@@ -37,6 +37,19 @@ class ModeFL26BW(Enum):
     LOW_NOISE = (1, 0)
     SENBIN = (0, 1)
 
+class ModeLibra25(Enum):
+    # TODO: Add support for Libra25 model
+    """
+    Libra-25 modes values are a combination of image mode and binning.
+    Store setting values for (TUCIDC_IMGMODESELECT, TUIDC_RESOLUTION) here.
+    The camera has two binning modes: Sensitive (2600 x 2048), and Resolution (5200 x 4096).
+    These 4 modes should be available in each of the binning modes as well.
+    """
+    GAIN0 = (0, 0)
+    GAIN1 = (1, 0)
+    GAIN2 = (2, 0)
+    GAIN3 = (3, 0)
+
 
 class ModeAries(Enum):
     """
