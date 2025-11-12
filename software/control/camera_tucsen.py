@@ -265,6 +265,25 @@ class TucsenCamera(AbstractCamera):
                     (2, 2): (1600, 1600),
                     (4, 4): (800, 800),
                 }
+            elif camera_model == TucsenCameraModel.LIBRA_25:
+            # TODO: Support binning for LIBRA_25 model
+            binning_to_resolution = {
+                (1, 1): (5200, 4096),
+                (2, 2): (2600, 2048),
+            }
+            binning_to_set_value = {
+                (1, 1): 0,
+                (2, 2): 1,
+            }
+            mode_to_line_rate_us = {
+                ModeLibra25.GAIN0: 34.67,
+                ModeLibra25.GAIN1: 34.67,
+                ModeLibra25.GAIN2: 34.67,
+                ModeLibra25.GAIN3: 34.67
+            }
+            pixel_size_um = 3.76
+            has_temperature_control = True
+            is_genicam = False
         else:
             raise ValueError(f"Unsupported camera model: {camera_model}")
 
