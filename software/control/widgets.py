@@ -4000,6 +4000,7 @@ class WellplateMultiPointWidget(QFrame):
         stage: AbstractStage,
         navigationViewer,
         multipointController,
+        liveController,
         objectiveStore,
         channelConfigurationManager,
         scanCoordinates,
@@ -4015,6 +4016,7 @@ class WellplateMultiPointWidget(QFrame):
         self.stage = stage
         self.navigationViewer = navigationViewer
         self.multipointController = multipointController
+        self.liveController = liveController
         self.objectiveStore = objectiveStore
         self.channelConfigurationManager = channelConfigurationManager
         self.scanCoordinates = scanCoordinates

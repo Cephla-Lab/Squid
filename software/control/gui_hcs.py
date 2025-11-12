@@ -675,6 +675,7 @@ class HighContentScreeningGui(QMainWindow):
             self.stage,
             self.navigationViewer,
             self.multipointController,
+            self.liveController,
             self.objectiveStore,
             self.channelConfigurationManager,
             self.scanCoordinates,
