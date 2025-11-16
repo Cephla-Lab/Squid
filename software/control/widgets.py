@@ -4307,7 +4307,7 @@ class WellplateMultiPointWidget(QFrame):
         self.xy_controls_frame = QFrame()
 
         self.row_2_layout = QGridLayout()
-        self.row_2_layout.setVerticalSpacing(8)  # Add spacing between rows
+        self.row_2_layout.setContentsMargins(4, 2, 4, 2)
         self.scan_shape_label = QLabel("Scan Shape")
         self.scan_size_label = QLabel("Scan Size")
         self.coverage_label = QLabel("Coverage")
@@ -4333,6 +4333,7 @@ class WellplateMultiPointWidget(QFrame):
         self.z_controls_dz_frame = QFrame()
 
         self.dz_layout = QHBoxLayout()
+        self.dz_layout.setContentsMargins(4, 2, 4, 2)
         self.dz_layout.addWidget(QLabel("dz"))
         self.dz_layout.addWidget(self.entry_deltaZ)
         self.dz_layout.addWidget(QLabel("Nz"))
@@ -4346,6 +4347,7 @@ class WellplateMultiPointWidget(QFrame):
 
         # dt and Nt
         self.dt_layout = QHBoxLayout()
+        self.dt_layout.setContentsMargins(4, 2, 4, 2)
         self.dt_layout.addWidget(QLabel("dt"))
         self.dt_layout.addWidget(self.entry_dt)
         self.dt_layout.addWidget(QLabel("Nt"))
@@ -4388,6 +4390,7 @@ class WellplateMultiPointWidget(QFrame):
         # Z controls frame for Z-min and Z-max (full row 2) with blue background
         self.z_controls_range_frame = QFrame()
         z_range_layout = QHBoxLayout()
+        z_range_layout.setContentsMargins(4, 2, 4, 2)
 
         # Z-min
         self.z_min_layout = QHBoxLayout()
@@ -4694,7 +4697,7 @@ class WellplateMultiPointWidget(QFrame):
                 background-color: white;
             }
             QFrame QPushButton {
-                background-color: palette(button);
+                background-color: #FFD9B3;
             }
             QFrame QLabel {
                 background-color: transparent;
@@ -4717,7 +4720,7 @@ class WellplateMultiPointWidget(QFrame):
                 background-color: white;
             }
             QFrame QPushButton {
-                background-color: palette(button);
+                background-color: #C2D9FF;
             }
             QFrame QLabel {
                 background-color: transparent;
@@ -4740,7 +4743,7 @@ class WellplateMultiPointWidget(QFrame):
                 background-color: white;
             }
             QFrame QPushButton {
-                background-color: palette(button);
+                background-color: #C2FFC2;
             }
             QFrame QLabel {
                 background-color: transparent;
