@@ -4046,6 +4046,10 @@ class WellplateMultiPointWidget(QFrame):
         # Add state tracking for coordinates
         self.has_loaded_coordinates = False
 
+        # Cache for loaded coordinates dataframe (restored when switching back to Load Coordinates mode)
+        self.cached_loaded_coordinates_df = None
+        self.cached_loaded_file_path = None
+
         # Add state tracking for Z parameters
         self.stored_z_params = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": "From Bottom"}
 
@@ -4189,6 +4193,11 @@ class WellplateMultiPointWidget(QFrame):
         self.btn_save_scan_coordinates = QPushButton("Save Coordinates")
         self.btn_load_scan_coordinates = QPushButton("Load Coordinates")
 
+        # Add text area for showing loaded file path
+        self.text_loaded_coordinates = QLineEdit()
+        self.text_loaded_coordinates.setReadOnly(True)
+        self.text_loaded_coordinates.setPlaceholderText("No file loaded")
+
         self.checkbox_genAFMap = QCheckBox("Generate Focus Map")
         self.checkbox_genAFMap.setChecked(False)
 
@@ -4237,7 +4246,7 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_xy.setChecked(True)
 
         self.combobox_xy_mode = QComboBox()
-        self.combobox_xy_mode.addItems(["Current Position", "Select Wells", "Manual"])
+        self.combobox_xy_mode.addItems(["Current Position", "Select Wells", "Manual", "Load Coordinates"])
         self.combobox_xy_mode.setEnabled(True)  # Initially enabled since XY is checked
         # disable manual mode on init (before mosaic is loaded) - identify the index of the manual mode by name
         _manual_index = self.combobox_xy_mode.findText("Manual")
@@ -4321,11 +4330,20 @@ class WellplateMultiPointWidget(QFrame):
         self.row_2_layout.addWidget(self.entry_well_coverage, 0, 5)
         self.row_2_layout.addWidget(self.fov_overlap_label, 1, 0)
         self.row_2_layout.addWidget(self.entry_overlap, 1, 1)
-        self.row_2_layout.addWidget(self.btn_save_scan_coordinates, 1, 2, 1, 2)
-        self.row_2_layout.addWidget(self.btn_load_scan_coordinates, 1, 4, 1, 2)
+        self.row_2_layout.addWidget(self.btn_save_scan_coordinates, 1, 2, 1, 4)
 
         self.xy_controls_frame.setLayout(self.row_2_layout)
         main_layout.addWidget(self.xy_controls_frame)
+
+        # Frame for Load Coordinates UI (initially hidden)
+        self.load_coordinates_frame = QFrame()
+        load_coords_layout = QHBoxLayout()
+        load_coords_layout.setContentsMargins(4, 2, 4, 2)
+        load_coords_layout.addWidget(self.btn_load_scan_coordinates)
+        load_coords_layout.addWidget(self.text_loaded_coordinates)
+        self.load_coordinates_frame.setLayout(load_coords_layout)
+        self.load_coordinates_frame.setVisible(False)  # Initially hidden
+        main_layout.addWidget(self.load_coordinates_frame)
 
         grid = QGridLayout()
 
@@ -4762,6 +4780,8 @@ class WellplateMultiPointWidget(QFrame):
         self.xy_frame.setStyleSheet(xy_active_style if self.checkbox_xy.isChecked() else inactive_style)
         if hasattr(self, "xy_controls_frame"):
             self.xy_controls_frame.setStyleSheet(xy_controls_style if self.checkbox_xy.isChecked() else "")
+        if hasattr(self, "load_coordinates_frame"):
+            self.load_coordinates_frame.setStyleSheet(xy_controls_style if self.checkbox_xy.isChecked() else "")
 
         self.z_frame.setStyleSheet(z_active_style if self.checkbox_z.isChecked() else inactive_style)
         if hasattr(self, "z_controls_dz_frame"):
@@ -4829,11 +4849,23 @@ class WellplateMultiPointWidget(QFrame):
         # Update UI based on the new mode
         self.update_scan_control_ui()
 
+        # Handle coordinate restoration/clearing based on mode
+        if mode == "Load Coordinates":
+            # Restore cached coordinates when switching to Load Coordinates mode
+            self.restore_cached_coordinates()
+        else:
+            # When switching away from Load Coordinates, clear coordinates and update based on new mode
+            if hasattr(self, "_previous_xy_mode") and self._previous_xy_mode == "Load Coordinates":
+                self.scanCoordinates.clear_regions()
+
         # Store the current mode as previous for next time
         self._previous_xy_mode = mode
 
         if mode == "Manual":
             self.signal_manual_shape_mode.emit(True)
+        elif mode == "Load Coordinates":
+            # Don't update coordinates or emit signals for Load Coordinates mode
+            pass
         else:
             self.update_coordinates()  # to-do: what does this do? is it needed?
 
@@ -4847,8 +4879,18 @@ class WellplateMultiPointWidget(QFrame):
         xy_checked = self.checkbox_xy.isChecked()
         xy_mode = self.combobox_xy_mode.currentText()
 
+        # Handle Load Coordinates mode separately
+        if xy_checked and xy_mode == "Load Coordinates":
+            # Hide the two-line xy_controls_frame
+            self.xy_controls_frame.setVisible(False)
+            # Show the Load Coordinates frame
+            self.load_coordinates_frame.setVisible(True)
+            return
+
         # Show/hide the entire XY controls frame based on XY checkbox
         self.xy_controls_frame.setVisible(xy_checked)
+        # Hide the Load Coordinates frame for all other modes
+        self.load_coordinates_frame.setVisible(False)
 
         # Handle coverage field based on XY mode
         if xy_checked:
@@ -5717,6 +5759,35 @@ class WellplateMultiPointWidget(QFrame):
             print("loading coordinates from", file_path)
             self.load_coordinates(file_path)
 
+    def restore_cached_coordinates(self):
+        """Restore previously loaded coordinates from cached dataframe"""
+        if self.cached_loaded_coordinates_df is None:
+            return
+
+        df = self.cached_loaded_coordinates_df
+
+        # Clear existing coordinates
+        self.scanCoordinates.clear_regions()
+
+        # Load coordinates into scanCoordinates from cached dataframe
+        for region_id in df["region"].unique():
+            region_points = df[df["region"] == region_id]
+            coords = list(zip(region_points["x (mm)"], region_points["y (mm)"]))
+            self.scanCoordinates.region_fov_coordinates[region_id] = coords
+
+            # Calculate and store region center (average of points)
+            center_x = region_points["x (mm)"].mean()
+            center_y = region_points["y (mm)"].mean()
+            self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
+
+            # Register FOVs with navigation viewer
+            for x, y in coords:
+                self.navigationViewer.register_fov_to_image(x, y)
+
+        # Update text area to show loaded file path
+        if self.cached_loaded_file_path:
+            self.text_loaded_coordinates.setText(f"Loaded: {self.cached_loaded_file_path}")
+
     def load_coordinates(self, file_path: str):
         """Load scan coordinates from a CSV file.
 
@@ -5725,13 +5796,16 @@ class WellplateMultiPointWidget(QFrame):
         """
         try:
             # Read coordinates from CSV
-
             df = pd.read_csv(file_path)
 
             # Validate CSV format
             required_columns = ["region", "x (mm)", "y (mm)"]
             if not all(col in df.columns for col in required_columns):
                 raise ValueError("CSV file must contain 'region', 'x (mm)', and 'y (mm)' columns")
+
+            # Cache the dataframe and file path
+            self.cached_loaded_coordinates_df = df.copy()
+            self.cached_loaded_file_path = file_path
 
             # Clear existing coordinates
             self.scanCoordinates.clear_regions()
@@ -5753,8 +5827,8 @@ class WellplateMultiPointWidget(QFrame):
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
 
-            # Update UI state
-            self.toggle_coordinate_controls(has_coordinates=True)
+            # Update text area to show loaded file path
+            self.text_loaded_coordinates.setText(f"Loaded: {file_path}")
 
         except Exception as e:
             self._log.error(f"Failed to load coordinates: {str(e)}")
