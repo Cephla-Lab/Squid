@@ -131,10 +131,9 @@ class ScanCoordinates:
         return well_centers
 
     def set_live_scan_coordinates(self, x_mm, y_mm, scan_size_mm, overlap_percent, shape):
-        if shape != "Manual" and self.format == "glass slide":
-            if self.region_centers:
-                self.clear_regions()
-            self.add_region("current", x_mm, y_mm, scan_size_mm, overlap_percent, shape)
+        if self.region_centers:
+            self.clear_regions()
+        self.add_region("current", x_mm, y_mm, scan_size_mm, overlap_percent, shape)
 
     def set_well_coordinates(self, scan_size_mm, overlap_percent, shape):
         new_region_centers = self.get_selected_wells()
