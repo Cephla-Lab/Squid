@@ -1588,11 +1588,62 @@ class NavigationViewer(QFrame):
         cv2.rectangle(self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, color, self.box_line_thickness)
         self.scan_overlay_item.setImage(self.scan_overlay)
 
+    def register_fovs_to_image_batch(self, fov_list):
+        """
+        Batch register multiple FOVs to image with single display update.
+
+        Args:
+            fov_list: List of tuples (x_mm, y_mm) or list of FovCenter objects
+        """
+        if not fov_list:
+            return
+
+        color = (252, 174, 30, 128)  # Yellow RGBA
+        for fov in fov_list:
+            # Handle both tuple and FovCenter object formats
+            if isinstance(fov, tuple):
+                x_mm = fov[0]
+                y_mm = fov[1]
+            else:
+                x_mm = fov.x_mm
+                y_mm = fov.y_mm
+            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            cv2.rectangle(
+                self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, color, self.box_line_thickness
+            )
+        # Single update after all rectangles are drawn
+        self.scan_overlay_item.setImage(self.scan_overlay)
+
     def deregister_fov_to_image(self, x_mm, y_mm):
         current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
         cv2.rectangle(
             self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, (0, 0, 0, 0), self.box_line_thickness
         )
+        self.scan_overlay_item.setImage(self.scan_overlay)
+
+    def deregister_fovs_from_image_batch(self, fov_list):
+        """
+        Batch deregister multiple FOVs from image with single display update.
+
+        Args:
+            fov_list: List of tuples (x_mm, y_mm) or list of FovCenter objects
+        """
+        if not fov_list:
+            return
+
+        for fov in fov_list:
+            # Handle both tuple and FovCenter object formats
+            if isinstance(fov, tuple):
+                x_mm = fov[0]
+                y_mm = fov[1]
+            else:
+                x_mm = fov.x_mm
+                y_mm = fov.y_mm
+            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            cv2.rectangle(
+                self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, (0, 0, 0, 0), self.box_line_thickness
+            )
+        # Single update after all rectangles are cleared
         self.scan_overlay_item.setImage(self.scan_overlay)
 
     def register_focus_point(self, x_mm, y_mm):
