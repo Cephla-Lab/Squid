@@ -65,7 +65,7 @@ class ModeAries(Enum):
 class TucsenModelProperties(pydantic.BaseModel):
     binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
     binning_to_set_value: Dict[Tuple[int, int], int]
-    mode_to_line_rate_us: Dict[Union[Mode400BSIV3, ModeFL26BW, ModeAries], float]
+    mode_to_line_rate_us: Dict[Union[Mode400BSIV3, ModeFL26BW, ModeAries, ModeLibra25], float]
     pixel_size_um: float
     has_temperature_control: bool
     is_genicam: bool
@@ -175,6 +175,8 @@ class TucsenCamera(AbstractCamera):
             # Low noise mode is not supported for FL26BW model yet.
         elif self._config.camera_model == TucsenCameraModel.DHYANA_400BSI_V3:
             self._camera_mode = Mode400BSIV3.HDR  # HDR as default
+        elif self._config.camera_model == TucsenCameraModel.LIBRA_25:
+            self._camera_mode = ModeLibra25.GAIN0  # GAIN0 as default
         elif (
             self._config.camera_model == TucsenCameraModel.ARIES_6506
             or self._config.camera_model == TucsenCameraModel.ARIES_6510
@@ -269,7 +271,7 @@ class TucsenCamera(AbstractCamera):
             # TODO: Support binning for LIBRA_25 model
             binning_to_resolution = {
                 (1, 1): (5200, 4096),
-                (2, 2): (2600, 2048),
+                (2, 2): (2600, 2048), # 2x2 binning should be the default
             }
             binning_to_set_value = {
                 (1, 1): 0,
@@ -279,7 +281,7 @@ class TucsenCamera(AbstractCamera):
                 ModeLibra25.GAIN0: 34.67,
                 ModeLibra25.GAIN1: 34.67,
                 ModeLibra25.GAIN2: 34.67,
-                ModeLibra25.GAIN3: 34.67
+                ModeLibra25.GAIN3: 34.67 # Line times for Sensitive mode (2x2 binning) are 6.31 us
             }
             pixel_size_um = 3.76
             has_temperature_control = True
