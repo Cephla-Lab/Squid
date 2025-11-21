@@ -41,14 +41,19 @@ class ModeLibra25(Enum):
     # TODO: Add support for Libra25 model
     """
     Libra-25 modes values are a combination of image mode and binning.
-    Store setting values for (TUCIDC_IMGMODESELECT, TUIDC_RESOLUTION) here.
+    Libra-25 does not use TUIDC_IMGMODESELECT.
+    Store setting values for (TUCIDC_GLOBALGAIN, TUIDC_RESOLUTION) here.
     The camera has two binning modes: Sensitive (2600 x 2048), and Resolution (5200 x 4096).
     These 4 modes should be available in each of the binning modes as well.
     """
-    GAIN0 = (0, 0)
-    GAIN1 = (1, 0)
-    GAIN2 = (2, 0)
-    GAIN3 = (3, 0)
+    RESOLUTION_GAIN0 = (0, 0)
+    RESOLUTION_GAIN1 = (1, 0)
+    RESOLUTION_GAIN2 = (2, 0)
+    RESOLUTION_GAIN3 = (3, 0)
+    SENSITIVE_GAIN0 = (0, 1)
+    SENSITIVE_GAIN1 = (1, 1)
+    SENSITIVE_GAIN2 = (2, 1)
+    SENSITIVE_GAIN3 = (3, 1)
 
 
 class ModeAries(Enum):
@@ -176,7 +181,7 @@ class TucsenCamera(AbstractCamera):
         elif self._config.camera_model == TucsenCameraModel.DHYANA_400BSI_V3:
             self._camera_mode = Mode400BSIV3.HDR  # HDR as default
         elif self._config.camera_model == TucsenCameraModel.LIBRA_25:
-            self._camera_mode = ModeLibra25.GAIN0  # GAIN0 as default
+            self._camera_mode = ModeLibra25.SENSITIVE_GAIN0  # SENSITIVE_GAIN0 as default
         elif (
             self._config.camera_model == TucsenCameraModel.ARIES_6506
             or self._config.camera_model == TucsenCameraModel.ARIES_6510
@@ -267,7 +272,7 @@ class TucsenCamera(AbstractCamera):
                     (2, 2): (1600, 1600),
                     (4, 4): (800, 800),
                 }
-            elif camera_model == TucsenCameraModel.LIBRA_25:
+        elif camera_model == TucsenCameraModel.LIBRA_25:
             # TODO: Support binning for LIBRA_25 model
             binning_to_resolution = {
                 (1, 1): (5200, 4096),
@@ -278,10 +283,14 @@ class TucsenCamera(AbstractCamera):
                 (2, 2): 1,
             }
             mode_to_line_rate_us = {
-                ModeLibra25.GAIN0: 34.67,
-                ModeLibra25.GAIN1: 34.67,
-                ModeLibra25.GAIN2: 34.67,
-                ModeLibra25.GAIN3: 34.67 # Line times for Sensitive mode (2x2 binning) are 6.31 us
+                ModeLibra25.RESOLUTION_GAIN0: 34.67,
+                ModeLibra25.RESOLUTION_GAIN1: 34.67,
+                ModeLibra25.RESOLUTION_GAIN2: 34.67,
+                ModeLibra25.RESOLUTION_GAIN3: 34.67,
+                ModeLibra25.SENSITIVE_GAIN0: 6.31,
+                ModeLibra25.SENSITIVE_GAIN1: 6.31,
+                ModeLibra25.SENSITIVE_GAIN2: 6.31,
+                ModeLibra25.SENSITIVE_GAIN3: 6.31
             }
             pixel_size_um = 3.76
             has_temperature_control = True
