@@ -4614,11 +4614,14 @@ class WellplateMultiPointWidget(QFrame):
             self.checkbox_withAutofocus.blockSignals(True)
             self.checkbox_withReflectionAutofocus.blockSignals(True)
 
+            # Set flag to prevent automatic file dialog when loading "Load Coordinates" mode from cache
+            self._loading_from_cache = True
+
             # Load settings
             self.checkbox_xy.setChecked(settings.get("xy_enabled", True))
 
             xy_mode = settings.get("xy_mode", "Current Position")
-            if xy_mode in ["Current Position", "Select Wells", "Manual"]:
+            if xy_mode in ["Current Position", "Select Wells", "Manual", "Load Coordinates"]:
                 self.combobox_xy_mode.setCurrentText(xy_mode)
 
             # If XY is checked and mode is Manual at startup, uncheck XY and change mode to Current Position
@@ -4692,10 +4695,15 @@ class WellplateMultiPointWidget(QFrame):
             if self.checkbox_time.isChecked():
                 self.show_time_controls(True)
 
+            # Clear the cache loading flag
+            self._loading_from_cache = False
+
             self._log.info("Loaded acquisition settings from cache")
 
         except Exception as e:
             self._log.warning(f"Failed to load acquisition settings from cache: {e}")
+            # Clear the flag even on error
+            self._loading_from_cache = False
 
     def update_tab_styles(self):
         """Update tab frame styles based on checkbox states"""
@@ -4823,7 +4831,7 @@ class WellplateMultiPointWidget(QFrame):
                     # If mosaic view has been cleared (no shapes), stay at "Current Position"
                     if self.shapes_mm is None or len(self.shapes_mm) == 0:
                         self.combobox_xy_mode.setCurrentText("Current Position")
-                        print("Manual mode had no shapes, staying at Current Position")
+                        self._log.info("Manual mode had no shapes, staying at Current Position")
                     else:
                         # Shapes exist, restore Manual mode
                         self.combobox_xy_mode.setCurrentText("Manual")
@@ -4843,11 +4851,11 @@ class WellplateMultiPointWidget(QFrame):
         else:
             self.signal_toggle_live_scan_grid.emit(False)  # disable live scan grid regardless of XY mode
 
-        print(f"XY acquisition {'enabled' if checked else 'disabled'}")
+        self._log.debug(f"XY acquisition {'enabled' if checked else 'disabled'}")
 
     def on_xy_mode_changed(self, mode):
         """Handle XY mode dropdown change"""
-        print(f"XY mode changed to: {mode}")
+        self._log.debug(f"XY mode changed to: {mode}")
 
         # Store current mode's parameters before switching (if we know the previous mode)
         # We need to track the previous mode to store its parameters
@@ -4864,10 +4872,8 @@ class WellplateMultiPointWidget(QFrame):
         # Handle coordinate restoration/clearing based on mode
         if mode == "Load Coordinates":
             # If no file has been loaded previously, open file dialog immediately
-            if self.cached_loaded_coordinates_df is None:
-                # Use QTimer to defer the file dialog so UI updates complete first
-                from qtpy.QtCore import QTimer
-
+            # But skip if we're loading from cache
+            if self.cached_loaded_coordinates_df is None and not getattr(self, "_loading_from_cache", False):
                 QTimer.singleShot(100, self.on_load_coordinates_clicked)
             else:
                 # Restore cached coordinates when switching to Load Coordinates mode
@@ -5005,13 +5011,13 @@ class WellplateMultiPointWidget(QFrame):
         # Update visibility based on both Z and Time states
         self.update_control_visibility()
 
-        print(f"Z acquisition {'enabled' if checked else 'disabled'}")
+        self._log.debug(f"Z acquisition {'enabled' if checked else 'disabled'}")
 
     def on_z_mode_changed(self, mode):
         """Handle Z mode dropdown change"""
         # Show/hide Z-min/Z-max controls based on mode
         self.toggle_z_range_controls(mode == "Set Range")
-        print(f"Z mode changed to: {mode}")
+        self._log.debug(f"Z mode changed to: {mode}")
 
     def on_time_toggled(self, checked):
         """Handle Time checkbox toggle"""
@@ -5029,7 +5035,7 @@ class WellplateMultiPointWidget(QFrame):
         # Update visibility based on both Z and Time states
         self.update_control_visibility()
 
-        print(f"Time acquisition {'enabled' if checked else 'disabled'}")
+        self._log.debug(f"Time acquisition {'enabled' if checked else 'disabled'}")
 
     def store_xy_mode_parameters(self, mode):
         """Store current scan size, coverage, and shape parameters for the given XY mode"""
@@ -5321,9 +5327,8 @@ class WellplateMultiPointWidget(QFrame):
         self.update()
 
     def set_default_scan_size(self):
-        # change current settings if XY is checked and mode is not "Select Wells"
         if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Select Wells":
-            print("Sample Format:", self.navigationViewer.sample)
+            self._log.debug(f"Sample Format: {self.navigationViewer.sample}")
             self.combobox_shape.blockSignals(True)
             self.entry_well_coverage.blockSignals(True)
             self.entry_scan_size.blockSignals(True)
@@ -5395,10 +5400,10 @@ class WellplateMultiPointWidget(QFrame):
 
         if shapes_data_mm and len(shapes_data_mm) > 0:
             self.shapes_mm = shapes_data_mm
-            print(f"Manual ROIs updated with {len(self.shapes_mm)} shapes")
+            self._log.debug(f"Manual ROIs updated with {len(self.shapes_mm)} shapes")
         else:
             self.shapes_mm = None
-            print("No valid shapes found, cleared manual ROIs")
+            self._log.debug("No valid shapes found, cleared manual ROIs")
         self.update_coordinates()
 
     def convert_pixel_to_mm(self, pixel_coords):
@@ -5417,14 +5422,14 @@ class WellplateMultiPointWidget(QFrame):
             self.entry_well_coverage.blockSignals(True)
             self.entry_well_coverage.setValue(coverage)
             self.entry_well_coverage.blockSignals(False)
-            print("COVERAGE", coverage)
+            self._log.debug(f"Coverage: {coverage}")
 
     def update_scan_size_from_coverage(self):
         effective_well_size = self.get_effective_well_size()
         coverage = self.entry_well_coverage.value()
         scan_size = round((coverage / 100) * effective_well_size, 3)
         self.entry_scan_size.setValue(scan_size)
-        print("SIZE", scan_size)
+        self._log.debug(f"Scan size: {scan_size}")
 
     def update_dz(self):
         z_min = self.entry_minZ.value()
@@ -5488,7 +5493,7 @@ class WellplateMultiPointWidget(QFrame):
         # set entry range values bith to current z pos
         self.entry_minZ.setValue(z_pos_mm * 1000)
         self.entry_maxZ.setValue(z_pos_mm * 1000)
-        print("init z-level wellplate:", self.entry_minZ.value())
+        self._log.debug(f"Init z-level wellplate: {self.entry_minZ.value()}")
 
         # reallow updates from entry sinals (signal enforces min <= max when we update either entry)
         self.entry_minZ.blockSignals(False)
@@ -5592,7 +5597,7 @@ class WellplateMultiPointWidget(QFrame):
                 minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
                 maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
                 self.multipointController.set_z_range(minZ, maxZ)
-                print("set z-range", (minZ, maxZ))
+                self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
             else:
                 z = self.stage.get_pos().z_mm
                 dz = self.entry_deltaZ.value()
@@ -5786,7 +5791,7 @@ class WellplateMultiPointWidget(QFrame):
         )
 
         if file_path:
-            print("loading coordinates from", file_path)
+            self._log.info(f"Loading coordinates from {file_path}")
             self.load_coordinates(file_path)
 
     def restore_cached_coordinates(self):
@@ -6317,7 +6322,7 @@ class MultiPointWithFluidicsWidget(QFrame):
         )
 
         if file_path:
-            print("loading coordinates from", file_path)
+            self._log.info(f"Loading coordinates from {file_path}")
             self.load_coordinates(file_path)
 
     def load_coordinates(self, file_path: str):

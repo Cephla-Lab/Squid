@@ -1506,18 +1506,19 @@ class HighContentScreeningGui(QMainWindow):
         self.log.debug(f"toggleAcquisitionStarted({acquisition_started=})")
         if acquisition_started:
             self.log.info("STARTING ACQUISITION")
-            if self.is_live_scan_grid_on:  # disconnect live scan grid during acquisition
+            if self.is_live_scan_grid_on:
                 self.toggle_live_scan_grid(on=False)
                 self.live_scan_grid_was_on = True
+            else:
+                self.live_scan_grid_was_on = False
         else:
             self.log.info("FINISHED ACQUISITION")
-            if self.live_scan_grid_was_on:  # reconnect live scan grid if was on before acquisition
+            if self.live_scan_grid_was_on:
                 self.toggle_live_scan_grid(on=True)
                 self.live_scan_grid_was_on = False
 
         # click to move off during acquisition
         self.navigationWidget.set_click_to_move(not acquisition_started)
-        print(f" >>>>> click to move set to {not acquisition_started}")
 
         # disable other acqusiition tabs during acquisition
         current_index = self.recordTabWidget.currentIndex()
