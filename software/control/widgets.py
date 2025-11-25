@@ -3639,8 +3639,9 @@ class FlexibleMultiPointWidget(QFrame):
 
             # Remove scanCoordinates dictionaries and remove region overlay
             self.scanCoordinates.region_centers.pop(region_id, None)
-            for coord in self.scanCoordinates.region_fov_coordinates.pop(region_id, []):
-                self.navigationViewer.deregister_fov_to_image(coord[0], coord[1])
+            self.navigationViewer.deregister_fovs_from_image(
+                self.scanCoordinates.region_fov_coordinates.pop(region_id, [])
+            )
 
             """
             # Reindex remaining regions and update UI
@@ -3668,8 +3669,7 @@ class FlexibleMultiPointWidget(QFrame):
 
             print(f"Remaining location IDs: {self.location_ids}")
             for region_id, fov_coords in self.scanCoordinates.region_fov_coordinates.items():
-                for coord in fov_coords:
-                    self.navigationViewer.register_fov_to_image(coord[0], coord[1])
+                self.navigationViewer.register_fovs_to_image(fov_coords)
 
             # Re-enable signals
             self.table_location_list.blockSignals(False)
@@ -3740,8 +3740,7 @@ class FlexibleMultiPointWidget(QFrame):
 
         # Clear all FOVs for this region
         if region_id in self.scanCoordinates.region_fov_coordinates.keys():
-            for coord in self.scanCoordinates.region_fov_coordinates[region_id]:
-                self.navigationViewer.deregister_fov_to_image(coord[0], coord[1])
+            self.navigationViewer.deregister_fovs_from_image(self.scanCoordinates.region_fov_coordinates[region_id])
 
         # Handle the changed value
         val_edit = self.table_location_list.item(row, column).text()
@@ -4928,8 +4927,7 @@ class WellplateMultiPointWidget(QFrame):
                 self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
 
                 # Register FOVs with navigation viewer
-                for x, y in coords:
-                    self.navigationViewer.register_fov_to_image(x, y)
+                self.navigationViewer.register_fovs_to_image(coords)
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
 
@@ -5426,8 +5424,7 @@ class MultiPointWithFluidicsWidget(QFrame):
                 self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
 
                 # Register FOVs with navigation viewer
-                for x, y in coords:
-                    self.navigationViewer.register_fov_to_image(x, y)
+                self.navigationViewer.register_fovs_to_image(coords)
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
 

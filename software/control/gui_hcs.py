@@ -444,11 +444,9 @@ class HighContentScreeningGui(QMainWindow):
 
         def scan_coordinate_callback(update: ScanCoordinatesUpdate):
             if isinstance(update, AddScanCoordinateRegion):
-                # Use batch method for performance - single display update instead of N updates
-                self.navigationViewer.register_fovs_to_image_batch(update.fov_centers)
+                self.navigationViewer.register_fovs_to_image(update.fov_centers)
             elif isinstance(update, RemovedScanCoordinateRegion):
-                # Use batch method for performance - single display update instead of N updates
-                self.navigationViewer.deregister_fovs_from_image_batch(update.fov_centers)
+                self.navigationViewer.deregister_fovs_from_image(update.fov_centers)
             elif isinstance(update, ClearedScanCoordinates):
                 self.navigationViewer.clear_overlay()
             if self.focusMapWidget:
