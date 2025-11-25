@@ -1,5 +1,6 @@
 import os
 import json
+import yaml
 import logging
 import sys
 from typing import Optional
@@ -4582,8 +4583,8 @@ class WellplateMultiPointWidget(QFrame):
                 "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
             }
 
-            with open("cache/multipoint_widget_config.json", "w") as f:
-                json.dump(settings, f, indent=2)
+            with open("cache/multipoint_widget_config.yaml", "w") as f:
+                yaml.dump(settings, f, default_flow_style=False, sort_keys=False)
 
         except Exception as e:
             self._log.warning(f"Failed to save acquisition settings to cache: {e}")
@@ -4591,12 +4592,12 @@ class WellplateMultiPointWidget(QFrame):
     def load_multipoint_widget_config_from_cache(self):
         """Load acquisition settings from cache if it exists"""
         try:
-            cache_file = "cache/multipoint_widget_config.json"
+            cache_file = "cache/multipoint_widget_config.yaml"
             if not os.path.exists(cache_file):
                 return
 
             with open(cache_file, "r") as f:
-                settings = json.load(f)
+                settings = yaml.safe_load(f)
 
             # Block signals to prevent triggering save during load
             self.checkbox_xy.blockSignals(True)
