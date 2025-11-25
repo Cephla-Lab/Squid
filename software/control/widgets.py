@@ -4716,6 +4716,10 @@ class WellplateMultiPointWidget(QFrame):
                 background-color: white;
                 color: black;
             }
+            QFrame QComboBox:disabled, QFrame QSpinBox:disabled, QFrame QDoubleSpinBox:disabled {
+                background-color: palette(button);
+                color: palette(disabled-text);
+            }
             QFrame QComboBox QAbstractItemView {
                 background-color: white;
                 color: black;
@@ -5301,6 +5305,7 @@ class WellplateMultiPointWidget(QFrame):
                 self.entry_minZ.valueChanged.connect(self.update_Nz)
                 self.entry_maxZ.valueChanged.connect(self.update_Nz)
                 self.entry_deltaZ.valueChanged.connect(self.update_Nz)
+                self.update_Nz()
             else:
                 self.entry_minZ.valueChanged.disconnect(self.update_z_max)
                 self.entry_maxZ.valueChanged.disconnect(self.update_z_min)
@@ -5681,6 +5686,16 @@ class WellplateMultiPointWidget(QFrame):
             # Restore mode dropdown states based on their respective checkboxes
             self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
             self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
+
+            # Restore Z controls based on Z mode
+            if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range":
+                # In Set Range mode, Nz should be disabled
+                self.entry_NZ.setEnabled(False)
+
+            # Restore coverage based on XY mode
+            if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position":
+                # In Current Position mode, coverage should be disabled (N/A)
+                self.entry_well_coverage.setEnabled(False)
 
     def disable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(False)
