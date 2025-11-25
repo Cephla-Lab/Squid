@@ -1433,7 +1433,13 @@ class HighContentScreeningGui(QMainWindow):
             self.movement_updater.position_after_move.connect(self.wellplateMultiPointWidget.update_live_coordinates)
             self.is_live_scan_grid_on = True
         else:
-            self.movement_updater.position_after_move.disconnect(self.wellplateMultiPointWidget.update_live_coordinates)
+            try:
+                self.movement_updater.position_after_move.disconnect(
+                    self.wellplateMultiPointWidget.update_live_coordinates
+                )
+            except TypeError:
+                # Signal was not connected, ignore
+                pass
             self.is_live_scan_grid_on = False
 
     def connectSlidePositionController(self):

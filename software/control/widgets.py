@@ -4191,7 +4191,7 @@ class WellplateMultiPointWidget(QFrame):
         # self.combobox_shape.currentTextChanged.connect(self.on_shape_changed)
 
         self.btn_save_scan_coordinates = QPushButton("Save Coordinates")
-        self.btn_load_scan_coordinates = QPushButton("Load Coordinates")
+        self.btn_load_scan_coordinates = QPushButton("Load New Coords")
 
         # Add text area for showing loaded file path
         self.text_loaded_coordinates = QLineEdit()
@@ -4713,6 +4713,13 @@ class WellplateMultiPointWidget(QFrame):
             }
             QFrame QComboBox, QFrame QSpinBox, QFrame QDoubleSpinBox {
                 background-color: white;
+                color: black;
+            }
+            QFrame QComboBox QAbstractItemView {
+                background-color: white;
+                color: black;
+                selection-background-color: palette(highlight);
+                selection-color: palette(highlighted-text);
             }
             QFrame QPushButton {
                 background-color: #FFD9B3;
@@ -4851,8 +4858,15 @@ class WellplateMultiPointWidget(QFrame):
 
         # Handle coordinate restoration/clearing based on mode
         if mode == "Load Coordinates":
-            # Restore cached coordinates when switching to Load Coordinates mode
-            self.restore_cached_coordinates()
+            # If no file has been loaded previously, open file dialog immediately
+            if self.cached_loaded_coordinates_df is None:
+                # Use QTimer to defer the file dialog so UI updates complete first
+                from qtpy.QtCore import QTimer
+
+                QTimer.singleShot(100, self.on_load_coordinates_clicked)
+            else:
+                # Restore cached coordinates when switching to Load Coordinates mode
+                self.restore_cached_coordinates()
         else:
             # When switching away from Load Coordinates, clear coordinates and update based on new mode
             if hasattr(self, "_previous_xy_mode") and self._previous_xy_mode == "Load Coordinates":
