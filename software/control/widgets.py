@@ -4069,6 +4069,9 @@ class WellplateMultiPointWidget(QFrame):
         # Track XY mode before unchecking, for restoration when re-checking
         self._xy_mode_before_uncheck = None
 
+        # Track loading from cache
+        self._loading_from_cache = False
+
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.set_default_scan_size()
@@ -5128,7 +5131,9 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_NZ.setValue(1)
         self.entry_minZ.setValue(current_z)
         self.entry_maxZ.setValue(current_z)
+        self.combobox_z_mode.blockSignals(True)
         self.combobox_z_mode.setCurrentText("From Bottom")
+        self.combobox_z_mode.blockSignals(False)
 
     def show_z_controls(self, visible):
         """Show Z-related controls"""
@@ -5293,7 +5298,9 @@ class WellplateMultiPointWidget(QFrame):
                 if widget:
                     widget.setVisible(is_visible)
 
-        # Disable reflection autofocus checkbox if Z-range is visible
+        # Disable and uncheck reflection autofocus checkbox if Z-range is visible
+        if is_visible:
+            self.checkbox_withReflectionAutofocus.setChecked(False)
         self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
@@ -5664,7 +5671,7 @@ class WellplateMultiPointWidget(QFrame):
         self.btn_startAcquisition.setText("Start\n Acquisition ")
         if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
             self.focusMapWidget.disable_updating_focus_points_on_signal()
-        # self.reset_coordinates() # unclear whether this is needed
+        self.reset_coordinates()
         if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
             self.focusMapWidget.update_focus_point_display()
             self.focusMapWidget.enable_updating_focus_points_on_signal()
