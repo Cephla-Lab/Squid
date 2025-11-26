@@ -208,6 +208,7 @@ class TucsenCameraModel(enum.Enum):
     ARIES_6506 = "ARIES-6506"
     ARIES_6510 = "ARIES-6510"
     LIBRA_25 = "LIBRA-25"
+    LIBRA_22 = "LIBRA-22"
 
     @staticmethod
     def from_string(cam_string: str) -> Optional["TucsenCameraModel"]:
