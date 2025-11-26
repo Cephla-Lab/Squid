@@ -268,7 +268,7 @@ class LaserAutofocusController(QObject):
         self.laserAFSettingManager.save_configurations(self.objectiveStore.current_objective)
         self._log.info("Updated threshold properties")
 
-    def measure_displacement(self) -> float:
+    def measure_displacement(self, search_for_spot: bool = True) -> float:
         """Measure the displacement of the laser spot from the reference position.
 
         Returns:
@@ -301,7 +301,74 @@ class LaserAutofocusController(QObject):
 
         if result is None:
             self._log.error("Failed to detect laser spot during displacement measurement")
-            return finish_with(float("nan"))  # Signal invalid measurement
+            if search_for_spot:
+                # Search for spot by scanning through z range, centered at current position
+                search_step_um = 10  # Step size in micrometers
+
+                # Get current z position in um
+                current_z_um = self.stage.get_pos().z_mm * 1000
+
+                # Calculate absolute search bounds
+                lower_bound_um = current_z_um - self.laser_af_properties.laser_af_range
+                upper_bound_um = current_z_um + self.laser_af_properties.laser_af_range
+
+                # Find first search position (round up to next multiple of step)
+                first_pos_um = math.ceil(lower_bound_um / search_step_um) * search_step_um
+
+                # Generate list of search positions (aligned to step size)
+                search_positions_um = []
+                pos = first_pos_um
+                while pos <= upper_bound_um:
+                    search_positions_um.append(pos)
+                    pos += search_step_um
+
+                self._log.info(f"Starting spot search: positions {search_positions_um} um")
+
+                spot_found = False
+                current_pos_um = current_z_um  # Track where we are
+
+                # turn on the laser
+                try:
+                    self.microcontroller.turn_on_AF_laser()
+                    self.microcontroller.wait_till_operation_is_completed()
+                except TimeoutError:
+                    self._log.exception("Turning on AF laser timed out, failed to measure displacement.")
+                    return finish_with(float("nan"))
+
+                for target_pos_um in search_positions_um:
+                    # Move to target position
+                    move_um = target_pos_um - current_pos_um
+                    if move_um != 0:
+                        self._move_z(move_um)
+                        current_pos_um = target_pos_um
+
+                    # Get one image and attempt spot detection
+                    result = self._get_laser_spot_centroid()
+
+                    if result is not None:
+                        self._log.info(f"Spot found at z position {target_pos_um} um")
+                        spot_found = True
+                        break
+
+                if not spot_found:
+                    # Move back to original position
+                    move_back_um = current_z_um - current_pos_um
+                    if move_back_um != 0:
+                        self._move_z(move_back_um)
+                    self._log.warning("Spot not found during z search")
+
+                # Turn off laser
+                try:
+                    self.microcontroller.turn_off_AF_laser()
+                    self.microcontroller.wait_till_operation_is_completed()
+                except TimeoutError:
+                    self._log.exception("Failed to turn off AF laser after spot search")
+
+                if not spot_found:
+                    return finish_with(float("nan"))
+
+            else:
+                return finish_with(float("nan"))
 
         x, y = result
         # calculate displacement
