@@ -294,6 +294,8 @@ PID_ARGUMENTS axes_pid_arg[4];
 
 // home safety margin
 uint16_t home_safety_margin[4] = {4, 4, 4, 4};
+// unit is mm
+float safety_position[4] = {0, 0, 1.40, 0};
 
 /***************************************************************************************************/
 /******************************************** timing ***********************************************/
@@ -1898,7 +1900,7 @@ void loop() {
       {
         home_X_found = true;
         us_since_x_home_found = 0;
-        tmc4361[x].xmin = tmc4361A_readInt(&tmc4361[x], TMC4361A_X_LATCH_RD);
+        tmc4361[x].xmin = tmc4361A_readInt(&tmc4361[x], TMC4361A_X_LATCH_RD) + tmc4361A_xmmToMicrosteps(&tmc4361[x], safety_position[x]);
         // tmc4361A_writeInt(&tmc4361[x], TMC4361A_X_TARGET, tmc4361[x].xmin);
         tmc4361A_moveTo(&tmc4361[x], tmc4361[x].xmin);
         X_commanded_movement_in_progress = true;
@@ -1912,7 +1914,7 @@ void loop() {
       {
         home_X_found = true;
         us_since_x_home_found = 0;
-        tmc4361[x].xmax = tmc4361A_readInt(&tmc4361[x], TMC4361A_X_LATCH_RD);
+        tmc4361[x].xmax = tmc4361A_readInt(&tmc4361[x], TMC4361A_X_LATCH_RD) - tmc4361A_xmmToMicrosteps(&tmc4361[x], safety_position[x]);
         // tmc4361A_writeInt(&tmc4361[x], TMC4361A_X_TARGET, tmc4361[x].xmax);
         tmc4361A_moveTo(&tmc4361[x], tmc4361[x].xmax);
         X_commanded_movement_in_progress = true;
@@ -1929,7 +1931,7 @@ void loop() {
       {
         home_Y_found = true;
         us_since_y_home_found = 0;
-        tmc4361[y].xmin = tmc4361A_readInt(&tmc4361[y], TMC4361A_X_LATCH_RD);
+        tmc4361[y].xmin = tmc4361A_readInt(&tmc4361[y], TMC4361A_X_LATCH_RD) + tmc4361A_xmmToMicrosteps(&tmc4361[y], safety_position[y]);
         // tmc4361A_writeInt(&tmc4361[y], TMC4361A_X_TARGET, tmc4361[y].xmin);
         tmc4361A_moveTo(&tmc4361[y], tmc4361[y].xmin);
         Y_commanded_movement_in_progress = true;
@@ -1943,7 +1945,7 @@ void loop() {
       {
         home_Y_found = true;
         us_since_y_home_found = 0;
-        tmc4361[y].xmax = tmc4361A_readInt(&tmc4361[y], TMC4361A_X_LATCH_RD);
+        tmc4361[y].xmax = tmc4361A_readInt(&tmc4361[y], TMC4361A_X_LATCH_RD) - tmc4361A_xmmToMicrosteps(&tmc4361[y], safety_position[y]);
         // tmc4361A_writeInt(&tmc4361[y], TMC4361A_X_TARGET, tmc4361[y].xmax);
         tmc4361A_moveTo(&tmc4361[y], tmc4361[y].xmax);
         Y_commanded_movement_in_progress = true;
@@ -1960,7 +1962,7 @@ void loop() {
       {
         home_Z_found = true;
         us_since_z_home_found = 0;
-        tmc4361[z].xmin = tmc4361A_readInt(&tmc4361[z], TMC4361A_X_LATCH_RD);
+        tmc4361[z].xmin = tmc4361A_readInt(&tmc4361[z], TMC4361A_X_LATCH_RD) + tmc4361A_xmmToMicrosteps(&tmc4361[z], safety_position[z]);
         // tmc4361A_writeInt(&tmc4361[z], TMC4361A_X_TARGET, tmc4361[z].xmin);
         tmc4361A_moveTo(&tmc4361[z], tmc4361[z].xmin);
         Z_commanded_movement_in_progress = true;
@@ -1974,7 +1976,7 @@ void loop() {
       {
         home_Z_found = true;
         us_since_z_home_found = 0;
-        tmc4361[z].xmax = tmc4361A_readInt(&tmc4361[z], TMC4361A_X_LATCH_RD);
+        tmc4361[z].xmax = tmc4361A_readInt(&tmc4361[z], TMC4361A_X_LATCH_RD) - tmc4361A_xmmToMicrosteps(&tmc4361[z], safety_position[z]);
         //tmc4361A_writeInt(&tmc4361[z], TMC4361A_X_TARGET, tmc4361[z].xmax);
         tmc4361A_moveTo(&tmc4361[z], tmc4361[z].xmax);
         Z_commanded_movement_in_progress = true;
@@ -2016,7 +2018,7 @@ void loop() {
   }
 
   // finish homing
-  if (is_homing_X && home_X_found && ( tmc4361A_currentPosition(&tmc4361[x]) == tmc4361A_targetPosition(&tmc4361[x]) || us_since_x_home_found > 500 * 1000 ) )
+  if (is_homing_X && home_X_found && ( tmc4361A_currentPosition(&tmc4361[x]) == tmc4361A_targetPosition(&tmc4361[x]) || us_since_x_home_found > 1000 * 1000 ) )
   {
     tmc4361A_setCurrentPosition(&tmc4361[x], 0);
     if (stage_PID_enabled[AXIS_X])
@@ -2028,7 +2030,7 @@ void loop() {
     if (is_homing_XY == false)
       mcu_cmd_execution_in_progress = false;
   }
-  if (is_homing_Y && home_Y_found && ( tmc4361A_currentPosition(&tmc4361[y]) == tmc4361A_targetPosition(&tmc4361[y]) || us_since_y_home_found > 500 * 1000 ) )
+  if (is_homing_Y && home_Y_found && ( tmc4361A_currentPosition(&tmc4361[y]) == tmc4361A_targetPosition(&tmc4361[y]) || us_since_y_home_found > 1000 * 1000 ) )
   {
     tmc4361A_setCurrentPosition(&tmc4361[y], 0);
     if (stage_PID_enabled[AXIS_Y])
@@ -2040,7 +2042,7 @@ void loop() {
     if (is_homing_XY == false)
       mcu_cmd_execution_in_progress = false;
   }
-  if (is_homing_Z && home_Z_found && ( tmc4361A_currentPosition(&tmc4361[z]) == tmc4361A_targetPosition(&tmc4361[z]) || us_since_z_home_found > 500 * 1000 ) )
+  if (is_homing_Z && home_Z_found && ( tmc4361A_currentPosition(&tmc4361[z]) == tmc4361A_targetPosition(&tmc4361[z]) || us_since_z_home_found > 1000 * 1000 ) )
   {
     tmc4361A_setCurrentPosition(&tmc4361[z], 0);
     if (stage_PID_enabled[AXIS_Z])
