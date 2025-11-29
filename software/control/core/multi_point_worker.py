@@ -29,7 +29,7 @@ from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.logging
 import control.core.job_processing
-from control.core.job_processing import CaptureInfo, SaveImageJob, Job, JobImage, JobRunner, JobResult
+from control.core.job_processing import CaptureInfo, SaveImageJob, SaveOMETiffJob, AcquisitionInfo, Job, JobImage, JobRunner, JobResult
 from squid.config import CameraPixelFormat
 
 
@@ -97,6 +97,18 @@ class MultiPointWorker:
         self._physical_size_z_um = self.deltaZ if self.NZ > 1 else None
         self.timestamp_acquisition_started = acquisition_parameters.acquisition_start_time
 
+        self.acquisition_info = AcquisitionInfo(
+            total_time_points=self.Nt,
+            total_z_levels=self.NZ,
+            total_channels=len(self.selected_configurations),
+            channel_names=[cfg.name for cfg in self.selected_configurations],
+            experiment_path=self.experiment_path,
+            time_increment_s=self._time_increment_s,
+            physical_size_z_um=self._physical_size_z_um,
+            physical_size_x_um=self._pixel_size_um,
+            physical_size_y_um=self._pixel_size_um,
+        )
+
         self.time_point = 0
         self.af_fov_count = 0
         self.num_fovs = 0
@@ -136,7 +148,13 @@ class MultiPointWorker:
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
 
-        job_classes = [SaveImageJob]
+        self._current_round_images = {}
+
+        job_classes = []
+        if FILE_SAVING_OPTION == FileSavingOption.OME_TIFF:
+            job_classes.append(SaveOMETiffJob)
+        else:
+            job_classes.append(SaveImageJob)
         if extra_job_classes:
             job_classes.extend(extra_job_classes)
 
@@ -657,15 +675,9 @@ class MultiPointWorker:
                 fov=fov,
                 configuration_idx=config_idx,
                 time_point=self.time_point,
-                total_time_points=self.Nt,
-                total_z_levels=self.NZ,
-                total_channels=len(self.selected_configurations),
-                channel_names=[cfg.name for cfg in self.selected_configurations],
-                experiment_path=self.experiment_path,
-                time_increment_s=self._time_increment_s,
-                physical_size_z_um=self._physical_size_z_um,
-                physical_size_x_um=self._pixel_size_um,
-                physical_size_y_um=self._pixel_size_um,
+                configuration_idx=config_idx,
+                time_point=self.time_point,
+                acquisition_info=self.acquisition_info,
             )
             self._current_capture_info = current_capture_info
         with self._timing.get_timer("send_trigger"):
@@ -749,15 +761,9 @@ class MultiPointWorker:
             fov=fov,
             configuration_idx=config.id,
             time_point=self.time_point,
-            total_time_points=self.Nt,
-            total_z_levels=self.NZ,
-            total_channels=len(self.selected_configurations),
-            channel_names=[cfg.name for cfg in self.selected_configurations],
-            experiment_path=self.experiment_path,
-            time_increment_s=self._time_increment_s,
-            physical_size_z_um=self._physical_size_z_um,
-            physical_size_x_um=self._pixel_size_um,
-            physical_size_y_um=self._pixel_size_um,
+            configuration_idx=config.id,
+            time_point=self.time_point,
+            acquisition_info=self.acquisition_info,
         )
 
         if len(i_size) == 3:

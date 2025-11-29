@@ -8,7 +8,6 @@ PIEZO_STEP_UM = 10.0
 import os
 import sys
 import tempfile
-import types
 import warnings
 import xml.etree.ElementTree as ET
 import time
@@ -25,40 +24,12 @@ if str(PROJECT_ROOT) not in sys.path:
 os.chdir(PROJECT_ROOT)
 
 
-def _ensure_dependency_stubs() -> None:
-    """Provide minimal substitutes for optional runtime dependencies."""
-
-    if "cv2" not in sys.modules:
-        cv2_stub = types.ModuleType("cv2")
-        cv2_stub.COLOR_RGB2GRAY = 0
-
-        def _cvt_color(image: np.ndarray, _: int) -> np.ndarray:
-            if image.ndim == 3:
-                return image.mean(axis=-1).astype(image.dtype)
-            return image
-
-        cv2_stub.cvtColor = _cvt_color  # type: ignore[attr-defined]
-        sys.modules["cv2"] = cv2_stub
-
-    if "git" not in sys.modules:
-        git_stub = types.ModuleType("git")
-
-        class _Repo:
-            def __init__(self, *args, **kwargs):
-                raise RuntimeError("gitpython not available in test stub")
-
-        git_stub.Repo = _Repo  # type: ignore[attr-defined]
-        sys.modules["git"] = git_stub
-
-
 @pytest.mark.parametrize("shape", [(64, 48), (32, 32)])
 def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
-    _ensure_dependency_stubs()
-
     # Imports that rely on the stubs and project path
     import control._def as _def
     from control._def import FileSavingOption
-    from control.core.job_processing import SaveImageJob, CaptureInfo, JobImage
+    from control.core.job_processing import SaveOMETiffJob, CaptureInfo, JobImage, AcquisitionInfo
     from control.utils_config import ChannelMode
     import squid.abc
 
@@ -95,6 +66,19 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
             pos_iter = iter(positions)
 
             channel_names = [channel.name for channel in channels]
+            
+            acquisition_info = AcquisitionInfo(
+                total_time_points=total_timepoints,
+                total_z_levels=total_z,
+                total_channels=total_channels,
+                channel_names=channel_names,
+                experiment_path=str(experiment_dir),
+                time_increment_s=1.5,
+                physical_size_z_um=4.5,
+                physical_size_x_um=0.75,
+                physical_size_y_um=0.8,
+            )
+
             for t in range(total_timepoints):
                 time_point_dir = experiment_dir / f"{t:03d}"
                 time_point_dir.mkdir(parents=True, exist_ok=True)
@@ -111,19 +95,11 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                             region_id=1,
                             fov=0,
                             configuration_idx=c,
+                            acquisition_info=acquisition_info,
                             z_piezo_um=float(z) * PIEZO_STEP_UM,
                             time_point=t,
-                            total_time_points=total_timepoints,
-                            total_z_levels=total_z,
-                            total_channels=total_channels,
-                            channel_names=channel_names,
-                            experiment_path=str(experiment_dir),
-                            time_increment_s=1.5,
-                            physical_size_z_um=4.5,
-                            physical_size_x_um=0.75,
-                            physical_size_y_um=0.8,
                         )
-                        job = SaveImageJob(
+                        job = SaveOMETiffJob(
                             capture_info=capture_info,
                             capture_image=JobImage(image_array=image),
                         )
