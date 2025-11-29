@@ -9,12 +9,8 @@ from contextlib import contextmanager
 from typing import Optional, Generic, TypeVar, List, Dict, Any
 from uuid import uuid4
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - platform without fcntl
-    fcntl = None
-
 from dataclasses import dataclass, field
+from filelock import FileLock
 
 import imageio as iio
 import numpy as np
@@ -24,7 +20,20 @@ from control import _def, utils_acquisition
 import squid.abc
 import squid.logging
 from control.utils_config import ChannelMode
-from . import utils_ome_tiff_writer as ome_tiff_writer
+from control.core import utils_ome_tiff_writer as ome_tiff_writer
+
+
+@dataclass
+class AcquisitionInfo:
+    total_time_points: int
+    total_z_levels: int
+    total_channels: int
+    channel_names: List[str]
+    experiment_path: Optional[str] = None
+    time_increment_s: Optional[float] = None
+    physical_size_z_um: Optional[float] = None
+    physical_size_x_um: Optional[float] = None
+    physical_size_y_um: Optional[float] = None
 
 
 # NOTE(imo): We want this to be fast.  But pydantic does not support numpy serialization natively, which means
@@ -40,17 +49,9 @@ class CaptureInfo:
     region_id: int
     fov: int
     configuration_idx: int
+    acquisition_info: Optional[AcquisitionInfo] = None
     z_piezo_um: Optional[float] = None
     time_point: Optional[int] = None
-    total_time_points: Optional[int] = None
-    total_z_levels: Optional[int] = None
-    total_channels: Optional[int] = None
-    channel_names: Optional[List[str]] = None
-    experiment_path: Optional[str] = None
-    time_increment_s: Optional[float] = None
-    physical_size_z_um: Optional[float] = None
-    physical_size_x_um: Optional[float] = None
-    physical_size_y_um: Optional[float] = None
 
 
 @dataclass()
@@ -92,15 +93,9 @@ def _metadata_lock_path(metadata_path: str) -> str:
 
 @contextmanager
 def _acquire_file_lock(lock_path: str):
-    lock_file = open(lock_path, "w")
-    try:
-        if fcntl is not None:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
+    lock = FileLock(lock_path, timeout=10)
+    with lock:
         yield
-    finally:
-        if fcntl is not None:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
-        lock_file.close()
 
 
 class SaveImageJob(Job):
@@ -148,8 +143,6 @@ class SaveImageJob(Job):
                     description=description,
                     extratags=extratags,
                 )
-        elif _def.FILE_SAVING_OPTION == _def.FileSavingOption.OME_TIFF:
-            self._save_ome_tiff(image, info)
         else:
             saved_image = utils_acquisition.save_image(
                 image=image,
@@ -163,6 +156,12 @@ class SaveImageJob(Job):
                 # TODO(imo): Add this back in
                 raise NotImplementedError("Image merging not supported yet")
 
+        return True
+
+
+class SaveOMETiffJob(Job):
+    def run(self) -> bool:
+        self._save_ome_tiff(self.image_array(), self.capture_info)
         return True
 
     def _save_ome_tiff(self, image: np.ndarray, info: CaptureInfo) -> None:
@@ -195,8 +194,8 @@ class SaveImageJob(Job):
                 expected_shape = tuple(metadata["shape"])
                 if expected_shape[-2:] != image.shape[-2:]:
                     raise ValueError("Image dimensions do not match existing OME memmap stack")
-                if not metadata.get("channel_names") and info.channel_names:
-                    metadata["channel_names"] = info.channel_names
+                if info.acquisition_info and not metadata.get("channel_names") and info.acquisition_info.channel_names:
+                    metadata["channel_names"] = info.acquisition_info.channel_names
 
             target_dtype = np.dtype(metadata["dtype"])
             image_to_store = image if image.dtype == target_dtype else image.astype(target_dtype)
