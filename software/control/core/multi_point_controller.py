@@ -97,11 +97,7 @@ class MultiPointController:
         self.selected_configurations = []
         self.scanCoordinates = scan_coordinates
         self.old_images_per_page = 1
-        z_mm_current = self.stage.get_pos().z_mm
-        self.z_range: Tuple[float, float] = (
-            z_mm_current,
-            z_mm_current + self.deltaZ * (self.NZ - 1),
-        )  # (start_mm, end_mm)
+        self.z_range: Tuple[float, float] = None
         self.z_stacking_config = control._def.Z_STACKING_CONFIG
 
         self._start_position: Optional[squid.abc.Pos] = None
@@ -339,6 +335,9 @@ class MultiPointController:
         self._log.info("start multipoint")
         self._start_position = self.stage.get_pos()
 
+        if self.z_range is None:
+            self.z_range = (self._start_position.z_mm, self._start_position.z_mm + self.deltaZ * (self.NZ - 1))
+
         acquisition_scan_coordinates = self.scanCoordinates
         self.run_acquisition_current_fov = False
         if acquire_current_fov:
@@ -467,8 +466,8 @@ class MultiPointController:
                 return
 
         def finish_fn():
-            self.callbacks.signal_acquisition_finished()
             self._on_acquisition_completed()
+            self.callbacks.signal_acquisition_finished()
 
         updated_callbacks = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
 

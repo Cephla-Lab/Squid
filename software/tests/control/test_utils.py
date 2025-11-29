@@ -2,6 +2,8 @@ import control.utils
 import tests.tools
 import pathlib
 import tempfile
+import threading
+import time
 
 
 def test_squid_repo_info():
@@ -11,7 +13,7 @@ def test_squid_repo_info():
 
 import numpy as np
 import pytest
-from control.utils import find_spot_location, SpotDetectionMode, get_available_disk_space
+from control.utils import find_spot_location, SpotDetectionMode, get_available_disk_space, threaded_operation_helper
 
 
 def create_test_image(spot_positions, image_size=(480, 640), spot_size=20):
@@ -184,3 +186,29 @@ def test_timing_manager():
     with tma.get_timer("t2"):
         pass
     assert len(tma.get_timer("t2").get_intervals()) == 1
+
+
+def test_threaded_operation_helper():
+    """Test threaded operation with callback and arguments."""
+    operation_result = []
+    callback_result = []
+
+    def test_operation(arg1, arg2):
+        operation_result.append((arg1, arg2))
+        time.sleep(0.05)
+
+    def test_callback(success, error_msg):
+        callback_result.append((success, error_msg))
+
+    # Execute
+    thread = threaded_operation_helper(test_operation, callback=test_callback, arg1="value1", arg2="value2")
+
+    # Verify thread properties and wait for completion
+    assert isinstance(thread, threading.Thread)
+    assert thread.daemon is True
+    assert thread.name == "test_operation"
+    thread.join(timeout=1.0)
+
+    # Verify results
+    assert operation_result == [("value1", "value2")]
+    assert callback_result == [(True, None)]

@@ -101,6 +101,7 @@ class MultiPointWorker:
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
+        self._last_time_point_z_pos = {}
         self.scan_region_fov_coords_mm = (
             acquisition_parameters.scan_position_information.scan_region_fov_coords_mm.copy()
         )
@@ -163,6 +164,7 @@ class MultiPointWorker:
             start_time = time.perf_counter_ns()
             self.camera.start_streaming()
             this_image_callback_id = self.camera.add_frame_callback(self._image_callback)
+            sleep_time = min(self.dt / 20.0, 0.5)
 
             while self.time_point < self.Nt:
                 # check if abort acquisition has been requested
@@ -203,7 +205,7 @@ class MultiPointWorker:
                         if self.abort_requested_fn():
                             self._log.debug("In run wait loop, abort_acquisition_requested=True")
                             break
-                        self._sleep(0.5)
+                        self._sleep(sleep_time)
 
             elapsed_time = time.perf_counter_ns() - start_time
             self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
@@ -333,8 +335,8 @@ class MultiPointWorker:
 
         self.coordinates_pd = pd.concat([self.coordinates_pd, new_row], ignore_index=True)
 
-    def move_to_coordinate(self, coordinate_mm):
-        print("moving to coordinate", coordinate_mm)
+    def move_to_coordinate(self, coordinate_mm, region_id, fov):
+        self._log.info(f"moving to coordinate {coordinate_mm}")
         x_mm = coordinate_mm[0]
         self.stage.move_x_to(x_mm)
         self._sleep(SCAN_STABILIZATION_TIME_MS_X / 1000)
@@ -344,6 +346,14 @@ class MultiPointWorker:
         self._sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
 
         # check if z is included in the coordinate
+        if (self.do_reflection_af or self.do_autofocus) and self.time_point > 0:
+            if (region_id, fov) in self._last_time_point_z_pos:
+                last_z_mm = self._last_time_point_z_pos[(region_id, fov)]
+                self.move_to_z_level(last_z_mm)
+                self._log.info(f"Moved to last z position {last_z_mm} [mm]")
+                return
+            else:
+                self._log.warning(f"No last z position found for region {region_id}, fov {fov}")
         if len(coordinate_mm) == 3:
             z_mm = coordinate_mm[2]
             self.move_to_z_level(z_mm)
@@ -394,7 +404,7 @@ class MultiPointWorker:
             self.num_fovs = len(coordinates)
             self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
 
-            for fov_count, coordinate_mm in enumerate(coordinates):
+            for fov, coordinate_mm in enumerate(coordinates):
                 # Just so the job result queues don't get too big, check and print a summary of intermediate results here
                 with self._timing.get_timer("job result summaries"):
                     if not self._summarize_runner_outputs() and self._abort_on_failed_job:
@@ -403,9 +413,9 @@ class MultiPointWorker:
                         return
 
                 with self._timing.get_timer("move_to_coordinate"):
-                    self.move_to_coordinate(coordinate_mm)
+                    self.move_to_coordinate(coordinate_mm, region_id, fov)
                 with self._timing.get_timer("acquire_at_position"):
-                    self.acquire_at_position(region_id, current_path, fov_count)
+                    self.acquire_at_position(region_id, current_path, fov)
 
                 if self.abort_requested_fn():
                     self.handle_acquisition_abort(current_path)
@@ -429,6 +439,9 @@ class MultiPointWorker:
             acquire_pos = self.stage.get_pos()
             metadata = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
             self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
+
+            if z_level == 0 and (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
+                self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
 
             # laser af characterization mode
             if self.laser_auto_focus_controller and self.laser_auto_focus_controller.characterization_mode:
@@ -686,7 +699,7 @@ class MultiPointWorker:
 
     def _sleep(self, sec):
         time_to_sleep = max(sec, 1e-6)
-        self._log.debug(f"Sleeping for {time_to_sleep} [s]")
+        # self._log.debug(f"Sleeping for {time_to_sleep} [s]")
         time.sleep(time_to_sleep)
 
     def acquire_rgb_image(self, config, file_ID, current_path, k, region_id, fov):

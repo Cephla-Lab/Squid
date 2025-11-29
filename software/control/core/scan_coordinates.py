@@ -131,10 +131,9 @@ class ScanCoordinates:
         return well_centers
 
     def set_live_scan_coordinates(self, x_mm, y_mm, scan_size_mm, overlap_percent, shape):
-        if shape != "Manual" and self.format == "glass slide":
-            if self.region_centers:
-                self.clear_regions()
-            self.add_region("current", x_mm, y_mm, scan_size_mm, overlap_percent, shape)
+        if self.region_centers:
+            self.clear_regions()
+        self.add_region("current", x_mm, y_mm, scan_size_mm, overlap_percent, shape)
 
     def set_well_coordinates(self, scan_size_mm, overlap_percent, shape):
         new_region_centers = self.get_selected_wells()
@@ -173,10 +172,9 @@ class ScanCoordinates:
                     self.region_shapes[region_name] = "Manual"
                     self.region_fov_coordinates[region_name] = scan_coordinates
                     self._log.info(f"Added Manual Region: {region_name}")
-            if scan_coordinates:
-                self._update_callback(
-                    AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
-                )
+                    self._update_callback(
+                        AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
+                    )
         else:
             self._log.info("No Manual ROI found")
 
@@ -309,7 +307,7 @@ class ScanCoordinates:
             for j in range(Nx):
                 x = center_x - grid_width_mm / 2 + j * step_size_mm
                 if self.validate_coordinates(x, y):
-                    row.append((x, y))
+                    row.append((x, y, center_z))
 
             if self.fov_pattern == "S-Pattern" and i % 2 == 1:  # reverse even rows
                 row.reverse()
