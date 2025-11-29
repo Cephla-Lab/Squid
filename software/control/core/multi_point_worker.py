@@ -29,7 +29,16 @@ from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.logging
 import control.core.job_processing
-from control.core.job_processing import CaptureInfo, SaveImageJob, SaveOMETiffJob, AcquisitionInfo, Job, JobImage, JobRunner, JobResult
+from control.core.job_processing import (
+    CaptureInfo,
+    SaveImageJob,
+    SaveOMETiffJob,
+    AcquisitionInfo,
+    Job,
+    JobImage,
+    JobRunner,
+    JobResult,
+)
 from squid.config import CameraPixelFormat
 
 
@@ -165,7 +174,11 @@ class MultiPointWorker:
         self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
         for job_class in job_classes:
             self._log.info(f"Creating job runner for {job_class.__name__} jobs")
-            job_runner = control.core.job_processing.JobRunner(self.acquisition_info) if Acquisition.USE_MULTIPROCESSING else None
+            job_runner = (
+                control.core.job_processing.JobRunner(self.acquisition_info)
+                if Acquisition.USE_MULTIPROCESSING
+                else None
+            )
             if job_runner:
                 job_runner.daemon = True
                 job_runner.start()

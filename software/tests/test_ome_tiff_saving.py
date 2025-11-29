@@ -66,7 +66,7 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
             pos_iter = iter(positions)
 
             channel_names = [channel.name for channel in channels]
-            
+
             acquisition_info = AcquisitionInfo(
                 total_time_points=total_timepoints,
                 total_z_levels=total_z,

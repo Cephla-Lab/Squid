@@ -160,7 +160,7 @@ class SaveImageJob(Job):
 
 class SaveOMETiffJob(Job):
     acquisition_info: Optional[AcquisitionInfo] = None  # Injected by JobRunner
-    
+
     def run(self) -> bool:
         if self.acquisition_info is None:
             raise ValueError("SaveOMETiffJob requires acquisition_info to be set by JobRunner")
@@ -278,7 +278,7 @@ class JobRunner(multiprocessing.Process):
         # Inject acquisition_info into SaveOMETiffJob instances
         if isinstance(job, SaveOMETiffJob) and self._acquisition_info is not None:
             job.acquisition_info = self._acquisition_info
-        
+
         self._input_queue.put_nowait(job)
 
         return True

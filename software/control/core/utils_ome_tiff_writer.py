@@ -73,7 +73,7 @@ def validate_capture_info(info: "CaptureInfo", acq_info: "AcquisitionInfo", imag
         raise ValueError("CaptureInfo.time_point is required for OME-TIFF saving")
     if acq_info is None:
         raise ValueError("AcquisitionInfo is required for OME-TIFF saving")
-    
+
     if acq_info.total_time_points is None:
         raise ValueError("AcquisitionInfo.total_time_points is required for OME-TIFF saving")
     if acq_info.total_z_levels is None:
@@ -107,7 +107,9 @@ def initialize_metadata(acq_info: "AcquisitionInfo", info: "CaptureInfo", image:
         CHANNEL_NAMES_KEY: channel_names,
         WRITTEN_INDICES_KEY: [],
         SAVED_COUNT_KEY: 0,
-        EXPECTED_COUNT_KEY: int(acq_info.total_time_points) * int(acq_info.total_z_levels) * int(acq_info.total_channels),
+        EXPECTED_COUNT_KEY: int(acq_info.total_time_points)
+        * int(acq_info.total_z_levels)
+        * int(acq_info.total_channels),
         PLANES_KEY: {},
         START_TIME_KEY: info.capture_time,
         COMPLETED_KEY: False,
