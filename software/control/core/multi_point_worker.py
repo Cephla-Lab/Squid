@@ -675,8 +675,6 @@ class MultiPointWorker:
                 fov=fov,
                 configuration_idx=config_idx,
                 time_point=self.time_point,
-                configuration_idx=config_idx,
-                time_point=self.time_point,
                 acquisition_info=self.acquisition_info,
             )
             self._current_capture_info = current_capture_info
@@ -759,8 +757,6 @@ class MultiPointWorker:
             file_id=file_ID,
             region_id=region_id,
             fov=fov,
-            configuration_idx=config.id,
-            time_point=self.time_point,
             configuration_idx=config.id,
             time_point=self.time_point,
             acquisition_info=self.acquisition_info,
