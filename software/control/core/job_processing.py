@@ -49,7 +49,6 @@ class CaptureInfo:
     region_id: int
     fov: int
     configuration_idx: int
-    acquisition_info: Optional[AcquisitionInfo] = None
     z_piezo_um: Optional[float] = None
     time_point: Optional[int] = None
 
@@ -160,26 +159,30 @@ class SaveImageJob(Job):
 
 
 class SaveOMETiffJob(Job):
+    acquisition_info: Optional[AcquisitionInfo] = None  # Injected by JobRunner
+    
     def run(self) -> bool:
+        if self.acquisition_info is None:
+            raise ValueError("SaveOMETiffJob requires acquisition_info to be set by JobRunner")
         self._save_ome_tiff(self.image_array(), self.capture_info)
         return True
 
     def _save_ome_tiff(self, image: np.ndarray, info: CaptureInfo) -> None:
         # with reference to Talley's https://github.com/pymmcore-plus/pymmcore-plus/blob/main/src/pymmcore_plus/mda/handlers/_ome_tiff_writer.py and Christoph's https://forum.image.sc/t/how-to-create-an-image-series-ome-tiff-from-python/42730/7
-        ome_tiff_writer.validate_capture_info(info, image)
+        ome_tiff_writer.validate_capture_info(info, self.acquisition_info, image)
 
-        ome_folder = ome_tiff_writer.ome_output_folder(info)
+        ome_folder = ome_tiff_writer.ome_output_folder(self.acquisition_info, info)
         ome_tiff_writer.ensure_output_directory(ome_folder)
 
         base_name = ome_tiff_writer.ome_base_name(info)
         output_path = os.path.join(ome_folder, base_name + ".ome.tiff")
-        metadata_path = ome_tiff_writer.metadata_temp_path(info, base_name)
+        metadata_path = ome_tiff_writer.metadata_temp_path(self.acquisition_info, info, base_name)
         lock_path = _metadata_lock_path(metadata_path)
 
         with _acquire_file_lock(lock_path):
             metadata = ome_tiff_writer.load_metadata(metadata_path)
             if metadata is None:
-                metadata = ome_tiff_writer.initialize_metadata(info, image)
+                metadata = ome_tiff_writer.initialize_metadata(self.acquisition_info, info, image)
                 target_dtype = np.dtype(metadata["dtype"])
                 if os.path.exists(output_path):
                     os.remove(output_path)
@@ -194,8 +197,8 @@ class SaveOMETiffJob(Job):
                 expected_shape = tuple(metadata["shape"])
                 if expected_shape[-2:] != image.shape[-2:]:
                     raise ValueError("Image dimensions do not match existing OME memmap stack")
-                if info.acquisition_info and not metadata.get("channel_names") and info.acquisition_info.channel_names:
-                    metadata["channel_names"] = info.acquisition_info.channel_names
+                if not metadata.get("channel_names") and self.acquisition_info.channel_names:
+                    metadata["channel_names"] = self.acquisition_info.channel_names
 
             target_dtype = np.dtype(metadata["dtype"])
             image_to_store = image if image.dtype == target_dtype else image.astype(target_dtype)
@@ -261,9 +264,10 @@ class ThrowImmediatelyJob(Job):
 
 
 class JobRunner(multiprocessing.Process):
-    def __init__(self):
+    def __init__(self, acquisition_info: Optional[AcquisitionInfo] = None):
         super().__init__()
         self._log = squid.logging.get_logger(__class__.__name__)
+        self._acquisition_info = acquisition_info
 
         self._input_queue: multiprocessing.Queue = multiprocessing.Queue()
         self._input_timeout = 1.0
@@ -271,6 +275,10 @@ class JobRunner(multiprocessing.Process):
         self._shutdown_event: multiprocessing.Event = multiprocessing.Event()
 
     def dispatch(self, job: Job):
+        # Inject acquisition_info into SaveOMETiffJob instances
+        if isinstance(job, SaveOMETiffJob) and self._acquisition_info is not None:
+            job.acquisition_info = self._acquisition_info
+        
         self._input_queue.put_nowait(job)
 
         return True

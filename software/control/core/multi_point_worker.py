@@ -165,7 +165,7 @@ class MultiPointWorker:
         self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
         for job_class in job_classes:
             self._log.info(f"Creating job runner for {job_class.__name__} jobs")
-            job_runner = control.core.job_processing.JobRunner() if Acquisition.USE_MULTIPROCESSING else None
+            job_runner = control.core.job_processing.JobRunner(self.acquisition_info) if Acquisition.USE_MULTIPROCESSING else None
             if job_runner:
                 job_runner.daemon = True
                 job_runner.start()
@@ -675,7 +675,6 @@ class MultiPointWorker:
                 fov=fov,
                 configuration_idx=config_idx,
                 time_point=self.time_point,
-                acquisition_info=self.acquisition_info,
             )
             self._current_capture_info = current_capture_info
         with self._timing.get_timer("send_trigger"):
@@ -759,7 +758,6 @@ class MultiPointWorker:
             fov=fov,
             configuration_idx=config.id,
             time_point=self.time_point,
-            acquisition_info=self.acquisition_info,
         )
 
         if len(i_size) == 3:

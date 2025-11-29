@@ -15,7 +15,7 @@ import tifffile
 from control import utils
 
 if TYPE_CHECKING:  # pragma: no cover - type-checking only
-    from .job_processing import CaptureInfo
+    from .job_processing import CaptureInfo, AcquisitionInfo
 
 # Constants for metadata keys
 WRITTEN_INDICES_KEY = "written_indices"
@@ -38,13 +38,13 @@ PHYSICAL_SIZE_Y_KEY = "physical_size_y"
 PHYSICAL_SIZE_Y_UNIT_KEY = "physical_size_y_unit"
 
 
-def ome_output_folder(info: "CaptureInfo") -> str:
-    base_dir = info.acquisition_info.experiment_path or os.path.dirname(info.save_directory)
+def ome_output_folder(acq_info: "AcquisitionInfo", info: "CaptureInfo") -> str:
+    base_dir = acq_info.experiment_path or os.path.dirname(info.save_directory)
     return os.path.join(base_dir, "ome_tiff")
 
 
-def metadata_temp_path(info: "CaptureInfo", base_name: str) -> str:
-    base_identifier = info.acquisition_info.experiment_path or info.save_directory
+def metadata_temp_path(acq_info: "AcquisitionInfo", info: "CaptureInfo", base_name: str) -> str:
+    base_identifier = acq_info.experiment_path or info.save_directory
     key = f"{base_identifier}:{base_name}"
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
     return os.path.join(tempfile.gettempdir(), f"ome_{digest}_metadata.json")
@@ -68,13 +68,12 @@ def ome_base_name(info: "CaptureInfo") -> str:
     return f"{info.region_id}_{info.fov:0{_def.FILE_ID_PADDING}}"
 
 
-def validate_capture_info(info: "CaptureInfo", image: np.ndarray) -> None:
+def validate_capture_info(info: "CaptureInfo", acq_info: "AcquisitionInfo", image: np.ndarray) -> None:
     if info.time_point is None:
         raise ValueError("CaptureInfo.time_point is required for OME-TIFF saving")
-    if info.acquisition_info is None:
-        raise ValueError("CaptureInfo.acquisition_info is required for OME-TIFF saving")
+    if acq_info is None:
+        raise ValueError("AcquisitionInfo is required for OME-TIFF saving")
     
-    acq_info = info.acquisition_info
     if acq_info.total_time_points is None:
         raise ValueError("AcquisitionInfo.total_time_points is required for OME-TIFF saving")
     if acq_info.total_z_levels is None:
@@ -85,8 +84,7 @@ def validate_capture_info(info: "CaptureInfo", image: np.ndarray) -> None:
         raise NotImplementedError("OME-TIFF saving currently supports 2D grayscale images only")
 
 
-def initialize_metadata(info: "CaptureInfo", image: np.ndarray) -> Dict[str, Any]:
-    acq_info = info.acquisition_info
+def initialize_metadata(acq_info: "AcquisitionInfo", info: "CaptureInfo", image: np.ndarray) -> Dict[str, Any]:
     channel_names = acq_info.channel_names or []
     time_increment = float(acq_info.time_increment_s) if acq_info.time_increment_s is not None else None
     time_increment_unit = "s" if time_increment is not None else None

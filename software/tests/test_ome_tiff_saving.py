@@ -95,7 +95,6 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                             region_id=1,
                             fov=0,
                             configuration_idx=c,
-                            acquisition_info=acquisition_info,
                             z_piezo_um=float(z) * PIEZO_STEP_UM,
                             time_point=t,
                         )
@@ -103,6 +102,8 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                             capture_info=capture_info,
                             capture_image=JobImage(image_array=image),
                         )
+                        # Manually inject acquisition_info (normally done by JobRunner)
+                        job.acquisition_info = acquisition_info
                         assert job.run()
 
             output_path = experiment_dir / "ome_tiff" / "1_0.ome.tiff"
