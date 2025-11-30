@@ -158,7 +158,12 @@ class SimulatedCamera(AbstractCamera):
         self.set_black_level(0)
         self._acquisition_mode = None
         self.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
-        width, height = self.BINNING_TO_RESOLUTION[(1, 1)]
+        # Set the initial ROI based on 1x1 binning
+        # Temporarily set binning to (1,1) to get the unbinned resolution
+        temp_binning = self._binning
+        self._binning = (1, 1)
+        width, height = self.get_resolution()
+        self._binning = temp_binning
         self._roi = (0, 0, width, height)
         self._temperature_setpoint = None
         self._continue_streaming = False
@@ -244,6 +249,13 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def get_resolution(self) -> Tuple[int, int]:
+        # If crop dimensions are specified in config, use them to calculate resolution
+        if self._config.crop_width is not None and self._config.crop_height is not None:
+            binning_x, binning_y = self._binning
+            width = int(self._config.crop_width / binning_x)
+            height = int(self._config.crop_height / binning_y)
+            return (width, height)
+        # Otherwise fall back to hardcoded resolutions
         return self.BINNING_TO_RESOLUTION[self._binning]
 
     @debug_log
@@ -361,7 +373,7 @@ class SimulatedCamera(AbstractCamera):
     @debug_log
     def _next_frame(self):
         (binning_x, binning_y) = self.get_binning()
-        width, height = self.BINNING_TO_RESOLUTION[(binning_x, binning_y)]
+        width, height = self.get_resolution()
 
         if self.get_frame_id() == 0:
             if self.get_pixel_format() == CameraPixelFormat.MONO8:
