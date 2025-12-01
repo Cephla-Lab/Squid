@@ -422,7 +422,6 @@ class ImageEventHandler(PySpin.ImageEventHandler):
         self._processor.SetColorProcessing(PySpin.SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR)
 
     def OnImageEvent(self, raw_image):
-
         if raw_image.IsIncomplete():
             print("Image incomplete with image status %i ..." % raw_image.GetImageStatus())
             return
@@ -918,15 +917,13 @@ class FLIRCamera(AbstractCamera):
 
     def start_streaming(self):
         """Start camera frame streaming."""
-        self.camera.Init()
-
         if not self.is_streaming:
             try:
-                self.camera.BeginAcquisition()
                 # Register the event handler for callbacks
                 if not self.callback_is_enabled:
                     self.camera.RegisterEventHandler(self.image_event_handler)
                     self.callback_is_enabled = True
+                self.camera.BeginAcquisition()
             except PySpin.SpinnakerException as ex:
                 raise CameraError(f"Spinnaker exception during start_streaming: {str(ex)}")
         if self.camera.IsStreaming():

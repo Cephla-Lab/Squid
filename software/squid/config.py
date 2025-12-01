@@ -194,10 +194,8 @@ class FLIRCameraModel(enum.Enum):
         """
         Attempts to convert the given string to a FLIR camera model.  This ignores all letter cases.
         """
-        # Replace hyphens with underscores for enum lookup
         try:
-            normalized = cam_string.upper().replace("-", "_")
-            return FLIRCameraModel[normalized]
+            return FLIRCameraModel[cam_string.upper()]
         except KeyError:
             return None
 
