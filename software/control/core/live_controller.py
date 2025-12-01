@@ -164,7 +164,7 @@ class LiveController:
                 elif self.trigger_mode == TriggerMode.HARDWARE:
                     self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(-self.camera.get_strobe_time())
                 self.microscope.addons.emission_filter_wheel.set_filter_wheel_position(
-                    {1: self.currentConfiguration.emission_filter_position}, blocking=False
+                    {1: self.currentConfiguration.emission_filter_position}
                 )
             except Exception as e:
                 print("not setting emission filter position due to " + str(e))
