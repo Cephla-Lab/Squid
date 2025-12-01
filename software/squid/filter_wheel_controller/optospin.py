@@ -15,6 +15,7 @@ class Optospin(AbstractFilterWheelController):
     DEFAULT_TIMEOUT = 1
     DEFAULT_MAX_RETRIES = 3
     DEFAULT_RETRY_DELAY = 0.5
+    NUM_FILTER_SLOTS = 6
 
     def __init__(self, config: OptospinFilterWheelConfig):
         self.log = squid.logging.get_logger(self.__class__.__name__)
@@ -74,7 +75,11 @@ class Optospin(AbstractFilterWheelController):
     def get_filter_wheel_info(self, index: int) -> FilterWheelInfo:
         if index not in self._available_filter_wheels:
             raise ValueError(f"Filter wheel index {index} not found")
-        return FilterWheelInfo(index=index, number_of_slots=8, slot_names=[str(i) for i in range(1, 9)])
+        return FilterWheelInfo(
+            index=index,
+            number_of_slots=self.NUM_FILTER_SLOTS,
+            slot_names=[str(i) for i in range(1, self.NUM_FILTER_SLOTS + 1)],
+        )
 
     def home(self, index: Optional[int] = None):
         pass
