@@ -38,9 +38,9 @@ export PATH=$JAVA_HOME/bin:$PATH
 
 <details>
 <summary>Installing drivers and libraries for FLIR camera support</summary>
-Go to FLIR's page for downloading their Spinnaker SDK (https://www.flir.com/support/products/spinnaker-sdk/) and register.
+Go to Teledyne's page for downloading Spinnaker SDK (https://www.teledynevisionsolutions.com/support/support-center/software-firmware-downloads/iis/spinnaker-sdk-download/spinnaker-sdk--download-files/) and register.
 
-Open the `software/drivers and libraries/flir` folder in terminal and run the following
+Open the `software/drivers and libraries/flir` folder in terminal and run the following (for Ubuntu 22.04)
 ```
 sh ./install_spinnaker.sh
 sh ./install_PySpin.sh
