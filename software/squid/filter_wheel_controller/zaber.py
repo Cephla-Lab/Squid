@@ -31,7 +31,6 @@ class ZaberFilterController(AbstractFilterWheelController):
         self.current_index = 1
         self.serial = self._initialize_serial(config.serial_number)
         self._config = config
-        self._homing_started = threading.Event()
         self._available_filter_wheels = []
         self._delay_offset_ms = 0
 
@@ -93,14 +92,8 @@ class ZaberFilterController(AbstractFilterWheelController):
                 success, message = self._parse_response(response)
 
                 if success:
-                    if self._homing_started.is_set():
-                        self._homing_started.clear()
                     return True, message
                 elif message.startswith("BUSY"):
-                    if self._homing_started.is_set():
-                        self.log.info("Waiting for homing to complete before sending new command")
-                        self.wait_for_homing_complete()
-                        self._homing_started.clear()
                     time.sleep(0.1)  # Wait a bit if the device is busy
                     continue
                 else:
@@ -246,17 +239,21 @@ class ZaberFilterController(AbstractFilterWheelController):
         Start the homing sequence for the filter device.
 
         This function initiates the homing process but does not wait for it to complete.
-        Use wait_for_homing_complete() to wait for the homing process to finish.
+        Use _wait_for_homing_complete() to wait for the homing process to finish.
 
         Raises:
             FilterControllerError: If the homing command fails to initiate.
         """
+        # We will always run a complete homing sequence now, instead of initiating homing and then calling
+        #  _wait_for_homing_complete(). This is for making it easier to comply with the abstract interface,
+        # and we don't actually benefit much from saving the homing time.
         success, _ = self._send_command("/home")
         if not success:
             raise FilterControllerError("Failed to initiate homing sequence")
-        self._homing_started.set()
+        if not self._wait_for_homing_complete():
+            raise TimeoutError("Filter device homing failed")
 
-    def wait_for_homing_complete(self, timeout: int = 50) -> bool:
+    def _wait_for_homing_complete(self, timeout: int = 50) -> bool:
         """
         Wait for the homing sequence to complete.
 
@@ -280,24 +277,6 @@ class ZaberFilterController(AbstractFilterWheelController):
                 self.move_to_offset_position()
                 return True
         return False
-
-    def complete_homing_sequence(self, timeout: int = 50):
-        """
-        Perform a complete homing sequence.
-
-        This method starts the homing sequence and waits for it to complete.
-
-        Args:
-            timeout (int): Maximum time to wait for homing to complete, in seconds.
-
-        Raises:
-            FilterControllerError: If homing fails to start or complete.
-            TimeoutError: If homing doesn't complete within the specified timeout.
-        """
-        self.home()
-        if not self.wait_for_homing_complete(timeout):
-            raise TimeoutError("Filter device homing failed")
-        self._homing_started.clear()
 
     def set_delay_offset_ms(self, delay_offset_ms: float):
         self._delay_offset_ms = delay_offset_ms
