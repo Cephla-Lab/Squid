@@ -1339,6 +1339,10 @@ void loop() {
                   }
                   break;
                 case AXIS_Z:
+                  // when homing, set the MICROSTEPPING value to 256, for avoiding to cause sharp noisy during Z axis moving
+                  tmc4361A_tmc2660_config(&tmc4361[z], (Z_MOTOR_RMS_CURRENT_mA / 1000.0)*R_sense_z / 0.2298, Z_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z, 256);
+                  tmc4361A_tmc2660_update(&tmc4361[z]);
+
                   if (stage_PID_enabled[AXIS_Z] == 1)
                     tmc4361A_set_PID(&tmc4361[AXIS_Z], PID_DISABLE);
                   tmc4361A_disableVirtualLimitSwitch(&tmc4361[z], -1);
@@ -2051,6 +2055,10 @@ void loop() {
     Z_commanded_movement_in_progress = false;
     Z_commanded_target_position = 0;
     mcu_cmd_execution_in_progress = false;
+
+    // restore the MICROSTEPPING_Z to setting value
+    tmc4361A_tmc2660_config(&tmc4361[z], (Z_MOTOR_RMS_CURRENT_mA / 1000.0)*R_sense_z / 0.2298, Z_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z, MICROSTEPPING_Z);
+    tmc4361A_tmc2660_update(&tmc4361[z]);
   }
 
   if (is_homing_W && home_W_found && ( tmc4361A_currentPosition(&tmc4361[w]) == tmc4361A_targetPosition(&tmc4361[w]) || us_since_w_home_found > 500 * 1000 ) )
