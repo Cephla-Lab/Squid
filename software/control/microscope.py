@@ -177,6 +177,8 @@ class MicroscopeAddons:
             fw_config = squid.config.get_filter_wheel_config()
             self.emission_filter_wheel.initialize(fw_config.indices)
             self.emission_filter_wheel.home()
+        if self.piezo_stage:
+            self.piezo_stage.home()
 
 
 class LowLevelDrivers:
