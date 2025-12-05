@@ -28,6 +28,16 @@ from control.widgets.acquisition import (
     WellplateMultiPointWidget,
     MultiPointWithFluidicsWidget,
 )
+from control.widgets.display import (
+    StatsDisplayWidget,
+    FocusMapWidget,
+    NapariLiveWidget,
+    NapariMultiChannelWidget,
+    NapariMosaicDisplayWidget,
+    WaveformDisplay,
+    PlotWidget,
+    SurfacePlotWidget,
+)
 
 __all__ = [
     # base
@@ -54,4 +64,13 @@ __all__ = [
     "FlexibleMultiPointWidget",
     "WellplateMultiPointWidget",
     "MultiPointWithFluidicsWidget",
+    # display
+    "StatsDisplayWidget",
+    "FocusMapWidget",
+    "NapariLiveWidget",
+    "NapariMultiChannelWidget",
+    "NapariMosaicDisplayWidget",
+    "WaveformDisplay",
+    "PlotWidget",
+    "SurfacePlotWidget",
 ]
