@@ -20,7 +20,8 @@ import imageio as iio
 import numpy as np
 import tifffile
 
-from control import _def, utils_acquisition
+from control import _def
+from control.core import utils_acquisition
 import squid.abc
 import squid.logging
 from control.utils_config import ChannelMode

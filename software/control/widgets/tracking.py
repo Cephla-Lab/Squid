@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
 from qtpy.QtGui import QPainter, QBrush, QPen, QColor
 
 from control._def import *
+from control.core.tracking import TrackingController
 
 
 class TrackingControllerWidget(QFrame):

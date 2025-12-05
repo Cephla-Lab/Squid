@@ -3,6 +3,8 @@ import numpy as np
 
 import squid.logging
 import pyqtgraph as pg
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import napari
 from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
 from qtpy.QtCore import Signal, Qt, QTimer

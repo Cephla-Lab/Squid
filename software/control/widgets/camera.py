@@ -473,7 +473,7 @@ class LiveControlWidget(QFrame):
         self.entry_exposureTime.setMinimum(self.camera.get_exposure_limits()[0])
         self.entry_exposureTime.setMaximum(self.camera.get_exposure_limits()[1])
         self.entry_exposureTime.setSingleStep(1)
-        self.entry_exposureTime.setValue(self.currentConfiguration.exposure_time_ms)
+        self.entry_exposureTime.setValue(self.currentConfiguration.exposure_time)
 
         self.entry_analogGain = QDoubleSpinBox()
         self.entry_analogGain.setKeyboardTracking(False)
@@ -600,7 +600,7 @@ class LiveControlWidget(QFrame):
 
     def update_ui_for_mode(self, configuration):
         self.entry_exposureTime.blockSignals(True)
-        self.entry_exposureTime.setValue(configuration.exposure_time_ms)
+        self.entry_exposureTime.setValue(configuration.exposure_time)
         self.entry_exposureTime.blockSignals(False)
 
         self.entry_analogGain.blockSignals(True)
@@ -617,7 +617,7 @@ class LiveControlWidget(QFrame):
 
     def update_camera_exposure_time(self, exposure_time):
         if not self.is_switching_mode:
-            self.currentConfiguration.exposure_time_ms = exposure_time
+            self.currentConfiguration.exposure_time = exposure_time
             self.liveController.set_microscope_mode(self.currentConfiguration)
 
     def update_camera_analog_gain(self, analog_gain):
@@ -638,6 +638,34 @@ class LiveControlWidget(QFrame):
     def set_trigger_mode(self, trigger_mode):
         self.dropdown_triggerManu.setCurrentText(trigger_mode)
         self.liveController.set_trigger_mode(self.dropdown_triggerManu.currentText())
+
+    def refresh_mode_list(self):
+        """Refresh the mode dropdown when profile changes."""
+        current_text = self.dropdown_modeSelection.currentText()
+        self.dropdown_modeSelection.clear()
+        for mode in self.channelConfigurationManager.get_channel_configurations_for_objective(
+            self.objectiveStore.current_objective
+        ):
+            self.dropdown_modeSelection.addItem(mode.name)
+        # Try to restore the previous selection if it still exists
+        index = self.dropdown_modeSelection.findText(current_text)
+        if index >= 0:
+            self.dropdown_modeSelection.setCurrentIndex(index)
+        elif self.dropdown_modeSelection.count() > 0:
+            self.dropdown_modeSelection.setCurrentIndex(0)
+
+    def update_camera_settings(self):
+        """Update UI to reflect current camera settings."""
+        self.entry_exposureTime.blockSignals(True)
+        self.entry_exposureTime.setValue(self.camera.get_exposure_time())
+        self.entry_exposureTime.blockSignals(False)
+
+        self.entry_analogGain.blockSignals(True)
+        try:
+            self.entry_analogGain.setValue(self.camera.get_analog_gain())
+        except NotImplementedError:
+            pass
+        self.entry_analogGain.blockSignals(False)
 
 
 class RecordingWidget(QFrame):

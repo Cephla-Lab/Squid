@@ -5,7 +5,7 @@ import math
 import time
 
 import squid.logging
-from qtpy.QtCore import Signal, Qt, QTimer
+from qtpy.QtCore import Signal, Qt, QTimer, QVariant
 from qtpy.QtWidgets import (
     QWidget,
     QFrame,
@@ -29,7 +29,7 @@ from qtpy.QtWidgets import (
     QMessageBox,
     QFileDialog,
 )
-from qtpy.QtGui import QColor, QBrush
+from qtpy.QtGui import QColor, QBrush, QFont
 
 from control._def import *
 from squid.abc import AbstractStage

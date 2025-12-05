@@ -9,7 +9,7 @@ from control.microcontroller import Microcontroller
 from squid.abc import CameraAcquisitionMode, AbstractCamera
 
 from control._def import *
-from control import utils_channel
+from control.core import utils_channel
 
 
 class LiveController:

@@ -11,7 +11,8 @@ from typing import Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 
-from control import utils, utils_acquisition
+from control import utils
+from control.core import utils_acquisition
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
 from control.core.channel_configuration_mananger import ChannelConfigurationManager

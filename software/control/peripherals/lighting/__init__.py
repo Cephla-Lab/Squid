@@ -10,7 +10,7 @@ from control.peripherals.lighting.dragonfly import Dragonfly, Dragonfly_Simulati
 from control.peripherals.lighting.ldi import LDI, LDI_Simulation
 from control.peripherals.lighting.cellx import CellX, CellX_Simulation
 from control.peripherals.lighting.sci_led_array import SciMicroscopyLEDArray, SciMicroscopyLEDArray_Simulation
-from control.peripherals.lighting.celesta import Celesta
+from control.peripherals.lighting.celesta import CELESTA
 
 __all__ = [
     # LED/base illumination
@@ -33,5 +33,5 @@ __all__ = [
     "SciMicroscopyLEDArray",
     "SciMicroscopyLEDArray_Simulation",
     # Celesta
-    "Celesta",
+    "CELESTA",
 ]
