@@ -1,306 +1,853 @@
 # Squid Microscopy Software Architecture (V2)
 
-This version documents the current architecture **and** the gaps between the intended design and what the code actually does. It is meant to be a realistic map for anyone refactoring for robustness, modularity, and easier feature additions.
+This document describes the current architecture of the Squid microscopy software after the v2 reorganization. It reflects the actual implementation as of the `arch_v2` branch.
 
 ## Table of Contents
 
-1. [Scope and Intent](#1-scope-and-intent)
-2. [Overall Project Structure](#2-overall-project-structure)
-3. [Core Modules and Their Responsibilities](#3-core-modules-and-their-responsibilities)
-4. [Entry Points](#4-entry-points)
-5. [Key Classes and Abstractions](#5-key-classes-and-abstractions)
-6. [Hardware Abstraction Layer](#6-hardware-abstraction-layer)
-7. [GUI Architecture](#7-gui-architecture)
+1. [Overview](#1-overview)
+2. [Project Structure](#2-project-structure)
+3. [Package Organization](#3-package-organization)
+4. [Hardware Abstraction Layer](#4-hardware-abstraction-layer)
+5. [Service Layer](#5-service-layer)
+6. [Event System](#6-event-system)
+7. [Application Context](#7-application-context)
 8. [Configuration System](#8-configuration-system)
-9. [Data Flow - Image Acquisition](#9-data-flow---image-acquisition)
-10. [Key Design Patterns](#10-key-design-patterns)
-11. [External Dependencies](#11-external-dependencies)
-12. [Threading and Concurrency](#12-threading-and-concurrency)
-13. [Special Features](#13-special-features)
-14. [Current Gaps vs Intended Architecture](#14-current-gaps-vs-intended-architecture)
+9. [Test Infrastructure](#9-test-infrastructure)
+10. [Data Flow](#10-data-flow)
+11. [Threading Model](#11-threading-model)
+12. [Key Design Patterns](#12-key-design-patterns)
 
 ---
 
-## 1. Scope and Intent
+## 1. Overview
 
-The goal remains a modular microscopy stack with hardware abstractions (`squid/`) sitting under higher-level control (`control/`) and a Qt GUI. In practice, the codebase is mid-migration: global state and legacy drivers are still heavily used. This document calls out both the intended structure and the observed deviations.
+The Squid microscopy software uses a layered architecture:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    GUI Layer                             │
+│              (control/gui_hcs.py, widgets/)              │
+├─────────────────────────────────────────────────────────┤
+│                  Service Layer                           │
+│     (squid/services/ - CameraService, StageService)      │
+├─────────────────────────────────────────────────────────┤
+│                 Controller Layer                         │
+│    (control/core/ - LiveController, MultiPointController)│
+├─────────────────────────────────────────────────────────┤
+│              Hardware Abstraction Layer                  │
+│        (squid/abc.py - AbstractCamera, AbstractStage)    │
+├─────────────────────────────────────────────────────────┤
+│              Hardware Implementations                    │
+│   (control/peripherals/ - cameras/, stage/, lighting/)   │
+├─────────────────────────────────────────────────────────┤
+│              Low-Level Drivers                           │
+│     (control/microcontroller.py, vendor SDKs)            │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Key Principles:**
+- Abstract base classes (ABCs) define hardware contracts
+- Factory functions enable runtime polymorphism
+- Services provide business logic and event publishing
+- Event bus enables decoupled communication
+- Simulation support at every layer
 
 ---
 
-## 2. Overall Project Structure
+## 2. Project Structure
 
 ```
 /Squid
-├── firmware/              # Teensy microcontroller firmware
+├── firmware/                    # Teensy microcontroller firmware
 ├── software/
-│   ├── control/           # Main control logic and legacy drivers
-│   ├── squid/             # Modern abstraction layer (currently imports control globals)
-│   ├── configurations/    # Hardware configuration files (.ini)
-│   ├── tools/             # Utility scripts
-│   ├── tests/             # Unit and integration tests
-│   ├── drivers and libraries/  # Manufacturer SDKs
-│   └── fluidics_v2/       # Fluidics module (git submodule)
-└── docs/                  # Documentation
-```
-
-**Primary Entry Point**: `/software/main_hcs.py` (High Content Screening GUI launcher)
-
----
-
-## 3. Core Modules and Their Responsibilities
-
-### A. squid Package (Hardware Abstraction Layer – partial)
-
-Located in `/software/squid/` and intended to define abstract interfaces. Today it still imports `control._def` and other control utilities at import time, so it is not standalone.
-
-| File | Purpose |
-|------|---------|
-| `abc.py` | Abstract base classes defining hardware contracts |
-| `config.py` | Pydantic models wrapping values pulled from `control._def` |
-| `camera/utils.py` | Factory for camera implementations (falls back to legacy drivers) |
-| `stage/cephla.py` | Cephla-designed stage with microcontroller |
-| `stage/prior.py` | Prior Scientific stage implementation |
-| `filter_wheel_controller/` | Filter wheel implementations (cephla, zaber, optospin, dragonfly) |
-
-**Key Abstractions in `abc.py`:**
-- `AbstractFilterWheelController` — filter wheel interface
-- `LightSource` — light source abstraction
-- `AbstractStage` — stage interface
-- `AbstractCamera` — camera interface with frame callbacks
-- `CameraFrame` — dataclass for frames with metadata
-
-### B. control Package (Legacy & Main Business Logic)
-
-Located in `/software/control/` — primary application logic and most drivers.
-
-**Core Hardware Drivers:**
-- `camera_*.py` — camera-specific implementations (FLIR, Toupcam, Hamamatsu, IDS, Tucsen, Andor, Photometrics, TIS)
-- `microcontroller.py` — Teensy serial protocol
-- `serial_peripherals.py` — XLight, Dragonfly, Celesta, NL5, CellX
-- `lighting.py` — illumination controller abstraction
-- `piezo.py` — objective piezo stage
-
-**High-Level Managers:**
-- `core.py` — `QtStreamHandler`, `ImageSaver`, `TrackingController`, `AutoFocusController`
-- `live_controller.py` — live view controller with streaming/triggering
-- `multi_point_controller.py` — multi-point orchestrator
-- `multi_point_worker.py` — acquisition worker thread
-- `auto_focus_controller.py` — autofocus logic
-- `laser_auto_focus_controller.py` — laser autofocus (displacement measurement)
-- `job_processing.py` — job queue for parallel image saving
-- `stream_handler.py` — frame streaming with FPS throttling
-
-**Configuration Managers:**
-- `channel_configuration_mananger.py` — channel (wavelength) configuration
-- `configuration_mananger.py` — profile/objective configs
-- `contrast_manager.py` — contrast adjustments
-- `laser_af_settings_manager.py` — laser AF parameters
-- `objective_store.py` — objective metadata
-- `scan_coordinates.py` — scan coordinate management
-
-**GUI Modules:**
-- `gui_hcs.py` — main GUI window
-- `widgets.py` — GUI widgets (camera settings, live control, recording, etc.)
-
-**Utilities:**
-- `_def.py` — global configuration constants (populated at import from `.ini`)
-- `utils.py` — helper functions
-- `utils_config.py` — channel mode/config structures
-- `utils_channel.py` — channel utilities
-- `utils_acquisition.py` — acquisition utilities
-
----
-
-## 4. Entry Points
-
-**Primary Entry**: `/software/main_hcs.py`
-
-```
-1. Parse CLI args (--simulation, --live-only, --verbose)
-2. Setup logging via squid.logging
-3. Load configuration from .ini into control._def (module-level globals)
-4. Build Microscope from global config (no DI)
-5. Create HighContentScreeningGui window
-6. Show GUI and start Qt event loop
-7. Optional: start terminal console for debugging
+│   ├── squid/                   # Core abstractions and services
+│   │   ├── abc.py               # Abstract base classes
+│   │   ├── application.py       # ApplicationContext (DI container)
+│   │   ├── events.py            # Event bus and event definitions
+│   │   ├── registry.py          # Plugin registry system
+│   │   ├── logging.py           # Logging utilities
+│   │   ├── config/              # Configuration models
+│   │   ├── services/            # Service layer
+│   │   └── utils/               # Utilities
+│   │
+│   ├── control/                 # Hardware control and GUI
+│   │   ├── microscope.py        # Microscope orchestrator
+│   │   ├── microcontroller.py   # Microcontroller serial protocol
+│   │   ├── _def.py              # Machine configuration (from .ini)
+│   │   ├── peripherals/         # Hardware implementations
+│   │   │   ├── cameras/         # Camera drivers
+│   │   │   ├── stage/           # Stage implementations
+│   │   │   ├── lighting/        # Light source drivers
+│   │   │   └── filter_wheel/    # Filter wheel controllers
+│   │   ├── core/                # High-level controllers
+│   │   ├── gui_hcs.py           # Main GUI window
+│   │   └── widgets/             # GUI widgets
+│   │
+│   ├── tests/                   # Test suite
+│   │   ├── unit/                # Unit tests
+│   │   ├── integration/         # Integration tests
+│   │   ├── manual/              # Manual verification tests
+│   │   └── conftest.py          # Shared fixtures
+│   │
+│   └── configurations/          # Hardware configuration files (.ini)
+│
+└── docs/                        # Documentation
 ```
 
 ---
 
-## 5. Key Classes and Abstractions
+## 3. Package Organization
 
-### Core Abstraction Hierarchy (intended)
+### 3.1 squid Package
 
-```
-AbstractCamera (abc.py)
-├── ToupcamCamera (legacy)
-├── FlirCamera (legacy)
-├── HamamatsuCamera (legacy)
-├── AndorCamera (legacy)
-├── PhotometricsCamera (legacy)
-├── TucsenCamera (legacy)
-├── SimulatedCamera (AbstractCamera)
-└── DefaultCamera (AbstractCamera)
+The `squid/` package contains core abstractions independent of specific hardware:
 
-AbstractStage (abc.py)
-├── CephlaStage
-└── PriorStage
+| Module | Purpose |
+|--------|---------|
+| `abc.py` | Abstract base classes (AbstractCamera, AbstractStage, etc.) |
+| `application.py` | ApplicationContext - dependency injection container |
+| `events.py` | EventBus and event type definitions |
+| `registry.py` | Generic registry for extensible hardware support |
+| `logging.py` | Structured logging utilities |
+| `config/` | Pydantic configuration models |
+| `services/` | Service layer (CameraService, StageService, etc.) |
+| `utils/` | Utility modules (image processing, worker management) |
 
-AbstractFilterWheelController (abc.py)
-├── SquidFilterWheelController
-├── ZaberFilterWheelController
-├── OptospinFilterWheelController
-└── DragonflyFilterWheelController
+### 3.2 control Package
 
-LightSource (abc.py)
-├── various implementations
-```
+The `control/` package contains hardware implementations and application logic:
 
-### Key Data Classes
-
-- `CameraFrame` — frame data, ID, timestamp, pixel format
-- `Pos` — x_mm, y_mm, z_mm, theta_rad
-- `StageState` — busy flag
-- `CaptureInfo` — capture metadata
-
-### Controller Classes
-
-- `Microscope` — composes stage, camera, illumination, addons, low-level drivers
-- `MicroscopeAddons` — optional hardware (filters, fluidics, piezo, etc.)
-- `LowLevelDrivers` — microcontroller wrapper
-- `LiveController` — live streaming/trigger orchestration
-- `MultiPointController` — multi-point orchestrator
-- `MultiPointWorker` — worker performing acquisition
-- `AutoFocusController` — autofocus logic
-- `LaserAutofocusController` — laser-based displacement
+| Module | Purpose |
+|--------|---------|
+| `microscope.py` | Microscope class - composes all hardware |
+| `microcontroller.py` | Teensy serial communication |
+| `_def.py` | Machine-specific configuration (loaded from .ini) |
+| `peripherals/` | Hardware driver implementations |
+| `core/` | High-level controllers (LiveController, etc.) |
+| `gui_hcs.py` | Main GUI window |
+| `widgets/` | GUI widget implementations |
+| `processing/` | Image processing utilities |
 
 ---
 
-## 6. Hardware Abstraction Layer
+## 4. Hardware Abstraction Layer
 
-- Factory pattern in `squid.camera.utils.get_camera()`; dynamically imports camera drivers.
-- Stages: `CephlaStage` (microcontroller) and `PriorStage` (serial).
-- Filter wheels: Squid, Zaber, Optospin, Dragonfly.
-- Light sources: LDI (serial), CELESTA (Ethernet), Andor lasers (USB), LED arrays (PWM), spinning disk.
-- Addons: objective piezo, autofocus camera, fluidics, LED array (SciMicroscopy).
+### 4.1 Abstract Base Classes
 
-**Reality check:** Many camera drivers are legacy and do not subclass `AbstractCamera`; the factory falls back to them. HAL modules import `control` globals, so the layer is not cleanly separated yet.
+Defined in `squid/abc.py`:
+
+```python
+# Camera interface
+class AbstractCamera(ABC):
+    def start_streaming(self) -> None: ...
+    def stop_streaming(self) -> None: ...
+    def send_trigger(self) -> None: ...
+    def read_frame(self) -> Optional[CameraFrame]: ...
+    def set_exposure_time(self, ms: float) -> None: ...
+    def set_analog_gain(self, gain: float) -> None: ...
+    # ... additional methods for ROI, binning, pixel format
+
+# Stage interface
+class AbstractStage(ABC):
+    def move_x(self, rel_mm: float, blocking: bool = True) -> None: ...
+    def move_x_to(self, abs_mm: float, blocking: bool = True) -> None: ...
+    def get_pos(self) -> Pos: ...
+    def home(self, x=False, y=False, z=False, theta=False) -> None: ...
+    # ... additional methods for all axes
+
+# Filter wheel interface
+class AbstractFilterWheelController(ABC):
+    def set_filter_wheel_position(self, positions: Dict[int, int]) -> None: ...
+    def home(self) -> None: ...
+    # ...
+
+# Light source interface
+class LightSource(ABC):
+    def set_intensity(self, channel: int, intensity: float) -> None: ...
+    def set_shutter(self, channel: int, on: bool) -> None: ...
+    # ...
+```
+
+### 4.2 Key Data Classes
+
+```python
+@dataclass
+class Pos:
+    x_mm: float
+    y_mm: float
+    z_mm: float
+    theta_rad: Optional[float]
+
+@dataclass
+class CameraFrame:
+    data: np.ndarray
+    frame_id: int
+    timestamp: float
+    pixel_format: PixelFormat
+
+@dataclass
+class StageState:
+    busy: bool
+```
+
+### 4.3 Hardware Implementations
+
+#### Cameras (`control/peripherals/cameras/`)
+
+| Implementation | File | Description |
+|----------------|------|-------------|
+| SimulatedCamera | `camera_utils.py` | Full simulation for testing |
+| DefaultCamera | `base.py` | Daheng Galaxy cameras (gxipy) |
+| ToupcamCamera | `toupcam.py` | Toupcam USB cameras |
+| HamamatsuCamera | `hamamatsu.py` | Hamamatsu DCAM cameras |
+| FlirCamera | `flir.py` | FLIR/Point Grey cameras |
+| AndorCamera | `andor.py` | Andor cameras |
+| PhotometricsCamera | `photometrics.py` | Photometrics cameras |
+| TucsenCamera | `tucsen.py` | Tucsen cameras |
+| IDSCamera | `ids.py` | IDS cameras |
+| TISCamera | `tis.py` | The Imaging Source cameras |
+
+#### Stages (`control/peripherals/stage/`)
+
+| Implementation | File | Description |
+|----------------|------|-------------|
+| SimulatedStage | `simulated.py` | Full simulation for testing |
+| CephlaStage | `cephla.py` | Cephla-designed stage via microcontroller |
+| PriorStage | `prior.py` | Prior Scientific stages |
+
+#### Filter Wheels (`control/peripherals/filter_wheel/`)
+
+| Implementation | File | Description |
+|----------------|------|-------------|
+| SimulatedFilterWheelController | `utils.py` | Full simulation |
+| SquidFilterWheel | `cephla.py` | Cephla via microcontroller |
+| ZaberFilterController | `zaber.py` | Zaber filter wheels |
+| Optospin | `optospin.py` | OptoSpin filter wheels |
+
+#### Lighting (`control/peripherals/lighting/`)
+
+| Implementation | File | Description |
+|----------------|------|-------------|
+| IlluminationController | `led.py` | Coordinates all light sources |
+| XLight | `xlight.py` | CrestOptics spinning disk |
+| Dragonfly | `dragonfly.py` | Andor spinning disk |
+| LDI | `ldi.py` | 89 North LDI laser system |
+| CELESTA | `celesta.py` | Lumencor CELESTA |
+| CellX | `cellx.py` | CellX LED system |
+| SciMicroscopyLEDArray | `sci_led_array.py` | SCI LED array |
+
+### 4.4 Factory Functions
+
+Factory functions enable runtime selection of implementations:
+
+```python
+# Camera factory
+from control.peripherals.cameras.camera_utils import get_camera
+camera = get_camera(config, simulated=True)
+
+# Stage factory
+from control.peripherals.stage.stage_utils import get_stage
+stage = get_stage(stage_config, microcontroller=micro, simulated=True)
+
+# Filter wheel factory
+from control.peripherals.filter_wheel.utils import get_filter_wheel_controller
+fw = get_filter_wheel_controller(config, microcontroller=micro, simulated=True)
+```
 
 ---
 
-## 7. GUI Architecture
+## 5. Service Layer
 
-- Qt5/qtpy, pyqtgraph for visualization; optional Napari integration.
-- Main window: `HighContentScreeningGui` (`control/gui_hcs.py`).
-- Widgets: live control, autofocus, filters, camera settings, recording, navigation, wellplate scanning, fluidics, stats, laser AF, etc.
-- Signal-based communication (PyQt signals) for thread-safe updates: movement, frame updates, acquisition events.
+The service layer (`squid/services/`) provides business logic on top of hardware abstractions. It acts as the primary interface between GUI widgets and hardware.
+
+### 5.1 Design Philosophy
+
+**Direct Method Calls (Not Command Events)**
+
+The service layer uses direct method calls rather than command events:
+
+```
+# What we do (simple, debuggable):
+Widget → service.set_exposure_time(100) → Hardware → publish(ExposureTimeChanged)
+
+# NOT this (too much indirection):
+Widget → publish(SetExposureTimeCommand) → Service → Hardware → publish(ExposureTimeChanged)
+```
+
+**Rationale:**
+- Simpler to understand and debug
+- Already working pattern in codebase
+- Command events add indirection without clear benefit for this use case
+- State events (service→GUI) continue working for synchronization
+
+### 5.2 Service Architecture
+
+```python
+class BaseService(ABC):
+    """Base class for all services."""
+    def __init__(self, event_bus: EventBus):
+        self._event_bus = event_bus
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+    def publish(self, event: Event) -> None:
+        """Publish event to the bus."""
+        self._event_bus.publish(event)
+
+    def subscribe(self, event_type: Type[E], handler: Callable) -> None:
+        """Subscribe to events (kept for future scripting API)."""
+        self._event_bus.subscribe(event_type, handler)
+
+    def shutdown(self) -> None: ...
+
+class ServiceRegistry:
+    """Central registry for all services."""
+    def register(self, name: str, service: BaseService) -> None: ...
+    def get(self, name: str) -> Optional[BaseService]: ...
+    def shutdown(self) -> None: ...
+```
+
+### 5.3 Available Services
+
+| Service | Purpose | Key Methods |
+|---------|---------|-------------|
+| `CameraService` | Camera operations with validation and events | `set_exposure_time`, `set_analog_gain`, `set_region_of_interest`, `set_binning`, `set_pixel_format`, `set_temperature`, `set_white_balance_gains`, `set_black_level` |
+| `StageService` | Stage movement with position events | `move_x`, `move_y`, `move_z`, `move_to`, `move_theta`, `move_theta_to`, `home`, `get_position`, `get_config` |
+| `PeripheralService` | DAC and digital I/O operations | `set_dac`, `set_pin` |
+
+### 5.4 Service Methods Pattern
+
+Each service method follows this pattern:
+
+```python
+def set_exposure_time(self, ms: float) -> None:
+    """Set camera exposure time with validation and event publishing."""
+    # 1. Validate/clamp input
+    limits = self._camera.get_exposure_limits()
+    clamped = max(limits[0], min(ms, limits[1]))
+
+    # 2. Log the operation
+    self._log.debug(f"Setting exposure time: {clamped}ms")
+
+    # 3. Call hardware
+    self._camera.set_exposure_time(clamped)
+
+    # 4. Publish state event (for GUI synchronization)
+    self.publish(ExposureTimeChanged(exposure_time_ms=clamped))
+```
+
+### 5.5 Using Services in Widgets
+
+Widgets receive services via constructor injection with backward compatibility:
+
+```python
+class CameraSettingsWidget(QFrame):
+    def __init__(
+        self,
+        camera: AbstractCamera = None,  # Legacy - keep for backward compat
+        camera_service: Optional["CameraService"] = None,
+        ...
+    ):
+        # Use service if provided, otherwise create from legacy param
+        if camera_service is not None:
+            self._service = camera_service
+            self.camera = camera  # Keep for read-only getters
+        elif camera is not None:
+            from squid.services import CameraService
+            self._service = CameraService(camera, event_bus)
+            self.camera = camera
+
+        # Subscribe to state events for synchronization
+        event_bus.subscribe(ExposureTimeChanged, self._on_exposure_changed)
+
+    def _on_exposure_changed(self, event: ExposureTimeChanged):
+        """Handle exposure time changed event."""
+        self.entry_exposureTime.blockSignals(True)
+        self.entry_exposureTime.setValue(event.exposure_time_ms)
+        self.entry_exposureTime.blockSignals(False)
+```
+
+### 5.6 Adding New Service Methods
+
+To add a new method to a service:
+
+1. **Add test first** (`tests/unit/squid/services/test_*_service.py`):
+```python
+def test_set_new_feature(self):
+    mock_camera = Mock()
+    bus = EventBus()
+    service = CameraService(mock_camera, bus)
+
+    service.set_new_feature(value)
+
+    mock_camera.set_new_feature.assert_called_once_with(value)
+```
+
+2. **Add event if needed** (`squid/events.py`):
+```python
+@dataclass
+class NewFeatureChanged(Event):
+    value: float
+```
+
+3. **Implement method** (`squid/services/camera_service.py`):
+```python
+def set_new_feature(self, value: float):
+    """Set new feature."""
+    self._log.debug(f"Setting new feature: {value}")
+    self._camera.set_new_feature(value)
+    self.publish(NewFeatureChanged(value=value))
+```
+
+4. **Update widget** to use `self._service.set_new_feature(value)` instead of direct call.
+
+---
+
+## 6. Event System
+
+The event bus (`squid/events.py`) enables decoupled communication between components.
+
+### 6.1 EventBus
+
+```python
+class EventBus:
+    def subscribe(self, event_type: Type[E], handler: Callable[[E], None]) -> None: ...
+    def unsubscribe(self, event_type: Type[E], handler: Callable[[E], None]) -> None: ...
+    def publish(self, event: Event) -> None: ...
+    def clear(self) -> None: ...
+```
+
+### 6.2 Event Categories
+
+**Command Events (for future scripting API):**
+
+These are defined but not currently used (services use direct method calls instead):
+- `SetExposureTimeCommand`
+- `SetAnalogGainCommand`
+- `MoveStageCommand`
+- `MoveStageToCommand`
+- `HomeStageCommand`
+- `SetDACCommand`
+- `StartLiveCommand`
+- `StopLiveCommand`
+
+**State Events (Service → GUI):**
+
+These are published by services to notify GUI of state changes:
+- `ExposureTimeChanged` - Camera exposure time changed
+- `AnalogGainChanged` - Camera analog gain changed
+- `ROIChanged` - Camera region of interest changed
+- `BinningChanged` - Camera binning changed
+- `PixelFormatChanged` - Camera pixel format changed
+- `StagePositionChanged` - Stage position changed
+- `LiveStateChanged` - Live view started/stopped
+- `DACValueChanged` - DAC output value changed
+
+**Acquisition Events:**
+- `AcquisitionStarted`
+- `AcquisitionFinished`
+- `ImageCaptured`
+
+### 6.3 Usage Example
+
+```python
+from squid.events import event_bus, StagePositionChanged
+
+# Subscribe to events
+def on_stage_moved(event: StagePositionChanged):
+    print(f"Stage at: {event.x_mm}, {event.y_mm}, {event.z_mm}")
+
+event_bus.subscribe(StagePositionChanged, on_stage_moved)
+
+# Publish events (typically from services)
+event_bus.publish(StagePositionChanged(x_mm=10.0, y_mm=20.0, z_mm=5.0))
+```
+
+---
+
+## 7. Application Context
+
+The `ApplicationContext` (`squid/application.py`) serves as a dependency injection container.
+
+### 7.1 Structure
+
+```python
+class ApplicationContext:
+    def __init__(self, simulation: bool = False):
+        self._build_microscope()   # Hardware layer
+        self._build_controllers()  # Controller layer
+        self._build_services()     # Service layer
+
+    @property
+    def microscope(self) -> Microscope: ...
+
+    @property
+    def controllers(self) -> Controllers: ...
+
+    @property
+    def services(self) -> ServiceRegistry: ...
+
+    def create_gui(self) -> HighContentScreeningGui: ...
+
+    def shutdown(self) -> None: ...
+```
+
+### 7.2 Controllers Container
+
+```python
+@dataclass
+class Controllers:
+    live: LiveController
+    stream_handler: StreamHandler
+    multipoint: Optional[MultiPointController] = None
+    channel_config_manager: Optional[ChannelConfigurationManager] = None
+    objective_store: Optional[ObjectiveStore] = None
+```
+
+### 7.3 Usage
+
+```python
+# Create application
+context = ApplicationContext(simulation=True)
+
+# Access components
+camera = context.microscope.camera
+stage_service = context.services.get('stage')
+
+# Create and show GUI
+gui = context.create_gui()
+gui.show()
+
+# Shutdown
+context.shutdown()
+```
 
 ---
 
 ## 8. Configuration System
 
-**Where config actually comes from**
-- INI files under `/software/configurations/` loaded into `control/_def.py` at import time (module-level globals).
-- `squid/config.py` wraps those globals into Pydantic models **once** at import; values are not re-validated per-run.
-- `conf_attribute_reader()` (`control/_def.py`) coerces strings to Python types but bypasses strict validation.
-- Cache files under `cache/` record last-used config path and sample/objective selections.
+### 8.1 Configuration Sources
 
-**Implications**
-- Configuration is effectively a process-global singleton; multiple microscopes or per-session overrides aren’t supported without reload.
-- Mutating `_def` during import means order of imports influences runtime state.
-- Pydantic models provide structure but not enforcement of source data (values are already coerced and stored globally).
+1. **INI files** (`configurations/*.ini`) - Machine-specific settings
+2. **`control/_def.py`** - Global configuration loaded at import time
+3. **`squid/config/`** - Pydantic models for type-safe configuration
 
-Key parameters (as in v1): camera type/format/binning/ROI, stage limits, illumination hardware, filter wheels, autofocus, multipoint defaults, fluidics, piezo.
+### 8.2 Configuration Models
+
+```python
+# squid/config/
+class CameraConfig(BaseModel):
+    camera_type: CameraType
+    default_pixel_format: PixelFormat
+    default_binning: int
+    # ...
+
+class StageConfig(BaseModel):
+    X_AXIS: AxisConfig
+    Y_AXIS: AxisConfig
+    Z_AXIS: AxisConfig
+    # ...
+
+class AxisConfig(BaseModel):
+    MOVEMENT_SIGN: int
+    USE_ENCODER: bool
+    ENCODER_SIGN: int
+    MM_PER_USTEP: float
+    # ...
+```
+
+### 8.3 Configuration Flow
+
+```
+configurations/*.ini
+       ↓
+control/_def.py (loaded at import)
+       ↓
+squid.config.get_*_config() functions
+       ↓
+Pydantic models (CameraConfig, StageConfig, etc.)
+       ↓
+Factory functions (get_camera, get_stage, etc.)
+```
 
 ---
 
-## 9. Data Flow - Image Acquisition
+## 9. Test Infrastructure
 
-### Live View
+### 9.1 Directory Structure
 
 ```
+tests/
+├── conftest.py              # Shared fixtures
+├── unit/                    # Unit tests (no hardware simulation)
+│   ├── squid/
+│   │   ├── config/
+│   │   ├── services/
+│   │   └── utils/
+│   └── control/
+│       └── core/
+├── integration/             # Integration tests (simulated hardware)
+│   ├── squid/
+│   └── control/
+└── manual/                  # Manual verification tests
+```
+
+### 9.2 Key Fixtures
+
+```python
+# tests/conftest.py
+
+@pytest.fixture
+def simulated_camera(camera_config):
+    """Provide a SimulatedCamera instance."""
+    camera = get_camera(camera_config, simulated=True)
+    yield camera
+    camera.close()
+
+@pytest.fixture
+def simulated_stage(stage_config):
+    """Provide a SimulatedStage instance."""
+    stage = SimulatedStage(stage_config, simulate_delays=False)
+    yield stage
+
+@pytest.fixture
+def simulated_microscope():
+    """Provide a fully simulated Microscope."""
+    scope = Microscope.build_from_global_config(simulated=True)
+    yield scope
+    scope.close()
+
+@pytest.fixture
+def simulated_application_context():
+    """Provide a simulated ApplicationContext."""
+    context = ApplicationContext(simulation=True)
+    yield context
+    context.shutdown()
+```
+
+### 9.3 Test Markers
+
+```python
+@pytest.mark.unit          # Unit tests without hardware simulation
+@pytest.mark.integration   # Integration tests using simulated hardware
+@pytest.mark.slow          # Tests that take >5 seconds
+@pytest.mark.qt            # Tests requiring Qt/PyQt5
+@pytest.mark.manual        # Tests for manual/visual verification
+```
+
+### 9.4 Running Tests
+
+```bash
+# All unit tests
+pytest tests/unit/ -m unit
+
+# All integration tests
+pytest tests/integration/ -m integration
+
+# Everything offline
+pytest tests/
+
+# With coverage
+pytest --cov=squid --cov=control tests/
+```
+
+---
+
+## 10. Data Flow
+
+### 10.1 Live View
+
+```
+User clicks "Start Live"
+       ↓
+GUI → StartLiveCommand event
+       ↓
+LiveController.start_live()
+       ↓
 Camera.start_streaming()
-  → Camera.add_frame_callback(StreamHandler.on_new_frame)
-    → StreamHandler throttles + scales
-    → image_to_display signal
-      → GUI updates viewer
+       ↓
+Camera frame callback → StreamHandler
+       ↓
+StreamHandler throttles/scales → image_to_display signal
+       ↓
+GUI updates image viewer
 ```
 
-### Multi-Point Acquisition
+### 10.2 Multi-Point Acquisition
 
 ```
-GUI triggers MultiPointController.acquire_()
-  → Spawns MultiPointWorker thread
-    → For each region/FOV:
-      1. Move stage
-      2. Optional autofocus
-      3. For each Z, for each channel:
-         - Set illumination/filter
-         - Trigger camera
-         - Frame callback queues SaveImageJob
-    → JobRunner saves images (optionally multiprocessing)
-    → Progress + final signals to GUI
+User starts acquisition
+       ↓
+MultiPointController.acquire()
+       ↓
+Spawns MultiPointWorker thread
+       ↓
+For each position:
+  1. Stage.move_to(x, y)
+  2. Optional: AutoFocusController.autofocus()
+  3. For each channel:
+     - IlluminationController.set_channel()
+     - Camera.send_trigger()
+     - Frame callback → SaveImageJob queue
+       ↓
+JobRunner saves images (OME-TIFF)
+       ↓
+AcquisitionFinished event → GUI
 ```
 
-### Image Saving
+### 10.3 Service Communication
 
-`SaveImageJob` writes BMP/TIFF/OME-TIFF with metadata; multiprocessing supported but optional.
-
----
-
-## 10. Key Design Patterns
-
-- **ABC pattern** (intended) for cameras/stages/filter wheels/lights; incomplete in legacy drivers.
-- **Factory**: `squid.camera.utils.get_camera()`, `squid.filter_wheel_controller.utils.get_filter_wheel_controller()`, `Microscope.build_from_global_config()` (uses globals, not DI).
-- **Composition**: `Microscope` composes hardware and controllers.
-- **Strategy**: camera acquisition modes (software, hardware, continuous).
-- **Observer**: Qt signals/slots and camera callbacks.
-- **Template Method**: `AbstractCamera._process_raw_frame()` override hook.
-- **Job Queue**: `JobRunner` + `SaveImageJob` for persistence.
-- **Configuration as Code** (aspirational): Pydantic models exist, but source data is global and pre-validated loosely.
+```
+GUI Widget
+    ↓ (calls service method)
+CameraService.set_exposure_time(50.0)
+    ↓ (validates and applies)
+AbstractCamera.set_exposure_time(50.0)
+    ↓ (publishes event)
+EventBus.publish(ExposureTimeChanged(50.0))
+    ↓ (subscribers notified)
+Other GUI widgets update displays
+```
 
 ---
 
-## 11. External Dependencies
+## 11. Threading Model
 
-Scientific: numpy, scipy, opencv-cv2, imageio, tifffile, pillow  
-Hardware: pyserial; vendor SDKs (pyspin, dcam, toupcam, tucsen, ids-peak, gxipy, Andor/Photometrics)  
-GUI: PyQt5/qtpy, pyqtgraph, napari, matplotlib  
-Data formats: pandas, json, yaml, tifffile (OME-TIFF)  
-Interop: optional pyimagej/scyjava
+### 11.1 Thread Types
+
+| Thread | Purpose |
+|--------|---------|
+| Main (GUI) | Qt event loop, GUI updates |
+| Camera callback | Frame delivery from camera SDK |
+| MultiPointWorker | Acquisition orchestration |
+| Position polling | Optional stage position updates |
+
+### 11.2 Synchronization
+
+- `threading.Lock` - Protects shared state (e.g., stage busy flag)
+- `threading.Event` - Signals between threads
+- `queue.Queue` - Thread-safe job queues
+- Qt signals/slots - Thread-safe GUI updates
+
+### 11.3 Thread Safety Rules
+
+1. Camera frame callbacks must be fast (offload to queues)
+2. GUI updates only via Qt signals from background threads
+3. EventBus is thread-safe (uses internal lock)
+4. Stage busy state uses lock for thread-safe access
 
 ---
 
-## 12. Threading and Concurrency
+## 12. Key Design Patterns
 
-Threads: GUI (Qt), camera callback threads, MultiPointWorker thread, optional position polling, timers in `LiveController`.  
-Processes: optional multiprocessing pool for image saving.  
-Sync: `threading.Event`, `threading.Lock`, `queue.Queue`, `multiprocessing.Queue`.  
-Hot path: camera callbacks must be fast; `StreamHandler` throttles and emits display/save events.
+### 12.1 Abstract Factory
+
+Factory functions create appropriate implementations based on configuration:
+
+```python
+def get_camera(config: CameraConfig, simulated: bool = False) -> AbstractCamera:
+    if simulated:
+        return SimulatedCamera(config)
+    if config.camera_type == CameraType.TOUPCAM:
+        return ToupcamCamera(config)
+    # ...
+```
+
+### 12.2 Registry Pattern
+
+The registry enables extensible hardware support:
+
+```python
+camera_registry = Registry[AbstractCamera]("camera")
+
+@camera_registry.register("custom")
+class CustomCamera(AbstractCamera):
+    ...
+
+# Later:
+camera = camera_registry.create("custom", config)
+```
+
+### 12.3 Composition
+
+The Microscope class composes all hardware:
+
+```python
+class Microscope:
+    stage: AbstractStage
+    camera: AbstractCamera
+    illumination_controller: IlluminationController
+    addons: MicroscopeAddons
+    low_level_drivers: LowLevelDrivers
+```
+
+### 12.4 Observer (Event Bus)
+
+Decoupled communication via publish/subscribe:
+
+```python
+event_bus.subscribe(StagePositionChanged, self.on_stage_moved)
+event_bus.publish(StagePositionChanged(x_mm=10.0, ...))
+```
+
+### 12.5 Strategy
+
+Different acquisition modes as strategies:
+
+```python
+class AcquisitionMode(Enum):
+    SOFTWARE_TRIGGER = auto()
+    HARDWARE_TRIGGER = auto()
+    CONTINUOUS = auto()
+```
+
+### 12.6 Dependency Injection
+
+ApplicationContext manages the object graph:
+
+```python
+context = ApplicationContext(simulation=True)
+# All dependencies wired automatically
+gui = context.create_gui()
+```
 
 ---
 
-## 13. Special Features
+## Appendix: Class Hierarchy
 
-- Autofocus: reflection-based, laser-based (separate camera), manual focus maps.
-- Multi-point: well arrays, per-region autofocus, Z-stacks with direction control, time-lapse (XYZT), fluidics integration.
-- Image processing: FPS throttling, resolution scaling, OME-TIFF metadata, parallel saving.
-- Stage control: encoder feedback, backlash handling, PID (where enabled), homing and safety limits.
+```
+AbstractCamera
+├── SimulatedCamera
+├── DefaultCamera (Daheng)
+├── ToupcamCamera
+├── HamamatsuCamera
+├── FlirCamera
+├── AndorCamera
+├── PhotometricsCamera
+├── TucsenCamera
+├── IDSCamera
+└── TISCamera
 
----
+AbstractStage
+├── SimulatedStage
+├── CephlaStage
+└── PriorStage
 
-## 14. Current Gaps vs Intended Architecture
+AbstractFilterWheelController
+├── SimulatedFilterWheelController
+├── SquidFilterWheel
+├── ZaberFilterController
+└── Optospin
 
-These are the main discrepancies that impact robustness, modularity, and ease of extension:
+LightSource
+├── XLight
+├── Dragonfly
+├── LDI
+├── CELESTA
+├── CellX
+└── SciMicroscopyLEDArray
 
-- **Global configuration singleton**: `software/control/_def.py` populates module-level variables at import (from `.ini` via `ConfigParser` and `conf_attribute_reader`). It writes cache files and never validates with Pydantic. `squid/config.py` snapshots those globals once. Runtime reconfiguration, per-instance configs, and strict typing are not in place.
-- **HAL not isolated**: `squid/config.py` and `squid/abc.py` import `control` modules, so the “modern” layer depends on legacy globals. `Microscope.build_from_global_config` constructs hardware directly from `_def` flags rather than injected config objects.
-- **Incomplete AbstractCamera adoption**: Several drivers in `software/control/camera_*.py` do not subclass `AbstractCamera`; `squid.camera.utils` falls back to them. `SimulatedCamera` even fabricates missing attributes via `__getattr__`, masking interface gaps. This weakens the promise of swappable implementations.
-- **Configuration immutability during a run**: Key values (pixel formats, stage limits, filter wheel options) are fixed at import time and cannot be swapped per session without restarting. The doc’s “configuration hierarchy” is aspirational until config objects are injected and validated rather than read from globals.
-
-**Recommended direction** (to align code with the intended architecture):
-1) Replace `_def` globals with validated config objects passed through constructors (no `locals()` mutation, no runtime `exec`).  
-2) Finish AbstractCamera (and other ABC) migration; ensure all drivers implement the interfaces and remove placeholder `__getattr__` fallbacks.  
-3) Decouple `squid` from `control` by moving shared helpers/config into a clean dependency that does not mutate global state.  
-4) Make microscope construction dependency-injected (take config objects, not global flags) to allow multiple instances, simulations, and tests without side effects.
-
+BaseService
+├── CameraService
+├── StageService
+└── PeripheralService
+```
