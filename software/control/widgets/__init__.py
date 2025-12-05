@@ -23,6 +23,11 @@ from control.widgets.stage import (
     NavigationWidget,
     AutoFocusWidget,
 )
+from control.widgets.acquisition import (
+    FlexibleMultiPointWidget,
+    WellplateMultiPointWidget,
+    MultiPointWithFluidicsWidget,
+)
 
 __all__ = [
     # base
@@ -45,4 +50,8 @@ __all__ = [
     "PiezoWidget",
     "NavigationWidget",
     "AutoFocusWidget",
+    # acquisition
+    "FlexibleMultiPointWidget",
+    "WellplateMultiPointWidget",
+    "MultiPointWithFluidicsWidget",
 ]
