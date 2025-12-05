@@ -2,14 +2,13 @@
 import logging
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QAbstractTableModel
 from qtpy.QtWidgets import (
     QMainWindow,
     QGroupBox,
     QVBoxLayout,
     QWidget,
     QMessageBox,
-    QAbstractTableModel,
 )
 from qtpy.QtGui import QBrush, QColor
 
