@@ -48,8 +48,8 @@ import control._def
 import control.peripherals.lighting as serial_peripherals
 import control.core.tracking_dasiamrpn as tracking
 import control.utils as utils
-import control.utils_acquisition as utils_acquisition
-import control.utils_channel as utils_channel
+import control.core.utils_acquisition as utils_acquisition
+import control.core.utils_channel as utils_channel
 import control.utils_config as utils_config
 import squid.logging
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import base64
 import numpy as np
 
-import control.utils_channel as utils_channel
+import control.core.utils_channel as utils_channel
 from control._def import (
     FOCUS_CAMERA_EXPOSURE_TIME_MS,
     FOCUS_CAMERA_ANALOG_GAIN,

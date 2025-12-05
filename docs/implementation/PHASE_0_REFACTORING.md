@@ -333,16 +333,16 @@ The following tasks reorganize remaining files in `control/` (~16,000 lines) int
 - [x] Verify syntax with py_compile
 - [x] Commit: "Move remaining widget files to control/widgets/"
 
-### Task 0.19: Organize utility files
-- [ ] Move `utils_acquisition.py` → `core/utils_acquisition.py` (58 lines)
-- [ ] Move `utils_channel.py` → `core/utils_channel.py` (20 lines)
-- [ ] Move `processing_handler.py` → `processing/handler.py` (100 lines)
-- [ ] Keep `utils.py` at top level (585 lines - general utilities)
-- [ ] Keep `utils_config.py` at top level (344 lines - config utilities)
-- [ ] Keep `console.py` at top level (290 lines - development utility)
-- [ ] Update imports throughout codebase
-- [ ] Verify syntax with py_compile
-- [ ] Commit: "Organize utility files"
+### Task 0.19: Organize utility files ✅
+- [x] Move `utils_acquisition.py` → `core/utils_acquisition.py` (58 lines)
+- [x] Move `utils_channel.py` → `core/utils_channel.py` (20 lines)
+- [x] Move `processing_handler.py` → `processing/handler.py` (100 lines)
+- [x] Keep `utils.py` at top level (585 lines - general utilities)
+- [x] Keep `utils_config.py` at top level (344 lines - config utilities)
+- [x] Keep `console.py` at top level (290 lines - development utility)
+- [x] Update imports in utils_config.py, core/core.py
+- [x] Verify syntax with py_compile
+- [x] Commit: "Organize utility files"
 
 ### Task 0.20: Final cleanup and verification
 - [ ] Remove any empty/unused files
