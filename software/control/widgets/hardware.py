@@ -1,8 +1,13 @@
 # Hardware control widgets (confocal, filter, laser AF, trigger, etc.)
 import numpy as np
+from typing import TYPE_CHECKING, Optional
 
 import squid.logging
+from squid.events import event_bus, DACValueChanged
 from qtpy.QtCore import Signal, Qt
+
+if TYPE_CHECKING:
+    from squid.services import PeripheralService
 from qtpy.QtWidgets import (
     QWidget,
     QFrame,
@@ -822,9 +827,28 @@ class ObjectivesWidget(QWidget):
 
 
 class DACControWidget(QFrame):
-    def __init__(self, microcontroller, *args, **kwargs):
+    def __init__(
+        self,
+        microcontroller=None,  # Legacy - keep for backward compat
+        peripheral_service: Optional["PeripheralService"] = None,
+        *args,
+        **kwargs
+    ):
         super().__init__(*args, **kwargs)
-        self.microcontroller = microcontroller
+
+        # Use service if provided, otherwise create from legacy param
+        if peripheral_service is not None:
+            self._service = peripheral_service
+        elif microcontroller is not None:
+            # Legacy mode - create service wrapper
+            from squid.services import PeripheralService
+            self._service = PeripheralService(microcontroller, event_bus)
+        else:
+            raise ValueError("Either peripheral_service or microcontroller required")
+
+        # Subscribe to state updates
+        event_bus.subscribe(DACValueChanged, self._on_dac_changed)
+
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
@@ -879,10 +903,30 @@ class DACControWidget(QFrame):
         self.setLayout(self.grid)
 
     def set_DAC0(self, value):
-        self.microcontroller.analog_write_onboard_DAC(0, round(value * 65535 / 100))
+        """Set DAC0 output (0-100%)."""
+        self._service.set_dac(channel=0, percentage=value)
 
     def set_DAC1(self, value):
-        self.microcontroller.analog_write_onboard_DAC(1, round(value * 65535 / 100))
+        """Set DAC1 output (0-100%)."""
+        self._service.set_dac(channel=1, percentage=value)
+
+    def _on_dac_changed(self, event: DACValueChanged):
+        """Handle DAC value changed event."""
+        # Update UI without triggering signal loops
+        if event.channel == 0:
+            self.entry_DAC0.blockSignals(True)
+            self.slider_DAC0.blockSignals(True)
+            self.entry_DAC0.setValue(event.value)
+            self.slider_DAC0.setValue(int(event.value))
+            self.entry_DAC0.blockSignals(False)
+            self.slider_DAC0.blockSignals(False)
+        elif event.channel == 1:
+            self.entry_DAC1.blockSignals(True)
+            self.slider_DAC1.blockSignals(True)
+            self.entry_DAC1.setValue(event.value)
+            self.slider_DAC1.setValue(int(event.value))
+            self.entry_DAC1.blockSignals(False)
+            self.slider_DAC1.blockSignals(False)
 
 
 class FilterControllerWidget(QFrame):
