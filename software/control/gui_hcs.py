@@ -26,7 +26,7 @@ from qtpy.QtGui import *
 from control._def import *
 
 # app specific libraries
-from control.NL5Widget import NL5Widget
+from control.widgets.nl5 import NL5Widget
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
@@ -86,7 +86,7 @@ if RUN_FLUIDICS:
     from control.peripherals.fluidics import Fluidics
 
 # Import the custom widget
-from control.custom_multipoint_widget import TemplateMultiPointWidget
+from control.widgets.custom_multipoint import TemplateMultiPointWidget
 
 # Import Qt controller wrappers
 from control.gui.qt_controllers import (
@@ -387,7 +387,7 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 self.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(self.xlight)
         if ENABLE_NL5:
-            import control.NL5Widget as NL5Widget
+            import control.widgets.nl5 as NL5Widget
 
             self.nl5Wdiget = NL5Widget.NL5Widget(self.nl5)
 

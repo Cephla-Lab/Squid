@@ -324,14 +324,14 @@ The following tasks reorganize remaining files in `control/` (~16,000 lines) int
 - [x] Verify syntax with py_compile
 - [x] Commit: "Move domain-specific core files to control/core/"
 
-### Task 0.18: Move remaining widget files to widgets/
-- [ ] Move `NL5Widget.py` → `widgets/nl5.py` (137 lines)
-- [ ] Move `custom_multipoint_widget.py` → `widgets/custom_multipoint.py` (194 lines)
-- [ ] Move `widgets_usbspectrometer.py` → `widgets/spectrometer.py` (204 lines)
-- [ ] Update `widgets/__init__.py` with new exports
-- [ ] Update imports in gui_hcs.py and other consumers
-- [ ] Verify syntax with py_compile
-- [ ] Commit: "Move remaining widget files to control/widgets/"
+### Task 0.18: Move remaining widget files to widgets/ ✅
+- [x] Move `NL5Widget.py` → `widgets/nl5.py` (137 lines)
+- [x] Move `custom_multipoint_widget.py` → `widgets/custom_multipoint.py` (194 lines)
+- [x] Move `widgets_usbspectrometer.py` → `widgets/spectrometer.py` (204 lines)
+- [x] Update `widgets/__init__.py` with new exports (NL5Widget, NL5SettingsDialog, TemplateMultiPointWidget, SpectrometerControlWidget, SpectrumDisplay)
+- [x] Update imports in gui_hcs.py
+- [x] Verify syntax with py_compile
+- [x] Commit: "Move remaining widget files to control/widgets/"
 
 ### Task 0.19: Organize utility files
 - [ ] Move `utils_acquisition.py` → `core/utils_acquisition.py` (58 lines)

@@ -67,6 +67,17 @@ from control.widgets.tracking import (
     DisplacementMeasurementWidget,
     Joystick,
 )
+from control.widgets.nl5 import (
+    NL5Widget,
+    NL5SettingsDialog,
+)
+from control.widgets.custom_multipoint import (
+    TemplateMultiPointWidget,
+)
+from control.widgets.spectrometer import (
+    SpectrometerControlWidget,
+    SpectrumDisplay,
+)
 
 __all__ = [
     # base
@@ -127,4 +138,12 @@ __all__ = [
     "PlateReaderNavigationWidget",
     "DisplacementMeasurementWidget",
     "Joystick",
+    # nl5
+    "NL5Widget",
+    "NL5SettingsDialog",
+    # custom_multipoint
+    "TemplateMultiPointWidget",
+    # spectrometer
+    "SpectrometerControlWidget",
+    "SpectrumDisplay",
 ]
