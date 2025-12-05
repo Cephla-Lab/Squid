@@ -1,14 +1,18 @@
 # squid/services/camera_service.py
 """Service for camera operations."""
-from typing import Tuple, TYPE_CHECKING
+from typing import Optional, Sequence, Tuple, TYPE_CHECKING
 
 from squid.services.base import BaseService
+from squid.config import CameraPixelFormat
 from squid.events import (
     EventBus,
     SetExposureTimeCommand,
     SetAnalogGainCommand,
     ExposureTimeChanged,
     AnalogGainChanged,
+    ROIChanged,
+    BinningChanged,
+    PixelFormatChanged,
 )
 
 if TYPE_CHECKING:
@@ -91,3 +95,70 @@ class CameraService(BaseService):
     def get_analog_gain(self) -> float:
         """Get current analog gain."""
         return self._camera.get_analog_gain()
+
+    # ============================================================
+    # Task 1.1: ROI methods
+    # ============================================================
+
+    def set_region_of_interest(self, x_offset: int, y_offset: int, width: int, height: int):
+        """Set camera region of interest."""
+        self._log.debug(f"Setting ROI: offset=({x_offset}, {y_offset}), size=({width}, {height})")
+        self._camera.set_region_of_interest(x_offset, y_offset, width, height)
+        self.publish(ROIChanged(x_offset=x_offset, y_offset=y_offset, width=width, height=height))
+
+    def get_region_of_interest(self) -> Tuple[int, int, int, int]:
+        """Get current ROI as (x_offset, y_offset, width, height)."""
+        return self._camera.get_region_of_interest()
+
+    def get_resolution(self) -> Tuple[int, int]:
+        """Get camera resolution as (width, height)."""
+        return self._camera.get_resolution()
+
+    # ============================================================
+    # Task 1.2: Binning methods
+    # ============================================================
+
+    def set_binning(self, binning_x: int, binning_y: int):
+        """Set camera binning."""
+        self._log.debug(f"Setting binning: {binning_x}x{binning_y}")
+        self._camera.set_binning(binning_x, binning_y)
+        self.publish(BinningChanged(binning_x=binning_x, binning_y=binning_y))
+
+    def get_binning(self) -> Tuple[int, int]:
+        """Get current binning as (x, y)."""
+        return self._camera.get_binning()
+
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
+        """Get available binning options."""
+        return self._camera.get_binning_options()
+
+    # ============================================================
+    # Task 1.3: Pixel format methods
+    # ============================================================
+
+    def set_pixel_format(self, pixel_format: CameraPixelFormat):
+        """Set camera pixel format."""
+        self._log.debug(f"Setting pixel format: {pixel_format}")
+        self._camera.set_pixel_format(pixel_format)
+        self.publish(PixelFormatChanged(pixel_format=pixel_format))
+
+    def get_pixel_format(self) -> Optional[CameraPixelFormat]:
+        """Get current pixel format."""
+        return self._camera.get_pixel_format()
+
+    def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
+        """Get available pixel formats."""
+        return self._camera.get_available_pixel_formats()
+
+    # ============================================================
+    # Task 1.4: Temperature methods
+    # ============================================================
+
+    def set_temperature(self, temperature: float):
+        """Set camera target temperature."""
+        self._log.debug(f"Setting temperature: {temperature}°C")
+        self._camera.set_temperature(temperature)
+
+    def set_temperature_reading_callback(self, callback):
+        """Set callback for temperature readings."""
+        self._camera.set_temperature_reading_callback(callback)

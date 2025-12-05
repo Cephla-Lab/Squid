@@ -256,3 +256,25 @@ class DACValueChanged(Event):
     """Notification that DAC value changed."""
     channel: int
     value: float
+
+
+@dataclass
+class ROIChanged(Event):
+    """Notification that ROI changed."""
+    x_offset: int
+    y_offset: int
+    width: int
+    height: int
+
+
+@dataclass
+class BinningChanged(Event):
+    """Notification that binning changed."""
+    binning_x: int
+    binning_y: int
+
+
+@dataclass
+class PixelFormatChanged(Event):
+    """Notification that pixel format changed."""
+    pixel_format: "CameraPixelFormat"  # Forward reference to avoid circular import
