@@ -76,7 +76,10 @@ if __name__ == "__main__":
     context = ApplicationContext(simulation=args.simulation)
 
     win = gui.HighContentScreeningGui(
-        microscope=context.microscope, is_simulation=args.simulation, live_only_mode=args.live_only
+        microscope=context.microscope,
+        services=context.services,
+        is_simulation=args.simulation,
+        live_only_mode=args.live_only
     )
 
     file_menu = QMenu("File", win)

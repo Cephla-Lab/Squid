@@ -101,11 +101,18 @@ class HighContentScreeningGui(QMainWindow):
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
 
     def __init__(
-        self, microscope: control.microscope.Microscope, is_simulation=False, live_only_mode=False, *args, **kwargs
+        self,
+        microscope: control.microscope.Microscope,
+        services=None,  # ServiceRegistry from ApplicationContext
+        is_simulation=False,
+        live_only_mode=False,
+        *args,
+        **kwargs
     ):
         super().__init__(*args, **kwargs)
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
+        self._services = services  # Store for passing to widgets
 
         self.microscope: control.microscope.Microscope = microscope
         self.stage: AbstractStage = microscope.stage
@@ -393,14 +400,16 @@ class HighContentScreeningGui(QMainWindow):
 
         if CAMERA_TYPE in ["Toupcam", "Tucsen", "Kinetix"]:
             self.cameraSettingWidget = widgets.CameraSettingsWidget(
-                self.camera,
+                camera=self.camera,
+                camera_service=self._services.get('camera') if self._services else None,
                 include_gain_exposure_time=False,
                 include_camera_temperature_setting=True,
                 include_camera_auto_wb_setting=False,
             )
         else:
             self.cameraSettingWidget = widgets.CameraSettingsWidget(
-                self.camera,
+                camera=self.camera,
+                camera_service=self._services.get('camera') if self._services else None,
                 include_gain_exposure_time=False,
                 include_camera_temperature_setting=False,
                 include_camera_auto_wb_setting=True,
@@ -416,10 +425,20 @@ class HighContentScreeningGui(QMainWindow):
             autolevel=True,
         )
         self.navigationWidget = widgets.NavigationWidget(
-            self.stage, widget_configuration=f"{WELLPLATE_FORMAT} well plate"
+            stage=self.stage,
+            stage_service=self._services.get('stage') if self._services else None,
+            widget_configuration=f"{WELLPLATE_FORMAT} well plate"
         )
-        self.stageUtils = widgets.StageUtils(self.stage, self.liveController, is_wellplate=True)
-        self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
+        self.stageUtils = widgets.StageUtils(
+            stage=self.stage,
+            live_controller=self.liveController,
+            is_wellplate=True,
+            stage_service=self._services.get('stage') if self._services else None
+        )
+        self.dacControlWidget = widgets.DACControWidget(
+            microcontroller=self.microcontroller,
+            peripheral_service=self._services.get('peripheral') if self._services else None
+        )
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
         if self.piezo:
             self.piezoWidget = widgets.PiezoWidget(self.piezo)
