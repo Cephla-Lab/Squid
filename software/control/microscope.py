@@ -210,7 +210,7 @@ class LowLevelDrivers:
 
 class Microscope:
     @staticmethod
-    def build_from_global_config(simulated: bool = False):
+    def build_from_global_config(simulated: bool = False, skip_controller_creation: bool = False):
         low_level_devices = LowLevelDrivers.build_from_global_config(simulated)
 
         stage_config = squid.config.get_stage_config()
@@ -293,6 +293,7 @@ class Microscope:
             addons=addons,
             low_level_drivers=low_level_devices,
             simulated=simulated,
+            skip_controller_creation=skip_controller_creation,
         )
 
     def __init__(
@@ -305,6 +306,7 @@ class Microscope:
         stream_handler_callbacks: Optional[StreamHandlerFunctions] = NoOpStreamHandlerFunctions,
         simulated: bool = False,
         skip_prepare_for_use: bool = False,
+        skip_controller_creation: bool = False,
     ):
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -318,6 +320,7 @@ class Microscope:
 
         self._simulated = simulated
 
+        # These are always created by Microscope (simple data managers)
         self.objective_store: ObjectiveStore = ObjectiveStore()
         self.channel_configuration_manager: ChannelConfigurationManager = ChannelConfigurationManager()
         self.laser_af_settings_manager: Optional[LaserAFSettingManager] = None
@@ -328,10 +331,28 @@ class Microscope:
             self.channel_configuration_manager, self.laser_af_settings_manager
         )
         self.contrast_manager: ContrastManager = ContrastManager()
-        self.stream_handler: StreamHandler = StreamHandler(handler_functions=stream_handler_callbacks)
 
+        # Controllers can be created externally and injected
+        # Initialize to None; will be set below or by ApplicationContext
+        self.stream_handler: Optional[StreamHandler] = None
         self.stream_handler_focus: Optional[StreamHandler] = None
         self.live_controller_focus: Optional[LiveController] = None
+        self.live_controller: Optional[LiveController] = None
+
+        if not skip_controller_creation:
+            # Default behavior: create controllers internally
+            self._create_controllers(stream_handler_callbacks)
+
+        if not skip_prepare_for_use:
+            self._prepare_for_use()
+
+    def _create_controllers(self, stream_handler_callbacks: Optional[StreamHandlerFunctions] = None):
+        """Create controllers internally. Called by __init__ unless skip_controller_creation=True."""
+        if stream_handler_callbacks is None:
+            stream_handler_callbacks = NoOpStreamHandlerFunctions
+
+        self.stream_handler = StreamHandler(handler_functions=stream_handler_callbacks)
+
         if self.addons.camera_focus:
             self.stream_handler_focus = StreamHandler(handler_functions=NoOpStreamHandlerFunctions)
             self.live_controller_focus = LiveController(
@@ -341,10 +362,7 @@ class Microscope:
                 for_displacement_measurement=True,
             )
 
-        self.live_controller: LiveController = LiveController(microscope=self, camera=self.camera)
-
-        if not skip_prepare_for_use:
-            self._prepare_for_use()
+        self.live_controller = LiveController(microscope=self, camera=self.camera)
 
     def _prepare_for_use(self):
         self.low_level_drivers.prepare_for_use()

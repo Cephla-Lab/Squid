@@ -60,20 +60,25 @@ class ApplicationContext:
         context.shutdown()
     """
 
-    def __init__(self, simulation: bool = False):
+    def __init__(self, simulation: bool = False, external_controller_creation: bool = False):
         """
         Initialize the application context.
 
         Args:
             simulation: If True, use simulated hardware
+            external_controller_creation: If True, create controllers in ApplicationContext
+                instead of letting Microscope create them internally. This enables
+                better dependency injection and testability.
         """
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self._simulation = simulation
+        self._external_controller_creation = external_controller_creation
         self._microscope: Optional["Microscope"] = None
         self._controllers: Optional[Controllers] = None
         self._gui = None
 
-        self._log.info(f"Creating ApplicationContext (simulation={simulation})")
+        self._log.info(f"Creating ApplicationContext (simulation={simulation}, "
+                       f"external_controller_creation={external_controller_creation})")
 
         # Build components
         self._build_microscope()
@@ -85,30 +90,71 @@ class ApplicationContext:
 
         self._log.info("Building microscope...")
         self._microscope = Microscope.build_from_global_config(
-            simulated=self._simulation
+            simulated=self._simulation,
+            skip_controller_creation=self._external_controller_creation,
         )
         self._log.info("Microscope built successfully")
 
     def _build_controllers(self):
         """
-        Build controllers container from microscope's existing controllers.
+        Build controllers container.
 
-        Note: Currently the Microscope creates some controllers internally.
-        This method wraps those in a Controllers dataclass. Future work
-        will move controller creation entirely into ApplicationContext.
+        If external_controller_creation is True, creates controllers here with
+        explicit dependency injection. Otherwise, wraps controllers that
+        Microscope created internally.
         """
         self._log.info("Building controllers...")
 
-        # For now, expose the controllers that Microscope creates
-        # Future: create controllers here with explicit dependency injection
+        if self._external_controller_creation:
+            self._create_controllers_externally()
+        else:
+            # Wrap controllers that Microscope created internally
+            self._controllers = Controllers(
+                live=self._microscope.live_controller,
+                stream_handler=self._microscope.stream_handler,
+                channel_config_manager=self._microscope.channel_configuration_manager,
+                objective_store=self._microscope.objective_store,
+            )
+
+        self._log.info("Controllers built successfully")
+
+    def _create_controllers_externally(self):
+        """Create controllers with explicit dependency injection."""
+        from control.core.live_controller import LiveController
+        from control.core.stream_handler import StreamHandler, NoOpStreamHandlerFunctions
+
+        # Create StreamHandler
+        stream_handler = StreamHandler(handler_functions=NoOpStreamHandlerFunctions)
+
+        # Create LiveController (needs microscope reference)
+        live_controller = LiveController(
+            microscope=self._microscope,
+            camera=self._microscope.camera,
+        )
+
+        # Assign controllers to Microscope (it expects these to exist)
+        self._microscope.stream_handler = stream_handler
+        self._microscope.live_controller = live_controller
+
+        # Handle focus camera if present
+        if self._microscope.addons.camera_focus:
+            stream_handler_focus = StreamHandler(handler_functions=NoOpStreamHandlerFunctions)
+            live_controller_focus = LiveController(
+                microscope=self._microscope,
+                camera=self._microscope.addons.camera_focus,
+                control_illumination=False,
+                for_displacement_measurement=True,
+            )
+            self._microscope.stream_handler_focus = stream_handler_focus
+            self._microscope.live_controller_focus = live_controller_focus
+
+        # Create Controllers container
         self._controllers = Controllers(
-            live=self._microscope.live_controller,
-            stream_handler=self._microscope.stream_handler,
+            live=live_controller,
+            stream_handler=stream_handler,
             channel_config_manager=self._microscope.channel_configuration_manager,
             objective_store=self._microscope.objective_store,
         )
-
-        self._log.info("Controllers built successfully")
 
     @property
     def microscope(self) -> "Microscope":
