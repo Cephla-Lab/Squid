@@ -222,6 +222,8 @@ class ApplicationContext:
         # For now, pass microscope directly - GUI still creates some things
         # Future: pass Controllers dataclass only
         self._gui = HighContentScreeningGui(
+            microscope=self._microscope,
+            services=self._services,
             is_simulation=self._simulation,
         )
         self._log.info("GUI created successfully")
