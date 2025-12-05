@@ -28,7 +28,7 @@ from control.widgets import ConfigEditorBackwardsCompatible, StageUtils
 from control._def import CACHED_CONFIG_FILE_PATH
 from control._def import USE_TERMINAL_CONSOLE
 import control.utils
-import control.microscope
+from squid.application import ApplicationContext
 
 
 if USE_TERMINAL_CONSOLE:
@@ -72,9 +72,11 @@ if __name__ == "__main__":
     # This allows shutdown via ctrl+C even after the gui has popped up.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    microscope = control.microscope.Microscope.build_from_global_config(args.simulation)
+    # Create application context (centralizes microscope and controller creation)
+    context = ApplicationContext(simulation=args.simulation)
+
     win = gui.HighContentScreeningGui(
-        microscope=microscope, is_simulation=args.simulation, live_only_mode=args.live_only
+        microscope=context.microscope, is_simulation=args.simulation, live_only_mode=args.live_only
     )
 
     file_menu = QMenu("File", win)
@@ -114,8 +116,12 @@ if __name__ == "__main__":
     win.show()
 
     if USE_TERMINAL_CONSOLE:
-        console_locals = {"microscope": win.microscope}
+        console_locals = {"microscope": context.microscope, "context": context}
         console_thread = ConsoleThread(console_locals)
         console_thread.start()
 
-    sys.exit(app.exec_())
+    try:
+        sys.exit(app.exec_())
+    finally:
+        # Clean shutdown of application context
+        context.shutdown()
