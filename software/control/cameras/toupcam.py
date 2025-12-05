@@ -21,6 +21,7 @@ from control._def import *
 import threading
 import control.cameras.toupcam_sdk as toupcam
 from control.cameras.toupcam_exceptions import hresult_checker
+from squid.camera.utils import camera_registry
 
 log = squid.logging.get_logger(__name__)
 
@@ -50,6 +51,7 @@ def get_sn_by_model(camera_model: ToupcamCameraModel):
     return None  # return None if no device with the specified model_name is connected
 
 
+@camera_registry.register("toupcam")
 class ToupcamCamera(AbstractCamera):
     TOUPCAM_OPTION_RAW_RAW_VAL = 1
     TOUPCAM_OPTION_RAW_RGB_VAL = 0

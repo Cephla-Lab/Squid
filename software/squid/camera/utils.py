@@ -15,8 +15,12 @@ from squid.abc import (
     CameraGainRange,
     CameraError,
 )
+from squid.registry import Registry
 
 _log = squid.logging.get_logger("squid.camera.utils")
+
+# Camera registry for plugin-style camera implementations
+camera_registry = Registry[AbstractCamera]("camera")
 
 
 def get_camera(
@@ -44,7 +48,12 @@ def get_camera(
             pass
 
     if simulated:
-        return SimulatedCamera(config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn)
+        return camera_registry.create(
+            "simulated",
+            config,
+            hw_trigger_fn=hw_trigger_fn,
+            hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+        )
 
     try:
         if config.camera_type == CameraVariant.TOUPCAM:
@@ -112,6 +121,7 @@ def get_camera(
         )
 
 
+@camera_registry.register("simulated")
 class SimulatedCamera(AbstractCamera):
 
     PIXEL_SIZE_UM = 3.76
