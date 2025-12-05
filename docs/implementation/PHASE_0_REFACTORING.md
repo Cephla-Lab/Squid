@@ -285,16 +285,16 @@ software/
 
 The following tasks reorganize remaining files in `control/` (~16,000 lines) into the established directory structure.
 
-### Task 0.15: Move camera SDK/support files to cameras/
-- [ ] Move `toupcam.py` → `cameras/toupcam_sdk.py` (2,694 lines - ToupCam SDK bindings)
-- [ ] Move `toupcam_exceptions.py` → `cameras/toupcam_exceptions.py` (47 lines)
-- [ ] Move `TUCam.py` → `cameras/tucam_sdk.py` (928 lines - Tucsen support)
-- [ ] Move `dcamapi4.py` → `cameras/dcamapi4.py` (1,369 lines - Hamamatsu DCAM API)
-- [ ] Move `dcam.py` → `cameras/dcam.py` (748 lines - DCAM wrapper)
-- [ ] Update `cameras/__init__.py` with new exports
-- [ ] Update imports in camera driver files
-- [ ] Verify syntax with py_compile
-- [ ] Commit: "Move camera SDK files to control/cameras/"
+### Task 0.15: Move camera SDK/support files to cameras/ ✅
+- [x] Move `toupcam.py` → `cameras/toupcam_sdk.py` (2,694 lines - ToupCam SDK bindings)
+- [x] Move `toupcam_exceptions.py` → `cameras/toupcam_exceptions.py` (47 lines)
+- [x] Move `TUCam.py` → `cameras/tucam_sdk.py` (928 lines - Tucsen support)
+- [x] Move `dcamapi4.py` → `cameras/dcamapi4.py` (1,369 lines - Hamamatsu DCAM API)
+- [x] Move `dcam.py` → `cameras/dcam.py` (748 lines - DCAM wrapper)
+- [x] Update `cameras/__init__.py` with documentation
+- [x] Update imports in camera driver files (hamamatsu.py, dcam.py, toupcam.py, tucsen.py, toupcam_exceptions.py)
+- [x] Verify syntax with py_compile
+- [x] Commit: "Move camera SDK files to control/cameras/"
 
 ### Task 0.16: Move peripheral/hardware files to peripherals/
 - [ ] Move `Xeryon.py` → `peripherals/xeryon.py` (1,476 lines - Xeryon stage)

@@ -1,6 +1,6 @@
 from zipfile import error
 
-from control.toupcam import HRESULTException
+from control.cameras.toupcam_sdk import HRESULTException
 
 
 def signed_to_unsigned(n, num_bits):
