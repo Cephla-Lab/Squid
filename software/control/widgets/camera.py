@@ -90,8 +90,9 @@ class CameraSettingsWidget(QFrame):
         self.entry_exposureTime.setMinimum(self.camera.get_exposure_limits()[0])
         self.entry_exposureTime.setMaximum(self.camera.get_exposure_limits()[1])
         self.entry_exposureTime.setSingleStep(1)
-        self.entry_exposureTime.setValue(20)
-        self.camera.set_exposure_time(20)
+        default_exposure = 20.0
+        self.entry_exposureTime.setValue(default_exposure)
+        self._service.set_exposure_time(default_exposure)
 
         self.entry_analogGain = QDoubleSpinBox()
         try:
@@ -100,7 +101,7 @@ class CameraSettingsWidget(QFrame):
             self.entry_analogGain.setMaximum(gain_range.max_gain)
             self.entry_analogGain.setSingleStep(gain_range.gain_step)
             self.entry_analogGain.setValue(gain_range.min_gain)
-            self.camera.set_analog_gain(gain_range.min_gain)
+            self._service.set_analog_gain(gain_range.min_gain)
         except NotImplementedError:
             self._log.info("Camera does not support analog gain, disabling analog gain control.")
             self.entry_analogGain.setValue(0)
@@ -117,7 +118,7 @@ class CameraSettingsWidget(QFrame):
             self.dropdown_pixelFormat.setCurrentText(self.camera.get_pixel_format().name)
         else:
             print("setting camera's default pixel format")
-            self.camera.set_pixel_format(CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
+            self._service.set_pixel_format(CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
             self.dropdown_pixelFormat.setCurrentText(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
         self.dropdown_pixelFormat.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
         # to do: load and save pixel format in configurations
@@ -165,7 +166,7 @@ class CameraSettingsWidget(QFrame):
         self.entry_exposureTime.valueChanged.connect(self._service.set_exposure_time)
         self.entry_analogGain.valueChanged.connect(self._set_analog_gain_via_service)
         self.dropdown_pixelFormat.currentTextChanged.connect(
-            lambda s: self.camera.set_pixel_format(CameraPixelFormat.from_string(s))
+            lambda s: self._service.set_pixel_format(CameraPixelFormat.from_string(s))
         )
         self.entry_ROI_offset_x.valueChanged.connect(self.set_ROI_offset)
         self.entry_ROI_offset_y.valueChanged.connect(self.set_ROI_offset)
@@ -213,7 +214,7 @@ class CameraSettingsWidget(QFrame):
             temp_line.addWidget(self.label_temperature_measured)
             try:
                 self.entry_temperature.valueChanged.connect(self.set_temperature)
-                self.camera.set_temperature_reading_callback(self.update_measured_temperature)
+                self._service.set_temperature_reading_callback(self.update_measured_temperature)
             except AttributeError:
                 pass
             self.camera_layout.addLayout(temp_line)
@@ -284,11 +285,11 @@ class CameraSettingsWidget(QFrame):
         # 0: OFF  1:CONTINUOUS  2:ONCE
         if pressed:
             # Run auto white balance once, then uncheck
-            self.camera.set_auto_white_balance_gains(on=True)
+            self._service.set_auto_white_balance(True)
         else:
-            self.camera.set_auto_white_balance_gains(on=False)
-            r, g, b = self.camera.get_white_balance_gains()
-            self.camera.set_white_balance_gains(r, g, b)
+            self._service.set_auto_white_balance(False)
+            r, g, b = self._service.get_white_balance_gains()
+            self._service.set_white_balance_gains(r, g, b)
 
     def set_exposure_time(self, exposure_time):
         self.entry_exposureTime.setValue(exposure_time)
@@ -301,12 +302,12 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_width.blockSignals(True)
         self.entry_ROI_width.setValue(width)
         self.entry_ROI_width.blockSignals(False)
-        offset_x = (self.camera.get_resolution()[0] - self.entry_ROI_width.value()) / 2
+        offset_x = (self._service.get_resolution()[0] - self.entry_ROI_width.value()) / 2
         offset_x = int(offset_x // 8) * 8
         self.entry_ROI_offset_x.blockSignals(True)
         self.entry_ROI_offset_x.setValue(offset_x)
         self.entry_ROI_offset_x.blockSignals(False)
-        self.camera.set_region_of_interest(
+        self._service.set_region_of_interest(
             self.entry_ROI_offset_x.value(),
             self.entry_ROI_offset_y.value(),
             self.entry_ROI_width.value(),
@@ -318,12 +319,12 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_height.blockSignals(True)
         self.entry_ROI_height.setValue(height)
         self.entry_ROI_height.blockSignals(False)
-        offset_y = (self.camera.get_resolution()[1] - self.entry_ROI_height.value()) / 2
+        offset_y = (self._service.get_resolution()[1] - self.entry_ROI_height.value()) / 2
         offset_y = int(offset_y // 8) * 8
         self.entry_ROI_offset_y.blockSignals(True)
         self.entry_ROI_offset_y.setValue(offset_y)
         self.entry_ROI_offset_y.blockSignals(False)
-        self.camera.set_region_of_interest(
+        self._service.set_region_of_interest(
             self.entry_ROI_offset_x.value(),
             self.entry_ROI_offset_y.value(),
             self.entry_ROI_width.value(),
@@ -331,7 +332,7 @@ class CameraSettingsWidget(QFrame):
         )
 
     def set_ROI_offset(self):
-        self.camera.set_region_of_interest(
+        self._service.set_region_of_interest(
             self.entry_ROI_offset_x.value(),
             self.entry_ROI_offset_y.value(),
             self.entry_ROI_width.value(),
@@ -340,7 +341,7 @@ class CameraSettingsWidget(QFrame):
 
     def set_temperature(self):
         try:
-            self.camera.set_temperature(float(self.entry_temperature.value()))
+            self._service.set_temperature(float(self.entry_temperature.value()))
         except AttributeError:
             self._log.warning("Cannot set temperature - not supported.")
 
@@ -352,7 +353,7 @@ class CameraSettingsWidget(QFrame):
         binning_x = int(binning_parts[0])
         binning_y = int(binning_parts[1])
 
-        self.camera.set_binning(binning_x, binning_y)
+        self._service.set_binning(binning_x, binning_y)
 
         self.entry_ROI_offset_x.blockSignals(True)
         self.entry_ROI_offset_y.blockSignals(True)
@@ -363,8 +364,8 @@ class CameraSettingsWidget(QFrame):
         def round_to_8(val):
             return int(8 * val // 8)
 
-        (x_offset, y_offset, width, height) = self.camera.get_region_of_interest()
-        (x_max, y_max) = self.camera.get_resolution()
+        (x_offset, y_offset, width, height) = self._service.get_region_of_interest()
+        (x_max, y_max) = self._service.get_resolution()
         self.entry_ROI_height.setMaximum(y_max)
         self.entry_ROI_width.setMaximum(x_max)
 
@@ -385,7 +386,7 @@ class CameraSettingsWidget(QFrame):
 
     def update_blacklevel(self, blacklevel):
         try:
-            self.camera.set_black_level(blacklevel)
+            self._service.set_black_level(blacklevel)
         except AttributeError:
             self._log.warning("Cannot set black level - not supported.")
 
