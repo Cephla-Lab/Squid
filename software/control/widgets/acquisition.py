@@ -7,11 +7,14 @@ import time
 import logging
 import yaml
 from datetime import datetime
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import numpy as np
 
 import squid.logging
+
+if TYPE_CHECKING:
+    from squid.services import StageService
 from qtpy.QtCore import Signal, Qt, QTimer
 from qtpy.QtWidgets import (
     QFrame,
@@ -70,6 +73,7 @@ class FlexibleMultiPointWidget(QFrame):
         channelConfigurationManager,
         scanCoordinates,
         focusMapWidget,
+        stage_service: Optional["StageService"] = None,
         *args,
         **kwargs,
     ):
@@ -79,6 +83,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.last_used_locations = None
         self.last_used_location_ids = None
         self.stage = stage
+        self._stage_service = stage_service
         self.navigationViewer = navigationViewer
         self.multipointController = multipointController
         self.objectiveStore = objectiveStore
@@ -1025,9 +1030,7 @@ class FlexibleMultiPointWidget(QFrame):
         x = self.location_list[index, 0]
         y = self.location_list[index, 1]
         z = self.location_list[index, 2]
-        self.stage.move_x_to(x)
-        self.stage.move_y_to(y)
-        self.stage.move_z_to(z)
+        self._move_stage_to(x, y, z)
 
     def previous(self):
         index = self.dropdown_location_list.currentIndex()
@@ -1036,9 +1039,7 @@ class FlexibleMultiPointWidget(QFrame):
         x = self.location_list[index, 0]
         y = self.location_list[index, 1]
         z = self.location_list[index, 2]
-        self.stage.move_x_to(x)
-        self.stage.move_y_to(y)
-        self.stage.move_z_to(z)
+        self._move_stage_to(x, y, z)
 
     def clear(self):
         self.location_list = np.empty((0, 3), dtype=float)
@@ -1062,10 +1063,17 @@ class FlexibleMultiPointWidget(QFrame):
                 x = self.location_list[index, 0]
                 y = self.location_list[index, 1]
                 z = self.location_list[index, 2]
-                self.stage.move_x_to(x)
-                self.stage.move_y_to(y)
-                self.stage.move_z_to(z)
+                self._move_stage_to(x, y, z)
                 self.table_location_list.selectRow(index)
+
+    def _move_stage_to(self, x: float, y: float, z: float):
+        """Move stage to position using service if available, else direct call."""
+        if self._stage_service is not None:
+            self._stage_service.move_to(x_mm=x, y_mm=y, z_mm=z)
+        else:
+            self.stage.move_x_to(x)
+            self.stage.move_y_to(y)
+            self.stage.move_z_to(z)
 
     def cell_was_clicked(self, row, column):
         self.dropdown_location_list.setCurrentIndex(row)
@@ -1344,12 +1352,14 @@ class WellplateMultiPointWidget(QFrame):
         napariMosaicWidget=None,
         tab_widget: Optional[QTabWidget] = None,
         well_selection_widget: Optional[WellSelectionWidget] = None,
+        stage_service: Optional["StageService"] = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.stage = stage
+        self._stage_service = stage_service
         self.navigationViewer = navigationViewer
         self.multipointController = multipointController
         self.liveController = liveController
@@ -2798,11 +2808,18 @@ class WellplateMultiPointWidget(QFrame):
 
     def goto_z_min(self):
         z_value_mm = self.entry_minZ.value() / 1000  # Convert from μm to mm
-        self.stage.move_z_to(z_value_mm)
+        self._move_z_to(z_value_mm)
 
     def goto_z_max(self):
         z_value_mm = self.entry_maxZ.value() / 1000  # Convert from μm to mm
-        self.stage.move_z_to(z_value_mm)
+        self._move_z_to(z_value_mm)
+
+    def _move_z_to(self, z_mm: float):
+        """Move Z axis using service if available, else direct call."""
+        if self._stage_service is not None:
+            self._stage_service.move_to(z_mm=z_mm)
+        else:
+            self.stage.move_z_to(z_mm)
 
     def update_z_min(self, z_pos_um):
         if z_pos_um < self.entry_minZ.value():
@@ -3279,12 +3296,14 @@ class MultiPointWithFluidicsWidget(QFrame):
         channelConfigurationManager,
         scanCoordinates,
         napariMosaicWidget=None,
+        stage_service: Optional["StageService"] = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.stage = stage
+        self._stage_service = stage_service
         self.navigationViewer = navigationViewer
         self.multipointController = multipointController
         self.objectiveStore = objectiveStore
