@@ -31,6 +31,7 @@ import squid.logging
 import control.core.job_processing
 from control.core.job_processing import CaptureInfo, SaveImageJob, Job, JobImage, JobRunner, JobResult
 from squid.config import CameraPixelFormat
+from squid.utils.safe_callback import safe_callback
 
 
 class MultiPointWorker:
@@ -135,6 +136,10 @@ class MultiPointWorker:
         self._current_capture_info: Optional[CaptureInfo] = None
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
+
+        # Error tracking for debugging
+        self._last_error: Optional[Exception] = None
+        self._last_stack_trace: Optional[str] = None
 
         job_classes = [SaveImageJob]
         if extra_job_classes:
@@ -551,61 +556,69 @@ class MultiPointWorker:
                 self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def _image_callback(self, camera_frame: CameraFrame):
+        """
+        Handle incoming camera frame.
+
+        Wrapped with safe_callback to contain exceptions and prevent crashes.
+        """
+        if self._ready_for_next_trigger.is_set():
+            self._log.warning(
+                "Got an image in the image callback, but we didn't send a trigger. Ignoring the image."
+            )
+            return
+
+        self._image_callback_idle.clear()
         try:
-            if self._ready_for_next_trigger.is_set():
-                self._log.warning(
-                    "Got an image in the image callback, but we didn't send a trigger.  Ignoring the image."
-                )
-                return
+            result = safe_callback(
+                self._process_camera_frame,
+                camera_frame,
+                on_error=self._handle_callback_error
+            )
 
-            self._image_callback_idle.clear()
-            with self._timing.get_timer("_image_callback"):
-                self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
-                info = self._current_capture_info
-                self._current_capture_info = None
-
-                self._ready_for_next_trigger.set()
-                if not info:
-                    self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
-                    self.request_abort_fn()
-                    return
-
-                image = camera_frame.frame
-                if not camera_frame or image is None:
-                    self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
-                    self.request_abort_fn()
-                    return
-
-                with self._timing.get_timer("job creation and dispatch"):
-                    for job_class, job_runner in self._job_runners:
-                        job = job_class(capture_info=info, capture_image=JobImage(image_array=image))
-                        if job_runner is not None:
-                            if not job_runner.dispatch(job):
-                                self._log.error("Failed to dispatch multiprocessing job!")
-                                self.request_abort_fn()
-                                return
-                        else:
-                            try:
-                                # NOTE(imo): We don't have any way of people using results, so for now just
-                                # grab and ignore it.
-                                result = job.run()
-                            except Exception:
-                                self._log.exception("Failed to execute job, abandoning acquisition!")
-                                self.request_abort_fn()
-                                return
-
-                height, width = image.shape[:2]
-                # with self._timing.get_timer("crop_image"):
-                #     image_to_display = utils.crop_image(
-                #         image,
-                #         round(width * self.display_resolution_scaling),
-                #         round(height * self.display_resolution_scaling),
-                #     )
-                with self._timing.get_timer("image_to_display*.emit"):
-                    self.callbacks.signal_new_image(camera_frame, info)
-
+            if not result.success:
+                self._log.error(f"Image callback failed, aborting: {result.error}")
+                self.request_abort_fn()
         finally:
             self._image_callback_idle.set()
+
+    def _process_camera_frame(self, camera_frame: CameraFrame):
+        """
+        Process a camera frame - extracted from _image_callback for error containment.
+        """
+        with self._timing.get_timer("_image_callback"):
+            self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
+            info = self._current_capture_info
+            self._current_capture_info = None
+
+            self._ready_for_next_trigger.set()
+            if not info:
+                raise RuntimeError("No current capture info! Something is wrong.")
+
+            image = camera_frame.frame
+            if not camera_frame or image is None:
+                raise RuntimeError("Image in frame callback is None.")
+
+            with self._timing.get_timer("job creation and dispatch"):
+                for job_class, job_runner in self._job_runners:
+                    job = job_class(capture_info=info, capture_image=JobImage(image_array=image))
+                    if job_runner is not None:
+                        if not job_runner.dispatch(job):
+                            raise RuntimeError("Failed to dispatch multiprocessing job!")
+                    else:
+                        # NOTE(imo): We don't have any way of people using results, so for now just
+                        # grab and ignore it.
+                        result = job.run()
+
+            height, width = image.shape[:2]
+            with self._timing.get_timer("image_to_display*.emit"):
+                self.callbacks.signal_new_image(camera_frame, info)
+
+    def _handle_callback_error(self, error: Exception, stack_trace: str):
+        """
+        Handle errors from image callback - store for debugging.
+        """
+        self._last_error = error
+        self._last_stack_trace = stack_trace
 
     def _frame_wait_timeout_s(self):
         return (self.camera.get_total_frame_time() / 1e3) + 10
