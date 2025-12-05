@@ -10,7 +10,7 @@ from squid.abc import AbstractCamera, CameraError
 from squid.config import CameraConfig, CameraPixelFormat, TucsenCameraModel
 from squid.abc import CameraFrame, CameraFrameFormat, CameraAcquisitionMode, CameraGainRange
 import squid.logging
-from control.cameras.tucam_sdk import *
+from control.peripherals.cameras.tucam_sdk import *
 import control.utils
 from control._def import *
 
@@ -955,7 +955,7 @@ class TucsenCamera(AbstractCamera):
             CameraError: If the camera doesn't support GenICam or if parameter setting fails
 
         Example:
-            from control.cameras.tucam_sdk import TUELEM_TYPE
+            from control.peripherals.cameras.tucam_sdk import TUELEM_TYPE
 
             camera.set_genicam_parameter("ExposureTime", 5.0, TUELEM_TYPE.TU_ElemFloat.value)
             camera.set_genicam_parameter("BlackLevel", 100, TUELEM_TYPE.TU_ElemInteger.value)

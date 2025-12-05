@@ -10,9 +10,9 @@ import git
 import matplotlib
 
 import control.microcontroller
-import squid.stage
-import squid.stage.cephla
-import squid.camera.utils
+import control.peripherals.stage
+import control.peripherals.stage.cephla
+import control.peripherals.cameras.camera_utils
 from control.microcontroller import Microcontroller
 from control.peripherals.piezo import PiezoStage
 from squid.config import get_stage_config

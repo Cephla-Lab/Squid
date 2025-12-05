@@ -1,13 +1,13 @@
 import pytest
 
 import squid.config
-import squid.filter_wheel_controller.utils
+import control.peripherals.filter_wheel.utils
 from squid.config import FilterWheelConfig, FilterWheelControllerVariant, SquidFilterWheelConfig
 
 
 def test_create_simulated_filter_wheel():
     """Test that we can create a simulated filter wheel controller."""
-    controller = squid.filter_wheel_controller.utils.SimulatedFilterWheelController(
+    controller = control.peripherals.filter_wheel.utils.SimulatedFilterWheelController(
         number_of_wheels=1, slots_per_wheel=8, simulate_delays=False
     )
     controller.initialize([1])
@@ -17,7 +17,7 @@ def test_create_simulated_filter_wheel():
 
 def test_simulated_filter_wheel_position():
     """Test setting and getting filter wheel positions."""
-    controller = squid.filter_wheel_controller.utils.SimulatedFilterWheelController(
+    controller = control.peripherals.filter_wheel.utils.SimulatedFilterWheelController(
         number_of_wheels=1, slots_per_wheel=8, simulate_delays=False
     )
     controller.initialize([1])
@@ -31,7 +31,7 @@ def test_simulated_filter_wheel_position():
 
 def test_simulated_filter_wheel_homing():
     """Test homing filter wheels."""
-    controller = squid.filter_wheel_controller.utils.SimulatedFilterWheelController(
+    controller = control.peripherals.filter_wheel.utils.SimulatedFilterWheelController(
         number_of_wheels=1, slots_per_wheel=8, simulate_delays=False
     )
     controller.initialize([1])

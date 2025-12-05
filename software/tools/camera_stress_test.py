@@ -3,7 +3,7 @@ import threading
 import time
 
 import control.microcontroller
-import squid.camera.utils
+import control.peripherals.cameras.camera_utils
 import squid.config
 import squid.logging
 from squid.abc import CameraFrame, CameraAcquisitionMode

@@ -5,7 +5,7 @@ import threading
 
 import control.microcontroller
 import squid.logging
-import squid.stage.cephla
+import control.peripherals.stage.cephla
 import squid.config
 
 log = squid.logging.get_logger("mst")

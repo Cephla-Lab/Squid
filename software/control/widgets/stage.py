@@ -33,7 +33,7 @@ from control._def import (
 from control.core.live_controller import LiveController
 from control.peripherals.piezo import PiezoStage
 from squid.abc import AbstractStage
-from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
+from control.peripherals.stage.stage_utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
 
 
 class StageUtils(QDialog):

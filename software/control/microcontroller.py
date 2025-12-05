@@ -8,7 +8,7 @@ from crc import CrcCalculator, Crc8
 
 import squid.logging
 from control._def import *
-from control.stage.serial import (
+from control.peripherals.stage.serial import (
     AbstractCephlaMicroSerial,
     SimSerial,
     MicrocontrollerSerial,

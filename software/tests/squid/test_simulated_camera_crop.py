@@ -5,7 +5,7 @@ crop_width_unbinned/binning_factor x crop_height_unbinned/binning_factor
 instead of using hardcoded values.
 """
 
-import squid.camera.utils
+import control.peripherals.cameras.camera_utils
 from squid.config import CameraConfig, CameraVariant
 
 
@@ -22,7 +22,7 @@ def test_simulated_camera_with_crop_dimensions():
         default_pixel_format="MONO12",
     )
 
-    sim_cam = squid.camera.utils.get_camera(config, simulated=True)
+    sim_cam = control.peripherals.cameras.camera_utils.get_camera(config, simulated=True)
 
     # With binning (2, 2), the expected resolution should be:
     # width = 5320 / 2 = 2660
@@ -59,7 +59,7 @@ def test_simulated_camera_fallback_to_hardcoded():
         default_pixel_format="MONO12",
     )
 
-    sim_cam = squid.camera.utils.get_camera(config, simulated=True)
+    sim_cam = control.peripherals.cameras.camera_utils.get_camera(config, simulated=True)
 
     # Should fall back to hardcoded BINNING_TO_RESOLUTION
     # For (2, 2) binning, the hardcoded value is (960, 540)

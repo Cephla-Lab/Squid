@@ -149,9 +149,9 @@ def get_filter_wheel_controller(
         return SimulatedFilterWheelController()
 
     # Import here to avoid circular dependencies
-    from squid.filter_wheel_controller.cephla import SquidFilterWheel
-    from squid.filter_wheel_controller.optospin import Optospin
-    from squid.filter_wheel_controller.zaber import ZaberFilterController
+    from control.peripherals.filter_wheel.cephla import SquidFilterWheel
+    from control.peripherals.filter_wheel.optospin import Optospin
+    from control.peripherals.filter_wheel.zaber import ZaberFilterController
 
     if config.controller_type == FilterWheelControllerVariant.SQUID:
         if microcontroller is None:

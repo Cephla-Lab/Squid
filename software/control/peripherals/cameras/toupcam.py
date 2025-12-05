@@ -19,9 +19,9 @@ from squid.config import CameraConfig, ToupcamCameraModel
 from control._def import *
 
 import threading
-import control.cameras.toupcam_sdk as toupcam
-from control.cameras.toupcam_exceptions import hresult_checker
-from squid.camera.utils import camera_registry
+import control.peripherals.cameras.toupcam_sdk as toupcam
+from control.peripherals.cameras.toupcam_exceptions import hresult_checker
+from control.peripherals.cameras.camera_utils import camera_registry
 
 log = squid.logging.get_logger(__name__)
 

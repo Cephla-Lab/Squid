@@ -15,19 +15,19 @@ from control.microcontroller import Microcontroller
 from control.peripherals.piezo import PiezoStage
 from control.peripherals.lighting import SciMicroscopyLEDArray
 from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
-from squid.stage.utils import move_z_axis_to_safety_position
-from squid.stage.cephla import CephlaStage
-from squid.stage.prior import PriorStage
+from control.peripherals.stage.stage_utils import move_z_axis_to_safety_position
+from control.peripherals.stage.cephla import CephlaStage
+from control.peripherals.stage.prior import PriorStage
 import control.peripherals.lighting.celesta
-import control.peripherals.illumination_andor
+import control.peripherals.lighting.illumination_andor
 import control.microcontroller
 import control.peripherals.lighting as serial_peripherals
-import squid.camera.utils
+import control.peripherals.cameras.camera_utils
 import squid.config
-import squid.filter_wheel_controller.utils
+import control.peripherals.filter_wheel.utils
 import squid.logging
-import squid.stage.cephla
-import squid.stage.utils
+import control.peripherals.stage.cephla
+import control.peripherals.stage.stage_utils
 
 if control._def.USE_XERYON:
     from control.peripherals.objective_changer import (
@@ -87,7 +87,7 @@ class MicroscopeAddons:
         emission_filter_wheel = None
         fw_config = squid.config.get_filter_wheel_config()
         if fw_config:
-            emission_filter_wheel = squid.filter_wheel_controller.utils.get_filter_wheel_controller(
+            emission_filter_wheel = control.peripherals.filter_wheel.utils.get_filter_wheel_controller(
                 fw_config, microcontroller=micro, simulated=simulated
             )
 
@@ -101,7 +101,7 @@ class MicroscopeAddons:
 
         camera_focus = None
         if control._def.SUPPORT_LASER_AUTOFOCUS:
-            camera_focus = squid.camera.utils.get_camera(
+            camera_focus = control.peripherals.cameras.camera_utils.get_camera(
                 squid.config.get_autofocus_camera_config(), simulated=simulated
             )
 
@@ -250,7 +250,7 @@ class Microscope:
 
             return True
 
-        camera = squid.camera.utils.get_camera(
+        camera = control.peripherals.cameras.camera_utils.get_camera(
             config=squid.config.get_camera_config(),
             simulated=simulated,
             hw_trigger_fn=acquisition_camera_hw_trigger_fn,

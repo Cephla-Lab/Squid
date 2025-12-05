@@ -1,5 +1,5 @@
 import control.microscope
-import squid.stage.cephla
+import control.peripherals.stage.cephla
 import squid.config
 from control.microcontroller import Microcontroller, SimSerial
 from tests.control.test_microcontroller import get_test_micro

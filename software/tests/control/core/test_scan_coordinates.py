@@ -1,5 +1,5 @@
 import tests.control.gui_test_stubs as gts
-import squid.stage
+import control.peripherals.stage
 from control.core.scan_coordinates import (
     ScanCoordinates,
     ScanCoordinatesUpdate,

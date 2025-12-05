@@ -7,8 +7,8 @@ import pydantic
 from squid.abc import AbstractCamera, CameraError
 from squid.config import CameraConfig, CameraPixelFormat
 from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
-from control.cameras.dcam import Dcam, Dcamapi
-from control.cameras.dcamapi4 import *
+from control.peripherals.cameras.dcam import Dcam, Dcamapi
+from control.peripherals.cameras.dcamapi4 import *
 import control.utils
 
 

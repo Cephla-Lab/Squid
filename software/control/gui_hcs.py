@@ -51,17 +51,17 @@ import control.microscope
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
 import squid.abc
-import squid.camera.utils
+import control.peripherals.cameras.camera_utils
 import squid.config
 import squid.logging
-import squid.stage.utils
+import control.peripherals.stage.stage_utils
 
 log = squid.logging.get_logger(__name__)
 
 if USE_PRIOR_STAGE:
-    import squid.stage.prior
+    import control.peripherals.stage.prior
 else:
-    import squid.stage.cephla
+    import control.peripherals.stage.cephla
 from control.peripherals.piezo import PiezoStage
 
 if USE_XERYON:
@@ -232,7 +232,7 @@ class HighContentScreeningGui(QMainWindow):
 
         # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
         if HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
-            if cached_pos := squid.stage.utils.get_cached_position():
+            if cached_pos := control.peripherals.stage.stage_utils.get_cached_position():
                 self.log.info(
                     f"Cache position exists.  Moving to: ({cached_pos.x_mm},{cached_pos.y_mm},{cached_pos.z_mm}) [mm]"
                 )
@@ -246,7 +246,7 @@ class HighContentScreeningGui(QMainWindow):
                     self.stage.move_z_to(int(Z_HOME_SAFETY_POINT) / 1000.0)
             else:
                 self.log.info(f"Cache position is not exists.  Moving Z axis to safety position")
-                squid.stage.utils.move_z_axis_to_safety_position(self.stage)
+                control.peripherals.stage.stage_utils.move_z_axis_to_safety_position(self.stage)
 
             if ENABLE_WELLPLATE_MULTIPOINT:
                 self.wellplateMultiPointWidget.init_z()
@@ -1436,7 +1436,7 @@ class HighContentScreeningGui(QMainWindow):
             return
 
         try:
-            squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
+            control.peripherals.stage.stage_utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
         except ValueError as e:
             self.log.error(f"Couldn't cache position while closing.  Ignoring and continuing. Error is: {e}")
         self.movement_update_timer.stop()

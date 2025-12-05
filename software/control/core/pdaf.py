@@ -18,7 +18,7 @@ from datetime import datetime
 import skimage  # pip3 install -U scikit-image
 import skimage.registration
 
-import squid.camera.utils
+import control.peripherals.cameras.camera_utils
 from squid.abc import AbstractCamera
 
 

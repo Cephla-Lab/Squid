@@ -57,51 +57,51 @@ def get_camera(
 
     try:
         if config.camera_type == CameraVariant.TOUPCAM:
-            import control.cameras.toupcam
+            import control.peripherals.cameras.toupcam
 
-            camera = control.cameras.toupcam.ToupcamCamera(
+            camera = control.peripherals.cameras.toupcam.ToupcamCamera(
                 config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
             )
         elif config.camera_type == CameraVariant.FLIR:
-            import control.cameras.flir
+            import control.peripherals.cameras.flir
 
-            camera = control.cameras.flir.Camera(config)
+            camera = control.peripherals.cameras.flir.Camera(config)
         elif config.camera_type == CameraVariant.HAMAMATSU:
-            import control.cameras.hamamatsu
+            import control.peripherals.cameras.hamamatsu
 
-            camera = control.cameras.hamamatsu.HamamatsuCamera(
+            camera = control.peripherals.cameras.hamamatsu.HamamatsuCamera(
                 config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
             )
         elif config.camera_type == CameraVariant.IDS:
-            import control.cameras.ids
+            import control.peripherals.cameras.ids
 
-            camera = control.cameras.ids.Camera(config)
+            camera = control.peripherals.cameras.ids.Camera(config)
         elif config.camera_type == CameraVariant.TUCSEN:
-            import control.cameras.tucsen
+            import control.peripherals.cameras.tucsen
 
-            camera = control.cameras.tucsen.TucsenCamera(
+            camera = control.peripherals.cameras.tucsen.TucsenCamera(
                 config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
             )
         elif config.camera_type == CameraVariant.PHOTOMETRICS:
-            import control.cameras.photometrics
+            import control.peripherals.cameras.photometrics
 
-            camera = control.cameras.photometrics.PhotometricsCamera(
+            camera = control.peripherals.cameras.photometrics.PhotometricsCamera(
                 config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
             )
         elif config.camera_type == CameraVariant.ANDOR:
-            import control.cameras.andor
+            import control.peripherals.cameras.andor
 
-            camera = control.cameras.andor.AndorCamera(
+            camera = control.peripherals.cameras.andor.AndorCamera(
                 config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
             )
         elif config.camera_type == CameraVariant.TIS:
-            import control.cameras.tis
+            import control.peripherals.cameras.tis
 
-            camera = control.cameras.tis.Camera(config)
+            camera = control.peripherals.cameras.tis.Camera(config)
         else:
-            import control.cameras.base
+            import control.peripherals.cameras.base
 
-            camera = control.cameras.base.DefaultCamera(
+            camera = control.peripherals.cameras.base.DefaultCamera(
                 config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
             )
 
@@ -114,7 +114,7 @@ def get_camera(
         _log.warning(f"Camera of type: '{config.camera_type}' failed to import.  Falling back to default camera impl.")
         _log.warning(e)
 
-        import control.cameras.base
+        import control.peripherals.cameras.base
 
         return control.cameras.base.DefaultCamera(
             config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
