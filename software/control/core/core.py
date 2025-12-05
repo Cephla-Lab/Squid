@@ -42,7 +42,7 @@ from control.core.focus_map import (
     NavigationViewer,
 )
 from control.microcontroller import Microcontroller
-from control.piezo import PiezoStage
+from control.peripherals.piezo import PiezoStage
 from squid.abc import AbstractStage, AbstractCamera, CameraAcquisitionMode, CameraFrame
 import control._def
 import control.peripherals.lighting as serial_peripherals
@@ -73,6 +73,6 @@ import squid.abc
 import scipy.ndimage
 
 if ENABLE_NL5:
-    import control.NL5 as NL5
+    import control.peripherals.nl5 as NL5
 else:
     NL5 = TypeVar("NL5")

@@ -3,7 +3,7 @@ import pathlib
 import control.microscope
 import control.core.objective_store
 import control.microcontroller
-import control.lighting
+import control.peripherals.lighting.led as lighting
 
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.configuration_mananger import ConfigurationManager

@@ -3,7 +3,7 @@ import sys
 import time
 import serial
 
-from control.Xeryon import Xeryon, Stage
+from control.peripherals.xeryon import Xeryon, Stage
 from control._def import *  # to remove once we create ObjectiveChangerConfig
 import squid.abc
 from typing import Optional

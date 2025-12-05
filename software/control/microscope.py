@@ -10,16 +10,16 @@ from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
 
-from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
+from control.peripherals.lighting.led import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
-from control.piezo import PiezoStage
+from control.peripherals.piezo import PiezoStage
 from control.peripherals.lighting import SciMicroscopyLEDArray
 from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
 from squid.stage.utils import move_z_axis_to_safety_position
 from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
-import control.celesta
-import control.illumination_andor
+import control.peripherals.lighting.celesta
+import control.peripherals.illumination_andor
 import control.microcontroller
 import control.peripherals.lighting as serial_peripherals
 import squid.camera.utils
@@ -30,7 +30,7 @@ import squid.stage.cephla
 import squid.stage.utils
 
 if control._def.USE_XERYON:
-    from control.objective_changer_2_pos_controller import (
+    from control.peripherals.objective_changer import (
         ObjectiveChanger2PosController,
         ObjectiveChanger2PosController_Simulation,
     )
@@ -38,12 +38,12 @@ else:
     ObjectiveChanger2PosController = TypeVar("ObjectiveChanger2PosController")
 
 if control._def.RUN_FLUIDICS:
-    from control.fluidics import Fluidics
+    from control.peripherals.fluidics import Fluidics
 else:
     Fluidics = TypeVar("Fluidics")
 
 if control._def.ENABLE_NL5:
-    import control.NL5 as NL5
+    import control.peripherals.nl5 as NL5
 else:
     NL5 = TypeVar("NL5")
 

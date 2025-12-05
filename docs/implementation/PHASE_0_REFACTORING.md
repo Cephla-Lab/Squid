@@ -296,21 +296,22 @@ The following tasks reorganize remaining files in `control/` (~16,000 lines) int
 - [x] Verify syntax with py_compile
 - [x] Commit: "Move camera SDK files to control/cameras/"
 
-### Task 0.16: Move peripheral/hardware files to peripherals/
-- [ ] Move `Xeryon.py` → `peripherals/xeryon.py` (1,476 lines - Xeryon stage)
-- [ ] Move `illumination_andor.py` → `peripherals/illumination_andor.py` (557 lines)
-- [ ] Move `fluidics.py` → `peripherals/fluidics.py` (336 lines)
-- [ ] Move `celesta.py` → `peripherals/lighting/celesta.py` (216 lines)
-- [ ] Move `lighting.py` → `peripherals/lighting/led.py` (204 lines)
-- [ ] Move `NL5.py` → `peripherals/nl5.py` (161 lines - NL5 laser)
-- [ ] Move `RCM_API.py` → `peripherals/rcm.py` (108 lines)
-- [ ] Move `spectrometer_oceanoptics.py` → `peripherals/spectrometer_oceanoptics.py` (109 lines)
-- [ ] Move `piezo.py` → `peripherals/piezo.py` (40 lines)
-- [ ] Move `objective_changer_2_pos_controller.py` → `peripherals/objective_changer.py` (87 lines)
-- [ ] Update `peripherals/__init__.py` with new exports
-- [ ] Update imports throughout codebase
-- [ ] Verify syntax with py_compile
-- [ ] Commit: "Move peripheral/hardware files to control/peripherals/"
+### Task 0.16: Move peripheral/hardware files to peripherals/ ✅
+- [x] Move `Xeryon.py` → `peripherals/xeryon.py` (1,476 lines - Xeryon stage)
+- [x] Move `illumination_andor.py` → `peripherals/illumination_andor.py` (557 lines)
+- [x] Move `fluidics.py` → `peripherals/fluidics.py` (336 lines)
+- [x] Move `celesta.py` → `peripherals/lighting/celesta.py` (216 lines)
+- [x] Move `lighting.py` → `peripherals/lighting/led.py` (204 lines)
+- [x] Move `NL5.py` → `peripherals/nl5.py` (161 lines - NL5 laser)
+- [x] Move `RCM_API.py` → `peripherals/rcm.py` (108 lines)
+- [x] Move `spectrometer_oceanoptics.py` → `peripherals/spectrometer_oceanoptics.py` (109 lines)
+- [x] Move `piezo.py` → `peripherals/piezo.py` (40 lines)
+- [x] Move `objective_changer_2_pos_controller.py` → `peripherals/objective_changer.py` (87 lines)
+- [x] Update `peripherals/__init__.py` with documentation
+- [x] Update `peripherals/lighting/__init__.py` with new exports
+- [x] Update imports throughout codebase (19 files updated)
+- [x] Verify syntax with py_compile
+- [x] Commit: "Move peripheral/hardware files to control/peripherals/"
 
 ### Task 0.17: Move domain-specific core files to core/
 - [ ] Move `core_platereader.py` → `core/platereader.py` (383 lines)

@@ -27,7 +27,7 @@ from control._def import (
     ENABLE_CLICK_TO_MOVE_BY_DEFAULT,
 )
 from control.core.live_controller import LiveController
-from control.piezo import PiezoStage
+from control.peripherals.piezo import PiezoStage
 from squid.abc import AbstractStage
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
 

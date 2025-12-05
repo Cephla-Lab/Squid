@@ -10,7 +10,7 @@ You Yan 12/2024
 import urllib.request
 import traceback
 from squid.abc import LightSource
-from control.lighting import ShutterControlMode
+from control.peripherals.lighting.led import ShutterControlMode
 
 import squid.logging
 

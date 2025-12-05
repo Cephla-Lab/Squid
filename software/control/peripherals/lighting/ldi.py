@@ -1,7 +1,7 @@
 import serial
 
 from control.peripherals.serial_base import SerialDevice
-from control.lighting import IntensityControlMode, ShutterControlMode
+from control.peripherals.lighting.led import IntensityControlMode, ShutterControlMode
 from control._def import LDI_INTENSITY_MODE, LDI_SHUTTER_MODE
 from squid.abc import LightSource
 

@@ -41,12 +41,12 @@ from control.core.multi_point_utils import (
 )
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
-from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
+from control.peripherals.lighting.led import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
-import control.lighting
+import control.peripherals.lighting.led as lighting
 import control.microscope
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
@@ -62,10 +62,10 @@ if USE_PRIOR_STAGE:
     import squid.stage.prior
 else:
     import squid.stage.cephla
-from control.piezo import PiezoStage
+from control.peripherals.piezo import PiezoStage
 
 if USE_XERYON:
-    from control.objective_changer_2_pos_controller import (
+    from control.peripherals.objective_changer import (
         ObjectiveChanger2PosController,
         ObjectiveChanger2PosController_Simulation,
     )
@@ -83,7 +83,7 @@ if USE_JUPYTER_CONSOLE:
     from control.console import JupyterWidget
 
 if RUN_FLUIDICS:
-    from control.fluidics import Fluidics
+    from control.peripherals.fluidics import Fluidics
 
 # Import the custom widget
 from control.custom_multipoint_widget import TemplateMultiPointWidget

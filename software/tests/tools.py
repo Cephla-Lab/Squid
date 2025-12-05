@@ -14,7 +14,7 @@ import squid.stage
 import squid.stage.cephla
 import squid.camera.utils
 from control.microcontroller import Microcontroller
-from control.piezo import PiezoStage
+from control.peripherals.piezo import PiezoStage
 from squid.config import get_stage_config
 import control._def
 

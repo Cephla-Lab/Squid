@@ -12,7 +12,7 @@ sys.path.append(software_dir)
 os.chdir(software_dir)
 
 from PM16 import PM16
-from control.lighting import IlluminationController, IntensityControlMode, ShutterControlMode
+from control.peripherals.lighting.led import IlluminationController, IntensityControlMode, ShutterControlMode
 import control.microcontroller as microcontroller
 from control._def import *
 

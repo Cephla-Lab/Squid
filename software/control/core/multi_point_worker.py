@@ -24,7 +24,7 @@ from control.core.multi_point_utils import (
 from control.core.objective_store import ObjectiveStore
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
-from control.piezo import PiezoStage
+from control.peripherals.piezo import PiezoStage
 from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.logging

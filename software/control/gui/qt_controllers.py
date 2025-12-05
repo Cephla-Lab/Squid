@@ -20,7 +20,7 @@ from control.core.objective_store import ObjectiveStore
 from control.core.scan_coordinates import ScanCoordinates
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
-from control.piezo import PiezoStage
+from control.peripherals.piezo import PiezoStage
 from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, AbstractStage
 import control.microscope

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 from squid.abc import LightSource
-from control.lighting import IntensityControlMode, ShutterControlMode
+from control.peripherals.lighting.led import IntensityControlMode, ShutterControlMode
 import squid.logging
 
 
