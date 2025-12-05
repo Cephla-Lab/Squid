@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from control.core.multi_point_controller import MultiPointController
     from control.core.channel_configuration_mananger import ChannelConfigurationManager
     from control.core.objective_store import ObjectiveStore
+    from squid.services import ServiceRegistry
 
 
 @dataclass
@@ -75,6 +76,7 @@ class ApplicationContext:
         self._external_controller_creation = external_controller_creation
         self._microscope: Optional["Microscope"] = None
         self._controllers: Optional[Controllers] = None
+        self._services: Optional["ServiceRegistry"] = None
         self._gui = None
 
         self._log.info(f"Creating ApplicationContext (simulation={simulation}, "
@@ -83,6 +85,7 @@ class ApplicationContext:
         # Build components
         self._build_microscope()
         self._build_controllers()
+        self._build_services()
 
     def _build_microscope(self):
         """Build the microscope from configuration."""
@@ -156,6 +159,29 @@ class ApplicationContext:
             objective_store=self._microscope.objective_store,
         )
 
+    def _build_services(self):
+        """Build service layer."""
+        from squid.services import ServiceRegistry, CameraService, StageService, PeripheralService
+        from squid.events import event_bus
+
+        self._log.info("Building services...")
+
+        self._services = ServiceRegistry(event_bus)
+
+        self._services.register('camera',
+            CameraService(self._microscope.camera, event_bus))
+
+        self._services.register('stage',
+            StageService(self._microscope.stage, event_bus))
+
+        self._services.register('peripheral',
+            PeripheralService(
+                self._microscope.low_level_drivers.microcontroller,
+                event_bus
+            ))
+
+        self._log.info("Services built successfully")
+
     @property
     def microscope(self) -> "Microscope":
         """Get the microscope instance."""
@@ -169,6 +195,13 @@ class ApplicationContext:
         if self._controllers is None:
             raise RuntimeError("Controllers not initialized")
         return self._controllers
+
+    @property
+    def services(self) -> "ServiceRegistry":
+        """Get the service registry."""
+        if self._services is None:
+            raise RuntimeError("Services not initialized")
+        return self._services
 
     @property
     def is_simulation(self) -> bool:
@@ -207,6 +240,11 @@ class ApplicationContext:
             if self._controllers.live:
                 self._controllers.live.stop_live()
             # StreamHandler doesn't have a stop method currently
+
+        # Shutdown services
+        if self._services:
+            self._services.shutdown()
+            self._services = None
 
         # Shutdown microscope
         if self._microscope:
