@@ -1,0 +1,1 @@
+# Hardware peripherals module
