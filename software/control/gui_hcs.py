@@ -521,6 +521,7 @@ class HighContentScreeningGui(QMainWindow):
             self.channelConfigurationManager,
             self.scanCoordinates,
             self.focusMapWidget,
+            stage_service=self._services.get('stage') if self._services else None,
         )
         self.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(
             self.stage,
@@ -534,6 +535,7 @@ class HighContentScreeningGui(QMainWindow):
             self.napariMosaicDisplayWidget,
             tab_widget=self.recordTabWidget,
             well_selection_widget=self.wellSelectionWidget,
+            stage_service=self._services.get('stage') if self._services else None,
         )
         if USE_TEMPLATE_MULTIPOINT:
             self.templateMultiPointWidget = TemplateMultiPointWidget(
@@ -552,8 +554,8 @@ class HighContentScreeningGui(QMainWindow):
             self.objectiveStore,
             self.channelConfigurationManager,
             self.scanCoordinates,
-            self.focusMapWidget,
             self.napariMosaicDisplayWidget,
+            stage_service=self._services.get('stage') if self._services else None,
         )
         self.sampleSettingsWidget = widgets.SampleSettingsWidget(self.objectivesWidget, self.wellplateFormatWidget)
 
