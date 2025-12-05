@@ -3,9 +3,13 @@ import numpy as np
 import json
 import math
 import time
+from typing import Optional, TYPE_CHECKING
 
 import squid.logging
 from qtpy.QtCore import Signal, Qt, QTimer, QVariant
+
+if TYPE_CHECKING:
+    from squid.services import StageService
 from qtpy.QtWidgets import (
     QWidget,
     QFrame,
@@ -376,11 +380,20 @@ class WellplateFormatWidget(QWidget):
 
 class WellplateCalibration(QDialog):
 
-    def __init__(self, wellplateFormatWidget, stage: AbstractStage, navigationViewer, streamHandler, liveController):
+    def __init__(
+        self,
+        wellplateFormatWidget,
+        stage: AbstractStage,
+        navigationViewer,
+        streamHandler,
+        liveController,
+        stage_service: Optional["StageService"] = None,
+    ):
         super().__init__()
         self.setWindowTitle("Well Plate Calibration")
         self.wellplateFormatWidget = wellplateFormatWidget
         self.stage = stage
+        self._stage_service = stage_service
         self.navigationViewer = navigationViewer
         self.streamHandler = streamHandler
         self.liveController: LiveController = liveController
@@ -576,8 +589,7 @@ class WellplateCalibration(QDialog):
         dx = math.copysign(max_speed * abs(x) ** exponent, x)
         dy = math.copysign(max_speed * abs(y) ** exponent, y)
 
-        self.stage.move_x(dx)
-        self.stage.move_y(dy)
+        self._move_stage_relative(dx, dy)
 
     def toggleClickToMove(self, state):
         if state == Qt.Checked:
@@ -597,8 +609,16 @@ class WellplateCalibration(QDialog):
         delta_x = pixel_sign_x * pixel_size_um * x / 1000.0
         delta_y = pixel_sign_y * pixel_size_um * y / 1000.0
 
-        self.stage.move_x(delta_x)
-        self.stage.move_y(delta_y)
+        self._move_stage_relative(delta_x, delta_y)
+
+    def _move_stage_relative(self, dx: float, dy: float):
+        """Move stage by relative distance using service if available."""
+        if self._stage_service is not None:
+            self._stage_service.move_x(dx)
+            self._stage_service.move_y(dy)
+        else:
+            self.stage.move_x(dx)
+            self.stage.move_y(dy)
 
     def setCorner(self, index):
         if self.corners[index] is None:
