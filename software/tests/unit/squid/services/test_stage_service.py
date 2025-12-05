@@ -139,3 +139,56 @@ class TestStageService:
         assert pos.x_mm == 1.0
         assert pos.y_mm == 2.0
         assert pos.z_mm == 3.0
+
+    # ============================================================
+    # Task 2.1: Theta axis methods
+    # ============================================================
+
+    def test_move_theta(self):
+        """move_theta should call stage.move_theta."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(1.0, 2.0, 3.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        service.move_theta(0.5)
+
+        mock_stage.move_theta.assert_called_once_with(0.5, True)
+
+    def test_move_theta_to(self):
+        """move_theta_to should call stage.move_theta_to."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(1.0, 2.0, 3.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        service.move_theta_to(1.57)
+
+        mock_stage.move_theta_to.assert_called_once_with(1.57, True)
+
+    # ============================================================
+    # Task 2.2: get_config method
+    # ============================================================
+
+    def test_get_config(self):
+        """get_config should return stage configuration."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_config = Mock()
+        mock_stage.get_config.return_value = mock_config
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        config = service.get_config()
+
+        assert config is mock_config
+        mock_stage.get_config.assert_called_once()

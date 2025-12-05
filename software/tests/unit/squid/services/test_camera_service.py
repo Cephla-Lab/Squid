@@ -298,3 +298,64 @@ class TestCameraService:
         service.set_temperature_reading_callback(callback)
 
         mock_camera.set_temperature_reading_callback.assert_called_once_with(callback)
+
+    # ============================================================
+    # Task 1.5: White balance methods
+    # ============================================================
+
+    def test_set_white_balance_gains(self):
+        """set_white_balance_gains should call camera."""
+        from squid.services.camera_service import CameraService
+        from squid.events import EventBus
+
+        mock_camera = Mock()
+        bus = EventBus()
+        service = CameraService(mock_camera, bus)
+
+        service.set_white_balance_gains(1.2, 1.0, 1.5)
+
+        mock_camera.set_white_balance_gains.assert_called_once_with(1.2, 1.0, 1.5)
+
+    def test_get_white_balance_gains(self):
+        """get_white_balance_gains should return camera value."""
+        from squid.services.camera_service import CameraService
+        from squid.events import EventBus
+
+        mock_camera = Mock()
+        mock_camera.get_white_balance_gains.return_value = (1.2, 1.0, 1.5)
+        bus = EventBus()
+        service = CameraService(mock_camera, bus)
+
+        result = service.get_white_balance_gains()
+
+        assert result == (1.2, 1.0, 1.5)
+
+    def test_set_auto_white_balance(self):
+        """set_auto_white_balance should call camera."""
+        from squid.services.camera_service import CameraService
+        from squid.events import EventBus
+
+        mock_camera = Mock()
+        bus = EventBus()
+        service = CameraService(mock_camera, bus)
+
+        service.set_auto_white_balance(True)
+
+        mock_camera.set_auto_white_balance_gains.assert_called_once_with(on=True)
+
+    # ============================================================
+    # Task 1.6: Black level method
+    # ============================================================
+
+    def test_set_black_level(self):
+        """set_black_level should call camera."""
+        from squid.services.camera_service import CameraService
+        from squid.events import EventBus
+
+        mock_camera = Mock()
+        bus = EventBus()
+        service = CameraService(mock_camera, bus)
+
+        service.set_black_level(10.0)
+
+        mock_camera.set_black_level.assert_called_once_with(10.0)

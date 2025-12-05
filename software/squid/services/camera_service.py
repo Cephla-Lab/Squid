@@ -162,3 +162,28 @@ class CameraService(BaseService):
     def set_temperature_reading_callback(self, callback):
         """Set callback for temperature readings."""
         self._camera.set_temperature_reading_callback(callback)
+
+    # ============================================================
+    # Task 1.5: White balance methods
+    # ============================================================
+
+    def set_white_balance_gains(self, r: float, g: float, b: float):
+        """Set white balance gains."""
+        self._camera.set_white_balance_gains(r, g, b)
+
+    def get_white_balance_gains(self) -> Tuple[float, float, float]:
+        """Get white balance gains as (r, g, b)."""
+        return self._camera.get_white_balance_gains()
+
+    def set_auto_white_balance(self, enabled: bool):
+        """Enable/disable auto white balance."""
+        self._camera.set_auto_white_balance_gains(on=enabled)
+
+    # ============================================================
+    # Task 1.6: Black level method
+    # ============================================================
+
+    def set_black_level(self, level: float):
+        """Set camera black level."""
+        self._log.debug(f"Setting black level: {level}")
+        self._camera.set_black_level(level)

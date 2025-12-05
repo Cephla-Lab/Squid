@@ -98,3 +98,25 @@ class StageService(BaseService):
             y_mm=pos.y_mm,
             z_mm=pos.z_mm
         ))
+
+    # ============================================================
+    # Task 2.1: Theta axis methods
+    # ============================================================
+
+    def move_theta(self, distance_rad: float, blocking: bool = True):
+        """Move theta axis by relative distance."""
+        self._stage.move_theta(distance_rad, blocking)
+        self._publish_position()
+
+    def move_theta_to(self, abs_rad: float, blocking: bool = True):
+        """Move theta to absolute position."""
+        self._stage.move_theta_to(abs_rad, blocking)
+        self._publish_position()
+
+    # ============================================================
+    # Task 2.2: get_config method
+    # ============================================================
+
+    def get_config(self):
+        """Get stage configuration."""
+        return self._stage.get_config()
