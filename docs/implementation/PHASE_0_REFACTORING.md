@@ -21,23 +21,32 @@
 ```
 software/
 ├── control/
-│   ├── core/                    # (existing, keep)
-│   │   ├── controllers/         # NEW: Controller classes
+│   ├── core/                    # (existing, expanded)
+│   │   ├── controllers/         # Controller classes (existing)
 │   │   │   ├── __init__.py
 │   │   │   ├── live_controller.py
 │   │   │   ├── auto_focus_controller.py
 │   │   │   ├── laser_auto_focus_controller.py
 │   │   │   └── multi_point_controller.py
-│   │   ├── workers/             # NEW: Worker classes
+│   │   ├── workers/             # Worker classes (existing)
 │   │   │   ├── __init__.py
 │   │   │   ├── multi_point_worker.py
 │   │   │   └── tracking_worker.py
-│   │   ├── stream_handler.py
-│   │   ├── scan_coordinates.py
+│   │   ├── stream_handler.py    # EXTRACTED from core.py
+│   │   ├── image_display.py     # EXTRACTED from core.py
+│   │   ├── tracking.py          # EXTRACTED from core.py
 │   │   ├── focus_map.py         # EXTRACTED from core.py
+│   │   ├── scan_coordinates.py
+│   │   ├── platereader.py       # MOVED from core_platereader.py (Phase 0b)
+│   │   ├── pdaf.py              # MOVED from core_PDAF.py (Phase 0b)
+│   │   ├── usb_spectrometer.py  # MOVED from core_usbspectrometer.py (Phase 0b)
+│   │   ├── volumetric_imaging.py # MOVED from core_volumetric_imaging.py (Phase 0b)
+│   │   ├── displacement_measurement.py # MOVED (Phase 0b)
+│   │   ├── utils_acquisition.py # MOVED (Phase 0b)
+│   │   ├── utils_channel.py     # MOVED (Phase 0b)
 │   │   └── ...
 │   │
-│   ├── cameras/                 # NEW: All camera drivers
+│   ├── cameras/                 # All camera drivers and SDKs
 │   │   ├── __init__.py
 │   │   ├── base.py              # camera.py renamed
 │   │   ├── andor.py
@@ -45,25 +54,37 @@ software/
 │   │   ├── hamamatsu.py
 │   │   ├── ids.py
 │   │   ├── photometrics.py
-│   │   ├── toupcam.py
-│   │   ├── tucsen.py
+│   │   ├── toupcam.py           # Camera driver
+│   │   ├── toupcam_sdk.py       # MOVED: SDK bindings (Phase 0b)
+│   │   ├── toupcam_exceptions.py # MOVED (Phase 0b)
+│   │   ├── tucsen.py            # Camera driver
+│   │   ├── tucam_sdk.py         # MOVED: TUCam.py (Phase 0b)
+│   │   ├── dcam.py              # MOVED: DCAM wrapper (Phase 0b)
+│   │   ├── dcamapi4.py          # MOVED: DCAM API (Phase 0b)
 │   │   └── tis.py
 │   │
-│   ├── peripherals/             # NEW: Hardware peripherals
+│   ├── peripherals/             # Hardware peripherals
 │   │   ├── __init__.py
 │   │   ├── serial_base.py       # EXTRACTED: Base SerialDevice
-│   │   ├── lighting/            # EXTRACTED from serial_peripherals.py
+│   │   ├── lighting/            # Illumination devices
 │   │   │   ├── __init__.py
-│   │   │   ├── xlight.py
+│   │   │   ├── xlight.py        # EXTRACTED from serial_peripherals.py
 │   │   │   ├── dragonfly.py
 │   │   │   ├── ldi.py
 │   │   │   ├── cellx.py
-│   │   │   └── sci_led_array.py
-│   │   ├── fluidics.py
-│   │   ├── piezo.py
-│   │   └── spectrometer.py
+│   │   │   ├── sci_led_array.py
+│   │   │   ├── celesta.py       # MOVED (Phase 0b)
+│   │   │   └── led.py           # MOVED from lighting.py (Phase 0b)
+│   │   ├── xeryon.py            # MOVED from Xeryon.py (Phase 0b)
+│   │   ├── illumination_andor.py # MOVED (Phase 0b)
+│   │   ├── fluidics.py          # MOVED (Phase 0b)
+│   │   ├── nl5.py               # MOVED from NL5.py (Phase 0b)
+│   │   ├── rcm.py               # MOVED from RCM_API.py (Phase 0b)
+│   │   ├── piezo.py             # MOVED (Phase 0b)
+│   │   ├── objective_changer.py # MOVED (Phase 0b)
+│   │   └── spectrometer_oceanoptics.py # MOVED (Phase 0b)
 │   │
-│   ├── widgets/                 # NEW: Split from widgets.py
+│   ├── widgets/                 # GUI widgets
 │   │   ├── __init__.py
 │   │   ├── base.py              # Utility widgets (WrapperWindow, CollapsibleGroupBox)
 │   │   ├── config.py            # ConfigEditor widgets
@@ -74,33 +95,40 @@ software/
 │   │   ├── hardware.py          # Confocal, filter, laser AF widgets
 │   │   ├── wellplate.py         # Well selection, calibration widgets
 │   │   ├── fluidics.py          # FluidicsWidget
-│   │   └── tracking.py          # TrackingControllerWidget, etc.
+│   │   ├── tracking.py          # TrackingControllerWidget, etc.
+│   │   ├── nl5.py               # MOVED from NL5Widget.py (Phase 0b)
+│   │   ├── custom_multipoint.py # MOVED (Phase 0b)
+│   │   └── spectrometer.py      # MOVED from widgets_usbspectrometer.py (Phase 0b)
 │   │
-│   ├── gui/                     # NEW: GUI organization
+│   ├── gui/                     # GUI organization
 │   │   ├── __init__.py
-│   │   ├── main_window.py       # HighContentScreeningGui (slimmed)
-│   │   ├── signal_manager.py    # EXTRACTED: Signal connection logic
-│   │   ├── layout_manager.py    # EXTRACTED: Layout/dock setup
+│   │   ├── main_window.py       # HighContentScreeningGui (slimmed) - deferred
+│   │   ├── signal_manager.py    # Signal connection logic - deferred
+│   │   ├── layout_manager.py    # Layout/dock setup - deferred
 │   │   └── qt_controllers.py    # MovementUpdater, QtAutoFocusController, QtMultiPointController
 │   │
-│   ├── stage/                   # NEW: Stage controllers
+│   ├── stage/                   # Stage controllers
 │   │   ├── __init__.py
 │   │   ├── microcontroller.py   # Main Microcontroller class
-│   │   ├── serial.py            # EXTRACTED: Serial communication classes
-│   │   └── xeryon.py
+│   │   └── serial.py            # EXTRACTED: Serial communication classes
 │   │
-│   ├── processing/              # NEW: Image processing
+│   ├── processing/              # Image processing
 │   │   ├── __init__.py
 │   │   ├── stitcher.py          # Base stitching
 │   │   ├── coordinate_stitcher.py  # EXTRACTED from stitcher.py
+│   │   ├── handler.py           # MOVED from processing_handler.py (Phase 0b)
 │   │   └── image_utils.py       # From utils_/image_processing.py
 │   │
 │   ├── _def.py                  # Keep (configuration constants)
-│   ├── microscope.py            # Keep
-│   └── utils.py                 # Keep
+│   ├── microscope.py            # Keep (core microscope abstraction)
+│   ├── microcontroller.py       # Keep (core hardware interface)
+│   ├── gui_hcs.py               # Keep (main GUI - further split deferred)
+│   ├── utils.py                 # Keep (general utilities)
+│   ├── utils_config.py          # Keep (configuration utilities)
+│   └── console.py               # Keep (development utility)
 │
 ├── squid/                       # (existing, mostly keep)
-│   ├── utils/                   # NEW: Phase 1 utilities go here
+│   ├── utils/                   # Phase 1 utilities go here
 │   │   ├── __init__.py
 │   │   ├── safe_callback.py
 │   │   ├── thread_safe_state.py
@@ -253,7 +281,99 @@ software/
 
 ---
 
-## Files to Split - Detailed Breakdown
+## Phase 0b: Additional File Reorganization
+
+The following tasks reorganize remaining files in `control/` (~16,000 lines) into the established directory structure.
+
+### Task 0.15: Move camera SDK/support files to cameras/
+- [ ] Move `toupcam.py` → `cameras/toupcam_sdk.py` (2,694 lines - ToupCam SDK bindings)
+- [ ] Move `toupcam_exceptions.py` → `cameras/toupcam_exceptions.py` (47 lines)
+- [ ] Move `TUCam.py` → `cameras/tucam_sdk.py` (928 lines - Tucsen support)
+- [ ] Move `dcamapi4.py` → `cameras/dcamapi4.py` (1,369 lines - Hamamatsu DCAM API)
+- [ ] Move `dcam.py` → `cameras/dcam.py` (748 lines - DCAM wrapper)
+- [ ] Update `cameras/__init__.py` with new exports
+- [ ] Update imports in camera driver files
+- [ ] Verify syntax with py_compile
+- [ ] Commit: "Move camera SDK files to control/cameras/"
+
+### Task 0.16: Move peripheral/hardware files to peripherals/
+- [ ] Move `Xeryon.py` → `peripherals/xeryon.py` (1,476 lines - Xeryon stage)
+- [ ] Move `illumination_andor.py` → `peripherals/illumination_andor.py` (557 lines)
+- [ ] Move `fluidics.py` → `peripherals/fluidics.py` (336 lines)
+- [ ] Move `celesta.py` → `peripherals/lighting/celesta.py` (216 lines)
+- [ ] Move `lighting.py` → `peripherals/lighting/led.py` (204 lines)
+- [ ] Move `NL5.py` → `peripherals/nl5.py` (161 lines - NL5 laser)
+- [ ] Move `RCM_API.py` → `peripherals/rcm.py` (108 lines)
+- [ ] Move `spectrometer_oceanoptics.py` → `peripherals/spectrometer_oceanoptics.py` (109 lines)
+- [ ] Move `piezo.py` → `peripherals/piezo.py` (40 lines)
+- [ ] Move `objective_changer_2_pos_controller.py` → `peripherals/objective_changer.py` (87 lines)
+- [ ] Update `peripherals/__init__.py` with new exports
+- [ ] Update imports throughout codebase
+- [ ] Verify syntax with py_compile
+- [ ] Commit: "Move peripheral/hardware files to control/peripherals/"
+
+### Task 0.17: Move domain-specific core files to core/
+- [ ] Move `core_platereader.py` → `core/platereader.py` (383 lines)
+- [ ] Move `core_PDAF.py` → `core/pdaf.py` (334 lines - phase detection AF)
+- [ ] Move `core_usbspectrometer.py` → `core/usb_spectrometer.py` (147 lines)
+- [ ] Move `core_volumetric_imaging.py` → `core/volumetric_imaging.py` (169 lines)
+- [ ] Move `core_displacement_measurement.py` → `core/displacement_measurement.py` (53 lines)
+- [ ] Move `tracking.py` → `core/tracking_utils.py` (234 lines - if not duplicate of core/tracking.py)
+- [ ] Update `core/__init__.py` with new exports
+- [ ] Update imports throughout codebase
+- [ ] Verify syntax with py_compile
+- [ ] Commit: "Move domain-specific core files to control/core/"
+
+### Task 0.18: Move remaining widget files to widgets/
+- [ ] Move `NL5Widget.py` → `widgets/nl5.py` (137 lines)
+- [ ] Move `custom_multipoint_widget.py` → `widgets/custom_multipoint.py` (194 lines)
+- [ ] Move `widgets_usbspectrometer.py` → `widgets/spectrometer.py` (204 lines)
+- [ ] Update `widgets/__init__.py` with new exports
+- [ ] Update imports in gui_hcs.py and other consumers
+- [ ] Verify syntax with py_compile
+- [ ] Commit: "Move remaining widget files to control/widgets/"
+
+### Task 0.19: Organize utility files
+- [ ] Move `utils_acquisition.py` → `core/utils_acquisition.py` (58 lines)
+- [ ] Move `utils_channel.py` → `core/utils_channel.py` (20 lines)
+- [ ] Move `processing_handler.py` → `processing/handler.py` (100 lines)
+- [ ] Keep `utils.py` at top level (585 lines - general utilities)
+- [ ] Keep `utils_config.py` at top level (344 lines - config utilities)
+- [ ] Keep `console.py` at top level (290 lines - development utility)
+- [ ] Update imports throughout codebase
+- [ ] Verify syntax with py_compile
+- [ ] Commit: "Organize utility files"
+
+### Task 0.20: Final cleanup and verification
+- [ ] Remove any empty/unused files
+- [ ] Verify all `__init__.py` files have complete exports
+- [ ] Run full syntax verification on all Python files
+- [ ] Update any remaining broken imports
+- [ ] Run manual smoke test with simulation (if environment available)
+- [ ] Commit: "Phase 0b complete - final cleanup"
+
+---
+
+## Files Remaining at Top Level (after Phase 0b)
+
+After all reorganization, only these files should remain directly in `control/`:
+
+| File | Lines | Reason to Keep |
+|------|-------|----------------|
+| `__init__.py` | 0 | Package marker |
+| `_def.py` | 990 | Central configuration constants |
+| `microscope.py` | 495 | Core microscope abstraction |
+| `microcontroller.py` | 866 | Core hardware interface |
+| `gui_hcs.py` | 1,471 | Main GUI (further split deferred) |
+| `utils.py` | 585 | General utilities |
+| `utils_config.py` | 344 | Configuration utilities |
+| `console.py` | 290 | Development/debugging utility |
+
+**Total: ~5,000 lines at top level** (down from ~16,000)
+
+---
+
+## Files to Split - Detailed Breakdown (Original Phase 0)
 
 ### 1. widgets.py (10,671 lines → 10 files)
 
