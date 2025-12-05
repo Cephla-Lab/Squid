@@ -152,3 +152,107 @@ class FocusChanged(Event):
     """Emitted when focus changes."""
     z_mm: float
     source: str  # "autofocus", "manual", "focus_map"
+
+
+# ============================================================
+# Command Events (GUI -> Service)
+# ============================================================
+
+@dataclass
+class SetExposureTimeCommand(Event):
+    """Command to set camera exposure time."""
+    exposure_time_ms: float
+
+
+@dataclass
+class SetAnalogGainCommand(Event):
+    """Command to set camera analog gain."""
+    gain: float
+
+
+@dataclass
+class SetDACCommand(Event):
+    """Command to set DAC output value."""
+    channel: int
+    value: float  # 0-100 percentage
+
+
+@dataclass
+class MoveStageCommand(Event):
+    """Command to move stage by relative distance."""
+    axis: str  # 'x', 'y', or 'z'
+    distance_mm: float
+
+
+@dataclass
+class MoveStageToCommand(Event):
+    """Command to move stage to absolute position."""
+    x_mm: Optional[float] = None
+    y_mm: Optional[float] = None
+    z_mm: Optional[float] = None
+
+
+@dataclass
+class HomeStageCommand(Event):
+    """Command to home stage axes."""
+    x: bool = False
+    y: bool = False
+    z: bool = False
+
+
+@dataclass
+class SetIlluminationCommand(Event):
+    """Command to set illumination."""
+    channel: int
+    intensity: float
+    on: bool
+
+
+@dataclass
+class StartLiveCommand(Event):
+    """Command to start live view."""
+    configuration: Optional[str] = None
+
+
+@dataclass
+class StopLiveCommand(Event):
+    """Command to stop live view."""
+    pass
+
+
+# ============================================================
+# State Events (Service -> GUI)
+# ============================================================
+
+@dataclass
+class ExposureTimeChanged(Event):
+    """Notification that exposure time changed."""
+    exposure_time_ms: float
+
+
+@dataclass
+class AnalogGainChanged(Event):
+    """Notification that analog gain changed."""
+    gain: float
+
+
+@dataclass
+class StagePositionChanged(Event):
+    """Notification that stage position changed."""
+    x_mm: float
+    y_mm: float
+    z_mm: float
+
+
+@dataclass
+class LiveStateChanged(Event):
+    """Notification that live view state changed."""
+    is_live: bool
+    configuration: Optional[str] = None
+
+
+@dataclass
+class DACValueChanged(Event):
+    """Notification that DAC value changed."""
+    channel: int
+    value: float
