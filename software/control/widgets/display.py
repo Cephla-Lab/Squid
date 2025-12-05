@@ -1,8 +1,12 @@
 # Display widgets for visualization
 import numpy as np
+from typing import Optional, TYPE_CHECKING
 
 import squid.logging
 import pyqtgraph as pg
+
+if TYPE_CHECKING:
+    from squid.services import StageService
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import napari
@@ -70,13 +74,21 @@ class StatsDisplayWidget(QFrame):
 class FocusMapWidget(QFrame):
     """Widget for managing focus map points and surface fitting"""
 
-    def __init__(self, stage: AbstractStage, navigationViewer, scanCoordinates, focusMap):
+    def __init__(
+        self,
+        stage: AbstractStage,
+        navigationViewer,
+        scanCoordinates,
+        focusMap,
+        stage_service: Optional["StageService"] = None,
+    ):
         super().__init__()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self._allow_updating_focus_points_on_signal = True
 
         # Store controllers
         self.stage = stage
+        self._stage_service = stage_service
         self.navigationViewer = navigationViewer
         self.scanCoordinates = scanCoordinates
         self.focusMap = focusMap
@@ -356,9 +368,16 @@ class FocusMapWidget(QFrame):
             index = self.point_combo.currentIndex()
             if 0 <= index < len(self.focus_points):
                 _, x, y, z = self.focus_points[index]
-                self.stage.move_x_to(x)
-                self.stage.move_y_to(y)
-                self.stage.move_z_to(z)
+                self._move_stage_to(x, y, z)
+
+    def _move_stage_to(self, x: float, y: float, z: float):
+        """Move stage to position using service if available, else direct call."""
+        if self._stage_service is not None:
+            self._stage_service.move_to(x_mm=x, y_mm=y, z_mm=z)
+        else:
+            self.stage.move_x_to(x)
+            self.stage.move_y_to(y)
+            self.stage.move_z_to(z)
 
     def update_current_z(self):
         index = self.point_combo.currentIndex()

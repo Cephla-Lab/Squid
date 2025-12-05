@@ -261,7 +261,7 @@ class CameraSettingsWidget(QFrame):
 
     def set_analog_gain_if_supported(self, gain):
         try:
-            self.camera.set_analog_gain(gain)
+            self._service.set_analog_gain(gain)
         except NotImplementedError:
             self._log.warning(f"Cannot set gain to {gain}, gain not supported.")
 
