@@ -1,8 +1,12 @@
 # Stage-related widgets
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import squid.logging
+from squid.events import event_bus, StagePositionChanged
 from qtpy.QtCore import Signal, Qt, QTimer
+
+if TYPE_CHECKING:
+    from squid.services import StageService
 from qtpy.QtWidgets import (
     QDialog,
     QFrame,
@@ -39,13 +43,31 @@ class StageUtils(QDialog):
     signal_loading_position_reached = Signal()
     signal_scanning_position_reached = Signal()
 
-    def __init__(self, stage: AbstractStage, live_controller: LiveController, is_wellplate: bool, parent=None):
+    def __init__(
+        self,
+        stage: AbstractStage = None,  # Legacy - keep for backward compat
+        live_controller: LiveController = None,
+        is_wellplate: bool = False,
+        stage_service: Optional["StageService"] = None,
+        parent=None
+    ):
         super().__init__(parent)
         self.log = squid.logging.get_logger(self.__class__.__name__)
-        self.stage = stage
         self.live_controller = live_controller
         self.is_wellplate = is_wellplate
         self.slide_position = None
+
+        # Use service if provided, otherwise create from legacy param
+        if stage_service is not None:
+            self._service = stage_service
+            self.stage = stage  # Keep for utility functions that need it
+        elif stage is not None:
+            # Legacy mode - create service wrapper
+            from squid.services import StageService
+            self._service = StageService(stage, event_bus)
+            self.stage = stage
+        else:
+            raise ValueError("Either stage_service or stage required")
 
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
@@ -148,19 +170,19 @@ class StageUtils(QDialog):
         msg.setDefaultButton(QMessageBox.Cancel)
         retval = msg.exec_()
         if QMessageBox.Ok == retval:
-            self.stage.home(x=x, y=y, z=z, theta=theta)
+            self._service.home(x=x, y=y, z=z)
 
     def zero_x(self):
         """Zero X axis position."""
-        self.stage.zero(x=True, y=False, z=False, theta=False)
+        self._service.zero(x=True, y=False, z=False)
 
     def zero_y(self):
         """Zero Y axis position."""
-        self.stage.zero(x=False, y=True, z=False, theta=False)
+        self._service.zero(x=False, y=True, z=False)
 
     def zero_z(self):
         """Zero Z axis position."""
-        self.stage.zero(x=False, y=False, z=True, theta=False)
+        self._service.zero(x=False, y=False, z=True)
 
     def switch_position(self):
         """Switch between loading and scanning positions."""
@@ -319,7 +341,8 @@ class PiezoWidget(QFrame):
 class NavigationWidget(QFrame):
     def __init__(
         self,
-        stage: AbstractStage,
+        stage: AbstractStage = None,  # Legacy - keep for backward compat
+        stage_service: Optional["StageService"] = None,
         main=None,
         widget_configuration="full",
         *args,
@@ -327,9 +350,24 @@ class NavigationWidget(QFrame):
     ):
         super().__init__(*args, **kwargs)
         self.log = squid.logging.get_logger(self.__class__.__name__)
-        self.stage = stage
         self.widget_configuration = widget_configuration
         self.slide_position = None
+
+        # Use service if provided, otherwise create from legacy param
+        if stage_service is not None:
+            self._service = stage_service
+            self.stage = None  # Don't need direct access
+        elif stage is not None:
+            # Legacy mode - create service wrapper
+            from squid.services import StageService
+            self._service = StageService(stage, event_bus)
+            self.stage = stage  # Keep for backwards compat (e.g., set_deltaX)
+        else:
+            raise ValueError("Either stage_service or stage required")
+
+        # Subscribe to position updates
+        event_bus.subscribe(StagePositionChanged, self._on_position_changed)
+
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
@@ -339,11 +377,17 @@ class NavigationWidget(QFrame):
         self.position_update_timer.start()
 
     def _update_position(self):
-        pos = self.stage.get_pos()
+        pos = self._service.get_position()
         self.label_Xpos.setNum(pos.x_mm)
         self.label_Ypos.setNum(pos.y_mm)
         # NOTE: The z label is in um
         self.label_Zpos.setNum(pos.z_mm * 1000)
+
+    def _on_position_changed(self, event: StagePositionChanged):
+        """Handle position changed event."""
+        self.label_Xpos.setNum(event.x_mm)
+        self.label_Ypos.setNum(event.y_mm)
+        self.label_Zpos.setNum(event.z_mm * 1000)
 
     def add_components(self):
         x_label = QLabel("X :")
@@ -462,22 +506,22 @@ class NavigationWidget(QFrame):
         self.btn_moveZ_backward.setEnabled(enabled)
 
     def move_x_forward(self):
-        self.stage.move_x(self.entry_dX.value())
+        self._service.move_x(self.entry_dX.value())
 
     def move_x_backward(self):
-        self.stage.move_x(-self.entry_dX.value())
+        self._service.move_x(-self.entry_dX.value())
 
     def move_y_forward(self):
-        self.stage.move_y(self.entry_dY.value())
+        self._service.move_y(self.entry_dY.value())
 
     def move_y_backward(self):
-        self.stage.move_y(-self.entry_dY.value())
+        self._service.move_y(-self.entry_dY.value())
 
     def move_z_forward(self):
-        self.stage.move_z(self.entry_dZ.value() / 1000)
+        self._service.move_z(self.entry_dZ.value() / 1000)
 
     def move_z_backward(self):
-        self.stage.move_z(-self.entry_dZ.value() / 1000)
+        self._service.move_z(-self.entry_dZ.value() / 1000)
 
     def set_deltaX(self, value):
         mm_per_ustep = 1.0 / self.stage.x_mm_to_usteps(1.0)

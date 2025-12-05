@@ -1,9 +1,14 @@
 # Camera-related widgets
 import os
 from datetime import datetime
+from typing import TYPE_CHECKING, Optional
 
 import squid.logging
+from squid.events import event_bus, ExposureTimeChanged, AnalogGainChanged
 from qtpy.QtCore import Signal, Qt
+
+if TYPE_CHECKING:
+    from squid.services import CameraService
 from qtpy.QtWidgets import (
     QFrame,
     QVBoxLayout,
@@ -40,7 +45,8 @@ class CameraSettingsWidget(QFrame):
 
     def __init__(
         self,
-        camera: AbstractCamera,
+        camera: AbstractCamera = None,  # Legacy - keep for backward compat
+        camera_service: Optional["CameraService"] = None,
         include_gain_exposure_time=False,
         include_camera_temperature_setting=False,
         include_camera_auto_wb_setting=False,
@@ -51,7 +57,23 @@ class CameraSettingsWidget(QFrame):
 
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.camera: AbstractCamera = camera
+
+        # Use service if provided, otherwise create from legacy param
+        if camera_service is not None:
+            self._service = camera_service
+            self.camera = camera  # Keep for direct access where needed
+        elif camera is not None:
+            # Legacy mode - create service wrapper
+            from squid.services import CameraService
+            self._service = CameraService(camera, event_bus)
+            self.camera = camera
+        else:
+            raise ValueError("Either camera_service or camera required")
+
+        # Subscribe to state updates
+        event_bus.subscribe(ExposureTimeChanged, self._on_exposure_changed)
+        event_bus.subscribe(AnalogGainChanged, self._on_gain_changed)
+
         self.add_components(
             include_gain_exposure_time, include_camera_temperature_setting, include_camera_auto_wb_setting
         )
@@ -140,8 +162,8 @@ class CameraSettingsWidget(QFrame):
         self.label_temperature_measured.setFrameStyle(QFrame.Panel | QFrame.Sunken)
 
         # connection
-        self.entry_exposureTime.valueChanged.connect(self.camera.set_exposure_time)
-        self.entry_analogGain.valueChanged.connect(self.set_analog_gain_if_supported)
+        self.entry_exposureTime.valueChanged.connect(self._service.set_exposure_time)
+        self.entry_analogGain.valueChanged.connect(self._set_analog_gain_via_service)
         self.dropdown_pixelFormat.currentTextChanged.connect(
             lambda s: self.camera.set_pixel_format(CameraPixelFormat.from_string(s))
         )
@@ -241,6 +263,22 @@ class CameraSettingsWidget(QFrame):
             self.camera.set_analog_gain(gain)
         except NotImplementedError:
             self._log.warning(f"Cannot set gain to {gain}, gain not supported.")
+
+    def _set_analog_gain_via_service(self, gain):
+        """Set analog gain through service layer."""
+        self._service.set_analog_gain(gain)
+
+    def _on_exposure_changed(self, event: ExposureTimeChanged):
+        """Handle exposure time changed event."""
+        self.entry_exposureTime.blockSignals(True)
+        self.entry_exposureTime.setValue(event.exposure_time_ms)
+        self.entry_exposureTime.blockSignals(False)
+
+    def _on_gain_changed(self, event: AnalogGainChanged):
+        """Handle analog gain changed event."""
+        self.entry_analogGain.blockSignals(True)
+        self.entry_analogGain.setValue(event.gain)
+        self.entry_analogGain.blockSignals(False)
 
     def toggle_auto_wb(self, pressed):
         # 0: OFF  1:CONTINUOUS  2:ONCE
