@@ -32,6 +32,7 @@ import control.core.job_processing
 from control.core.job_processing import CaptureInfo, SaveImageJob, Job, JobImage, JobRunner, JobResult
 from squid.config import CameraPixelFormat
 from squid.utils.safe_callback import safe_callback
+from squid.utils.thread_safe_state import ThreadSafeValue, ThreadSafeFlag
 
 
 class MultiPointWorker:
@@ -125,15 +126,12 @@ class MultiPointWorker:
         # This is for keeping track of whether or not we have the last image we tried to capture.
         # NOTE(imo): Once we do overlapping triggering, we'll want to keep a queue of images we are expecting.
         # For now, this is an improvement over blocking immediately while waiting for the next image!
-        self._ready_for_next_trigger = threading.Event()
-        # Set this to true so that the first frame capture can proceed.
-        self._ready_for_next_trigger.set()
-        # This is cleared when the image callback is no longer processing an image.  If true, an image is still
-        # in flux and we need to make sure the object doesn't disappear.
-        self._image_callback_idle = threading.Event()
-        self._image_callback_idle.set()
-        # This is protected by the threading event above (aka set after clear, take copy before set)
-        self._current_capture_info: Optional[CaptureInfo] = None
+        # Thread-safe flags for synchronization
+        self._ready_for_next_trigger = ThreadSafeFlag(initial=True)
+        self._image_callback_idle = ThreadSafeFlag(initial=True)
+
+        # Thread-safe capture info - accessed from main thread and camera callback thread
+        self._current_capture_info: ThreadSafeValue[CaptureInfo] = ThreadSafeValue(None)
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
 
@@ -587,8 +585,7 @@ class MultiPointWorker:
         """
         with self._timing.get_timer("_image_callback"):
             self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
-            info = self._current_capture_info
-            self._current_capture_info = None
+            info = self._current_capture_info.get_and_clear()
 
             self._ready_for_next_trigger.set()
             if not info:
@@ -680,7 +677,7 @@ class MultiPointWorker:
                 physical_size_x_um=self._pixel_size_um,
                 physical_size_y_um=self._pixel_size_um,
             )
-            self._current_capture_info = current_capture_info
+            self._current_capture_info.set(current_capture_info)
         with self._timing.get_timer("send_trigger"):
             self.camera.send_trigger(illumination_time=camera_illumination_time)
 
