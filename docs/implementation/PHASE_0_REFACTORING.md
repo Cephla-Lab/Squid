@@ -313,17 +313,16 @@ The following tasks reorganize remaining files in `control/` (~16,000 lines) int
 - [x] Verify syntax with py_compile
 - [x] Commit: "Move peripheral/hardware files to control/peripherals/"
 
-### Task 0.17: Move domain-specific core files to core/
-- [ ] Move `core_platereader.py` → `core/platereader.py` (383 lines)
-- [ ] Move `core_PDAF.py` → `core/pdaf.py` (334 lines - phase detection AF)
-- [ ] Move `core_usbspectrometer.py` → `core/usb_spectrometer.py` (147 lines)
-- [ ] Move `core_volumetric_imaging.py` → `core/volumetric_imaging.py` (169 lines)
-- [ ] Move `core_displacement_measurement.py` → `core/displacement_measurement.py` (53 lines)
-- [ ] Move `tracking.py` → `core/tracking_utils.py` (234 lines - if not duplicate of core/tracking.py)
-- [ ] Update `core/__init__.py` with new exports
-- [ ] Update imports throughout codebase
-- [ ] Verify syntax with py_compile
-- [ ] Commit: "Move domain-specific core files to control/core/"
+### Task 0.17: Move domain-specific core files to core/ ✅
+- [x] Move `core_platereader.py` → `core/platereader.py` (383 lines)
+- [x] Move `core_PDAF.py` → `core/pdaf.py` (334 lines - phase detection AF)
+- [x] Move `core_usbspectrometer.py` → `core/usb_spectrometer.py` (147 lines)
+- [x] Move `core_volumetric_imaging.py` → `core/volumetric_imaging.py` (169 lines)
+- [x] Move `core_displacement_measurement.py` → `core/displacement_measurement.py` (53 lines)
+- [x] Move `tracking.py` → `core/tracking_dasiamrpn.py` (234 lines - DaSiamRPN tracker, distinct from core/tracking.py)
+- [x] Update imports throughout codebase (6 files updated)
+- [x] Verify syntax with py_compile
+- [x] Commit: "Move domain-specific core files to control/core/"
 
 ### Task 0.18: Move remaining widget files to widgets/
 - [ ] Move `NL5Widget.py` → `widgets/nl5.py` (137 lines)

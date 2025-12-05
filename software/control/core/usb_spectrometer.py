@@ -11,7 +11,7 @@ from qtpy.QtGui import *
 
 import control.utils as utils
 from control._def import *
-import control.tracking as tracking
+import control.core.tracking_dasiamrpn as tracking
 
 from queue import Queue
 from threading import Thread, Lock

@@ -75,7 +75,7 @@ import control.microcontroller as microcontroller
 import control.peripherals.lighting as serial_peripherals
 
 if SUPPORT_LASER_AUTOFOCUS:
-    import control.core_displacement_measurement as core_displacement_measurement
+    import control.core.displacement_measurement as core_displacement_measurement
 
 SINGLE_WINDOW = True  # set to False if use separate windows for display and control
 

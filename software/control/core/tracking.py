@@ -11,7 +11,7 @@ from qtpy.QtWidgets import QApplication
 from control._def import Acquisition
 from control.core.stream_handler import ImageSaver_Tracking
 from control.utils_config import ChannelMode
-import control.tracking as tracking
+import control.core.tracking_dasiamrpn as tracking
 import control.utils as utils
 import squid.logging
 from squid.abc import AbstractCamera, AbstractStage
