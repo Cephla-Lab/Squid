@@ -72,7 +72,7 @@ if USE_XERYON:
 
 import control.core.core as core
 import control.microcontroller as microcontroller
-import control.serial_peripherals as serial_peripherals
+import control.peripherals.lighting as serial_peripherals
 
 if SUPPORT_LASER_AUTOFOCUS:
     import control.core_displacement_measurement as core_displacement_measurement
@@ -280,7 +280,7 @@ class HighContentScreeningGui(QMainWindow):
         self.dragonfly: Optional[serial_peripherals.Dragonfly] = microscope.addons.dragonfly
         self.nl5: Optional[Any] = microscope.addons.nl5
         self.cellx: Optional[serial_peripherals.CellX] = microscope.addons.cellx
-        self.emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterController] = (
+        self.emission_filter_wheel: Optional[AbstractFilterWheelController] = (
             microscope.addons.emission_filter_wheel
         )
         self.objective_changer: Optional[Any] = microscope.addons.objective_changer

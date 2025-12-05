@@ -13,7 +13,7 @@ from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, N
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
-from control.serial_peripherals import SciMicroscopyLEDArray
+from control.peripherals.lighting import SciMicroscopyLEDArray
 from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
 from squid.stage.utils import move_z_axis_to_safety_position
 from squid.stage.cephla import CephlaStage
@@ -21,7 +21,7 @@ from squid.stage.prior import PriorStage
 import control.celesta
 import control.illumination_andor
 import control.microcontroller
-import control.serial_peripherals as serial_peripherals
+import control.peripherals.lighting as serial_peripherals
 import squid.camera.utils
 import squid.config
 import squid.filter_wheel_controller.utils
