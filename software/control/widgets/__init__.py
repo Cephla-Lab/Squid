@@ -38,6 +38,35 @@ from control.widgets.display import (
     PlotWidget,
     SurfacePlotWidget,
 )
+from control.widgets.hardware import (
+    LaserAutofocusSettingWidget,
+    SpinningDiskConfocalWidget,
+    DragonflyConfocalWidget,
+    ObjectivesWidget,
+    DACControWidget,
+    FilterControllerWidget,
+    TriggerControlWidget,
+    LaserAutofocusControlWidget,
+    LedMatrixSettingsDialog,
+)
+from control.widgets.wellplate import (
+    WellSelectionWidget,
+    WellplateFormatWidget,
+    WellplateCalibration,
+    CalibrationLiveViewer,
+    Well1536SelectionWidget,
+    SampleSettingsWidget,
+)
+from control.widgets.fluidics import (
+    FluidicsWidget,
+)
+from control.widgets.tracking import (
+    TrackingControllerWidget,
+    PlateReaderAcquisitionWidget,
+    PlateReaderNavigationWidget,
+    DisplacementMeasurementWidget,
+    Joystick,
+)
 
 __all__ = [
     # base
@@ -73,4 +102,29 @@ __all__ = [
     "WaveformDisplay",
     "PlotWidget",
     "SurfacePlotWidget",
+    # hardware
+    "LaserAutofocusSettingWidget",
+    "SpinningDiskConfocalWidget",
+    "DragonflyConfocalWidget",
+    "ObjectivesWidget",
+    "DACControWidget",
+    "FilterControllerWidget",
+    "TriggerControlWidget",
+    "LaserAutofocusControlWidget",
+    "LedMatrixSettingsDialog",
+    # wellplate
+    "WellSelectionWidget",
+    "WellplateFormatWidget",
+    "WellplateCalibration",
+    "CalibrationLiveViewer",
+    "Well1536SelectionWidget",
+    "SampleSettingsWidget",
+    # fluidics
+    "FluidicsWidget",
+    # tracking
+    "TrackingControllerWidget",
+    "PlateReaderAcquisitionWidget",
+    "PlateReaderNavigationWidget",
+    "DisplacementMeasurementWidget",
+    "Joystick",
 ]
