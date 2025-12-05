@@ -6,7 +6,8 @@ import sys
 from typing import Optional
 
 import squid.logging
-from control.core.core import TrackingController, LiveController
+from control.core.tracking import TrackingController
+from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage

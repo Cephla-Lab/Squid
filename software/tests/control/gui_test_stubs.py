@@ -7,7 +7,7 @@ import control.lighting
 
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.configuration_mananger import ConfigurationManager
-from control.core.core import NavigationViewer
+from control.core.focus_map import NavigationViewer
 from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.gui_hcs import QtMultiPointController
 from control.microscope import Microscope
