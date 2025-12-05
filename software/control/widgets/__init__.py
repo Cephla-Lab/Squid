@@ -11,14 +11,38 @@ from control.widgets.config import (
     ConfigEditorBackwardsCompatible,
     ProfileWidget,
 )
+from control.widgets.camera import (
+    CameraSettingsWidget,
+    LiveControlWidget,
+    RecordingWidget,
+    MultiCameraRecordingWidget,
+)
+from control.widgets.stage import (
+    StageUtils,
+    PiezoWidget,
+    NavigationWidget,
+    AutoFocusWidget,
+)
 
 __all__ = [
+    # base
     "error_dialog",
     "check_space_available_with_error_dialog",
     "WrapperWindow",
     "CollapsibleGroupBox",
     "PandasTableModel",
+    # config
     "ConfigEditor",
     "ConfigEditorBackwardsCompatible",
     "ProfileWidget",
+    # camera
+    "CameraSettingsWidget",
+    "LiveControlWidget",
+    "RecordingWidget",
+    "MultiCameraRecordingWidget",
+    # stage
+    "StageUtils",
+    "PiezoWidget",
+    "NavigationWidget",
+    "AutoFocusWidget",
 ]
