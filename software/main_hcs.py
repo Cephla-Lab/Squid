@@ -1,5 +1,6 @@
 # set QT_API environment variable
 import argparse
+import faulthandler
 import glob
 import logging
 import os
@@ -7,6 +8,10 @@ import os
 os.environ["QT_API"] = "pyqt5"
 import signal
 import sys
+
+# Enable faulthandler to print traceback on segfault or deadlock
+# This helps debug hung threads and crashes
+faulthandler.enable()
 
 # qt libraries
 from qtpy.QtWidgets import *
