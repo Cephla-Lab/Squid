@@ -14,35 +14,45 @@ log = squid.logging.get_logger(__name__)
 
 def conf_attribute_reader(string_value):
     """
-    :brief: standardized way for reading config entries
-    that are strings, in priority order
-    None -> bool -> dict/list (via json) -> int -> float -> string
-    REMEMBER TO ENCLOSE PROPERTY NAMES IN LISTS/DICTS IN
-    DOUBLE QUOTES
+    Standardized way for reading config entries that are strings.
+
+    Priority order: None -> bool -> dict/list (via json) -> int -> float -> string
+
+    REMEMBER TO ENCLOSE PROPERTY NAMES IN LISTS/DICTS IN DOUBLE QUOTES
     """
     actualvalue = str(string_value).strip()
+
+    # Check for None
     try:
         if str(actualvalue) == "None":
             return None
-    except:
+    except (ValueError, TypeError, AttributeError):
         pass
+
+    # Check for boolean
     try:
         if str(actualvalue) == "True" or str(actualvalue) == "true":
             return True
         if str(actualvalue) == "False" or str(actualvalue) == "false":
             return False
-    except:
+    except (ValueError, TypeError, AttributeError):
         pass
+
+    # Try JSON (dict/list)
     try:
         actualvalue = json.loads(actualvalue)
-    except:
+    except (json.JSONDecodeError, ValueError, TypeError):
+        # Try int
         try:
             actualvalue = int(str(actualvalue))
-        except:
+        except (ValueError, TypeError):
+            # Try float
             try:
                 actualvalue = float(actualvalue)
-            except:
+            except (ValueError, TypeError):
+                # Fall back to string
                 actualvalue = str(actualvalue)
+
     return actualvalue
 
 
