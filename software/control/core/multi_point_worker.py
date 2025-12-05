@@ -33,6 +33,7 @@ from control.core.job_processing import CaptureInfo, SaveImageJob, Job, JobImage
 from squid.config import CameraPixelFormat
 from squid.utils.safe_callback import safe_callback
 from squid.utils.thread_safe_state import ThreadSafeValue, ThreadSafeFlag
+from squid.utils.worker_manager import WorkerManager
 
 
 class MultiPointWorker:
@@ -138,6 +139,13 @@ class MultiPointWorker:
         # Error tracking for debugging
         self._last_error: Optional[Exception] = None
         self._last_stack_trace: Optional[str] = None
+
+        # Worker manager for timeout detection
+        self._worker_manager = WorkerManager(max_workers=2)
+        self._worker_manager.signals.timeout.connect(self._on_worker_timeout)
+
+        # Configurable acquisition timeout (default 5 minutes)
+        self._acquisition_timeout_ms = 300000
 
         job_classes = [SaveImageJob]
         if extra_job_classes:
@@ -616,6 +624,11 @@ class MultiPointWorker:
         """
         self._last_error = error
         self._last_stack_trace = stack_trace
+
+    def _on_worker_timeout(self, task_name: str):
+        """Handle worker timeout - abort gracefully instead of hanging."""
+        self._log.error(f"Worker '{task_name}' timed out, aborting acquisition")
+        self.request_abort_fn()
 
     def _frame_wait_timeout_s(self):
         return (self.camera.get_total_frame_time() / 1e3) + 10
