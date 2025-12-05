@@ -5,6 +5,7 @@ from typing import Dict, Optional
 from squid.services.base import BaseService
 from squid.services.peripheral_service import PeripheralService
 from squid.services.camera_service import CameraService
+from squid.services.stage_service import StageService
 from squid.events import EventBus
 
 
@@ -62,4 +63,4 @@ class ServiceRegistry:
         self._services.clear()
 
 
-__all__ = ['BaseService', 'ServiceRegistry', 'PeripheralService', 'CameraService']
+__all__ = ['BaseService', 'ServiceRegistry', 'PeripheralService', 'CameraService', 'StageService']
