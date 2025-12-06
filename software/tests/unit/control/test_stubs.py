@@ -1,11 +1,11 @@
 from control._def import OBJECTIVES, DEFAULT_OBJECTIVE
-from control.core.auto_focus_controller import AutoFocusController
-from control.core.laser_auto_focus_controller import LaserAutofocusController
-from control.core.live_controller import LiveController
-from control.core.multi_point_controller import NoOpCallbacks, MultiPointController
-from control.core.multi_point_utils import MultiPointControllerFunctions
-from control.core.objective_store import ObjectiveStore
-from control.core.scan_coordinates import ScanCoordinates
+from control.core.autofocus import AutoFocusController
+from control.core.autofocus import LaserAutofocusController
+from control.core.display import LiveController
+from control.core.acquisition.multi_point_controller import NoOpCallbacks, MultiPointController
+from control.core.acquisition.multi_point_utils import MultiPointControllerFunctions
+from control.core.navigation import ObjectiveStore
+from control.core.navigation import ScanCoordinates
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from squid.abc import AbstractStage, AbstractCamera

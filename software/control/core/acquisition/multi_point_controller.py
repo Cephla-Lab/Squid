@@ -12,17 +12,17 @@ import numpy as np
 import pandas as pd
 
 from control import utils
-from control.core import utils_acquisition
+from control.core.output import utils_acquisition
 import control._def
-from control.core.auto_focus_controller import AutoFocusController
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
-from control.core.scan_coordinates import ScanCoordinates
-from control.core.laser_auto_focus_controller import LaserAutofocusController
-from control.core.live_controller import LiveController
+from control.core.autofocus import AutoFocusController
+from control.core.configuration import ChannelConfigurationManager
+from control.core.acquisition.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
+from control.core.navigation import ScanCoordinates
+from control.core.autofocus import LaserAutofocusController
+from control.core.display import LiveController
 from control.microscope import Microscope
-from control.core.multi_point_worker import MultiPointWorker
-from control.core.objective_store import ObjectiveStore
+from control.core.acquisition.multi_point_worker import MultiPointWorker
+from control.core.navigation import ObjectiveStore
 from control.microcontroller import Microcontroller
 from control.peripherals.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage

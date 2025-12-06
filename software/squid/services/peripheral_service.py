@@ -30,7 +30,7 @@ class PeripheralService(BaseService):
         """Handle SetDACCommand event."""
         self.set_dac(event.channel, event.value)
 
-    def set_dac(self, channel: int, percentage: float):
+    def set_dac(self, channel: int, percentage: float) -> None:
         """
         Set DAC output value.
 

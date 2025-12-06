@@ -274,6 +274,12 @@ class BinningChanged(Event):
     binning_y: int
 
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from squid.config import CameraPixelFormat
+
+
 @dataclass
 class PixelFormatChanged(Event):
     """Notification that pixel format changed."""

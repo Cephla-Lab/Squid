@@ -17,7 +17,7 @@ import pandas as pd
 import control.utils as utils
 
 if TYPE_CHECKING:
-    from control.core.multi_point_controller import MultiPointController
+    from control.core.acquisition import MultiPointController
 
 
 def error_dialog(message: str, title: str = "Error"):

@@ -4,20 +4,20 @@ from typing import Any, Optional
 import numpy as np
 from qtpy.QtCore import QObject, Signal
 
-from control.core.auto_focus_controller import AutoFocusController
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.job_processing import CaptureInfo
-from control.core.laser_auto_focus_controller import LaserAutofocusController
-from control.core.live_controller import LiveController
-from control.core.multi_point_controller import MultiPointController
-from control.core.multi_point_utils import (
+from control.core.autofocus import AutoFocusController
+from control.core.configuration import ChannelConfigurationManager
+from control.core.acquisition import CaptureInfo
+from control.core.autofocus import LaserAutofocusController
+from control.core.display import LiveController
+from control.core.acquisition import MultiPointController
+from control.core.acquisition.multi_point_utils import (
     MultiPointControllerFunctions,
     AcquisitionParameters,
     OverallProgressUpdate,
     RegionProgressUpdate,
 )
-from control.core.objective_store import ObjectiveStore
-from control.core.scan_coordinates import ScanCoordinates
+from control.core.navigation import ObjectiveStore
+from control.core.navigation import ScanCoordinates
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.peripherals.piezo import PiezoStage

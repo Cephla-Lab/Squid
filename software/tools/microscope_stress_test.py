@@ -3,17 +3,17 @@ import threading
 import time
 from dataclasses import dataclass
 
-from control.core.auto_focus_controller import AutoFocusController
-from control.core.job_processing import CaptureInfo
-from control.core.multi_point_controller import MultiPointController
-from control.core.multi_point_utils import (
+from control.core.autofocus import AutoFocusController
+from control.core.acquisition import CaptureInfo
+from control.core.acquisition import MultiPointController
+from control.core.acquisition.multi_point_utils import (
     MultiPointControllerFunctions,
     AcquisitionParameters,
     RegionProgressUpdate,
     OverallProgressUpdate,
 )
-from control.core.scan_coordinates import ScanCoordinates
-from control.core.stream_handler import StreamHandlerFunctions
+from control.core.navigation import ScanCoordinates
+from control.core.display import StreamHandlerFunctions
 from control.utils_config import ChannelMode
 from squid.abc import CameraFrame
 import control.microscope

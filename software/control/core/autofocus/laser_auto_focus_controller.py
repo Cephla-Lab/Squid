@@ -10,9 +10,9 @@ from qtpy.QtCore import Signal
 
 from control import utils
 import control._def
-from control.core.laser_af_settings_manager import LaserAFSettingManager
-from control.core.live_controller import LiveController
-from control.core.objective_store import ObjectiveStore
+from control.core.autofocus.laser_af_settings_manager import LaserAFSettingManager
+from control.core.display import LiveController
+from control.core.navigation import ObjectiveStore
 from control.microcontroller import Microcontroller
 from control.peripherals.piezo import PiezoStage
 from control.utils_config import LaserAFConfig

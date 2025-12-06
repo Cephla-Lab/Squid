@@ -1,10 +1,12 @@
 # squid/services/base.py
 """Base class for all services."""
 from abc import ABC
-from typing import List, Tuple, Type, Callable
+from typing import List, Tuple, Type, Callable, TypeVar
 
 import squid.logging
 from squid.events import EventBus, Event
+
+E = TypeVar('E', bound=Event)
 
 
 class BaseService(ABC):
@@ -37,7 +39,7 @@ class BaseService(ABC):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self._subscriptions: List[Tuple[Type[Event], Callable]] = []
 
-    def subscribe(self, event_type: Type[Event], handler: Callable[[Event], None]):
+    def subscribe(self, event_type: Type[E], handler: Callable[[E], None]) -> None:
         """
         Subscribe to an event type.
 
@@ -45,8 +47,8 @@ class BaseService(ABC):
             event_type: Type of event to subscribe to
             handler: Callable to handle events
         """
-        self._event_bus.subscribe(event_type, handler)
-        self._subscriptions.append((event_type, handler))
+        self._event_bus.subscribe(event_type, handler)  # type: ignore
+        self._subscriptions.append((event_type, handler))  # type: ignore
         self._log.debug(f"Subscribed to {event_type.__name__}")
 
     def publish(self, event: Event):

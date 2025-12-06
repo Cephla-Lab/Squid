@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
 )
 
 from control._def import TriggerMode, USE_NAPARI_FOR_LIVE_CONTROL, USE_NAPARI_WELL_SELECTION
-from control.core.live_controller import LiveController
+from control.core.display import LiveController
 
 if TYPE_CHECKING:
     from squid.services import CameraService

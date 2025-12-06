@@ -17,7 +17,7 @@ from qtpy.QtWidgets import (
 from qtpy.QtGui import QColor
 
 from control._def import SpotDetectionMode
-from control.core.live_controller import LiveController
+from control.core.display import LiveController
 from control import utils
 
 

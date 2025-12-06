@@ -2,8 +2,8 @@ import threading
 
 import control._def
 import control.microscope
-from control.core.multi_point_controller import MultiPointController
-from control.core.multi_point_utils import MultiPointControllerFunctions, AcquisitionParameters
+from control.core.acquisition import MultiPointController
+from control.core.acquisition.multi_point_utils import MultiPointControllerFunctions, AcquisitionParameters
 
 import tests.control.test_stubs as ts
 

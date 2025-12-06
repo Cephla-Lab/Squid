@@ -1,14 +1,14 @@
 import pathlib
 
 import control.microscope
-import control.core.objective_store
+import control.core.navigation.objective_store
 import control.microcontroller
 import control.peripherals.lighting.led as lighting
 
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.configuration_mananger import ConfigurationManager
-from control.core.focus_map import NavigationViewer
-from control.core.laser_af_settings_manager import LaserAFSettingManager
+from control.core.configuration import ChannelConfigurationManager
+from control.core.configuration import ConfigurationManager
+from control.core.navigation import NavigationViewer
+from control.core.autofocus import LaserAFSettingManager
 from control.gui_hcs import QtMultiPointController
 from control.microscope import Microscope
 from tests.tools import get_repo_root

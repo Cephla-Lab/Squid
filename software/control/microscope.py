@@ -2,13 +2,13 @@ import serial
 from typing import Optional, TypeVar
 
 import control._def
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.configuration_mananger import ConfigurationManager
-from control.core.contrast_manager import ContrastManager
-from control.core.laser_af_settings_manager import LaserAFSettingManager
-from control.core.live_controller import LiveController
-from control.core.objective_store import ObjectiveStore
-from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
+from control.core.configuration import ChannelConfigurationManager
+from control.core.configuration import ConfigurationManager
+from control.core.configuration import ContrastManager
+from control.core.autofocus import LaserAFSettingManager
+from control.core.display import LiveController
+from control.core.navigation import ObjectiveStore
+from control.core.display import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
 
 from control.peripherals.lighting.led import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller

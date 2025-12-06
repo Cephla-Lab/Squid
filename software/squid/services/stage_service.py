@@ -29,7 +29,7 @@ class StageService(BaseService):
     def __init__(self, stage: "AbstractStage", event_bus: EventBus):
         super().__init__(event_bus)
         self._stage = stage
-        self._scanning_position_z_mm = None  # Track Z position for loading/scanning
+        self._scanning_position_z_mm: Optional[float] = None  # Track Z position for loading/scanning
 
         self.subscribe(MoveStageCommand, self._on_move_command)
         self.subscribe(MoveStageToCommand, self._on_move_to_command)
@@ -107,14 +107,14 @@ class StageService(BaseService):
     # Task 2.1: Theta axis methods
     # ============================================================
 
-    def move_theta(self, distance_rad: float, blocking: bool = True):
+    def move_theta(self, distance_rad: float, blocking: bool = True) -> None:
         """Move theta axis by relative distance."""
-        self._stage.move_theta(distance_rad, blocking)
+        self._stage.move_theta(distance_rad, blocking)  # type: ignore[attr-defined]
         self._publish_position()
 
-    def move_theta_to(self, abs_rad: float, blocking: bool = True):
+    def move_theta_to(self, abs_rad: float, blocking: bool = True) -> None:
         """Move theta to absolute position."""
-        self._stage.move_theta_to(abs_rad, blocking)
+        self._stage.move_theta_to(abs_rad, blocking)  # type: ignore[attr-defined]
         self._publish_position()
 
     # ============================================================
@@ -133,23 +133,23 @@ class StageService(BaseService):
         """Wait for stage to finish movement."""
         self._stage.wait_for_idle(timeout)
 
-    def set_limits(self, x_pos_mm: float = None, x_neg_mm: float = None,
-                   y_pos_mm: float = None, y_neg_mm: float = None):
+    def set_limits(self, x_pos_mm: Optional[float] = None, x_neg_mm: Optional[float] = None,
+                   y_pos_mm: Optional[float] = None, y_neg_mm: Optional[float] = None) -> None:
         """Set movement limits."""
         self._stage.set_limits(x_pos_mm=x_pos_mm, x_neg_mm=x_neg_mm,
                                y_pos_mm=y_pos_mm, y_neg_mm=y_neg_mm)
 
     def get_x_mm_per_ustep(self) -> float:
         """Get mm per microstep for X axis."""
-        return 1.0 / self._stage.x_mm_to_usteps(1.0)
+        return 1.0 / self._stage.x_mm_to_usteps(1.0)  # type: ignore[attr-defined]
 
     def get_y_mm_per_ustep(self) -> float:
         """Get mm per microstep for Y axis."""
-        return 1.0 / self._stage.y_mm_to_usteps(1.0)
+        return 1.0 / self._stage.y_mm_to_usteps(1.0)  # type: ignore[attr-defined]
 
     def get_z_mm_per_ustep(self) -> float:
         """Get mm per microstep for Z axis."""
-        return 1.0 / self._stage.z_mm_to_usteps(1.0)
+        return 1.0 / self._stage.z_mm_to_usteps(1.0)  # type: ignore[attr-defined]
 
     def move_to_safety_position(self):
         """Move Z to safety position."""
@@ -195,7 +195,7 @@ class StageService(BaseService):
         self._publish_position()
 
     def move_to_loading_position(self, blocking: bool = True,
-                                 callback: Callable = None,
+                                 callback: Optional[Callable] = None,
                                  is_wellplate: bool = True) -> Optional[Thread]:
         """Move stage to loading position."""
         if blocking and callback:
@@ -208,7 +208,7 @@ class StageService(BaseService):
         )
 
     def move_to_scanning_position(self, blocking: bool = True,
-                                  callback: Callable = None,
+                                  callback: Optional[Callable] = None,
                                   is_wellplate: bool = True) -> Optional[Thread]:
         """Move stage to scanning position."""
         if blocking and callback:

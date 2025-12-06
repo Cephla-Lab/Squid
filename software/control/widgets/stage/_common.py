@@ -31,6 +31,6 @@ from control._def import (
     HOMING_ENABLED_Z,
     ENABLE_CLICK_TO_MOVE_BY_DEFAULT,
 )
-from control.core.live_controller import LiveController
+from control.core.display import LiveController
 from control.peripherals.piezo import PiezoStage
 from squid.abc import AbstractStage

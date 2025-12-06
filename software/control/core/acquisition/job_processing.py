@@ -21,11 +21,11 @@ import numpy as np
 import tifffile
 
 from control import _def
-from control.core import utils_acquisition
+from control.core.output import utils_acquisition
 import squid.abc
 import squid.logging
 from control.utils_config import ChannelMode
-from . import utils_ome_tiff_writer as ome_tiff_writer
+from control.core.output import utils_ome_tiff_writer as ome_tiff_writer
 
 
 # NOTE(imo): We want this to be fast.  But pydantic does not support numpy serialization natively, which means

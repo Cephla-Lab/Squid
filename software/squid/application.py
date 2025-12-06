@@ -19,11 +19,12 @@ import squid.logging
 
 if TYPE_CHECKING:
     from control.microscope import Microscope
-    from control.core.live_controller import LiveController
-    from control.core.stream_handler import StreamHandler
-    from control.core.multi_point_controller import MultiPointController
-    from control.core.channel_configuration_mananger import ChannelConfigurationManager
-    from control.core.objective_store import ObjectiveStore
+    from control.core.display import LiveController
+    from control.core.display import StreamHandler
+    from control.core.acquisition import MultiPointController
+    from control.core.configuration import ChannelConfigurationManager
+    from control.core.navigation import ObjectiveStore
+    from control.gui_hcs import HighContentScreeningGui
     from squid.services import ServiceRegistry
 
 
@@ -77,7 +78,7 @@ class ApplicationContext:
         self._microscope: Optional["Microscope"] = None
         self._controllers: Optional[Controllers] = None
         self._services: Optional["ServiceRegistry"] = None
-        self._gui = None
+        self._gui: Optional["HighContentScreeningGui"] = None
 
         self._log.info(f"Creating ApplicationContext (simulation={simulation}, "
                        f"external_controller_creation={external_controller_creation})")
@@ -87,7 +88,7 @@ class ApplicationContext:
         self._build_controllers()
         self._build_services()
 
-    def _build_microscope(self):
+    def _build_microscope(self) -> None:
         """Build the microscope from configuration."""
         from control.microscope import Microscope
 
@@ -98,7 +99,7 @@ class ApplicationContext:
         )
         self._log.info("Microscope built successfully")
 
-    def _build_controllers(self):
+    def _build_controllers(self) -> None:
         """
         Build controllers container.
 
@@ -108,10 +109,15 @@ class ApplicationContext:
         """
         self._log.info("Building controllers...")
 
+        assert self._microscope is not None, "Microscope must be built before controllers"
+
         if self._external_controller_creation:
             self._create_controllers_externally()
         else:
             # Wrap controllers that Microscope created internally
+            assert self._microscope.live_controller is not None, "LiveController not created by Microscope"
+            assert self._microscope.stream_handler is not None, "StreamHandler not created by Microscope"
+
             self._controllers = Controllers(
                 live=self._microscope.live_controller,
                 stream_handler=self._microscope.stream_handler,
@@ -121,10 +127,12 @@ class ApplicationContext:
 
         self._log.info("Controllers built successfully")
 
-    def _create_controllers_externally(self):
+    def _create_controllers_externally(self) -> None:
         """Create controllers with explicit dependency injection."""
-        from control.core.live_controller import LiveController
-        from control.core.stream_handler import StreamHandler, NoOpStreamHandlerFunctions
+        from control.core.display import LiveController
+        from control.core.display import StreamHandler, NoOpStreamHandlerFunctions
+
+        assert self._microscope is not None, "Microscope must be built before creating controllers"
 
         # Create StreamHandler
         stream_handler = StreamHandler(handler_functions=NoOpStreamHandlerFunctions)
@@ -159,10 +167,12 @@ class ApplicationContext:
             objective_store=self._microscope.objective_store,
         )
 
-    def _build_services(self):
+    def _build_services(self) -> None:
         """Build service layer."""
         from squid.services import ServiceRegistry, CameraService, StageService, PeripheralService
         from squid.events import event_bus
+
+        assert self._microscope is not None, "Microscope must be built before services"
 
         self._log.info("Building services...")
 
@@ -208,7 +218,7 @@ class ApplicationContext:
         """Check if running in simulation mode."""
         return self._simulation
 
-    def create_gui(self):
+    def create_gui(self) -> "HighContentScreeningGui":
         """
         Create the GUI with pre-built controllers.
 
@@ -218,18 +228,21 @@ class ApplicationContext:
         # Import here to avoid circular imports
         from control.gui_hcs import HighContentScreeningGui
 
+        assert self._microscope is not None, "Microscope must be built before GUI"
+
         self._log.info("Creating GUI...")
         # For now, pass microscope directly - GUI still creates some things
         # Future: pass Controllers dataclass only
-        self._gui = HighContentScreeningGui(
+        gui = HighContentScreeningGui(
             microscope=self._microscope,
             services=self._services,
             is_simulation=self._simulation,
         )
+        self._gui = gui
         self._log.info("GUI created successfully")
-        return self._gui
+        return gui
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         """Clean shutdown of all components."""
         self._log.info("Shutting down application...")
 

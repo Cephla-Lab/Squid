@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Optional, Callable
 
-from control.core.job_processing import CaptureInfo
-from control.core.scan_coordinates import ScanCoordinates
+from control.core.acquisition.job_processing import CaptureInfo
+from control.core.navigation import ScanCoordinates
 from control.utils_config import ChannelMode
 from squid.abc import CameraFrame
 

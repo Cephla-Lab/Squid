@@ -1,10 +1,10 @@
 # set QT_API environment variable
 import os
 
-from control.core.auto_focus_controller import AutoFocusController
-from control.core.job_processing import CaptureInfo
-from control.core.laser_auto_focus_controller import LaserAutofocusController
-from control.core.scan_coordinates import (
+from control.core.autofocus import AutoFocusController
+from control.core.acquisition import CaptureInfo
+from control.core.autofocus import LaserAutofocusController
+from control.core.navigation.scan_coordinates import (
     ScanCoordinates,
     ScanCoordinatesUpdate,
     AddScanCoordinateRegion,
@@ -27,20 +27,20 @@ from control._def import *
 
 # app specific libraries
 from control.widgets.nl5 import NL5Widget
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.configuration_mananger import ConfigurationManager
-from control.core.contrast_manager import ContrastManager
-from control.core.laser_af_settings_manager import LaserAFSettingManager
-from control.core.live_controller import LiveController
-from control.core.multi_point_controller import MultiPointController
-from control.core.multi_point_utils import (
+from control.core.configuration import ChannelConfigurationManager
+from control.core.configuration import ConfigurationManager
+from control.core.configuration import ContrastManager
+from control.core.autofocus import LaserAFSettingManager
+from control.core.display import LiveController
+from control.core.acquisition import MultiPointController
+from control.core.acquisition.multi_point_utils import (
     MultiPointControllerFunctions,
     AcquisitionParameters,
     OverallProgressUpdate,
     RegionProgressUpdate,
 )
-from control.core.objective_store import ObjectiveStore
-from control.core.stream_handler import StreamHandler
+from control.core.navigation import ObjectiveStore
+from control.core.display import StreamHandler
 from control.peripherals.lighting.led import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
@@ -75,7 +75,7 @@ import control.microcontroller as microcontroller
 import control.peripherals.lighting as serial_peripherals
 
 if SUPPORT_LASER_AUTOFOCUS:
-    import control.core.displacement_measurement as core_displacement_measurement
+    import control.core.tracking.displacement_measurement as core_displacement_measurement
 
 SINGLE_WINDOW = True  # set to False if use separate windows for display and control
 

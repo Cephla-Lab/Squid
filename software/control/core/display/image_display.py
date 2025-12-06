@@ -27,8 +27,8 @@ from qtpy.QtWidgets import (
 )
 
 from control._def import ENABLE_TRACKING
-from control.core.contrast_manager import ContrastManager
-from control.core.live_controller import LiveController
+from control.core.configuration import ContrastManager
+from control.core.display.live_controller import LiveController
 import squid.logging
 
 

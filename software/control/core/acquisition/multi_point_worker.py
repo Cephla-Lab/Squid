@@ -11,25 +11,25 @@ import pandas as pd
 
 from control._def import *
 from control import utils
-from control.core.auto_focus_controller import AutoFocusController
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.laser_auto_focus_controller import LaserAutofocusController
-from control.core.live_controller import LiveController
-from control.core.multi_point_utils import (
+from control.core.autofocus import AutoFocusController
+from control.core.configuration import ChannelConfigurationManager
+from control.core.autofocus import LaserAutofocusController
+from control.core.display import LiveController
+from control.core.acquisition.multi_point_utils import (
     AcquisitionParameters,
     MultiPointControllerFunctions,
     OverallProgressUpdate,
     RegionProgressUpdate,
 )
-from control.core.objective_store import ObjectiveStore
+from control.core.navigation import ObjectiveStore
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.peripherals.piezo import PiezoStage
 from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.logging
-import control.core.job_processing
-from control.core.job_processing import CaptureInfo, SaveImageJob, Job, JobImage, JobRunner, JobResult
+import control.core.acquisition.job_processing
+from control.core.acquisition.job_processing import CaptureInfo, SaveImageJob, Job, JobImage, JobRunner, JobResult
 from squid.config import CameraPixelFormat
 from squid.utils.safe_callback import safe_callback
 from squid.utils.thread_safe_state import ThreadSafeValue, ThreadSafeFlag

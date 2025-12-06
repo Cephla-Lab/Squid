@@ -7,7 +7,7 @@ from typing import Callable, List, Tuple
 import numpy as np
 
 import control._def
-from control.core.objective_store import ObjectiveStore
+from control.core.navigation.objective_store import ObjectiveStore
 from squid.abc import AbstractStage, AbstractCamera
 import squid.logging
 

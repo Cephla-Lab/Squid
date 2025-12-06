@@ -78,7 +78,7 @@ def _load_filter_wheel_config() -> Optional[FilterWheelConfig]:
     if controller_type is None:
         return None
 
-    controller_config = None
+    controller_config: Optional[Union[SquidFilterWheelConfig, ZaberFilterWheelConfig, OptospinFilterWheelConfig]] = None
     if controller_type == FilterWheelControllerVariant.SQUID:
         controller_config = SquidFilterWheelConfig(
             max_index=_def.SQUID_FILTERWHEEL_MAX_INDEX,
@@ -163,7 +163,7 @@ class AxisConfig(pydantic.BaseModel):
     # gains to use.
     PID: Optional[PIDConfig]
 
-    def convert_to_real_units(self, usteps: float):
+    def convert_to_real_units(self, usteps: float) -> float:
         if self.USE_ENCODER:
             return usteps * self.MOVEMENT_SIGN.value * self.ENCODER_STEP_SIZE * self.ENCODER_SIGN.value
         else:
@@ -174,7 +174,7 @@ class AxisConfig(pydantic.BaseModel):
                 / (self.MICROSTEPS_PER_STEP * self.FULL_STEPS_PER_REV)
             )
 
-    def convert_real_units_to_ustep(self, real_unit: float):
+    def convert_real_units_to_ustep(self, real_unit: float) -> int:
         return round(
             real_unit
             / (self.MOVEMENT_SIGN.value * self.SCREW_PITCH / (self.MICROSTEPS_PER_STEP * self.FULL_STEPS_PER_REV))
@@ -192,9 +192,9 @@ class StageConfig(pydantic.BaseModel):
 # this getter for the temporary singleton will help with the refactor once we can get rid of it.
 _stage_config = StageConfig(
     X_AXIS=AxisConfig(
-        MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_X,
+        MOVEMENT_SIGN=DirectionSign(_def.STAGE_MOVEMENT_SIGN_X),
         USE_ENCODER=_def.USE_ENCODER_X,
-        ENCODER_SIGN=_def.ENCODER_POS_SIGN_X,
+        ENCODER_SIGN=DirectionSign(_def.ENCODER_POS_SIGN_X),
         ENCODER_STEP_SIZE=_def.ENCODER_STEP_SIZE_X_MM,
         FULL_STEPS_PER_REV=_def.FULLSTEPS_PER_REV_X,
         SCREW_PITCH=_def.SCREW_PITCH_X_MM,
@@ -206,9 +206,9 @@ _stage_config = StageConfig(
         PID=None,
     ),
     Y_AXIS=AxisConfig(
-        MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_Y,
+        MOVEMENT_SIGN=DirectionSign(_def.STAGE_MOVEMENT_SIGN_Y),
         USE_ENCODER=_def.USE_ENCODER_Y,
-        ENCODER_SIGN=_def.ENCODER_POS_SIGN_Y,
+        ENCODER_SIGN=DirectionSign(_def.ENCODER_POS_SIGN_Y),
         ENCODER_STEP_SIZE=_def.ENCODER_STEP_SIZE_Y_MM,
         FULL_STEPS_PER_REV=_def.FULLSTEPS_PER_REV_Y,
         SCREW_PITCH=_def.SCREW_PITCH_Y_MM,
@@ -220,9 +220,9 @@ _stage_config = StageConfig(
         PID=None,
     ),
     Z_AXIS=AxisConfig(
-        MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_Z,
+        MOVEMENT_SIGN=DirectionSign(_def.STAGE_MOVEMENT_SIGN_Z),
         USE_ENCODER=_def.USE_ENCODER_Z,
-        ENCODER_SIGN=_def.ENCODER_POS_SIGN_Z,
+        ENCODER_SIGN=DirectionSign(_def.ENCODER_POS_SIGN_Z),
         ENCODER_STEP_SIZE=_def.ENCODER_STEP_SIZE_Z_MM,
         FULL_STEPS_PER_REV=_def.FULLSTEPS_PER_REV_Z,
         SCREW_PITCH=_def.SCREW_PITCH_Z_MM,
@@ -234,9 +234,9 @@ _stage_config = StageConfig(
         PID=None,
     ),
     THETA_AXIS=AxisConfig(
-        MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_THETA,
+        MOVEMENT_SIGN=DirectionSign(_def.STAGE_MOVEMENT_SIGN_THETA),
         USE_ENCODER=_def.USE_ENCODER_THETA,
-        ENCODER_SIGN=_def.ENCODER_POS_SIGN_THETA,
+        ENCODER_SIGN=DirectionSign(_def.ENCODER_POS_SIGN_THETA),
         ENCODER_STEP_SIZE=_def.ENCODER_STEP_SIZE_THETA,
         FULL_STEPS_PER_REV=_def.FULLSTEPS_PER_REV_THETA,
         SCREW_PITCH=2.0 * math.pi / _def.FULLSTEPS_PER_REV_THETA,
@@ -408,7 +408,7 @@ class CameraPixelFormat(enum.Enum):
     BAYER_RG12 = "BAYER_RG12"
 
     @staticmethod
-    def is_color_format(pixel_format):
+    def is_color_format(pixel_format: "CameraPixelFormat") -> bool:
         return pixel_format in (
             CameraPixelFormat.RGB24,
             CameraPixelFormat.RGB32,
@@ -418,7 +418,7 @@ class CameraPixelFormat(enum.Enum):
         )
 
     @staticmethod
-    def from_string(pixel_format_string):
+    def from_string(pixel_format_string: str) -> "CameraPixelFormat":
         return CameraPixelFormat[pixel_format_string]
 
 
@@ -519,10 +519,27 @@ def _old_camera_variant_to_enum(old_string) -> CameraVariant:
     raise ValueError(f"Unknown old camera type {old_string=}")
 
 
+def _get_camera_model_enum(model: str, cam_type: CameraVariant) -> Optional[Union[GxipyCameraModel, TucsenCameraModel, ToupcamCameraModel, HamamatsuCameraModel, PhotometricsCameraModel, AndorCameraModel]]:
+    """Convert string camera model to appropriate enum type."""
+    if cam_type == CameraVariant.GXIPY:
+        return GxipyCameraModel.from_string(model) if model else None
+    elif cam_type == CameraVariant.TUCSEN:
+        return TucsenCameraModel.from_string(model) if model else None
+    elif cam_type == CameraVariant.TOUPCAM:
+        return ToupcamCameraModel.from_string(model) if model else None
+    elif cam_type == CameraVariant.HAMAMATSU:
+        return HamamatsuCameraModel.from_string(model) if model else None
+    elif cam_type == CameraVariant.PHOTOMETRICS:
+        return PhotometricsCameraModel.from_string(model) if model else None
+    elif cam_type == CameraVariant.ANDOR:
+        return AndorCameraModel.from_string(model) if model else None
+    return None
+
+
 _camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.CAMERA_TYPE),
-    camera_model=_def.MAIN_CAMERA_MODEL,
-    default_pixel_format=_def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT,
+    camera_model=_get_camera_model_enum(_def.MAIN_CAMERA_MODEL, _old_camera_variant_to_enum(_def.CAMERA_TYPE)) if hasattr(_def, 'MAIN_CAMERA_MODEL') and _def.MAIN_CAMERA_MODEL else None,
+    default_pixel_format=CameraPixelFormat.from_string(_def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT) if isinstance(_def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT, str) else _def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT,
     default_binning=(_def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT, _def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT),
     default_roi=(
         _def.CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT,
@@ -553,7 +570,7 @@ def get_camera_config() -> CameraConfig:
 
 _autofocus_camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE),
-    camera_model=_def.FOCUS_CAMERA_MODEL,
+    camera_model=_get_camera_model_enum(_def.FOCUS_CAMERA_MODEL, _old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE)) if hasattr(_def, 'FOCUS_CAMERA_MODEL') and _def.FOCUS_CAMERA_MODEL else None,
     default_pixel_format=CameraPixelFormat.MONO8,
     default_binning=(1, 1),
     rotate_image_angle=None,

@@ -1,6 +1,6 @@
 import tests.control.gui_test_stubs as gts
 import control.peripherals.stage
-from control.core.scan_coordinates import (
+from control.core.navigation.scan_coordinates import (
     ScanCoordinates,
     ScanCoordinatesUpdate,
     AddScanCoordinateRegion,

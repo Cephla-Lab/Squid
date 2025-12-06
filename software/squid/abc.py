@@ -8,6 +8,7 @@ import time
 
 import pydantic
 import numpy as np
+import numpy.typing as npt
 from dataclasses import dataclass
 
 import squid.logging
@@ -72,7 +73,7 @@ class AbstractFilterWheelController(ABC):
         pass
 
     @abstractmethod
-    def home(self, index: int = None):
+    def home(self, index: Optional[int] = None) -> None:
         """Home the filter wheel with the given index. If index is None, home all filter wheels."""
         pass
 
@@ -310,7 +311,7 @@ class AbstractStage(metaclass=abc.ABCMeta):
     def get_config(self) -> StageConfig:
         return self._config
 
-    def wait_for_idle(self, timeout_s):
+    def wait_for_idle(self, timeout_s: float) -> None:
         start_time = time.time()
         while time.time() < start_time + timeout_s:
             if not self.get_state().busy:
@@ -353,11 +354,11 @@ class CameraGainRange(pydantic.BaseModel):
 class CameraFrame:
     frame_id: int
     timestamp: float
-    frame: np.array
+    frame: npt.NDArray[np.uint8]
     frame_format: CameraFrameFormat
     frame_pixel_format: CameraPixelFormat
 
-    def is_color(self):
+    def is_color(self) -> bool:
         return CameraPixelFormat.is_color_format(self.frame_pixel_format)
 
 
@@ -436,7 +437,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
             if was_streaming:
                 self.start_streaming()
 
-    def enable_callbacks(self, enabled: bool):
+    def enable_callbacks(self, enabled: bool) -> None:
         """
         This enables or disables propagation of frames to all the registered callbacks.  This should be used
         sparingly since any read_frame() with enable_callbacks = False will be lost to all callbacks.  Valid
@@ -468,7 +469,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
         return next_id
 
-    def remove_frame_callback(self, callback_id):
+    def remove_frame_callback(self, callback_id: int) -> None:
         try:
             idx_to_remove = [t[0] for t in self._frame_callbacks].index(callback_id)
             self._log.debug(f"Removing callback with id={callback_id} at idx={idx_to_remove}.")
@@ -476,7 +477,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         except ValueError:
             self._log.warning(f"No callback with id={callback_id}, cannot remove it.")
 
-    def _propogate_frame(self, camera_frame: CameraFrame):
+    def _propogate_frame(self, camera_frame: CameraFrame) -> None:
         """
         Implementations can call this to propogate a new frame to all registered callbacks.  You should
         have already called _process_raw_frame to generate this (aka: all cropping and rotating should be done).
@@ -645,7 +646,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def get_is_streaming(self):
         pass
 
-    def _process_raw_frame(self, raw_frame: np.array) -> np.array:
+    def _process_raw_frame(self, raw_frame: npt.NDArray[np.uint8]) -> npt.NDArray[np.uint8]:
         """
         Takes a raw nd array from a camera, and processes it such that it can be used directly in a
         CameraFrame as the frame field.  This takes care of rotating, resizing, etc the raw frame such that
@@ -655,7 +656,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         # Apply rotation and flip
         image = control.utils.rotate_and_flip_image(
-            raw_frame, rotate_image_angle=self._config.rotate_image_angle, flip_image=self._config.flip
+            raw_frame, rotate_image_angle=self._config.rotate_image_angle or 0.0, flip_image=self._config.flip
         )
 
         # Apply software crop
@@ -665,7 +666,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
         return image
 
-    def get_crop_size(self) -> Tuple[int, int]:
+    def get_crop_size(self) -> Tuple[Optional[int], Optional[int]]:
         """
         Returns the final crop size of the image (after software crop).
         """
@@ -676,13 +677,16 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         crop_height = int(crop_height * self._software_crop_height_ratio) if crop_height is not None else None
         return crop_width, crop_height
 
-    def get_fov_size_mm(self) -> float:
+    def get_fov_size_mm(self) -> Optional[float]:
         """
         Returns the size of the camera field of view in millimeters (after ROI and software crop).
         """
-        return self.get_crop_size()[0] * self.get_pixel_size_binned_um() / 1000
+        crop_width = self.get_crop_size()[0]
+        if crop_width is None:
+            return None
+        return crop_width * self.get_pixel_size_binned_um() / 1000
 
-    def set_software_crop_ratio(self, width_ratio: float, height_ratio: float):
+    def set_software_crop_ratio(self, width_ratio: float, height_ratio: float) -> None:
         """
         Set the software crop ratio. The final image size will be the hardware crop size multiplied by the
         software crop ratio rounded to the nearest integer.
@@ -765,7 +769,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
-    def set_acquisition_mode(self, acquisition_mode: CameraAcquisitionMode):
+    def set_acquisition_mode(self, acquisition_mode: CameraAcquisitionMode) -> None:
         """
         Sets the acquisition mode.  If you are specifying hardware trigger, and an external
         system needs to send the trigger, you must specify a hw_trigger_fn.  This function must be callable in such
@@ -784,7 +788,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
                     "Cannot set HARDWARE_TRIGGER camera acquisition mode without a hw_set_strobe_delay_ms_fn.  You must provide one when constructing the camera."
                 )
 
-        return self._set_acquisition_mode_imp(acquisition_mode=acquisition_mode)
+        self._set_acquisition_mode_imp(acquisition_mode=acquisition_mode)
 
     @abc.abstractmethod
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):

@@ -9,7 +9,7 @@ from qtpy.QtWidgets import (
 )
 
 from squid.abc import AbstractFilterWheelController
-from control.core.live_controller import LiveController
+from control.core.display import LiveController
 
 
 class FilterControllerWidget(QFrame):

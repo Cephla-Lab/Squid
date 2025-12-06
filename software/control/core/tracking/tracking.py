@@ -9,16 +9,16 @@ from qtpy.QtCore import QObject, QThread, Signal
 from qtpy.QtWidgets import QApplication
 
 from control._def import Acquisition
-from control.core.stream_handler import ImageSaver_Tracking
+from control.core.display.stream_handler import ImageSaver_Tracking
 from control.utils_config import ChannelMode
-import control.core.tracking_dasiamrpn as tracking
+import control.core.tracking.tracking_dasiamrpn as tracking
 import control.utils as utils
 import squid.logging
 from squid.abc import AbstractCamera, AbstractStage
 
 if TYPE_CHECKING:
-    from control.core.image_display import ImageDisplayWindow
-    from control.core.live_controller import LiveController
+    from control.core.display import ImageDisplayWindow
+    from control.core.display import LiveController
     from control.microcontroller import Microcontroller
 
 

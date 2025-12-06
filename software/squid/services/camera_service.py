@@ -1,6 +1,6 @@
 # squid/services/camera_service.py
 """Service for camera operations."""
-from typing import Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import Optional, Sequence, Tuple, TYPE_CHECKING, Callable
 
 from squid.services.base import BaseService
 from squid.config import CameraPixelFormat
@@ -16,7 +16,7 @@ from squid.events import (
 )
 
 if TYPE_CHECKING:
-    from squid.abc import AbstractCamera
+    from squid.abc import AbstractCamera, CameraGainRange, CameraAcquisitionMode
 
 
 class CameraService(BaseService):
@@ -50,7 +50,7 @@ class CameraService(BaseService):
         """Handle SetAnalogGainCommand event."""
         self.set_analog_gain(event.gain)
 
-    def set_exposure_time(self, exposure_time_ms: float):
+    def set_exposure_time(self, exposure_time_ms: float) -> None:
         """
         Set camera exposure time.
 
@@ -74,7 +74,7 @@ class CameraService(BaseService):
         """Get exposure time limits (min, max) in milliseconds."""
         return self._camera.get_exposure_limits()
 
-    def set_analog_gain(self, gain: float):
+    def set_analog_gain(self, gain: float) -> None:
         """
         Set camera analog gain.
 
@@ -100,7 +100,7 @@ class CameraService(BaseService):
     # Task 1.1: ROI methods
     # ============================================================
 
-    def set_region_of_interest(self, x_offset: int, y_offset: int, width: int, height: int):
+    def set_region_of_interest(self, x_offset: int, y_offset: int, width: int, height: int) -> None:
         """Set camera region of interest."""
         self._log.debug(f"Setting ROI: offset=({x_offset}, {y_offset}), size=({width}, {height})")
         self._camera.set_region_of_interest(x_offset, y_offset, width, height)
@@ -118,7 +118,7 @@ class CameraService(BaseService):
     # Task 1.2: Binning methods
     # ============================================================
 
-    def set_binning(self, binning_x: int, binning_y: int):
+    def set_binning(self, binning_x: int, binning_y: int) -> None:
         """Set camera binning."""
         self._log.debug(f"Setting binning: {binning_x}x{binning_y}")
         self._camera.set_binning(binning_x, binning_y)
@@ -136,7 +136,7 @@ class CameraService(BaseService):
     # Task 1.3: Pixel format methods
     # ============================================================
 
-    def set_pixel_format(self, pixel_format: CameraPixelFormat):
+    def set_pixel_format(self, pixel_format: CameraPixelFormat) -> None:
         """Set camera pixel format."""
         self._log.debug(f"Setting pixel format: {pixel_format}")
         self._camera.set_pixel_format(pixel_format)
@@ -154,12 +154,12 @@ class CameraService(BaseService):
     # Task 1.4: Temperature methods
     # ============================================================
 
-    def set_temperature(self, temperature: float):
+    def set_temperature(self, temperature: float) -> None:
         """Set camera target temperature."""
         self._log.debug(f"Setting temperature: {temperature}°C")
         self._camera.set_temperature(temperature)
 
-    def set_temperature_reading_callback(self, callback):
+    def set_temperature_reading_callback(self, callback: Callable) -> None:
         """Set callback for temperature readings."""
         self._camera.set_temperature_reading_callback(callback)
 
@@ -167,7 +167,7 @@ class CameraService(BaseService):
     # Task 1.5: White balance methods
     # ============================================================
 
-    def set_white_balance_gains(self, r: float, g: float, b: float):
+    def set_white_balance_gains(self, r: float, g: float, b: float) -> None:
         """Set white balance gains."""
         self._camera.set_white_balance_gains(r, g, b)
 
@@ -175,7 +175,7 @@ class CameraService(BaseService):
         """Get white balance gains as (r, g, b)."""
         return self._camera.get_white_balance_gains()
 
-    def set_auto_white_balance(self, enabled: bool):
+    def set_auto_white_balance(self, enabled: bool) -> None:
         """Enable/disable auto white balance."""
         self._camera.set_auto_white_balance_gains(on=enabled)
 
@@ -183,7 +183,7 @@ class CameraService(BaseService):
     # Task 1.6: Black level method
     # ============================================================
 
-    def set_black_level(self, level: float):
+    def set_black_level(self, level: float) -> None:
         """Set camera black level."""
         self._log.debug(f"Setting black level: {level}")
         self._camera.set_black_level(level)
@@ -192,11 +192,11 @@ class CameraService(BaseService):
     # Read-only camera properties
     # ============================================================
 
-    def get_gain_range(self):
+    def get_gain_range(self) -> "CameraGainRange":
         """Get camera gain range."""
         return self._camera.get_gain_range()
 
-    def get_acquisition_mode(self):
+    def get_acquisition_mode(self) -> "CameraAcquisitionMode":
         """Get current acquisition mode."""
         return self._camera.get_acquisition_mode()
 

@@ -58,7 +58,7 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
     # Imports that rely on the stubs and project path
     import control._def as _def
     from control._def import FileSavingOption
-    from control.core.job_processing import SaveImageJob, CaptureInfo, JobImage
+    from control.core.acquisition.job_processing import SaveImageJob, CaptureInfo, JobImage
     from control.utils_config import ChannelMode
     import squid.abc
 
