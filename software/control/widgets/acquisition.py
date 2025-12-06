@@ -1067,13 +1067,8 @@ class FlexibleMultiPointWidget(QFrame):
                 self.table_location_list.selectRow(index)
 
     def _move_stage_to(self, x: float, y: float, z: float):
-        """Move stage to position using service if available, else direct call."""
-        if self._stage_service is not None:
-            self._stage_service.move_to(x_mm=x, y_mm=y, z_mm=z)
-        else:
-            self.stage.move_x_to(x)
-            self.stage.move_y_to(y)
-            self.stage.move_z_to(z)
+        """Move stage to position."""
+        self._stage_service.move_to(x_mm=x, y_mm=y, z_mm=z)
 
     def cell_was_clicked(self, row, column):
         self.dropdown_location_list.setCurrentIndex(row)
@@ -2815,11 +2810,8 @@ class WellplateMultiPointWidget(QFrame):
         self._move_z_to(z_value_mm)
 
     def _move_z_to(self, z_mm: float):
-        """Move Z axis using service if available, else direct call."""
-        if self._stage_service is not None:
-            self._stage_service.move_to(z_mm=z_mm)
-        else:
-            self.stage.move_z_to(z_mm)
+        """Move Z axis."""
+        self._stage_service.move_to(z_mm=z_mm)
 
     def update_z_min(self, z_pos_um):
         if z_pos_um < self.entry_minZ.value():

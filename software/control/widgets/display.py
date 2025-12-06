@@ -371,13 +371,8 @@ class FocusMapWidget(QFrame):
                 self._move_stage_to(x, y, z)
 
     def _move_stage_to(self, x: float, y: float, z: float):
-        """Move stage to position using service if available, else direct call."""
-        if self._stage_service is not None:
-            self._stage_service.move_to(x_mm=x, y_mm=y, z_mm=z)
-        else:
-            self.stage.move_x_to(x)
-            self.stage.move_y_to(y)
-            self.stage.move_z_to(z)
+        """Move stage to position."""
+        self._stage_service.move_to(x_mm=x, y_mm=y, z_mm=z)
 
     def update_current_z(self):
         index = self.point_combo.currentIndex()

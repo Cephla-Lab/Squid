@@ -612,13 +612,9 @@ class WellplateCalibration(QDialog):
         self._move_stage_relative(delta_x, delta_y)
 
     def _move_stage_relative(self, dx: float, dy: float):
-        """Move stage by relative distance using service if available."""
-        if self._stage_service is not None:
-            self._stage_service.move_x(dx)
-            self._stage_service.move_y(dy)
-        else:
-            self.stage.move_x(dx)
-            self.stage.move_y(dy)
+        """Move stage by relative distance."""
+        self._stage_service.move_x(dx)
+        self._stage_service.move_y(dy)
 
     def setCorner(self, index):
         if self.corners[index] is None:
