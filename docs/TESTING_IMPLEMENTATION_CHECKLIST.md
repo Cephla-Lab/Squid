@@ -214,6 +214,128 @@ A detailed checklist for implementing comprehensive offline testing for the Squi
 
 ---
 
+## Phase 7: Flakiness Prevention Infrastructure
+
+### 7.1 Create Test Utilities Module
+- [ ] Create file: `tests/fixtures/__init__.py`
+- [ ] Create file: `tests/fixtures/builders.py`
+  - [ ] Implement `MicroscopeBuilder` class
+  - [ ] Implement `with_piezo()` method
+  - [ ] Implement `with_autofocus_camera()` method
+  - [ ] Implement `build()` method
+- [ ] Create file: `tests/fixtures/waiters.py`
+  - [ ] Implement `wait_for_condition(fn, timeout_s)` function
+  - [ ] Implement `DeterministicEventWaiter` class
+  - [ ] Implement `AcquisitionTracker` class
+
+### 7.2 Add Isolation Fixtures
+- [ ] Add `isolated_event_bus` fixture to `conftest.py`
+- [ ] Add `isolated_config` fixture to `conftest.py`
+- [ ] Add `apply_timeout` autouse fixture to `conftest.py`
+- [ ] Add pytest-timeout to dependencies in `pyproject.toml`
+
+### 7.3 Replace time.sleep() in Tests
+- [ ] Audit existing tests for `time.sleep()` usage
+- [ ] Replace with `wait_for_condition()` or event waits
+- [ ] Add explicit timeout assertions
+
+---
+
+## Phase 8: GUI Widget Testing
+
+### 8.1 Camera Settings Widget Tests
+- [ ] Create file: `tests/gui/__init__.py`
+- [ ] Create file: `tests/gui/test_camera_settings_widget.py`
+  - [ ] Test widget initialization with mock camera
+  - [ ] Test exposure time spinbox updates camera
+  - [ ] Test gain spinbox updates camera
+  - [ ] Test event subscription (ExposureTimeChanged updates UI)
+  - [ ] Test binning dropdown changes
+
+### 8.2 Stage Widget Tests
+- [ ] Create file: `tests/gui/test_stage_widget.py`
+  - [ ] Test widget initialization with mock stage service
+  - [ ] Test movement button clicks publish commands
+  - [ ] Test position display updates from events
+  - [ ] Test home button functionality
+
+### 8.3 Navigation Widget Tests
+- [ ] Create file: `tests/gui/test_navigation_widget.py`
+  - [ ] Test widget initialization
+  - [ ] Test FOV navigation
+  - [ ] Test coordinate display updates
+
+---
+
+## Phase 9: E2E Workflow Tests
+
+### 9.1 Multi-Point Acquisition E2E
+- [ ] Create file: `tests/e2e/__init__.py`
+- [ ] Create file: `tests/e2e/test_multipoint_acquisition.py`
+  - [ ] Test single region acquisition completes
+  - [ ] Test multi-region acquisition completes
+  - [ ] Test Z-stack acquisition creates correct number of images
+  - [ ] Test time-lapse acquisition
+  - [ ] Test acquisition abort mid-run
+  - [ ] Test output files are created correctly
+
+### 9.2 Autofocus Workflow E2E
+- [ ] Create file: `tests/e2e/test_autofocus_workflow.py`
+  - [ ] Test contrast autofocus completes
+  - [ ] Test focus map generation with 3 points
+  - [ ] Test focus map interpolation
+  - [ ] Test autofocus during acquisition
+
+### 9.3 Live View E2E
+- [ ] Create file: `tests/e2e/test_live_view.py`
+  - [ ] Test start/stop live view cycle
+  - [ ] Test frame callbacks receive frames
+  - [ ] Test channel switching during live view
+
+---
+
+## Phase 10: Simulation Enhancements
+
+### 10.1 Deterministic Frame Generation
+- [ ] Modify `SimulatedCamera` in `control/peripherals/cameras/camera_utils.py`
+  - [ ] Add `_deterministic_seed` parameter
+  - [ ] Add `set_frame_generator(fn)` method
+  - [ ] Add `_frame_generator` callback support
+  - [ ] Ensure reproducible frames when seed is set
+
+### 10.2 Error Injection for SimulatedStage
+- [ ] Modify `SimulatedStage` in `control/peripherals/stage/simulated.py`
+  - [ ] Add `inject_failure_on_next_move()` method
+  - [ ] Add `inject_failure_after_n_moves(n)` method
+  - [ ] Add `_fail_next_move` flag
+  - [ ] Add `_move_count` tracking
+  - [ ] Raise RuntimeError when failure is injected
+
+### 10.3 Error Injection for SimulatedCamera
+- [ ] Modify `SimulatedCamera`
+  - [ ] Add `inject_read_timeout()` method
+  - [ ] Add `inject_streaming_failure()` method
+
+---
+
+## Phase 11: pytest Configuration Updates
+
+### 11.1 Add New Markers
+- [ ] Add `e2e` marker to `pyproject.toml`
+- [ ] Add `gui` marker alias for `qt`
+- [ ] Update marker descriptions
+
+### 11.2 Add Dependencies
+- [ ] Add `pytest-timeout` to test dependencies
+- [ ] Verify `pytest-qt` is in dependencies
+- [ ] Verify `pytest-xvfb` is in dependencies
+
+### 11.3 Add testpaths
+- [ ] Add `tests/gui` to testpaths if not auto-discovered
+- [ ] Add `tests/e2e` to testpaths if not auto-discovered
+
+---
+
 ## Verification Checklist
 
 After implementation, verify:
@@ -226,6 +348,10 @@ After implementation, verify:
 - [ ] All AbstractStage methods implemented in SimulatedStage
 - [ ] All AbstractCamera methods implemented in SimulatedCamera
 - [ ] Multi-point acquisition completes in simulation mode
+- [ ] No flaky tests (run 5x without failures)
+- [ ] GUI tests pass with `pytest -m qt --xvfb`
+- [ ] E2E tests pass with `pytest -m e2e`
+- [ ] All tests complete within timeout limits
 
 ---
 
@@ -253,6 +379,17 @@ After implementation, verify:
 | `tests/integration/test_autofocus_workflow.py` | Autofocus workflow tests |
 | `tests/integration/test_multi_point_workflow.py` | Multi-point acquisition tests |
 | `tests/integration/test_channel_switching.py` | Channel switching tests |
+| `tests/fixtures/__init__.py` | Fixtures package |
+| `tests/fixtures/builders.py` | MicroscopeBuilder, test object factories |
+| `tests/fixtures/waiters.py` | wait_for_condition, DeterministicEventWaiter, AcquisitionTracker |
+| `tests/gui/__init__.py` | GUI tests package |
+| `tests/gui/test_camera_settings_widget.py` | Camera widget tests |
+| `tests/gui/test_stage_widget.py` | Stage widget tests |
+| `tests/gui/test_navigation_widget.py` | Navigation widget tests |
+| `tests/e2e/__init__.py` | E2E tests package |
+| `tests/e2e/test_multipoint_acquisition.py` | Multi-point E2E tests |
+| `tests/e2e/test_autofocus_workflow.py` | Autofocus E2E tests |
+| `tests/e2e/test_live_view.py` | Live view E2E tests |
 
 ## Files to Modify Summary
 
@@ -260,3 +397,7 @@ After implementation, verify:
 |------|--------|
 | `control/serial_peripherals.py` | Fix CellX_Simulation (remove serial in __init__) |
 | `tests/control/test_MultiPointWorker.py` | Enable skipped tests |
+| `control/peripherals/cameras/camera_utils.py` | Add deterministic frame generation, error injection |
+| `control/peripherals/stage/simulated.py` | Add error injection methods |
+| `tests/conftest.py` | Add isolation fixtures, timeout fixture |
+| `pyproject.toml` | Add e2e marker, pytest-timeout dependency |
