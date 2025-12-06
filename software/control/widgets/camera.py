@@ -45,8 +45,7 @@ class CameraSettingsWidget(QFrame):
 
     def __init__(
         self,
-        camera: AbstractCamera = None,  # Legacy - keep for backward compat
-        camera_service: Optional["CameraService"] = None,
+        camera_service: "CameraService",
         include_gain_exposure_time=False,
         include_camera_temperature_setting=False,
         include_camera_auto_wb_setting=False,
@@ -58,17 +57,9 @@ class CameraSettingsWidget(QFrame):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
-        # Use service if provided, otherwise create from legacy param
-        if camera_service is not None:
-            self._service = camera_service
-            self.camera = camera  # Keep for direct access where needed
-        elif camera is not None:
-            # Legacy mode - create service wrapper
-            from squid.services import CameraService
-            self._service = CameraService(camera, event_bus)
-            self.camera = camera
-        else:
-            raise ValueError("Either camera_service or camera required")
+        self._service = camera_service
+        # TODO(Task 5): Remove self.camera - route all calls through service
+        self.camera = camera_service._camera
 
         # Subscribe to state updates
         event_bus.subscribe(ExposureTimeChanged, self._on_exposure_changed)
@@ -302,7 +293,7 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_width.blockSignals(True)
         self.entry_ROI_width.setValue(width)
         self.entry_ROI_width.blockSignals(False)
-        offset_x = (self._service.get_resolution()[0] - self.entry_ROI_width.value()) / 2
+        offset_x = (self.camera.get_resolution()[0] - self.entry_ROI_width.value()) / 2
         offset_x = int(offset_x // 8) * 8
         self.entry_ROI_offset_x.blockSignals(True)
         self.entry_ROI_offset_x.setValue(offset_x)
@@ -319,7 +310,7 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_height.blockSignals(True)
         self.entry_ROI_height.setValue(height)
         self.entry_ROI_height.blockSignals(False)
-        offset_y = (self._service.get_resolution()[1] - self.entry_ROI_height.value()) / 2
+        offset_y = (self.camera.get_resolution()[1] - self.entry_ROI_height.value()) / 2
         offset_y = int(offset_y // 8) * 8
         self.entry_ROI_offset_y.blockSignals(True)
         self.entry_ROI_offset_y.setValue(offset_y)
@@ -364,8 +355,8 @@ class CameraSettingsWidget(QFrame):
         def round_to_8(val):
             return int(8 * val // 8)
 
-        (x_offset, y_offset, width, height) = self._service.get_region_of_interest()
-        (x_max, y_max) = self._service.get_resolution()
+        (x_offset, y_offset, width, height) = self.camera.get_region_of_interest()
+        (x_max, y_max) = self.camera.get_resolution()
         self.entry_ROI_height.setMaximum(y_max)
         self.entry_ROI_width.setMaximum(x_max)
 

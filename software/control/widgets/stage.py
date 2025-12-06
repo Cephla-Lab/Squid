@@ -33,7 +33,6 @@ from control._def import (
 from control.core.live_controller import LiveController
 from control.peripherals.piezo import PiezoStage
 from squid.abc import AbstractStage
-from control.peripherals.stage.stage_utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
 
 
 class StageUtils(QDialog):
@@ -45,10 +44,9 @@ class StageUtils(QDialog):
 
     def __init__(
         self,
-        stage: AbstractStage = None,  # Legacy - keep for backward compat
+        stage_service: "StageService",
         live_controller: LiveController = None,
         is_wellplate: bool = False,
-        stage_service: Optional["StageService"] = None,
         parent=None
     ):
         super().__init__(parent)
@@ -57,17 +55,7 @@ class StageUtils(QDialog):
         self.is_wellplate = is_wellplate
         self.slide_position = None
 
-        # Use service if provided, otherwise create from legacy param
-        if stage_service is not None:
-            self._service = stage_service
-            self.stage = stage  # Keep for utility functions that need it
-        elif stage is not None:
-            # Legacy mode - create service wrapper
-            from squid.services import StageService
-            self._service = StageService(stage, event_bus)
-            self.stage = stage
-        else:
-            raise ValueError("Either stage_service or stage required")
+        self._service = stage_service
 
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
@@ -157,7 +145,7 @@ class StageUtils(QDialog):
     def home_z(self):
         """Home Z axis with confirmation dialog."""
         self._show_confirmation_dialog(x=False, y=False, z=True, theta=False)
-        move_z_axis_to_safety_position(self.stage)
+        self._service.move_to_safety_position()
 
     def _show_confirmation_dialog(self, x: bool, y: bool, z: bool, theta: bool):
         """Display a confirmation dialog and home the specified axis if confirmed."""
@@ -191,15 +179,13 @@ class StageUtils(QDialog):
             self.live_controller.stop_live()
         self.signal_threaded_stage_move_started.emit()
         if self.slide_position != "loading":
-            move_to_loading_position(
-                self.stage,
+            self._service.move_to_loading_position(
                 blocking=False,
                 callback=self._callback_loading_position_reached,
                 is_wellplate=self.is_wellplate,
             )
         else:
-            move_to_scanning_position(
-                self.stage,
+            self._service.move_to_scanning_position(
                 blocking=False,
                 callback=self._callback_scanning_position_reached,
                 is_wellplate=self.is_wellplate,
@@ -341,8 +327,7 @@ class PiezoWidget(QFrame):
 class NavigationWidget(QFrame):
     def __init__(
         self,
-        stage: AbstractStage = None,  # Legacy - keep for backward compat
-        stage_service: Optional["StageService"] = None,
+        stage_service: "StageService",
         main=None,
         widget_configuration="full",
         *args,
@@ -353,17 +338,7 @@ class NavigationWidget(QFrame):
         self.widget_configuration = widget_configuration
         self.slide_position = None
 
-        # Use service if provided, otherwise create from legacy param
-        if stage_service is not None:
-            self._service = stage_service
-            self.stage = None  # Don't need direct access
-        elif stage is not None:
-            # Legacy mode - create service wrapper
-            from squid.services import StageService
-            self._service = StageService(stage, event_bus)
-            self.stage = stage  # Keep for backwards compat (e.g., set_deltaX)
-        else:
-            raise ValueError("Either stage_service or stage required")
+        self._service = stage_service
 
         # Subscribe to position updates
         event_bus.subscribe(StagePositionChanged, self._on_position_changed)
@@ -524,17 +499,17 @@ class NavigationWidget(QFrame):
         self._service.move_z(-self.entry_dZ.value() / 1000)
 
     def set_deltaX(self, value):
-        mm_per_ustep = 1.0 / self.stage.x_mm_to_usteps(1.0)
+        mm_per_ustep = self._service.get_x_mm_per_ustep()
         deltaX = round(value / mm_per_ustep) * mm_per_ustep
         self.entry_dX.setValue(deltaX)
 
     def set_deltaY(self, value):
-        mm_per_ustep = 1.0 / self.stage.y_mm_to_usteps(1.0)
+        mm_per_ustep = self._service.get_y_mm_per_ustep()
         deltaY = round(value / mm_per_ustep) * mm_per_ustep
         self.entry_dY.setValue(deltaY)
 
     def set_deltaZ(self, value):
-        mm_per_ustep = 1.0 / self.stage.z_mm_to_usteps(1.0)
+        mm_per_ustep = self._service.get_z_mm_per_ustep()
         deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
         self.entry_dZ.setValue(deltaZ)
 

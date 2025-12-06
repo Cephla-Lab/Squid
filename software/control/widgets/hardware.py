@@ -829,22 +829,13 @@ class ObjectivesWidget(QWidget):
 class DACControWidget(QFrame):
     def __init__(
         self,
-        microcontroller=None,  # Legacy - keep for backward compat
-        peripheral_service: Optional["PeripheralService"] = None,
+        peripheral_service: "PeripheralService",
         *args,
         **kwargs
     ):
         super().__init__(*args, **kwargs)
 
-        # Use service if provided, otherwise create from legacy param
-        if peripheral_service is not None:
-            self._service = peripheral_service
-        elif microcontroller is not None:
-            # Legacy mode - create service wrapper
-            from squid.services import PeripheralService
-            self._service = PeripheralService(microcontroller, event_bus)
-        else:
-            raise ValueError("Either peripheral_service or microcontroller required")
+        self._service = peripheral_service
 
         # Subscribe to state updates
         event_bus.subscribe(DACValueChanged, self._on_dac_changed)
