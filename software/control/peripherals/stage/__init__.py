@@ -6,6 +6,8 @@ from control.peripherals.stage.serial import (
     get_microcontroller_serial_device,
     payload_to_int,
 )
+from control.peripherals.stage.simulated import SimulatedStage
+from control.peripherals.stage.stage_utils import get_stage
 
 __all__ = [
     "AbstractCephlaMicroSerial",
@@ -13,4 +15,6 @@ __all__ = [
     "MicrocontrollerSerial",
     "get_microcontroller_serial_device",
     "payload_to_int",
+    "SimulatedStage",
+    "get_stage",
 ]

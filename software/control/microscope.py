@@ -15,7 +15,7 @@ from control.microcontroller import Microcontroller
 from control.peripherals.piezo import PiezoStage
 from control.peripherals.lighting import SciMicroscopyLEDArray
 from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
-from control.peripherals.stage.stage_utils import move_z_axis_to_safety_position
+from control.peripherals.stage.stage_utils import move_z_axis_to_safety_position, get_stage
 from control.peripherals.stage.cephla import CephlaStage
 from control.peripherals.stage.prior import PriorStage
 import control.peripherals.lighting.celesta
@@ -214,12 +214,11 @@ class Microscope:
         low_level_devices = LowLevelDrivers.build_from_global_config(simulated)
 
         stage_config = squid.config.get_stage_config()
-        if control._def.USE_PRIOR_STAGE:
-            stage = PriorStage(sn=control._def.PRIOR_STAGE_SN, stage_config=stage_config)
-        else:
-            if low_level_devices.microcontroller is None:
-                raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
-            stage = CephlaStage(low_level_devices.microcontroller, stage_config)
+        stage = get_stage(
+            stage_config=stage_config,
+            microcontroller=low_level_devices.microcontroller,
+            simulated=simulated,
+        )
 
         addons = MicroscopeAddons.build_from_global_config(
             stage, low_level_devices.microcontroller, simulated=simulated

@@ -10,6 +10,55 @@ import control.utils
 _log = squid.logging.get_logger(__package__)
 _DEFAULT_CACHE_PATH = "cache/last_coords.txt"
 
+
+def get_stage(
+    stage_config: StageConfig,
+    microcontroller=None,  # Type: control.microcontroller.Microcontroller
+    simulated: bool = False,
+    simulate_delays: bool = False,
+) -> AbstractStage:
+    """
+    Factory function to create the appropriate stage based on configuration.
+
+    Args:
+        stage_config: StageConfig containing axis configurations
+        microcontroller: Microcontroller instance (required for CephlaStage)
+        simulated: If True, return a SimulatedStage regardless of other config
+        simulate_delays: If simulated=True, whether to simulate movement delays
+
+    Returns:
+        AbstractStage instance
+
+    Raises:
+        ValueError: If required dependencies are missing for the requested stage type
+    """
+    if simulated:
+        from control.peripherals.stage.simulated import SimulatedStage
+
+        return SimulatedStage(
+            stage_config=stage_config,
+            simulate_delays=simulate_delays,
+        )
+
+    if _def.USE_PRIOR_STAGE:
+        from control.peripherals.stage.prior import PriorStage
+
+        return PriorStage(
+            sn=_def.PRIOR_STAGE_SN,
+            stage_config=stage_config,
+        )
+    else:
+        if microcontroller is None:
+            raise ValueError("CephlaStage requires a microcontroller instance")
+
+        from control.peripherals.stage.cephla import CephlaStage
+
+        return CephlaStage(
+            microcontroller=microcontroller,
+            stage_config=stage_config,
+        )
+
+
 """
 Attempts to load a cached stage position and return it.
 """
