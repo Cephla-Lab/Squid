@@ -1,7 +1,7 @@
 # squid/services/camera_service.py
 """Service for camera operations."""
-
-from typing import Optional, Sequence, Tuple, TYPE_CHECKING, Callable
+from __future__ import annotations
+from typing import Optional, Sequence, Tuple, Callable
 
 from squid.services.base import BaseService
 from squid.config import CameraPixelFormat
@@ -16,8 +16,7 @@ from squid.events import (
     PixelFormatChanged,
 )
 
-if TYPE_CHECKING:
-    from squid.abc import AbstractCamera, CameraGainRange, CameraAcquisitionMode
+from squid.abc import AbstractCamera, CameraGainRange, CameraAcquisitionMode
 
 
 class CameraService(BaseService):

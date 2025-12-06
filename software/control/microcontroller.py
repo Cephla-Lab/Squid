@@ -10,6 +10,7 @@ import squid.logging
 from control._def import *
 from control.peripherals.stage.serial import (
     AbstractCephlaMicroSerial,
+    get_microcontroller_serial_device,
 )
 
 

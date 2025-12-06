@@ -164,7 +164,7 @@ class AcquisitionConfig(BaseModel):
 
     @field_validator("channels")
     @classmethod
-    def must_have_channels(cls, v):
+    def must_have_channels(cls: type, v: List[ChannelConfig]) -> List[ChannelConfig]:
         if not v:
             raise ValueError("Must have at least one channel")
         return v

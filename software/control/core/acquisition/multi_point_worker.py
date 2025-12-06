@@ -1,7 +1,7 @@
 import os
 import queue
 import time
-from typing import Callable, List, Optional, Tuple, Type
+from typing import Callable, Dict, List, Optional, Tuple, Type
 from datetime import datetime
 
 import imageio as iio

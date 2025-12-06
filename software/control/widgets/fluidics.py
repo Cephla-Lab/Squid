@@ -1,7 +1,12 @@
 # Fluidics control widgets
+from __future__ import annotations
 
+from typing import TYPE_CHECKING
 
 import squid.logging
+
+if TYPE_CHECKING:
+    from control.peripherals.fluidics import Fluidics
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QWidget,

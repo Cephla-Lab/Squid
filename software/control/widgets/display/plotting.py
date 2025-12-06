@@ -1,4 +1,6 @@
 # Plotting widgets (waveform, generic plot, 3D surface)
+from typing import Any, Optional, List
+
 import numpy as np
 from mpl_toolkits.mplot3d import proj3d
 from scipy.interpolate import griddata

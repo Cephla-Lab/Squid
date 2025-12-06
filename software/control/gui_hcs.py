@@ -1,4 +1,5 @@
 # set QT_API environment variable
+from __future__ import annotations
 import os
 
 from control.core.autofocus import AutoFocusController
@@ -10,7 +11,7 @@ from control.core.navigation.scan_coordinates import (
     RemovedScanCoordinateRegion,
     ClearedScanCoordinates,
 )
-from software.squid.services import ServiceRegistry
+from squid.services import ServiceRegistry
 
 os.environ["QT_API"] = "pyqt5"
 from typing import Any, Optional

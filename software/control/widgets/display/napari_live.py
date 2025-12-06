@@ -2,15 +2,15 @@
 import numpy as np
 from typing import TYPE_CHECKING
 
-from software.control.core.configuration.channel_configuration_manager import (
-    ChannelConfigurationManager,
-)
-from software.control.core.configuration.contrast_manager import ContrastManager
-from software.control.core.display.stream_handler import StreamHandler
-from software.control.core.navigation.objective_store import ObjectiveStore
+from control.core.configuration import ChannelConfigurationManager
+from control.core.configuration import ContrastManager
+from control.core.display import StreamHandler
+from control.core.navigation import ObjectiveStore
 import squid.logging
 import pyqtgraph as pg
 import napari
+from napari.layers import Layer
+from napari.utils.events import Event
 
 from qtpy.QtCore import Signal, Qt
 from qtpy.QtWidgets import (
@@ -34,9 +34,13 @@ from control._def import (
 )
 from control.core.display import LiveController
 
+from squid.abc import AbstractStage
+from control.utils_config import ChannelMode as ChannelConfiguration
+
+from squid.services import CameraService
+
 if TYPE_CHECKING:
-    from squid.services import CameraService
-    from squid.abc import AbstractStage
+    pass
 
 
 class NapariLiveWidget(QWidget):

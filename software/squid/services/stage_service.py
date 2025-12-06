@@ -104,7 +104,7 @@ class StageService(BaseService):
     def _publish_position(self):
         """Publish current position."""
         pos = self._stage.get_pos()
-        self.publish(StagePositionChanged(x_mm=pos.x_mm, y_mm=pos.y_mm, z_mm=pos.z_mm))
+        self.publish(StagePositionChanged(x_mm=pos.x_mm, y_mm=pos.y_mm, z_mm=pos.z_mm, theta_rad=pos.theta_rad))
 
     # ============================================================
     # Task 2.1: Theta axis methods

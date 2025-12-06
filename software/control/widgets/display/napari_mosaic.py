@@ -12,8 +12,8 @@ from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QPushButton
 
 from control._def import CHANNEL_COLORS_MAP, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM
-from software.control.core.configuration.contrast_manager import ContrastManager
-from software.control.core.navigation.objective_store import ObjectiveStore
+from control.core.configuration import ContrastManager
+from control.core.navigation import ObjectiveStore
 
 from squid.services import CameraService
 

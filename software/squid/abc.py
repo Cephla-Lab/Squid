@@ -138,7 +138,7 @@ class LightSource(ABC):
         pass
 
     @abstractmethod
-    def set_intensity_control_mode(self, mode):
+    def set_intensity_control_mode(self, mode: enum.Enum):
         """
         Set intensity control mode.
 
@@ -158,7 +158,7 @@ class LightSource(ABC):
         pass
 
     @abstractmethod
-    def set_shutter_control_mode(self, mode):
+    def set_shutter_control_mode(self, mode: enum.Enum):
         """
         Set shutter control mode.
 
