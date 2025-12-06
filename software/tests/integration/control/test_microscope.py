@@ -1,17 +1,18 @@
+import pytest
 import control.microscope
-import control.peripherals.stage.cephla
-import squid.config
-from control.microcontroller import Microcontroller, SimSerial
-from tests.control.test_microcontroller import get_test_micro
 
 
-def test_create_simulated_microscope():
-    sim_scope = control.microscope.Microscope.build_from_global_config(True)
-    sim_scope.close()
+@pytest.mark.integration
+def test_create_simulated_microscope(simulated_microscope):
+    """Test creating a simulated microscope."""
+    # The fixture handles creation and cleanup
+    assert simulated_microscope is not None
 
 
-def test_simulated_scope_basic_ops():
-    scope = control.microscope.Microscope.build_from_global_config(True)
+@pytest.mark.integration
+def test_simulated_scope_basic_ops(simulated_microscope):
+    """Test basic operations on simulated microscope."""
+    scope = simulated_microscope
 
     scope.stage.home(x=True, y=True, z=True, theta=False, blocking=True)
     scope.stage.move_x_to(scope.stage.get_config().X_AXIS.MAX_POSITION / 2)

@@ -1,15 +1,96 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "squid-microscope"
+version = "0.1.0"
+description = "Squid microscope control software"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Cephla Lab"},
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "qtpy",
+    "PyQt5",
+    "pyqtgraph",
+    "pyserial",
+    "pandas",
+    "imageio",
+    "crc==1.3.0",
+    "lxml",
+    "numpy",
+    "tifffile",
+    "scipy",
+    "napari",
+    "opencv-python-headless",
+    "opencv-contrib-python-headless",
+    "scikit-image",
+    "dask_image",
+    "ome_zarr",
+    "aicsimageio",
+    "basicpy",
+    "gitpython",
+    "matplotlib",
+    "pydantic_xml",
+    "pyvisa",
+    "hidapi",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-qt",
+    "pytest-xvfb",
+    "black",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["control*", "squid*"]
+exclude = ["tests*", "drivers*"]
+
 [tool.black]
 line-length = 120
-target-version = ["py34", "py35", "py36", "py38", "py39", "py310", "py311", "py312"]
+target-version = ["py39", "py310", "py311", "py312"]
 extend-exclude = '''
 (
-^/drivers and libraries/ 
-| ^/control/gxipy/ 
-| ^/control/RCM_API.py 
-| ^/control/TUCam.py 
-| ^/control/dcam.py 
-| ^/control/dcamapi4.py 
-| ^/control/toupcam.py 
+^/drivers and libraries/
+| ^/control/gxipy/
+| ^/control/RCM_API.py
+| ^/control/TUCam.py
+| ^/control/dcam.py
+| ^/control/dcamapi4.py
+| ^/control/toupcam.py
 | ^/control/toupcam_exceptions.py
 | ^/fluidics_v2/
 )'''
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Unit tests without hardware simulation",
+    "integration: Integration tests using simulated hardware",
+    "slow: Tests that take >5 seconds",
+    "qt: Tests requiring Qt/PyQt5",
+    "manual: Tests for manual/visual verification",
+]
+addopts = ["-v", "--tb=short", "-ra"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]

@@ -1,0 +1,1 @@
+# Squid module unit tests
