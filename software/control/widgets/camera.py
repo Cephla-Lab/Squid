@@ -58,8 +58,6 @@ class CameraSettingsWidget(QFrame):
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
         self._service = camera_service
-        # TODO(Task 5): Remove self.camera - route all calls through service
-        self.camera = camera_service._camera
 
         # Subscribe to state updates
         event_bus.subscribe(ExposureTimeChanged, self._on_exposure_changed)
@@ -78,8 +76,8 @@ class CameraSettingsWidget(QFrame):
         # add buttons and input fields
         self.entry_exposureTime = QDoubleSpinBox()
         self.entry_exposureTime.setKeyboardTracking(False)
-        self.entry_exposureTime.setMinimum(self.camera.get_exposure_limits()[0])
-        self.entry_exposureTime.setMaximum(self.camera.get_exposure_limits()[1])
+        self.entry_exposureTime.setMinimum(self._service.get_exposure_limits()[0])
+        self.entry_exposureTime.setMaximum(self._service.get_exposure_limits()[1])
         self.entry_exposureTime.setSingleStep(1)
         default_exposure = 20.0
         self.entry_exposureTime.setValue(default_exposure)
@@ -87,7 +85,7 @@ class CameraSettingsWidget(QFrame):
 
         self.entry_analogGain = QDoubleSpinBox()
         try:
-            gain_range = self.camera.get_gain_range()
+            gain_range = self._service.get_gain_range()
             self.entry_analogGain.setMinimum(gain_range.min_gain)
             self.entry_analogGain.setMaximum(gain_range.max_gain)
             self.entry_analogGain.setSingleStep(gain_range.gain_step)
@@ -100,13 +98,13 @@ class CameraSettingsWidget(QFrame):
 
         self.dropdown_pixelFormat = QComboBox()
         try:
-            pixel_formats = self.camera.get_available_pixel_formats()
+            pixel_formats = self._service.get_available_pixel_formats()
             pixel_formats = [pf.name for pf in pixel_formats]
         except NotImplementedError:
             pixel_formats = ["MONO8", "MONO12", "MONO14", "MONO16", "BAYER_RG8", "BAYER_RG12"]
         self.dropdown_pixelFormat.addItems(pixel_formats)
-        if self.camera.get_pixel_format() is not None:
-            self.dropdown_pixelFormat.setCurrentText(self.camera.get_pixel_format().name)
+        if self._service.get_pixel_format() is not None:
+            self.dropdown_pixelFormat.setCurrentText(self._service.get_pixel_format().name)
         else:
             print("setting camera's default pixel format")
             self._service.set_pixel_format(CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
@@ -115,8 +113,8 @@ class CameraSettingsWidget(QFrame):
         # to do: load and save pixel format in configurations
 
         self.entry_ROI_offset_x = QSpinBox()
-        roi_info = self.camera.get_region_of_interest()
-        (max_x, max_y) = self.camera.get_resolution()
+        roi_info = self._service.get_region_of_interest()
+        (max_x, max_y) = self._service.get_resolution()
         self.entry_ROI_offset_x.setValue(roi_info[0])
         self.entry_ROI_offset_x.setSingleStep(8)
         self.entry_ROI_offset_x.setFixedWidth(60)
@@ -180,9 +178,9 @@ class CameraSettingsWidget(QFrame):
         format_line.addWidget(QLabel("Pixel Format"))
         format_line.addWidget(self.dropdown_pixelFormat)
         try:
-            current_binning = self.camera.get_binning()
+            current_binning = self._service.get_binning()
             current_binning_string = "x".join([str(current_binning[0]), str(current_binning[1])])
-            binning_options = [f"{binning[0]}x{binning[1]}" for binning in self.camera.get_binning_options()]
+            binning_options = [f"{binning[0]}x{binning[1]}" for binning in self._service.get_binning_options()]
             self.dropdown_binning = QComboBox()
             self.dropdown_binning.addItems(binning_options)
             self.dropdown_binning.setCurrentText(current_binning_string)
@@ -239,7 +237,7 @@ class CameraSettingsWidget(QFrame):
 
             self.camera_layout.addLayout(blacklevel_line)
 
-        if include_camera_auto_wb_setting and CameraPixelFormat.is_color_format(self.camera.get_pixel_format()):
+        if include_camera_auto_wb_setting and CameraPixelFormat.is_color_format(self._service.get_pixel_format()):
             # auto white balance
             self.btn_auto_wb = QPushButton("Auto White Balance")
             self.btn_auto_wb.setCheckable(True)
@@ -293,7 +291,7 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_width.blockSignals(True)
         self.entry_ROI_width.setValue(width)
         self.entry_ROI_width.blockSignals(False)
-        offset_x = (self.camera.get_resolution()[0] - self.entry_ROI_width.value()) / 2
+        offset_x = (self._service.get_resolution()[0] - self.entry_ROI_width.value()) / 2
         offset_x = int(offset_x // 8) * 8
         self.entry_ROI_offset_x.blockSignals(True)
         self.entry_ROI_offset_x.setValue(offset_x)
@@ -310,7 +308,7 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_height.blockSignals(True)
         self.entry_ROI_height.setValue(height)
         self.entry_ROI_height.blockSignals(False)
-        offset_y = (self.camera.get_resolution()[1] - self.entry_ROI_height.value()) / 2
+        offset_y = (self._service.get_resolution()[1] - self.entry_ROI_height.value()) / 2
         offset_y = int(offset_y // 8) * 8
         self.entry_ROI_offset_y.blockSignals(True)
         self.entry_ROI_offset_y.setValue(offset_y)
@@ -355,8 +353,8 @@ class CameraSettingsWidget(QFrame):
         def round_to_8(val):
             return int(8 * val // 8)
 
-        (x_offset, y_offset, width, height) = self.camera.get_region_of_interest()
-        (x_max, y_max) = self.camera.get_resolution()
+        (x_offset, y_offset, width, height) = self._service.get_region_of_interest()
+        (x_max, y_max) = self._service.get_resolution()
         self.entry_ROI_height.setMaximum(y_max)
         self.entry_ROI_width.setMaximum(x_max)
 
