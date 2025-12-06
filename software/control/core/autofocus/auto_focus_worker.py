@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import threading
-from typing import Callable, Optional, TypeVar
+from typing import Callable, Optional, TypeVar, TYPE_CHECKING
 
 import time
 import numpy as np
@@ -7,10 +9,12 @@ import numpy as np
 import squid.logging
 from control import utils
 import control._def
-from control.core.live_controller import LiveController
+from control.core.display import LiveController
 from control.microcontroller import Microcontroller
-from control.microscope import NL5
 from squid.abc import AbstractCamera, AbstractStage
+
+if TYPE_CHECKING:
+    from control.microscope import NL5
 
 AutoFocusController = TypeVar("AutoFocusController")
 

@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.laser_af_settings_manager import LaserAFSettingManager
+from control.core.configuration.channel_configuration_manager import ChannelConfigurationManager
 import control._def
+
+if TYPE_CHECKING:
+    from control.core.autofocus import LaserAFSettingManager
 
 
 class ConfigurationManager:

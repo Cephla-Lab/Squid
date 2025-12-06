@@ -103,7 +103,7 @@ class TwoCamerasPDAFCalibrationController(QObject):
     acquisitionFinished = Signal()
     image_to_display_camera1 = Signal(np.ndarray)
     image_to_display_camera2 = Signal(np.ndarray)
-    signal_current_configuration = Signal(Configuration)
+    signal_current_configuration = Signal(object)
 
     z_pos = Signal(float)
 

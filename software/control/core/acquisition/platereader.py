@@ -11,8 +11,10 @@ from qtpy.QtGui import *
 
 import control.utils as utils
 from control._def import *
-import control.core.tracking_dasiamrpn as tracking
-from control.core import *
+import control.core.tracking.tracking_dasiamrpn as tracking
+from control.core.display import *
+from control.core.navigation import *
+from control.core.configuration import *
 
 from queue import Queue
 from threading import Thread, Lock
@@ -34,7 +36,7 @@ class PlateReadingWorker(QObject):
     finished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
-    signal_current_configuration = Signal(Configuration)
+    signal_current_configuration = Signal(object)
 
     def __init__(self, plateReadingController):
         QObject.__init__(self)
@@ -223,7 +225,7 @@ class PlateReadingController(QObject):
     acquisitionFinished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
-    signal_current_configuration = Signal(Configuration)
+    signal_current_configuration = Signal(object)
 
     def __init__(
         self, camera, plateReaderNavigationController, liveController, autofocusController, configurationManager

@@ -2,7 +2,7 @@ import logging as py_logging
 import logging.handlers
 import os.path
 import threading
-from typing import Optional, Type
+from typing import Callable, Optional, Type
 from types import TracebackType
 import sys
 import platformdirs
@@ -41,7 +41,7 @@ class _CustomFormatter(py_logging.Formatter):
         return self.FORMATTERS[record.levelno].format(record)
 
 
-def _thread_id_filter(record: logging.LogRecord):
+def _thread_id_filter(record: py_logging.LogRecord) -> bool:
     """Inject thread_id to log records"""
     record.thread_id = threading.get_native_id()
     return True
@@ -76,7 +76,7 @@ def get_logger(name: Optional[str] = None) -> py_logging.Logger:
 log = get_logger(__name__)
 
 
-def set_stdout_log_level(level):
+def set_stdout_log_level(level: int) -> None:
     """
     All squid code should use this set_stdout_log_level method, and the corresponding squid.logging.get_logger,
     to control squid-only logging.
@@ -89,12 +89,12 @@ def set_stdout_log_level(level):
 
     for handler in squid_root_logger.handlers:
         # We always want the file handlers to capture everything, so don't touch them.
-        if isinstance(handler, logging.FileHandler):
+        if isinstance(handler, py_logging.FileHandler):
             continue
         handler.setLevel(level)
 
 
-def register_crash_handler(handler, call_existing_too=True):
+def register_crash_handler(handler: Callable[[Type[BaseException], BaseException, TracebackType], None], call_existing_too: bool = True) -> None:
     """
     We want to make sure any uncaught exceptions are logged, so we have this mechanism for putting a hook into
     the python system that does custom logging when an exception bubbles all the way to the top.
@@ -121,23 +121,25 @@ def register_crash_handler(handler, call_existing_too=True):
         if call_existing_too:
             old_excepthook(exception_type, value, tb)
 
-    def new_thread_excepthook(hook_args: threading.ExceptHookArgs):
+    def new_thread_excepthook(hook_args: threading.ExceptHookArgs) -> None:
         exception_type = hook_args.exc_type
-        value = hook_args.exc_type
+        value = hook_args.exc_value
         tb = hook_args.exc_traceback
         try:
-            handler(exception_type, value, type(tb))
+            if value and tb:
+                handler(exception_type, value, tb)
         except BaseException as e:
             logger.critical("Custom thread excepthook handler raised exception", e)
         if call_existing_too:
-            old_thread_excepthook(exception_type, value, type(tb))
+            old_thread_excepthook(hook_args)
 
-    def new_unraisable_hook(info):
+    def new_unraisable_hook(info) -> None:
         exception_type = info.exc_type
         tb = info.exc_traceback
         value = info.exc_value
         try:
-            handler(exception_type, value, type(tb))
+            if value and tb:
+                handler(exception_type, value, tb)
         except BaseException as e:
             logger.critical("Custom unraisable hook handler raised exception", e)
         if call_existing_too:
@@ -146,32 +148,32 @@ def register_crash_handler(handler, call_existing_too=True):
     logger.info(
         f"Registering custom excepthook, threading excepthook, and unraisable hook using handler={handler.__name__}"
     )
-    sys.excepthook = new_excepthook
+    sys.excepthook = new_excepthook  # type: ignore[assignment]
     threading.excepthook = new_thread_excepthook
     sys.unraisablehook = new_unraisable_hook
 
 
-def setup_uncaught_exception_logging():
+def setup_uncaught_exception_logging() -> None:
     """
     This will make sure uncaught exceptions are sent to the root squid logger as error messages.
     """
     logger = get_logger()
 
-    def uncaught_exception_logger(exception_type: Type[BaseException], value: BaseException, tb: TracebackType):
+    def uncaught_exception_logger(exception_type: Type[BaseException], value: BaseException, tb: TracebackType) -> None:
         logger.exception("Uncaught Exception!", exc_info=value)
 
     register_crash_handler(uncaught_exception_logger, call_existing_too=False)
 
 
-def get_default_log_directory():
-    return platformdirs.user_log_path(_squid_root_logger_name, "cephla")
+def get_default_log_directory() -> str:
+    return str(platformdirs.user_log_path(_squid_root_logger_name, "cephla"))
 
 
-def add_file_logging(log_filename, replace_existing=False):
+def add_file_logging(log_filename: str, replace_existing: bool = False) -> bool:
     root_logger = get_logger()
     abs_path = os.path.abspath(log_filename)
     for handler in root_logger.handlers:
-        if isinstance(handler, logging.handlers.BaseRotatingHandler):
+        if isinstance(handler, py_logging.handlers.BaseRotatingHandler):
             if handler.baseFilename == abs_path:
                 if replace_existing:
                     root_logger.removeHandler(handler)
@@ -188,7 +190,7 @@ def add_file_logging(log_filename, replace_existing=False):
     # For now, don't worry about rollover after a certain size or time.  Just get a new file per call.
     # NOTE(imo): We had issues with windows not defaulting to utf-8, so force that here.  But also let the handler
     # know that if it sees encoding errors, it should replace the error bytes with ? and continue.
-    new_handler = logging.handlers.RotatingFileHandler(
+    new_handler = py_logging.handlers.RotatingFileHandler(
         abs_path, maxBytes=0, backupCount=25, encoding="utf-8", errors="replace"
     )
     new_handler.setLevel(py_logging.DEBUG)

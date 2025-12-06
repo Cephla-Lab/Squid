@@ -11,7 +11,7 @@ from qtpy.QtGui import *
 
 import control.utils as utils
 from control._def import *
-import control.core.tracking_dasiamrpn as tracking
+import control.core.tracking.tracking_dasiamrpn as tracking
 
 from queue import Queue
 from threading import Thread, Lock
@@ -35,7 +35,7 @@ class StreamHandler(QObject):
     signal_new_frame_received = Signal()
 
     def __init__(
-        self, crop_width=Acquisition.CROP_WIDTH, crop_height=Acquisition.CROP_HEIGHT, display_resolution_scaling=0.5
+        self, crop_width=AF.CROP_WIDTH, crop_height=AF.CROP_HEIGHT, display_resolution_scaling=0.5
     ):
         QObject.__init__(self)
         self.fps_display = 1

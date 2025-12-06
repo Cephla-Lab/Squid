@@ -1,18 +1,22 @@
+from __future__ import annotations
+
 import threading
 import time
 from threading import Thread
-from typing import Optional, Callable
+from typing import Optional, Callable, TYPE_CHECKING
 
 import numpy as np
 
 import squid.logging
 from control import utils
 import control._def
-from control.core.auto_focus_worker import AutofocusWorker
-from control.core.live_controller import LiveController
+from control.core.autofocus.auto_focus_worker import AutofocusWorker
+from control.core.display import LiveController
 from control.microcontroller import Microcontroller
-from control.microscope import NL5
 from squid.abc import AbstractCamera, AbstractStage
+
+if TYPE_CHECKING:
+    from control.microscope import NL5
 
 
 class AutoFocusController:
