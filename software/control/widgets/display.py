@@ -6,7 +6,7 @@ import squid.logging
 import pyqtgraph as pg
 
 if TYPE_CHECKING:
-    from squid.services import StageService
+    from squid.services import StageService, CameraService
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import napari
@@ -579,6 +579,7 @@ class NapariLiveWidget(QWidget):
         objectiveStore,
         channelConfigurationManager,
         contrastManager,
+        camera_service: "CameraService",
         wellSelectionWidget=None,
         show_trigger_options=True,
         show_display_options=True,
@@ -594,6 +595,7 @@ class NapariLiveWidget(QWidget):
         self.objectiveStore = objectiveStore
         self.channelConfigurationManager = channelConfigurationManager
         self.wellSelectionWidget = wellSelectionWidget
+        self._camera_service = camera_service
         self.live_configuration = self.liveController.currentConfiguration
         self.image_width = 0
         self.image_height = 0
@@ -704,7 +706,7 @@ class NapariLiveWidget(QWidget):
 
         # Exposure Time
         self.entry_exposureTime = QDoubleSpinBox()
-        self.entry_exposureTime.setRange(*self.camera.get_exposure_limits())
+        self.entry_exposureTime.setRange(*self._camera_service.get_exposure_limits())
         self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
         self.entry_exposureTime.setSuffix(" ms")
         self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
@@ -1105,11 +1107,11 @@ class NapariLiveWidget(QWidget):
 
 class NapariMultiChannelWidget(QWidget):
 
-    def __init__(self, objectiveStore, camera, contrastManager, grid_enabled=False, parent=None):
+    def __init__(self, objectiveStore, camera_service: "CameraService", contrastManager, grid_enabled=False, parent=None):
         super().__init__(parent)
         # Initialize placeholders for the acquisition parameters
         self.objectiveStore = objectiveStore
-        self.camera = camera
+        self._camera_service = camera_service
         self.contrastManager = contrastManager
         self.image_width = 0
         self.image_height = 0
@@ -1148,7 +1150,7 @@ class NapariMultiChannelWidget(QWidget):
             self.viewer.window._qt_viewer.layerButtons.hide()
 
     def initLayersShape(self, Nz, dz):
-        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self._camera_service.get_pixel_size_binned_um()
         if self.Nz != Nz or self.dz_um != dz or self.pixel_size_um != pixel_size_um:
             self.acquisition_initialized = False
             self.Nz = Nz
@@ -1283,10 +1285,10 @@ class NapariMosaicDisplayWidget(QWidget):
     signal_layers_initialized = Signal()
     signal_shape_drawn = Signal(list)
 
-    def __init__(self, objectiveStore, camera, contrastManager, parent=None):
+    def __init__(self, objectiveStore, camera_service: "CameraService", contrastManager, parent=None):
         super().__init__(parent)
         self.objectiveStore = objectiveStore
-        self.camera = camera
+        self._camera_service = camera_service
         self.contrastManager = contrastManager
         self.viewer = napari.Viewer(show=False)
         self.layout = QVBoxLayout()
@@ -1429,7 +1431,7 @@ class NapariMosaicDisplayWidget(QWidget):
 
     def updateMosaic(self, image, x_mm, y_mm, k, channel_name):
         # calculate pixel size
-        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self._camera_service.get_pixel_size_binned_um()
         downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um))
         image_pixel_size_um = pixel_size_um * downsample_factor
         image_pixel_size_mm = image_pixel_size_um / 1000

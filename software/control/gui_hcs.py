@@ -583,7 +583,8 @@ class HighContentScreeningGui(QMainWindow):
                 self.objectiveStore,
                 self.channelConfigurationManager,
                 self.contrastManager,
-                self.wellSelectionWidget,
+                camera_service=self._services.get('camera'),
+                wellSelectionWidget=self.wellSelectionWidget,
             )
             self.imageDisplayTabs.addTab(self.napariLiveWidget, "Live View")
         else:
@@ -599,7 +600,7 @@ class HighContentScreeningGui(QMainWindow):
         if not self.live_only_mode:
             if USE_NAPARI_FOR_MULTIPOINT:
                 self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
-                    self.objectiveStore, self.camera, self.contrastManager
+                    self.objectiveStore, self._services.get('camera'), self.contrastManager
                 )
                 self.imageDisplayTabs.addTab(self.napariMultiChannelWidget, "Multichannel Acquisition")
             else:
@@ -608,7 +609,7 @@ class HighContentScreeningGui(QMainWindow):
 
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
-                    self.objectiveStore, self.camera, self.contrastManager
+                    self.objectiveStore, self._services.get('camera'), self.contrastManager
                 )
                 self.imageDisplayTabs.addTab(self.napariMosaicDisplayWidget, "Mosaic View")
 
