@@ -126,7 +126,8 @@ class TemplateMultiPointWidget(FlexibleMultiPointWidget):
         template_df = self.templates[template_name]
 
         # Get current stage position to use as reference
-        ref_x, ref_y, ref_z = self.stage.get_pos().x_mm, self.stage.get_pos().y_mm, self.stage.get_pos().z_mm
+        pos = self._stage_service.get_position()
+        ref_x, ref_y, ref_z = pos.x_mm, pos.y_mm, pos.z_mm
 
         # Check required columns
         if not all(col in template_df.columns for col in ["x_offset_mm", "y_offset_mm"]):
