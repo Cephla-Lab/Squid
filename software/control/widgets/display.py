@@ -284,7 +284,7 @@ class FocusMapWidget(QFrame):
             self.focus_points.clear()
             self.navigationViewer.clear_focus_points()
             self.status_label.setText(" ")
-            current_z = self.stage.get_pos().z_mm
+            current_z = self._stage_service.get_position().z_mm
 
             # Use FocusMap to generate coordinates
             coordinates = self.focusMap.generate_grid_coordinates(
@@ -310,7 +310,7 @@ class FocusMapWidget(QFrame):
             QMessageBox.warning(self, "No Regions Defined", "Please define scan regions before adding focus points.")
             return
 
-        pos = self.stage.get_pos()
+        pos = self._stage_service.get_position()
         region_id = None
 
         # If by_region checkbox is checked, ask for region ID
@@ -377,7 +377,7 @@ class FocusMapWidget(QFrame):
     def update_current_z(self):
         index = self.point_combo.currentIndex()
         if 0 <= index < len(self.focus_points):
-            new_z = self.stage.get_pos().z_mm
+            new_z = self._stage_service.get_position().z_mm
             region_id, x, y, _ = self.focus_points[index]
             self.focus_points[index] = (region_id, x, y, new_z)
             self.update_point_list()
