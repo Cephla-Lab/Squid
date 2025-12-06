@@ -236,3 +236,188 @@ class TestStageService:
 
         assert config is mock_config
         mock_stage.get_config.assert_called_once()
+
+    # ============================================================
+    # Task 3A: Synchronization and positioning methods
+    # ============================================================
+
+    def test_wait_for_idle(self):
+        """wait_for_idle should call stage.wait_for_idle."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        service.wait_for_idle(5.0)
+
+        mock_stage.wait_for_idle.assert_called_once_with(5.0)
+
+    def test_set_limits(self):
+        """set_limits should call stage.set_limits."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        service.set_limits(x_pos_mm=10.0, x_neg_mm=-10.0, y_pos_mm=20.0, y_neg_mm=-20.0)
+
+        mock_stage.set_limits.assert_called_once_with(
+            x_pos_mm=10.0, x_neg_mm=-10.0, y_pos_mm=20.0, y_neg_mm=-20.0
+        )
+
+    def test_get_x_mm_per_ustep(self):
+        """get_x_mm_per_ustep should return mm per microstep."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        mock_stage.x_mm_to_usteps.return_value = 1000.0  # 1mm = 1000 usteps
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        result = service.get_x_mm_per_ustep()
+
+        assert result == 0.001  # 1/1000
+        mock_stage.x_mm_to_usteps.assert_called_once_with(1.0)
+
+    def test_get_y_mm_per_ustep(self):
+        """get_y_mm_per_ustep should return mm per microstep."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        mock_stage.y_mm_to_usteps.return_value = 500.0  # 1mm = 500 usteps
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        result = service.get_y_mm_per_ustep()
+
+        assert result == 0.002  # 1/500
+        mock_stage.y_mm_to_usteps.assert_called_once_with(1.0)
+
+    def test_get_z_mm_per_ustep(self):
+        """get_z_mm_per_ustep should return mm per microstep."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        mock_stage.z_mm_to_usteps.return_value = 2000.0  # 1mm = 2000 usteps
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        result = service.get_z_mm_per_ustep()
+
+        assert result == 0.0005  # 1/2000
+        mock_stage.z_mm_to_usteps.assert_called_once_with(1.0)
+
+    def test_move_to_safety_position(self):
+        """move_to_safety_position should move Z to safety point."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus, StagePositionChanged
+        import control._def as _def
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 1.2)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        service.move_to_safety_position()
+
+        expected_z = int(_def.Z_HOME_SAFETY_POINT) / 1000.0
+        mock_stage.move_z_to.assert_called_once_with(expected_z)
+
+    def test_move_to_loading_position_blocking(self):
+        """move_to_loading_position should move to loading position."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+        import control._def as _def
+
+        mock_stage = Mock()
+        mock_config = Mock()
+        mock_config.X_AXIS.MAX_POSITION = 100.0
+        mock_config.X_AXIS.MIN_POSITION = -100.0
+        mock_config.Y_AXIS.MAX_POSITION = 100.0
+        mock_config.Y_AXIS.MIN_POSITION = -100.0
+        mock_stage.get_config.return_value = mock_config
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 5.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        result = service.move_to_loading_position(blocking=True, is_wellplate=True)
+
+        assert result is None
+        # Verify move to loading position was called
+        mock_stage.move_x_to.assert_called()
+        mock_stage.move_y_to.assert_called()
+
+    def test_move_to_loading_position_not_wellplate(self):
+        """move_to_loading_position should work for non-wellplate."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+        import control._def as _def
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 5.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        result = service.move_to_loading_position(blocking=True, is_wellplate=False)
+
+        assert result is None
+        # Should only call move_x_to and move_y_to once each (no retraction sequence)
+        assert mock_stage.move_y_to.call_count == 1
+        assert mock_stage.move_x_to.call_count == 1
+
+    def test_move_to_loading_position_callback_error(self):
+        """move_to_loading_position should raise if blocking=True with callback."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+
+        with pytest.raises(ValueError, match="Callback not supported"):
+            service.move_to_loading_position(blocking=True, callback=lambda *a: None)
+
+    def test_move_to_scanning_position_blocking(self):
+        """move_to_scanning_position should move to scanning position."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+        import control._def as _def
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 5.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        result = service.move_to_scanning_position(blocking=True, is_wellplate=True)
+
+        assert result is None
+        mock_stage.move_x_to.assert_called()
+        mock_stage.move_y_to.assert_called()
+
+    def test_move_to_scanning_position_callback_error(self):
+        """move_to_scanning_position should raise if blocking=True with callback."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+
+        with pytest.raises(ValueError, match="Callback not supported"):
+            service.move_to_scanning_position(blocking=True, callback=lambda *a: None)

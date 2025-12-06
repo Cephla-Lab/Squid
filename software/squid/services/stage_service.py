@@ -1,6 +1,7 @@
 # squid/services/stage_service.py
 """Service for stage operations."""
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, Callable, TYPE_CHECKING
+from threading import Thread
 
 from squid.services.base import BaseService
 from squid.events import (
@@ -10,6 +11,8 @@ from squid.events import (
     HomeStageCommand,
     StagePositionChanged,
 )
+import control._def as _def
+import control.utils
 
 if TYPE_CHECKING:
     from squid.abc import AbstractStage, Pos
@@ -26,6 +29,7 @@ class StageService(BaseService):
     def __init__(self, stage: "AbstractStage", event_bus: EventBus):
         super().__init__(event_bus)
         self._stage = stage
+        self._scanning_position_z_mm = None  # Track Z position for loading/scanning
 
         self.subscribe(MoveStageCommand, self._on_move_command)
         self.subscribe(MoveStageToCommand, self._on_move_to_command)
@@ -120,3 +124,98 @@ class StageService(BaseService):
     def get_config(self):
         """Get stage configuration."""
         return self._stage.get_config()
+
+    # ============================================================
+    # Task 3A: Synchronization and positioning methods
+    # ============================================================
+
+    def wait_for_idle(self, timeout: float = 10.0):
+        """Wait for stage to finish movement."""
+        self._stage.wait_for_idle(timeout)
+
+    def set_limits(self, x_pos_mm: float = None, x_neg_mm: float = None,
+                   y_pos_mm: float = None, y_neg_mm: float = None):
+        """Set movement limits."""
+        self._stage.set_limits(x_pos_mm=x_pos_mm, x_neg_mm=x_neg_mm,
+                               y_pos_mm=y_pos_mm, y_neg_mm=y_neg_mm)
+
+    def get_x_mm_per_ustep(self) -> float:
+        """Get mm per microstep for X axis."""
+        return 1.0 / self._stage.x_mm_to_usteps(1.0)
+
+    def get_y_mm_per_ustep(self) -> float:
+        """Get mm per microstep for Y axis."""
+        return 1.0 / self._stage.y_mm_to_usteps(1.0)
+
+    def get_z_mm_per_ustep(self) -> float:
+        """Get mm per microstep for Z axis."""
+        return 1.0 / self._stage.z_mm_to_usteps(1.0)
+
+    def move_to_safety_position(self):
+        """Move Z to safety position."""
+        self._stage.move_z_to(int(_def.Z_HOME_SAFETY_POINT) / 1000.0)
+        self._publish_position()
+
+    def _move_to_loading_position_impl(self, is_wellplate: bool):
+        """Internal: move to loading position."""
+        if is_wellplate:
+            a_large_limit_mm = 125
+            self._stage.set_limits(
+                x_pos_mm=a_large_limit_mm, x_neg_mm=-a_large_limit_mm,
+                y_pos_mm=a_large_limit_mm, y_neg_mm=-a_large_limit_mm,
+            )
+            self._scanning_position_z_mm = self._stage.get_pos().z_mm
+            self._stage.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
+            self._stage.wait_for_idle(_def.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+            self._stage.move_y_to(15)
+            self._stage.move_x_to(35)
+            self._stage.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
+            self._stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
+            config = self._stage.get_config()
+            self._stage.set_limits(
+                x_pos_mm=config.X_AXIS.MAX_POSITION, x_neg_mm=config.X_AXIS.MIN_POSITION,
+                y_pos_mm=config.Y_AXIS.MAX_POSITION, y_neg_mm=config.Y_AXIS.MIN_POSITION,
+            )
+        else:
+            self._stage.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
+            self._stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
+        self._publish_position()
+
+    def _move_to_scanning_position_impl(self, is_wellplate: bool):
+        """Internal: move to scanning position."""
+        if is_wellplate:
+            self._stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
+            self._stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
+            if self._scanning_position_z_mm is not None:
+                self._stage.move_z_to(self._scanning_position_z_mm)
+            self._scanning_position_z_mm = None
+        else:
+            self._stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
+            self._stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
+        self._publish_position()
+
+    def move_to_loading_position(self, blocking: bool = True,
+                                 callback: Callable = None,
+                                 is_wellplate: bool = True) -> Optional[Thread]:
+        """Move stage to loading position."""
+        if blocking and callback:
+            raise ValueError("Callback not supported when blocking is True")
+        if blocking:
+            self._move_to_loading_position_impl(is_wellplate)
+            return None
+        return control.utils.threaded_operation_helper(
+            self._move_to_loading_position_impl, callback, is_wellplate=is_wellplate
+        )
+
+    def move_to_scanning_position(self, blocking: bool = True,
+                                  callback: Callable = None,
+                                  is_wellplate: bool = True) -> Optional[Thread]:
+        """Move stage to scanning position."""
+        if blocking and callback:
+            raise ValueError("Callback not supported when blocking is True")
+        if blocking:
+            self._move_to_scanning_position_impl(is_wellplate)
+            return None
+        return control.utils.threaded_operation_helper(
+            self._move_to_scanning_position_impl, callback, is_wellplate=is_wellplate
+        )
