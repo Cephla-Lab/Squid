@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import time
 import threading
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import squid.logging
 from control.microcontroller import Microcontroller
@@ -10,6 +9,10 @@ from squid.abc import CameraAcquisitionMode, AbstractCamera
 
 from control._def import *
 from control.core.utils import utils_channel
+
+if TYPE_CHECKING:
+    from control.microscope import Microscope
+    from control.utils_config import ChannelMode
 
 
 class LiveController:
@@ -21,38 +24,40 @@ class LiveController:
         control_illumination: bool = True,
         use_internal_timer_for_hardware_trigger: bool = True,
         for_displacement_measurement: bool = False,
-    ):
+    ) -> None:
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.microscope = microscope
+        self.microscope: "Microscope" = microscope
         self.camera: AbstractCamera = camera
-        self.currentConfiguration = None
+        self.currentConfiguration: Optional["ChannelMode"] = None
         self.trigger_mode: Optional[TriggerMode] = TriggerMode.SOFTWARE  # @@@ change to None
-        self.is_live = False
-        self.control_illumination = control_illumination
-        self.illumination_on = False
-        self.use_internal_timer_for_hardware_trigger = (
+        self.is_live: bool = False
+        self.control_illumination: bool = control_illumination
+        self.illumination_on: bool = False
+        self.use_internal_timer_for_hardware_trigger: bool = (
             use_internal_timer_for_hardware_trigger  # use Timer vs timer in the MCU
         )
-        self.for_displacement_measurement = for_displacement_measurement
+        self.for_displacement_measurement: bool = for_displacement_measurement
 
-        self.fps_trigger = 1
-        self.timer_trigger_interval = (1.0 / self.fps_trigger) * 1000
-        self._trigger_skip_count = 0
+        self.fps_trigger: float = 1
+        self.timer_trigger_interval: float = (1.0 / self.fps_trigger) * 1000
+        self._trigger_skip_count: int = 0
         self.timer_trigger: Optional[threading.Timer] = None
 
-        self.trigger_ID = -1
+        self.trigger_ID: int = -1
 
-        self.fps_real = 0
-        self.counter = 0
-        self.timestamp_last = 0
+        self.fps_real: float = 0
+        self.counter: int = 0
+        self.timestamp_last: float = 0
 
-        self.display_resolution_scaling = 1
+        self.display_resolution_scaling: float = 1
 
         self.enable_channel_auto_filter_switching: bool = True
 
     # illumination control
-    def turn_on_illumination(self):
-        if not "LED matrix" in self.currentConfiguration.name:
+    def turn_on_illumination(self) -> None:
+        if self.currentConfiguration is None:
+            return
+        if "LED matrix" not in self.currentConfiguration.name:
             self.microscope.illumination_controller.turn_on_illumination(
                 int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
             )
@@ -63,8 +68,10 @@ class LiveController:
             self.microscope.low_level_drivers.microcontroller.turn_on_illumination()  # to wrap microcontroller in Squid_led_array
         self.illumination_on = True
 
-    def turn_off_illumination(self):
-        if not "LED matrix" in self.currentConfiguration.name:
+    def turn_off_illumination(self) -> None:
+        if self.currentConfiguration is None:
+            return
+        if "LED matrix" not in self.currentConfiguration.name:
             self.microscope.illumination_controller.turn_off_illumination(
                 int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
             )
@@ -75,7 +82,9 @@ class LiveController:
             self.microscope.low_level_drivers.microcontroller.turn_off_illumination()  # to wrap microcontroller in Squid_led_array
         self.illumination_on = False
 
-    def update_illumination(self):
+    def update_illumination(self) -> None:
+        if self.currentConfiguration is None:
+            return
         illumination_source = self.currentConfiguration.illumination_source
         intensity = self.currentConfiguration.illumination_intensity
         if illumination_source < 10:  # LED matrix
@@ -169,7 +178,7 @@ class LiveController:
             except Exception as e:
                 print("not setting emission filter position due to " + str(e))
 
-    def start_live(self):
+    def start_live(self) -> None:
         self.is_live = True
         self.camera.start_streaming()
         if self.trigger_mode == TriggerMode.SOFTWARE or (
@@ -181,7 +190,7 @@ class LiveController:
         if self.for_displacement_measurement:
             self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
 
-    def stop_live(self):
+    def stop_live(self) -> None:
         if self.is_live:
             self.is_live = False
             if self.trigger_mode == TriggerMode.SOFTWARE:
@@ -198,7 +207,7 @@ class LiveController:
             if self.for_displacement_measurement:
                 self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
 
-    def _trigger_acquisition_timer_fn(self):
+    def _trigger_acquisition_timer_fn(self) -> None:
         if self.trigger_acquisition():
             if self.is_live:
                 self._start_new_timer()
@@ -210,7 +219,7 @@ class LiveController:
                 self._start_new_timer(maybe_custom_interval_ms=re_check_period_ms)
 
     # software trigger related
-    def trigger_acquisition(self):
+    def trigger_acquisition(self) -> bool:
         if not self.camera.get_ready_for_trigger():
             # TODO(imo): Before, send_trigger would pass silently for this case.  Now
             # we do the same here.  Should this warn?  I didn't add a warning because it seems like
@@ -233,17 +242,17 @@ class LiveController:
         self.camera.send_trigger(self.camera.get_exposure_time())
 
         if self.trigger_mode == TriggerMode.SOFTWARE:
-            if self.control_illumination and self.illumination_on == False:
+            if self.control_illumination and not self.illumination_on:
                 self.turn_on_illumination()
 
         return True
 
-    def _stop_existing_timer(self):
+    def _stop_existing_timer(self) -> None:
         if self.timer_trigger and self.timer_trigger.is_alive():
             self.timer_trigger.cancel()
         self.timer_trigger = None
 
-    def _start_new_timer(self, maybe_custom_interval_ms=None):
+    def _start_new_timer(self, maybe_custom_interval_ms: Optional[float] = None) -> None:
         self._stop_existing_timer()
         if maybe_custom_interval_ms:
             interval_s = maybe_custom_interval_ms / 1000.0
@@ -253,10 +262,10 @@ class LiveController:
         self.timer_trigger.daemon = True
         self.timer_trigger.start()
 
-    def _start_triggerred_acquisition(self):
+    def _start_triggerred_acquisition(self) -> None:
         self._start_new_timer()
 
-    def _set_trigger_fps(self, fps_trigger):
+    def _set_trigger_fps(self, fps_trigger: float) -> None:
         if fps_trigger <= 0:
             raise ValueError(f"fps_trigger must be > 0, but {fps_trigger=}")
         self._log.debug(f"Setting {fps_trigger=}")
@@ -265,11 +274,11 @@ class LiveController:
         if self.is_live:
             self._start_new_timer()
 
-    def _stop_triggerred_acquisition(self):
+    def _stop_triggerred_acquisition(self) -> None:
         self._stop_existing_timer()
 
     # trigger mode and settings
-    def set_trigger_mode(self, mode):
+    def set_trigger_mode(self, mode: TriggerMode) -> None:
         if mode == TriggerMode.SOFTWARE:
             if self.is_live and (
                 self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
@@ -282,7 +291,8 @@ class LiveController:
             if self.trigger_mode == TriggerMode.SOFTWARE and self.is_live:
                 self._stop_triggerred_acquisition()
             self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
-            self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
+            if self.currentConfiguration is not None:
+                self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
 
             if self.is_live and self.use_internal_timer_for_hardware_trigger:
                 self._start_triggerred_acquisition()
@@ -294,7 +304,7 @@ class LiveController:
             self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
         self.trigger_mode = mode
 
-    def set_trigger_fps(self, fps):
+    def set_trigger_fps(self, fps: float) -> None:
         if (self.trigger_mode == TriggerMode.SOFTWARE) or (
             self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
         ):
@@ -302,7 +312,7 @@ class LiveController:
 
     # set microscope mode
     # @@@ to do: change softwareTriggerGenerator to TriggerGeneratror
-    def set_microscope_mode(self, configuration):
+    def set_microscope_mode(self, configuration: "ChannelMode") -> None:
 
         self.currentConfiguration = configuration
         self._log.info("setting microscope mode to " + self.currentConfiguration.name)
@@ -331,14 +341,14 @@ class LiveController:
             self._start_new_timer()
         self._log.info("Done setting microscope mode.")
 
-    def get_trigger_mode(self):
+    def get_trigger_mode(self) -> Optional[TriggerMode]:
         return self.trigger_mode
 
     # slot
-    def on_new_frame(self):
+    def on_new_frame(self) -> None:
         if self.fps_trigger <= 5:
-            if self.control_illumination and self.illumination_on == True:
+            if self.control_illumination and self.illumination_on:
                 self.turn_off_illumination()
 
-    def set_display_resolution_scaling(self, display_resolution_scaling):
+    def set_display_resolution_scaling(self, display_resolution_scaling: float) -> None:
         self.display_resolution_scaling = display_resolution_scaling / 100

@@ -12,13 +12,15 @@ class LaserAFSettingManager:
 
     def __init__(self):
         self.autofocus_configurations: Dict[str, LaserAFConfig] = {}  # Dict[str, Dict[str, Any]]
-        self.current_profile_path = None
+        self.current_profile_path: Optional[Path] = None
 
     def set_profile_path(self, profile_path: Path) -> None:
         self.current_profile_path = profile_path
 
     def load_configurations(self, objective: str) -> None:
         """Load autofocus configurations for a specific objective."""
+        if self.current_profile_path is None:
+            return
         config_file = self.current_profile_path / objective / "laser_af_settings.json"
         if config_file.exists():
             with open(config_file, "r") as f:
@@ -28,6 +30,8 @@ class LaserAFSettingManager:
     def save_configurations(self, objective: str) -> None:
         """Save autofocus configurations for a specific objective."""
         if objective not in self.autofocus_configurations:
+            return
+        if self.current_profile_path is None:
             return
 
         objective_path = self.current_profile_path / objective

@@ -4,13 +4,14 @@ import os
 os.environ["QT_API"] = "pyqt5"
 
 # qt libraries
-from qtpy.QtCore import *
-from qtpy.QtWidgets import *
+from qtpy.QtCore import QObject, Signal
+from qtpy.QtWidgets import QApplication
 
 import control.utils as utils
 from control._def import *
 
 import time
+from typing import Optional, List, Any
 import numpy as np
 import cv2
 from datetime import datetime
@@ -18,7 +19,6 @@ from datetime import datetime
 import skimage  # pip3 install -U scikit-image
 import skimage.registration
 
-import control.peripherals.cameras.camera_utils
 from squid.abc import AbstractCamera
 
 
@@ -28,25 +28,32 @@ class PDAFController(QObject):
     # input: from internal_states shared variables
     # output: amount of defocus, which may be read by or emitted to focusTrackingController (that manages focus tracking on/off, PID coefficients)
 
-    def __init__(self, internal_states):
+    def __init__(self, internal_states: Any):
         QObject.__init__(self)
-        self.coefficient_shift2defocus = 1
-        self.registration_upsample_factor = 5
-        self.image1_received = False
-        self.image2_received = False
-        self.locked = False
-        self.shared_variables = internal_states
+        self.coefficient_shift2defocus: float = 1
+        self.registration_upsample_factor: int = 5
+        self.image1_received: bool = False
+        self.image2_received: bool = False
+        self.locked: bool = False
+        self.shared_variables: Any = internal_states
+        self.image1: Optional[np.ndarray] = None
+        self.image2: Optional[np.ndarray] = None
+        self.defocus: float = 0.0
+        self.x: int = 0
+        self.y: int = 0
+        self.w: int = 0
+        self.h: int = 0
 
-    def register_image_from_camera_1(self, image):
-        if self.locked == True:
+    def register_image_from_camera_1(self, image: np.ndarray) -> None:
+        if self.locked:
             return
         self.image1 = np.copy(image)
         self.image1_received = True
         if self.image2_received:
             self.calculate_defocus()
 
-    def register_image_from_camera_2(self, image):
-        if self.locked == True:
+    def register_image_from_camera_2(self, image: np.ndarray) -> None:
+        if self.locked:
             return
         self.image2 = np.copy(image)
         self.image2 = np.fliplr(self.image2)  # can be flipud depending on camera orientation
@@ -54,7 +61,7 @@ class PDAFController(QObject):
         if self.image1_received:
             self.calculate_defocus()
 
-    def calculate_defocus(self):
+    def calculate_defocus(self) -> None:
         self.locked = True
         # cropping parameters
         self.x = self.shared_variables.x
@@ -70,13 +77,13 @@ class PDAFController(QObject):
             (self.y - int(self.h / 2)) : (self.y + int(self.h / 2)),
             (self.x - int(self.w / 2)) : (self.x + int(self.w / 2)),
         ]  # additional offsets may need to be added
-        shift = self._compute_shift_from_image_pair()
+        shift: float = self._compute_shift_from_image_pair()
         self.defocus = shift * self.coefficient_shift2defocus
         self.image1_received = False
         self.image2_received = False
         self.locked = False
 
-    def _compute_shift_from_image_pair(self):
+    def _compute_shift_from_image_pair(self) -> float:
         # method 1: calculate 2D cross correlation -> find peak or centroid
         """
         I1 = np.array(self.image1,dtype=np.int)
@@ -88,13 +95,16 @@ class PDAFController(QObject):
         cv2.waitKey(15)
         """
         # method 2: use skimage.registration.phase_cross_correlation
+        shifts: np.ndarray
+        error: float
+        phasediff: float
         shifts, error, phasediff = skimage.registration.phase_cross_correlation(
             self.image1, self.image2, upsample_factor=self.registration_upsample_factor, space="real"
         )
         print(shifts)  # for debugging
-        return shifts[0]  # can be shifts[1] - depending on camera orientation
+        return float(shifts[0])  # can be shifts[1] - depending on camera orientation
 
-    def close(self):
+    def close(self) -> None:
         pass
 
 
@@ -111,68 +121,79 @@ class TwoCamerasPDAFCalibrationController(QObject):
         self,
         camera1: AbstractCamera,
         camera2: AbstractCamera,
-        navigationController,
-        liveController1,
-        liveController2,
-        configurationManager=None,
+        navigationController: Any,
+        liveController1: Any,
+        liveController2: Any,
+        configurationManager: Optional[Any] = None,
     ):
         QObject.__init__(self)
 
         self.camera1: AbstractCamera = camera1
         self.camera2: AbstractCamera = camera2
-        self.navigationController = navigationController
-        self.liveController1 = liveController1
-        self.liveController2 = liveController2
-        self.configurationManager = configurationManager
-        self.NZ = 1
-        self.Nt = 1
-        self.deltaZ = Acquisition.DZ / 1000
-        self.deltaZ_usteps = round((Acquisition.DZ / 1000) * Motion.STEPS_PER_MM_Z)
-        self.crop_width = Acquisition.CROP_WIDTH
-        self.crop_height = Acquisition.CROP_HEIGHT
-        self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
-        self.counter = 0
-        self.experiment_ID = None
-        self.base_path = None
+        self.navigationController: Any = navigationController
+        self.liveController1: Any = liveController1
+        self.liveController2: Any = liveController2
+        self.configurationManager: Optional[Any] = configurationManager
+        self.NZ: int = 1
+        self.NX: int = 1
+        self.NY: int = 1
+        self.Nt: int = 1
+        self.deltaZ: float = Acquisition.DZ / 1000
+        self.deltaZ_usteps: int = round((Acquisition.DZ / 1000) * Motion.STEPS_PER_MM_Z)
+        self.deltaX: float = 0.0
+        self.deltaX_usteps: int = 0
+        self.deltaY: float = 0.0
+        self.deltaY_usteps: int = 0
+        self.deltat: float = 0.0
+        self.do_autofocus: bool = False
+        self.crop_width: int = Acquisition.CROP_WIDTH
+        self.crop_height: int = Acquisition.CROP_HEIGHT
+        self.display_resolution_scaling: float = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
+        self.counter: int = 0
+        self.experiment_ID: Optional[str] = None
+        self.base_path: Optional[str] = None
+        self.recording_start_time: float = 0.0
+        self.selected_configurations: List[Any] = []
+        self.time_point: int = 0
 
-    def set_NX(self, N):
+    def set_NX(self, N: int) -> None:
         self.NX = N
 
-    def set_NY(self, N):
+    def set_NY(self, N: int) -> None:
         self.NY = N
 
-    def set_NZ(self, N):
+    def set_NZ(self, N: int) -> None:
         self.NZ = N
 
-    def set_Nt(self, N):
+    def set_Nt(self, N: int) -> None:
         self.Nt = N
 
-    def set_deltaX(self, delta):
+    def set_deltaX(self, delta: float) -> None:
         self.deltaX = delta
         self.deltaX_usteps = round(delta * Motion.STEPS_PER_MM_XY)
 
-    def set_deltaY(self, delta):
+    def set_deltaY(self, delta: float) -> None:
         self.deltaY = delta
         self.deltaY_usteps = round(delta * Motion.STEPS_PER_MM_XY)
 
-    def set_deltaZ(self, delta_um):
+    def set_deltaZ(self, delta_um: float) -> None:
         self.deltaZ = delta_um / 1000
         self.deltaZ_usteps = round((delta_um / 1000) * Motion.STEPS_PER_MM_Z)
 
-    def set_deltat(self, delta):
+    def set_deltat(self, delta: float) -> None:
         self.deltat = delta
 
-    def set_af_flag(self, flag):
+    def set_af_flag(self, flag: bool) -> None:
         self.do_autofocus = flag
 
-    def set_crop(self, crop_width, height):
+    def set_crop(self, crop_width: int, height: int) -> None:
         self.crop_width = crop_width
-        self.crop_height = crop_height
+        self.crop_height = height
 
-    def set_base_path(self, path):
+    def set_base_path(self, path: str) -> None:
         self.base_path = path
 
-    def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
+    def start_new_experiment(self, experiment_ID: str) -> None:  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
         self.experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d %H-%M-%S.%f")
         self.recording_start_time = time.time()
@@ -183,10 +204,10 @@ class TwoCamerasPDAFCalibrationController(QObject):
                 self.configurationManager.write_configuration(
                     os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml"
                 )  # save the configuration for the experiment
-        except:
+        except Exception:
             pass
 
-    def set_selected_configurations(self, selected_configurations_name):
+    def set_selected_configurations(self, selected_configurations_name: List[str]) -> None:
         self.selected_configurations = []
         for configuration_name in selected_configurations_name:
             self.selected_configurations.append(
@@ -195,7 +216,7 @@ class TwoCamerasPDAFCalibrationController(QObject):
                 )
             )
 
-    def run_acquisition(self):  # @@@ to do: change name to run_experiment
+    def run_acquisition(self) -> None:  # @@@ to do: change name to run_experiment
         print("start multipoint")
 
         # stop live
@@ -253,25 +274,25 @@ class TwoCamerasPDAFCalibrationController(QObject):
         self.acquisitionFinished.emit()
         QApplication.processEvents()
 
-    def _run_multipoint_single(self):
+    def _run_multipoint_single(self) -> None:
         # for each time point, create a new folder
-        current_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point))
+        current_path: str = os.path.join(self.base_path, self.experiment_ID, str(self.time_point))
         os.mkdir(current_path)
 
         # z-stack
         for k in range(self.NZ):
-            file_ID = str(k)
+            file_ID: str = str(k)
             if self.configurationManager:
                 # iterate through selected modes
                 for config in self.selected_configurations:
                     self.signal_current_configuration.emit(config)
                     self.camera1.send_trigger()
-                    image = self.camera1.read_frame()
+                    image: Optional[np.ndarray] = self.camera1.read_frame()
                     image = utils.crop_image(image, self.crop_width, self.crop_height)
-                    saving_path = os.path.join(
+                    saving_path: str = os.path.join(
                         current_path, "camera1_" + file_ID + str(config.name) + "." + Acquisition.IMAGE_FORMAT
                     )
-                    image_to_display = utils.crop_image(
+                    image_to_display: np.ndarray = utils.crop_image(
                         image,
                         round(self.crop_width * self.liveController1.display_resolution_scaling),
                         round(self.crop_height * self.liveController1.display_resolution_scaling),

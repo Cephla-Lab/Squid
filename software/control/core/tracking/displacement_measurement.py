@@ -2,14 +2,12 @@
 import os
 
 os.environ["QT_API"] = "pyqt5"
-import qtpy
 
 # qt libraries
 from qtpy.QtCore import *
 from qtpy.QtWidgets import *
 from qtpy.QtGui import *
 
-import control.utils as utils
 from control._def import *
 
 import time
@@ -22,20 +20,20 @@ class DisplacementMeasurementController(QObject):
     signal_readings = Signal(list)
     signal_plots = Signal(np.ndarray, np.ndarray)
 
-    def __init__(self, x_offset=0, y_offset=0, x_scaling=1, y_scaling=1, N_average=1, N=10000):
+    def __init__(self, x_offset: float = 0, y_offset: float = 0, x_scaling: float = 1, y_scaling: float = 1, N_average: int = 1, N: int = 10000) -> None:
 
         QObject.__init__(self)
-        self.x_offset = x_offset
-        self.y_offset = y_offset
-        self.x_scaling = x_scaling
-        self.y_scaling = y_scaling
-        self.N_average = N_average
-        self.N = N  # length of array to emit
-        self.t_array = np.array([])
-        self.x_array = np.array([])
-        self.y_array = np.array([])
+        self.x_offset: float = x_offset
+        self.y_offset: float = y_offset
+        self.x_scaling: float = x_scaling
+        self.y_scaling: float = y_scaling
+        self.N_average: int = N_average
+        self.N: int = N  # length of array to emit
+        self.t_array: np.ndarray = np.array([])
+        self.x_array: np.ndarray = np.array([])
+        self.y_array: np.ndarray = np.array([])
 
-    def update_measurement(self, image):
+    def update_measurement(self, image: np.ndarray) -> None:
 
         t = time.time()
 
@@ -62,7 +60,7 @@ class DisplacementMeasurementController(QObject):
         self.signal_plots.emit(self.t_array[-self.N :], np.vstack((self.x_array[-self.N :], self.y_array[-self.N :])))
         self.signal_readings.emit([np.mean(self.x_array[-self.N_average :]), np.mean(self.y_array[-self.N_average :])])
 
-    def update_settings(self, x_offset, y_offset, x_scaling, y_scaling, N_average, N):
+    def update_settings(self, x_offset: float, y_offset: float, x_scaling: float, y_scaling: float, N_average: int, N: int) -> None:
         self.N = N
         self.N_average = N_average
         self.x_offset = x_offset

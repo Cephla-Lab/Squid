@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from threading import Thread
-from typing import Optional, Callable, TYPE_CHECKING
+from typing import Optional, Callable, TYPE_CHECKING, List, Tuple
 
 import numpy as np
 
@@ -45,23 +45,25 @@ class AutoFocusController:
         # Start with "Reasonable" defaults.
         self.N: int = 10
         self.deltaZ: float = 1.524
-        self.crop_width = control._def.AF.CROP_WIDTH
-        self.crop_height = control._def.AF.CROP_HEIGHT
-        self.autofocus_in_progress = False
-        self.focus_map_coords = []
-        self.use_focus_map = False
+        self.crop_width: int = control._def.AF.CROP_WIDTH
+        self.crop_height: int = control._def.AF.CROP_HEIGHT
+        self.autofocus_in_progress: bool = False
+        self.focus_map_coords: List[Tuple[float, float, float]] = []
+        self.use_focus_map: bool = False
+        self.was_live_before_autofocus: bool = False
+        self.callback_was_enabled_before_autofocus: bool = False
 
-    def set_N(self, N):
+    def set_N(self, N: int) -> None:
         self.N = N
 
-    def set_deltaZ(self, delta_z_um):
+    def set_deltaZ(self, delta_z_um: float) -> None:
         self.deltaZ = delta_z_um / 1000
 
-    def set_crop(self, crop_width, crop_height):
+    def set_crop(self, crop_width: int, crop_height: int) -> None:
         self.crop_width = crop_width
         self.crop_height = crop_height
 
-    def autofocus(self, focus_map_override=False):
+    def autofocus(self, focus_map_override: bool = False) -> None:
         if self.use_focus_map and (not focus_map_override):
             self.autofocus_in_progress = True
 
@@ -112,7 +114,7 @@ class AutoFocusController:
         self._focus_thread = Thread(target=self._autofocus_worker.run, daemon=True)
         self._focus_thread.start()
 
-    def _on_autofocus_completed(self):
+    def _on_autofocus_completed(self) -> None:
         # re-enable callback
         if self.callback_was_enabled_before_autofocus:
             self.camera.enable_callbacks(True)
@@ -128,12 +130,12 @@ class AutoFocusController:
         # update the state
         self.autofocus_in_progress = False
 
-    def wait_till_autofocus_has_completed(self):
+    def wait_till_autofocus_has_completed(self) -> None:
         while self.autofocus_in_progress:
             time.sleep(0.005)
         self._log.info("autofocus wait has completed, exit wait")
 
-    def set_focus_map_use(self, enable):
+    def set_focus_map_use(self, enable: bool) -> None:
         if not enable:
             self._log.info("Disabling focus map.")
             self.use_focus_map = False
@@ -156,11 +158,11 @@ class AutoFocusController:
             self._log.info("Enabling focus map.")
             self.use_focus_map = True
 
-    def clear_focus_map(self):
+    def clear_focus_map(self) -> None:
         self.focus_map_coords = []
         self.set_focus_map_use(False)
 
-    def gen_focus_map(self, coord1, coord2, coord3):
+    def gen_focus_map(self, coord1: Tuple[float, float], coord2: Tuple[float, float], coord3: Tuple[float, float]) -> None:
         """
         Navigate to 3 coordinates and get your focus-map coordinates
         by autofocusing there and saving the z-values.
@@ -191,7 +193,7 @@ class AutoFocusController:
 
         self._log.info("Generated focus map.")
 
-    def add_current_coords_to_focus_map(self):
+    def add_current_coords_to_focus_map(self) -> None:
         if len(self.focus_map_coords) >= 3:
             self._log.info("Replacing last coordinate on focus map.")
         self.stage.wait_for_idle(timeout_s=0.5)

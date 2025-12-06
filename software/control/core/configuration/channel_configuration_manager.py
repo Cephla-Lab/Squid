@@ -1,6 +1,7 @@
 from enum import Enum
 from pathlib import Path
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Optional
+import logging
 
 from control.utils_config import ChannelConfig, ChannelMode
 import control.utils_config as utils_config
@@ -15,7 +16,12 @@ class ConfigType(Enum):
 
 
 class ChannelConfigurationManager:
-    def __init__(self):
+    _log: logging.Logger
+    config_root: Optional[Path]
+    all_configs: Dict[ConfigType, Dict[str, ChannelConfig]]
+    active_config_type: ConfigType
+
+    def __init__(self) -> None:
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config_root = None
         self.all_configs: Dict[ConfigType, Dict[str, ChannelConfig]] = {
@@ -33,6 +39,8 @@ class ChannelConfigurationManager:
 
     def _load_xml_config(self, objective: str, config_type: ConfigType) -> None:
         """Load XML configuration for a specific config type, generating default if needed"""
+        if self.config_root is None:
+            raise ValueError("config_root is not set. Call set_profile_path() first.")
         config_file = self.config_root / objective / f"{config_type.value}_configurations.xml"
 
         if not config_file.exists():
@@ -55,6 +63,8 @@ class ChannelConfigurationManager:
         """Save XML configuration for a specific config type"""
         if objective not in self.all_configs[config_type]:
             return
+        if self.config_root is None:
+            raise ValueError("config_root is not set. Call set_profile_path() first.")
 
         config = self.all_configs[config_type][objective]
         save_path = self.config_root / objective / f"{config_type.value}_configurations.xml"
@@ -128,7 +138,7 @@ class ChannelConfigurationManager:
         """Get Configuration objects for current active type (alias for get_configurations)"""
         return self.get_configurations(objective)
 
-    def get_channel_configuration_by_name(self, objective: str, name: str) -> ChannelMode:
+    def get_channel_configuration_by_name(self, objective: str, name: str) -> Optional[ChannelMode]:
         """Get Configuration object by name"""
         return next((mode for mode in self.get_configurations(objective) if mode.name == name), None)
 

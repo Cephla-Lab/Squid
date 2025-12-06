@@ -1,16 +1,16 @@
 import control.utils_.image_processing as image_processing
 import numpy as np
 from os.path import realpath, dirname, join
+from typing import Optional, Dict, Any, Tuple, Callable, List
 
 try:
     import torch
     from control.DaSiamRPN.code.net import SiamRPNvot
 
     print(1)
-    from control.DaSiamRPN.code import vot
 
     print(2)
-    from control.DaSiamRPN.code.utils import get_axis_aligned_bbox, cxy_wh_2_rect
+    from control.DaSiamRPN.code.utils import cxy_wh_2_rect
 
     print(3)
     from control.DaSiamRPN.code.run_SiamRPN import SiamRPN_init, SiamRPN_track
@@ -28,11 +28,11 @@ class Tracker_Image(object):
     SLOTS: update_tracker_type, Connected to: Tracking Widget
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Define list of trackers being used(maybe do this as a definition?)
         # OpenCV tracking suite
         # self.OPENCV_OBJECT_TRACKERS = {}
-        self.OPENCV_OBJECT_TRACKERS = {
+        self.OPENCV_OBJECT_TRACKERS: Dict[str, Callable] = {
             "csrt": cv2.legacy.TrackerCSRT_create,
             "kcf": cv2.legacy.TrackerKCF_create,
             "mil": cv2.legacy.TrackerMIL_create,
@@ -47,11 +47,11 @@ class Tracker_Image(object):
                 "medianflow": cv2.legacy.TrackerMedianFlow_create,
                 "mosse": cv2.legacy.TrackerMOSSE_create,
             }
-        except:
+        except Exception:
             print("Warning: OpenCV-Contrib trackers unavailable!")
 
         # Neural Net based trackers
-        self.NEURALNETTRACKERS = {"daSiamRPN": []}
+        self.NEURALNETTRACKERS: Dict[str, List] = {"daSiamRPN": []}
         try:
             # load net
             self.net = SiamRPNvot()
@@ -66,28 +66,31 @@ class Tracker_Image(object):
             print("reverting to default OpenCV tracker")
 
         # Image Tracker type
-        self.tracker_type = Tracking.DEFAULT_TRACKER
+        self.tracker_type: str = Tracking.DEFAULT_TRACKER
         # Init method for tracker
-        self.init_method = Tracking.DEFAULT_INIT_METHOD
+        self.init_method: str = Tracking.DEFAULT_INIT_METHOD
         # Create the tracker
         self.create_tracker()
 
         # Centroid of object from the image
-        self.centroid_image = None  # (2,1)
-        self.bbox = None
-        self.rect_pts = None
-        self.roi_bbox = None
-        self.origin = np.array([0, 0])
+        self.centroid_image: Optional[np.ndarray] = None  # (2,1)
+        self.bbox: Optional[np.ndarray] = None
+        self.rect_pts: Optional[np.ndarray] = None
+        self.roi_bbox: Optional[Tuple[int, int, int, int]] = None
+        self.origin: np.ndarray = np.array([0, 0])
 
-        self.isCentroidFound = False
-        self.trackerActive = False
-        self.searchArea = None
-        self.is_color = None
+        self.isCentroidFound: bool = False
+        self.trackerActive: bool = False
+        self.searchArea: Optional[int] = None
+        self.is_color: Optional[bool] = None
+        self.tracker: Any = None
+        self.state: Optional[Dict[str, Any]] = None
+        self.net: Any = None
 
-    def track(self, image, thresh_image, is_first_frame=False):
+    def track(self, image: np.ndarray, thresh_image: Optional[np.ndarray], is_first_frame: bool = False) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
 
         # case 1: initialize the tracker
-        if is_first_frame == True or self.trackerActive == False:
+        if is_first_frame or not self.trackerActive:
             # tracker initialization - using ROI
             if self.init_method == "roi":
                 self.bbox = tuple(self.roi_bbox)
@@ -122,20 +125,20 @@ class Tracker_Image(object):
                 self.trackerActive = False
         return self.isCentroidFound, self.centroid_image, self.rect_pts
 
-    def reset(self):
+    def reset(self) -> None:
         print("Reset image tracker state")
         self.is_first_frame = True
         self.trackerActive = False
         self.isCentroidFound = False
 
-    def create_tracker(self):
+    def create_tracker(self) -> None:
         if self.tracker_type in self.OPENCV_OBJECT_TRACKERS.keys():
             self.tracker = self.OPENCV_OBJECT_TRACKERS[self.tracker_type]()
         elif self.tracker_type in self.NEURALNETTRACKERS.keys():
             print("Using {} tracker".format(self.tracker_type))
             pass
 
-    def _initialize_tracker(self, image, centroid, bbox):
+    def _initialize_tracker(self, image: np.ndarray, centroid: np.ndarray, bbox: Tuple[int, int, int, int]) -> None:
         bbox = tuple(int(x) for x in bbox)
         # check if the image is color or not
         if len(image.shape) < 3:
@@ -145,7 +148,7 @@ class Tracker_Image(object):
             print("Initializing openCV tracker")
             print(self.tracker_type)
             print(bbox)
-            if self.is_color == False:
+            if not self.is_color:
                 image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
             self.create_tracker()  # for a new track, just calling self.tracker.init(image,bbox) is not sufficient, this line needs to be called
             self.tracker.init(image, bbox)
@@ -154,29 +157,29 @@ class Tracker_Image(object):
             # Initialize the tracker with this centroid position
             print("Initializing with daSiamRPN tracker")
             target_pos, target_sz = np.array([centroid[0], centroid[1]]), np.array([bbox[2], bbox[3]])
-            if self.is_color == False:
+            if not self.is_color:
                 image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
             self.state = SiamRPN_init(image, target_pos, target_sz, self.net)
             print("daSiamRPN tracker initialized")
         else:
             pass
 
-    def _update_tracker(self, image, thresh_image):
+    def _update_tracker(self, image: np.ndarray, thresh_image: Optional[np.ndarray]) -> Tuple[bool, Optional[Tuple[int, int, int, int]]]:
         # Input: image or thresh_image
         # Output: new_bbox based on tracking
-        new_bbox = None
+        new_bbox: Optional[Tuple[int, int, int, int]] = None
         # tracking w/ openCV tracker
         if self.tracker_type in self.OPENCV_OBJECT_TRACKERS.keys():
             self.origin = np.array([0, 0])
             # (x,y,w,h)\
-            if self.is_color == False:
+            if not self.is_color:
                 image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
             ok, new_bbox = self.tracker.update(image)
             return ok, new_bbox
         # tracking w/ the neural network-based tracker
         elif self.tracker_type in self.NEURALNETTRACKERS.keys():
             self.origin = np.array([0, 0])
-            if self.is_color == False:
+            if not self.is_color:
                 image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
             self.state = SiamRPN_track(self.state, image)
             ok = True
@@ -201,16 +204,16 @@ class Tracker_Image(object):
         # @@@ Can add additional methods here for future tracker implementations
 
     # Signal from Tracking Widget connects to this Function
-    def update_tracker_type(self, tracker_type):
+    def update_tracker_type(self, tracker_type: str) -> None:
         self.tracker_type = tracker_type
         print("set tracker set to {}".format(self.tracker_type))
         # self.create_tracker()
 
-    def update_init_method(self, method):
+    def update_init_method(self, method: str) -> None:
         self.init_method = method
         print("Tracking init method set to : {}".format(self.init_method))
 
-    def centroid_from_bbox(self, bbox):
+    def centroid_from_bbox(self, bbox: Tuple[int, int, int, int]) -> np.ndarray:
         # Coordinates of the object centroid are taken as the center of the bounding box
         assert len(bbox) == 4
         cx = int(bbox[0] + bbox[2] / 2)
@@ -218,17 +221,17 @@ class Tracker_Image(object):
         centroid = np.array([cx, cy])
         return centroid
 
-    def rectpts_from_bbox(self, bbox):
+    def rectpts_from_bbox(self, bbox: Tuple[int, int, int, int]) -> Optional[np.ndarray]:
         if self.bbox is not None:
             pts = np.array([[bbox[0], bbox[1]], [bbox[0] + bbox[2], bbox[1] + bbox[3]]], dtype="int")
         else:
             pts = None
         return pts
 
-    def update_searchArea(self, value):
+    def update_searchArea(self, value: int) -> None:
         self.searchArea = value
 
-    def set_roi_bbox(self, bbox):
+    def set_roi_bbox(self, bbox: Tuple[int, int, int, int]) -> None:
         # Updates roi bbox from ImageDisplayWindow
         self.roi_bbox = bbox
         print("Rec bbox from ImageDisplay: {}".format(self.roi_bbox))

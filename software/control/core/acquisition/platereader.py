@@ -2,7 +2,6 @@
 import os
 
 os.environ["QT_API"] = "pyqt5"
-import qtpy
 
 # qt libraries
 from qtpy.QtCore import *
@@ -11,24 +10,26 @@ from qtpy.QtGui import *
 
 import control.utils as utils
 from control._def import *
-import control.core.tracking.tracking_dasiamrpn as tracking
 from control.core.display import *
 from control.core.navigation import *
 from control.core.configuration import *
 
-from queue import Queue
-from threading import Thread, Lock
+from typing import List, Optional, Any, TYPE_CHECKING
 import time
 import numpy as np
-import pyqtgraph as pg
 import cv2
 from datetime import datetime
 
-from lxml import etree as ET
-from pathlib import Path
-import control.utils_config as utils_config
+if TYPE_CHECKING:
+    from squid.abc import AbstractCamera
+    from control.microcontroller import Microcontroller
+    from control.core.display import LiveController
+    from control.core.autofocus import AutoFocusController
+    from control.utils_config import ChannelMode
 
-import math
+from squid.config import CameraPixelFormat
+
+
 
 
 class PlateReadingWorker(QObject):
@@ -38,7 +39,7 @@ class PlateReadingWorker(QObject):
     image_to_display_multi = Signal(np.ndarray, int)
     signal_current_configuration = Signal(object)
 
-    def __init__(self, plateReadingController):
+    def __init__(self, plateReadingController: "PlateReadingController") -> None:
         QObject.__init__(self)
         self.plateReadingController = plateReadingController
 
@@ -69,13 +70,13 @@ class PlateReadingWorker(QObject):
         self.timestamp_acquisition_started = self.plateReadingController.timestamp_acquisition_started
         self.time_point = 0
         self.abort_acquisition_requested = False
-        self.selected_configurations = self.plateReadingController.selected_configurations
-        self.selected_columns = self.plateReadingController.selected_columns
+        self.selected_configurations: List[Any] = self.plateReadingController.selected_configurations
+        self.selected_columns: List[int] = self.plateReadingController.selected_columns
 
-    def run(self):
+    def run(self) -> None:
         self.abort_acquisition_requested = False
         self.plateReaderNavigationController.is_scanning = True
-        while self.time_point < self.Nt and self.abort_acquisition_requested == False:
+        while self.time_point < self.Nt and not self.abort_acquisition_requested:
             # continous acquisition
             if self.dt == 0:
                 self.run_single_time_point()
@@ -96,17 +97,20 @@ class PlateReadingWorker(QObject):
         self.plateReaderNavigationController.is_scanning = False
         self.finished.emit()
 
-    def wait_till_operation_is_completed(self):
+    def wait_till_operation_is_completed(self) -> None:
         while self.microcontroller.is_busy():
             time.sleep(SLEEP_TIME_S)
 
-    def run_single_time_point(self):
-        self.FOV_counter = 0
-        column_counter = 0
+    def run_single_time_point(self) -> None:
+        if self.base_path is None or self.experiment_ID is None:
+            raise ValueError("base_path and experiment_ID must be set before running acquisition")
+
+        self.FOV_counter: int = 0
+        column_counter: int = 0
         print("multipoint acquisition - time point " + str(self.time_point + 1))
 
         # for each time point, create a new folder
-        current_path = os.path.join(self.base_path, self.experiment_ID, str(self.time_point))
+        current_path: str = os.path.join(self.base_path, self.experiment_ID, str(self.time_point))
         utils.ensure_directory_exists(current_path)
 
         # run homing
@@ -114,7 +118,7 @@ class PlateReadingWorker(QObject):
         self.wait_till_operation_is_completed()
 
         # row scan direction
-        row_scan_direction = 1  # 1: A -> H, 0: H -> A
+        row_scan_direction: int = 1  # 1: A -> H, 0: H -> A
 
         # go through columns
         for column in self.selected_columns:
@@ -139,8 +143,8 @@ class PlateReadingWorker(QObject):
                 if row_scan_direction == 0:  # reverse scan:
                     row = PLATE_READER.NUMBER_OF_ROWS - 1 - row
 
-                row_str = chr(ord("A") + row)
-                file_ID = row_str + str(column)
+                row_str: str = chr(ord("A") + row)
+                file_ID: str = row_str + str(column)
 
                 # move to the selected row
                 self.plateReaderNavigationController.moveto_row(row)
@@ -153,15 +157,19 @@ class PlateReadingWorker(QObject):
                     and (self.do_autofocus)
                     and (self.FOV_counter % Acquisition.NUMBER_OF_FOVS_PER_AF == 0)
                 ):
-                    configuration_name_AF = "BF LED matrix full"
-                    config_AF = next(
+                    configuration_name_AF: str = "BF LED matrix full"
+                    # Get configurations for the default objective
+                    available_configs = self.configurationManager.get_configurations(DEFAULT_OBJECTIVE)
+                    config_AF: Optional["ChannelMode"] = next(
                         (
                             config
-                            for config in self.configurationManager.configurations
+                            for config in available_configs
                             if config.name == configuration_name_AF
-                        )
+                        ),
+                        None
                     )
-                    self.signal_current_configuration.emit(config_AF)
+                    if config_AF:
+                        self.signal_current_configuration.emit(config_AF)
                     self.autofocusController.autofocus()
                     self.autofocusController.wait_till_autofocus_has_completed()
 
@@ -185,18 +193,21 @@ class PlateReadingWorker(QObject):
                         self.liveController.turn_on_illumination()
                         self.wait_till_operation_is_completed()
                         self.camera.send_trigger()
-                        image = self.camera.read_frame()
+                        image: Optional[np.ndarray] = self.camera.read_frame()
                         self.liveController.turn_off_illumination()
+                        if image is None:
+                            print("Warning: camera.read_frame() returned None, skipping this image")
+                            continue
                         image = utils.crop_image(image, self.crop_width, self.crop_height)
-                        saving_path = os.path.join(
+                        saving_path: str = os.path.join(
                             current_path, file_ID + "_" + str(config.name) + "." + Acquisition.IMAGE_FORMAT
                         )
                         # self.image_to_display.emit(cv2.resize(image,(round(self.crop_width*self.display_resolution_scaling), round(self.crop_height*self.display_resolution_scaling)),cv2.INTER_LINEAR))
                         # image_to_display = utils.crop_image(image,round(self.crop_width*self.liveController.display_resolution_scaling), round(self.crop_height*self.liveController.display_resolution_scaling))
-                        image_to_display = utils.crop_image(image, round(self.crop_width), round(self.crop_height))
+                        image_to_display: np.ndarray = utils.crop_image(image, round(self.crop_width), round(self.crop_height))
                         self.image_to_display.emit(image_to_display)
                         self.image_to_display_multi.emit(image_to_display, config.illumination_source)
-                        if self.camera.is_color:
+                        if CameraPixelFormat.is_color_format(self.camera.get_pixel_format()):
                             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                         cv2.imwrite(saving_path, image)
                         QApplication.processEvents()
@@ -228,108 +239,128 @@ class PlateReadingController(QObject):
     signal_current_configuration = Signal(object)
 
     def __init__(
-        self, camera, plateReaderNavigationController, liveController, autofocusController, configurationManager
-    ):
+        self,
+        camera: "AbstractCamera",
+        plateReaderNavigationController: Any,  # TODO: Create proper type for this
+        liveController: "LiveController",
+        autofocusController: "AutoFocusController",
+        configurationManager: "ChannelConfigurationManager"
+    ) -> None:
         QObject.__init__(self)
 
-        self.camera = camera
-        self.microcontroller = plateReaderNavigationController.microcontroller  # to move to gui for transparency
-        self.plateReaderNavigationController = plateReaderNavigationController
-        self.liveController = liveController
-        self.autofocusController = autofocusController
-        self.configurationManager = configurationManager
-        self.NX = 1
-        self.NY = 1
-        self.NZ = 1
-        self.Nt = 1
-        mm_per_ustep_X = SCREW_PITCH_X_MM / (self.plateReaderNavigationController.x_microstepping * FULLSTEPS_PER_REV_X)
-        mm_per_ustep_Y = SCREW_PITCH_Y_MM / (self.plateReaderNavigationController.y_microstepping * FULLSTEPS_PER_REV_Y)
-        mm_per_ustep_Z = SCREW_PITCH_Z_MM / (self.plateReaderNavigationController.z_microstepping * FULLSTEPS_PER_REV_Z)
-        self.deltaX = Acquisition.DX
-        self.deltaX_usteps = round(self.deltaX / mm_per_ustep_X)
-        self.deltaY = Acquisition.DY
-        self.deltaY_usteps = round(self.deltaY / mm_per_ustep_Y)
-        self.deltaZ = Acquisition.DZ / 1000
-        self.deltaZ_usteps = round(self.deltaZ / mm_per_ustep_Z)
-        self.deltat = 0
-        self.do_autofocus = False
-        self.crop_width = Acquisition.CROP_WIDTH
-        self.crop_height = Acquisition.CROP_HEIGHT
-        self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
-        self.counter = 0
-        self.experiment_ID = None
-        self.base_path = None
-        self.selected_configurations = []
-        self.selected_columns = []
+        self.camera: "AbstractCamera" = camera
+        self.microcontroller: "Microcontroller" = plateReaderNavigationController.microcontroller  # to move to gui for transparency
+        self.plateReaderNavigationController: Any = plateReaderNavigationController  # TODO: Create proper type for this
+        self.liveController: "LiveController" = liveController
+        self.autofocusController: "AutoFocusController" = autofocusController
+        self.configurationManager: "ChannelConfigurationManager" = configurationManager
+        self.NX: int = 1
+        self.NY: int = 1
+        self.NZ: int = 1
+        self.Nt: int = 1
+        mm_per_ustep_X: float = SCREW_PITCH_X_MM / (self.plateReaderNavigationController.x_microstepping * FULLSTEPS_PER_REV_X)
+        mm_per_ustep_Y: float = SCREW_PITCH_Y_MM / (self.plateReaderNavigationController.y_microstepping * FULLSTEPS_PER_REV_Y)
+        mm_per_ustep_Z: float = SCREW_PITCH_Z_MM / (self.plateReaderNavigationController.z_microstepping * FULLSTEPS_PER_REV_Z)
+        self.deltaX: float = Acquisition.DX
+        self.deltaX_usteps: int = round(self.deltaX / mm_per_ustep_X)
+        self.deltaY: float = Acquisition.DY
+        self.deltaY_usteps: int = round(self.deltaY / mm_per_ustep_Y)
+        self.deltaZ: float = Acquisition.DZ / 1000
+        self.deltaZ_usteps: int = round(self.deltaZ / mm_per_ustep_Z)
+        self.deltat: float = 0
+        self.do_autofocus: bool = False
+        self.crop_width: int = AF.CROP_WIDTH
+        self.crop_height: int = AF.CROP_HEIGHT
+        self.display_resolution_scaling: float = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
+        self.counter: int = 0
+        self.experiment_ID: Optional[str] = None
+        self.base_path: Optional[str] = None
+        self.selected_configurations: List[Any] = []
+        self.selected_columns: List[int] = []
+        self.thread: Optional[QThread] = None
+        self.plateReadingWorker: Optional[PlateReadingWorker] = None
+        self.timestamp_acquisition_started: float = 0
+        self.recording_start_time: float = 0
 
-    def set_NZ(self, N):
+        # State tracking for acquisition
+        self.camera_callback_was_enabled_before_acquisition: bool = False
+        self.liveController_was_live_before_acquisition: bool = False
+        self.configuration_before_running_multipoint: Optional["ChannelMode"] = None
+
+    def set_NZ(self, N: int) -> None:
         self.NZ = N
 
-    def set_Nt(self, N):
+    def set_Nt(self, N: int) -> None:
         self.Nt = N
 
-    def set_deltaZ(self, delta_um):
-        mm_per_ustep_Z = SCREW_PITCH_Z_MM / (self.plateReaderNavigationController.z_microstepping * FULLSTEPS_PER_REV_Z)
+    def set_deltaZ(self, delta_um: float) -> None:
+        mm_per_ustep_Z: float = SCREW_PITCH_Z_MM / (self.plateReaderNavigationController.z_microstepping * FULLSTEPS_PER_REV_Z)
         self.deltaZ = delta_um / 1000
         self.deltaZ_usteps = round((delta_um / 1000) / mm_per_ustep_Z)
 
-    def set_deltat(self, delta):
+    def set_deltat(self, delta: float) -> None:
         self.deltat = delta
 
-    def set_af_flag(self, flag):
+    def set_af_flag(self, flag: bool) -> None:
         self.do_autofocus = flag
 
-    def set_crop(self, crop_width, height):
+    def set_crop(self, crop_width: int, height: int) -> None:
         self.crop_width = crop_width
-        self.crop_height = crop_height
+        self.crop_height = height
 
-    def set_base_path(self, path):
+    def set_base_path(self, path: str) -> None:
         self.base_path = path
 
-    def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
+    def start_new_experiment(self, experiment_ID: str) -> None:  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
         self.experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
         self.recording_start_time = time.time()
         # create a new folder
+        if self.base_path is None:
+            raise ValueError("base_path must be set before starting experiment")
         try:
             os.mkdir(os.path.join(self.base_path, self.experiment_ID))
-            self.configurationManager.write_configuration(
+            self.configurationManager.write_configuration_selected(
+                DEFAULT_OBJECTIVE,
+                self.selected_configurations,
                 os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml"
             )  # save the configuration for the experiment
-        except:
+        except Exception:
             pass
 
-    def set_selected_configurations(self, selected_configurations_name):
+    def set_selected_configurations(self, selected_configurations_name: List[str]) -> None:
         self.selected_configurations = []
+        available_configs = self.configurationManager.get_configurations(DEFAULT_OBJECTIVE)
         for configuration_name in selected_configurations_name:
-            self.selected_configurations.append(
-                next(
-                    (config for config in self.configurationManager.configurations if config.name == configuration_name)
-                )
+            config = next(
+                (config for config in available_configs if config.name == configuration_name),
+                None
             )
+            if config:
+                self.selected_configurations.append(config)
 
-    def set_selected_columns(self, selected_columns):
+    def set_selected_columns(self, selected_columns: List[int]) -> None:
         selected_columns.sort()
         self.selected_columns = selected_columns
 
-    def run_acquisition(self):  # @@@ to do: change name to run_experiment
+    def run_acquisition(self) -> None:  # @@@ to do: change name to run_experiment
         print("start plate reading")
         # save the current microscope configuration
         self.configuration_before_running_multipoint = self.liveController.currentConfiguration
         # stop live
         if self.liveController.is_live:
-            self.liveController.was_live_before_multipoint = True
+            self.liveController_was_live_before_acquisition = True
             self.liveController.stop_live()  # @@@ to do: also uncheck the live button
         else:
-            self.liveController.was_live_before_multipoint = False
+            self.liveController_was_live_before_acquisition = False
         # disable callback
-        if self.camera.callback_is_enabled:
-            self.camera.callback_was_enabled_before_multipoint = True
+        if self.camera.get_callbacks_enabled():
+            self.camera_callback_was_enabled_before_acquisition = True
             self.camera.stop_streaming()
-            self.camera.disable_callback()
+            self.camera.enable_callbacks(False)
             self.camera.start_streaming()  # @@@ to do: absorb stop/start streaming into enable/disable callback - add a flag is_streaming to the camera class
         else:
-            self.camera.callback_was_enabled_before_multipoint = False
+            self.camera_callback_was_enabled_before_acquisition = False
 
         # run the acquisition
         self.timestamp_acquisition_started = time.time()
@@ -353,33 +384,34 @@ class PlateReadingController(QObject):
         # start the thread
         self.thread.start()
 
-    def stop_acquisition(self):
-        self.plateReadingWorker.abort_acquisition_requested = True
+    def stop_acquisition(self) -> None:
+        if self.plateReadingWorker is not None:
+            self.plateReadingWorker.abort_acquisition_requested = True
 
-    def _on_acquisition_completed(self):
+    def _on_acquisition_completed(self) -> None:
         # restore the previous selected mode
         self.signal_current_configuration.emit(self.configuration_before_running_multipoint)
 
         # re-enable callback
-        if self.camera.callback_was_enabled_before_multipoint:
+        if self.camera_callback_was_enabled_before_acquisition:
             self.camera.stop_streaming()
-            self.camera.enable_callback()
+            self.camera.enable_callbacks(True)
             self.camera.start_streaming()
-            self.camera.callback_was_enabled_before_multipoint = False
+            self.camera_callback_was_enabled_before_acquisition = False
 
         # re-enable live if it's previously on
-        if self.liveController.was_live_before_multipoint:
+        if self.liveController_was_live_before_acquisition:
             self.liveController.start_live()
 
         # emit the acquisition finished signal to enable the UI
         self.acquisitionFinished.emit()
         QApplication.processEvents()
 
-    def slot_image_to_display(self, image):
+    def slot_image_to_display(self, image: np.ndarray) -> None:
         self.image_to_display.emit(image)
 
-    def slot_image_to_display_multi(self, image, illumination_source):
+    def slot_image_to_display_multi(self, image: np.ndarray, illumination_source: int) -> None:
         self.image_to_display_multi.emit(image, illumination_source)
 
-    def slot_current_configuration(self, configuration):
+    def slot_current_configuration(self, configuration: "ChannelMode") -> None:
         self.signal_current_configuration.emit(configuration)

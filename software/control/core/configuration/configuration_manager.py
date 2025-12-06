@@ -14,13 +14,19 @@ if TYPE_CHECKING:
 class ConfigurationManager:
     """Main configuration manager that coordinates channel and autofocus configurations."""
 
+    base_config_path: Path
+    current_profile: str
+    available_profiles: List[str]
+    channel_manager: ChannelConfigurationManager
+    laser_af_manager: Optional[LaserAFSettingManager]
+
     def __init__(
         self,
         channel_manager: ChannelConfigurationManager,
         laser_af_manager: Optional[LaserAFSettingManager] = None,
         base_config_path: Path = Path("acquisition_configurations"),
         profile: str = "default_profile",
-    ):
+    ) -> None:
         super().__init__()
         self.base_config_path = Path(base_config_path)
         self.current_profile = profile

@@ -1,4 +1,6 @@
 # Laser autofocus widgets
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
 import numpy as np
 
 from qtpy.QtCore import Signal
@@ -20,20 +22,33 @@ from control._def import SpotDetectionMode
 from control.core.display import LiveController
 from control import utils
 
+if TYPE_CHECKING:
+    from control.core.display import StreamHandler
+    from control.core.autofocus import LaserAutofocusController
+
 
 class LaserAutofocusSettingWidget(QWidget):
 
-    signal_newExposureTime = Signal(float)
-    signal_newAnalogGain = Signal(float)
-    signal_apply_settings = Signal()
-    signal_laser_spot_location = Signal(np.ndarray, float, float)
+    signal_newExposureTime: Signal = Signal(float)
+    signal_newAnalogGain: Signal = Signal(float)
+    signal_apply_settings: Signal = Signal()
+    signal_laser_spot_location: Signal = Signal(np.ndarray, float, float)
 
-    def __init__(self, streamHandler, liveController: LiveController, laserAutofocusController, stretch=True):
+    def __init__(self, streamHandler: "StreamHandler", liveController: LiveController, laserAutofocusController: "LaserAutofocusController", stretch: bool = True) -> None:
         super().__init__()
-        self.streamHandler = streamHandler
+        self.streamHandler: "StreamHandler" = streamHandler
         self.liveController: LiveController = liveController
-        self.laserAutofocusController = laserAutofocusController
-        self.stretch = stretch
+        self.laserAutofocusController: "LaserAutofocusController" = laserAutofocusController
+        self.stretch: bool = stretch
+        self.spinboxes: Dict[str, QDoubleSpinBox] = {}
+        self.btn_live: QPushButton
+        self.exposure_spinbox: QDoubleSpinBox
+        self.analog_gain_spinbox: QDoubleSpinBox
+        self.update_threshold_button: QPushButton
+        self.run_spot_detection_button: QPushButton
+        self.initialize_button: QPushButton
+        self.characterization_checkbox: QCheckBox
+        self.spot_mode_combo: QComboBox
         self.liveController.set_trigger_fps(10)
         self.streamHandler.set_display_fps(10)
 
@@ -45,11 +60,10 @@ class LaserAutofocusSettingWidget(QWidget):
         palette.setColor(self.backgroundRole(), QColor(240, 240, 240))
         self.setPalette(palette)
 
-        self.spinboxes = {}
         self.init_ui()
         self.update_calibration_label()
 
-    def init_ui(self):
+    def init_ui(self) -> None:
         layout = QVBoxLayout()
         layout.setContentsMargins(9, 9, 9, 9)
 
@@ -188,14 +202,14 @@ class LaserAutofocusSettingWidget(QWidget):
 
     def _add_spinbox(
         self,
-        layout,
+        layout: QVBoxLayout,
         label: str,
         property_name: str,
         min_val: float,
         max_val: float,
         decimals: int,
         step: float = 1,
-        allow_none=False,
+        allow_none: bool = False,
     ) -> None:
         """Helper method to add a labeled spinbox to the layout."""
         box_layout = QHBoxLayout()
@@ -223,7 +237,7 @@ class LaserAutofocusSettingWidget(QWidget):
         # Store spinbox reference
         self.spinboxes[property_name] = spinbox
 
-    def toggle_live(self, pressed):
+    def toggle_live(self, pressed: bool) -> None:
         if pressed:
             self.liveController.start_live()
             self.btn_live.setText("Stop Live")
@@ -233,21 +247,21 @@ class LaserAutofocusSettingWidget(QWidget):
             self.btn_live.setText("Start Live")
             self.run_spot_detection_button.setEnabled(True)
 
-    def stop_live(self):
+    def stop_live(self) -> None:
         """Used for stopping live when switching to other tabs"""
         self.toggle_live(False)
         self.btn_live.setChecked(False)
 
-    def toggle_characterization_mode(self, state):
+    def toggle_characterization_mode(self, state: bool) -> None:
         self.laserAutofocusController.characterization_mode = state
 
-    def update_exposure_time(self, value):
+    def update_exposure_time(self, value: float) -> None:
         self.signal_newExposureTime.emit(value)
 
-    def update_analog_gain(self, value):
+    def update_analog_gain(self, value: float) -> None:
         self.signal_newAnalogGain.emit(value)
 
-    def update_values(self):
+    def update_values(self) -> None:
         """Update all widget values from the controller properties"""
         self.clear_labels()
 
@@ -269,7 +283,7 @@ class LaserAutofocusSettingWidget(QWidget):
         self.update_threshold_button.setEnabled(self.laserAutofocusController.is_initialized)
         self.update_calibration_label()
 
-    def apply_and_initialize(self):
+    def apply_and_initialize(self) -> None:
         self.clear_labels()
 
         updates = {
@@ -297,7 +311,7 @@ class LaserAutofocusSettingWidget(QWidget):
         self.update_threshold_button.setEnabled(True)
         self.update_calibration_label()
 
-    def update_threshold_settings(self):
+    def update_threshold_settings(self) -> None:
         updates = {
             "laser_af_averaging_n": int(self.spinboxes["laser_af_averaging_n"].value()),
             "displacement_success_window_um": self.spinboxes["displacement_success_window_um"].value(),
@@ -306,45 +320,50 @@ class LaserAutofocusSettingWidget(QWidget):
         }
         self.laserAutofocusController.update_threshold_properties(updates)
 
-    def update_calibration_label(self):
+    def update_calibration_label(self) -> None:
         # Show calibration result
         # Clear previous calibration label if it exists
-        if hasattr(self, "calibration_label"):
+        if hasattr(self, "calibration_label") and self.calibration_label is not None:
             self.calibration_label.deleteLater()
 
         # Create and add new calibration label
-        self.calibration_label = QLabel()
+        self.calibration_label: QLabel = QLabel()
         self.calibration_label.setText(
             f"Calibration Result: {self.laserAutofocusController.laser_af_properties.pixel_to_um:.3f} pixels/um\nPerformed at {self.laserAutofocusController.laser_af_properties.calibration_timestamp}"
         )
-        self.layout().addWidget(self.calibration_label)
+        layout = self.layout()
+        if layout is not None:
+            layout.addWidget(self.calibration_label)
 
-    def illuminate_and_get_frame(self):
+    def illuminate_and_get_frame(self) -> Optional[np.ndarray]:
         # Get a frame from the live controller.  We need to reach deep into the liveController here which
         # is not ideal.
-        self.liveController.microscope.low_level_drivers.microcontroller.turn_on_AF_laser()
-        self.liveController.microscope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
+        microcontroller = self.liveController.microscope.low_level_drivers.microcontroller
+        if microcontroller is not None:
+            microcontroller.turn_on_AF_laser()
+            microcontroller.wait_till_operation_is_completed()
         self.liveController.trigger_acquisition()
 
         try:
             frame = self.liveController.camera.read_frame()
         finally:
-            self.liveController.microscope.low_level_drivers.microcontroller.turn_off_AF_laser()
-            self.liveController.microscope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
+            if microcontroller is not None:
+                microcontroller.turn_off_AF_laser()
+                microcontroller.wait_till_operation_is_completed()
 
         return frame
 
-    def clear_labels(self):
+    def clear_labels(self) -> None:
         # Remove any existing error or correlation labels
-        if hasattr(self, "spot_detection_error_label"):
+        if hasattr(self, "spot_detection_error_label") and self.spot_detection_error_label is not None:
             self.spot_detection_error_label.deleteLater()
             delattr(self, "spot_detection_error_label")
 
-        if hasattr(self, "correlation_label"):
+        if hasattr(self, "correlation_label") and self.correlation_label is not None:
             self.correlation_label.deleteLater()
             delattr(self, "correlation_label")
 
-    def run_spot_detection(self):
+    def run_spot_detection(self) -> None:
         """Run spot detection with current settings and emit results"""
         params = {
             "y_window": int(self.spinboxes["y_window"].value()),
@@ -360,7 +379,7 @@ class LaserAutofocusSettingWidget(QWidget):
         frame = self.illuminate_and_get_frame()
         if frame is not None:
             try:
-                result = utils.find_spot_location(frame, mode=mode, params=params, filter_sigma=sigma, debug_plot=True)
+                result = utils.find_spot_location(frame, mode=mode, params=params, filter_sigma=int(sigma) if sigma else None, debug_plot=True)
                 if result is not None:
                     x, y = result
                     self.signal_laser_spot_location.emit(frame, x, y)
@@ -369,35 +388,44 @@ class LaserAutofocusSettingWidget(QWidget):
             except Exception:
                 # Show error message
                 # Clear previous error label if it exists
-                if hasattr(self, "spot_detection_error_label"):
+                if hasattr(self, "spot_detection_error_label") and self.spot_detection_error_label is not None:
                     self.spot_detection_error_label.deleteLater()
 
                 # Create and add new error label
-                self.spot_detection_error_label = QLabel("Spot detection failed!")
-                self.layout().addWidget(self.spot_detection_error_label)
+                self.spot_detection_error_label: QLabel = QLabel("Spot detection failed!")
+                layout = self.layout()
+                if layout is not None:
+                    layout.addWidget(self.spot_detection_error_label)
 
-    def show_cross_correlation_result(self, value):
+    def show_cross_correlation_result(self, value: float) -> None:
         """Show cross-correlation value from validating laser af images"""
         # Clear previous correlation label if it exists
-        if hasattr(self, "correlation_label"):
+        if hasattr(self, "correlation_label") and self.correlation_label is not None:
             self.correlation_label.deleteLater()
 
         # Create and add new correlation label
-        self.correlation_label = QLabel()
+        self.correlation_label: QLabel = QLabel()
         self.correlation_label.setText(f"Cross-correlation: {value:.3f}")
-        self.layout().addWidget(self.correlation_label)
+        layout = self.layout()
+        if layout is not None:
+            layout.addWidget(self.correlation_label)
 
 
 class LaserAutofocusControlWidget(QFrame):
-    def __init__(self, laserAutofocusController, liveController: LiveController, main=None, *args, **kwargs):
+    def __init__(self, laserAutofocusController: "LaserAutofocusController", liveController: LiveController, main: Optional[QWidget] = None, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.laserAutofocusController = laserAutofocusController
+        self.laserAutofocusController: "LaserAutofocusController" = laserAutofocusController
         self.liveController: LiveController = liveController
+        self.btn_set_reference: QPushButton
+        self.label_displacement: QLabel
+        self.btn_measure_displacement: QPushButton
+        self.entry_target: QDoubleSpinBox
+        self.btn_move_to_target: QPushButton
         self.add_components()
         self.update_init_state()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-    def add_components(self):
+    def add_components(self) -> None:
         self.btn_set_reference = QPushButton(" Set Reference ")
         self.btn_set_reference.setCheckable(False)
         self.btn_set_reference.setChecked(False)
@@ -449,12 +477,12 @@ class LaserAutofocusControlWidget(QFrame):
         self.btn_move_to_target.clicked.connect(self.move_to_target)
         self.laserAutofocusController.signal_displacement_um.connect(self.label_displacement.setNum)
 
-    def update_init_state(self):
+    def update_init_state(self) -> None:
         self.btn_set_reference.setEnabled(self.laserAutofocusController.is_initialized)
         self.btn_measure_displacement.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)
         self.btn_move_to_target.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)
 
-    def move_to_target(self):
+    def move_to_target(self) -> None:
         was_live = self.liveController.is_live
         if was_live:
             self.liveController.stop_live()
@@ -462,7 +490,7 @@ class LaserAutofocusControlWidget(QFrame):
         if was_live:
             self.liveController.start_live()
 
-    def on_set_reference_clicked(self):
+    def on_set_reference_clicked(self) -> None:
         """Handle set reference button click"""
         was_live = self.liveController.is_live
         if was_live:
@@ -474,7 +502,7 @@ class LaserAutofocusControlWidget(QFrame):
         if was_live:
             self.liveController.start_live()
 
-    def on_measure_displacement_clicked(self):
+    def on_measure_displacement_clicked(self) -> None:
         was_live = self.liveController.is_live
         if was_live:
             self.liveController.stop_live()

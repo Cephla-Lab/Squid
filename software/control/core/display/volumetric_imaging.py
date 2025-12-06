@@ -2,7 +2,6 @@
 import os
 
 os.environ["QT_API"] = "pyqt5"
-import qtpy
 
 # qt libraries
 from qtpy.QtCore import *
@@ -11,19 +10,13 @@ from qtpy.QtGui import *
 
 import control.utils as utils
 from control._def import *
-import control.core.tracking.tracking_dasiamrpn as tracking
 
-from queue import Queue
-from threading import Thread, Lock
+from typing import Any
 import time
 import numpy as np
 import pyqtgraph as pg
 import cv2
-from datetime import datetime
 
-from lxml import etree as ET
-from pathlib import Path
-import control.utils_config as utils_config
 
 
 class StreamHandler(QObject):
@@ -35,56 +28,56 @@ class StreamHandler(QObject):
     signal_new_frame_received = Signal()
 
     def __init__(
-        self, crop_width=AF.CROP_WIDTH, crop_height=AF.CROP_HEIGHT, display_resolution_scaling=0.5
-    ):
+        self, crop_width: int = AF.CROP_WIDTH, crop_height: int = AF.CROP_HEIGHT, display_resolution_scaling: float = 0.5
+    ) -> None:
         QObject.__init__(self)
-        self.fps_display = 1
-        self.fps_save = 1
-        self.fps_track = 1
-        self.timestamp_last_display = 0
-        self.timestamp_last_save = 0
-        self.timestamp_last_track = 0
+        self.fps_display: float = 1
+        self.fps_save: float = 1
+        self.fps_track: float = 1
+        self.timestamp_last_display: float = 0
+        self.timestamp_last_save: float = 0
+        self.timestamp_last_track: float = 0
 
-        self.crop_width = crop_width
-        self.crop_height = crop_height
-        self.display_resolution_scaling = display_resolution_scaling
+        self.crop_width: int = crop_width
+        self.crop_height: int = crop_height
+        self.display_resolution_scaling: float = display_resolution_scaling
 
-        self.save_image_flag = False
-        self.track_flag = False
-        self.handler_busy = False
+        self.save_image_flag: bool = False
+        self.track_flag: bool = False
+        self.handler_busy: bool = False
 
         # for fps measurement
-        self.timestamp_last = 0
-        self.counter = 0
-        self.fps_real = 0
+        self.timestamp_last: int = 0
+        self.counter: int = 0
+        self.fps_real: int = 0
 
-    def start_recording(self):
+    def start_recording(self) -> None:
         self.save_image_flag = True
 
-    def stop_recording(self):
+    def stop_recording(self) -> None:
         self.save_image_flag = False
 
-    def start_tracking(self):
+    def start_tracking(self) -> None:
         self.tracking_flag = True
 
-    def stop_tracking(self):
+    def stop_tracking(self) -> None:
         self.tracking_flag = False
 
-    def set_display_fps(self, fps):
+    def set_display_fps(self, fps: float) -> None:
         self.fps_display = fps
 
-    def set_save_fps(self, fps):
+    def set_save_fps(self, fps: float) -> None:
         self.fps_save = fps
 
-    def set_crop(self, crop_width, height):
+    def set_crop(self, crop_width: int, height: int) -> None:
         self.crop_width = crop_width
         self.crop_height = crop_height
 
-    def set_display_resolution_scaling(self, display_resolution_scaling):
+    def set_display_resolution_scaling(self, display_resolution_scaling: float) -> None:
         self.display_resolution_scaling = display_resolution_scaling / 100
         print(self.display_resolution_scaling)
 
-    def on_new_frame(self, camera):
+    def on_new_frame(self, camera: Any) -> None:
 
         self.handler_busy = True
         self.signal_new_frame_received.emit()  # self.liveController.turn_off_illumination()
@@ -141,17 +134,17 @@ class StreamHandler(QObject):
 
 class ImageArrayDisplayWindow(QMainWindow):
 
-    def __init__(self, window_title=""):
+    def __init__(self, window_title: str = "") -> None:
         super().__init__()
         self.setWindowTitle(window_title)
         self.setWindowFlags(self.windowFlags() | Qt.CustomizeWindowHint)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint)
-        self.widget = QWidget()
+        self.widget: QWidget = QWidget()
 
         # interpret image data as row-major instead of col-major
         pg.setConfigOptions(imageAxisOrder="row-major")
 
-        self.sub_windows = []
+        self.sub_windows: List[Any] = []
         for i in range(9):
             self.sub_windows.append(pg.GraphicsLayoutWidget())
             self.sub_windows[i].view = self.sub_windows[i].addViewBox(enableMouse=True)
@@ -179,7 +172,7 @@ class ImageArrayDisplayWindow(QMainWindow):
         height = width
         self.setFixedSize(width, height)
 
-    def display_image(self, image, i):
+    def display_image(self, image: np.ndarray, i: int) -> None:
         if i < 9:
             self.sub_windows[i].img.setImage(image, autoLevels=False)
             self.sub_windows[i].view.autoRange(padding=0)

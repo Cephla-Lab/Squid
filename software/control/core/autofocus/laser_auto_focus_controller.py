@@ -1,5 +1,5 @@
 import time
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 import cv2
 from datetime import datetime
@@ -38,23 +38,23 @@ class LaserAutofocusController(QObject):
     ):
         QObject.__init__(self)
         self._log = squid.logging.get_logger(__class__.__name__)
-        self.microcontroller = microcontroller
+        self.microcontroller: Microcontroller = microcontroller
         self.camera: AbstractCamera = camera
         self.liveController: LiveController = liveController
-        self.stage = stage
-        self.piezo = piezo
-        self.objectiveStore = objectiveStore
-        self.laserAFSettingManager = laserAFSettingManager
-        self.characterization_mode = control._def.LASER_AF_CHARACTERIZATION_MODE
+        self.stage: AbstractStage = stage
+        self.piezo: Optional[PiezoStage] = piezo
+        self.objectiveStore: Optional[ObjectiveStore] = objectiveStore
+        self.laserAFSettingManager: Optional[LaserAFSettingManager] = laserAFSettingManager
+        self.characterization_mode: bool = control._def.LASER_AF_CHARACTERIZATION_MODE
 
-        self.is_initialized = False
+        self.is_initialized: bool = False
 
-        self.laser_af_properties = LaserAFConfig()
-        self.reference_crop = None
+        self.laser_af_properties: LaserAFConfig = LaserAFConfig()
+        self.reference_crop: Optional[np.ndarray] = None
 
-        self.spot_spacing_pixels = None  # spacing between the spots from the two interfaces (unit: pixel)
+        self.spot_spacing_pixels: Optional[float] = None  # spacing between the spots from the two interfaces (unit: pixel)
 
-        self.image = None  # for saving the focus camera image for debugging when centroid cannot be found
+        self.image: Optional[np.ndarray] = None  # for saving the focus camera image for debugging when centroid cannot be found
 
         # Load configurations if provided
         if self.laserAFSettingManager:
@@ -93,10 +93,10 @@ class LaserAutofocusController(QObject):
                 self.objectiveStore.current_objective, config.model_dump()
             )
 
-    def load_cached_configuration(self):
+    def load_cached_configuration(self) -> None:
         """Load configuration from the cache if available."""
-        laser_af_settings = self.laserAFSettingManager.get_laser_af_settings()
-        current_objective = self.objectiveStore.current_objective if self.objectiveStore else None
+        laser_af_settings: Dict[str, Any] = self.laserAFSettingManager.get_laser_af_settings()
+        current_objective: Optional[str] = self.objectiveStore.current_objective if self.objectiveStore else None
         if current_objective and current_objective in laser_af_settings:
             config = self.laserAFSettingManager.get_settings_for_objective(current_objective)
 
@@ -434,7 +434,7 @@ class LaserAutofocusController(QObject):
         self.is_initialized = False
         self.load_cached_configuration()
 
-    def _verify_spot_alignment(self) -> Tuple[bool, np.array]:
+    def _verify_spot_alignment(self) -> Tuple[bool, float]:
         """Verify laser spot alignment using cross-correlation with reference image.
 
         Captures current laser spot image and compares it with the reference image
@@ -442,9 +442,9 @@ class LaserAutofocusController(QObject):
         spot location and normalized by maximum intensity before comparison.
 
         Returns:
-            bool: True if spots are well aligned (correlation > CORRELATION_THRESHOLD), False otherwise
+            Tuple[bool, float]: (alignment_ok, correlation) - True if spots are well aligned (correlation > CORRELATION_THRESHOLD), False otherwise
         """
-        failure_return_value = False, np.array([0.0, 0.0])
+        failure_return_value: Tuple[bool, float] = False, 0.0
 
         # Get current spot image
         try:
@@ -460,7 +460,7 @@ class LaserAutofocusController(QObject):
         current_image = self.camera.read_frame()
         """
         self._get_laser_spot_centroid()
-        current_image = self.image
+        current_image: Optional[np.ndarray] = self.image
 
         try:
             self.microcontroller.turn_off_AF_laser()
@@ -478,19 +478,19 @@ class LaserAutofocusController(QObject):
             return failure_return_value
 
         # Crop and normalize current image
-        center_x = int(self.laser_af_properties.x_reference)
-        center_y = int(current_image.shape[0] / 2)
+        center_x: int = int(self.laser_af_properties.x_reference)
+        center_y: int = int(current_image.shape[0] / 2)
 
-        x_start = max(0, center_x - self.laser_af_properties.spot_crop_size // 2)
-        x_end = min(current_image.shape[1], center_x + self.laser_af_properties.spot_crop_size // 2)
-        y_start = max(0, center_y - self.laser_af_properties.spot_crop_size // 2)
-        y_end = min(current_image.shape[0], center_y + self.laser_af_properties.spot_crop_size // 2)
+        x_start: int = max(0, center_x - self.laser_af_properties.spot_crop_size // 2)
+        x_end: int = min(current_image.shape[1], center_x + self.laser_af_properties.spot_crop_size // 2)
+        y_start: int = max(0, center_y - self.laser_af_properties.spot_crop_size // 2)
+        y_end: int = min(current_image.shape[0], center_y + self.laser_af_properties.spot_crop_size // 2)
 
-        current_crop = current_image[y_start:y_end, x_start:x_end].astype(np.float32)
-        current_norm = (current_crop - np.mean(current_crop)) / np.max(current_crop)
+        current_crop: np.ndarray = current_image[y_start:y_end, x_start:x_end].astype(np.float32)
+        current_norm: np.ndarray = (current_crop - np.mean(current_crop)) / np.max(current_crop)
 
         # Calculate normalized cross correlation
-        correlation = np.corrcoef(current_norm.ravel(), self.reference_crop.ravel())[0, 1]
+        correlation: float = np.corrcoef(current_norm.ravel(), self.reference_crop.ravel())[0, 1]
 
         self._log.info(f"Cross correlation with reference: {correlation:.3f}")
 
@@ -501,7 +501,7 @@ class LaserAutofocusController(QObject):
 
         return True, correlation
 
-    def get_new_frame(self):
+    def get_new_frame(self) -> Optional[np.ndarray]:
         # IMPORTANT: This assumes that the autofocus laser is already on!
         self.camera.send_trigger(self.camera.get_exposure_time())
         return self.camera.read_frame()
@@ -520,11 +520,11 @@ class LaserAutofocusController(QObject):
         # disable camera callback
         self.camera.enable_callbacks(False)
 
-        successful_detections = 0
-        tmp_x = 0
-        tmp_y = 0
+        successful_detections: int = 0
+        tmp_x: float = 0
+        tmp_y: float = 0
 
-        image = None
+        image: Optional[np.ndarray] = None
         for i in range(self.laser_af_properties.laser_af_averaging_n):
             try:
                 image = self.get_new_frame()
@@ -533,6 +533,8 @@ class LaserAutofocusController(QObject):
                     continue
 
                 self.image = image  # store for debugging # TODO: add to return instead of storing
+                full_height: int
+                full_width: int
                 full_height, full_width = image.shape[:2]
 
                 if use_center_crop is not None:
@@ -544,7 +546,7 @@ class LaserAutofocusController(QObject):
                     image = cv2.morphologyEx(image, cv2.MORPH_TOPHAT, kernel)
 
                 # calculate centroid
-                spot_detection_params = {
+                spot_detection_params: Dict[str, Any] = {
                     "y_window": self.laser_af_properties.y_window,
                     "x_window": self.laser_af_properties.x_window,
                     "peak_width": self.laser_af_properties.min_peak_width,
@@ -552,7 +554,7 @@ class LaserAutofocusController(QObject):
                     "peak_prominence": self.laser_af_properties.min_peak_prominence,
                     "spot_spacing": self.laser_af_properties.spot_spacing,
                 }
-                result = utils.find_spot_location(
+                result: Optional[Tuple[float, float]] = utils.find_spot_location(
                     image,
                     mode=self.laser_af_properties.spot_detection_mode,
                     params=spot_detection_params,
@@ -564,6 +566,8 @@ class LaserAutofocusController(QObject):
                     )
                     continue
 
+                x: float
+                y: float
                 if use_center_crop is not None:
                     x, y = (
                         result[0] + (full_width - use_center_crop[0]) // 2,
@@ -593,17 +597,17 @@ class LaserAutofocusController(QObject):
                 continue
 
         # optionally display the image
-        if control._def.LASER_AF_DISPLAY_SPOT_IMAGE:
+        if control._def.LASER_AF_DISPLAY_SPOT_IMAGE and image is not None:
             self.image_to_display.emit(image)
 
         # Check if we got enough successful detections
         if successful_detections <= 0:
-            self._log.error(f"No successful detections")
+            self._log.error("No successful detections")
             return None
 
         # Calculate average position from successful detections
-        x = tmp_x / successful_detections
-        y = tmp_y / successful_detections
+        x: float = tmp_x / successful_detections
+        y: float = tmp_y / successful_detections
 
         self._log.debug(f"Spot centroid found at ({x:.1f}, {y:.1f}) from {successful_detections} detections")
         return (x, y)

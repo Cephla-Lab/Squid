@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import itertools
 import math
 import re
-from typing import Callable, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -48,41 +48,49 @@ class ScanCoordinates:
         objectiveStore: ObjectiveStore,
         stage: AbstractStage,
         camera: AbstractCamera,
-        update_callback: Callable[[ScanCoordinatesUpdate], None] = None,
-    ):
+        update_callback: Optional[Callable[[ScanCoordinatesUpdate], None]] = None,
+    ) -> None:
         self._log = squid.logging.get_logger(self.__class__.__name__)
         # Wellplate settings
-        self.objectiveStore = objectiveStore
+        self.objectiveStore: ObjectiveStore = objectiveStore
         self.stage: AbstractStage = stage
         self.camera: AbstractCamera = camera
         self._update_callback: Callable[[ScanCoordinatesUpdate], None] = (
             update_callback if update_callback else lambda update: None
         )
-        self.well_selector = None
-        self.acquisition_pattern = control._def.ACQUISITION_PATTERN
-        self.fov_pattern = control._def.FOV_PATTERN
-        self.format = control._def.WELLPLATE_FORMAT
-        self.a1_x_mm = control._def.A1_X_MM
-        self.a1_y_mm = control._def.A1_Y_MM
-        self.wellplate_offset_x_mm = control._def.WELLPLATE_OFFSET_X_mm
-        self.wellplate_offset_y_mm = control._def.WELLPLATE_OFFSET_Y_mm
-        self.well_spacing_mm = control._def.WELL_SPACING_MM
-        self.well_size_mm = control._def.WELL_SIZE_MM
-        self.a1_x_pixel = None
-        self.a1_y_pixel = None
-        self.number_of_skip = None
+        self.well_selector: Optional[Any] = None
+        self.acquisition_pattern: str = control._def.ACQUISITION_PATTERN
+        self.fov_pattern: str = control._def.FOV_PATTERN
+        self.format: str = control._def.WELLPLATE_FORMAT
+        self.a1_x_mm: float = control._def.A1_X_MM
+        self.a1_y_mm: float = control._def.A1_Y_MM
+        self.wellplate_offset_x_mm: float = control._def.WELLPLATE_OFFSET_X_mm
+        self.wellplate_offset_y_mm: float = control._def.WELLPLATE_OFFSET_Y_mm
+        self.well_spacing_mm: float = control._def.WELL_SPACING_MM
+        self.well_size_mm: float = control._def.WELL_SIZE_MM
+        self.a1_x_pixel: Optional[float] = None
+        self.a1_y_pixel: Optional[float] = None
+        self.number_of_skip: Optional[int] = None
 
         # Centralized region management
-        self.region_centers = {}  # {region_id: [x, y, z]}
-        self.region_shapes = {}  # {region_id: "Square"}
-        self.region_fov_coordinates = {}  # {region_id: [(x,y,z), ...]}
+        self.region_centers: Dict[str, List[float]] = {}  # {region_id: [x, y, z]}
+        self.region_shapes: Dict[str, str] = {}  # {region_id: "Square"}
+        self.region_fov_coordinates: Dict[str, List[Tuple[float, ...]]] = {}  # {region_id: [(x,y,z), ...]}
 
-    def add_well_selector(self, well_selector):
+    def add_well_selector(self, well_selector: Any) -> None:
         self.well_selector = well_selector
 
     def update_wellplate_settings(
-        self, format_, a1_x_mm, a1_y_mm, a1_x_pixel, a1_y_pixel, size_mm, spacing_mm, number_of_skip
-    ):
+        self,
+        format_: str,
+        a1_x_mm: float,
+        a1_y_mm: float,
+        a1_x_pixel: float,
+        a1_y_pixel: float,
+        size_mm: float,
+        spacing_mm: float,
+        number_of_skip: int,
+    ) -> None:
         self.format = format_
         self.a1_x_mm = a1_x_mm
         self.a1_y_mm = a1_y_mm
@@ -92,7 +100,7 @@ class ScanCoordinates:
         self.well_spacing_mm = spacing_mm
         self.number_of_skip = number_of_skip
 
-    def _index_to_row(self, index):
+    def _index_to_row(self, index: int) -> str:
         index += 1
         row = ""
         while index > 0:
@@ -101,7 +109,7 @@ class ScanCoordinates:
             index //= 26
         return row
 
-    def get_selected_wells(self):
+    def get_selected_wells(self) -> Optional[Dict[str, Tuple[float, float]]]:
         # get selected wells from the widget
         self._log.info("getting selected wells for acquisition")
         if not self.well_selector or self.format == "glass slide":
@@ -120,7 +128,7 @@ class ScanCoordinates:
             items = selected_wells[selected_wells[:, 0] == row]
             columns = items[:, 1]
             columns = np.sort(columns)
-            if _increasing == False:
+            if not _increasing:
                 columns = np.flip(columns)
             for column in columns:
                 x_mm = self.a1_x_mm + (column * self.well_spacing_mm) + self.wellplate_offset_x_mm
@@ -130,12 +138,14 @@ class ScanCoordinates:
             _increasing = not _increasing
         return well_centers
 
-    def set_live_scan_coordinates(self, x_mm, y_mm, scan_size_mm, overlap_percent, shape):
+    def set_live_scan_coordinates(
+        self, x_mm: float, y_mm: float, scan_size_mm: float, overlap_percent: float, shape: str
+    ) -> None:
         if self.region_centers:
             self.clear_regions()
         self.add_region("current", x_mm, y_mm, scan_size_mm, overlap_percent, shape)
 
-    def set_well_coordinates(self, scan_size_mm, overlap_percent, shape):
+    def set_well_coordinates(self, scan_size_mm: float, overlap_percent: float, shape: str) -> None:
         new_region_centers = self.get_selected_wells()
 
         if self.format == "glass slide":
@@ -155,7 +165,9 @@ class ScanCoordinates:
         else:
             self.clear_regions()
 
-    def set_manual_coordinates(self, manual_shapes, overlap_percent):
+    def set_manual_coordinates(
+        self, manual_shapes: Optional[List[np.ndarray]], overlap_percent: float
+    ) -> None:
         self.clear_regions()
         if manual_shapes is not None:
             # Handle manual ROIs
@@ -164,7 +176,7 @@ class ScanCoordinates:
                 scan_coordinates = self.get_points_for_manual_region(shape_coords, overlap_percent)
                 if scan_coordinates:
                     if len(manual_shapes) <= 1:
-                        region_name = f"manual"
+                        region_name = "manual"
                     else:
                         region_name = f"manual{i}"
                     center = np.mean(shape_coords, axis=0)
@@ -178,9 +190,20 @@ class ScanCoordinates:
         else:
             self._log.info("No Manual ROI found")
 
-    def add_region(self, well_id, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
+    def add_region(
+        self,
+        well_id: str,
+        center_x: float,
+        center_y: float,
+        scan_size_mm: float,
+        overlap_percent: float = 10,
+        shape: str = "Square",
+    ) -> None:
         """add region based on user inputs"""
-        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.camera.get_fov_size_mm()
+        pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
+        if pixel_size_factor is None:
+            pixel_size_factor = 1.0
+        fov_size_mm = pixel_size_factor * self.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
 
@@ -192,10 +215,6 @@ class ScanCoordinates:
             # Calculate steps for height and width separately
             steps_height = math.floor(height_mm / step_size_mm)
             steps_width = math.floor(width_mm / step_size_mm)
-
-            # Calculate actual dimensions
-            actual_scan_height_mm = (steps_height - 1) * step_size_mm + fov_size_mm
-            actual_scan_width_mm = (steps_width - 1) * step_size_mm + fov_size_mm
 
             steps_height = max(1, steps_height)
             steps_width = max(1, steps_width)
@@ -268,7 +287,7 @@ class ScanCoordinates:
         self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)))
         self._log.info(f"Added Region: {well_id}")
 
-    def remove_region(self, well_id):
+    def remove_region(self, well_id: str) -> None:
         if well_id in self.region_centers:
             removed_fov_centers: List[FovCenter] = []
             del self.region_centers[well_id]
@@ -284,16 +303,28 @@ class ScanCoordinates:
             self._log.info(f"Removed Region: {well_id}")
             self._update_callback(RemovedScanCoordinateRegion(fov_centers=removed_fov_centers))
 
-    def clear_regions(self):
+    def clear_regions(self) -> None:
         self.region_centers.clear()
         self.region_shapes.clear()
         self.region_fov_coordinates.clear()
         self._update_callback(ClearedScanCoordinates())
         self._log.info("Cleared All Regions")
 
-    def add_flexible_region(self, region_id, center_x, center_y, center_z, Nx, Ny, overlap_percent=10):
+    def add_flexible_region(
+        self,
+        region_id: str,
+        center_x: float,
+        center_y: float,
+        center_z: float,
+        Nx: int,
+        Ny: int,
+        overlap_percent: float = 10,
+    ) -> None:
         """Convert grid parameters NX, NY to FOV coordinates based on overlap"""
-        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.camera.get_fov_size_mm()
+        pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
+        if pixel_size_factor is None:
+            pixel_size_factor = 1.0
+        fov_size_mm = pixel_size_factor * self.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Calculate total grid size
@@ -324,7 +355,9 @@ class ScanCoordinates:
         else:
             self._log.info(f"Region Out of Bounds: {region_id}")
 
-    def add_single_fov_region(self, region_id, center_x, center_y, center_z):
+    def add_single_fov_region(
+        self, region_id: str, center_x: float, center_y: float, center_z: float
+    ) -> None:
         if not self.validate_coordinates(center_x, center_y):
             raise ValueError(f"FOV with center (x,y)={center_x},{center_y} is not valid, cannot add region.")
 
@@ -332,7 +365,17 @@ class ScanCoordinates:
         self.region_fov_coordinates[region_id] = [(center_x, center_y)]
         self._update_callback(AddScanCoordinateRegion(fov_centers=[FovCenter(x_mm=center_x, y_mm=center_y)]))
 
-    def add_flexible_region_with_step_size(self, region_id, center_x, center_y, center_z, Nx, Ny, dx, dy):
+    def add_flexible_region_with_step_size(
+        self,
+        region_id: str,
+        center_x: float,
+        center_y: float,
+        center_z: float,
+        Nx: int,
+        Ny: int,
+        dx: float,
+        dy: float,
+    ) -> None:
         """Convert grid parameters NX, NY to FOV coordinates based on dx, dy"""
         grid_width_mm = (Nx - 1) * dx
         grid_height_mm = (Ny - 1) * dy
@@ -360,13 +403,18 @@ class ScanCoordinates:
         else:
             print(f"Region Out of Bounds: {region_id}")
 
-    def get_points_for_manual_region(self, shape_coords, overlap_percent):
+    def get_points_for_manual_region(
+        self, shape_coords: np.ndarray, overlap_percent: float
+    ) -> List[Tuple[float, float]]:
         """Add region from manually drawn polygon shape"""
         if shape_coords is None or len(shape_coords) < 3:
             self._log.error("Invalid manual ROI data")
             return []
 
-        fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.camera.get_fov_size_mm()
+        pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
+        if pixel_size_factor is None:
+            pixel_size_factor = 1.0
+        fov_size_mm = pixel_size_factor * self.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
 
         # Ensure shape_coords is a numpy array
@@ -450,7 +498,7 @@ class ScanCoordinates:
         template_x_mm: np.ndarray,
         template_y_mm: np.ndarray,
         region_id: str,
-    ):
+    ) -> None:
         """Add a region based on a template of x and y coordinates"""
         scan_coordinates = []
         for i in range(len(template_x_mm)):
@@ -484,7 +532,7 @@ class ScanCoordinates:
 
         return True
 
-    def _is_in_polygon(self, x, y, poly):
+    def _is_in_polygon(self, x: float, y: float, poly: np.ndarray) -> bool:
         n = len(poly)
         inside = False
         p1x, p1y = poly[0]
@@ -500,7 +548,9 @@ class ScanCoordinates:
             p1x, p1y = p2x, p2y
         return inside
 
-    def _is_in_circle(self, x, y, center_x, center_y, radius_squared, fov_size_mm_half):
+    def _is_in_circle(
+        self, x: float, y: float, center_x: float, center_y: float, radius_squared: float, fov_size_mm_half: float
+    ) -> bool:
         corners = [
             (x - fov_size_mm_half, y - fov_size_mm_half),
             (x + fov_size_mm_half, y - fov_size_mm_half),
@@ -509,21 +559,21 @@ class ScanCoordinates:
         ]
         return all((cx - center_x) ** 2 + (cy - center_y) ** 2 <= radius_squared for cx, cy in corners)
 
-    def has_regions(self):
+    def has_regions(self) -> bool:
         """Check if any regions exist"""
         return len(self.region_centers) > 0
 
-    def validate_region(self, region_id):
+    def validate_region(self, region_id: str) -> bool:
         """Validate a region exists"""
         return region_id in self.region_centers and region_id in self.region_fov_coordinates
 
-    def validate_coordinates(self, x, y):
+    def validate_coordinates(self, x: float, y: float) -> bool:
         return (
             control._def.SOFTWARE_POS_LIMIT.X_NEGATIVE <= x <= control._def.SOFTWARE_POS_LIMIT.X_POSITIVE
             and control._def.SOFTWARE_POS_LIMIT.Y_NEGATIVE <= y <= control._def.SOFTWARE_POS_LIMIT.Y_POSITIVE
         )
 
-    def sort_coordinates(self):
+    def sort_coordinates(self) -> None:
         self._log.info(f"Acquisition pattern: {self.acquisition_pattern}")
 
         if len(self.region_centers) <= 1:
@@ -561,7 +611,7 @@ class ScanCoordinates:
             k: self.region_fov_coordinates[k] for k, _ in sorted_items if k in self.region_fov_coordinates
         }
 
-    def get_region_bounds(self, region_id):
+    def get_region_bounds(self, region_id: str) -> Optional[Dict[str, float]]:
         """Get region boundaries"""
         if not self.validate_region(region_id):
             return None
@@ -573,12 +623,12 @@ class ScanCoordinates:
             "max_y": np.max(fovs[:, 1]),
         }
 
-    def get_region_shape(self, region_id):
+    def get_region_shape(self, region_id: str) -> Optional[str]:
         if not self.validate_region(region_id):
             return None
         return self.region_shapes[region_id]
 
-    def get_scan_bounds(self):
+    def get_scan_bounds(self) -> Optional[Dict[str, Tuple[float, float]]]:
         """Get bounds of all scan regions with margin"""
         if not self.has_regions():
             return None
@@ -607,7 +657,7 @@ class ScanCoordinates:
 
         return {"x": (min_x - margin, max_x + margin), "y": (min_y - margin, max_y + margin)}
 
-    def update_fov_z_level(self, region_id, fov, new_z):
+    def update_fov_z_level(self, region_id: str, fov: int, new_z: float) -> None:
         """Update z-level for a specific FOV and its region center"""
         if not self.validate_region(region_id):
             print(f"Region {region_id} not found")
@@ -637,12 +687,12 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         stage: AbstractStage,
         camera: AbstractCamera,
         update_callback: Callable[[ScanCoordinatesUpdate], None],
-    ):
+    ) -> None:
         super().__init__(objectiveStore=objectiveStore, stage=stage, camera=camera, update_callback=update_callback)
 
     def get_scan_coordinates_from_selected_wells(
-        self, wellplate_format, well_name, scan_size_mm=None, overlap_percent=10
-    ):
+        self, wellplate_format: str, well_name: str, scan_size_mm: Optional[float] = None, overlap_percent: float = 10
+    ) -> None:
         wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
         self.get_selected_well_coordinates(well_name, wellplate_settings)
 
@@ -658,7 +708,7 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
             coords = self.create_region_coordinates(v[0], v[1], scan_size_mm, overlap_percent, well_shape)
             self.region_fov_coordinates[k] = coords
 
-    def get_selected_well_coordinates(self, well_names, wellplate_settings):
+    def get_selected_well_coordinates(self, well_names: str, wellplate_settings: Dict[str, Any]) -> None:
         """
         Given a comma separated list of well names in A1 format, return the coordinates for the wells (wrt the A1 corner)
         """
@@ -723,7 +773,9 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
             else:
                 raise ValueError(f"Invalid well format: {desc}. Expected format is 'A1' or 'A1:B2' for ranges.")
 
-    def create_region_coordinates(self, center_x, center_y, scan_size_mm, overlap_percent=10, shape="Square"):
+    def create_region_coordinates(
+        self, center_x: float, center_y: float, scan_size_mm: float, overlap_percent: float = 10, shape: str = "Square"
+    ) -> List[Tuple[float, float]]:
         fov_size_mm = self.camera.get_fov_size_mm()
         # We are not taking software cropping into account here. Need to fix it when we merge this into ScanCoordinates.
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)

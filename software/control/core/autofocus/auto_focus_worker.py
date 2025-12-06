@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Callable, Optional, TypeVar, TYPE_CHECKING
+from typing import Callable, Optional, List, TYPE_CHECKING
 
 import time
 import numpy as np
@@ -15,21 +15,20 @@ from squid.abc import AbstractCamera, AbstractStage
 
 if TYPE_CHECKING:
     from control.microscope import NL5
-
-AutoFocusController = TypeVar("AutoFocusController")
+    from control.core.autofocus.auto_focus_controller import AutoFocusController
 
 
 class AutofocusWorker:
     def __init__(
         self,
-        autofocusController,
+        autofocusController: "AutoFocusController",
         finished_fn: Callable[[], None],
         image_to_display_fn: Callable[[np.ndarray], None],
         keep_running: threading.Event,
     ):
-        self.autofocusController: AutoFocusController = autofocusController
-        self._finished_fn = finished_fn
-        self._image_to_display_fn = image_to_display_fn
+        self.autofocusController: "AutoFocusController" = autofocusController
+        self._finished_fn: Callable[[], None] = finished_fn
+        self._image_to_display_fn: Callable[[np.ndarray], None] = image_to_display_fn
         self._keep_running: threading.Event = keep_running
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
@@ -39,34 +38,34 @@ class AutofocusWorker:
         self.liveController: LiveController = self.autofocusController.liveController
         self.nl5: Optional[NL5] = self.autofocusController.nl5
 
-        self.N = self.autofocusController.N
-        self.deltaZ = self.autofocusController.deltaZ
+        self.N: int = self.autofocusController.N
+        self.deltaZ: float = self.autofocusController.deltaZ
 
-        self.crop_width = self.autofocusController.crop_width
-        self.crop_height = self.autofocusController.crop_height
+        self.crop_width: int = self.autofocusController.crop_width
+        self.crop_height: int = self.autofocusController.crop_height
 
-    def run(self):
+    def run(self) -> None:
         try:
             self.run_autofocus()
         finally:
             self._finished_fn()
 
-    def wait_till_operation_is_completed(self):
+    def wait_till_operation_is_completed(self) -> None:
         while self.microcontroller.is_busy():
             time.sleep(control._def.SLEEP_TIME_S)
 
-    def run_autofocus(self):
+    def run_autofocus(self) -> None:
         # @@@ to add: increase gain, decrease exposure time
         # @@@ can move the execution into a thread - done 08/21/2021
-        focus_measure_vs_z = [0] * self.N
-        focus_measure_max = 0
+        focus_measure_vs_z: List[float] = [0] * self.N
+        focus_measure_max: float = 0
 
-        z_af_offset = self.deltaZ * round(self.N / 2)
+        z_af_offset: float = self.deltaZ * round(self.N / 2)
 
         self.stage.move_z(-z_af_offset)
 
-        steps_moved = 0
-        image = None
+        steps_moved: int = 0
+        image: Optional[np.ndarray] = None
         for i in range(self.N):
             if not self._keep_running.is_set():
                 self._log.warning("Signal to abort autofocus received, aborting!")

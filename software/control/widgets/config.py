@@ -1,5 +1,7 @@
 # Configuration editor widgets
 import squid.logging
+from typing import Any, Dict, TYPE_CHECKING
+from configparser import ConfigParser
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QDialog,
@@ -20,9 +22,23 @@ from qtpy.QtWidgets import (
 
 from control.widgets.base import CollapsibleGroupBox
 
+if TYPE_CHECKING:
+    from control.core.configuration import ConfigurationManager
+
 
 class ConfigEditor(QDialog):
-    def __init__(self, config):
+
+    config: ConfigParser
+    scroll_area: QScrollArea
+    scroll_area_widget: QWidget
+    scroll_area_layout: QVBoxLayout
+    save_config_button: QPushButton
+    save_to_file_button: QPushButton
+    load_config_button: QPushButton
+    config_value_widgets: Dict[str, Dict[str, Any]]
+    groups: Dict[str, CollapsibleGroupBox]
+
+    def __init__(self, config: ConfigParser) -> None:
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
@@ -53,7 +69,7 @@ class ConfigEditor(QDialog):
         self.setWindowTitle("Configuration Editor")
         self.init_ui()
 
-    def init_ui(self):
+    def init_ui(self) -> None:
         self.groups = {}
         for section in self.config.sections():
             group_box = CollapsibleGroupBox(section)
@@ -92,7 +108,7 @@ class ConfigEditor(QDialog):
             group_box.content.addLayout(group_layout)
             self.scroll_area_layout.addWidget(group_box)
 
-    def save_config(self):
+    def save_config(self) -> None:
         for section in self.config.sections():
             for option in self.config.options(section):
                 if option.startswith("_") and option.endswith("_options"):
@@ -106,7 +122,7 @@ class ConfigEditor(QDialog):
                 if old_val != self.config.get(section, option):
                     print(self.config.get(section, option))
 
-    def save_to_filename(self, filename: str):
+    def save_to_filename(self, filename: str) -> bool:
         try:
             with open(filename, "w") as configfile:
                 self.config.write(configfile)
@@ -115,7 +131,7 @@ class ConfigEditor(QDialog):
             self._log.exception(f"Failed to write config file to '{filename}'")
             return False
 
-    def save_to_file(self):
+    def save_to_file(self) -> None:
         self.save_config()
         file_path, _ = QFileDialog.getSaveFileName(self, "Save Config File", "", "INI Files (*.ini);;All Files (*)")
         if file_path:
@@ -124,7 +140,7 @@ class ConfigEditor(QDialog):
                     self, "Warning", f"Failed to write config file to '{file_path}'.  Check permissions!"
                 )
 
-    def load_config_from_file(self):
+    def load_config_from_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, "Load Config File", "", "INI Files (*.ini);;All Files (*)")
         if file_path:
             self.config.read(file_path)
@@ -138,7 +154,12 @@ class ConfigEditor(QDialog):
 
 
 class ConfigEditorBackwardsCompatible(ConfigEditor):
-    def __init__(self, config, original_filepath, main_window):
+
+    original_filepath: str
+    main_window: QWidget
+    apply_exit_button: QPushButton
+
+    def __init__(self, config: ConfigParser, original_filepath: str, main_window: QWidget) -> None:
         super().__init__(config)
         self.original_filepath = original_filepath
         self.main_window = main_window
@@ -146,31 +167,37 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
         self.apply_exit_button = QPushButton("Apply and Exit")
         self.apply_exit_button.clicked.connect(self.apply_and_exit)
 
-        self.layout().addWidget(self.apply_exit_button)
+        layout = self.layout()
+        if layout is not None:
+            layout.addWidget(self.apply_exit_button)
 
-    def apply_and_exit(self):
+    def apply_and_exit(self) -> None:
         self.save_config()
         with open(self.original_filepath, "w") as configfile:
             self.config.write(configfile)
         try:
             self.main_window.close()
-        except:
+        except Exception:
             pass
         self.close()
 
 
 class ProfileWidget(QFrame):
 
-    signal_profile_changed = Signal()
+    signal_profile_changed: Signal = Signal()
 
-    def __init__(self, configurationManager, *args, **kwargs):
+    configurationManager: "ConfigurationManager"
+    dropdown_profiles: QComboBox
+    btn_newProfile: QPushButton
+
+    def __init__(self, configurationManager: "ConfigurationManager", *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.configurationManager = configurationManager
 
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.setup_ui()
 
-    def setup_ui(self):
+    def setup_ui(self) -> None:
         # Create widgets
         self.dropdown_profiles = QComboBox()
         self.dropdown_profiles.addItems(self.configurationManager.available_profiles)
@@ -192,14 +219,14 @@ class ProfileWidget(QFrame):
 
         self.setLayout(layout)
 
-    def load_profile(self):
+    def load_profile(self) -> None:
         """Load the selected profile."""
         profile_name = self.dropdown_profiles.currentText()
         # Load the profile
         self.configurationManager.load_profile(profile_name)
         self.signal_profile_changed.emit()
 
-    def create_new_profile(self):
+    def create_new_profile(self) -> None:
         """Create a new profile with current configurations."""
         dialog = QInputDialog()
         profile_name, ok = dialog.getText(self, "New Profile", "Enter new profile name:", QLineEdit.Normal, "")
@@ -213,6 +240,6 @@ class ProfileWidget(QFrame):
             except ValueError as e:
                 QMessageBox.warning(self, "Error", str(e))
 
-    def get_current_profile(self):
+    def get_current_profile(self) -> str:
         """Return the currently selected profile name."""
         return self.dropdown_profiles.currentText()

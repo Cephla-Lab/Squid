@@ -1,5 +1,5 @@
 import os
-from typing import Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -19,7 +19,8 @@ from control._def import (
     WELL_SIZE_MM,
     WELL_SPACING_MM,
 )
-from control.core.navigation.scan_coordinates import ScanCoordinates
+from control.core.navigation.objective_store import ObjectiveStore
+from control.core.navigation.scan_coordinates import FovCenter, ScanCoordinates
 import squid.abc
 import squid.logging
 
@@ -27,19 +28,19 @@ import squid.logging
 class FocusMap:
     """Handles fitting and interpolation of slide surfaces through measured focus points"""
 
-    def __init__(self, smoothing_factor=0.1):
+    def __init__(self, smoothing_factor: float = 0.1) -> None:
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.smoothing_factor = smoothing_factor
-        self.method = "spline"  # can be 'spline' or 'rbf' or 'constant'
-        self.global_surface_fit = None
-        self.global_method = None
-        self.global_errors = None
-        self.region_surface_fits = {}
-        self.region_methods = {}
-        self.region_errors = {}
-        self.fit_by_region = False
-        self.focus_points = {}
-        self.is_fitted = False
+        self.smoothing_factor: float = smoothing_factor
+        self.method: str = "spline"  # can be 'spline' or 'rbf' or 'constant'
+        self.global_surface_fit: Optional[Union[SmoothBivariateSpline, RBFInterpolator, Callable]] = None
+        self.global_method: Optional[str] = None
+        self.global_errors: Optional[np.ndarray] = None
+        self.region_surface_fits: Dict[str, Union[SmoothBivariateSpline, RBFInterpolator, Callable]] = {}
+        self.region_methods: Dict[str, str] = {}
+        self.region_errors: Dict[str, np.ndarray] = {}
+        self.fit_by_region: bool = False
+        self.focus_points: Dict[str, List[Tuple[float, float, float]]] = {}
+        self.is_fitted: bool = False
 
     def generate_grid_coordinates(
         self, scanCoordinates: ScanCoordinates, rows: int = 4, cols: int = 4, add_margin: bool = False
@@ -111,7 +112,7 @@ class FocusMap:
 
         return focus_coords
 
-    def set_method(self, method: str):
+    def set_method(self, method: str) -> None:
         """Set interpolation method
 
         Args:
@@ -123,7 +124,7 @@ class FocusMap:
         self.is_fitted = False
         self.region_surface_fits = {}  # Reset region fits when method changes
 
-    def set_fit_by_region(self, fit_by_region: bool):
+    def set_fit_by_region(self, fit_by_region: bool) -> None:
         """Set if the surface fit should be done by region or globally
 
         Args:
@@ -131,7 +132,7 @@ class FocusMap:
         """
         self.fit_by_region = fit_by_region
 
-    def fit(self, points: Dict[str, List[Tuple[float, float, float]]]):
+    def fit(self, points: Dict[str, List[Tuple[float, float, float]]]) -> Tuple[float, float]:
         """Fit surface through provided focus points
 
         Args:
@@ -178,7 +179,9 @@ class FocusMap:
 
         return mean_error, std_error
 
-    def _fit_surface(self, points: List[Tuple[float, float, float]]) -> Tuple[Callable, str, np.ndarray]:
+    def _fit_surface(
+        self, points: List[Tuple[float, float, float]]
+    ) -> Tuple[Union[SmoothBivariateSpline, RBFInterpolator, Callable], str, Optional[np.ndarray]]:
         """Fit surface through provided focus points for a specific region or globally
 
         Args:
@@ -226,15 +229,15 @@ class FocusMap:
 
         return surface_fit, method, errors
 
-    def _fit_rbf(self, x, y, z):
+    def _fit_rbf(self, x: np.ndarray, y: np.ndarray, z: np.ndarray) -> RBFInterpolator:
         """Fit using Radial Basis Function interpolation"""
         xy = np.column_stack((x, y))
         return RBFInterpolator(xy, z, kernel="thin_plate_spline", epsilon=self.smoothing_factor)
 
-    def _fit_constant_plane(self, z_value):
+    def _fit_constant_plane(self, z_value: float) -> Callable[[Union[float, np.ndarray], Union[float, np.ndarray]], Union[float, np.ndarray]]:
         """Create a constant height plane"""
 
-        def constant_plane(x, y):
+        def constant_plane(x: Union[float, np.ndarray], y: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
             if isinstance(x, np.ndarray):
                 return np.full_like(x, z_value)
             else:
@@ -242,7 +245,9 @@ class FocusMap:
 
         return constant_plane
 
-    def interpolate(self, x, y, region_id=None):
+    def interpolate(
+        self, x: Union[float, np.ndarray], y: Union[float, np.ndarray], region_id: Optional[str] = None
+    ) -> Union[float, np.ndarray]:
         """Get interpolated Z value at given (x,y) coordinates
 
         Args:
@@ -268,7 +273,13 @@ class FocusMap:
 
         return self._interpolate_helper(x, y, surface_fit, method)
 
-    def _interpolate_helper(self, x, y, surface_fit, method):
+    def _interpolate_helper(
+        self,
+        x: Union[float, np.ndarray],
+        y: Union[float, np.ndarray],
+        surface_fit: Union[SmoothBivariateSpline, RBFInterpolator, Callable],
+        method: str,
+    ) -> Union[float, np.ndarray]:
         if np.isscalar(x) and np.isscalar(y):
             if method == "spline":
                 return float(surface_fit.ev(x, y))
@@ -289,7 +300,10 @@ class FocusMap:
                 return z.reshape(x.shape)
 
     def _calculate_fitting_errors(
-        self, points: List[Tuple[float, float, float]], surface_fit: Callable, method: str
+        self,
+        points: List[Tuple[float, float, float]],
+        surface_fit: Union[SmoothBivariateSpline, RBFInterpolator, Callable],
+        method: str,
     ) -> np.ndarray:
         """Calculate absolute errors at measured points"""
         errors = []
@@ -298,7 +312,13 @@ class FocusMap:
             errors.append(abs(z_fit - z_measured))
         return np.array(errors)
 
-    def get_surface_grid(self, x_range, y_range, num_points=50, region_id=None):
+    def get_surface_grid(
+        self,
+        x_range: Tuple[float, float],
+        y_range: Tuple[float, float],
+        num_points: int = 50,
+        region_id: Optional[str] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Generate grid of interpolated Z values for visualization
 
         Args:
@@ -324,26 +344,42 @@ class FocusMap:
 class NavigationViewer(QFrame):
     signal_coordinates_clicked = Signal(float, float)  # Will emit x_mm, y_mm when clicked
 
-    def __init__(self, objectivestore, camera, sample="glass slide", invertX=False, *args, **kwargs):
+    def __init__(
+        self,
+        objectivestore: ObjectiveStore,
+        camera: squid.abc.AbstractCamera,
+        sample: str = "glass slide",
+        invertX: bool = False,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        self.sample = sample
-        self.objectiveStore = objectivestore
-        self.camera = camera
-        self.well_size_mm = WELL_SIZE_MM
-        self.well_spacing_mm = WELL_SPACING_MM
-        self.number_of_skip = NUMBER_OF_SKIP
-        self.a1_x_mm = A1_X_MM
-        self.a1_y_mm = A1_Y_MM
-        self.a1_x_pixel = A1_X_PIXEL
-        self.a1_y_pixel = A1_Y_PIXEL
-        self.location_update_threshold_mm = 0.2
-        self.box_color = (255, 0, 0)
-        self.box_line_thickness = 2
-        self.x_mm = None
-        self.y_mm = None
-        self.image_paths = {
+        self.sample: str = sample
+        self.objectiveStore: ObjectiveStore = objectivestore
+        self.camera: squid.abc.AbstractCamera = camera
+        self.well_size_mm: float = WELL_SIZE_MM
+        self.well_spacing_mm: float = WELL_SPACING_MM
+        self.number_of_skip: int = NUMBER_OF_SKIP
+        self.a1_x_mm: float = A1_X_MM
+        self.a1_y_mm: float = A1_Y_MM
+        self.a1_x_pixel: float = A1_X_PIXEL
+        self.a1_y_pixel: float = A1_Y_PIXEL
+        self.location_update_threshold_mm: float = 0.2
+        self.box_color: Tuple[int, int, int] = (255, 0, 0)
+        self.box_line_thickness: int = 2
+        self.x_mm: Optional[float] = None
+        self.y_mm: Optional[float] = None
+        self.mm_per_pixel: float = 0.0
+        self.origin_x_pixel: float = 0.0
+        self.origin_y_pixel: float = 0.0
+        self.fov_size_mm: float = 0.0
+        self.image_height: int = 0
+        self.image_width: int = 0
+        self.rows: int = 0
+        self.cols: int = 0
+        self.image_paths: Dict[str, str] = {
             "glass slide": "assets/images/slide carrier_828x662.png",
             "4 glass slide": "assets/images/4 slide carrier_1509x1010.png",
             "6 well plate": "assets/images/6 well plate_1509x1010.png",
@@ -362,7 +398,7 @@ class NavigationViewer(QFrame):
         self.update_display_properties(sample)
         # self.update_display()
 
-    def init_ui(self, invertX):
+    def init_ui(self, invertX: bool) -> None:
         # interpret image data as row-major instead of col-major
         pg.setConfigOptions(imageAxisOrder="row-major")
         self.graphics_widget = pg.GraphicsLayoutWidget()
@@ -385,7 +421,7 @@ class NavigationViewer(QFrame):
         # Connect double-click handler
         self.view.scene().sigMouseClicked.connect(self.handle_mouse_click)
 
-    def _position_button(self):
+    def _position_button(self) -> None:
         """Position the clear button at the bottom-right corner of the graphics widget"""
         margin = 10  # Margin from edges
         button_width = self.btn_clear_coordinates.sizeHint().width()
@@ -396,13 +432,13 @@ class NavigationViewer(QFrame):
         self.btn_clear_coordinates.move(x, y)
         self.btn_clear_coordinates.raise_()
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: Any) -> None:
         """Reposition button when widget is resized"""
         super().resizeEvent(event)
         if hasattr(self, "btn_clear_coordinates"):
             self._position_button()
 
-    def load_background_image(self, image_path):
+    def load_background_image(self, image_path: str) -> None:
         self.view.clear()
         self.background_image = cv2.imread(image_path)
         if self.background_image is None:
@@ -421,7 +457,7 @@ class NavigationViewer(QFrame):
         self.background_item = pg.ImageItem(self.background_image)
         self.view.addItem(self.background_item)
 
-    def create_layers(self):
+    def create_layers(self) -> None:
         self.scan_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
         self.fov_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
         self.focus_point_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
@@ -439,7 +475,7 @@ class NavigationViewer(QFrame):
         self.focus_point_overlay_item.setZValue(1)  # # Focus points next
         self.fov_overlay_item.setZValue(2)  # FOV overlay on top
 
-    def update_display_properties(self, sample):
+    def update_display_properties(self, sample: str) -> None:
         if sample == "glass slide":
             self.location_update_threshold_mm = 0.2
             self.mm_per_pixel = 0.1453
@@ -457,27 +493,27 @@ class NavigationViewer(QFrame):
             self.origin_y_pixel = self.a1_y_pixel - (self.a1_y_mm) / self.mm_per_pixel
         self.update_fov_size()
 
-    def update_fov_size(self):
+    def update_fov_size(self) -> None:
         self.fov_size_mm = self.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
 
-    def redraw_fov(self):
+    def redraw_fov(self) -> None:
         self.clear_overlay()
         self.update_fov_size()
         self.draw_current_fov(self.x_mm, self.y_mm)
 
     def update_wellplate_settings(
         self,
-        sample_format,
-        a1_x_mm,
-        a1_y_mm,
-        a1_x_pixel,
-        a1_y_pixel,
-        well_size_mm,
-        well_spacing_mm,
-        number_of_skip,
-        rows,
-        cols,
-    ):
+        sample_format: Union[str, QVariant],
+        a1_x_mm: float,
+        a1_y_mm: float,
+        a1_x_pixel: float,
+        a1_y_pixel: float,
+        well_size_mm: float,
+        well_spacing_mm: float,
+        number_of_skip: int,
+        rows: int,
+        cols: int,
+    ) -> None:
         if isinstance(sample_format, QVariant):
             sample_format = sample_format.value()
 
@@ -517,7 +553,7 @@ class NavigationViewer(QFrame):
         self.update_display_properties(sample)
         self.draw_current_fov(self.x_mm, self.y_mm)
 
-    def draw_fov_current_location(self, pos: squid.abc.Pos):
+    def draw_fov_current_location(self, pos: Optional[squid.abc.Pos]) -> None:
         if not pos:
             if self.x_mm is None and self.y_mm is None:
                 return
@@ -529,7 +565,7 @@ class NavigationViewer(QFrame):
             self.x_mm = x_mm
             self.y_mm = y_mm
 
-    def get_FOV_pixel_coordinates(self, x_mm, y_mm):
+    def get_FOV_pixel_coordinates(self, x_mm: float, y_mm: float) -> Tuple[Tuple[int, int], Tuple[int, int]]:
         if self.sample == "glass slide":
             current_FOV_top_left = (
                 round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
@@ -558,7 +594,7 @@ class NavigationViewer(QFrame):
             )
         return current_FOV_top_left, current_FOV_bottom_right
 
-    def draw_current_fov(self, x_mm, y_mm):
+    def draw_current_fov(self, x_mm: float, y_mm: float) -> None:
         self.fov_overlay.fill(0)
         current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
         cv2.rectangle(
@@ -566,7 +602,7 @@ class NavigationViewer(QFrame):
         )
         self.fov_overlay_item.setImage(self.fov_overlay)
 
-    def register_fov(self, x_mm, y_mm):
+    def register_fov(self, x_mm: float, y_mm: float) -> None:
         color = (0, 0, 255, 255)  # Blue RGBA
         current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
         cv2.rectangle(
@@ -574,7 +610,7 @@ class NavigationViewer(QFrame):
         )
         self.background_item.setImage(self.background_image)
 
-    def register_fovs_to_image(self, fov_list):
+    def register_fovs_to_image(self, fov_list: List[Union[Tuple[float, ...], FovCenter]]) -> None:
         """
         Register FOVs to image with single display update.
 
@@ -600,7 +636,7 @@ class NavigationViewer(QFrame):
         # Single update after all rectangles are drawn
         self.scan_overlay_item.setImage(self.scan_overlay)
 
-    def deregister_fovs_from_image(self, fov_list):
+    def deregister_fovs_from_image(self, fov_list: List[Union[Tuple[float, ...], FovCenter]]) -> None:
         """
         Deregister FOVs from image with single display update.
 
@@ -625,7 +661,7 @@ class NavigationViewer(QFrame):
         # Single update after all rectangles are cleared
         self.scan_overlay_item.setImage(self.scan_overlay)
 
-    def register_focus_point(self, x_mm, y_mm):
+    def register_focus_point(self, x_mm: float, y_mm: float) -> None:
         """Draw focus point marker as filled circle centered on the FOV"""
         color = (0, 255, 0, 255)  # Green RGBA
         # Get FOV corner coordinates, then calculate FOV center pixel coordinates
@@ -637,23 +673,23 @@ class NavigationViewer(QFrame):
         cv2.circle(self.focus_point_overlay, (center_x, center_y), radius, color, -1)  # -1 thickness means filled
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
 
-    def clear_focus_points(self):
+    def clear_focus_points(self) -> None:
         """Clear just the focus point overlay"""
         self.focus_point_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
 
-    def clear_slide(self):
+    def clear_slide(self) -> None:
         self.background_image = self.background_image_copy.copy()
         self.background_item.setImage(self.background_image)
         self.draw_current_fov(self.x_mm, self.y_mm)
 
-    def clear_overlay(self):
+    def clear_overlay(self) -> None:
         self.scan_overlay.fill(0)
         self.scan_overlay_item.setImage(self.scan_overlay)
         self.focus_point_overlay.fill(0)
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
 
-    def handle_mouse_click(self, evt):
+    def handle_mouse_click(self, evt: Any) -> None:
         if not evt.double():
             return
         try:

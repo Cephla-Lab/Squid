@@ -3,7 +3,7 @@ import os
 import time
 from queue import Queue
 from threading import Lock, Thread
-from typing import Optional
+from typing import Optional, Tuple, Any, List
 
 import cv2
 import numpy as np
@@ -35,15 +35,15 @@ import squid.logging
 class ImageDisplay(QObject):
     image_to_display = Signal(np.ndarray)
 
-    def __init__(self):
+    def __init__(self) -> None:
         QObject.__init__(self)
-        self.queue = Queue(10)  # max 10 items in the queue
-        self.image_lock = Lock()
-        self.stop_signal_received = False
-        self.thread = Thread(target=self.process_queue, daemon=True)
+        self.queue: Queue = Queue(10)  # max 10 items in the queue
+        self.image_lock: Lock = Lock()
+        self.stop_signal_received: bool = False
+        self.thread: Thread = Thread(target=self.process_queue, daemon=True)
         self.thread.start()
 
-    def process_queue(self):
+    def process_queue(self) -> None:
         while True:
             # stop the thread if stop signal is received
             if self.stop_signal_received:
@@ -55,23 +55,23 @@ class ImageDisplay(QObject):
                 self.image_to_display.emit(image)
                 self.image_lock.release()
                 self.queue.task_done()
-            except:
+            except Exception:
                 pass
             time.sleep(0)
 
     # def enqueue(self,image,frame_ID,timestamp):
-    def enqueue(self, image):
+    def enqueue(self, image: np.ndarray) -> None:
         try:
             self.queue.put_nowait([image, None, None])
             # when using self.queue.put(str_) instead of try + nowait, program can be slowed down despite multithreading because of the block and the GIL
             pass
-        except:
+        except Exception:
             print("imageDisplay queue is full, image discarded")
 
-    def emit_directly(self, image):
+    def emit_directly(self, image: np.ndarray) -> None:
         self.image_to_display.emit(image)
 
-    def close(self):
+    def close(self) -> None:
         self.queue.join()
         self.stop_signal_received = True
         self.thread.join()
@@ -84,38 +84,38 @@ class ImageDisplayWindow(QMainWindow):
         self,
         liveController: Optional[LiveController] = None,
         contrastManager: Optional[ContrastManager] = None,
-        window_title="",
-        show_LUT=False,
-        autoLevels=False,
-    ):
+        window_title: str = "",
+        show_LUT: bool = False,
+        autoLevels: bool = False,
+    ) -> None:
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.liveController = liveController
-        self.contrastManager = contrastManager
+        self.liveController: Optional[LiveController] = liveController
+        self.contrastManager: Optional[ContrastManager] = contrastManager
         self.setWindowTitle(window_title)
         self.setWindowFlags(self.windowFlags() | Qt.CustomizeWindowHint)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint)
-        self.widget = QWidget()
-        self.show_LUT = show_LUT
-        self.autoLevels = autoLevels
+        self.widget: QWidget = QWidget()
+        self.show_LUT: bool = show_LUT
+        self.autoLevels: bool = autoLevels
 
-        self.first_image = True
+        self.first_image: bool = True
 
         # Store last valid cursor position
-        self.last_valid_x = 0
-        self.last_valid_y = 0
-        self.last_valid_value = 0
-        self.has_valid_position = False
+        self.last_valid_x: int = 0
+        self.last_valid_y: int = 0
+        self.last_valid_value: Any = 0
+        self.has_valid_position: bool = False
 
         # Line profiler state
-        self.line_roi = None
-        self.is_drawing_line = False
-        self.line_start_pos = None
-        self.line_end_pos = None
-        self.drawing_cursor = QCursor(Qt.CrossCursor)  # Cross cursor for drawing mode
-        self.normal_cursor = QCursor(Qt.ArrowCursor)  # Normal cursor
-        self.preview_line = None
-        self.start_point_marker = None
+        self.line_roi: Optional[Any] = None
+        self.is_drawing_line: bool = False
+        self.line_start_pos: Optional[Tuple[float, float]] = None
+        self.line_end_pos: Optional[Tuple[float, float]] = None
+        self.drawing_cursor: QCursor = QCursor(Qt.CrossCursor)  # Cross cursor for drawing mode
+        self.normal_cursor: QCursor = QCursor(Qt.ArrowCursor)  # Normal cursor
+        self.preview_line: Optional[Any] = None
+        self.start_point_marker: Optional[Any] = None
 
         # Create main layout
         layout = QVBoxLayout()
@@ -123,30 +123,30 @@ class ImageDisplayWindow(QMainWindow):
         layout.setSpacing(0)
 
         # Create status bar widget
-        status_widget = QWidget()
-        status_layout = QHBoxLayout()
+        status_widget: QWidget = QWidget()
+        status_layout: QHBoxLayout = QHBoxLayout()
         status_layout.setContentsMargins(5, 2, 5, 2)
         status_layout.setSpacing(10)
 
         # Create labels with minimum width to prevent jumping
-        self.cursor_position_label = QLabel()
+        self.cursor_position_label: QLabel = QLabel()
         self.cursor_position_label.setMinimumWidth(150)
-        self.pixel_value_label = QLabel()
+        self.pixel_value_label: QLabel = QLabel()
         self.pixel_value_label.setMinimumWidth(150)
-        self.stage_position_label = QLabel()
+        self.stage_position_label: QLabel = QLabel()
         self.stage_position_label.setMinimumWidth(200)
-        self.piezo_position_label = QLabel()
+        self.piezo_position_label: QLabel = QLabel()
         self.piezo_position_label.setMinimumWidth(150)
 
         # Add line profiler toggle button
-        self.btn_line_profiler = QPushButton("Line Profiler")
+        self.btn_line_profiler: QPushButton = QPushButton("Line Profiler")
         self.btn_line_profiler.setCheckable(True)
         self.btn_line_profiler.setChecked(False)
         self.btn_line_profiler.setEnabled(False)
         self.btn_line_profiler.clicked.connect(self.toggle_line_profiler)
 
         # Add well selector toggle button
-        self.btn_well_selector = QPushButton("Show Well Selector")
+        self.btn_well_selector: QPushButton = QPushButton("Show Well Selector")
         self.btn_well_selector.setCheckable(False)
 
         # Add labels to status layout with spacing
@@ -174,12 +174,12 @@ class ImageDisplayWindow(QMainWindow):
         pg.setConfigOptions(imageAxisOrder="row-major")
 
         # Create a container widget for the image display
-        self.image_container = QWidget()
-        image_layout = QVBoxLayout()
+        self.image_container: QWidget = QWidget()
+        image_layout: QVBoxLayout = QVBoxLayout()
         image_layout.setContentsMargins(0, 0, 0, 0)
         image_layout.setSpacing(0)
 
-        self.graphics_widget = pg.GraphicsLayoutWidget()
+        self.graphics_widget: Any = pg.GraphicsLayoutWidget()
         self.graphics_widget.view = self.graphics_widget.addViewBox()
         self.graphics_widget.view.invertY()
 
@@ -193,7 +193,7 @@ class ImageDisplayWindow(QMainWindow):
             self.graphics_widget.img.setBorder("w")
             self.graphics_widget.view.ui.roiBtn.hide()
             self.graphics_widget.view.ui.menuBtn.hide()
-            self.LUTWidget = self.graphics_widget.view.getHistogramWidget()
+            self.LUTWidget: Any = self.graphics_widget.view.getHistogramWidget()
             self.LUTWidget.region.sigRegionChanged.connect(self.update_contrast_limits)
             self.LUTWidget.region.sigRegionChangeFinished.connect(self.update_contrast_limits)
         else:
@@ -201,9 +201,9 @@ class ImageDisplayWindow(QMainWindow):
             self.graphics_widget.view.addItem(self.graphics_widget.img)
 
         ## Create ROI
-        self.roi_pos = (500, 500)
-        self.roi_size = (500, 500)
-        self.ROI = pg.ROI(self.roi_pos, self.roi_size, scaleSnap=True, translateSnap=True)
+        self.roi_pos: Any = (500, 500)
+        self.roi_size: Any = (500, 500)
+        self.ROI: Any = pg.ROI(self.roi_pos, self.roi_size, scaleSnap=True, translateSnap=True)
         self.ROI.setZValue(10)
         self.ROI.addScaleHandle((0, 0), (1, 1))
         self.ROI.addScaleHandle((1, 1), (0, 0))
@@ -214,12 +214,12 @@ class ImageDisplayWindow(QMainWindow):
         self.roi_size = self.ROI.size()
 
         ## Variables for annotating images
-        self.draw_rectangle = False
-        self.ptRect1 = None
-        self.ptRect2 = None
-        self.DrawCirc = False
-        self.centroid = None
-        self.image_offset = np.array([0, 0])
+        self.draw_rectangle: bool = False
+        self.ptRect1: Optional[Tuple[int, int]] = None
+        self.ptRect2: Optional[Tuple[int, int]] = None
+        self.DrawCirc: bool = False
+        self.centroid: Optional[Any] = None
+        self.image_offset: np.ndarray = np.array([0, 0])
 
         # Add image widget to container
         if self.show_LUT:
@@ -229,12 +229,12 @@ class ImageDisplayWindow(QMainWindow):
         self.image_container.setLayout(image_layout)
 
         # Create line profiler widget
-        self.line_profiler_widget = pg.GraphicsLayoutWidget()
-        self.line_profiler_plot = self.line_profiler_widget.addPlot()
+        self.line_profiler_widget: Any = pg.GraphicsLayoutWidget()
+        self.line_profiler_plot: Any = self.line_profiler_widget.addPlot()
         self.line_profiler_plot.setLabel("left", "Intensity")
         self.line_profiler_plot.setLabel("bottom", "Position")
         self.line_profiler_widget.hide()  # Initially hidden
-        self.line_profiler_manual_range = False  # Flag to track if y-range is manually set
+        self.line_profiler_manual_range: bool = False  # Flag to track if y-range is manually set
 
         # Create splitter
         self.splitter = QSplitter(Qt.Vertical)
@@ -270,11 +270,11 @@ class ImageDisplayWindow(QMainWindow):
             self.graphics_widget.view.scene().sigMouseMoved.connect(self.handle_mouse_move)
 
         # Set up timer for updating stage and piezo positions
-        self.update_timer = QTimer()
+        self.update_timer: QTimer = QTimer()
         self.update_timer.timeout.connect(self.update_stage_piezo_positions)
         self.update_timer.start(100)  # Update every 100ms
 
-    def update_stage_piezo_positions(self):
+    def update_stage_piezo_positions(self) -> None:
         try:
             if self.liveController and self.liveController.microscope:
                 stage = self.liveController.microscope.stage
@@ -306,12 +306,12 @@ class ImageDisplayWindow(QMainWindow):
             self.stage_position_label.setText("Stage: Error")
             self.piezo_position_label.setVisible(False)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: Any) -> None:
         # Stop the timer when the window is closed
         self.update_timer.stop()
         super().closeEvent(event)
 
-    def toggle_line_profiler(self):
+    def toggle_line_profiler(self) -> None:
         """Toggle the visibility of the line profiler widget."""
         if self.btn_line_profiler.isChecked():
             self.line_profiler_widget.show()
@@ -342,11 +342,11 @@ class ImageDisplayWindow(QMainWindow):
         # Connect to the view range changed signal to detect manual range changes
         self.line_profiler_plot.sigRangeChanged.connect(self._on_range_changed)
 
-    def _on_range_changed(self, view_range):
+    def _on_range_changed(self, view_range: Any) -> None:
         """Handle manual range changes in the line profiler plot."""
         self.line_profiler_manual_range = True
 
-    def create_line_roi(self):
+    def create_line_roi(self) -> None:
         """Create a line ROI for intensity profiling."""
         if self.line_roi is None and self.line_start_pos is not None and self.line_end_pos is not None:
             try:
@@ -384,7 +384,7 @@ class ImageDisplayWindow(QMainWindow):
                 self.line_start_pos = None
                 self.line_end_pos = None
 
-    def update_line_profile(self):
+    def update_line_profile(self) -> None:
         """Update the line profile plot based on the line ROI."""
         if not self.btn_line_profiler.isChecked() or self.line_roi is None:
             return
@@ -434,7 +434,7 @@ class ImageDisplayWindow(QMainWindow):
         except Exception as e:
             self._log.error(f"Error updating line profile: {str(e)}")
 
-    def get_line_profile(self, image, start, end, width=1):
+    def get_line_profile(self, image: np.ndarray, start: Any, end: Any, width: float = 1) -> np.ndarray:
         """Get intensity profile along a line with specified width."""
         try:
             # Calculate the line vector
@@ -478,7 +478,7 @@ class ImageDisplayWindow(QMainWindow):
             self._log.error(f"Error getting line profile: {str(e)}")
             return np.zeros(1)
 
-    def handle_mouse_move(self, pos):
+    def handle_mouse_move(self, pos: Any) -> None:
         try:
             if self.show_LUT:
                 view_coord = self.graphics_widget.view.getView().mapSceneToView(pos)
@@ -514,10 +514,10 @@ class ImageDisplayWindow(QMainWindow):
                 self.cursor_position_label.setText("Position:")
                 self.pixel_value_label.setText("Value:")
                 self.has_valid_position = False
-        except:
+        except Exception:
             pass
 
-    def handle_mouse_click(self, evt):
+    def handle_mouse_click(self, evt: Any) -> None:
         """Handle mouse clicks for both line drawing and other interactions."""
         if self.is_drawing_line:
             try:
@@ -610,7 +610,7 @@ class ImageDisplayWindow(QMainWindow):
             else:
                 view_coord = self.graphics_widget.view.mapSceneToView(pos)
             image_coord = self.graphics_widget.img.mapFromView(view_coord)
-        except:
+        except Exception:
             return
 
         if self.is_within_image(image_coord):
@@ -620,15 +620,15 @@ class ImageDisplayWindow(QMainWindow):
                 x_pixel_centered, y_pixel_centered, self.graphics_widget.img.width(), self.graphics_widget.img.height()
             )
 
-    def is_within_image(self, coordinates):
+    def is_within_image(self, coordinates: Any) -> bool:
         try:
             image_width = self.graphics_widget.img.width()
             image_height = self.graphics_widget.img.height()
             return 0 <= coordinates.x() < image_width and 0 <= coordinates.y() < image_height
-        except:
+        except Exception:
             return False
 
-    def display_image(self, image):
+    def display_image(self, image: np.ndarray) -> None:
         # enable the line profiler button after the first image is displayed
         if self.first_image:
             self.first_image = False
@@ -646,7 +646,7 @@ class ImageDisplayWindow(QMainWindow):
 
         if self.liveController is not None and self.contrastManager is not None:
             channel_name = self.liveController.currentConfiguration.name
-            if self.contrastManager.acquisition_dtype != None and self.contrastManager.acquisition_dtype != np.dtype(
+            if self.contrastManager.acquisition_dtype is not None and self.contrastManager.acquisition_dtype != np.dtype(
                 image.dtype
             ):
                 self.contrastManager.scale_contrast_limits(np.dtype(image.dtype))
@@ -671,7 +671,7 @@ class ImageDisplayWindow(QMainWindow):
                     self.last_valid_value = pixel_value
                     self.cursor_position_label.setText(f"Position: ({self.last_valid_x}, {self.last_valid_y})")
                     self.pixel_value_label.setText(f"Value: {pixel_value}")
-            except:
+            except Exception:
                 # If there's an error, keep the last valid values
                 self.cursor_position_label.setText(f"Position: ({self.last_valid_x}, {self.last_valid_y})")
                 self.pixel_value_label.setText(f"Value: {self.last_valid_value}")
@@ -708,30 +708,30 @@ class ImageDisplayWindow(QMainWindow):
 
         self.display_image(marked_image)
 
-    def update_contrast_limits(self):
+    def update_contrast_limits(self) -> None:
         if self.show_LUT and self.contrastManager and self.contrastManager.acquisition_dtype:
             min_val, max_val = self.LUTWidget.region.getRegion()
             self.contrastManager.update_limits(self.liveController.currentConfiguration.name, min_val, max_val)
 
-    def update_ROI(self):
+    def update_ROI(self) -> None:
         self.roi_pos = self.ROI.pos()
         self.roi_size = self.ROI.size()
 
-    def show_ROI_selector(self):
+    def show_ROI_selector(self) -> None:
         self.ROI.show()
 
-    def hide_ROI_selector(self):
+    def hide_ROI_selector(self) -> None:
         self.ROI.hide()
 
-    def get_roi(self):
+    def get_roi(self) -> Tuple[Any, Any]:
         return self.roi_pos, self.roi_size
 
-    def update_bounding_box(self, pts):
+    def update_bounding_box(self, pts: List[List[int]]) -> None:
         self.draw_rectangle = True
         self.ptRect1 = (pts[0][0], pts[0][1])
         self.ptRect2 = (pts[1][0], pts[1][1])
 
-    def get_roi_bounding_box(self):
+    def get_roi_bounding_box(self) -> np.ndarray:
         self.update_ROI()
         width = self.roi_size[0]
         height = self.roi_size[1]
@@ -739,45 +739,45 @@ class ImageDisplayWindow(QMainWindow):
         ymin = max(0, self.roi_pos[1])
         return np.array([xmin, ymin, width, height])
 
-    def set_autolevel(self, enabled):
+    def set_autolevel(self, enabled: bool) -> None:
         self.autoLevels = enabled
         self._log.info("set autolevel to " + str(enabled))
 
 
 class ImageArrayDisplayWindow(QMainWindow):
 
-    def __init__(self, window_title=""):
+    def __init__(self, window_title: str = "") -> None:
         super().__init__()
         self.setWindowTitle(window_title)
         self.setWindowFlags(self.windowFlags() | Qt.CustomizeWindowHint)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint)
-        self.widget = QWidget()
+        self.widget: QWidget = QWidget()
 
         # interpret image data as row-major instead of col-major
         pg.setConfigOptions(imageAxisOrder="row-major")
 
-        self.graphics_widget_1 = pg.GraphicsLayoutWidget()
+        self.graphics_widget_1: Any = pg.GraphicsLayoutWidget()
         self.graphics_widget_1.view = self.graphics_widget_1.addViewBox()
         self.graphics_widget_1.view.setAspectLocked(True)
         self.graphics_widget_1.img = pg.ImageItem(border="w")
         self.graphics_widget_1.view.addItem(self.graphics_widget_1.img)
         self.graphics_widget_1.view.invertY()
 
-        self.graphics_widget_2 = pg.GraphicsLayoutWidget()
+        self.graphics_widget_2: Any = pg.GraphicsLayoutWidget()
         self.graphics_widget_2.view = self.graphics_widget_2.addViewBox()
         self.graphics_widget_2.view.setAspectLocked(True)
         self.graphics_widget_2.img = pg.ImageItem(border="w")
         self.graphics_widget_2.view.addItem(self.graphics_widget_2.img)
         self.graphics_widget_2.view.invertY()
 
-        self.graphics_widget_3 = pg.GraphicsLayoutWidget()
+        self.graphics_widget_3: Any = pg.GraphicsLayoutWidget()
         self.graphics_widget_3.view = self.graphics_widget_3.addViewBox()
         self.graphics_widget_3.view.setAspectLocked(True)
         self.graphics_widget_3.img = pg.ImageItem(border="w")
         self.graphics_widget_3.view.addItem(self.graphics_widget_3.img)
         self.graphics_widget_3.view.invertY()
 
-        self.graphics_widget_4 = pg.GraphicsLayoutWidget()
+        self.graphics_widget_4: Any = pg.GraphicsLayoutWidget()
         self.graphics_widget_4.view = self.graphics_widget_4.addViewBox()
         self.graphics_widget_4.view.setAspectLocked(True)
         self.graphics_widget_4.img = pg.ImageItem(border="w")
@@ -798,7 +798,7 @@ class ImageArrayDisplayWindow(QMainWindow):
         height = width
         self.setFixedSize(int(width), int(height))
 
-    def display_image(self, image, illumination_source):
+    def display_image(self, image: np.ndarray, illumination_source: int) -> None:
         if illumination_source < 11:
             self.graphics_widget_1.img.setImage(image, autoLevels=False)
         elif illumination_source == 11:

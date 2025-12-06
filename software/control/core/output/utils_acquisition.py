@@ -13,7 +13,7 @@ import control._def
 from control.utils_config import ChannelMode
 
 
-def save_image(image: np.array, file_id: str, save_directory: str, config: ChannelMode, is_color: bool) -> np.array:
+def save_image(image: np.ndarray, file_id: str, save_directory: str, config: ChannelMode, is_color: bool) -> np.ndarray:
     if image.dtype == np.uint16:
         saving_path = os.path.join(save_directory, file_id + "_" + str(config.name).replace(" ", "_") + ".tiff")
     else:
@@ -37,13 +37,13 @@ def save_image(image: np.array, file_id: str, save_directory: str, config: Chann
     return image
 
 
-def grayscale_to_rgb(image: np.array, hex_color):
+def grayscale_to_rgb(image: np.ndarray, hex_color: int) -> np.ndarray:
     rgb_ratios = np.array([(hex_color >> 16) & 0xFF, (hex_color >> 8) & 0xFF, hex_color & 0xFF]) / 255
     rgb = np.stack([image] * 3, axis=-1) * rgb_ratios
     return rgb.astype(image.dtype)
 
 
-def return_pseudo_colored_image(image: np.array, config):
+def return_pseudo_colored_image(image: np.ndarray, config: ChannelMode) -> np.ndarray:
     if "405 nm" in config.name:
         image = grayscale_to_rgb(image, control._def.CHANNEL_COLORS_MAP["405"]["hex"])
     elif "488 nm" in config.name:

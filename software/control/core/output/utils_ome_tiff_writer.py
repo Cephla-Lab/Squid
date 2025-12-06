@@ -10,7 +10,6 @@ from datetime import datetime
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
 import numpy as np
-import tifffile
 
 from control import utils
 

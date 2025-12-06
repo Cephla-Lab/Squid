@@ -1,7 +1,8 @@
+from typing import Optional, Dict, Any
 from control._def import CHANNEL_COLORS_MAP
 
 
-def extract_wavelength_from_config_name(name):
+def extract_wavelength_from_config_name(name: str) -> Optional[str]:
     # Split the string and find the wavelength number immediately after "Fluorescence"
     parts = name.split()
     if "Fluorescence" in parts:
@@ -14,8 +15,8 @@ def extract_wavelength_from_config_name(name):
     return None
 
 
-def get_channel_color(channel):
-    channel_info = CHANNEL_COLORS_MAP.get(
+def get_channel_color(channel: str) -> int:
+    channel_info: Dict[str, Any] = CHANNEL_COLORS_MAP.get(
         extract_wavelength_from_config_name(channel), {"hex": 0xFFFFFF, "name": "gray"}
     )
     return channel_info["hex"]

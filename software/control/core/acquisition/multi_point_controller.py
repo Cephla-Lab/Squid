@@ -6,7 +6,7 @@ import tempfile
 import time
 from datetime import datetime
 from threading import Thread
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, List
 
 import numpy as np
 import pandas as pd
@@ -69,46 +69,46 @@ class MultiPointController:
         self.fluidics: Optional[Any] = microscope.addons.fluidics
         self.thread: Optional[Thread] = None
 
-        self.NX = 1
-        self.deltaX = control._def.Acquisition.DX
-        self.NY = 1
-        self.deltaY = control._def.Acquisition.DY
-        self.NZ = 1
+        self.NX: int = 1
+        self.deltaX: float = control._def.Acquisition.DX
+        self.NY: int = 1
+        self.deltaY: float = control._def.Acquisition.DY
+        self.NZ: int = 1
         # TODO(imo): Switch all to consistent mm units
-        self.deltaZ = control._def.Acquisition.DZ / 1000
-        self.Nt = 1
-        self.deltat = 0
+        self.deltaZ: float = control._def.Acquisition.DZ / 1000
+        self.Nt: int = 1
+        self.deltat: float = 0
 
-        self.deltaX = control._def.Acquisition.DX
-        self.deltaY = control._def.Acquisition.DY
+        self.deltaX: float = control._def.Acquisition.DX
+        self.deltaY: float = control._def.Acquisition.DY
 
-        self.do_autofocus = False
-        self.do_reflection_af = False
-        self.display_resolution_scaling = control._def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
-        self.use_piezo = control._def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
-        self.experiment_ID = None
-        self.use_manual_focus_map = False
-        self.base_path = None
-        self.use_fluidics = False
+        self.do_autofocus: bool = False
+        self.do_reflection_af: bool = False
+        self.display_resolution_scaling: float = control._def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
+        self.use_piezo: bool = control._def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
+        self.experiment_ID: Optional[str] = None
+        self.use_manual_focus_map: bool = False
+        self.base_path: Optional[str] = None
+        self.use_fluidics: bool = False
 
-        self.focus_map = None
-        self.gen_focus_map = False
-        self.focus_map_storage = []
-        self.already_using_fmap = False
-        self.selected_configurations = []
-        self.scanCoordinates = scan_coordinates
-        self.old_images_per_page = 1
-        self.z_range: Tuple[float, float] = None
-        self.z_stacking_config = control._def.Z_STACKING_CONFIG
+        self.focus_map: Optional[Any] = None
+        self.gen_focus_map: bool = False
+        self.focus_map_storage: List[Tuple[float, float, float]] = []
+        self.already_using_fmap: bool = False
+        self.selected_configurations: List[Any] = []
+        self.scanCoordinates: Optional[ScanCoordinates] = scan_coordinates
+        self.old_images_per_page: int = 1
+        self.z_range: Optional[Tuple[float, float]] = None
+        self.z_stacking_config: str = control._def.Z_STACKING_CONFIG
 
         self._start_position: Optional[squid.abc.Pos] = None
 
-    def acquisition_in_progress(self):
+    def acquisition_in_progress(self) -> bool:
         if self.thread and self.thread.is_alive() and self.multiPointWorker:
             return True
         return False
 
-    def set_use_piezo(self, checked):
+    def set_use_piezo(self, checked: bool) -> None:
         if checked and self.piezo is None:
             raise ValueError("Cannot enable piezo - no piezo stage configured")
         self.use_piezo = checked
@@ -116,62 +116,62 @@ class MultiPointController:
         if self.multiPointWorker:
             self.multiPointWorker.update_use_piezo(checked)
 
-    def set_z_stacking_config(self, z_stacking_config_index):
+    def set_z_stacking_config(self, z_stacking_config_index: int) -> None:
         if z_stacking_config_index in control._def.Z_STACKING_CONFIG_MAP:
             self.z_stacking_config = control._def.Z_STACKING_CONFIG_MAP[z_stacking_config_index]
         print(f"z-stacking configuration set to {self.z_stacking_config}")
 
-    def set_z_range(self, minZ, maxZ):
-        self.z_range = [minZ, maxZ]
+    def set_z_range(self, minZ: float, maxZ: float) -> None:
+        self.z_range = (minZ, maxZ)
 
-    def set_NX(self, N):
+    def set_NX(self, N: int) -> None:
         self.NX = N
 
-    def set_NY(self, N):
+    def set_NY(self, N: int) -> None:
         self.NY = N
 
-    def set_NZ(self, N):
+    def set_NZ(self, N: int) -> None:
         self.NZ = N
 
-    def set_Nt(self, N):
+    def set_Nt(self, N: int) -> None:
         self.Nt = N
 
-    def set_deltaX(self, delta):
+    def set_deltaX(self, delta: float) -> None:
         self.deltaX = delta
 
-    def set_deltaY(self, delta):
+    def set_deltaY(self, delta: float) -> None:
         self.deltaY = delta
 
-    def set_deltaZ(self, delta_um):
+    def set_deltaZ(self, delta_um: float) -> None:
         self.deltaZ = delta_um / 1000
 
-    def set_deltat(self, delta):
+    def set_deltat(self, delta: float) -> None:
         self.deltat = delta
 
-    def set_af_flag(self, flag):
+    def set_af_flag(self, flag: bool) -> None:
         self.do_autofocus = flag
 
-    def set_reflection_af_flag(self, flag):
+    def set_reflection_af_flag(self, flag: bool) -> None:
         self.do_reflection_af = flag
 
-    def set_manual_focus_map_flag(self, flag):
+    def set_manual_focus_map_flag(self, flag: bool) -> None:
         self.use_manual_focus_map = flag
 
-    def set_gen_focus_map_flag(self, flag):
+    def set_gen_focus_map_flag(self, flag: bool) -> None:
         self.gen_focus_map = flag
         if not flag:
             self.autofocusController.set_focus_map_use(False)
 
-    def set_focus_map(self, focusMap):
+    def set_focus_map(self, focusMap: Optional[Any]) -> None:
         self.focus_map = focusMap  # None if dont use focusMap
 
-    def set_base_path(self, path):
+    def set_base_path(self, path: str) -> None:
         self.base_path = path
 
-    def set_use_fluidics(self, use_fluidics):
+    def set_use_fluidics(self, use_fluidics: bool) -> None:
         self.use_fluidics = use_fluidics
 
-    def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
+    def start_new_experiment(self, experiment_ID: str) -> None:  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
         self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
         self.recording_start_time = time.time()
@@ -203,14 +203,14 @@ class MultiPointController:
             for k in objective_info.keys():
                 acquisition_parameters["objective"][k] = objective_info[k]
             acquisition_parameters["objective"]["name"] = current_objective
-        except:
+        except Exception:
             try:
                 objective_info = control._def.OBJECTIVES[control._def.DEFAULT_OBJECTIVE]
                 acquisition_parameters["objective"] = {}
                 for k in objective_info.keys():
                     acquisition_parameters["objective"][k] = objective_info[k]
                 acquisition_parameters["objective"]["name"] = control._def.DEFAULT_OBJECTIVE
-            except:
+            except Exception:
                 pass
         # TODO: USE OBJECTIVE STORE DATA
         acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
@@ -219,7 +219,7 @@ class MultiPointController:
         f.write(json.dumps(acquisition_parameters))
         f.close()
 
-    def set_selected_configurations(self, selected_configurations_name):
+    def set_selected_configurations(self, selected_configurations_name: List[str]) -> None:
         self.selected_configurations = []
         for configuration_name in selected_configurations_name:
             config = self.channelConfigurationManager.get_channel_configuration_by_name(
@@ -228,7 +228,7 @@ class MultiPointController:
             if config:
                 self.selected_configurations.append(config)
 
-    def get_acquisition_image_count(self):
+    def get_acquisition_image_count(self) -> int:
         """
         Given the current settings on this controller, return how many images an acquisition will
         capture and save to disk.
@@ -259,15 +259,14 @@ class MultiPointController:
             # this "not configured" and want it to be a ValueError.
             raise ValueError("Not properly configured for an acquisition, cannot calculate image count.")
 
-    def _temporary_get_an_image_hack(self) -> Tuple[np.array, bool]:
-        was_streaming = self.camera.get_is_streaming()
-        callbacks_were_enabled = self.camera.get_callbacks_enabled()
+    def _temporary_get_an_image_hack(self) -> Tuple[Optional[np.ndarray], bool]:
+        was_streaming: bool = self.camera.get_is_streaming()
+        callbacks_were_enabled: bool = self.camera.get_callbacks_enabled()
         self.camera.enable_callbacks(False)
-        test_frame = None
+        test_frame: Optional[CameraFrame] = None
         if not was_streaming:
             self.camera.start_streaming()
         try:
-            config = self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)[0]
             if (
                 self.liveController.trigger_mode == control._def.TriggerMode.SOFTWARE
                 or self.liveController.trigger_mode == control._def.TriggerMode.HARDWARE
@@ -280,7 +279,7 @@ class MultiPointController:
                 self.camera.stop_streaming()
         return (test_frame.frame, test_frame.is_color()) if test_frame else (None, False)
 
-    def get_estimated_acquisition_disk_storage(self):
+    def get_estimated_acquisition_disk_storage(self) -> int:
         """
         This does its best to return the number of bytes needed to store the settings for the currently
         configured acquisition on disk.  If you don't have at least this amount of disk space available
@@ -292,11 +291,11 @@ class MultiPointController:
         first_config = self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)[0]
 
         # Our best bet is to grab an image, and use that for our size estimate.
-        test_image = None
-        is_color = True
+        test_image: Optional[np.ndarray] = None
+        is_color: bool = True
         try:
             test_image, is_color = self._temporary_get_an_image_hack()
-        except Exception as e:
+        except Exception:
             self._log.exception("Couldn't capture image from camera for size estimate, using worst cast image.")
             # Not ideal that we need to catch Exception, but the camera implementations vary wildly...
             pass
@@ -306,8 +305,6 @@ class MultiPointController:
             # Do our best to create a fake image with the correct properties.
             # TODO(imo): It'd be better to pull this from our camera but need to wait for AbstractCamera for a consistent way to do that.
             width, height = self.camera.get_crop_size()
-            bytes_per_pixel = 3 if is_color else 2  # Worst case assumptions: 24 bit color, 16 bit grayscale
-
             test_image = np.random.randint(2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
 
         # Depending on settings, we modify the image before saving.  This means we need to actually save an image
@@ -317,7 +314,7 @@ class MultiPointController:
             file_id = "test_id"
             test_config = first_config
             size_before = utils.get_directory_disk_usage(pathlib.Path(temp_save_dir))
-            saved_image = utils_acquisition.save_image(test_image, file_id, temp_save_dir, test_config, is_color)
+            utils_acquisition.save_image(test_image, file_id, temp_save_dir, test_config, is_color)
             size_after = utils.get_directory_disk_usage(pathlib.Path(temp_save_dir))
 
             size_per_image = size_after - size_before
@@ -327,7 +324,7 @@ class MultiPointController:
 
         return size_per_image * self.get_acquisition_image_count() + non_image_file_size
 
-    def run_acquisition(self, acquire_current_fov=False):
+    def run_acquisition(self, acquire_current_fov: bool = False) -> None:
         if not self.validate_acquisition_settings():
             # emit acquisition finished signal to re-enable the UI
             self.callbacks.signal_acquisition_finished()
@@ -339,8 +336,8 @@ class MultiPointController:
         if self.z_range is None:
             self.z_range = (self._start_position.z_mm, self._start_position.z_mm + self.deltaZ * (self.NZ - 1))
 
-        acquisition_scan_coordinates = self.scanCoordinates
-        self.run_acquisition_current_fov = False
+        acquisition_scan_coordinates: ScanCoordinates = self.scanCoordinates
+        self.run_acquisition_current_fov: bool = False
         if acquire_current_fov:
             pos = self.stage.get_pos()
             # No callback - we don't want to clobber existing info with this one off fov acquisition
@@ -355,10 +352,10 @@ class MultiPointController:
             )
             self.run_acquisition_current_fov = True
 
-        scan_position_information = ScanPositionInformation.from_scan_coordinates(acquisition_scan_coordinates)
+        scan_position_information: ScanPositionInformation = ScanPositionInformation.from_scan_coordinates(acquisition_scan_coordinates)
 
         # Save coordinates to CSV in top level folder
-        coordinates_df = pd.DataFrame(columns=["region", "x (mm)", "y (mm)", "z (mm)"])
+        coordinates_df: pd.DataFrame = pd.DataFrame(columns=["region", "x (mm)", "y (mm)", "z (mm)"])
         for region_id, coords_list in scan_position_information.scan_region_fov_coords_mm.items():
             for coord in coords_list:
                 row = {"region": region_id, "x (mm)": coord[0], "y (mm)": coord[1]}
@@ -375,23 +372,23 @@ class MultiPointController:
         self._log.info(f"region ids: {scan_position_information.scan_region_names}")
         self._log.info(f"region centers: {scan_position_information.scan_region_coords_mm}")
 
-        self.abort_acqusition_requested = False
+        self.abort_acqusition_requested: bool = False
 
-        self.configuration_before_running_multipoint = self.liveController.currentConfiguration
+        self.configuration_before_running_multipoint: Any = self.liveController.currentConfiguration
         # stop live
         if self.liveController.is_live:
-            self.liveController_was_live_before_multipoint = True
+            self.liveController_was_live_before_multipoint: bool = True
             self.liveController.stop_live()  # @@@ to do: also uncheck the live button
         else:
-            self.liveController_was_live_before_multipoint = False
+            self.liveController_was_live_before_multipoint: bool = False
 
-        self.camera_callback_was_enabled_before_multipoint = self.camera.get_callbacks_enabled()
+        self.camera_callback_was_enabled_before_multipoint: bool = self.camera.get_callbacks_enabled()
         # We need callbacks, because we trigger and then use callbacks for image processing.  This
         # lets us do overlapping triggering (soon).
         self.camera.enable_callbacks(True)
 
         # run the acquisition
-        self.timestamp_acquisition_started = time.time()
+        self.timestamp_acquisition_started: float = time.time()
 
         if self.focus_map:
             self._log.info("Using focus surface for Z interpolation")
@@ -466,13 +463,13 @@ class MultiPointController:
                 self._log.exception("Invalid coordinates for autofocus plane, aborting.")
                 return
 
-        def finish_fn():
+        def finish_fn() -> None:
             self._on_acquisition_completed()
             self.callbacks.signal_acquisition_finished()
 
-        updated_callbacks = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
+        updated_callbacks: MultiPointControllerFunctions = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
 
-        acquisition_params = self.build_params(scan_position_information=scan_position_information)
+        acquisition_params: AcquisitionParameters = self.build_params(scan_position_information=scan_position_information)
         self.callbacks.signal_acquisition_start(acquisition_params)
         self.multiPointWorker = MultiPointWorker(
             scope=self.microscope,
@@ -488,7 +485,7 @@ class MultiPointController:
             extra_job_classes=[],
         )
 
-        self.thread = Thread(target=self.multiPointWorker.run, name="Acquisition thread", daemon=True)
+        self.thread: Thread = Thread(target=self.multiPointWorker.run, name="Acquisition thread", daemon=True)
         self.thread.start()
 
     def build_params(self, scan_position_information: ScanPositionInformation) -> AcquisitionParameters:
@@ -515,7 +512,7 @@ class MultiPointController:
             use_fluidics=self.use_fluidics,
         )
 
-    def _on_acquisition_completed(self):
+    def _on_acquisition_completed(self) -> None:
         self._log.debug("MultiPointController._on_acquisition_completed called")
         # restore the previous selected mode
         if self.gen_focus_map:
@@ -541,21 +538,21 @@ class MultiPointController:
             self.run_acquisition_current_fov = False
 
         if self._start_position:
-            x_mm = self._start_position.x_mm
-            y_mm = self._start_position.y_mm
-            z_mm = self._start_position.z_mm
+            x_mm: float = self._start_position.x_mm
+            y_mm: float = self._start_position.y_mm
+            z_mm: float = self._start_position.z_mm
             self._log.info(f"Moving back to start position: (x,y,z) [mm] = ({x_mm}, {y_mm}, {z_mm})")
             self.stage.move_x_to(x_mm)
             self.stage.move_y_to(y_mm)
             self.stage.move_z_to(z_mm)
             self._start_position = None
 
-        ending_pos = self.stage.get_pos()
+        ending_pos: squid.abc.Pos = self.stage.get_pos()
         self.callbacks.signal_current_fov(ending_pos.x_mm, ending_pos.y_mm)
 
         self.callbacks.signal_acquisition_finished()
 
-    def request_abort_aquisition(self):
+    def request_abort_aquisition(self) -> None:
         self.abort_acqusition_requested = True
 
     def validate_acquisition_settings(self) -> bool:

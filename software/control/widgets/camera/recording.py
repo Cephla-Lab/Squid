@@ -1,7 +1,11 @@
 from control.widgets.camera._common import *
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from control.core.display import StreamHandler, ImageSaver
 
 class RecordingWidget(QFrame):
-    def __init__(self, streamHandler, imageSaver, main=None, *args, **kwargs):
+    def __init__(self, streamHandler: StreamHandler, imageSaver: ImageSaver, main: Optional[QWidget] = None, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.imageSaver = imageSaver  # for saving path control
         self.streamHandler = streamHandler
@@ -9,7 +13,7 @@ class RecordingWidget(QFrame):
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-    def add_components(self):
+    def add_components(self) -> None:
         self.btn_setSavingDir = QPushButton("Browse")
         self.btn_setSavingDir.setDefault(False)
         self.btn_setSavingDir.setIcon(QIcon("assets/icon/folder.png"))
@@ -75,15 +79,15 @@ class RecordingWidget(QFrame):
         self.entry_timeLimit.valueChanged.connect(self.imageSaver.set_recording_time_limit)
         self.imageSaver.stop_recording.connect(self.stop_recording)
 
-    def set_saving_dir(self):
+    def set_saving_dir(self) -> None:
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
         self.imageSaver.set_base_path(save_dir_base)
         self.lineEdit_savingDir.setText(save_dir_base)
         self.base_path_is_set = True
 
-    def toggle_recording(self, pressed):
-        if self.base_path_is_set == False:
+    def toggle_recording(self, pressed: bool) -> None:
+        if not self.base_path_is_set:
             self.btn_record.setChecked(False)
             msg = QMessageBox()
             msg.setText("Please choose base saving directory first")
@@ -100,7 +104,7 @@ class RecordingWidget(QFrame):
             self.btn_setSavingDir.setEnabled(True)
 
     # stop_recording can be called by imageSaver
-    def stop_recording(self):
+    def stop_recording(self) -> None:
         self.lineEdit_experimentID.setEnabled(True)
         self.btn_record.setChecked(False)
         self.streamHandler.stop_recording()
@@ -108,7 +112,7 @@ class RecordingWidget(QFrame):
 
 
 class MultiCameraRecordingWidget(QFrame):
-    def __init__(self, streamHandler, imageSaver, channels, main=None, *args, **kwargs):
+    def __init__(self, streamHandler: Dict[str, "StreamHandler"], imageSaver: Dict[str, "ImageSaver"], channels: List[str], main: Optional[QWidget] = None, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.imageSaver = imageSaver  # for saving path control
         self.streamHandler = streamHandler
@@ -117,7 +121,7 @@ class MultiCameraRecordingWidget(QFrame):
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-    def add_components(self):
+    def add_components(self) -> None:
         self.btn_setSavingDir = QPushButton("Browse")
         self.btn_setSavingDir.setDefault(False)
         self.btn_setSavingDir.setIcon(QIcon("assets/icon/folder.png"))
@@ -182,7 +186,7 @@ class MultiCameraRecordingWidget(QFrame):
             self.entry_timeLimit.valueChanged.connect(self.imageSaver[channel].set_recording_time_limit)
             self.imageSaver[channel].stop_recording.connect(self.stop_recording)
 
-    def set_saving_dir(self):
+    def set_saving_dir(self) -> None:
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
         for channel in self.channels:
@@ -191,8 +195,8 @@ class MultiCameraRecordingWidget(QFrame):
         self.save_dir_base = save_dir_base
         self.base_path_is_set = True
 
-    def toggle_recording(self, pressed):
-        if self.base_path_is_set == False:
+    def toggle_recording(self, pressed: bool) -> None:
+        if not self.base_path_is_set:
             self.btn_record.setChecked(False)
             msg = QMessageBox()
             msg.setText("Please choose base saving directory first")
@@ -214,7 +218,7 @@ class MultiCameraRecordingWidget(QFrame):
             self.btn_setSavingDir.setEnabled(True)
 
     # stop_recording can be called by imageSaver
-    def stop_recording(self):
+    def stop_recording(self) -> None:
         self.lineEdit_experimentID.setEnabled(True)
         self.btn_record.setChecked(False)
         for channel in self.channels:

@@ -1,9 +1,35 @@
 from control.widgets.tracking._common import *
+from qtpy.QtWidgets import QListWidget, QAbstractItemView
+from qtpy.QtGui import QIcon
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from control.core.acquisition.platereader import PlateReadingController
+    from control.core.configuration import ChannelConfigurationManager
 
 class PlateReaderAcquisitionWidget(QFrame):
+    plateReadingController: "PlateReadingController"
+    configurationManager: "ChannelConfigurationManager"
+    base_path_is_set: bool
+    btn_setSavingDir: QPushButton
+    lineEdit_savingDir: QLineEdit
+    lineEdit_experimentID: QLineEdit
+    list_columns: QListWidget
+    list_configurations: QListWidget
+    checkbox_withAutofocus: QCheckBox
+    checkbox_withReflectionAutofocus: QCheckBox
+    btn_startAcquisition: QPushButton
+    grid: QGridLayout
+
     def __init__(
-        self, plateReadingController, configurationManager=None, show_configurations=True, main=None, *args, **kwargs
-    ):
+        self,
+        plateReadingController: "PlateReadingController",
+        configurationManager: Optional["ChannelConfigurationManager"] = None,
+        show_configurations: bool = True,
+        main: Optional[QWidget] = None,
+        *args: Any,
+        **kwargs: Any
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.plateReadingController = plateReadingController
         self.configurationManager = configurationManager
@@ -11,7 +37,7 @@ class PlateReaderAcquisitionWidget(QFrame):
         self.add_components(show_configurations)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-    def add_components(self, show_configurations):
+    def add_components(self, show_configurations: bool) -> None:
         self.btn_setSavingDir = QPushButton("Browse")
         self.btn_setSavingDir.setDefault(False)
         self.btn_setSavingDir.setIcon(QIcon("assets/icon/folder.png"))
@@ -92,15 +118,15 @@ class PlateReaderAcquisitionWidget(QFrame):
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.plateReadingController.acquisitionFinished.connect(self.acquisition_is_finished)
 
-    def set_saving_dir(self):
+    def set_saving_dir(self) -> None:
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
         self.plateReadingController.set_base_path(save_dir_base)
         self.lineEdit_savingDir.setText(save_dir_base)
         self.base_path_is_set = True
 
-    def toggle_acquisition(self, pressed):
-        if self.base_path_is_set == False:
+    def toggle_acquisition(self, pressed: bool) -> None:
+        if not self.base_path_is_set:
             self.btn_startAcquisition.setChecked(False)
             msg = QMessageBox()
             msg.setText("Please choose base saving directory first")
@@ -122,11 +148,11 @@ class PlateReaderAcquisitionWidget(QFrame):
             self.plateReadingController.stop_acquisition()  # to implement
             pass
 
-    def acquisition_is_finished(self):
+    def acquisition_is_finished(self) -> None:
         self.btn_startAcquisition.setChecked(False)
         self.setEnabled_all(True)
 
-    def setEnabled_all(self, enabled, exclude_btn_startAcquisition=False):
+    def setEnabled_all(self, enabled: bool, exclude_btn_startAcquisition: bool = False) -> None:
         self.btn_setSavingDir.setEnabled(enabled)
         self.lineEdit_savingDir.setEnabled(enabled)
         self.lineEdit_experimentID.setEnabled(enabled)
@@ -137,18 +163,31 @@ class PlateReaderAcquisitionWidget(QFrame):
         if exclude_btn_startAcquisition is not True:
             self.btn_startAcquisition.setEnabled(enabled)
 
-    def slot_homing_complete(self):
+    def slot_homing_complete(self) -> None:
         self.btn_startAcquisition.setEnabled(True)
 
 
 class PlateReaderNavigationWidget(QFrame):
-    def __init__(self, plateReaderNavigationController, *args, **kwargs):
+    plateReaderNavigationController: Any  # TODO: Create proper type for PlateReaderNavigationController
+    dropdown_column: QComboBox
+    dropdown_row: QComboBox
+    btn_moveto: QPushButton
+    btn_home: QPushButton
+    label_current_location: QLabel
+    grid: QGridLayout
+
+    def __init__(
+        self,
+        plateReaderNavigationController: Any,  # TODO: Create proper type for PlateReaderNavigationController
+        *args: Any,
+        **kwargs: Any
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.plateReaderNavigationController = plateReaderNavigationController
 
-    def add_components(self):
+    def add_components(self) -> None:
         self.dropdown_column = QComboBox()
         self.dropdown_column.addItems([""])
         self.dropdown_column.addItems([str(i + 1) for i in range(PLATE_READER.NUMBER_OF_COLUMNS)])
@@ -185,7 +224,7 @@ class PlateReaderNavigationWidget(QFrame):
         self.btn_home.clicked.connect(self.home)
         self.btn_moveto.clicked.connect(self.move)
 
-    def home(self):
+    def home(self) -> None:
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Information)
         msg.setText("Confirm your action")
@@ -197,15 +236,15 @@ class PlateReaderNavigationWidget(QFrame):
         if QMessageBox.Ok == retval:
             self.plateReaderNavigationController.home()
 
-    def move(self):
+    def move(self) -> None:  # type: ignore[override]
         self.plateReaderNavigationController.moveto(self.dropdown_column.currentText(), self.dropdown_row.currentText())
 
-    def slot_homing_complete(self):
+    def slot_homing_complete(self) -> None:
         self.dropdown_column.setEnabled(True)
         self.dropdown_row.setEnabled(True)
         self.btn_moveto.setEnabled(True)
 
-    def update_current_location(self, location_str):
+    def update_current_location(self, location_str: str) -> None:
         self.label_current_location.setText(location_str)
         row = location_str[0]
         column = location_str[1:]

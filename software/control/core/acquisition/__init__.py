@@ -14,3 +14,18 @@ from control.core.acquisition.multi_point_utils import (
 )
 from control.core.acquisition.multi_point_worker import MultiPointWorker
 from control.core.acquisition.platereader import PlateReadingController
+
+__all__ = [
+    "CaptureInfo",
+    "SaveImageJob",
+    "Job",
+    "JobImage",
+    "JobRunner",
+    "JobResult",
+    "MultiPointController",
+    "MultiPointControllerFunctions",
+    "ScanPositionInformation",
+    "AcquisitionParameters",
+    "MultiPointWorker",
+    "PlateReadingController",
+]
