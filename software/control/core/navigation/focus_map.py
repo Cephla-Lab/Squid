@@ -19,7 +19,7 @@ from control._def import (
     WELL_SIZE_MM,
     WELL_SPACING_MM,
 )
-from control.core.scan_coordinates import ScanCoordinates
+from control.core.navigation.scan_coordinates import ScanCoordinates
 import squid.abc
 import squid.logging
 
@@ -344,20 +344,20 @@ class NavigationViewer(QFrame):
         self.x_mm = None
         self.y_mm = None
         self.image_paths = {
-            "glass slide": "images/slide carrier_828x662.png",
-            "4 glass slide": "images/4 slide carrier_1509x1010.png",
-            "6 well plate": "images/6 well plate_1509x1010.png",
-            "12 well plate": "images/12 well plate_1509x1010.png",
-            "24 well plate": "images/24 well plate_1509x1010.png",
-            "96 well plate": "images/96 well plate_1509x1010.png",
-            "384 well plate": "images/384 well plate_1509x1010.png",
-            "1536 well plate": "images/1536 well plate_1509x1010.png",
+            "glass slide": "assets/images/slide carrier_828x662.png",
+            "4 glass slide": "assets/images/4 slide carrier_1509x1010.png",
+            "6 well plate": "assets/images/6 well plate_1509x1010.png",
+            "12 well plate": "assets/images/12 well plate_1509x1010.png",
+            "24 well plate": "assets/images/24 well plate_1509x1010.png",
+            "96 well plate": "assets/images/96 well plate_1509x1010.png",
+            "384 well plate": "assets/images/384 well plate_1509x1010.png",
+            "1536 well plate": "assets/images/1536 well plate_1509x1010.png",
         }
 
         print("navigation viewer:", sample)
         self.init_ui(invertX)
 
-        self.load_background_image(self.image_paths.get(sample, "images/4 slide carrier_1509x1010.png"))
+        self.load_background_image(self.image_paths.get(sample, "assets/images/4 slide carrier_1509x1010.png"))
         self.create_layers()
         self.update_display_properties(sample)
         # self.update_display()

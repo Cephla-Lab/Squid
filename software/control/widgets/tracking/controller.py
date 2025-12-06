@@ -26,7 +26,7 @@ class TrackingControllerWidget(QFrame):
     def add_components(self, show_configurations):
         self.btn_setSavingDir = QPushButton("Browse")
         self.btn_setSavingDir.setDefault(False)
-        self.btn_setSavingDir.setIcon(QIcon("icon/folder.png"))
+        self.btn_setSavingDir.setIcon(QIcon("assets/icon/folder.png"))
         self.lineEdit_savingDir = QLineEdit()
         self.lineEdit_savingDir.setReadOnly(True)
         self.lineEdit_savingDir.setText("Choose a base saving directory")
