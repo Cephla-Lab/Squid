@@ -281,7 +281,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
         self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_minZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_minZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to current position
+        self.entry_minZ.setValue(self._stage_service.get_position().z_mm * 1000)  # Set to current position
         self.entry_minZ.setSuffix(" μm")
         # self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.set_minZ_button = QPushButton("Set")
@@ -292,7 +292,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
         self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_maxZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to current position
+        self.entry_maxZ.setValue(self._stage_service.get_position().z_mm * 1000)  # Set to current position
         self.entry_maxZ.setSuffix(" μm")
         # self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.set_maxZ_button = QPushButton("Set")
@@ -564,7 +564,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
-        current_z = self.stage.get_pos().z_mm * 1000
+        current_z = self._stage_service.get_position().z_mm * 1000
         self.entry_minZ.setValue(current_z)
         if is_visible:
             self._reset_reflection_af_reference()
@@ -580,7 +580,7 @@ class FlexibleMultiPointWidget(QFrame):
             except:
                 pass
             # When Z-range is not specified, set Z-min and Z-max to current Z position
-            current_z = self.stage.get_pos().z_mm * 1000
+            current_z = self._stage_service.get_position().z_mm * 1000
             self.entry_minZ.setValue(current_z)
             self.entry_maxZ.setValue(current_z)
         else:
@@ -597,7 +597,7 @@ class FlexibleMultiPointWidget(QFrame):
 
     def init_z(self, z_pos_mm=None):
         if z_pos_mm is None:
-            z_pos_mm = self.stage.get_pos().z_mm
+            z_pos_mm = self._stage_service.get_position().z_mm
 
         # block entry update signals
         self.entry_minZ.blockSignals(True)
@@ -613,12 +613,12 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_maxZ.blockSignals(False)
 
     def set_z_min(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        z_value = self._stage_service.get_position().z_mm * 1000  # Convert to μm
         self.entry_minZ.setValue(z_value)
         self._reset_reflection_af_reference()
 
     def set_z_max(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        z_value = self._stage_service.get_position().z_mm * 1000  # Convert to μm
         self.entry_maxZ.setValue(z_value)
 
     def update_z_min(self, z_pos_um):
@@ -638,7 +638,7 @@ class FlexibleMultiPointWidget(QFrame):
             error_dialog("Failed to set reference for reflection autofocus. Is the laser autofocus initialized?")
 
     def update_z(self):
-        z_mm = self.stage.get_pos().z_mm
+        z_mm = self._stage_service.get_position().z_mm
         index = self.dropdown_location_list.currentIndex()
         self.location_list[index, 2] = z_mm
         self.scanCoordinates.region_centers[self.location_ids[index]][2] = z_mm
@@ -815,7 +815,7 @@ class FlexibleMultiPointWidget(QFrame):
                 maxZ = self.entry_maxZ.value() / 1000
                 self.multipointController.set_z_range(minZ, maxZ)
             else:
-                z = self.stage.get_pos().z_mm
+                z = self._stage_service.get_position().z_mm
                 dz = self.entry_deltaZ.value()
                 Nz = self.entry_NZ.value()
                 self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
@@ -899,7 +899,7 @@ class FlexibleMultiPointWidget(QFrame):
 
     def add_location(self):
         # Get raw positions without rounding
-        pos = self.stage.get_pos()
+        pos = self._stage_service.get_position()
         x = pos.x_mm
         y = pos.y_mm
         z = pos.z_mm
@@ -1265,7 +1265,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.multipointController.set_reflection_af_flag(False)
         self.multipointController.set_use_fluidics(False)
 
-        z = self.stage.get_pos().z_mm
+        z = self._stage_service.get_position().z_mm
         self.multipointController.set_z_range(z, z)
 
         # Start the acquisition process for the single FOV
@@ -1457,7 +1457,7 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
         self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_minZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_minZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to minimum
+        self.entry_minZ.setValue(self._stage_service.get_position().z_mm * 1000)  # Set to minimum
         self.entry_minZ.setSuffix(" μm")
         # self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -1473,7 +1473,7 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
         self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
         self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_maxZ.setValue(self.stage.get_pos().z_mm * 1000)  # Set to maximum
+        self.entry_maxZ.setValue(self._stage_service.get_position().z_mm * 1000)  # Set to maximum
         self.entry_maxZ.setSuffix(" μm")
         # self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -2324,7 +2324,7 @@ class WellplateMultiPointWidget(QFrame):
             self.scanCoordinates.clear_regions()
 
         # Get current position and add it as a single region
-        pos = self.stage.get_pos()
+        pos = self._stage_service.get_position()
         x = pos.x_mm
         y = pos.y_mm
 
@@ -2467,7 +2467,7 @@ class WellplateMultiPointWidget(QFrame):
                     widget.setVisible(False)
 
         # Set single-slice parameters
-        current_z = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        current_z = self._stage_service.get_position().z_mm * 1000  # Convert to μm
         self.entry_NZ.setValue(1)
         self.entry_minZ.setValue(current_z)
         self.entry_maxZ.setValue(current_z)
@@ -2644,7 +2644,7 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
-        current_z = self.stage.get_pos().z_mm * 1000
+        current_z = self._stage_service.get_position().z_mm * 1000
         self.entry_minZ.setValue(current_z)
         if is_visible:
             self._reset_reflection_af_reference()
@@ -2793,12 +2793,12 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_NZ.setValue(nz)
 
     def set_z_min(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        z_value = self._stage_service.get_position().z_mm * 1000  # Convert to μm
         self.entry_minZ.setValue(z_value)
         self._reset_reflection_af_reference()
 
     def set_z_max(self):
-        z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
+        z_value = self._stage_service.get_position().z_mm * 1000  # Convert to μm
         self.entry_maxZ.setValue(z_value)
 
     def goto_z_min(self):
@@ -2835,7 +2835,7 @@ class WellplateMultiPointWidget(QFrame):
     def init_z(self, z_pos_mm=None):
         # sets initial z range form the current z position used after startup of the GUI
         if z_pos_mm is None:
-            z_pos_mm = self.stage.get_pos().z_mm
+            z_pos_mm = self._stage_service.get_position().z_mm
 
         # block entry update signals
         self.entry_minZ.blockSignals(True)
@@ -2867,7 +2867,7 @@ class WellplateMultiPointWidget(QFrame):
             self.scanCoordinates.set_manual_coordinates(self.shapes_mm, overlap_percent)
 
         elif self.combobox_xy_mode.currentText() == "Current Position":
-            pos = self.stage.get_pos()
+            pos = self._stage_service.get_position()
             self.scanCoordinates.set_live_scan_coordinates(pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape)
         else:
             if self.scanCoordinates.has_regions():
@@ -2950,7 +2950,7 @@ class WellplateMultiPointWidget(QFrame):
                 self.multipointController.set_z_range(minZ, maxZ)
                 self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
             else:
-                z = self.stage.get_pos().z_mm
+                z = self._stage_service.get_position().z_mm
                 dz = self.entry_deltaZ.value()
                 Nz = self.entry_NZ.value()
                 self.multipointController.set_z_range(z, z + dz * (Nz - 1))
@@ -3085,7 +3085,7 @@ class WellplateMultiPointWidget(QFrame):
         self.multipointController.set_reflection_af_flag(False)
         self.multipointController.set_use_fluidics(False)
 
-        z = self.stage.get_pos().z_mm
+        z = self._stage_service.get_position().z_mm
         self.multipointController.set_z_range(z, z)
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
