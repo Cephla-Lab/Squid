@@ -1,9 +1,8 @@
 import math
-from typing import Optional, Callable
+from typing import Optional
 
 import control.microcontroller
 import control._def as _def
-import control.utils as utils
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig, AxisConfig
 
@@ -19,7 +18,11 @@ class CephlaStage(AbstractStage):
         # Also protect against divide by zero.
         return max((3, 3 * abs(distance) / min(0.1, abs(max_speed))))
 
-    def __init__(self, microcontroller: control.microcontroller.Microcontroller, stage_config: StageConfig):
+    def __init__(
+        self,
+        microcontroller: control.microcontroller.Microcontroller,
+        stage_config: StageConfig,
+    ):
         super().__init__(stage_config)
         self._microcontroller = microcontroller
         self._homing_done = False
@@ -30,16 +33,22 @@ class CephlaStage(AbstractStage):
         self._configure_axis(_def.AXIS.Y, stage_config.Y_AXIS)
         self._configure_axis(_def.AXIS.Z, stage_config.Z_AXIS)
 
-    def _configure_axis(self, microcontroller_axis_number: int, axis_config: AxisConfig):
+    def _configure_axis(
+        self, microcontroller_axis_number: int, axis_config: AxisConfig
+    ):
         if axis_config.USE_ENCODER:
             # TODO(imo): The original navigationController had a "flip_direction" on configure_encoder, but it was unused in the implementation?
             self._microcontroller.configure_stage_pid(
                 axis=microcontroller_axis_number,
-                transitions_per_revolution=axis_config.SCREW_PITCH / axis_config.ENCODER_STEP_SIZE,
+                transitions_per_revolution=axis_config.SCREW_PITCH
+                / axis_config.ENCODER_STEP_SIZE,
             )
             if axis_config.PID and axis_config.PID.ENABLED:
                 self._microcontroller.set_pid_arguments(
-                    microcontroller_axis_number, axis_config.PID.P, axis_config.PID.I, axis_config.PID.D
+                    microcontroller_axis_number,
+                    axis_config.PID.P,
+                    axis_config.PID.I,
+                    axis_config.PID.D,
                 )
                 self._microcontroller.turn_on_stage_pid(microcontroller_axis_number)
 
@@ -53,14 +62,18 @@ class CephlaStage(AbstractStage):
         return self._config.Z_AXIS.convert_real_units_to_ustep(mm)
 
     def move_x(self, rel_mm: float, blocking: bool = True):
-        self._microcontroller.move_x_usteps(self._config.X_AXIS.convert_real_units_to_ustep(rel_mm))
+        self._microcontroller.move_x_usteps(
+            self._config.X_AXIS.convert_real_units_to_ustep(rel_mm)
+        )
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(
                 self._calc_move_timeout(rel_mm, self.get_config().X_AXIS.MAX_SPEED)
             )
 
     def move_y(self, rel_mm: float, blocking: bool = True):
-        self._microcontroller.move_y_usteps(self._config.Y_AXIS.convert_real_units_to_ustep(rel_mm))
+        self._microcontroller.move_y_usteps(
+            self._config.Y_AXIS.convert_real_units_to_ustep(rel_mm)
+        )
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(
                 self._calc_move_timeout(rel_mm, self.get_config().Y_AXIS.MAX_SPEED)
@@ -81,33 +94,50 @@ class CephlaStage(AbstractStage):
             # rest on the downside of the drive mechanism.  But make sure we don't drive past the min position
             # to do this.
             rel_move_with_backlash_offset_mm = rel_mm + backlash_offset
-            rel_move_with_backlash_offset_usteps = self._config.Z_AXIS.convert_real_units_to_ustep(
-                rel_move_with_backlash_offset_mm
+            rel_move_with_backlash_offset_usteps = (
+                self._config.Z_AXIS.convert_real_units_to_ustep(
+                    rel_move_with_backlash_offset_mm
+                )
             )
             self._microcontroller.move_z_usteps(rel_move_with_backlash_offset_usteps)
             if blocking:
                 self._microcontroller.wait_till_operation_is_completed(
-                    self._calc_move_timeout(rel_move_with_backlash_offset_mm, self.get_config().Z_AXIS.MAX_SPEED)
+                    self._calc_move_timeout(
+                        rel_move_with_backlash_offset_mm,
+                        self.get_config().Z_AXIS.MAX_SPEED,
+                    )
                 )
 
-        self._microcontroller.move_z_usteps(self._config.Z_AXIS.convert_real_units_to_ustep(final_rel_move_mm))
+        self._microcontroller.move_z_usteps(
+            self._config.Z_AXIS.convert_real_units_to_ustep(final_rel_move_mm)
+        )
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(
-                self._calc_move_timeout(final_rel_move_mm, self.get_config().Z_AXIS.MAX_SPEED)
+                self._calc_move_timeout(
+                    final_rel_move_mm, self.get_config().Z_AXIS.MAX_SPEED
+                )
             )
 
     def move_x_to(self, abs_mm: float, blocking: bool = True):
-        self._microcontroller.move_x_to_usteps(self._config.X_AXIS.convert_real_units_to_ustep(abs_mm))
+        self._microcontroller.move_x_to_usteps(
+            self._config.X_AXIS.convert_real_units_to_ustep(abs_mm)
+        )
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(
-                self._calc_move_timeout(abs_mm - self.get_pos().x_mm, self.get_config().X_AXIS.MAX_SPEED)
+                self._calc_move_timeout(
+                    abs_mm - self.get_pos().x_mm, self.get_config().X_AXIS.MAX_SPEED
+                )
             )
 
     def move_y_to(self, abs_mm: float, blocking: bool = True):
-        self._microcontroller.move_y_to_usteps(self._config.Y_AXIS.convert_real_units_to_ustep(abs_mm))
+        self._microcontroller.move_y_to_usteps(
+            self._config.Y_AXIS.convert_real_units_to_ustep(abs_mm)
+        )
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(
-                self._calc_move_timeout(abs_mm - self.get_pos().y_mm, self.get_config().Y_AXIS.MAX_SPEED)
+                self._calc_move_timeout(
+                    abs_mm - self.get_pos().y_mm, self.get_config().Y_AXIS.MAX_SPEED
+                )
             )
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
@@ -122,20 +152,29 @@ class CephlaStage(AbstractStage):
             # Move past our final position, so we can move up to the final position and
             # rest on the downside of the drive mechanism.  But make sure we don't drive past the min position
             # to do this.
-            clamped_z_backlash_pos = max(abs_mm + backlash_offset, self.get_config().Z_AXIS.MIN_POSITION)
-            clamped_z_backlash_pos_usteps = self._config.Z_AXIS.convert_real_units_to_ustep(clamped_z_backlash_pos)
+            clamped_z_backlash_pos = max(
+                abs_mm + backlash_offset, self.get_config().Z_AXIS.MIN_POSITION
+            )
+            clamped_z_backlash_pos_usteps = (
+                self._config.Z_AXIS.convert_real_units_to_ustep(clamped_z_backlash_pos)
+            )
             self._microcontroller.move_z_to_usteps(clamped_z_backlash_pos_usteps)
             if blocking:
                 self._microcontroller.wait_till_operation_is_completed(
                     self._calc_move_timeout(
-                        clamped_z_backlash_pos - self.get_pos().z_mm, self.get_config().Z_AXIS.MAX_SPEED
+                        clamped_z_backlash_pos - self.get_pos().z_mm,
+                        self.get_config().Z_AXIS.MAX_SPEED,
                     )
                 )
 
-        self._microcontroller.move_z_to_usteps(self._config.Z_AXIS.convert_real_units_to_ustep(abs_mm))
+        self._microcontroller.move_z_to_usteps(
+            self._config.Z_AXIS.convert_real_units_to_ustep(abs_mm)
+        )
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(
-                self._calc_move_timeout(abs_mm - self.get_pos().z_mm, self.get_config().Z_AXIS.MAX_SPEED)
+                self._calc_move_timeout(
+                    abs_mm - self.get_pos().z_mm, self.get_config().Z_AXIS.MAX_SPEED
+                )
             )
 
     def get_pos(self) -> Pos:
@@ -153,34 +192,49 @@ class CephlaStage(AbstractStage):
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         # NOTE(imo): Arbitrarily use max speed / 5 for homing speed.  It'd be better to have it exactly!
         x_timeout = self._calc_move_timeout(
-            self.get_config().X_AXIS.MAX_POSITION - self.get_config().X_AXIS.MIN_POSITION,
+            self.get_config().X_AXIS.MAX_POSITION
+            - self.get_config().X_AXIS.MIN_POSITION,
             self.get_config().X_AXIS.MAX_SPEED / 5.0,
         )
         y_timeout = self._calc_move_timeout(
-            self.get_config().Y_AXIS.MAX_POSITION - self.get_config().Y_AXIS.MIN_POSITION,
+            self.get_config().Y_AXIS.MAX_POSITION
+            - self.get_config().Y_AXIS.MIN_POSITION,
             self.get_config().Y_AXIS.MAX_SPEED / 5.0,
         )
         z_timeout = self._calc_move_timeout(
-            self.get_config().Z_AXIS.MAX_POSITION - self.get_config().Z_AXIS.MIN_POSITION,
+            self.get_config().Z_AXIS.MAX_POSITION
+            - self.get_config().Z_AXIS.MIN_POSITION,
             self.get_config().Z_AXIS.MAX_SPEED / 5.0,
         )
-        theta_timeout = self._calc_move_timeout(2.0 * math.pi, self.get_config().THETA_AXIS.MAX_SPEED / 5.0)
+        theta_timeout = self._calc_move_timeout(
+            2.0 * math.pi, self.get_config().THETA_AXIS.MAX_SPEED / 5.0
+        )
 
-        x_dir = control.microcontroller.movement_sign_to_homing_direction(self.get_config().X_AXIS.MOVEMENT_SIGN)
-        y_dir = control.microcontroller.movement_sign_to_homing_direction(self.get_config().Y_AXIS.MOVEMENT_SIGN)
-        z_dir = control.microcontroller.movement_sign_to_homing_direction(self.get_config().Z_AXIS.MOVEMENT_SIGN)
+        x_dir = control.microcontroller.movement_sign_to_homing_direction(
+            self.get_config().X_AXIS.MOVEMENT_SIGN
+        )
+        y_dir = control.microcontroller.movement_sign_to_homing_direction(
+            self.get_config().Y_AXIS.MOVEMENT_SIGN
+        )
+        z_dir = control.microcontroller.movement_sign_to_homing_direction(
+            self.get_config().Z_AXIS.MOVEMENT_SIGN
+        )
         theta_dir = control.microcontroller.movement_sign_to_homing_direction(
             self.get_config().THETA_AXIS.MOVEMENT_SIGN
         )
 
         if x and y:
-            self._microcontroller.home_xy(homing_direction_x=x_dir, homing_direction_y=y_dir)
+            self._microcontroller.home_xy(
+                homing_direction_x=x_dir, homing_direction_y=y_dir
+            )
         elif x:
             self._microcontroller.home_x(homing_direction=x_dir)
         elif y:
             self._microcontroller.home_y(homing_direction=y_dir)
         if blocking:
-            self._microcontroller.wait_till_operation_is_completed(max(x_timeout, y_timeout))
+            self._microcontroller.wait_till_operation_is_completed(
+                max(x_timeout, y_timeout)
+            )
 
         if z:
             self._microcontroller.home_z(homing_direction=z_dir)
@@ -234,35 +288,57 @@ class CephlaStage(AbstractStage):
             elif movement_sign == -1:
                 return non_inverted_pos, non_inverted_neg
             else:
-                raise ValueError(f"Only 1 and -1 are valid movement signs, but got: {movement_sign}")
+                raise ValueError(
+                    f"Only 1 and -1 are valid movement signs, but got: {movement_sign}"
+                )
 
         (x_neg_code, x_pos_code) = limit_codes_for(
-            self._config.X_AXIS.MOVEMENT_SIGN, _def.LIMIT_CODE.X_NEGATIVE, _def.LIMIT_CODE.X_POSITIVE
+            self._config.X_AXIS.MOVEMENT_SIGN,
+            _def.LIMIT_CODE.X_NEGATIVE,
+            _def.LIMIT_CODE.X_POSITIVE,
         )
         (y_neg_code, y_pos_code) = limit_codes_for(
-            self._config.Y_AXIS.MOVEMENT_SIGN, _def.LIMIT_CODE.Y_NEGATIVE, _def.LIMIT_CODE.Y_POSITIVE
+            self._config.Y_AXIS.MOVEMENT_SIGN,
+            _def.LIMIT_CODE.Y_NEGATIVE,
+            _def.LIMIT_CODE.Y_POSITIVE,
         )
         (z_neg_code, z_pos_code) = limit_codes_for(
-            self._config.Z_AXIS.MOVEMENT_SIGN, _def.LIMIT_CODE.Z_NEGATIVE, _def.LIMIT_CODE.Z_POSITIVE
+            self._config.Z_AXIS.MOVEMENT_SIGN,
+            _def.LIMIT_CODE.Z_NEGATIVE,
+            _def.LIMIT_CODE.Z_POSITIVE,
         )
 
         if x_pos_mm is not None:
-            self._microcontroller.set_lim(x_pos_code, self._config.X_AXIS.convert_real_units_to_ustep(x_pos_mm))
+            self._microcontroller.set_lim(
+                x_pos_code, self._config.X_AXIS.convert_real_units_to_ustep(x_pos_mm)
+            )
 
         if x_neg_mm is not None:
-            self._microcontroller.set_lim(x_neg_code, self._config.X_AXIS.convert_real_units_to_ustep(x_neg_mm))
+            self._microcontroller.set_lim(
+                x_neg_code, self._config.X_AXIS.convert_real_units_to_ustep(x_neg_mm)
+            )
 
         if y_pos_mm is not None:
-            self._microcontroller.set_lim(y_pos_code, self._config.Y_AXIS.convert_real_units_to_ustep(y_pos_mm))
+            self._microcontroller.set_lim(
+                y_pos_code, self._config.Y_AXIS.convert_real_units_to_ustep(y_pos_mm)
+            )
 
         if y_neg_mm is not None:
-            self._microcontroller.set_lim(y_neg_code, self._config.Y_AXIS.convert_real_units_to_ustep(y_neg_mm))
+            self._microcontroller.set_lim(
+                y_neg_code, self._config.Y_AXIS.convert_real_units_to_ustep(y_neg_mm)
+            )
 
         if z_pos_mm is not None:
-            self._microcontroller.set_lim(z_pos_code, self._config.Z_AXIS.convert_real_units_to_ustep(z_pos_mm))
+            self._microcontroller.set_lim(
+                z_pos_code, self._config.Z_AXIS.convert_real_units_to_ustep(z_pos_mm)
+            )
 
         if z_neg_mm is not None:
-            self._microcontroller.set_lim(z_neg_code, self._config.Z_AXIS.convert_real_units_to_ustep(z_neg_mm))
+            self._microcontroller.set_lim(
+                z_neg_code, self._config.Z_AXIS.convert_real_units_to_ustep(z_neg_mm)
+            )
 
         if theta_neg_rad or theta_pos_rad:
-            raise ValueError("Setting limits for the theta axis is not supported on the CephlaStage")
+            raise ValueError(
+                "Setting limits for the theta axis is not supported on the CephlaStage"
+            )

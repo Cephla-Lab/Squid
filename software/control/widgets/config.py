@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 
 
 class ConfigEditor(QDialog):
-
     config: ConfigParser
     scroll_area: QScrollArea
     scroll_area_widget: QWidget
@@ -133,15 +132,21 @@ class ConfigEditor(QDialog):
 
     def save_to_file(self) -> None:
         self.save_config()
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Config File", "", "INI Files (*.ini);;All Files (*)")
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Config File", "", "INI Files (*.ini);;All Files (*)"
+        )
         if file_path:
             if not self.save_to_filename(file_path):
                 QMessageBox.warning(
-                    self, "Warning", f"Failed to write config file to '{file_path}'.  Check permissions!"
+                    self,
+                    "Warning",
+                    f"Failed to write config file to '{file_path}'.  Check permissions!",
                 )
 
     def load_config_from_file(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(self, "Load Config File", "", "INI Files (*.ini);;All Files (*)")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Config File", "", "INI Files (*.ini);;All Files (*)"
+        )
         if file_path:
             self.config.read(file_path)
             # Clear and re-initialize the UI
@@ -154,12 +159,13 @@ class ConfigEditor(QDialog):
 
 
 class ConfigEditorBackwardsCompatible(ConfigEditor):
-
     original_filepath: str
     main_window: QWidget
     apply_exit_button: QPushButton
 
-    def __init__(self, config: ConfigParser, original_filepath: str, main_window: QWidget) -> None:
+    def __init__(
+        self, config: ConfigParser, original_filepath: str, main_window: QWidget
+    ) -> None:
         super().__init__(config)
         self.original_filepath = original_filepath
         self.main_window = main_window
@@ -183,14 +189,15 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
 
 
 class ProfileWidget(QFrame):
-
     signal_profile_changed: Signal = Signal()
 
     configurationManager: "ConfigurationManager"
     dropdown_profiles: QComboBox
     btn_newProfile: QPushButton
 
-    def __init__(self, configurationManager: "ConfigurationManager", *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self, configurationManager: "ConfigurationManager", *args: Any, **kwargs: Any
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.configurationManager = configurationManager
 
@@ -229,7 +236,9 @@ class ProfileWidget(QFrame):
     def create_new_profile(self) -> None:
         """Create a new profile with current configurations."""
         dialog = QInputDialog()
-        profile_name, ok = dialog.getText(self, "New Profile", "Enter new profile name:", QLineEdit.Normal, "")
+        profile_name, ok = dialog.getText(
+            self, "New Profile", "Enter new profile name:", QLineEdit.Normal, ""
+        )
 
         if ok and profile_name:
             try:

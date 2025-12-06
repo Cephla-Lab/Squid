@@ -17,7 +17,10 @@ def test_children_loggers():
     child_b_logger = child_a_logger.getChild(child_b)
 
     assert child_a_logger.name == f"{squid.logging._squid_root_logger_name}.{child_a}"
-    assert child_b_logger.name == f"{squid.logging._squid_root_logger_name}.{child_a}.{child_b}"
+    assert (
+        child_b_logger.name
+        == f"{squid.logging._squid_root_logger_name}.{child_a}.{child_b}"
+    )
 
 
 def test_file_loggers():

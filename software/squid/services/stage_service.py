@@ -1,5 +1,6 @@
 # squid/services/stage_service.py
 """Service for stage operations."""
+
 from typing import Optional, Callable, TYPE_CHECKING
 from threading import Thread
 
@@ -29,18 +30,20 @@ class StageService(BaseService):
     def __init__(self, stage: "AbstractStage", event_bus: EventBus):
         super().__init__(event_bus)
         self._stage = stage
-        self._scanning_position_z_mm: Optional[float] = None  # Track Z position for loading/scanning
+        self._scanning_position_z_mm: Optional[float] = (
+            None  # Track Z position for loading/scanning
+        )
 
         self.subscribe(MoveStageCommand, self._on_move_command)
         self.subscribe(MoveStageToCommand, self._on_move_to_command)
         self.subscribe(HomeStageCommand, self._on_home_command)
 
     def _on_move_command(self, event: MoveStageCommand):
-        if event.axis == 'x':
+        if event.axis == "x":
             self.move_x(event.distance_mm)
-        elif event.axis == 'y':
+        elif event.axis == "y":
             self.move_y(event.distance_mm)
-        elif event.axis == 'z':
+        elif event.axis == "z":
             self.move_z(event.distance_mm)
 
     def _on_move_to_command(self, event: MoveStageToCommand):
@@ -69,7 +72,7 @@ class StageService(BaseService):
         x_mm: Optional[float] = None,
         y_mm: Optional[float] = None,
         z_mm: Optional[float] = None,
-        blocking: bool = True
+        blocking: bool = True,
     ):
         """Move to absolute position."""
         if x_mm is not None:
@@ -84,12 +87,16 @@ class StageService(BaseService):
         """Get current position."""
         return self._stage.get_pos()
 
-    def home(self, x: bool = False, y: bool = False, z: bool = False, theta: bool = False):
+    def home(
+        self, x: bool = False, y: bool = False, z: bool = False, theta: bool = False
+    ):
         """Home specified axes."""
         self._stage.home(x, y, z, theta)
         self._publish_position()
 
-    def zero(self, x: bool = False, y: bool = False, z: bool = False, theta: bool = False):
+    def zero(
+        self, x: bool = False, y: bool = False, z: bool = False, theta: bool = False
+    ):
         """Zero specified axes."""
         self._stage.zero(x, y, z, theta)
         self._publish_position()
@@ -97,11 +104,7 @@ class StageService(BaseService):
     def _publish_position(self):
         """Publish current position."""
         pos = self._stage.get_pos()
-        self.publish(StagePositionChanged(
-            x_mm=pos.x_mm,
-            y_mm=pos.y_mm,
-            z_mm=pos.z_mm
-        ))
+        self.publish(StagePositionChanged(x_mm=pos.x_mm, y_mm=pos.y_mm, z_mm=pos.z_mm))
 
     # ============================================================
     # Task 2.1: Theta axis methods
@@ -133,11 +136,17 @@ class StageService(BaseService):
         """Wait for stage to finish movement."""
         self._stage.wait_for_idle(timeout)
 
-    def set_limits(self, x_pos_mm: Optional[float] = None, x_neg_mm: Optional[float] = None,
-                   y_pos_mm: Optional[float] = None, y_neg_mm: Optional[float] = None) -> None:
+    def set_limits(
+        self,
+        x_pos_mm: Optional[float] = None,
+        x_neg_mm: Optional[float] = None,
+        y_pos_mm: Optional[float] = None,
+        y_neg_mm: Optional[float] = None,
+    ) -> None:
         """Set movement limits."""
-        self._stage.set_limits(x_pos_mm=x_pos_mm, x_neg_mm=x_neg_mm,
-                               y_pos_mm=y_pos_mm, y_neg_mm=y_neg_mm)
+        self._stage.set_limits(
+            x_pos_mm=x_pos_mm, x_neg_mm=x_neg_mm, y_pos_mm=y_pos_mm, y_neg_mm=y_neg_mm
+        )
 
     def get_x_mm_per_ustep(self) -> float:
         """Get mm per microstep for X axis."""
@@ -161,8 +170,10 @@ class StageService(BaseService):
         if is_wellplate:
             a_large_limit_mm = 125
             self._stage.set_limits(
-                x_pos_mm=a_large_limit_mm, x_neg_mm=-a_large_limit_mm,
-                y_pos_mm=a_large_limit_mm, y_neg_mm=-a_large_limit_mm,
+                x_pos_mm=a_large_limit_mm,
+                x_neg_mm=-a_large_limit_mm,
+                y_pos_mm=a_large_limit_mm,
+                y_neg_mm=-a_large_limit_mm,
             )
             self._scanning_position_z_mm = self._stage.get_pos().z_mm
             self._stage.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
@@ -173,8 +184,10 @@ class StageService(BaseService):
             self._stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
             config = self._stage.get_config()
             self._stage.set_limits(
-                x_pos_mm=config.X_AXIS.MAX_POSITION, x_neg_mm=config.X_AXIS.MIN_POSITION,
-                y_pos_mm=config.Y_AXIS.MAX_POSITION, y_neg_mm=config.Y_AXIS.MIN_POSITION,
+                x_pos_mm=config.X_AXIS.MAX_POSITION,
+                x_neg_mm=config.X_AXIS.MIN_POSITION,
+                y_pos_mm=config.Y_AXIS.MAX_POSITION,
+                y_neg_mm=config.Y_AXIS.MIN_POSITION,
             )
         else:
             self._stage.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
@@ -194,9 +207,12 @@ class StageService(BaseService):
             self._stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
         self._publish_position()
 
-    def move_to_loading_position(self, blocking: bool = True,
-                                 callback: Optional[Callable] = None,
-                                 is_wellplate: bool = True) -> Optional[Thread]:
+    def move_to_loading_position(
+        self,
+        blocking: bool = True,
+        callback: Optional[Callable] = None,
+        is_wellplate: bool = True,
+    ) -> Optional[Thread]:
         """Move stage to loading position."""
         if blocking and callback:
             raise ValueError("Callback not supported when blocking is True")
@@ -207,9 +223,12 @@ class StageService(BaseService):
             self._move_to_loading_position_impl, callback, is_wellplate=is_wellplate
         )
 
-    def move_to_scanning_position(self, blocking: bool = True,
-                                  callback: Optional[Callable] = None,
-                                  is_wellplate: bool = True) -> Optional[Thread]:
+    def move_to_scanning_position(
+        self,
+        blocking: bool = True,
+        callback: Optional[Callable] = None,
+        is_wellplate: bool = True,
+    ) -> Optional[Thread]:
         """Move stage to scanning position."""
         if blocking and callback:
             raise ValueError("Callback not supported when blocking is True")

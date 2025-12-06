@@ -13,13 +13,25 @@ import control._def
 from control.utils_config import ChannelMode
 
 
-def save_image(image: np.ndarray, file_id: str, save_directory: str, config: ChannelMode, is_color: bool) -> np.ndarray:
+def save_image(
+    image: np.ndarray,
+    file_id: str,
+    save_directory: str,
+    config: ChannelMode,
+    is_color: bool,
+) -> np.ndarray:
     if image.dtype == np.uint16:
-        saving_path = os.path.join(save_directory, file_id + "_" + str(config.name).replace(" ", "_") + ".tiff")
+        saving_path = os.path.join(
+            save_directory, file_id + "_" + str(config.name).replace(" ", "_") + ".tiff"
+        )
     else:
         saving_path = os.path.join(
             save_directory,
-            file_id + "_" + str(config.name).replace(" ", "_") + "." + control._def.Acquisition.IMAGE_FORMAT,
+            file_id
+            + "_"
+            + str(config.name).replace(" ", "_")
+            + "."
+            + control._def.Acquisition.IMAGE_FORMAT,
         )
 
     if is_color:
@@ -38,7 +50,10 @@ def save_image(image: np.ndarray, file_id: str, save_directory: str, config: Cha
 
 
 def grayscale_to_rgb(image: np.ndarray, hex_color: int) -> np.ndarray:
-    rgb_ratios = np.array([(hex_color >> 16) & 0xFF, (hex_color >> 8) & 0xFF, hex_color & 0xFF]) / 255
+    rgb_ratios = (
+        np.array([(hex_color >> 16) & 0xFF, (hex_color >> 8) & 0xFF, hex_color & 0xFF])
+        / 255
+    )
     rgb = np.stack([image] * 3, axis=-1) * rgb_ratios
     return rgb.astype(image.dtype)
 

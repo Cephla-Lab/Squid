@@ -7,8 +7,7 @@ Created on Mon May  7 19:44:40 2018
 
 import numpy as np
 import cv2
-from scipy.ndimage.filters import laplace
-from numpy import std, square, mean
+from numpy import square, mean
 
 # color is a vector HSV whose size is 3
 
@@ -31,7 +30,9 @@ def default_upper_HSV(color):
 
 def threshold_image(image_BGR, LOWER, UPPER):
     image_HSV = cv2.cvtColor(image_BGR, cv2.COLOR_BGR2HSV)
-    imgMask = 255 * np.array(cv2.inRange(image_HSV, LOWER, UPPER), dtype="uint8")  # The tracked object will be in white
+    imgMask = 255 * np.array(
+        cv2.inRange(image_HSV, LOWER, UPPER), dtype="uint8"
+    )  # The tracked object will be in white
     imgMask = cv2.erode(
         imgMask, None, iterations=2
     )  # Do a series of erosions and dilations on the thresholded image to reduce smaller blobs
@@ -57,7 +58,9 @@ def bgr2gray(image_BGR):
 
 
 def crop(image, center, imSize):  # center is the vector [x,y]
-    imH, imW, *rest = image.shape  # image.shape:[nb of row -->height,nb of column --> Width]
+    imH, imW, *rest = (
+        image.shape
+    )  # image.shape:[nb of row -->height,nb of column --> Width]
     xmin = max(10, center[0] - int(imSize))
     xmax = min(imW - 10, center[0] + int(imSize))
     ymin = max(10, center[1] - int(imSize))
@@ -101,7 +104,9 @@ def find_centroid_enhanced(image, last_centroid):
                 centroid = np.array([cx, cy])
                 isCentroidFound = True
                 all_centroid.append(centroid)
-                dist.append([cv2.contourArea(cnt) / (1 + (centroid - last_centroid) ** 2)])
+                dist.append(
+                    [cv2.contourArea(cnt) / (1 + (centroid - last_centroid) ** 2)]
+                )
 
     if isCentroidFound:
         ind = dist.index(max(dist))
@@ -115,6 +120,7 @@ def find_centroid_enhanced_Rect(image, last_centroid):
     # find contour looks for white object on a black back ground
     # This looks for all contours in the thresholded image and then finds the centroid that maximizes a tracking metric
     # Tracking metric : current centroid area/(1 + dist_to_prev_centroid**2)
+    imH, imW = image.shape[:2]
     contours = cv2.findContours(image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[-2]
     centroid = False
     isCentroidFound = False
@@ -130,7 +136,9 @@ def find_centroid_enhanced_Rect(image, last_centroid):
                 centroid = np.array([cx, cy])
                 isCentroidFound = True
                 all_centroid.append(centroid)
-                dist.append([cv2.contourArea(cnt) / (1 + (centroid - last_centroid) ** 2)])
+                dist.append(
+                    [cv2.contourArea(cnt) / (1 + (centroid - last_centroid) ** 2)]
+                )
 
     if isCentroidFound:
         ind = dist.index(max(dist))
@@ -173,7 +181,6 @@ def find_centroid_basic_Rect(image):
     centroid = False
     isCentroidFound = False
     bbox = None
-    rect = False
     if len(contours) > 0:
         # Find contour with max area
         cnt = max(contours, key=cv2.contourArea)
@@ -199,10 +206,9 @@ def find_centroid_basic_Rect(image):
 
 
 def scale_square_bbox(bbox, scale_factor, square=True):
-
     xmin, ymin, width, height = bbox
 
-    if square == True:
+    if square:
         min_dim = min(width, height)
         width, height = min_dim, min_dim
 
@@ -229,7 +235,7 @@ def get_image_height_width(image):
 
 def get_image_top_center_width(image):
     ImShape = image.shape
-    ImH, ImWs = ImShape[0], ImShape[1]
+    ImH, ImW = ImShape[0], ImShape[1]
     return np.array([ImW * 0.5, 0.25 * ImH]), ImW
 
 
@@ -263,7 +269,9 @@ if __name__ == "__main__":
     vert_HSV = cv2.cvtColor(vert, cv2.COLOR_RGB2HSV)[0][0]
     bleu_HSV = cv2.cvtColor(bleu, cv2.COLOR_RGB2HSV)[0][0]
 
-    img = cv2.imread("C:/Users/Francois/Documents/11-Stage_3A/6-Code_Python/ConsoleWheel/test/rouge.jpg")
+    img = cv2.imread(
+        "C:/Users/Francois/Documents/11-Stage_3A/6-Code_Python/ConsoleWheel/test/rouge.jpg"
+    )
     print(img)
     img2 = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 

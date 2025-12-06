@@ -22,7 +22,12 @@ def get_inverted_y_filepath(filepath, channel_name, Ny):
     channel_name = channel_name.replace(" ", "_")
     filename = filepath.split("/")[-1]
     extension = filename.split(".")[-1]
-    coord_list = filename.replace(channel_name, "").replace("." + extension, "").strip("_").split("_")
+    coord_list = (
+        filename.replace(channel_name, "")
+        .replace("." + extension, "")
+        .strip("_")
+        .split("_")
+    )
     if len(coord_list) > 3:
         coord_list[1] = str(Ny - 1 - int(coord_list[1]))
     else:

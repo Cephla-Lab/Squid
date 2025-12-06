@@ -9,7 +9,6 @@ import threading
 import time
 from typing import Optional
 
-import squid.logging
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
 

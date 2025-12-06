@@ -1,27 +1,26 @@
 import ctypes
-from ctypes import c_int, c_char_p, create_string_buffer
-from pycparser import c_parser, c_ast, parse_file
+from ctypes import c_int, create_string_buffer
 import re
-import sys
 
 C_TO_CTYPES = {
-    'void': None,
-    'int': ctypes.c_int,
-    'char': ctypes.c_char,
-    'char*': ctypes.c_char_p,
-    'bool': ctypes.c_bool,
-    'double': ctypes.c_double,
+    "void": None,
+    "int": ctypes.c_int,
+    "char": ctypes.c_char,
+    "char*": ctypes.c_char_p,
+    "bool": ctypes.c_bool,
+    "double": ctypes.c_double,
     # Add more mappings as needed
 }
 
+
 def extract_macros_from_header(file_path):
     macros = {}
-    with open(file_path, 'r') as file:
+    with open(file_path, "r") as file:
         for line in file:
             # Ignore lines containing keywords like "_declspec"
             if "_declspec" in line or "_BUILD_DLL_" in line:
                 continue
-            match = re.match(r'#define\s+(\w+)\s+(\d+)', line)
+            match = re.match(r"#define\s+(\w+)\s+(\d+)", line)
             if match:
                 name, value = match.groups()
                 macros[name] = int(value)
@@ -30,36 +29,39 @@ def extract_macros_from_header(file_path):
 
 def extract_functions_from_header(file_path):
     functions = []
-    with open(file_path, 'r') as file:
+    with open(file_path, "r") as file:
         content = file.read()
         # Match function prototypes
-        matches = re.findall(r'\b(\w[\w\s\*]+)\s+(\w+)\s*\(([^)]*)\)\s*;', content)
+        matches = re.findall(r"\b(\w[\w\s\*]+)\s+(\w+)\s*\(([^)]*)\)\s*;", content)
         for ret_type, func_name, params in matches:
             param_list = []
             if params.strip():  # Check if there are parameters
-                for param in params.split(','):
+                for param in params.split(","):
                     param = param.strip()
-                    param_type = ' '.join(param.split()[:-1])
-                    param_list.append(C_TO_CTYPES.get(param_type.strip(), ctypes.c_void_p))
-            functions.append({
-                'name': func_name,
-                # 'return_type': C_TO_CTYPES.get(ret_type.strip(), ctypes.c_void_p),
-                'return_type': c_int,
-                'arg_types': param_list
-            })
+                    param_type = " ".join(param.split()[:-1])
+                    param_list.append(
+                        C_TO_CTYPES.get(param_type.strip(), ctypes.c_void_p)
+                    )
+            functions.append(
+                {
+                    "name": func_name,
+                    # 'return_type': C_TO_CTYPES.get(ret_type.strip(), ctypes.c_void_p),
+                    "return_type": c_int,
+                    "arg_types": param_list,
+                }
+            )
     return functions
 
 
 class RCM_API:
     def __init__(self):
-
         # Load the header
-        macros = extract_macros_from_header('.\\RCM_API.h')
-        functions = extract_functions_from_header('.\\RCM_API.h')
+        macros = extract_macros_from_header(".\\RCM_API.h")
+        functions = extract_functions_from_header(".\\RCM_API.h")
 
         # Load the DLL
-        self.rcm_api = ctypes.CDLL('.\\RCM_API.dll')
-        
+        self.rcm_api = ctypes.CDLL(".\\RCM_API.dll")
+
         # Set constants from macros
         for name, value in macros.items():
             setattr(self, name, int(value))
@@ -69,9 +71,9 @@ class RCM_API:
         # Dynamically define functions from the header file
         for func in functions:
             # print(func)
-            func_name = func['name']
-            ret_type = func['return_type']
-            arg_types = func['arg_types']
+            func_name = func["name"]
+            ret_type = func["return_type"]
+            arg_types = func["arg_types"]
             function = getattr(self.rcm_api, func_name)
             function.restype = ret_type
             function.argtypes = arg_types

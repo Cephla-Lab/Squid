@@ -2,19 +2,16 @@
 import os
 
 os.environ["QT_API"] = "pyqt5"
-import qtpy
 
 # qt libraries
-from qtpy.QtCore import *
+from qtpy.QtCore import *  # type: ignore[assignment, misc]
 from qtpy.QtWidgets import *
-from qtpy.QtGui import *
+from qtpy.QtGui import *  # type: ignore[assignment, misc]
 import pyqtgraph as pg
-from datetime import datetime
 from control._def import *
 
 
 class SpectrometerControlWidget(QFrame):
-
     signal_newExposureTime = Signal(float)
     signal_newAnalogGain = Signal(float)
 
@@ -42,7 +39,9 @@ class SpectrometerControlWidget(QFrame):
 
         # connections
         self.btn_live.clicked.connect(self.toggle_live)
-        self.entry_exposureTime.valueChanged.connect(self.spectrometer.set_integration_time_ms)
+        self.entry_exposureTime.valueChanged.connect(
+            self.spectrometer.set_integration_time_ms
+        )
 
         # layout
         grid_line2 = QHBoxLayout()
@@ -131,7 +130,9 @@ class RecordingWidget(QFrame):
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_record.clicked.connect(self.toggle_recording)
         self.entry_saveFPS.valueChanged.connect(self.streamHandler.set_save_fps)
-        self.entry_timeLimit.valueChanged.connect(self.imageSaver.set_recording_time_limit)
+        self.entry_timeLimit.valueChanged.connect(
+            self.imageSaver.set_recording_time_limit
+        )
         self.imageSaver.stop_recording.connect(self.stop_recording)
 
     def set_saving_dir(self):
@@ -142,7 +143,7 @@ class RecordingWidget(QFrame):
         self.base_path_is_set = True
 
     def toggle_recording(self, pressed):
-        if self.base_path_is_set == False:
+        if not self.base_path_is_set:
             self.btn_record.setChecked(False)
             msg = QMessageBox()
             msg.setText("Please choose base saving directory first")
@@ -167,7 +168,6 @@ class RecordingWidget(QFrame):
 
 
 class SpectrumDisplay(QFrame):
-
     def __init__(self, N=1000, main=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.N = N
@@ -186,7 +186,6 @@ class SpectrumDisplay(QFrame):
 
 
 class PlotWidget(pg.GraphicsLayoutWidget):
-
     def __init__(self, title="", parent=None, add_legend=False):
         super().__init__(parent)
         self.plotWidget = self.addPlot(title=title)

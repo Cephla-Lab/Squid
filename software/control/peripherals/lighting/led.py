@@ -1,6 +1,5 @@
 from enum import Enum
 import json
-import os
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -76,7 +75,10 @@ class IlluminationController:
         if self.light_source_type is not None:
             self._configure_light_source()
 
-        if self.light_source_type is None and self.disable_intensity_calibration is False:
+        if (
+            self.light_source_type is None
+            and self.disable_intensity_calibration is False
+        ):
             self._load_intensity_calibrations()
 
     def _load_channel_mappings(self, default_mappings):
@@ -90,7 +92,9 @@ class IlluminationController:
                 with open(mapping_file, "r") as f:
                     mappings = json.load(f)
                     # Convert string keys to integers
-                    return {int(k): v for k, v in mappings["Illumination Code Map"].items()}
+                    return {
+                        int(k): v for k, v in mappings["Illumination Code Map"].items()
+                    }
             return default_mappings
         except (json.JSONDecodeError, KeyError, FileNotFoundError):
             return default_mappings
@@ -102,7 +106,9 @@ class IlluminationController:
         self.channel_mappings_software = self.light_source.channel_mappings
         for ch in self.channel_mappings_software:
             self.intensity_settings[ch] = self.get_intensity(ch)
-            self.is_on[ch] = self.light_source.get_shutter_state(self.channel_mappings_software[ch])
+            self.is_on[ch] = self.light_source.get_shutter_state(
+                self.channel_mappings_software[ch]
+            )
 
     def _set_intensity_control_mode(self, mode):
         self.light_source.set_intensity_control_mode(mode)
@@ -114,7 +120,9 @@ class IlluminationController:
 
     def get_intensity(self, channel):
         if self.intensity_control_mode == IntensityControlMode.Software:
-            intensity = self.light_source.get_intensity(self.channel_mappings_software[channel])
+            intensity = self.light_source.get_intensity(
+                self.channel_mappings_software[channel]
+            )
             self.intensity_settings[channel] = intensity
             return intensity  # 0 - 100
 
@@ -123,7 +131,9 @@ class IlluminationController:
             channel = self.current_channel
 
         if self.shutter_control_mode == ShutterControlMode.Software:
-            self.light_source.set_shutter_state(self.channel_mappings_software[channel], on=True)
+            self.light_source.set_shutter_state(
+                self.channel_mappings_software[channel], on=True
+            )
         elif self.shutter_control_mode == ShutterControlMode.TTL:
             # self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], self.intensity_settings[channel])
             self.microcontroller.turn_on_illumination()
@@ -135,7 +145,9 @@ class IlluminationController:
             channel = self.current_channel
 
         if self.shutter_control_mode == ShutterControlMode.Software:
-            self.light_source.set_shutter_state(self.channel_mappings_software[channel], on=False)
+            self.light_source.set_shutter_state(
+                self.channel_mappings_software[channel], on=False
+            )
         elif self.shutter_control_mode == ShutterControlMode.TTL:
             self.microcontroller.turn_off_illumination()
 
@@ -149,21 +161,36 @@ class IlluminationController:
 
         for calibration_file in calibrations_dir.glob("*.csv"):
             try:
-                wavelength = int(calibration_file.stem)  # Filename should be wavelength.csv
+                wavelength = int(
+                    calibration_file.stem
+                )  # Filename should be wavelength.csv
                 calibration_data = pd.read_csv(calibration_file)
-                if "DAC Percent" in calibration_data.columns and "Optical Power (mW)" in calibration_data.columns:
+                if (
+                    "DAC Percent" in calibration_data.columns
+                    and "Optical Power (mW)" in calibration_data.columns
+                ):
                     # Store max power for this wavelength
-                    self.max_power[wavelength] = calibration_data["Optical Power (mW)"].max()
+                    self.max_power[wavelength] = calibration_data[
+                        "Optical Power (mW)"
+                    ].max()
                     # Create normalized power values (0-100%)
-                    normalized_power = calibration_data["Optical Power (mW)"] / self.max_power[wavelength] * 100
+                    normalized_power = (
+                        calibration_data["Optical Power (mW)"]
+                        / self.max_power[wavelength]
+                        * 100
+                    )
                     # Ensure DAC values are in range 0-100
-                    dac_percent = np.clip(calibration_data["DAC Percent"].values, 0, 100)
+                    dac_percent = np.clip(
+                        calibration_data["DAC Percent"].values, 0, 100
+                    )
                     self.intensity_luts[wavelength] = {
                         "power_percent": normalized_power.values,
                         "dac_percent": dac_percent,
                     }
             except (ValueError, KeyError) as e:
-                print(f"Warning: Could not load calibration from {calibration_file}: {e}")
+                print(
+                    f"Warning: Could not load calibration from {calibration_file}: {e}"
+                )
 
     def _apply_lut(self, channel, intensity_percent):
         """Convert desired power percentage to DAC value (0-100) using LUT."""
@@ -171,7 +198,9 @@ class IlluminationController:
         # Ensure intensity is within bounds
         intensity_percent = np.clip(intensity_percent, 0, 100)
         # Interpolate to get DAC value
-        dac_percent = np.interp(intensity_percent, lut["power_percent"], lut["dac_percent"])
+        dac_percent = np.interp(
+            intensity_percent, lut["power_percent"], lut["dac_percent"]
+        )
         # Ensure DAC value is in range 0-100
         return np.clip(dac_percent, 0, 100)
 
@@ -181,19 +210,27 @@ class IlluminationController:
             self.intensity_settings[channel] = -1
         if self.intensity_control_mode == IntensityControlMode.Software:
             if intensity != self.intensity_settings[channel]:
-                self.light_source.set_intensity(self.channel_mappings_software[channel], intensity)
+                self.light_source.set_intensity(
+                    self.channel_mappings_software[channel], intensity
+                )
                 self.intensity_settings[channel] = intensity
             if self.shutter_control_mode == ShutterControlMode.TTL:
                 # This is needed, because we select the channel in microcontroller set_illumination().
                 # Otherwise, the wrong channel will be opened when turn_on_illumination() is called.
-                self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], intensity)
+                self.microcontroller.set_illumination(
+                    self.channel_mappings_TTL[channel], intensity
+                )
         else:
             if channel in self.intensity_luts:
                 # Apply LUT to convert power percentage to DAC percent (0-100)
                 dac_percent = self._apply_lut(channel, intensity)
-                self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], dac_percent)
+                self.microcontroller.set_illumination(
+                    self.channel_mappings_TTL[channel], dac_percent
+                )
             else:
-                self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], intensity)
+                self.microcontroller.set_illumination(
+                    self.channel_mappings_TTL[channel], intensity
+                )
             self.intensity_settings[channel] = intensity
 
     def get_shutter_state(self):

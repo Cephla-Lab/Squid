@@ -10,9 +10,6 @@ import squid.logging
 from control._def import *
 from control.peripherals.stage.serial import (
     AbstractCephlaMicroSerial,
-    SimSerial,
-    MicrocontrollerSerial,
-    get_microcontroller_serial_device,
 )
 
 
@@ -41,7 +38,9 @@ def movement_sign_to_homing_direction(sign: int) -> HomingDirection:
 _default_x_homing_direction = movement_sign_to_homing_direction(STAGE_MOVEMENT_SIGN_X)
 _default_y_homing_direction = movement_sign_to_homing_direction(STAGE_MOVEMENT_SIGN_Y)
 _default_z_homing_direction = movement_sign_to_homing_direction(STAGE_MOVEMENT_SIGN_Z)
-_default_theta_homing_direction = movement_sign_to_homing_direction(STAGE_MOVEMENT_SIGN_THETA)
+_default_theta_homing_direction = movement_sign_to_homing_direction(
+    STAGE_MOVEMENT_SIGN_THETA
+)
 _default_w_homing_direction = movement_sign_to_homing_direction(STAGE_MOVEMENT_SIGN_W)
 
 
@@ -68,11 +67,17 @@ class Microcontroller:
     # on the micro.  So 0.1 is 10x that.
     STALE_READ_TIMEOUT = 0.1
 
-    def __init__(self, serial_device: AbstractCephlaMicroSerial, reset_and_initialize=True):
+    def __init__(
+        self,
+        serial_device: AbstractCephlaMicroSerial,
+        reset_and_initialize: bool = True,
+    ) -> None:
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
         if not serial_device:
-            raise ValueError("You must pass in an AbstractCephlaSerial device for the microcontroller instance to use.")
+            raise ValueError(
+                "You must pass in an AbstractCephlaSerial device for the microcontroller instance to use."
+            )
 
         self._serial = serial_device
 
@@ -119,7 +124,9 @@ class Microcontroller:
         self.new_packet_callback_external = None
         self.terminate_reading_received_packet_thread = False
         self._received_packet_cv = threading.Condition()
-        self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
+        self.thread_read_received_packet = threading.Thread(
+            target=self.read_received_packet, daemon=True
+        )
         self.thread_read_received_packet.start()
 
         if reset_and_initialize:
@@ -129,10 +136,12 @@ class Microcontroller:
             self.initialize_drivers()
             time.sleep(0.5)
             self.configure_actuators()
-            self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
+            self.set_dac80508_scaling_factor_for_illumination(
+                ILLUMINATION_INTENSITY_FACTOR
+            )
             time.sleep(0.5)
 
-    def _warn_if_reads_stale(self):
+    def _warn_if_reads_stale(self) -> None:
         now = time.time()
         last_read = float(
             self._last_successful_read_time
@@ -142,30 +151,32 @@ class Microcontroller:
                 f"Read thread is stale, it has been {now - last_read} [s] since a valid packet. Last cmd id from the mcu was {self._cmd_id_mcu}, our last sent cmd id was {self._cmd_id}"
             )
 
-    def close(self):
+    def close(self) -> None:
         self.terminate_reading_received_packet_thread = True
         self.thread_read_received_packet.join()
         self._serial.close()
 
-    def add_joystick_button_listener(self, listener: Callable[[bool], None]):
+    def add_joystick_button_listener(self, listener: Callable[[bool], None]) -> None:
         try:
             next_id = max(t[0] for t in self.joystick_event_listeners) + 1
-        except ValueError as e:
+        except ValueError:
             next_id = 1
         self.log.debug(f"Adding joystick button listener with id={next_id}")
         self.joystick_event_listeners.append((next_id, listener))
 
-    def remove_joystick_button_listener(self, id_to_remove):
+    def remove_joystick_button_listener(self, id_to_remove: int) -> None:
         try:
             idx = [t[0] for t in self.joystick_event_listeners].index(id_to_remove)
-            self.log.debug(f"Removing joystick button listener id={id_to_remove} at idx={idx}")
+            self.log.debug(
+                f"Removing joystick button listener id={id_to_remove} at idx={idx}"
+            )
             del self.joystick_event_listeners[idx]
-        except ValueError as e:
+        except ValueError:
             self.log.warning(
                 f"Asked to remove joystick button listener {id_to_remove}, but it is not a known listener id"
             )
 
-    def enable_joystick(self, enabled: bool):
+    def enable_joystick(self, enabled: bool) -> None:
         self.joystick_listener_events_enabled = enabled
 
     def reset(self):
@@ -178,31 +189,31 @@ class Microcontroller:
         # here.
         self._cmd_id = 0
 
-    def initialize_drivers(self):
+    def initialize_drivers(self) -> None:
         self._cmd_id = 0
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.INITIALIZE
         self.send_command(cmd)
         self.log.debug("initialize the drivers")
 
-    def init_filter_wheel(self):
+    def init_filter_wheel(self) -> None:
         self._cmd_id = 0
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.INITFILTERWHEEL
         self.send_command(cmd)
         print("initialize filter wheel")  # debug
 
-    def turn_on_illumination(self):
+    def turn_on_illumination(self) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_ON_ILLUMINATION
         self.send_command(cmd)
 
-    def turn_off_illumination(self):
+    def turn_off_illumination(self) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_OFF_ILLUMINATION
         self.send_command(cmd)
 
-    def set_illumination(self, illumination_source, intensity):
+    def set_illumination(self, illumination_source: int, intensity: float) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_ILLUMINATION
         cmd[2] = illumination_source
@@ -210,7 +221,9 @@ class Microcontroller:
         cmd[4] = int((intensity / 100) * 65535) & 0xFF
         self.send_command(cmd)
 
-    def set_illumination_led_matrix(self, illumination_source, r, g, b):
+    def set_illumination_led_matrix(
+        self, illumination_source: int, r: float, g: float, b: float
+    ) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_ILLUMINATION_LED_MATRIX
         cmd[2] = illumination_source
@@ -219,18 +232,27 @@ class Microcontroller:
         cmd[5] = min(int(b * 255), 255)
         self.send_command(cmd)
 
-    def send_hardware_trigger(self, control_illumination=False, illumination_on_time_us=0, trigger_output_ch=0):
+    def send_hardware_trigger(
+        self,
+        control_illumination: bool = False,
+        illumination_on_time_us: int = 0,
+        trigger_output_ch: int = 0,
+    ) -> None:
         illumination_on_time_us = int(illumination_on_time_us)
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SEND_HARDWARE_TRIGGER
-        cmd[2] = (control_illumination << 7) + trigger_output_ch  # MSB: whether illumination is controlled
+        cmd[2] = (
+            control_illumination << 7
+        ) + trigger_output_ch  # MSB: whether illumination is controlled
         cmd[3] = illumination_on_time_us >> 24
         cmd[4] = (illumination_on_time_us >> 16) & 0xFF
         cmd[5] = (illumination_on_time_us >> 8) & 0xFF
         cmd[6] = illumination_on_time_us & 0xFF
         self.send_command(cmd)
 
-    def set_strobe_delay_us(self, strobe_delay_us, camera_channel=0):
+    def set_strobe_delay_us(
+        self, strobe_delay_us: int, camera_channel: int = 0
+    ) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_STROBE_DELAY
         cmd[2] = camera_channel
@@ -240,14 +262,14 @@ class Microcontroller:
         cmd[6] = strobe_delay_us & 0xFF
         self.send_command(cmd)
 
-    def set_axis_enable_disable(self, axis, status):
+    def set_axis_enable_disable(self, axis: int, status: int) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_AXIS_DISABLE_ENABLE
         cmd[2] = axis
         cmd[3] = status
         self.send_command(cmd)
 
-    def _move_axis_usteps(self, usteps, axis_command_code):
+    def _move_axis_usteps(self, usteps: int, axis_command_code: int) -> None:
         direction = np.sign(usteps)
         n_microsteps_abs = abs(usteps)
         # if n_microsteps_abs exceed the max value that can be sent in one go
@@ -275,10 +297,10 @@ class Microcontroller:
         cmd[5] = payload & 0xFF
         self.send_command(cmd)
 
-    def move_x_usteps(self, usteps):
+    def move_x_usteps(self, usteps: int) -> None:
         self._move_axis_usteps(usteps, CMD_SET.MOVE_X)
 
-    def move_x_to_usteps(self, usteps):
+    def move_x_to_usteps(self, usteps: int) -> None:
         payload = self._int_to_payload(usteps, 4)
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.MOVETO_X
@@ -291,7 +313,7 @@ class Microcontroller:
     def move_y_usteps(self, usteps):
         self._move_axis_usteps(usteps, CMD_SET.MOVE_Y)
 
-    def move_y_to_usteps(self, usteps):
+    def move_y_to_usteps(self, usteps: int) -> None:
         payload = self._int_to_payload(usteps, 4)
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.MOVETO_Y
@@ -301,10 +323,10 @@ class Microcontroller:
         cmd[5] = payload & 0xFF
         self.send_command(cmd)
 
-    def move_z_usteps(self, usteps):
+    def move_z_usteps(self, usteps: int) -> None:
         self._move_axis_usteps(usteps, CMD_SET.MOVE_Z)
 
-    def move_z_to_usteps(self, usteps):
+    def move_z_to_usteps(self, usteps: int) -> None:
         payload = self._int_to_payload(usteps, 4)
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.MOVETO_Z
@@ -314,13 +336,13 @@ class Microcontroller:
         cmd[5] = payload & 0xFF
         self.send_command(cmd)
 
-    def move_theta_usteps(self, usteps):
+    def move_theta_usteps(self, usteps: int) -> None:
         self._move_axis_usteps(usteps, CMD_SET.MOVE_THETA)
 
-    def move_w_usteps(self, usteps):
+    def move_w_usteps(self, usteps: int):
         self._move_axis_usteps(usteps, CMD_SET.MOVE_W)
 
-    def set_off_set_velocity_x(self, off_set_velocity):
+    def set_off_set_velocity_x(self, off_set_velocity: float) -> None:
         # off_set_velocity is in mm/s
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_OFFSET_VELOCITY
@@ -333,7 +355,7 @@ class Microcontroller:
         cmd[6] = payload & 0xFF
         self.send_command(cmd)
 
-    def set_off_set_velocity_y(self, off_set_velocity):
+    def set_off_set_velocity_y(self, off_set_velocity: float) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_OFFSET_VELOCITY
         cmd[2] = AXIS.Y
@@ -345,28 +367,36 @@ class Microcontroller:
         cmd[6] = payload & 0xFF
         self.send_command(cmd)
 
-    def home_x(self, homing_direction: HomingDirection = _default_x_homing_direction):
+    def home_x(
+        self, homing_direction: HomingDirection = _default_x_homing_direction
+    ) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.X
         cmd[3] = homing_direction.value
         self.send_command(cmd)
 
-    def home_y(self, homing_direction: HomingDirection = _default_y_homing_direction):
+    def home_y(
+        self, homing_direction: HomingDirection = _default_y_homing_direction
+    ) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.Y
         cmd[3] = homing_direction.value
         self.send_command(cmd)
 
-    def home_z(self, homing_direction: HomingDirection = _default_z_homing_direction):
+    def home_z(
+        self, homing_direction: HomingDirection = _default_z_homing_direction
+    ) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.Z
         cmd[3] = homing_direction.value
         self.send_command(cmd)
 
-    def home_theta(self, homing_direction: HomingDirection = _default_theta_homing_direction):
+    def home_theta(
+        self, homing_direction: HomingDirection = _default_theta_homing_direction
+    ) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = 3
@@ -377,7 +407,7 @@ class Microcontroller:
         self,
         homing_direction_x: HomingDirection = _default_x_homing_direction,
         homing_direction_y: HomingDirection = _default_y_homing_direction,
-    ):
+    ) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.XY
@@ -385,51 +415,57 @@ class Microcontroller:
         cmd[4] = homing_direction_y.value
         self.send_command(cmd)
 
-    def home_w(self, homing_direction: HomingDirection = _default_w_homing_direction):
+    def home_w(
+        self, homing_direction: HomingDirection = _default_w_homing_direction
+    ) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.W
         cmd[3] = homing_direction.value
         self.send_command(cmd)
 
-    def zero_x(self):
+    def zero_x(self) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.X
         cmd[3] = HOME_OR_ZERO.ZERO
         self.send_command(cmd)
 
-    def zero_y(self):
+    def zero_y(self) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.Y
         cmd[3] = HOME_OR_ZERO.ZERO
         self.send_command(cmd)
 
-    def zero_z(self):
+    def zero_z(self) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.Z
         cmd[3] = HOME_OR_ZERO.ZERO
         self.send_command(cmd)
 
-    def zero_w(self):
+    def zero_w(self) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.W
         cmd[3] = HOME_OR_ZERO.ZERO
         self.send_command(cmd)
 
-    def zero_theta(self):
+    def zero_theta(self) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.THETA
         cmd[3] = HOME_OR_ZERO.ZERO
         self.send_command(cmd)
 
-    def configure_stage_pid(self, axis, transitions_per_revolution, flip_direction=False):
+    def configure_stage_pid(
+        self, axis: int, transitions_per_revolution: int, flip_direction: bool = False
+    ) -> None:
         if not isinstance(transitions_per_revolution, int):
-            self.log.warning(f"transitions_per_revolution must be an integer, truncating: {transitions_per_revolution}")
+            self.log.warning(
+                f"transitions_per_revolution must be an integer, truncating: {transitions_per_revolution}"
+            )
 
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.CONFIGURE_STAGE_PID
@@ -440,24 +476,24 @@ class Microcontroller:
         cmd[5] = payload & 0xFF
         self.send_command(cmd)
 
-    def turn_on_stage_pid(self, axis):
+    def turn_on_stage_pid(self, axis: int) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.ENABLE_STAGE_PID
         cmd[2] = axis
         self.send_command(cmd)
 
-    def turn_off_stage_pid(self, axis):
+    def turn_off_stage_pid(self, axis: int) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.DISABLE_STAGE_PID
         cmd[2] = axis
         self.send_command(cmd)
 
-    def turn_off_all_pid(self):
+    def turn_off_all_pid(self) -> None:
         for primary_axis_id in [AXIS.X, AXIS.Y, AXIS.Z]:
             self.turn_off_stage_pid(primary_axis_id)
             self.wait_till_operation_is_completed()
 
-    def set_pid_arguments(self, axis, pid_p, pid_i, pid_d):
+    def set_pid_arguments(self, axis: int, pid_p: int, pid_i: int, pid_d: int) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_PID_ARGUMENTS
         cmd[2] = int(axis)
@@ -469,7 +505,7 @@ class Microcontroller:
         cmd[6] = int(pid_d)
         self.send_command(cmd)
 
-    def set_lim(self, limit_code, usteps):
+    def set_lim(self, limit_code: int, usteps: int) -> None:
         self.log.info(f"Set lim: {limit_code=}, {usteps=}")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_LIM
@@ -481,14 +517,14 @@ class Microcontroller:
         cmd[6] = payload & 0xFF
         self.send_command(cmd)
 
-    def set_limit_switch_polarity(self, axis, polarity):
+    def set_limit_switch_polarity(self, axis: int, polarity: int) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_LIM_SWITCH_POLARITY
         cmd[2] = axis
         cmd[3] = polarity
         self.send_command(cmd)
 
-    def set_home_safety_margin(self, axis, margin):
+    def set_home_safety_margin(self, axis: int, margin: int) -> None:
         margin = abs(margin)
         if margin > 0xFFFF:
             margin = 0xFFFF
@@ -499,7 +535,9 @@ class Microcontroller:
         cmd[4] = (margin) & 0xFF
         self.send_command(cmd)
 
-    def configure_motor_driver(self, axis, microstepping, current_rms, I_hold):
+    def configure_motor_driver(
+        self, axis: int, microstepping: int, current_rms: int, I_hold: float
+    ) -> None:
         # current_rms in mA
         # I_hold 0.0-1.0
         cmd = bytearray(self.tx_buffer_length)
@@ -508,7 +546,9 @@ class Microcontroller:
         if microstepping == 1:
             cmd[3] = 0
         elif microstepping == 256:
-            cmd[3] = 255  # max of uint8 is 255 - will be changed to 255 after received by the MCU
+            cmd[3] = (
+                255  # max of uint8 is 255 - will be changed to 255 after received by the MCU
+            )
         else:
             cmd[3] = microstepping
         cmd[4] = current_rms >> 8
@@ -516,7 +556,9 @@ class Microcontroller:
         cmd[6] = int(I_hold * 255)
         self.send_command(cmd)
 
-    def set_max_velocity_acceleration(self, axis, velocity, acceleration):
+    def set_max_velocity_acceleration(
+        self, axis: int, velocity: float, acceleration: float
+    ) -> None:
         # velocity: max 65535/100 mm/s
         # acceleration: max 65535/10 mm/s^2
         cmd = bytearray(self.tx_buffer_length)
@@ -528,7 +570,7 @@ class Microcontroller:
         cmd[6] = int(acceleration * 10) & 0xFF
         self.send_command(cmd)
 
-    def set_leadscrew_pitch(self, axis, pitch_mm):
+    def set_leadscrew_pitch(self, axis: int, pitch_mm: float) -> None:
         # pitch: max 65535/1000 = 65.535 (mm)
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_LEAD_SCREW_PITCH
@@ -546,18 +588,30 @@ class Microcontroller:
         self.set_leadscrew_pitch(AXIS.Z, SCREW_PITCH_Z_MM)
         self.wait_till_operation_is_completed()
         # stepper driver (microstepping,rms current and I_hold)
-        self.configure_motor_driver(AXIS.X, MICROSTEPPING_DEFAULT_X, X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            AXIS.X, MICROSTEPPING_DEFAULT_X, X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD
+        )
         self.wait_till_operation_is_completed()
-        self.configure_motor_driver(AXIS.Y, MICROSTEPPING_DEFAULT_Y, Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            AXIS.Y, MICROSTEPPING_DEFAULT_Y, Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD
+        )
         self.wait_till_operation_is_completed()
-        self.configure_motor_driver(AXIS.Z, MICROSTEPPING_DEFAULT_Z, Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            AXIS.Z, MICROSTEPPING_DEFAULT_Z, Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD
+        )
         self.wait_till_operation_is_completed()
         # max velocity and acceleration
-        self.set_max_velocity_acceleration(AXIS.X, MAX_VELOCITY_X_mm, MAX_ACCELERATION_X_mm)
+        self.set_max_velocity_acceleration(
+            AXIS.X, MAX_VELOCITY_X_mm, MAX_ACCELERATION_X_mm
+        )
         self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(AXIS.Y, MAX_VELOCITY_Y_mm, MAX_ACCELERATION_Y_mm)
+        self.set_max_velocity_acceleration(
+            AXIS.Y, MAX_VELOCITY_Y_mm, MAX_ACCELERATION_Y_mm
+        )
         self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(AXIS.Z, MAX_VELOCITY_Z_mm, MAX_ACCELERATION_Z_mm)
+        self.set_max_velocity_acceleration(
+            AXIS.Z, MAX_VELOCITY_Z_mm, MAX_ACCELERATION_Z_mm
+        )
         self.wait_till_operation_is_completed()
         # home switch
         self.set_limit_switch_polarity(AXIS.X, X_HOME_SWITCH_POLARITY)
@@ -577,17 +631,21 @@ class Microcontroller:
     def configure_squidfilter(self):
         self.set_leadscrew_pitch(AXIS.W, SCREW_PITCH_W_MM)
         self.wait_till_operation_is_completed()
-        self.configure_motor_driver(AXIS.W, MICROSTEPPING_DEFAULT_W, W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            AXIS.W, MICROSTEPPING_DEFAULT_W, W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD
+        )
         self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(AXIS.W, MAX_VELOCITY_W_mm, MAX_ACCELERATION_W_mm)
+        self.set_max_velocity_acceleration(
+            AXIS.W, MAX_VELOCITY_W_mm, MAX_ACCELERATION_W_mm
+        )
         self.wait_till_operation_is_completed()
 
-    def ack_joystick_button_pressed(self):
+    def ack_joystick_button_pressed(self) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.ACK_JOYSTICK_BUTTON_PRESSED
         self.send_command(cmd)
 
-    def analog_write_onboard_DAC(self, dac, value):
+    def analog_write_onboard_DAC(self, dac: int, value: int) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.ANALOG_WRITE_ONBOARD_DAC
         cmd[2] = dac
@@ -595,32 +653,32 @@ class Microcontroller:
         cmd[4] = value & 0xFF
         self.send_command(cmd)
 
-    def set_piezo_um(self, z_piezo_um):
+    def set_piezo_um(self, z_piezo_um: float) -> None:
         dac = int(65535 * (z_piezo_um / OBJECTIVE_PIEZO_RANGE_UM))
         dac = 65535 - dac if OBJECTIVE_PIEZO_FLIP_DIR else dac
         self.analog_write_onboard_DAC(7, dac)
 
-    def configure_dac80508_refdiv_and_gain(self, div, gains):
+    def configure_dac80508_refdiv_and_gain(self, div: int, gains: int) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_DAC80508_REFDIV_GAIN
         cmd[2] = div
         cmd[3] = gains
         self.send_command(cmd)
 
-    def set_pin_level(self, pin, level):
+    def set_pin_level(self, pin: int, level: int) -> None:
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_PIN_LEVEL
         cmd[2] = pin
         cmd[3] = level
         self.send_command(cmd)
 
-    def turn_on_AF_laser(self):
+    def turn_on_AF_laser(self) -> None:
         self.set_pin_level(MCU_PINS.AF_LASER, 1)
 
-    def turn_off_AF_laser(self):
+    def turn_off_AF_laser(self) -> None:
         self.set_pin_level(MCU_PINS.AF_LASER, 0)
 
-    def send_command(self, command):
+    def send_command(self, command: bytearray) -> None:
         self._cmd_id = (self._cmd_id + 1) % 256
         command[0] = self._cmd_id
         command[-1] = self.crc_calculator.calculate_checksum(command[:-1])
@@ -632,36 +690,45 @@ class Microcontroller:
 
         if self.last_command_aborted_error is not None:
             self.log.warning(
-                "Last command aborted and not cleared before new command sent!", self.last_command_aborted_error
+                "Last command aborted and not cleared before new command sent!",
+                self.last_command_aborted_error,
             )
         self.last_command_aborted_error = None
 
         self._warn_if_reads_stale()
 
-    def abort_current_command(self, reason):
+    def abort_current_command(self, reason: str) -> None:
         self.log.error(f"Command id={self._cmd_id} aborted for reason='{reason}'")
-        self.last_command_aborted_error = CommandAborted(reason=reason, command_id=self._cmd_id)
+        self.last_command_aborted_error = CommandAborted(
+            reason=reason, command_id=self._cmd_id
+        )
         self.mcu_cmd_execution_in_progress = False
 
-    def acknowledge_aborted_command(self):
+    def acknowledge_aborted_command(self) -> None:
         if self.last_command_aborted_error is None:
-            self.log.warning("Request to ack aborted command, but there is no aborted command.")
+            self.log.warning(
+                "Request to ack aborted command, but there is no aborted command."
+            )
 
         self.last_command_aborted_error = None
 
-    def resend_last_command(self):
+    def resend_last_command(self) -> None:
         if self.last_command is not None:
-            self._serial.write(self.last_command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
+            self._serial.write(
+                self.last_command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT
+            )
             self.mcu_cmd_execution_in_progress = True
             # We use the retry count for both checksum errors, and to keep track of
             # timeout re-attempts.
             self.last_command_send_timestamp = time.time()
             self.retry = self.retry + 1
         else:
-            self.log.warning("resend requested with no last_command, something is wrong!")
+            self.log.warning(
+                "resend requested with no last_command, something is wrong!"
+            )
             self.abort_current_command("Resend last requested with no last command")
 
-    def read_received_packet(self):
+    def read_received_packet(self) -> None:
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
         last_watchdog_fail_report = time.time()
         watchdog_fail_report_period = 5.0
@@ -678,14 +745,19 @@ class Microcontroller:
                 # If we don't at least have enough bytes for a full packet (rx_buffer_length), there's no reason to
                 # waste our time looking for a valid message.  So wait here until we have at least that many bytes.
                 if self._serial.bytes_available() < self.rx_buffer_length:
-                    if time.time() - last_watchdog_fail_report > watchdog_fail_report_period:
+                    if (
+                        time.time() - last_watchdog_fail_report
+                        > watchdog_fail_report_period
+                    ):
                         last_watchdog_fail_report = time.time()
                         self._warn_if_reads_stale()
                     # Sleep a negligible amount of time just to give other threads time to run.  Otherwise,
                     # we run the rise of spinning forever here and not letting progress happen elsewhere.
                     time.sleep(0.0001)
                     if not self._serial.is_open():
-                        if not self._serial.reconnect(attempts=Microcontroller.MAX_RECONNECT_COUNT):
+                        if not self._serial.reconnect(
+                            attempts=Microcontroller.MAX_RECONNECT_COUNT
+                        ):
                             self.log.error(
                                 "In read loop, serial device failed to reconnect.  Microcontroller is defunct!"
                             )
@@ -708,7 +780,9 @@ class Microcontroller:
                         if checksum == maybe_msg[-1] or maybe_msg[-1] == 0:
                             return maybe_msg
                         else:
-                            self.log.warning(f"Bad checksum {checksum} for packet '{maybe_msg}, tossing first byte'")
+                            self.log.warning(
+                                f"Bad checksum {checksum} for packet '{maybe_msg}, tossing first byte'"
+                            )
                             maybe_msg.pop(0)
                     return None
 
@@ -734,7 +808,8 @@ class Microcontroller:
                 self._cmd_id_mcu = msg[0]
                 self._cmd_execution_status = msg[1]
                 if (self._cmd_id_mcu == self._cmd_id) and (
-                    self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+                    self._cmd_execution_status
+                    == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
                 ):
                     if self.mcu_cmd_execution_in_progress:
                         self.mcu_cmd_execution_in_progress = False
@@ -742,7 +817,8 @@ class Microcontroller:
                 elif (
                     self.mcu_cmd_execution_in_progress
                     and self._cmd_id_mcu != self._cmd_id
-                    and time.time() - self.last_command_send_timestamp > self.LAST_COMMAND_ACK_TIMEOUT
+                    and time.time() - self.last_command_send_timestamp
+                    > self.LAST_COMMAND_ACK_TIMEOUT
                     and self.last_command is not None
                 ):
                     if self.retry > self.MAX_RETRY_COUNT:
@@ -756,10 +832,13 @@ class Microcontroller:
                         self.resend_last_command()
                 elif (
                     self.mcu_cmd_execution_in_progress
-                    and self._cmd_execution_status == CMD_EXECUTION_STATUS.CMD_CHECKSUM_ERROR
+                    and self._cmd_execution_status
+                    == CMD_EXECUTION_STATUS.CMD_CHECKSUM_ERROR
                 ):
                     if self.retry > self.MAX_RETRY_COUNT:
-                        self.abort_current_command(reason=f"Checksum error and 10 retries for {self._cmd_id}")
+                        self.abort_current_command(
+                            reason=f"Checksum error and 10 retries for {self._cmd_id}"
+                        )
                     else:
                         self.log.error("cmd checksum error, resending command")
                         self.resend_last_command()
@@ -802,21 +881,24 @@ class Microcontroller:
                 if self.new_packet_callback_external is not None:
                     self.new_packet_callback_external(self)
             except Exception as e:
-                self.log.error("Read loop failed, continuing to loop to see if anything can recover.", exc_info=e)
+                self.log.error(
+                    "Read loop failed, continuing to loop to see if anything can recover.",
+                    exc_info=e,
+                )
 
-    def get_pos(self):
+    def get_pos(self) -> tuple:
         return self.x_pos, self.y_pos, self.z_pos, self.theta_pos
 
-    def get_button_and_switch_state(self):
+    def get_button_and_switch_state(self) -> int:
         return self.button_and_switch_state
 
-    def is_busy(self):
+    def is_busy(self) -> bool:
         return self.mcu_cmd_execution_in_progress
 
-    def set_callback(self, function):
+    def set_callback(self, function: callable) -> None:
         self.new_packet_callback_external = function
 
-    def wait_till_operation_is_completed(self, timeout_limit_s=5):
+    def wait_till_operation_is_completed(self, timeout_limit_s: float = 5) -> None:
         """
         Wait for the current command to complete.  If the wait times out, the current command isn't touched.  To
         abort it, you should call the abort_current_command(...) method.
@@ -826,25 +908,31 @@ class Microcontroller:
             def still_busy():
                 return self.is_busy() and self.last_command_aborted_error is None
 
-            self._received_packet_cv.wait_for(lambda: not still_busy(), timeout=timeout_limit_s)
+            self._received_packet_cv.wait_for(
+                lambda: not still_busy(), timeout=timeout_limit_s
+            )
 
             if still_busy():
-                raise TimeoutError(f"Current mcu operation timed out after {timeout_limit_s} [s].")
+                raise TimeoutError(
+                    f"Current mcu operation timed out after {timeout_limit_s} [s]."
+                )
 
             if self.last_command_aborted_error is not None:
                 raise self.last_command_aborted_error
 
     @staticmethod
-    def _int_to_payload(signed_int, number_of_bytes) -> int:
+    def _int_to_payload(signed_int: int, number_of_bytes: int) -> int:
         actually_signed_int = int(round(signed_int))
         if actually_signed_int >= 0:
             payload = actually_signed_int
         else:
-            payload = 2 ** (8 * number_of_bytes) + actually_signed_int  # find two's complement
+            payload = (
+                2 ** (8 * number_of_bytes) + actually_signed_int
+            )  # find two's complement
         return int(payload)
 
     @staticmethod
-    def _payload_to_int(payload, number_of_bytes) -> int:
+    def _payload_to_int(payload: bytes, number_of_bytes: int) -> int:
         signed = 0
         for i in range(number_of_bytes):
             signed = signed + int(payload[i]) * (256 ** (number_of_bytes - 1 - i))
@@ -852,7 +940,9 @@ class Microcontroller:
             signed = signed - 256**number_of_bytes
         return int(signed)
 
-    def set_dac80508_scaling_factor_for_illumination(self, illumination_intensity_factor):
+    def set_dac80508_scaling_factor_for_illumination(
+        self, illumination_intensity_factor
+    ):
         if illumination_intensity_factor > 1:
             illumination_intensity_factor = 1
 

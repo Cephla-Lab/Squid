@@ -1,4 +1,5 @@
 """Tests for Registry utility."""
+
 import pytest
 from squid.registry import Registry
 

@@ -1,21 +1,51 @@
 # Napari multi-channel Z-stack viewer widget
+from __future__ import annotations
+
 import numpy as np
-from typing import TYPE_CHECKING
+from numpy.typing import DTypeLike
+from typing import Optional, Set, Tuple
 
 import napari
 from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
+from napari.utils.events import Event
 
 from qtpy.QtWidgets import QWidget, QVBoxLayout
 
 from control._def import CHANNEL_COLORS_MAP, USE_NAPARI_FOR_LIVE_VIEW
 
-if TYPE_CHECKING:
-    from squid.services import CameraService
+from squid.services import CameraService
+from control.core.navigation import ObjectiveStore
+from control.core.configuration import ContrastManager
 
 
 class NapariMultiChannelWidget(QWidget):
+    objectiveStore: ObjectiveStore
+    _camera_service: CameraService
+    contrastManager: ContrastManager
+    image_width: int
+    image_height: int
+    dtype: np.dtype
+    channels: Set[str]
+    pixel_size_um: float
+    dz_um: float
+    Nz: int
+    layers_initialized: bool
+    acquisition_initialized: bool
+    viewer_scale_initialized: bool
+    update_layer_count: int
+    grid_enabled: bool
+    viewer: napari.Viewer
+    viewerWidget: QWidget
+    _layout: QVBoxLayout
 
-    def __init__(self, objectiveStore, camera_service: "CameraService", contrastManager, grid_enabled=False, parent=None):
+    def __init__(
+        self,
+        objectiveStore: ObjectiveStore,
+        camera_service: CameraService,
+        contrastManager: ContrastManager,
+        grid_enabled: bool = False,
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
         # Initialize placeholders for the acquisition parameters
         self.objectiveStore = objectiveStore
@@ -23,10 +53,10 @@ class NapariMultiChannelWidget(QWidget):
         self.contrastManager = contrastManager
         self.image_width = 0
         self.image_height = 0
-        self.dtype = np.uint8
+        self.dtype = np.dtype(np.uint8)
         self.channels = set()
-        self.pixel_size_um = 1
-        self.dz_um = 1
+        self.pixel_size_um = 1.0
+        self.dz_um = 1.0
         self.Nz = 1
         self.layers_initialized = False
         self.acquisition_initialized = False
@@ -37,34 +67,37 @@ class NapariMultiChannelWidget(QWidget):
         # Initialize a napari Viewer without showing its standalone window.
         self.initNapariViewer()
 
-    def initNapariViewer(self):
+    def initNapariViewer(self) -> None:
         self.viewer = napari.Viewer(show=False)
         if self.grid_enabled:
             self.viewer.grid.enabled = True
         self.viewer.dims.axis_labels = ["Z-axis", "Y-axis", "X-axis"]
         self.viewerWidget = self.viewer.window._qt_window
-        self.layout = QVBoxLayout()
-        self.layout.addWidget(self.viewerWidget)
-        self.setLayout(self.layout)
+        self._layout = QVBoxLayout()
+        self._layout.addWidget(self.viewerWidget)
+        self.setLayout(self._layout)
         self.customizeViewer()
 
-    def customizeViewer(self):
+    def customizeViewer(self) -> None:
         # Hide the layer buttons
         if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
             self.viewer.window._qt_viewer.layerButtons.hide()
 
-    def initLayersShape(self, Nz, dz):
-        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self._camera_service.get_pixel_size_binned_um()
+    def initLayersShape(self, Nz: int, dz: float) -> None:
+        pixel_size_um = (
+            self.objectiveStore.get_pixel_size_factor()
+            * self._camera_service.get_pixel_size_binned_um()
+        )
         if self.Nz != Nz or self.dz_um != dz or self.pixel_size_um != pixel_size_um:
             self.acquisition_initialized = False
             self.Nz = Nz
             self.dz_um = dz if Nz > 1 and dz != 0 else 1.0
             self.pixel_size_um = pixel_size_um
 
-    def initChannels(self, channels):
+    def initChannels(self, channels: Set[str]) -> None:
         self.channels = set(channels)
 
-    def extractWavelength(self, name):
+    def extractWavelength(self, name: str) -> Optional[str]:
         # Split the string and find the wavelength number immediately after "Fluorescence"
         parts = name.split()
         if "Fluorescence" in parts:
@@ -76,9 +109,8 @@ class NapariMultiChannelWidget(QWidget):
                 return color
         return None
 
-    def generateColormap(self, channel_info):
+    def generateColormap(self, channel_info: dict) -> Colormap:
         """Convert a HEX value to a normalized RGB tuple."""
-        positions = [0, 1]
         c0 = (0, 0, 0)
         c1 = (
             ((channel_info["hex"] >> 16) & 0xFF) / 255,  # Normalize the Red component
@@ -87,7 +119,9 @@ class NapariMultiChannelWidget(QWidget):
         )  # Normalize the Blue component
         return Colormap(colors=[c0, c1], controls=[0, 1], name=channel_info["name"])
 
-    def initLayers(self, image_height, image_width, image_dtype):
+    def initLayers(
+        self, image_height: int, image_width: int, image_dtype: DTypeLike
+    ) -> None:
         """Initializes the full canvas for each channel based on the acquisition parameters."""
         if self.acquisition_initialized:
             for layer in list(self.viewer.layers):
@@ -105,7 +139,9 @@ class NapariMultiChannelWidget(QWidget):
         self.layers_initialized = True
         self.update_layer_count = 0
 
-    def updateLayers(self, image, x, y, k, channel_name):
+    def updateLayers(
+        self, image: np.ndarray, x: int, y: int, k: int, channel_name: str
+    ) -> None:
         """Updates the appropriate slice of the canvas with the new image data."""
         rgb = len(image.shape) == 3
 
@@ -122,16 +158,22 @@ class NapariMultiChannelWidget(QWidget):
             self.channels.add(channel_name)
             if rgb:
                 color = None  # RGB images do not need a colormap
-                canvas = np.zeros((self.Nz, self.image_height, self.image_width, 3), dtype=self.dtype)
+                canvas = np.zeros(
+                    (self.Nz, self.image_height, self.image_width, 3), dtype=self.dtype
+                )
             else:
+                wavelength = self.extractWavelength(channel_name)
                 channel_info = CHANNEL_COLORS_MAP.get(
-                    self.extractWavelength(channel_name), {"hex": 0xFFFFFF, "name": "gray"}
+                    wavelength if wavelength is not None else "",
+                    {"hex": 0xFFFFFF, "name": "gray"},
                 )
                 if channel_info["name"] in AVAILABLE_COLORMAPS:
                     color = AVAILABLE_COLORMAPS[channel_info["name"]]
                 else:
                     color = self.generateColormap(channel_info)
-                canvas = np.zeros((self.Nz, self.image_height, self.image_width), dtype=self.dtype)
+                canvas = np.zeros(
+                    (self.Nz, self.image_height, self.image_width), dtype=self.dtype
+                )
 
             limits = self.getContrastLimits(self.dtype)
             layer = self.viewer.add_image(
@@ -164,18 +206,18 @@ class NapariMultiChannelWidget(QWidget):
             for layer in self.viewer.layers:
                 layer.refresh()
 
-    def signalContrastLimits(self, event):
+    def signalContrastLimits(self, event: Event) -> None:
         layer = event.source
         min_val, max_val = map(float, layer.contrast_limits)
         self.contrastManager.update_limits(layer.name, min_val, max_val)
 
-    def getContrastLimits(self, dtype):
+    def getContrastLimits(self, dtype: np.dtype) -> Tuple[float, float]:
         return self.contrastManager.get_default_limits()
 
-    def resetView(self):
+    def resetView(self) -> None:
         self.viewer.reset_view()
         for layer in self.viewer.layers:
             layer.refresh()
 
-    def activate(self):
+    def activate(self) -> None:
         self.viewer.window.activate()

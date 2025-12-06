@@ -56,7 +56,9 @@ class StreamHandler:
         self.counter: int = 0
         self.fps_real: int = 0
 
-        self._fns: StreamHandlerFunctions = handler_functions if handler_functions else NoOpStreamHandlerFunctions
+        self._fns: StreamHandlerFunctions = (
+            handler_functions if handler_functions else NoOpStreamHandlerFunctions
+        )
 
     def start_recording(self) -> None:
         self.save_image_flag = True
@@ -113,7 +115,10 @@ class StreamHandler:
             self.timestamp_last_display = time_now
 
         # send image to write
-        if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
+        if (
+            self.save_image_flag
+            and time_now - self.timestamp_last_save >= 1 / self.fps_save
+        ):
             if frame.is_color():
                 image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             self._fns.packet_image_to_write(image, frame.frame_id, frame.timestamp)
@@ -123,12 +128,15 @@ class StreamHandler:
 
 
 class QtStreamHandler(QObject):
-
     image_to_display = Signal(np.ndarray)
     packet_image_to_write = Signal(np.ndarray, int, float)
     signal_new_frame_received = Signal()
 
-    def __init__(self, display_resolution_scaling: float = 1, accept_new_frame_fn: Callable[[], bool] = lambda: True) -> None:
+    def __init__(
+        self,
+        display_resolution_scaling: float = 1,
+        accept_new_frame_fn: Callable[[], bool] = lambda: True,
+    ) -> None:
         super().__init__()
 
         functions = StreamHandlerFunctions(
@@ -138,7 +146,8 @@ class QtStreamHandler(QObject):
             accept_new_frame=accept_new_frame_fn,
         )
         self._handler = StreamHandler(
-            handler_functions=functions, display_resolution_scaling=display_resolution_scaling
+            handler_functions=functions,
+            display_resolution_scaling=display_resolution_scaling,
         )
 
     def get_frame_callback(self) -> Callable[[CameraFrame], None]:
@@ -191,12 +200,17 @@ class ImageSaver(QObject):
                 file_ID = int(self.counter % self.max_num_image_per_folder)
                 # create a new folder
                 if file_ID == 0:
-                    utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID, str(folder_ID)))
+                    utils.ensure_directory_exists(
+                        os.path.join(self.base_path, self.experiment_ID, str(folder_ID))
+                    )
 
                 if image.dtype == np.uint16:
                     # need to use tiff when saving 16 bit images
                     saving_path = os.path.join(
-                        self.base_path, self.experiment_ID, str(folder_ID), str(file_ID) + "_" + str(frame_ID) + ".tiff"
+                        self.base_path,
+                        self.experiment_ID,
+                        str(folder_ID),
+                        str(file_ID) + "_" + str(frame_ID) + ".tiff",
                     )
                     iio.imwrite(saving_path, image)
                 else:
@@ -231,16 +245,22 @@ class ImageSaver(QObject):
     def set_recording_time_limit(self, time_limit: float) -> None:
         self.recording_time_limit = time_limit
 
-    def start_new_experiment(self, experiment_ID: str, add_timestamp: bool = True) -> None:
+    def start_new_experiment(
+        self, experiment_ID: str, add_timestamp: bool = True
+    ) -> None:
         if add_timestamp:
             # generate unique experiment ID
-            self.experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+            self.experiment_ID = (
+                experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+            )
         else:
             self.experiment_ID = experiment_ID
         self.recording_start_time = time.time()
         # create a new folder
         try:
-            utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
+            utils.ensure_directory_exists(
+                os.path.join(self.base_path, self.experiment_ID)
+            )
             # to do: save configuration
         except Exception:
             pass
@@ -278,19 +298,32 @@ class ImageSaver_Tracking(QObject):
                 file_ID = int(frame_counter % self.max_num_image_per_folder)
                 # create a new folder
                 if file_ID == 0:
-                    utils.ensure_directory_exists(os.path.join(self.base_path, str(folder_ID)))
+                    utils.ensure_directory_exists(
+                        os.path.join(self.base_path, str(folder_ID))
+                    )
                 if image.dtype == np.uint16:
                     saving_path = os.path.join(
                         self.base_path,
                         str(folder_ID),
-                        str(file_ID) + "_" + str(frame_counter) + "_" + postfix + ".tiff",
+                        str(file_ID)
+                        + "_"
+                        + str(frame_counter)
+                        + "_"
+                        + postfix
+                        + ".tiff",
                     )
                     iio.imwrite(saving_path, image)
                 else:
                     saving_path = os.path.join(
                         self.base_path,
                         str(folder_ID),
-                        str(file_ID) + "_" + str(frame_counter) + "_" + postfix + "." + self.image_format,
+                        str(file_ID)
+                        + "_"
+                        + str(frame_counter)
+                        + "_"
+                        + postfix
+                        + "."
+                        + self.image_format,
                     )
                     cv2.imwrite(saving_path, image)
                 self.queue.task_done()

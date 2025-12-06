@@ -92,7 +92,9 @@ class XLight_Simulation:
 class XLight:
     """Wrapper for communicating with CrestOptics X-Light devices over serial"""
 
-    def __init__(self, SN, sleep_time_for_wheel=0.25, disable_emission_filter_wheel=True):
+    def __init__(
+        self, SN, sleep_time_for_wheel=0.25, disable_emission_filter_wheel=True
+    ):
         """
         Provide serial number (default is that of the device
         cephla already has) for device-finding purposes. Otherwise, all
@@ -151,7 +153,8 @@ class XLight:
     def print_config(self):
         self.log.info(
             (
-                "Machine Configuration:\n" f"  Spinning disk motor: {self.has_spinning_disk_motor}\n",
+                "Machine Configuration:\n"
+                f"  Spinning disk motor: {self.has_spinning_disk_motor}\n",
                 f"  Spinning disk slider: {self.has_spinning_disk_slider}\n",
                 f"  Dichroic filters wheel: {self.has_dichroic_filters_wheel}\n",
                 f"  Emission filters wheel: {self.has_emission_filters_wheel}\n",
@@ -187,7 +190,9 @@ class XLight:
         return self.emission_wheel_pos
 
     def get_emission_filter(self):
-        current_pos = self.serial_connection.write_and_check("rB\r", "rB", read_delay=0.01)
+        current_pos = self.serial_connection.write_and_check(
+            "rB\r", "rB", read_delay=0.01
+        )
         self.emission_wheel_pos = int(current_pos[2])
         return self.emission_wheel_pos
 
@@ -206,7 +211,9 @@ class XLight:
         return self.dichroic_wheel_pos
 
     def get_dichroic(self):
-        current_pos = self.serial_connection.write_and_check("rC\r", "rC", read_delay=0.01)
+        current_pos = self.serial_connection.write_and_check(
+            "rC\r", "rC", read_delay=0.01
+        )
         self.dichroic_wheel_pos = int(current_pos[2])
         return self.dichroic_wheel_pos
 
@@ -232,11 +239,15 @@ class XLight:
         # value: 0 - 100
         self.illumination_iris = value
         value = str(int(10 * value))
-        self.serial_connection.write_and_check("J" + value + "\r", "J" + value, read_delay=3)
+        self.serial_connection.write_and_check(
+            "J" + value + "\r", "J" + value, read_delay=3
+        )
         return self.illumination_iris
 
     def get_illumination_iris(self):
-        current_pos = self.serial_connection.write_and_check("rJ\r", "rJ", read_delay=0.01)
+        current_pos = self.serial_connection.write_and_check(
+            "rJ\r", "rJ", read_delay=0.01
+        )
         self.illumination_iris = int(int(current_pos[2:]) / 10)
         return self.illumination_iris
 
@@ -244,11 +255,15 @@ class XLight:
         # value: 0 - 100
         self.emission_iris = value
         value = str(int(10 * value))
-        self.serial_connection.write_and_check("V" + value + "\r", "V" + value, read_delay=3)
+        self.serial_connection.write_and_check(
+            "V" + value + "\r", "V" + value, read_delay=3
+        )
         return self.emission_iris
 
     def get_emission_iris(self):
-        current_pos = self.serial_connection.write_and_check("rV\r", "rV", read_delay=0.01)
+        current_pos = self.serial_connection.write_and_check(
+            "rV\r", "rV", read_delay=0.01
+        )
         self.emission_iris = int(int(current_pos[2:]) / 10)
         return self.emission_iris
 
@@ -258,11 +273,15 @@ class XLight:
         self.slider_position = position
         position_to_write = str(position)
         position_to_read = str(position)
-        self.serial_connection.write_and_check("P" + position_to_write + "\r", "V" + position_to_read, read_delay=5)
+        self.serial_connection.write_and_check(
+            "P" + position_to_write + "\r", "V" + position_to_read, read_delay=5
+        )
         return self.slider_position
 
     def get_disk_position(self):
-        current_pos = self.serial_connection.write_and_check("rD\r", "rD", read_delay=0.01)
+        current_pos = self.serial_connection.write_and_check(
+            "rD\r", "rD", read_delay=0.01
+        )
         self.spinning_disk_pos = int(current_pos[2])
         return self.spinning_disk_pos
 
@@ -281,6 +300,8 @@ class XLight:
 
     def get_disk_motor_state(self):
         """Return True for on, Off otherwise"""
-        current_pos = self.serial_connection.write_and_check("rN\r", "rN", read_delay=0.01)
+        current_pos = self.serial_connection.write_and_check(
+            "rN\r", "rN", read_delay=0.01
+        )
         self.disk_motor_state = bool(int(current_pos[2]))
         return self.disk_motor_state

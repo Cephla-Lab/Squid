@@ -9,7 +9,10 @@ from fluidics.control.controller import FluidControllerSimulation, FluidControll
 from fluidics.control.syringe_pump import SyringePumpSimulation, SyringePump
 from fluidics.control.selector_valve import SelectorValveSystem
 from fluidics.control.disc_pump import DiscPump
-from fluidics.control.temperature_controller import TCMControllerSimulation, TCMController
+from fluidics.control.temperature_controller import (
+    TCMControllerSimulation,
+    TCMController,
+)
 from fluidics.merfish_operations import MERFISHOperations
 from fluidics.open_chamber_operations import OpenChamberOperations
 from fluidics.experiment_worker import ExperimentWorker
@@ -55,7 +58,9 @@ class Fluidics:
 
         # Set default callbacks if none provided
         self.worker_callbacks = worker_callbacks or {
-            "update_progress": lambda idx, seq_num, status: print(f"Sequence {idx} ({seq_num}): {status}"),
+            "update_progress": lambda idx, seq_num, status: print(
+                f"Sequence {idx} ({seq_num}): {status}"
+            ),
             "on_error": lambda msg: print(f"Error: {msg}"),
             "on_finished": lambda: print("Experiment completed"),
             "on_estimate": lambda time, n: print(f"Est. time: {time}s, Sequences: {n}"),
@@ -83,14 +88,21 @@ class Fluidics:
         self.available_port_names = []
         for i in range(1, available_ports + 1):
             self.available_port_names.append(
-                "Port " + str(i) + ": " + self.config["selector_valves"]["reagent_name_mapping"]["port_" + str(i)]
+                "Port "
+                + str(i)
+                + ": "
+                + self.config["selector_valves"]["reagent_name_mapping"][
+                    "port_" + str(i)
+                ]
             )
         print(self.available_port_names)
 
     def _initialize_hardware(self):
         """Initialize hardware controllers based on simulation mode"""
         if self.simulation:
-            self.controller = FluidControllerSimulation(self.config["microcontroller"]["serial_number"])
+            self.controller = FluidControllerSimulation(
+                self.config["microcontroller"]["serial_number"]
+            )
             self.syringe_pump = SyringePumpSimulation(
                 sn=self.config["syringe_pump"]["serial_number"],
                 syringe_ul=self.config["syringe_pump"]["volume_ul"],
@@ -103,7 +115,9 @@ class Fluidics:
             ):
                 self.temperature_controller = TCMControllerSimulation()
         else:
-            self.controller = FluidController(self.config["microcontroller"]["serial_number"])
+            self.controller = FluidController(
+                self.config["microcontroller"]["serial_number"]
+            )
             self.syringe_pump = SyringePump(
                 sn=self.config["syringe_pump"]["serial_number"],
                 syringe_ul=self.config["syringe_pump"]["volume_ul"],
@@ -114,7 +128,9 @@ class Fluidics:
                 "temperature_controller" in self.config
                 and self.config["temperature_controller"]["use_temperature_controller"]
             ):
-                self.temperature_controller = TCMController(self.config["temperature_controller"]["serial_number"])
+                self.temperature_controller = TCMController(
+                    self.config["temperature_controller"]["serial_number"]
+                )
 
         self.controller.begin()
         self.controller.send_command(CMD_SET.CLEAR)
@@ -126,10 +142,15 @@ class Fluidics:
         if self.config["application"] == "Open Chamber":
             self.disc_pump = DiscPump(self.controller)
             self.experiment_ops = OpenChamberOperations(
-                self.config, self.syringe_pump, self.selector_valve_system, self.disc_pump
+                self.config,
+                self.syringe_pump,
+                self.selector_valve_system,
+                self.disc_pump,
             )
         else:  # MERFISH
-            self.experiment_ops = MERFISHOperations(self.config, self.syringe_pump, self.selector_valve_system)
+            self.experiment_ops = MERFISHOperations(
+                self.config, self.syringe_pump, self.selector_valve_system
+            )
 
     def get_syringe_pump_volume(self):
         """Get the volume of the syringe pump"""
@@ -143,7 +164,7 @@ class Fluidics:
                 # Try to convert to Int64 (pandas extension type that supports NaN)
                 if df[col].dtype.kind in "fi":  # float or int
                     df[col] = df[col].astype("Int64")
-            except:
+            except Exception:
                 pass
         # Keep sequences that are either included or are imaging steps
         mask = (df["include"] == 1) | (df["sequence_name"] == "Imaging")
@@ -165,9 +186,12 @@ class Fluidics:
     def _validate_sequences(self):
         valid_sequence_names = ["Imaging", "Priming", "Clean Up"]
         for idx, sequence_name in enumerate(self.sequences["sequence_name"]):
-            if sequence_name not in valid_sequence_names and not sequence_name.startswith("Flow "):
+            if (
+                sequence_name not in valid_sequence_names
+                and not sequence_name.startswith("Flow ")
+            ):
                 raise ValueError(
-                    f"Invalid sequence name at row {idx+1}: '{sequence_name}'. "
+                    f"Invalid sequence name at row {idx + 1}: '{sequence_name}'. "
                     f"Must be one of {valid_sequence_names} or start with 'Flow '"
                 )
 
@@ -177,46 +201,70 @@ class Fluidics:
                 "Missing required 'Imaging' sequence. Please insert an 'Imaging' sequence where you want the acquisition to happen."
             )
         elif imaging_count > 1:
-            raise ValueError("Multiple 'Imaging' sequences found. There should be exactly one 'Imaging' sequence.")
+            raise ValueError(
+                "Multiple 'Imaging' sequences found. There should be exactly one 'Imaging' sequence."
+            )
 
-        for idx, row in self.sequences[self.sequences["sequence_name"] != "Imaging"].iterrows():
+        for idx, row in self.sequences[
+            self.sequences["sequence_name"] != "Imaging"
+        ].iterrows():
             if not (
                 isinstance(row["fluidic_port"], (int, pd.Int64Dtype))
                 and 1 <= row["fluidic_port"] <= len(self.available_port_names)
             ):
                 raise ValueError(
-                    f"Invalid fluidic_port at row {idx+1}: {row['fluidic_port']}. "
+                    f"Invalid fluidic_port at row {idx + 1}: {row['fluidic_port']}. "
                     f"Must be an integer in range [1, {len(self.available_port_names)}]."
                 )
 
-            if not (isinstance(row["flow_rate"], (int, pd.Int64Dtype)) and row["flow_rate"] > 0):
+            if not (
+                isinstance(row["flow_rate"], (int, pd.Int64Dtype))
+                and row["flow_rate"] > 0
+            ):
                 raise ValueError(
-                    f"Invalid flow_rate at row {idx+1}: {row['flow_rate']}. " f"Must be a positive integer."
+                    f"Invalid flow_rate at row {idx + 1}: {row['flow_rate']}. "
+                    f"Must be a positive integer."
                 )
 
-            if not (isinstance(row["volume"], (int, pd.Int64Dtype)) and 0 < row["volume"] < self.syringe_pump.volume):
+            if not (
+                isinstance(row["volume"], (int, pd.Int64Dtype))
+                and 0 < row["volume"] < self.syringe_pump.volume
+            ):
                 raise ValueError(
-                    f"Invalid volume at row {idx+1}: {row['volume']}. "
+                    f"Invalid volume at row {idx + 1}: {row['volume']}. "
                     f"Must be an integer in range (0, {self.syringe_pump.volume})."
                 )
 
             for field in ["incubation_time", "repeat"]:
-                if not (isinstance(row[field], (int, pd.Int64Dtype)) and row[field] >= 0):
-                    raise ValueError(f"Invalid {field} at row {idx+1}: {row[field]}. " f"Must be an integer >= 0.")
+                if not (
+                    isinstance(row[field], (int, pd.Int64Dtype)) and row[field] >= 0
+                ):
+                    raise ValueError(
+                        f"Invalid {field} at row {idx + 1}: {row[field]}. "
+                        f"Must be an integer >= 0."
+                    )
 
             if not (
                 isinstance(row["fill_tubing_with"], (int, pd.Int64Dtype))
                 and 0 <= row["fill_tubing_with"] <= len(self.available_port_names)
             ):
                 raise ValueError(
-                    f"Invalid fill_tubing_with at row {idx+1}: {row['fill_tubing_with']}. "
+                    f"Invalid fill_tubing_with at row {idx + 1}: {row['fill_tubing_with']}. "
                     f"Must be an integer in range [0, {len(self.available_port_names)}]."
                 )
 
-            if not (isinstance(row["include"], (int, pd.Int64Dtype)) and row["include"] in [0, 1]):
-                raise ValueError(f"Invalid include at row {idx+1}: {row['include']}. " f"Must be either 0 or 1.")
+            if not (
+                isinstance(row["include"], (int, pd.Int64Dtype))
+                and row["include"] in [0, 1]
+            ):
+                raise ValueError(
+                    f"Invalid include at row {idx + 1}: {row['include']}. "
+                    f"Must be either 0 or 1."
+                )
 
-    def priming(self, ports: list, last_port: int, volume_ul: int, flow_rate: int = 5000):
+    def priming(
+        self, ports: list, last_port: int, volume_ul: int, flow_rate: int = 5000
+    ):
         """Priming the fluidics system"""
         # Create priming sequence dataframe
         priming_seq = pd.DataFrame(
@@ -234,7 +282,14 @@ class Fluidics:
         )
         self.run_sequences(priming_seq)
 
-    def clean_up(self, ports: list, last_port: int, volume_ul: int, repeat: int, flow_rate: int = 10000):
+    def clean_up(
+        self,
+        ports: list,
+        last_port: int,
+        volume_ul: int,
+        repeat: int,
+        flow_rate: int = 10000,
+    ):
         """Clean up the fluidics system"""
         cleanup_seq = pd.DataFrame(
             {
@@ -289,7 +344,9 @@ class Fluidics:
 
     def run_sequences(self, sequences: pd.DataFrame):
         """Start running the sequences in a separate thread"""
-        self.worker = ExperimentWorker(self.experiment_ops, sequences, self.config, self.worker_callbacks)
+        self.worker = ExperimentWorker(
+            self.experiment_ops, sequences, self.config, self.worker_callbacks
+        )
         self.thread = threading.Thread(target=self.worker.run)
         self.thread.start()
 
@@ -314,9 +371,13 @@ class Fluidics:
             port: New port number to use for Flow Reagent sequences with port <= 24
         """
         # Find Flow Reagent sequences with port <= 24
-        mask = (self.sequences["sequence_name"] == "Flow Probe") & (self.sequences["fluidic_port"] <= 24)
+        mask = (self.sequences["sequence_name"] == "Flow Probe") & (
+            self.sequences["fluidic_port"] <= 24
+        )
 
-        self.log_callback(f"Running fluidics round for Probe Port {self.port_list[index]}")
+        self.log_callback(
+            f"Running fluidics round for Probe Port {self.port_list[index]}"
+        )
         self.sequences.loc[mask, "fluidic_port"] = self.port_list[index]
 
     def set_rounds(self, rounds: list):

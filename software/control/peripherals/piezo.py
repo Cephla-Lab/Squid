@@ -1,4 +1,3 @@
-from typing import Optional
 from control.microcontroller import Microcontroller
 
 
@@ -9,13 +8,17 @@ class PiezoStage:
         self._current_position_um = 0
         self._home_position_um = config.get("OBJECTIVE_PIEZO_HOME_UM", 20)
         self._range_um = config.get("OBJECTIVE_PIEZO_RANGE_UM", 300)
-        self._control_voltage_range = config.get("OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE", 5)
+        self._control_voltage_range = config.get(
+            "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE", 5
+        )
         self._flip_direction = config.get("OBJECTIVE_PIEZO_FLIP_DIR", False)
 
     def move_to(self, position_um: float) -> None:
         """Move piezo to absolute position in micrometers"""
         if not 0 <= position_um <= self._range_um:
-            raise ValueError(f"Position {position_um}um outside valid range 0-{self._range_um}um")
+            raise ValueError(
+                f"Position {position_um}um outside valid range 0-{self._range_um}um"
+            )
         self._mc.set_piezo_um(position_um)
         self._current_position_um = position_um
 

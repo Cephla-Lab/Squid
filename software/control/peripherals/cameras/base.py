@@ -16,7 +16,7 @@ from control._def import CAMERA_PIXEL_SIZE_UM
 
 try:
     import control.gxipy as gx
-except:
+except Exception:
     print("gxipy import error")
 
 
@@ -35,7 +35,7 @@ def get_sn_by_model(camera_model: GxipyCameraModel):
     try:
         device_manager = gx.DeviceManager()
         device_num, device_info_list = device_manager.update_device_list()
-    except:
+    except Exception:
         device_num = 0
     if device_num > 0:
         for i in range(device_num):
@@ -48,7 +48,9 @@ class DefaultCamera(AbstractCamera):
     @staticmethod
     def _open(device_manager: gx.DeviceManager, sn=None, index=None):
         if sn is None and index is None:
-            raise ValueError("You must specify a serial number or index of camera to open.")
+            raise ValueError(
+                "You must specify a serial number or index of camera to open."
+            )
 
         device_num, device_info_list = device_manager.update_device_list()
 
@@ -71,14 +73,19 @@ class DefaultCamera(AbstractCamera):
                 and camera.OffsetX.is_writable()
                 and camera.OffsetY.is_writable()
             ),
-            black_level=(camera.BlackLevel.is_implemented() and camera.BlackLevel.is_writable()),
+            black_level=(
+                camera.BlackLevel.is_implemented() and camera.BlackLevel.is_writable()
+            ),
             white_balance=(
                 camera.BalanceRatio.is_implemented()
                 and camera.BalanceRatio.is_writable()
                 and camera.BalanceRatioSelector.is_implemented()
                 and camera.BalanceRatioSelector.is_writable()
             ),
-            auto_white_balance=(camera.BalanceWhiteAuto.is_implemented() and camera.BalanceWhiteAuto.is_writable()),
+            auto_white_balance=(
+                camera.BalanceWhiteAuto.is_implemented()
+                and camera.BalanceWhiteAuto.is_writable()
+            ),
             is_global_shutter=False,
         )
 
@@ -102,23 +109,32 @@ class DefaultCamera(AbstractCamera):
         if self._config.camera_model is not None:
             sn = get_sn_by_model(self._config.camera_model)
             if sn is None:
-                raise CameraError(f"Camera with model {self._config.camera_model} not found.")
+                raise CameraError(
+                    f"Camera with model {self._config.camera_model} not found."
+                )
             else:
                 # We need to keep the device manager instance around because it also manages the gx library initialization
                 # and de-initialization.  So we capture it here, but then never use it past the _open call.
                 self._gx_device_manager = gx.DeviceManager()
-                (self._camera, self._capabilities) = DefaultCamera._open(self._gx_device_manager, sn=sn)
+                (self._camera, self._capabilities) = DefaultCamera._open(
+                    self._gx_device_manager, sn=sn
+                )
         else:
             # If there is only one camera connected, open it by index
             self._gx_device_manager = gx.DeviceManager()
-            (self._camera, self._capabilities) = DefaultCamera._open(self._gx_device_manager, index=0)
+            (self._camera, self._capabilities) = DefaultCamera._open(
+                self._gx_device_manager, index=0
+            )
 
         # TODO/NOTE(imo): Need to test if self as user_param is correct here, of it sends self for us.
         self._camera.register_capture_callback(None, self._frame_callback)
 
         self.set_auto_white_balance_gains(False)
 
-        if self._config.default_white_balance_gains is not None and self._capabilities.white_balance:
+        if (
+            self._config.default_white_balance_gains is not None
+            and self._capabilities.white_balance
+        ):
             default_wb = self._config.default_white_balance_gains
             self.set_white_balance_gains(default_wb.r, default_wb.g, default_wb.b)
 
@@ -147,7 +163,9 @@ class DefaultCamera(AbstractCamera):
 
     def _frame_callback(self, unused_user_param, raw_image: gx.RawImage):
         with self._frame_lock:
-            this_frame_id = (self._current_frame.frame_id if self._current_frame else 0) + 1
+            this_frame_id = (
+                self._current_frame.frame_id if self._current_frame else 0
+            ) + 1
             this_timestamp = time.time()
             this_frame_format = self.get_frame_format()
             this_pixel_format = self.get_pixel_format()
@@ -201,13 +219,18 @@ class DefaultCamera(AbstractCamera):
         pixel_size_bytes = self._get_pixel_size_bytes(self.get_pixel_format())
         exposure_delay_us = pixel_size_bytes * exposure_delay_us_8bit
         exposure_time_us = 1000.0 * self._exposure_time_ms
-        row_count = self.get_resolution()[1]  # TODO: this should be the row count after setting ROI
+        row_count = self.get_resolution()[
+            1
+        ]  # TODO: this should be the row count after setting ROI
         row_period_us = 10
 
         # NOTE(imo): Our strobe delay calculation is not perfect, so add 10ms buffer to make sure we are good to go.  It'd
         # be better to calculate exactly, though!
         self._strobe_delay_us = (
-            exposure_delay_us + exposure_time_us + row_period_us * pixel_size_bytes * (row_count - 1) + 500
+            exposure_delay_us
+            + exposure_time_us
+            + row_period_us * pixel_size_bytes * (row_count - 1)
+            + 500
         )
 
         if self._hw_set_strobe_delay_ms_fn:
@@ -253,7 +276,10 @@ class DefaultCamera(AbstractCamera):
                 f"Something is really wrong, current pixel format is not mapped to a frame format: {current_pixel_format=}"
             )
 
-        if frame_format != DefaultCamera._PIXEL_FORMAT_TO_FRAME_FORMAT[current_pixel_format]:
+        if (
+            frame_format
+            != DefaultCamera._PIXEL_FORMAT_TO_FRAME_FORMAT[current_pixel_format]
+        ):
             raise ValueError(
                 f"Frame format {frame_format=} not compatible with current pixel format {current_pixel_format=}"
             )
@@ -298,7 +324,9 @@ class DefaultCamera(AbstractCamera):
     def set_pixel_format(self, pixel_format: CameraPixelFormat):
         with self._pause_streaming():
             if not self._capabilities.settable_pixel_format:
-                raise NotImplementedError("The camera does not support setting pixel format.")
+                raise NotImplementedError(
+                    "The camera does not support setting pixel format."
+                )
             self._camera.PixelFormat.set(self._gx_pixel_format_for(pixel_format))
             self._pixel_format = pixel_format
 
@@ -308,7 +336,9 @@ class DefaultCamera(AbstractCamera):
 
     def get_pixel_format(self) -> CameraPixelFormat:
         if not self._capabilities.gettable_pixel_format:
-            raise NotImplementedError("The camera does not support getting pixel format.")
+            raise NotImplementedError(
+                "The camera does not support getting pixel format."
+            )
 
         if self._pixel_format is None:
             (pixel_format_val, _) = self._camera.PixelFormat.get()
@@ -317,7 +347,9 @@ class DefaultCamera(AbstractCamera):
         return self._pixel_format
 
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
-        raise NotImplementedError("get_available_pixel_formats is not implemented for DefaultCamera")
+        raise NotImplementedError(
+            "get_available_pixel_formats is not implemented for DefaultCamera"
+        )
 
     def get_resolution(self) -> Tuple[int, int]:
         return self._camera.WidthMax.get(), self._camera.HeightMax.get()
@@ -339,14 +371,18 @@ class DefaultCamera(AbstractCamera):
 
     def get_pixel_size_unbinned_um(self) -> float:
         if self._config.camera_model in DefaultCamera._MODEL_TO_SENSOR:
-            return CAMERA_PIXEL_SIZE_UM[DefaultCamera._MODEL_TO_SENSOR[self._config.camera_model].value]
+            return CAMERA_PIXEL_SIZE_UM[
+                DefaultCamera._MODEL_TO_SENSOR[self._config.camera_model].value
+            ]
         else:
             raise NotImplementedError(f"No pixel size for {self._config.camera_model=}")
 
     def get_pixel_size_binned_um(self) -> float:
         # Right now binning for these cameras will always be 1x1
         if self._config.camera_model in DefaultCamera._MODEL_TO_SENSOR:
-            return CAMERA_PIXEL_SIZE_UM[DefaultCamera._MODEL_TO_SENSOR[self._config.camera_model].value]
+            return CAMERA_PIXEL_SIZE_UM[
+                DefaultCamera._MODEL_TO_SENSOR[self._config.camera_model].value
+            ]
         else:
             raise NotImplementedError(f"No pixel size for {self._config.camera_model=}")
 
@@ -359,7 +395,11 @@ class DefaultCamera(AbstractCamera):
     def get_gain_range(self) -> CameraGainRange:
         gain_range = self._camera.Gain.get_range()
 
-        return CameraGainRange(min_gain=gain_range["min"], max_gain=gain_range["max"], gain_step=gain_range["inc"])
+        return CameraGainRange(
+            min_gain=gain_range["min"],
+            max_gain=gain_range["max"],
+            gain_step=gain_range["inc"],
+        )
 
     def start_streaming(self):
         self._camera.stream_on()
@@ -386,7 +426,11 @@ class DefaultCamera(AbstractCamera):
         total_exposure_time_ms = self._exposure_time_ms + self._strobe_delay_us / 1000.0
 
         # If the last frame we got was from <exposure time ago, use it.
-        if self._current_frame and time.time() - self._current_frame.timestamp <= total_exposure_time_ms / 1000.0:
+        if (
+            self._current_frame
+            and time.time() - self._current_frame.timestamp
+            <= total_exposure_time_ms / 1000.0
+        ):
             return self._current_frame
 
         # The camera api isn't really fast, so it is easy to time out waiting for a frame and its processing.  So
@@ -420,7 +464,9 @@ class DefaultCamera(AbstractCamera):
 
         return rgb_vals[0], rgb_vals[1], rgb_vals[2]
 
-    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
+    def set_white_balance_gains(
+        self, red_gain: float, green_gain: float, blue_gain: float
+    ):
         rgb_vals = (red_gain, green_gain, blue_gain)
         for idx in (0, 1, 2):  # r, g, b
             self._camera.BalanceRatioSelector.set(idx)
@@ -447,7 +493,9 @@ class DefaultCamera(AbstractCamera):
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
         if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
             self._camera.TriggerMode.set(gx.GxSwitchEntry.ON)
-            self._camera.TriggerSource.set(gx.GxTriggerSourceEntry.LINE2)  # LINE0 requires 7 mA min
+            self._camera.TriggerSource.set(
+                gx.GxTriggerSourceEntry.LINE2
+            )  # LINE0 requires 7 mA min
         elif acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
             self._camera.TriggerMode.set(gx.GxSwitchEntry.ON)
             self._camera.TriggerSource.set(gx.GxTriggerSourceEntry.SOFTWARE)
@@ -480,25 +528,37 @@ class DefaultCamera(AbstractCamera):
         elif current_acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
             self._camera.TriggerSoftware.send_command()
         else:
-            self._log.warning(f"Current acquisition mode {current_acquisition_mode=} not triggerable.")
+            self._log.warning(
+                f"Current acquisition mode {current_acquisition_mode=} not triggerable."
+            )
 
     def get_ready_for_trigger(self) -> bool:
         time_since_last_s = time.time() - self._last_trigger_timestamp
-        timeout_period_s = (4 * self._exposure_time_ms + 5) / 1000.0  # Arbitrary - how do we do somethigng smart here?
+        timeout_period_s = (
+            4 * self._exposure_time_ms + 5
+        ) / 1000.0  # Arbitrary - how do we do somethigng smart here?
         if time_since_last_s > timeout_period_s and self._in_trigger:
-            self._log.warning(f"It has been {time_since_last_s=}[s] since last trigger, timing it out.")
+            self._log.warning(
+                f"It has been {time_since_last_s=}[s] since last trigger, timing it out."
+            )
             self._in_trigger = False
 
         return not self._in_trigger
 
-    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+    def set_region_of_interest(
+        self, offset_x: int, offset_y: int, width: int, height: int
+    ):
         if not self._capabilities.settable_roi:
-            raise NotImplementedError("Camera does not implement settable region of interest.")
+            raise NotImplementedError(
+                "Camera does not implement settable region of interest."
+            )
 
         # NOTE: The camera restricts offsets/widths/etc based on what the other settings currently are, so you
         # can't just blindly set them.  If the offset is growing, you need to set the width first.  If the
         # offset is decreasing, you need to set the offset first.
-        (existing_offset_x, existing_offset_y, existing_width, existing_height) = self.get_region_of_interest()
+        (existing_offset_x, existing_offset_y, existing_width, existing_height) = (
+            self.get_region_of_interest()
+        )
 
         with self._pause_streaming():
             if existing_offset_x < offset_x:
@@ -536,7 +596,11 @@ class DefaultCamera(AbstractCamera):
         raise NotImplementedError("DefaultCameras do not support temperature control.")
 
     def get_temperature(self) -> float:
-        raise NotImplementedError("DefaultCameras do not support getting current temperature")
+        raise NotImplementedError(
+            "DefaultCameras do not support getting current temperature"
+        )
 
     def set_temperature_reading_callback(self, callback: Callable):
-        raise NotImplementedError("DefaultCameras do not support getting current temperature")
+        raise NotImplementedError(
+            "DefaultCameras do not support getting current temperature"
+        )

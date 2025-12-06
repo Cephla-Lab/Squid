@@ -95,7 +95,11 @@ def cache_position(pos: Pos, stage_config: StageConfig, cache_path=_DEFAULT_CACH
         y_max = stage_config.Y_AXIS.MAX_POSITION
         z_min = stage_config.Z_AXIS.MIN_POSITION
         z_max = stage_config.Z_AXIS.MAX_POSITION
-        if not (x_min <= pos.x_mm <= x_max and y_min <= pos.y_mm <= y_max and z_min <= pos.z_mm <= z_max):
+        if not (
+            x_min <= pos.x_mm <= x_max
+            and y_min <= pos.y_mm <= y_max
+            and z_min <= pos.z_mm <= z_max
+        ):
             raise ValueError(
                 f"Position {pos} is not cacheable because it is outside of the min/max of at least one axis. x_range=({x_min}, {x_max}), y_range=({y_min}, {y_max}), z_range=({z_min}, {z_max})"
             )
@@ -169,12 +173,15 @@ def move_to_loading_position(
     if blocking and callback:
         raise ValueError("Callback is not supported when blocking is True")
     if blocking:
-        _log.info(f"Moving to loading position. Blocking is True.")
+        _log.info("Moving to loading position. Blocking is True.")
         _move_to_loading_position_impl(stage, is_wellplate)
         _log.info("Successfully moved to loading position")
     else:
         return control.utils.threaded_operation_helper(
-            _move_to_loading_position_impl, callback, stage=stage, is_wellplate=is_wellplate
+            _move_to_loading_position_impl,
+            callback,
+            stage=stage,
+            is_wellplate=is_wellplate,
         )
 
 
@@ -197,12 +204,15 @@ def move_to_scanning_position(
     if blocking and callback:
         raise ValueError("Callback is not supported when blocking is True")
     if blocking:
-        _log.info(f"Moving to scanning position. Blocking is True.")
+        _log.info("Moving to scanning position. Blocking is True.")
         _move_to_scanning_position_impl(stage, is_wellplate)
         _log.info("Successfully moved to scanning position")
     else:
         return control.utils.threaded_operation_helper(
-            _move_to_scanning_position_impl, callback, stage=stage, is_wellplate=is_wellplate
+            _move_to_scanning_position_impl,
+            callback,
+            stage=stage,
+            is_wellplate=is_wellplate,
         )
 
 

@@ -1,20 +1,19 @@
 from control.widgets.camera._common import *
 
-class CameraSettingsWidget(QFrame):
 
-    signal_binning_changed = Signal()
+class CameraSettingsWidget(QFrame):
+    signal_binning_changed: Signal = Signal()
 
     def __init__(
         self,
-        camera_service: "CameraService",
-        include_gain_exposure_time=False,
-        include_camera_temperature_setting=False,
-        include_camera_auto_wb_setting=False,
-        main=None,
-        *args,
-        **kwargs,
-    ):
-
+        camera_service: CameraService,
+        include_gain_exposure_time: bool = False,
+        include_camera_temperature_setting: bool = False,
+        include_camera_auto_wb_setting: bool = False,
+        main: Optional[Any] = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
@@ -25,15 +24,19 @@ class CameraSettingsWidget(QFrame):
         event_bus.subscribe(AnalogGainChanged, self._on_gain_changed)
 
         self.add_components(
-            include_gain_exposure_time, include_camera_temperature_setting, include_camera_auto_wb_setting
+            include_gain_exposure_time,
+            include_camera_temperature_setting,
+            include_camera_auto_wb_setting,
         )
         # set frame style
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
     def add_components(
-        self, include_gain_exposure_time, include_camera_temperature_setting, include_camera_auto_wb_setting
-    ):
-
+        self,
+        include_gain_exposure_time: bool,
+        include_camera_temperature_setting: bool,
+        include_camera_auto_wb_setting: bool,
+    ) -> None:
         # add buttons and input fields
         self.entry_exposureTime = QDoubleSpinBox()
         self.entry_exposureTime.setKeyboardTracking(False)
@@ -53,24 +56,38 @@ class CameraSettingsWidget(QFrame):
             self.entry_analogGain.setValue(gain_range.min_gain)
             self._service.set_analog_gain(gain_range.min_gain)
         except NotImplementedError:
-            self._log.info("Camera does not support analog gain, disabling analog gain control.")
+            self._log.info(
+                "Camera does not support analog gain, disabling analog gain control."
+            )
             self.entry_analogGain.setValue(0)
             self.entry_analogGain.setEnabled(False)
 
         self.dropdown_pixelFormat = QComboBox()
         try:
-            pixel_formats = self._service.get_available_pixel_formats()
-            pixel_formats = [pf.name for pf in pixel_formats]
+            pixel_formats_enum = self._service.get_available_pixel_formats()
+            pixel_format_names = [pf.name for pf in pixel_formats_enum]
         except NotImplementedError:
-            pixel_formats = ["MONO8", "MONO12", "MONO14", "MONO16", "BAYER_RG8", "BAYER_RG12"]
-        self.dropdown_pixelFormat.addItems(pixel_formats)
-        if self._service.get_pixel_format() is not None:
-            self.dropdown_pixelFormat.setCurrentText(self._service.get_pixel_format().name)
+            pixel_format_names = [
+                "MONO8",
+                "MONO12",
+                "MONO14",
+                "MONO16",
+                "BAYER_RG8",
+                "BAYER_RG12",
+            ]
+        self.dropdown_pixelFormat.addItems(pixel_format_names)
+        current_format = self._service.get_pixel_format()
+        if current_format is not None:
+            self.dropdown_pixelFormat.setCurrentText(current_format.name)
         else:
             print("setting camera's default pixel format")
-            self._service.set_pixel_format(CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
+            self._service.set_pixel_format(
+                CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
+            )
             self.dropdown_pixelFormat.setCurrentText(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
-        self.dropdown_pixelFormat.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
+        self.dropdown_pixelFormat.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        )
         # to do: load and save pixel format in configurations
 
         self.entry_ROI_offset_x = QSpinBox()
@@ -140,8 +157,13 @@ class CameraSettingsWidget(QFrame):
         format_line.addWidget(self.dropdown_pixelFormat)
         try:
             current_binning = self._service.get_binning()
-            current_binning_string = "x".join([str(current_binning[0]), str(current_binning[1])])
-            binning_options = [f"{binning[0]}x{binning[1]}" for binning in self._service.get_binning_options()]
+            current_binning_string = "x".join(
+                [str(current_binning[0]), str(current_binning[1])]
+            )
+            binning_options = [
+                f"{binning[0]}x{binning[1]}"
+                for binning in self._service.get_binning_options()
+            ]
             self.dropdown_binning = QComboBox()
             self.dropdown_binning.addItems(binning_options)
             self.dropdown_binning.setCurrentText(current_binning_string)
@@ -164,7 +186,9 @@ class CameraSettingsWidget(QFrame):
             temp_line.addWidget(self.label_temperature_measured)
             try:
                 self.entry_temperature.valueChanged.connect(self.set_temperature)
-                self._service.set_temperature_reading_callback(self.update_measured_temperature)
+                self._service.set_temperature_reading_callback(
+                    self.update_measured_temperature
+                )
             except AttributeError:
                 pass
             self.camera_layout.addLayout(temp_line)
@@ -198,7 +222,12 @@ class CameraSettingsWidget(QFrame):
 
             self.camera_layout.addLayout(blacklevel_line)
 
-        if include_camera_auto_wb_setting and CameraPixelFormat.is_color_format(self._service.get_pixel_format()):
+        current_pixel_format = self._service.get_pixel_format()
+        if (
+            include_camera_auto_wb_setting
+            and current_pixel_format is not None
+            and CameraPixelFormat.is_color_format(current_pixel_format)
+        ):
             # auto white balance
             self.btn_auto_wb = QPushButton("Auto White Balance")
             self.btn_auto_wb.setCheckable(True)
@@ -209,29 +238,29 @@ class CameraSettingsWidget(QFrame):
 
         self.setLayout(self.camera_layout)
 
-    def set_analog_gain_if_supported(self, gain):
+    def set_analog_gain_if_supported(self, gain: float) -> None:
         try:
             self._service.set_analog_gain(gain)
         except NotImplementedError:
             self._log.warning(f"Cannot set gain to {gain}, gain not supported.")
 
-    def _set_analog_gain_via_service(self, gain):
+    def _set_analog_gain_via_service(self, gain: float) -> None:
         """Set analog gain through service layer."""
         self._service.set_analog_gain(gain)
 
-    def _on_exposure_changed(self, event: ExposureTimeChanged):
+    def _on_exposure_changed(self, event: ExposureTimeChanged) -> None:
         """Handle exposure time changed event."""
         self.entry_exposureTime.blockSignals(True)
         self.entry_exposureTime.setValue(event.exposure_time_ms)
         self.entry_exposureTime.blockSignals(False)
 
-    def _on_gain_changed(self, event: AnalogGainChanged):
+    def _on_gain_changed(self, event: AnalogGainChanged) -> None:
         """Handle analog gain changed event."""
         self.entry_analogGain.blockSignals(True)
         self.entry_analogGain.setValue(event.gain)
         self.entry_analogGain.blockSignals(False)
 
-    def toggle_auto_wb(self, pressed):
+    def toggle_auto_wb(self, pressed: bool) -> None:
         # 0: OFF  1:CONTINUOUS  2:ONCE
         if pressed:
             # Run auto white balance once, then uncheck
@@ -241,18 +270,20 @@ class CameraSettingsWidget(QFrame):
             r, g, b = self._service.get_white_balance_gains()
             self._service.set_white_balance_gains(r, g, b)
 
-    def set_exposure_time(self, exposure_time):
+    def set_exposure_time(self, exposure_time: float) -> None:
         self.entry_exposureTime.setValue(exposure_time)
 
-    def set_analog_gain(self, analog_gain):
+    def set_analog_gain(self, analog_gain: float) -> None:
         self.entry_analogGain.setValue(analog_gain)
 
-    def set_Width(self):
+    def set_Width(self) -> None:
         width = int(self.entry_ROI_width.value() // 8) * 8
         self.entry_ROI_width.blockSignals(True)
         self.entry_ROI_width.setValue(width)
         self.entry_ROI_width.blockSignals(False)
-        offset_x = (self._service.get_resolution()[0] - self.entry_ROI_width.value()) / 2
+        offset_x = (
+            self._service.get_resolution()[0] - self.entry_ROI_width.value()
+        ) / 2
         offset_x = int(offset_x // 8) * 8
         self.entry_ROI_offset_x.blockSignals(True)
         self.entry_ROI_offset_x.setValue(offset_x)
@@ -264,12 +295,14 @@ class CameraSettingsWidget(QFrame):
             self.entry_ROI_height.value(),
         )
 
-    def set_Height(self):
+    def set_Height(self) -> None:
         height = int(self.entry_ROI_height.value() // 8) * 8
         self.entry_ROI_height.blockSignals(True)
         self.entry_ROI_height.setValue(height)
         self.entry_ROI_height.blockSignals(False)
-        offset_y = (self._service.get_resolution()[1] - self.entry_ROI_height.value()) / 2
+        offset_y = (
+            self._service.get_resolution()[1] - self.entry_ROI_height.value()
+        ) / 2
         offset_y = int(offset_y // 8) * 8
         self.entry_ROI_offset_y.blockSignals(True)
         self.entry_ROI_offset_y.setValue(offset_y)
@@ -281,7 +314,7 @@ class CameraSettingsWidget(QFrame):
             self.entry_ROI_height.value(),
         )
 
-    def set_ROI_offset(self):
+    def set_ROI_offset(self) -> None:
         self._service.set_region_of_interest(
             self.entry_ROI_offset_x.value(),
             self.entry_ROI_offset_y.value(),
@@ -289,16 +322,16 @@ class CameraSettingsWidget(QFrame):
             self.entry_ROI_height.value(),
         )
 
-    def set_temperature(self):
+    def set_temperature(self) -> None:
         try:
             self._service.set_temperature(float(self.entry_temperature.value()))
         except AttributeError:
             self._log.warning("Cannot set temperature - not supported.")
 
-    def update_measured_temperature(self, temperature):
+    def update_measured_temperature(self, temperature: float) -> None:
         self.label_temperature_measured.setNum(temperature)
 
-    def set_binning(self, binning_text):
+    def set_binning(self, binning_text: str) -> None:
         binning_parts = binning_text.split("x")
         binning_x = int(binning_parts[0])
         binning_y = int(binning_parts[1])
@@ -311,7 +344,7 @@ class CameraSettingsWidget(QFrame):
         self.entry_ROI_width.blockSignals(True)
 
         # TODO: move these calculations to camera class as they can be different for different cameras
-        def round_to_8(val):
+        def round_to_8(val: float) -> int:
             return int(8 * val // 8)
 
         (x_offset, y_offset, width, height) = self._service.get_region_of_interest()
@@ -334,10 +367,8 @@ class CameraSettingsWidget(QFrame):
 
         self.signal_binning_changed.emit()
 
-    def update_blacklevel(self, blacklevel):
+    def update_blacklevel(self, blacklevel: int) -> None:
         try:
             self._service.set_black_level(blacklevel)
         except AttributeError:
             self._log.warning("Cannot set black level - not supported.")
-
-

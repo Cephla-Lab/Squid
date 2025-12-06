@@ -33,15 +33,23 @@ class NonInteractiveMatplotlib:
 
 
 def get_test_microcontroller() -> control.microcontroller.Microcontroller:
-    return control.microcontroller.Microcontroller(control.microcontroller.SimSerial(), True)
+    return control.microcontroller.Microcontroller(
+        control.microcontroller.SimSerial(), True
+    )
 
 
 def get_test_camera():
-    return squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+    import squid.config
+
+    return control.peripherals.cameras.camera_utils.get_camera(
+        squid.config.get_camera_config(), simulated=True
+    )
 
 
 def get_test_stage(microcontroller):
-    return squid.stage.cephla.CephlaStage(microcontroller=microcontroller, stage_config=get_stage_config())
+    return control.peripherals.stage.cephla.CephlaStage(
+        microcontroller=microcontroller, stage_config=get_stage_config()
+    )
 
 
 def get_repo_root() -> pathlib.Path:

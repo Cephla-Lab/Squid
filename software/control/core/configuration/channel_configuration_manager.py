@@ -30,7 +30,9 @@ class ChannelConfigurationManager:
             ConfigType.WIDEFIELD: {},
         }
         self.active_config_type = (
-            ConfigType.CHANNEL if not control._def.ENABLE_SPINNING_DISK_CONFOCAL else ConfigType.CONFOCAL
+            ConfigType.CHANNEL
+            if not control._def.ENABLE_SPINNING_DISK_CONFOCAL
+            else ConfigType.CONFOCAL
         )
 
     def set_profile_path(self, profile_path: Path) -> None:
@@ -41,7 +43,9 @@ class ChannelConfigurationManager:
         """Load XML configuration for a specific config type, generating default if needed"""
         if self.config_root is None:
             raise ValueError("config_root is not set. Call set_profile_path() first.")
-        config_file = self.config_root / objective / f"{config_type.value}_configurations.xml"
+        config_file = (
+            self.config_root / objective / f"{config_type.value}_configurations.xml"
+        )
 
         if not config_file.exists():
             utils_config.generate_default_configuration(str(config_file))
@@ -67,7 +71,9 @@ class ChannelConfigurationManager:
             raise ValueError("config_root is not set. Call set_profile_path() first.")
 
         config = self.all_configs[config_type][objective]
-        save_path = self.config_root / objective / f"{config_type.value}_configurations.xml"
+        save_path = (
+            self.config_root / objective / f"{config_type.value}_configurations.xml"
+        )
 
         if not save_path.parent.exists():
             save_path.parent.mkdir(parents=True)
@@ -98,7 +104,9 @@ class ChannelConfigurationManager:
             return []
         return config.modes
 
-    def update_configuration(self, objective: str, config_id: str, attr_name: str, value: Any) -> None:
+    def update_configuration(
+        self, objective: str, config_id: str, attr_name: str, value: Any
+    ) -> None:
         """Update a specific configuration in current active type"""
         config = self.all_configs[self.active_config_type].get(objective)
         if not config:
@@ -134,14 +142,23 @@ class ChannelConfigurationManager:
             mode.selected = False
         self.save_configurations(objective)
 
-    def get_channel_configurations_for_objective(self, objective: str) -> List[ChannelMode]:
+    def get_channel_configurations_for_objective(
+        self, objective: str
+    ) -> List[ChannelMode]:
         """Get Configuration objects for current active type (alias for get_configurations)"""
         return self.get_configurations(objective)
 
-    def get_channel_configuration_by_name(self, objective: str, name: str) -> Optional[ChannelMode]:
+    def get_channel_configuration_by_name(
+        self, objective: str, name: str
+    ) -> Optional[ChannelMode]:
         """Get Configuration object by name"""
-        return next((mode for mode in self.get_configurations(objective) if mode.name == name), None)
+        return next(
+            (mode for mode in self.get_configurations(objective) if mode.name == name),
+            None,
+        )
 
     def toggle_confocal_widefield(self, confocal: bool) -> None:
         """Toggle between confocal and widefield configurations"""
-        self.active_config_type = ConfigType.CONFOCAL if confocal else ConfigType.WIDEFIELD
+        self.active_config_type = (
+            ConfigType.CONFOCAL if confocal else ConfigType.WIDEFIELD
+        )

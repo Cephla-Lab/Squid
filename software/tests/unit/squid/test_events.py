@@ -1,5 +1,5 @@
 """Tests for EventBus utility."""
-import pytest
+
 from dataclasses import dataclass
 from squid.events import Event, EventBus
 
@@ -7,12 +7,14 @@ from squid.events import Event, EventBus
 @dataclass
 class TestEvent(Event):
     """Test event for unit tests."""
+
     message: str
 
 
 @dataclass
 class OtherEvent(Event):
     """Another test event."""
+
     value: int
 
 

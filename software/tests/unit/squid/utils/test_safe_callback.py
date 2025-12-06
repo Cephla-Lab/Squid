@@ -1,6 +1,7 @@
 """Tests for safe_callback utility."""
+
 import pytest
-from squid.utils.safe_callback import safe_callback, CallbackResult
+from squid.utils.safe_callback import safe_callback
 
 
 class TestSafeCallback:
@@ -8,6 +9,7 @@ class TestSafeCallback:
 
     def test_successful_callback_returns_value(self):
         """Successful callback should return value in result."""
+
         def add(a, b):
             return a + b
 
@@ -20,6 +22,7 @@ class TestSafeCallback:
 
     def test_failed_callback_contains_error(self):
         """Failed callback should contain exception and stack trace."""
+
         def explode():
             raise ValueError("boom")
 
@@ -42,7 +45,7 @@ class TestSafeCallback:
         def on_error(e, tb):
             errors.append((e, tb))
 
-        result = safe_callback(explode, on_error=on_error)
+        safe_callback(explode, on_error=on_error)
 
         assert len(errors) == 1
         assert isinstance(errors[0][0], ValueError)
@@ -51,6 +54,7 @@ class TestSafeCallback:
 
     def test_on_error_callback_failure_doesnt_crash(self):
         """If on_error handler fails, safe_callback should still return."""
+
         def explode():
             raise ValueError("original error")
 
@@ -65,6 +69,7 @@ class TestSafeCallback:
 
     def test_kwargs_are_passed(self):
         """Keyword arguments should be passed to callback."""
+
         def greet(name, greeting="Hello"):
             return f"{greeting}, {name}!"
 
@@ -75,6 +80,7 @@ class TestSafeCallback:
 
     def test_raise_if_error_raises(self):
         """raise_if_error should re-raise the exception."""
+
         def explode():
             raise ValueError("boom")
 
@@ -87,6 +93,7 @@ class TestSafeCallback:
 
     def test_raise_if_error_noop_on_success(self):
         """raise_if_error should do nothing on success."""
+
         def ok():
             return 42
 

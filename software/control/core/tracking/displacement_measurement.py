@@ -16,12 +16,18 @@ import cv2
 
 
 class DisplacementMeasurementController(QObject):
-
     signal_readings = Signal(list)
     signal_plots = Signal(np.ndarray, np.ndarray)
 
-    def __init__(self, x_offset: float = 0, y_offset: float = 0, x_scaling: float = 1, y_scaling: float = 1, N_average: int = 1, N: int = 10000) -> None:
-
+    def __init__(
+        self,
+        x_offset: float = 0,
+        y_offset: float = 0,
+        x_scaling: float = 1,
+        y_scaling: float = 1,
+        N_average: int = 1,
+        N: int = 10000,
+    ) -> None:
         QObject.__init__(self)
         self.x_offset: float = x_offset
         self.y_offset: float = y_offset
@@ -34,7 +40,6 @@ class DisplacementMeasurementController(QObject):
         self.y_array: np.ndarray = np.array([])
 
     def update_measurement(self, image: np.ndarray) -> None:
-
         t = time.time()
 
         if len(image.shape) == 3:
@@ -57,10 +62,26 @@ class DisplacementMeasurementController(QObject):
         self.x_array = np.append(self.x_array, x)
         self.y_array = np.append(self.y_array, y)
 
-        self.signal_plots.emit(self.t_array[-self.N :], np.vstack((self.x_array[-self.N :], self.y_array[-self.N :])))
-        self.signal_readings.emit([np.mean(self.x_array[-self.N_average :]), np.mean(self.y_array[-self.N_average :])])
+        self.signal_plots.emit(
+            self.t_array[-self.N :],
+            np.vstack((self.x_array[-self.N :], self.y_array[-self.N :])),
+        )
+        self.signal_readings.emit(
+            [
+                np.mean(self.x_array[-self.N_average :]),
+                np.mean(self.y_array[-self.N_average :]),
+            ]
+        )
 
-    def update_settings(self, x_offset: float, y_offset: float, x_scaling: float, y_scaling: float, N_average: int, N: int) -> None:
+    def update_settings(
+        self,
+        x_offset: float,
+        y_offset: float,
+        x_scaling: float,
+        y_scaling: float,
+        N_average: int,
+        N: int,
+    ) -> None:
         self.N = N
         self.N_average = N_average
         self.x_offset = x_offset

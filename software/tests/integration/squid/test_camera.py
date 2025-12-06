@@ -8,14 +8,18 @@ from squid.config import CameraConfig
 
 
 def test_create_simulated_camera():
-    sim_cam = control.peripherals.cameras.camera_utils.get_camera(squid.config.get_camera_config(), simulated=True)
+    control.peripherals.cameras.camera_utils.get_camera(
+        squid.config.get_camera_config(), simulated=True
+    )
 
 
 def test_simulated_camera():
     sim_cam_config: CameraConfig = squid.config.get_camera_config().model_copy(
         update={"rotate_image_angle": None, "flip": None}
     )
-    sim_cam = control.peripherals.cameras.camera_utils.get_camera(sim_cam_config, simulated=True)
+    sim_cam = control.peripherals.cameras.camera_utils.get_camera(
+        sim_cam_config, simulated=True
+    )
 
     # Really basic tests to make sure the simulated camera does what is expected.
     sim_cam.send_trigger()
@@ -48,18 +52,27 @@ def test_new_roi_for_binning():
     expected_down_roi_partial = (20, 40, 200, 400)
 
     assert (
-        AbstractCamera.calculate_new_roi_for_binning(old_binning, old_roi_full, new_binning_up) == expected_up_roi_full
+        AbstractCamera.calculate_new_roi_for_binning(
+            old_binning, old_roi_full, new_binning_up
+        )
+        == expected_up_roi_full
     )
     assert (
-        AbstractCamera.calculate_new_roi_for_binning(old_binning, old_roi_partial, new_binning_up)
+        AbstractCamera.calculate_new_roi_for_binning(
+            old_binning, old_roi_partial, new_binning_up
+        )
         == expected_up_roi_partial
     )
     assert (
-        AbstractCamera.calculate_new_roi_for_binning(old_binning, old_roi_full, new_binning_down)
+        AbstractCamera.calculate_new_roi_for_binning(
+            old_binning, old_roi_full, new_binning_down
+        )
         == expected_down_roi_full
     )
     assert (
-        AbstractCamera.calculate_new_roi_for_binning(old_binning, old_roi_partial, new_binning_down)
+        AbstractCamera.calculate_new_roi_for_binning(
+            old_binning, old_roi_partial, new_binning_down
+        )
         == expected_down_roi_partial
     )
 

@@ -1,13 +1,15 @@
 # tests/squid/services/test_stage_service.py
 """Tests for StageService."""
+
 import pytest
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 from dataclasses import dataclass
 
 
 @dataclass
 class MockPos:
     """Mock position for testing."""
+
     x_mm: float
     y_mm: float
     z_mm: float
@@ -88,9 +90,9 @@ class TestStageService:
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
         bus = EventBus()
 
-        service = StageService(mock_stage, bus)
+        StageService(mock_stage, bus)
 
-        bus.publish(MoveStageCommand(axis='x', distance_mm=5.0))
+        bus.publish(MoveStageCommand(axis="x", distance_mm=5.0))
 
         mock_stage.move_x.assert_called_once_with(5.0, True)
 
@@ -322,7 +324,7 @@ class TestStageService:
     def test_move_to_safety_position(self):
         """move_to_safety_position should move Z to safety point."""
         from squid.services.stage_service import StageService
-        from squid.events import EventBus, StagePositionChanged
+        from squid.events import EventBus
         import control._def as _def
 
         mock_stage = Mock()
@@ -339,7 +341,6 @@ class TestStageService:
         """move_to_loading_position should move to loading position."""
         from squid.services.stage_service import StageService
         from squid.events import EventBus
-        import control._def as _def
 
         mock_stage = Mock()
         mock_config = Mock()
@@ -363,7 +364,6 @@ class TestStageService:
         """move_to_loading_position should work for non-wellplate."""
         from squid.services.stage_service import StageService
         from squid.events import EventBus
-        import control._def as _def
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 5.0)
@@ -395,7 +395,6 @@ class TestStageService:
         """move_to_scanning_position should move to scanning position."""
         from squid.services.stage_service import StageService
         from squid.events import EventBus
-        import control._def as _def
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 5.0)

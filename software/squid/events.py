@@ -19,6 +19,7 @@ Usage:
     # Publish events
     event_bus.publish(ImageCaptured(frame=frame, info=info))
 """
+
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Type, TypeVar, Optional
 from threading import Lock
@@ -30,10 +31,11 @@ _log = squid.logging.get_logger("squid.events")
 @dataclass
 class Event:
     """Base class for all events."""
+
     pass
 
 
-E = TypeVar('E', bound=Event)
+E = TypeVar("E", bound=Event)
 
 
 class EventBus:
@@ -117,9 +119,11 @@ event_bus = EventBus()
 
 # Common event types
 
+
 @dataclass
 class AcquisitionStarted(Event):
     """Emitted when acquisition begins."""
+
     experiment_id: str
     timestamp: float
 
@@ -127,6 +131,7 @@ class AcquisitionStarted(Event):
 @dataclass
 class AcquisitionFinished(Event):
     """Emitted when acquisition completes."""
+
     success: bool
     error: Optional[Exception] = None
 
@@ -134,6 +139,7 @@ class AcquisitionFinished(Event):
 @dataclass
 class ImageCaptured(Event):
     """Emitted when an image is captured."""
+
     frame_id: int
     # Note: Don't include heavy objects like frame data
     # Use frame_id to look up from a cache instead
@@ -142,6 +148,7 @@ class ImageCaptured(Event):
 @dataclass
 class StageMovedTo(Event):
     """Emitted when stage moves to a position."""
+
     x_mm: float
     y_mm: float
     z_mm: float
@@ -150,6 +157,7 @@ class StageMovedTo(Event):
 @dataclass
 class FocusChanged(Event):
     """Emitted when focus changes."""
+
     z_mm: float
     source: str  # "autofocus", "manual", "focus_map"
 
@@ -158,21 +166,25 @@ class FocusChanged(Event):
 # Command Events (GUI -> Service)
 # ============================================================
 
+
 @dataclass
 class SetExposureTimeCommand(Event):
     """Command to set camera exposure time."""
+
     exposure_time_ms: float
 
 
 @dataclass
 class SetAnalogGainCommand(Event):
     """Command to set camera analog gain."""
+
     gain: float
 
 
 @dataclass
 class SetDACCommand(Event):
     """Command to set DAC output value."""
+
     channel: int
     value: float  # 0-100 percentage
 
@@ -180,6 +192,7 @@ class SetDACCommand(Event):
 @dataclass
 class MoveStageCommand(Event):
     """Command to move stage by relative distance."""
+
     axis: str  # 'x', 'y', or 'z'
     distance_mm: float
 
@@ -187,6 +200,7 @@ class MoveStageCommand(Event):
 @dataclass
 class MoveStageToCommand(Event):
     """Command to move stage to absolute position."""
+
     x_mm: Optional[float] = None
     y_mm: Optional[float] = None
     z_mm: Optional[float] = None
@@ -195,6 +209,7 @@ class MoveStageToCommand(Event):
 @dataclass
 class HomeStageCommand(Event):
     """Command to home stage axes."""
+
     x: bool = False
     y: bool = False
     z: bool = False
@@ -203,6 +218,7 @@ class HomeStageCommand(Event):
 @dataclass
 class SetIlluminationCommand(Event):
     """Command to set illumination."""
+
     channel: int
     intensity: float
     on: bool
@@ -211,12 +227,14 @@ class SetIlluminationCommand(Event):
 @dataclass
 class StartLiveCommand(Event):
     """Command to start live view."""
+
     configuration: Optional[str] = None
 
 
 @dataclass
 class StopLiveCommand(Event):
     """Command to stop live view."""
+
     pass
 
 
@@ -224,21 +242,25 @@ class StopLiveCommand(Event):
 # State Events (Service -> GUI)
 # ============================================================
 
+
 @dataclass
 class ExposureTimeChanged(Event):
     """Notification that exposure time changed."""
+
     exposure_time_ms: float
 
 
 @dataclass
 class AnalogGainChanged(Event):
     """Notification that analog gain changed."""
+
     gain: float
 
 
 @dataclass
 class StagePositionChanged(Event):
     """Notification that stage position changed."""
+
     x_mm: float
     y_mm: float
     z_mm: float
@@ -247,6 +269,7 @@ class StagePositionChanged(Event):
 @dataclass
 class LiveStateChanged(Event):
     """Notification that live view state changed."""
+
     is_live: bool
     configuration: Optional[str] = None
 
@@ -254,6 +277,7 @@ class LiveStateChanged(Event):
 @dataclass
 class DACValueChanged(Event):
     """Notification that DAC value changed."""
+
     channel: int
     value: float
 
@@ -261,6 +285,7 @@ class DACValueChanged(Event):
 @dataclass
 class ROIChanged(Event):
     """Notification that ROI changed."""
+
     x_offset: int
     y_offset: int
     width: int
@@ -270,6 +295,7 @@ class ROIChanged(Event):
 @dataclass
 class BinningChanged(Event):
     """Notification that binning changed."""
+
     binning_x: int
     binning_y: int
 
@@ -283,4 +309,5 @@ if TYPE_CHECKING:
 @dataclass
 class PixelFormatChanged(Event):
     """Notification that pixel format changed."""
+
     pixel_format: "CameraPixelFormat"  # Forward reference to avoid circular import

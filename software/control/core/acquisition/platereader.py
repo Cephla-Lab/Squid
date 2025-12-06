@@ -30,10 +30,7 @@ if TYPE_CHECKING:
 from squid.config import CameraPixelFormat
 
 
-
-
 class PlateReadingWorker(QObject):
-
     finished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -45,7 +42,9 @@ class PlateReadingWorker(QObject):
 
         self.camera = self.plateReadingController.camera
         self.microcontroller = self.plateReadingController.microcontroller
-        self.plateReaderNavigationController = self.plateReadingController.plateReaderNavigationController
+        self.plateReaderNavigationController = (
+            self.plateReadingController.plateReaderNavigationController
+        )
         self.liveController = self.plateReadingController.liveController
         self.autofocusController = self.plateReadingController.autofocusController
         self.configurationManager = self.plateReadingController.configurationManager
@@ -63,14 +62,20 @@ class PlateReadingWorker(QObject):
         self.do_autofocus = self.plateReadingController.do_autofocus
         self.crop_width = self.plateReadingController.crop_width
         self.crop_height = self.plateReadingController.crop_height
-        self.display_resolution_scaling = self.plateReadingController.display_resolution_scaling
+        self.display_resolution_scaling = (
+            self.plateReadingController.display_resolution_scaling
+        )
         self.counter = self.plateReadingController.counter
         self.experiment_ID = self.plateReadingController.experiment_ID
         self.base_path = self.plateReadingController.base_path
-        self.timestamp_acquisition_started = self.plateReadingController.timestamp_acquisition_started
+        self.timestamp_acquisition_started = (
+            self.plateReadingController.timestamp_acquisition_started
+        )
         self.time_point = 0
         self.abort_acquisition_requested = False
-        self.selected_configurations: List[Any] = self.plateReadingController.selected_configurations
+        self.selected_configurations: List[Any] = (
+            self.plateReadingController.selected_configurations
+        )
         self.selected_columns: List[int] = self.plateReadingController.selected_columns
 
     def run(self) -> None:
@@ -86,13 +91,19 @@ class PlateReadingWorker(QObject):
                 self.run_single_time_point()
                 self.time_point = self.time_point + 1
                 # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
-                while time.time() > self.timestamp_acquisition_started + self.time_point * self.dt:
+                while (
+                    time.time()
+                    > self.timestamp_acquisition_started + self.time_point * self.dt
+                ):
                     print("skip time point " + str(self.time_point + 1))
                     self.time_point = self.time_point + 1
                 if self.time_point == self.Nt:
                     break  # no waiting after taking the last time point
                 # wait until it's time to do the next acquisition
-                while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
+                while (
+                    time.time()
+                    < self.timestamp_acquisition_started + self.time_point * self.dt
+                ):
                     time.sleep(0.05)
         self.plateReaderNavigationController.is_scanning = False
         self.finished.emit()
@@ -103,14 +114,18 @@ class PlateReadingWorker(QObject):
 
     def run_single_time_point(self) -> None:
         if self.base_path is None or self.experiment_ID is None:
-            raise ValueError("base_path and experiment_ID must be set before running acquisition")
+            raise ValueError(
+                "base_path and experiment_ID must be set before running acquisition"
+            )
 
         self.FOV_counter: int = 0
         column_counter: int = 0
         print("multipoint acquisition - time point " + str(self.time_point + 1))
 
         # for each time point, create a new folder
-        current_path: str = os.path.join(self.base_path, self.experiment_ID, str(self.time_point))
+        current_path: str = os.path.join(
+            self.base_path, self.experiment_ID, str(self.time_point)
+        )
         utils.ensure_directory_exists(current_path)
 
         # run homing
@@ -122,7 +137,6 @@ class PlateReadingWorker(QObject):
 
         # go through columns
         for column in self.selected_columns:
-
             # increament counter
             column_counter = column_counter + 1
 
@@ -139,7 +153,6 @@ class PlateReadingWorker(QObject):
 
             # go through rows
             for row in range(PLATE_READER.NUMBER_OF_ROWS):
-
                 if row_scan_direction == 0:  # reverse scan:
                     row = PLATE_READER.NUMBER_OF_ROWS - 1 - row
 
@@ -159,14 +172,16 @@ class PlateReadingWorker(QObject):
                 ):
                     configuration_name_AF: str = "BF LED matrix full"
                     # Get configurations for the default objective
-                    available_configs = self.configurationManager.get_configurations(DEFAULT_OBJECTIVE)
+                    available_configs = self.configurationManager.get_configurations(
+                        DEFAULT_OBJECTIVE
+                    )
                     config_AF: Optional["ChannelMode"] = next(
                         (
                             config
                             for config in available_configs
                             if config.name == configuration_name_AF
                         ),
-                        None
+                        None,
                     )
                     if config_AF:
                         self.signal_current_configuration.emit(config_AF)
@@ -175,7 +190,6 @@ class PlateReadingWorker(QObject):
 
                 # z stack
                 for k in range(self.NZ):
-
                     if self.NZ > 1:
                         # update file ID
                         file_ID = file_ID + "_" + str(k)
@@ -196,18 +210,33 @@ class PlateReadingWorker(QObject):
                         image: Optional[np.ndarray] = self.camera.read_frame()
                         self.liveController.turn_off_illumination()
                         if image is None:
-                            print("Warning: camera.read_frame() returned None, skipping this image")
+                            print(
+                                "Warning: camera.read_frame() returned None, skipping this image"
+                            )
                             continue
-                        image = utils.crop_image(image, self.crop_width, self.crop_height)
+                        image = utils.crop_image(
+                            image, self.crop_width, self.crop_height
+                        )
                         saving_path: str = os.path.join(
-                            current_path, file_ID + "_" + str(config.name) + "." + Acquisition.IMAGE_FORMAT
+                            current_path,
+                            file_ID
+                            + "_"
+                            + str(config.name)
+                            + "."
+                            + Acquisition.IMAGE_FORMAT,
                         )
                         # self.image_to_display.emit(cv2.resize(image,(round(self.crop_width*self.display_resolution_scaling), round(self.crop_height*self.display_resolution_scaling)),cv2.INTER_LINEAR))
                         # image_to_display = utils.crop_image(image,round(self.crop_width*self.liveController.display_resolution_scaling), round(self.crop_height*self.liveController.display_resolution_scaling))
-                        image_to_display: np.ndarray = utils.crop_image(image, round(self.crop_width), round(self.crop_height))
+                        image_to_display: np.ndarray = utils.crop_image(
+                            image, round(self.crop_width), round(self.crop_height)
+                        )
                         self.image_to_display.emit(image_to_display)
-                        self.image_to_display_multi.emit(image_to_display, config.illumination_source)
-                        if CameraPixelFormat.is_color_format(self.camera.get_pixel_format()):
+                        self.image_to_display_multi.emit(
+                            image_to_display, config.illumination_source
+                        )
+                        if CameraPixelFormat.is_color_format(
+                            self.camera.get_pixel_format()
+                        ):
                             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                         cv2.imwrite(saving_path, image)
                         QApplication.processEvents()
@@ -215,13 +244,17 @@ class PlateReadingWorker(QObject):
                     if self.NZ > 1:
                         # move z
                         if k < self.NZ - 1:
-                            self.plateReaderNavigationController.move_z_usteps(self.deltaZ_usteps)
+                            self.plateReaderNavigationController.move_z_usteps(
+                                self.deltaZ_usteps
+                            )
                             self.wait_till_operation_is_completed()
                             time.sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
                 if self.NZ > 1:
                     # move z back
-                    self.plateReaderNavigationController.move_z_usteps(-self.deltaZ_usteps * (self.NZ - 1))
+                    self.plateReaderNavigationController.move_z_usteps(
+                        -self.deltaZ_usteps * (self.NZ - 1)
+                    )
                     self.wait_till_operation_is_completed()
 
                 if self.abort_acquisition_requested:
@@ -232,7 +265,6 @@ class PlateReadingWorker(QObject):
 
 
 class PlateReadingController(QObject):
-
     acquisitionFinished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
@@ -244,13 +276,17 @@ class PlateReadingController(QObject):
         plateReaderNavigationController: Any,  # TODO: Create proper type for this
         liveController: "LiveController",
         autofocusController: "AutoFocusController",
-        configurationManager: "ChannelConfigurationManager"
+        configurationManager: "ChannelConfigurationManager",
     ) -> None:
         QObject.__init__(self)
 
         self.camera: "AbstractCamera" = camera
-        self.microcontroller: "Microcontroller" = plateReaderNavigationController.microcontroller  # to move to gui for transparency
-        self.plateReaderNavigationController: Any = plateReaderNavigationController  # TODO: Create proper type for this
+        self.microcontroller: "Microcontroller" = (
+            plateReaderNavigationController.microcontroller
+        )  # to move to gui for transparency
+        self.plateReaderNavigationController: Any = (
+            plateReaderNavigationController  # TODO: Create proper type for this
+        )
         self.liveController: "LiveController" = liveController
         self.autofocusController: "AutoFocusController" = autofocusController
         self.configurationManager: "ChannelConfigurationManager" = configurationManager
@@ -258,9 +294,15 @@ class PlateReadingController(QObject):
         self.NY: int = 1
         self.NZ: int = 1
         self.Nt: int = 1
-        mm_per_ustep_X: float = SCREW_PITCH_X_MM / (self.plateReaderNavigationController.x_microstepping * FULLSTEPS_PER_REV_X)
-        mm_per_ustep_Y: float = SCREW_PITCH_Y_MM / (self.plateReaderNavigationController.y_microstepping * FULLSTEPS_PER_REV_Y)
-        mm_per_ustep_Z: float = SCREW_PITCH_Z_MM / (self.plateReaderNavigationController.z_microstepping * FULLSTEPS_PER_REV_Z)
+        mm_per_ustep_X: float = SCREW_PITCH_X_MM / (
+            self.plateReaderNavigationController.x_microstepping * FULLSTEPS_PER_REV_X
+        )
+        mm_per_ustep_Y: float = SCREW_PITCH_Y_MM / (
+            self.plateReaderNavigationController.y_microstepping * FULLSTEPS_PER_REV_Y
+        )
+        mm_per_ustep_Z: float = SCREW_PITCH_Z_MM / (
+            self.plateReaderNavigationController.z_microstepping * FULLSTEPS_PER_REV_Z
+        )
         self.deltaX: float = Acquisition.DX
         self.deltaX_usteps: int = round(self.deltaX / mm_per_ustep_X)
         self.deltaY: float = Acquisition.DY
@@ -271,7 +313,9 @@ class PlateReadingController(QObject):
         self.do_autofocus: bool = False
         self.crop_width: int = AF.CROP_WIDTH
         self.crop_height: int = AF.CROP_HEIGHT
-        self.display_resolution_scaling: float = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
+        self.display_resolution_scaling: float = (
+            Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
+        )
         self.counter: int = 0
         self.experiment_ID: Optional[str] = None
         self.base_path: Optional[str] = None
@@ -294,7 +338,9 @@ class PlateReadingController(QObject):
         self.Nt = N
 
     def set_deltaZ(self, delta_um: float) -> None:
-        mm_per_ustep_Z: float = SCREW_PITCH_Z_MM / (self.plateReaderNavigationController.z_microstepping * FULLSTEPS_PER_REV_Z)
+        mm_per_ustep_Z: float = SCREW_PITCH_Z_MM / (
+            self.plateReaderNavigationController.z_microstepping * FULLSTEPS_PER_REV_Z
+        )
         self.deltaZ = delta_um / 1000
         self.deltaZ_usteps = round((delta_um / 1000) / mm_per_ustep_Z)
 
@@ -311,9 +357,13 @@ class PlateReadingController(QObject):
     def set_base_path(self, path: str) -> None:
         self.base_path = path
 
-    def start_new_experiment(self, experiment_ID: str) -> None:  # @@@ to do: change name to prepare_folder_for_new_experiment
+    def start_new_experiment(
+        self, experiment_ID: str
+    ) -> None:  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
-        self.experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+        self.experiment_ID = (
+            experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+        )
         self.recording_start_time = time.time()
         # create a new folder
         if self.base_path is None:
@@ -323,18 +373,27 @@ class PlateReadingController(QObject):
             self.configurationManager.write_configuration_selected(
                 DEFAULT_OBJECTIVE,
                 self.selected_configurations,
-                os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml"
+                os.path.join(self.base_path, self.experiment_ID)
+                + "/configurations.xml",
             )  # save the configuration for the experiment
         except Exception:
             pass
 
-    def set_selected_configurations(self, selected_configurations_name: List[str]) -> None:
+    def set_selected_configurations(
+        self, selected_configurations_name: List[str]
+    ) -> None:
         self.selected_configurations = []
-        available_configs = self.configurationManager.get_configurations(DEFAULT_OBJECTIVE)
+        available_configs = self.configurationManager.get_configurations(
+            DEFAULT_OBJECTIVE
+        )
         for configuration_name in selected_configurations_name:
             config = next(
-                (config for config in available_configs if config.name == configuration_name),
-                None
+                (
+                    config
+                    for config in available_configs
+                    if config.name == configuration_name
+                ),
+                None,
             )
             if config:
                 self.selected_configurations.append(config)
@@ -346,7 +405,9 @@ class PlateReadingController(QObject):
     def run_acquisition(self) -> None:  # @@@ to do: change name to run_experiment
         print("start plate reading")
         # save the current microscope configuration
-        self.configuration_before_running_multipoint = self.liveController.currentConfiguration
+        self.configuration_before_running_multipoint = (
+            self.liveController.currentConfiguration
+        )
         # stop live
         if self.liveController.is_live:
             self.liveController_was_live_before_acquisition = True
@@ -376,7 +437,9 @@ class PlateReadingController(QObject):
         self.plateReadingWorker.finished.connect(self.plateReadingWorker.deleteLater)
         self.plateReadingWorker.finished.connect(self.thread.quit)
         self.plateReadingWorker.image_to_display.connect(self.slot_image_to_display)
-        self.plateReadingWorker.image_to_display_multi.connect(self.slot_image_to_display_multi)
+        self.plateReadingWorker.image_to_display_multi.connect(
+            self.slot_image_to_display_multi
+        )
         self.plateReadingWorker.signal_current_configuration.connect(
             self.slot_current_configuration, type=Qt.BlockingQueuedConnection
         )
@@ -390,7 +453,9 @@ class PlateReadingController(QObject):
 
     def _on_acquisition_completed(self) -> None:
         # restore the previous selected mode
-        self.signal_current_configuration.emit(self.configuration_before_running_multipoint)
+        self.signal_current_configuration.emit(
+            self.configuration_before_running_multipoint
+        )
 
         # re-enable callback
         if self.camera_callback_was_enabled_before_acquisition:
@@ -410,7 +475,9 @@ class PlateReadingController(QObject):
     def slot_image_to_display(self, image: np.ndarray) -> None:
         self.image_to_display.emit(image)
 
-    def slot_image_to_display_multi(self, image: np.ndarray, illumination_source: int) -> None:
+    def slot_image_to_display_multi(
+        self, image: np.ndarray, illumination_source: int
+    ) -> None:
         self.image_to_display_multi.emit(image, illumination_source)
 
     def slot_current_configuration(self, configuration: "ChannelMode") -> None:

@@ -32,7 +32,9 @@ class LaserUnit:
     product_id: int
     serial_number: str  # Required to distinguish between units
     device_handle: Optional[hid.device] = None
-    line_to_wavelength: Dict[int, int] = field(default_factory=dict)  # {line_number: wavelength}
+    line_to_wavelength: Dict[int, int] = field(
+        default_factory=dict
+    )  # {line_number: wavelength}
 
 
 class AndorLaser(LightSource):
@@ -80,7 +82,12 @@ class AndorLaser(LightSource):
         return serial_numbers
 
     def _add_unit(
-        self, unit_id: str, vendor_id: int, product_id: int, serial_number: str, line_to_wavelength: Dict[int, int]
+        self,
+        unit_id: str,
+        vendor_id: int,
+        product_id: int,
+        serial_number: str,
+        line_to_wavelength: Dict[int, int],
     ) -> bool:
         """
         Add a laser unit to be controlled.
@@ -132,7 +139,9 @@ class AndorLaser(LightSource):
                 if self._set_lines_to_off(unit_id):
                     results[unit_id] = True
                 else:
-                    log.warning(f"Warning: Unit {unit_id} connected but initialization failed")
+                    log.warning(
+                        f"Warning: Unit {unit_id} connected but initialization failed"
+                    )
                     results[unit_id] = True  # Still mark as connected
             except Exception as e:
                 log.error(f"Failed to connect to unit {unit_id}: {e}")
@@ -146,7 +155,7 @@ class AndorLaser(LightSource):
             if unit.device_handle:
                 try:
                     unit.device_handle.close()
-                except:
+                except Exception:
                     log.error(f"Failed to disconnect from unit {unit.serial_number}")
                 unit.device_handle = None
 
@@ -198,7 +207,9 @@ class AndorLaser(LightSource):
             if data:
                 if debug:
                     # Show all received bytes for debugging
-                    log.debug(f"Received ({len(data)} bytes): {' '.join(f'0x{b:02x}' for b in data)}")
+                    log.debug(
+                        f"Received ({len(data)} bytes): {' '.join(f'0x{b:02x}' for b in data)}"
+                    )
 
                 # The device always sends Report ID 0 as first byte
                 # Check if first byte is 0x00 (Report ID)
@@ -206,13 +217,17 @@ class AndorLaser(LightSource):
                     # Skip the Report ID and return the actual data
                     actual_data = data[1 : expected_length + 1]
                     if debug:
-                        log.debug(f"Actual response: {' '.join(f'0x{b:02x}' for b in actual_data)}")
+                        log.debug(
+                            f"Actual response: {' '.join(f'0x{b:02x}' for b in actual_data)}"
+                        )
                     return bytes(actual_data)
                 else:
                     # No Report ID or unexpected format
                     actual_data = data[:expected_length]
                     if debug:
-                        log.debug(f"Response (no Report ID): {' '.join(f'0x{b:02x}' for b in actual_data)}")
+                        log.debug(
+                            f"Response (no Report ID): {' '.join(f'0x{b:02x}' for b in actual_data)}"
+                        )
                     return bytes(actual_data)
             time.sleep(0.001)
 
@@ -279,7 +294,9 @@ class AndorLaser(LightSource):
         command = struct.pack(">B", LaserCommands.GET_LASER_LINE_SETUP)
 
         if not AndorLaser._send_command(unit, command):
-            raise RuntimeError(f"Failed to send get laser line setup command to unit {unit_id}")
+            raise RuntimeError(
+                f"Failed to send get laser line setup command to unit {unit_id}"
+            )
 
         # Read response - minimum 13 bytes (1 command + 6 pairs), maximum 17 bytes (1 command + 8 pairs)
         response = AndorLaser._read_response(unit, 17, timeout=1.0)
@@ -288,9 +305,13 @@ class AndorLaser(LightSource):
 
         if response[0] != LaserCommands.GET_LASER_LINE_SETUP:
             if response[0] == LaserCommands.ERROR_RESPONSE:
-                raise RuntimeError(f"Error response from unit {unit_id} for get laser line setup")
+                raise RuntimeError(
+                    f"Error response from unit {unit_id} for get laser line setup"
+                )
             else:
-                raise RuntimeError(f"Unexpected response command 0x{response[0]:02x} from unit {unit_id}")
+                raise RuntimeError(
+                    f"Unexpected response command 0x{response[0]:02x} from unit {unit_id}"
+                )
 
         # Parse wavelength pairs (HH LL format)
         line_to_wavelength = {}
@@ -332,7 +353,9 @@ class AndorLaser(LightSource):
         serial_numbers = AndorLaser._find_laser_devices(self.vid, self.pid)
 
         if not serial_numbers:
-            raise RuntimeError(f"No laser devices found with VID:PID {self.vid:04x}:{self.pid:04x}")
+            raise RuntimeError(
+                f"No laser devices found with VID:PID {self.vid:04x}:{self.pid:04x}"
+            )
 
         log.info(f"Found {len(serial_numbers)} laser units: {serial_numbers}")
 
@@ -390,17 +413,25 @@ class AndorLaser(LightSource):
                         self.channel_mappings[wl] = (unit_id, line)
                     log.info(f"Mapped channels {group} to unit {unit_id}, line {line}")
                 else:
-                    log.error(f"Wavelength {wavelength}nm from unit {unit_id} not in supported channels")
+                    log.error(
+                        f"Wavelength {wavelength}nm from unit {unit_id} not in supported channels"
+                    )
 
         # Show final channel mapping
-        active_channels = {ch: mapping for ch, mapping in self.channel_mappings.items() if mapping is not None}
+        active_channels = {
+            ch: mapping
+            for ch, mapping in self.channel_mappings.items()
+            if mapping is not None
+        }
         log.info(f"Active channels: {active_channels}")
 
         # Initialize all connected units (set all lines to off)
         for unit_id in self.units:
             if self.units[unit_id].device_handle:
                 if not self._set_lines_to_off(unit_id):
-                    raise RuntimeError(f"Failed to initialize shutter state for unit {unit_id}")
+                    raise RuntimeError(
+                        f"Failed to initialize shutter state for unit {unit_id}"
+                    )
 
     def set_intensity(self, channel: Tuple[int, int], intensity: float) -> bool:
         """
@@ -426,7 +457,9 @@ class AndorLaser(LightSource):
         transmission = int(intensity * 10)
 
         # Build command: 0x04 + line_number + transmission_high + transmission_low
-        command = struct.pack(">BBH", LaserCommands.SET_TRANSMISSION, line, transmission)
+        command = struct.pack(
+            ">BBH", LaserCommands.SET_TRANSMISSION, line, transmission
+        )
 
         # Send command
         if not AndorLaser._send_command(unit, command):
@@ -486,14 +519,18 @@ class AndorLaser(LightSource):
 
     def set_intensity_control_mode(self, mode: IntensityControlMode):
         if mode != IntensityControlMode.Software:
-            raise NotImplementedError("Changing intensity control mode is not supported for Andor laser units")
+            raise NotImplementedError(
+                "Changing intensity control mode is not supported for Andor laser units"
+            )
 
     def get_intensity_control_mode(self) -> IntensityControlMode:
         return self.intensity_control_mode
 
     def set_shutter_control_mode(self, mode: ShutterControlMode):
         if mode != ShutterControlMode.TTL:
-            raise NotImplementedError("Changing shutter control mode is not supported for Andor laser units")
+            raise NotImplementedError(
+                "Changing shutter control mode is not supported for Andor laser units"
+            )
 
     def get_shutter_control_mode(self) -> ShutterControlMode:
         return self.shutter_control_mode
@@ -502,7 +539,9 @@ class AndorLaser(LightSource):
         """
         We will use TTL to control on/off so we don't need to do anything here.
         """
-        raise NotImplementedError("Setting shutter state in software is not supported for Andor laser units")
+        raise NotImplementedError(
+            "Setting shutter state in software is not supported for Andor laser units"
+        )
 
     def get_shutter_state(self, channel: Tuple[int, int]) -> bool:
         """
@@ -525,7 +564,9 @@ class AndorLaser(LightSource):
 
         # Send command
         if not AndorLaser._send_command(unit, command):
-            raise RuntimeError(f"Failed to send read shutter state command to unit {unit_id}")
+            raise RuntimeError(
+                f"Failed to send read shutter state command to unit {unit_id}"
+            )
 
         # Read response (2 bytes: command + status byte)
         response = AndorLaser._read_response(unit, 2)
@@ -534,9 +575,13 @@ class AndorLaser(LightSource):
 
         if response[0] != LaserCommands.READ_SHUTTER_STATE:
             if response[0] == LaserCommands.ERROR_RESPONSE:
-                raise RuntimeError(f"Error response from unit {unit_id} for read shutter state")
+                raise RuntimeError(
+                    f"Error response from unit {unit_id} for read shutter state"
+                )
             else:
-                raise RuntimeError(f"Unexpected response command 0x{response[0]:02x} from unit {unit_id}")
+                raise RuntimeError(
+                    f"Unexpected response command 0x{response[0]:02x} from unit {unit_id}"
+                )
 
         # Extract status byte - each bit represents a line position
         status_byte = response[1]
@@ -545,7 +590,9 @@ class AndorLaser(LightSource):
         line_bit = (status_byte >> line) & 0x01
 
         if self.debug:
-            log.debug(f"Unit {unit_id} shutter status byte: 0x{status_byte:02x}, line {line} state: {bool(line_bit)}")
+            log.debug(
+                f"Unit {unit_id} shutter status byte: 0x{status_byte:02x}, line {line} state: {bool(line_bit)}"
+            )
 
         return bool(line_bit)
 

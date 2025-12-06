@@ -17,13 +17,17 @@ def main(args):
 
     log.info("Creating microcontroller...")
     micro = control.microcontroller.Microcontroller(
-        serial_device=control.microcontroller.get_microcontroller_serial_device(simulated=False)
+        serial_device=control.microcontroller.get_microcontroller_serial_device(
+            simulated=False
+        )
     )
 
     stage_positions = cycle([(10, 10), (10.001, 10), (10.001, 10.001), (10, 10.001)])
     stage = None
     if args.stage:
-        stage = squid.stage.cephla.CephlaStage(micro, stage_config=squid.config.get_stage_config())
+        stage = squid.stage.cephla.CephlaStage(
+            micro, stage_config=squid.config.get_stage_config()
+        )
         # stage.home(x=False, y=False, z=True, theta=False)
         log.info("Moving z to 0.1")
         stage.move_z(0.1)
@@ -96,20 +100,45 @@ if __name__ == "__main__":
     import argparse
     import sys
 
-    ap = argparse.ArgumentParser(description="A stress test to try to trigger microcontroller errors.")
-
-    ap.add_argument("--runtime", type=float, help="The time to run the test for, in [s]", default=60)
-    ap.add_argument("--report_interval", type=int, help="How often to report (in loop counts)", default=100)
-    ap.add_argument("--laser_af", action="store_true", help="Toggle the laser af on/off as part of the test.")
-    ap.add_argument(
-        "--stage", action="store_true", help="Create a motion stage, home it, then use it in the stress test."
+    ap = argparse.ArgumentParser(
+        description="A stress test to try to trigger microcontroller errors."
     )
-    ap.add_argument("--no_loop_sleep", action="store_true", help="Do not sleep to yield the test thread.")
+
     ap.add_argument(
-        "--on_thread", action="store_true", help="Run the test on a daemon thread while the main thread spins"
+        "--runtime", type=float, help="The time to run the test for, in [s]", default=60
+    )
+    ap.add_argument(
+        "--report_interval",
+        type=int,
+        help="How often to report (in loop counts)",
+        default=100,
+    )
+    ap.add_argument(
+        "--laser_af",
+        action="store_true",
+        help="Toggle the laser af on/off as part of the test.",
+    )
+    ap.add_argument(
+        "--stage",
+        action="store_true",
+        help="Create a motion stage, home it, then use it in the stress test.",
+    )
+    ap.add_argument(
+        "--no_loop_sleep",
+        action="store_true",
+        help="Do not sleep to yield the test thread.",
+    )
+    ap.add_argument(
+        "--on_thread",
+        action="store_true",
+        help="Run the test on a daemon thread while the main thread spins",
     )
     ap.add_argument("--verbose", action="store_true", help="Turn on debug logging.")
-    ap.add_argument("--no_wait", action="store_true", help="Turn off waiting for micro to complete commands.")
+    ap.add_argument(
+        "--no_wait",
+        action="store_true",
+        help="Turn off waiting for micro to complete commands.",
+    )
     args = ap.parse_args()
 
     sys.exit(main(args))

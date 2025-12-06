@@ -1,5 +1,6 @@
 # squid/services/__init__.py
 """Service layer for hardware orchestration."""
+
 from typing import Dict, Optional
 
 from squid.services.base import BaseService
@@ -63,4 +64,10 @@ class ServiceRegistry:
         self._services.clear()
 
 
-__all__ = ['BaseService', 'ServiceRegistry', 'PeripheralService', 'CameraService', 'StageService']
+__all__ = [
+    "BaseService",
+    "ServiceRegistry",
+    "PeripheralService",
+    "CameraService",
+    "StageService",
+]

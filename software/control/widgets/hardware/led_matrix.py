@@ -1,4 +1,6 @@
 # LED matrix settings dialog
+from typing import Any
+
 from qtpy.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -10,12 +12,12 @@ from qtpy.QtWidgets import (
 
 
 class LedMatrixSettingsDialog(QDialog):
-    def __init__(self, led_array):
-        self.led_array = led_array
+    def __init__(self, led_array: Any) -> None:
+        self.led_array: Any = led_array
         super().__init__()
         self.setWindowTitle("LED Matrix Settings")
 
-        self.layout = QVBoxLayout()
+        main_layout = QVBoxLayout()
 
         # Add QDoubleSpinBox for LED intensity (0-1)
         self.NA_spinbox = QDoubleSpinBox()
@@ -28,16 +30,18 @@ class LedMatrixSettingsDialog(QDialog):
         NA_layout.addWidget(QLabel("NA"))
         NA_layout.addWidget(self.NA_spinbox)
 
-        self.layout.addLayout(NA_layout)
-        self.setLayout(self.layout)
+        main_layout.addLayout(NA_layout)
+        self.setLayout(main_layout)
 
         # add ok/cancel buttons
-        self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.button_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
-        self.layout.addWidget(self.button_box)
+        main_layout.addWidget(self.button_box)
 
         self.button_box.accepted.connect(self.update_NA)
 
-    def update_NA(self):
+    def update_NA(self) -> None:
         self.led_array.set_NA(self.NA_spinbox.value())

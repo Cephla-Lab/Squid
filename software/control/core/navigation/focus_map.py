@@ -32,10 +32,14 @@ class FocusMap:
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.smoothing_factor: float = smoothing_factor
         self.method: str = "spline"  # can be 'spline' or 'rbf' or 'constant'
-        self.global_surface_fit: Optional[Union[SmoothBivariateSpline, RBFInterpolator, Callable]] = None
+        self.global_surface_fit: Optional[
+            Union[SmoothBivariateSpline, RBFInterpolator, Callable]
+        ] = None
         self.global_method: Optional[str] = None
         self.global_errors: Optional[np.ndarray] = None
-        self.region_surface_fits: Dict[str, Union[SmoothBivariateSpline, RBFInterpolator, Callable]] = {}
+        self.region_surface_fits: Dict[
+            str, Union[SmoothBivariateSpline, RBFInterpolator, Callable]
+        ] = {}
         self.region_methods: Dict[str, str] = {}
         self.region_errors: Dict[str, np.ndarray] = {}
         self.fit_by_region: bool = False
@@ -43,7 +47,11 @@ class FocusMap:
         self.is_fitted: bool = False
 
     def generate_grid_coordinates(
-        self, scanCoordinates: ScanCoordinates, rows: int = 4, cols: int = 4, add_margin: bool = False
+        self,
+        scanCoordinates: ScanCoordinates,
+        rows: int = 4,
+        cols: int = 4,
+        add_margin: bool = False,
     ) -> Dict[str, List[Tuple[float, float]]]:
         """
         Generate focus point grid coordinates for each scan region
@@ -103,9 +111,9 @@ class FocusMap:
             for y in y_positions:
                 for x in x_positions:
                     # Check if point is within region bounds
-                    if scanCoordinates.validate_coordinates(x, y) and scanCoordinates.region_contains_coordinate(
-                        region_id, x, y
-                    ):
+                    if scanCoordinates.validate_coordinates(
+                        x, y
+                    ) and scanCoordinates.region_contains_coordinate(region_id, x, y):
                         region_focus_coords.append((x, y))
 
             focus_coords[region_id] = region_focus_coords
@@ -132,7 +140,9 @@ class FocusMap:
         """
         self.fit_by_region = fit_by_region
 
-    def fit(self, points: Dict[str, List[Tuple[float, float, float]]]) -> Tuple[float, float]:
+    def fit(
+        self, points: Dict[str, List[Tuple[float, float, float]]]
+    ) -> Tuple[float, float]:
         """Fit surface through provided focus points
 
         Args:
@@ -153,15 +163,21 @@ class FocusMap:
             self.region_errors = {}
             for region_id, region_points in points.items():
                 if len(region_points) in [0, 2, 3]:
-                    raise ValueError("Use 1 point for constant plane, or at least 4 points for surface fitting")
-                self.region_surface_fits[region_id], self.region_methods[region_id], self.region_errors[region_id] = (
-                    self._fit_surface(region_points)
-                )
+                    raise ValueError(
+                        "Use 1 point for constant plane, or at least 4 points for surface fitting"
+                    )
+                (
+                    self.region_surface_fits[region_id],
+                    self.region_methods[region_id],
+                    self.region_errors[region_id],
+                ) = self._fit_surface(region_points)
             if self.method == "constant":
                 mean_error = 0
                 std_error = 0
             else:
-                all_errors = np.concatenate([errors for errors in self.region_errors.values()])
+                all_errors = np.concatenate(
+                    [errors for errors in self.region_errors.values()]
+                )
                 mean_error = np.mean(all_errors)
                 std_error = np.std(all_errors)
         else:
@@ -169,9 +185,13 @@ class FocusMap:
             for region_points in points.values():
                 all_points.extend(region_points)
             if len(all_points) < 4:
-                raise ValueError("Use 1 point for constant plane, or at least 4 points for surface fitting")
+                raise ValueError(
+                    "Use 1 point for constant plane, or at least 4 points for surface fitting"
+                )
 
-            self.global_surface_fit, self.global_method, self.global_errors = self._fit_surface(all_points)
+            self.global_surface_fit, self.global_method, self.global_errors = (
+                self._fit_surface(all_points)
+            )
             mean_error = np.mean(self.global_errors)
             std_error = np.std(self.global_errors)
 
@@ -181,7 +201,11 @@ class FocusMap:
 
     def _fit_surface(
         self, points: List[Tuple[float, float, float]]
-    ) -> Tuple[Union[SmoothBivariateSpline, RBFInterpolator, Callable], str, Optional[np.ndarray]]:
+    ) -> Tuple[
+        Union[SmoothBivariateSpline, RBFInterpolator, Callable],
+        str,
+        Optional[np.ndarray],
+    ]:
         """Fit surface through provided focus points for a specific region or globally
 
         Args:
@@ -198,7 +222,9 @@ class FocusMap:
         if len(points) == 1:
             # For single point, create a flat plane at that z-height
             if self.method != "constant":
-                self._log.warning("One point can only be used for constant plane, falling back to constant")
+                self._log.warning(
+                    "One point can only be used for constant plane, falling back to constant"
+                )
             z_value = z[0]
             surface_fit = self._fit_constant_plane(z_value)
             method = "constant"
@@ -209,15 +235,24 @@ class FocusMap:
             if self.method == "spline":
                 try:
                     surface_fit = SmoothBivariateSpline(
-                        x, y, z, kx=3, ky=3, s=self.smoothing_factor  # cubic spline in x  # cubic spline in y
+                        x,
+                        y,
+                        z,
+                        kx=3,
+                        ky=3,
+                        s=self.smoothing_factor,  # cubic spline in x  # cubic spline in y
                     )
                     method = self.method
                 except Exception as e:
-                    self._log.warning(f"Spline fitting failed: {str(e)}, falling back to RBF")
+                    self._log.warning(
+                        f"Spline fitting failed: {str(e)}, falling back to RBF"
+                    )
                     surface_fit = self._fit_rbf(x, y, z)
                     method = "rbf"
             elif self.method == "constant":
-                self._log.warning("Constant method cannot be used for multiple points, falling back to RBF")
+                self._log.warning(
+                    "Constant method cannot be used for multiple points, falling back to RBF"
+                )
                 surface_fit = self._fit_rbf(x, y, z)
                 method = "rbf"
             else:
@@ -232,12 +267,20 @@ class FocusMap:
     def _fit_rbf(self, x: np.ndarray, y: np.ndarray, z: np.ndarray) -> RBFInterpolator:
         """Fit using Radial Basis Function interpolation"""
         xy = np.column_stack((x, y))
-        return RBFInterpolator(xy, z, kernel="thin_plate_spline", epsilon=self.smoothing_factor)
+        return RBFInterpolator(
+            xy, z, kernel="thin_plate_spline", epsilon=self.smoothing_factor
+        )
 
-    def _fit_constant_plane(self, z_value: float) -> Callable[[Union[float, np.ndarray], Union[float, np.ndarray]], Union[float, np.ndarray]]:
+    def _fit_constant_plane(
+        self, z_value: float
+    ) -> Callable[
+        [Union[float, np.ndarray], Union[float, np.ndarray]], Union[float, np.ndarray]
+    ]:
         """Create a constant height plane"""
 
-        def constant_plane(x: Union[float, np.ndarray], y: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
+        def constant_plane(
+            x: Union[float, np.ndarray], y: Union[float, np.ndarray]
+        ) -> Union[float, np.ndarray]:
             if isinstance(x, np.ndarray):
                 return np.full_like(x, z_value)
             else:
@@ -246,7 +289,10 @@ class FocusMap:
         return constant_plane
 
     def interpolate(
-        self, x: Union[float, np.ndarray], y: Union[float, np.ndarray], region_id: Optional[str] = None
+        self,
+        x: Union[float, np.ndarray],
+        y: Union[float, np.ndarray],
+        region_id: Optional[str] = None,
     ) -> Union[float, np.ndarray]:
         """Get interpolated Z value at given (x,y) coordinates
 
@@ -342,7 +388,9 @@ class FocusMap:
 
 
 class NavigationViewer(QFrame):
-    signal_coordinates_clicked = Signal(float, float)  # Will emit x_mm, y_mm when clicked
+    signal_coordinates_clicked = Signal(
+        float, float
+    )  # Will emit x_mm, y_mm when clicked
 
     def __init__(
         self,
@@ -393,7 +441,9 @@ class NavigationViewer(QFrame):
         print("navigation viewer:", sample)
         self.init_ui(invertX)
 
-        self.load_background_image(self.image_paths.get(sample, "assets/images/4 slide carrier_1509x1010.png"))
+        self.load_background_image(
+            self.image_paths.get(sample, "assets/images/4 slide carrier_1509x1010.png")
+        )
         self.create_layers()
         self.update_display_properties(sample)
         # self.update_display()
@@ -404,11 +454,15 @@ class NavigationViewer(QFrame):
         self.graphics_widget = pg.GraphicsLayoutWidget()
         self.graphics_widget.setBackground("w")
 
-        self.view = self.graphics_widget.addViewBox(invertX=not INVERTED_OBJECTIVE, invertY=True)
+        self.view = self.graphics_widget.addViewBox(
+            invertX=not INVERTED_OBJECTIVE, invertY=True
+        )
         self.view.setAspectLocked(True)
 
         # Create Clear Coordinates button with seamless styling
-        self.btn_clear_coordinates = QPushButton("Clear Scan Grid", self.graphics_widget)
+        self.btn_clear_coordinates = QPushButton(
+            "Clear Scan Grid", self.graphics_widget
+        )
         self.btn_clear_coordinates.clicked.connect(self.clear_slide)
         self.btn_clear_coordinates.setCursor(Qt.PointingHandCursor)
         # Position button
@@ -446,11 +500,17 @@ class NavigationViewer(QFrame):
             self.background_image = cv2.imread(self.image_paths.get("glass slide"))
 
         if len(self.background_image.shape) == 2:  # Grayscale image
-            self.background_image = cv2.cvtColor(self.background_image, cv2.COLOR_GRAY2RGBA)
+            self.background_image = cv2.cvtColor(
+                self.background_image, cv2.COLOR_GRAY2RGBA
+            )
         elif self.background_image.shape[2] == 3:  # BGR image
-            self.background_image = cv2.cvtColor(self.background_image, cv2.COLOR_BGR2RGBA)
+            self.background_image = cv2.cvtColor(
+                self.background_image, cv2.COLOR_BGR2RGBA
+            )
         elif self.background_image.shape[2] == 4:  # BGRA image
-            self.background_image = cv2.cvtColor(self.background_image, cv2.COLOR_BGRA2RGBA)
+            self.background_image = cv2.cvtColor(
+                self.background_image, cv2.COLOR_BGRA2RGBA
+            )
 
         self.background_image_copy = self.background_image.copy()
         self.image_height, self.image_width = self.background_image.shape[:2]
@@ -458,9 +518,15 @@ class NavigationViewer(QFrame):
         self.view.addItem(self.background_item)
 
     def create_layers(self) -> None:
-        self.scan_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
-        self.fov_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
-        self.focus_point_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
+        self.scan_overlay = np.zeros(
+            (self.image_height, self.image_width, 4), dtype=np.uint8
+        )
+        self.fov_overlay = np.zeros(
+            (self.image_height, self.image_width, 4), dtype=np.uint8
+        )
+        self.focus_point_overlay = np.zeros(
+            (self.image_height, self.image_width, 4), dtype=np.uint8
+        )
 
         self.scan_overlay_item = pg.ImageItem()
         self.fov_overlay_item = pg.ImageItem()
@@ -494,7 +560,9 @@ class NavigationViewer(QFrame):
         self.update_fov_size()
 
     def update_fov_size(self) -> None:
-        self.fov_size_mm = self.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
+        self.fov_size_mm = (
+            self.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
+        )
 
     def redraw_fov(self) -> None:
         self.clear_overlay()
@@ -565,10 +633,16 @@ class NavigationViewer(QFrame):
             self.x_mm = x_mm
             self.y_mm = y_mm
 
-    def get_FOV_pixel_coordinates(self, x_mm: float, y_mm: float) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    def get_FOV_pixel_coordinates(
+        self, x_mm: float, y_mm: float
+    ) -> Tuple[Tuple[int, int], Tuple[int, int]]:
         if self.sample == "glass slide":
             current_FOV_top_left = (
-                round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(
+                    self.origin_x_pixel
+                    + x_mm / self.mm_per_pixel
+                    - self.fov_size_mm / 2 / self.mm_per_pixel
+                ),
                 round(
                     self.image_height
                     - (self.origin_y_pixel + y_mm / self.mm_per_pixel)
@@ -576,7 +650,11 @@ class NavigationViewer(QFrame):
                 ),
             )
             current_FOV_bottom_right = (
-                round(self.origin_x_pixel + x_mm / self.mm_per_pixel + self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(
+                    self.origin_x_pixel
+                    + x_mm / self.mm_per_pixel
+                    + self.fov_size_mm / 2 / self.mm_per_pixel
+                ),
                 round(
                     self.image_height
                     - (self.origin_y_pixel + y_mm / self.mm_per_pixel)
@@ -585,32 +663,60 @@ class NavigationViewer(QFrame):
             )
         else:
             current_FOV_top_left = (
-                round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
-                round((self.origin_y_pixel + y_mm / self.mm_per_pixel) - self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(
+                    self.origin_x_pixel
+                    + x_mm / self.mm_per_pixel
+                    - self.fov_size_mm / 2 / self.mm_per_pixel
+                ),
+                round(
+                    (self.origin_y_pixel + y_mm / self.mm_per_pixel)
+                    - self.fov_size_mm / 2 / self.mm_per_pixel
+                ),
             )
             current_FOV_bottom_right = (
-                round(self.origin_x_pixel + x_mm / self.mm_per_pixel + self.fov_size_mm / 2 / self.mm_per_pixel),
-                round((self.origin_y_pixel + y_mm / self.mm_per_pixel) + self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(
+                    self.origin_x_pixel
+                    + x_mm / self.mm_per_pixel
+                    + self.fov_size_mm / 2 / self.mm_per_pixel
+                ),
+                round(
+                    (self.origin_y_pixel + y_mm / self.mm_per_pixel)
+                    + self.fov_size_mm / 2 / self.mm_per_pixel
+                ),
             )
         return current_FOV_top_left, current_FOV_bottom_right
 
     def draw_current_fov(self, x_mm: float, y_mm: float) -> None:
         self.fov_overlay.fill(0)
-        current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+        current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
+            x_mm, y_mm
+        )
         cv2.rectangle(
-            self.fov_overlay, current_FOV_top_left, current_FOV_bottom_right, (255, 0, 0, 255), self.box_line_thickness
+            self.fov_overlay,
+            current_FOV_top_left,
+            current_FOV_bottom_right,
+            (255, 0, 0, 255),
+            self.box_line_thickness,
         )
         self.fov_overlay_item.setImage(self.fov_overlay)
 
     def register_fov(self, x_mm: float, y_mm: float) -> None:
         color = (0, 0, 255, 255)  # Blue RGBA
-        current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+        current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
+            x_mm, y_mm
+        )
         cv2.rectangle(
-            self.background_image, current_FOV_top_left, current_FOV_bottom_right, color, self.box_line_thickness
+            self.background_image,
+            current_FOV_top_left,
+            current_FOV_bottom_right,
+            color,
+            self.box_line_thickness,
         )
         self.background_item.setImage(self.background_image)
 
-    def register_fovs_to_image(self, fov_list: List[Union[Tuple[float, ...], FovCenter]]) -> None:
+    def register_fovs_to_image(
+        self, fov_list: List[Union[Tuple[float, ...], FovCenter]]
+    ) -> None:
         """
         Register FOVs to image with single display update.
 
@@ -629,14 +735,22 @@ class NavigationViewer(QFrame):
             else:
                 x_mm = fov.x_mm
                 y_mm = fov.y_mm
-            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            current_FOV_top_left, current_FOV_bottom_right = (
+                self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            )
             cv2.rectangle(
-                self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, color, self.box_line_thickness
+                self.scan_overlay,
+                current_FOV_top_left,
+                current_FOV_bottom_right,
+                color,
+                self.box_line_thickness,
             )
         # Single update after all rectangles are drawn
         self.scan_overlay_item.setImage(self.scan_overlay)
 
-    def deregister_fovs_from_image(self, fov_list: List[Union[Tuple[float, ...], FovCenter]]) -> None:
+    def deregister_fovs_from_image(
+        self, fov_list: List[Union[Tuple[float, ...], FovCenter]]
+    ) -> None:
         """
         Deregister FOVs from image with single display update.
 
@@ -654,9 +768,15 @@ class NavigationViewer(QFrame):
             else:
                 x_mm = fov.x_mm
                 y_mm = fov.y_mm
-            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            current_FOV_top_left, current_FOV_bottom_right = (
+                self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            )
             cv2.rectangle(
-                self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, (0, 0, 0, 0), self.box_line_thickness
+                self.scan_overlay,
+                current_FOV_top_left,
+                current_FOV_bottom_right,
+                (0, 0, 0, 0),
+                self.box_line_thickness,
             )
         # Single update after all rectangles are cleared
         self.scan_overlay_item.setImage(self.scan_overlay)
@@ -665,17 +785,23 @@ class NavigationViewer(QFrame):
         """Draw focus point marker as filled circle centered on the FOV"""
         color = (0, 255, 0, 255)  # Green RGBA
         # Get FOV corner coordinates, then calculate FOV center pixel coordinates
-        current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+        current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
+            x_mm, y_mm
+        )
         center_x = (current_FOV_top_left[0] + current_FOV_bottom_right[0]) // 2
         center_y = (current_FOV_top_left[1] + current_FOV_bottom_right[1]) // 2
         # Draw a filled circle at the center
         radius = 5  # Radius of circle in pixels
-        cv2.circle(self.focus_point_overlay, (center_x, center_y), radius, color, -1)  # -1 thickness means filled
+        cv2.circle(
+            self.focus_point_overlay, (center_x, center_y), radius, color, -1
+        )  # -1 thickness means filled
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
 
     def clear_focus_points(self) -> None:
         """Clear just the focus point overlay"""
-        self.focus_point_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
+        self.focus_point_overlay = np.zeros(
+            (self.image_height, self.image_width, 4), dtype=np.uint8
+        )
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
 
     def clear_slide(self) -> None:

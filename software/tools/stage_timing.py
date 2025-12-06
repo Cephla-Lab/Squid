@@ -9,15 +9,15 @@ log = squid.logging.get_logger("stage timing")
 
 
 def get_move_fn(scope: Microscope, stage: squid.abc.AbstractStage, axis: str, relative):
-    match axis.lower():
-        case "z":
-            return stage.move_z if relative else scope.move_z_to
-        case "y":
-            return stage.move_y if relative else scope.move_y_to
-        case "x":
-            return stage.move_x if relative else scope.move_x_to
-        case _:
-            raise ValueError(f"Unknown axis {axis}")
+    axis_lower = axis.lower()
+    if axis_lower == "z":
+        return stage.move_z if relative else scope.move_z_to
+    elif axis_lower == "y":
+        return stage.move_y if relative else scope.move_y_to
+    elif axis_lower == "x":
+        return stage.move_x if relative else scope.move_x_to
+    else:
+        raise ValueError(f"Unknown axis {axis}")
 
 
 def home(scope: Microscope):
@@ -64,17 +64,43 @@ if __name__ == "__main__":
     import argparse
     import sys
 
-    ap = argparse.ArgumentParser(description="Run a stage z move timing test (make sure z axis is clear!)")
+    ap = argparse.ArgumentParser(
+        description="Run a stage z move timing test (make sure z axis is clear!)"
+    )
 
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--report_interval", type=int, default=10, help="Report every this many moves.")
-    ap.add_argument("--count", type=int, default=25, help="The number of moves to execute.")
-    ap.add_argument("--axis", type=str, choices=["x", "y", "z"], default="z", help="The axis to do a timing test with.")
-    ap.add_argument("--start", type=float, default=0.1, help="The starting position to use in mm.")
     ap.add_argument(
-        "--step", type=float, default=0.001, help="The step size to use in mm.  This should be small!  EG 0.001"
+        "--report_interval", type=int, default=10, help="Report every this many moves."
     )
-    ap.add_argument("--no_home", dest="home", action="store_false", help="Do not home zxy before running.")
-    ap.add_argument("--relative", action="store_true", help="Use relative moves instead of absolute.")
+    ap.add_argument(
+        "--count", type=int, default=25, help="The number of moves to execute."
+    )
+    ap.add_argument(
+        "--axis",
+        type=str,
+        choices=["x", "y", "z"],
+        default="z",
+        help="The axis to do a timing test with.",
+    )
+    ap.add_argument(
+        "--start", type=float, default=0.1, help="The starting position to use in mm."
+    )
+    ap.add_argument(
+        "--step",
+        type=float,
+        default=0.001,
+        help="The step size to use in mm.  This should be small!  EG 0.001",
+    )
+    ap.add_argument(
+        "--no_home",
+        dest="home",
+        action="store_false",
+        help="Do not home zxy before running.",
+    )
+    ap.add_argument(
+        "--relative",
+        action="store_true",
+        help="Use relative moves instead of absolute.",
+    )
 
     sys.exit(main(ap.parse_args()))

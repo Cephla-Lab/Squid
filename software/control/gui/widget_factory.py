@@ -4,7 +4,7 @@ These helper functions extract widget creation logic from HighContentScreeningGu
 to reduce the size of the main gui_hcs.py file.
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from control.gui_hcs import HighContentScreeningGui
@@ -16,10 +16,8 @@ from control._def import (
     USE_DRAGONFLY,
     USE_XERYON,
     SUPPORT_LASER_AUTOFOCUS,
-    FOCUS_CAMERA_TYPE,
     RUN_FLUIDICS,
     WELLPLATE_FORMAT,
-    SHOW_DAC_CONTROL,
 )
 import control.widgets as widgets
 
@@ -29,17 +27,22 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
     # Spinning disk confocal widget
     if ENABLE_SPINNING_DISK_CONFOCAL:
         if USE_DRAGONFLY:
-            gui.spinningDiskConfocalWidget = widgets.DragonflyConfocalWidget(gui.dragonfly)
+            gui.spinningDiskConfocalWidget = widgets.DragonflyConfocalWidget(
+                gui.dragonfly
+            )
         else:
-            gui.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(gui.xlight)
+            gui.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(
+                gui.xlight
+            )
 
     # NL5 widget
     if ENABLE_NL5:
         import control.widgets.nl5 as NL5Widget
+
         gui.nl5Wdiget = NL5Widget.NL5Widget(gui.nl5)
 
     # Camera settings widget
-    camera_service = gui._services.get('camera') if gui._services else None
+    camera_service = gui._services.get("camera") if gui._services else None
     if CAMERA_TYPE in ["Toupcam", "Tucsen", "Kinetix"]:
         gui.cameraSettingWidget = widgets.CameraSettingsWidget(
             camera_service,
@@ -68,10 +71,9 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
     )
 
     # Navigation and stage widgets
-    stage_service = gui._services.get('stage') if gui._services else None
+    stage_service = gui._services.get("stage") if gui._services else None
     gui.navigationWidget = widgets.NavigationWidget(
-        stage_service,
-        widget_configuration=f"{WELLPLATE_FORMAT} well plate"
+        stage_service, widget_configuration=f"{WELLPLATE_FORMAT} well plate"
     )
     gui.stageUtils = widgets.StageUtils(
         stage_service,
@@ -80,7 +82,7 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
     )
 
     # DAC control widget
-    peripheral_service = gui._services.get('peripheral') if gui._services else None
+    peripheral_service = gui._services.get("peripheral") if gui._services else None
     gui.dacControlWidget = widgets.DACControWidget(peripheral_service)
 
     # Autofocus widget
@@ -92,7 +94,9 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
 
     # Objectives widget
     if USE_XERYON:
-        gui.objectivesWidget = widgets.ObjectivesWidget(gui.objectiveStore, gui.objective_changer)
+        gui.objectivesWidget = widgets.ObjectivesWidget(
+            gui.objectiveStore, gui.objective_changer
+        )
     else:
         gui.objectivesWidget = widgets.ObjectivesWidget(gui.objectiveStore)
 
@@ -103,7 +107,9 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
         )
 
     # Recording widget
-    gui.recordingControlWidget = widgets.RecordingWidget(gui.streamHandler, gui.imageSaver)
+    gui.recordingControlWidget = widgets.RecordingWidget(
+        gui.streamHandler, gui.imageSaver
+    )
 
 
 def create_wellplate_widgets(gui: "HighContentScreeningGui") -> None:
@@ -114,7 +120,9 @@ def create_wellplate_widgets(gui: "HighContentScreeningGui") -> None:
         gui.stage, gui.navigationViewer, gui.streamHandler, gui.liveController
     )
     if WELLPLATE_FORMAT != "1536 well plate":
-        gui.wellSelectionWidget = widgets.WellSelectionWidget(WELLPLATE_FORMAT, gui.wellplateFormatWidget)
+        gui.wellSelectionWidget = widgets.WellSelectionWidget(
+            WELLPLATE_FORMAT, gui.wellplateFormatWidget
+        )
     else:
         gui.wellSelectionWidget = widgets.Well1536SelectionWidget()
     gui.scanCoordinates.add_well_selector(gui.wellSelectionWidget)
@@ -123,7 +131,7 @@ def create_wellplate_widgets(gui: "HighContentScreeningGui") -> None:
         gui.navigationViewer,
         gui.scanCoordinates,
         core.FocusMap(),
-        stage_service=gui._services.get('stage') if gui._services else None,
+        stage_service=gui._services.get("stage") if gui._services else None,
     )
 
 
@@ -143,7 +151,9 @@ def create_laser_autofocus_widgets(gui: "HighContentScreeningGui") -> None:
         gui.laserAutofocusController,
         stretch=False,
     )
-    gui.waveformDisplay = widgets.WaveformDisplay(N=1000, include_x=True, include_y=False)
+    gui.waveformDisplay = widgets.WaveformDisplay(
+        N=1000, include_x=True, include_y=False
+    )
     gui.displacementMeasurementWidget = widgets.DisplacementMeasurementWidget(
         gui.displacementMeasurementController, gui.waveformDisplay
     )
@@ -176,7 +186,7 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
         gui.channelConfigurationManager,
         gui.scanCoordinates,
         gui.focusMapWidget,
-        stage_service=gui._services.get('stage') if gui._services else None,
+        stage_service=gui._services.get("stage") if gui._services else None,
     )
     gui.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(
         gui.stage,
@@ -190,7 +200,7 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
         gui.napariMosaicDisplayWidget,
         tab_widget=gui.recordTabWidget,
         well_selection_widget=gui.wellSelectionWidget,
-        stage_service=gui._services.get('stage') if gui._services else None,
+        stage_service=gui._services.get("stage") if gui._services else None,
     )
     if USE_TEMPLATE_MULTIPOINT:
         gui.templateMultiPointWidget = TemplateMultiPointWidget(
@@ -210,9 +220,11 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
         gui.channelConfigurationManager,
         gui.scanCoordinates,
         gui.napariMosaicDisplayWidget,
-        stage_service=gui._services.get('stage') if gui._services else None,
+        stage_service=gui._services.get("stage") if gui._services else None,
     )
-    gui.sampleSettingsWidget = widgets.SampleSettingsWidget(gui.objectivesWidget, gui.wellplateFormatWidget)
+    gui.sampleSettingsWidget = widgets.SampleSettingsWidget(
+        gui.objectivesWidget, gui.wellplateFormatWidget
+    )
 
     if ENABLE_TRACKING:
         gui.trackingControlWidget = widgets.TrackingControllerWidget(

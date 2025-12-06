@@ -1,11 +1,7 @@
 import numpy
 from collections import namedtuple
-from time import sleep
 import sys
 import time  # @@@
-import numpy as np
-from scipy import misc
-import cv2
 
 import squid.logging
 
@@ -16,17 +12,18 @@ try:
 
     gi.require_version("Gst", "1.0")
     gi.require_version("Tcam", "0.1")
-    from gi.repository import Tcam, Gst, GLib, GObject
+    from gi.repository import Gst, GLib, GObject
 except ImportError:
     log.error("gi import error")
     # TODO(imo): Propagate error in some way and handle
 
 DeviceInfo = namedtuple("DeviceInfo", "status name identifier connection_type")
-CameraProperty = namedtuple("CameraProperty", "status value min max default step type flags category group")
+CameraProperty = namedtuple(
+    "CameraProperty", "status value min max default step type flags category group"
+)
 
 
 class Camera(object):
-
     def __init__(self, sn=None, width=1920, height=1080, framerate=30, color=False):
         self.log = squid.logging.get_logger(self.__class__.__name__)
         Gst.init(sys.argv)
@@ -53,24 +50,30 @@ class Camera(object):
         self.callback_was_enabled_before_multipoint = False
 
         format = "BGRx"
-        if color == False:
+        if not color:
             format = "GRAY8"
 
         if framerate == 2500000:
-            p = 'tcambin serial="%s" name=source ! video/x-raw,format=%s,width=%d,height=%d,framerate=%d/10593' % (
-                sn,
-                format,
-                width,
-                height,
-                framerate,
+            p = (
+                'tcambin serial="%s" name=source ! video/x-raw,format=%s,width=%d,height=%d,framerate=%d/10593'
+                % (
+                    sn,
+                    format,
+                    width,
+                    height,
+                    framerate,
+                )
             )
         else:
-            p = 'tcambin serial="%s" name=source ! video/x-raw,format=%s,width=%d,height=%d,framerate=%d/1' % (
-                sn,
-                format,
-                width,
-                height,
-                framerate,
+            p = (
+                'tcambin serial="%s" name=source ! video/x-raw,format=%s,width=%d,height=%d,framerate=%d/1'
+                % (
+                    sn,
+                    format,
+                    width,
+                    height,
+                    framerate,
+                )
             )
 
         p += " ! videoconvert ! appsink name=sink"
@@ -79,7 +82,7 @@ class Camera(object):
         try:
             self.pipeline = Gst.parse_launch(p)
         except GLib.Error as error:
-            self.log.error(f"Error creating pipeline", error)
+            self.log.error("Error creating pipeline", error)
             raise
 
         self.pipeline.set_state(Gst.State.READY)
@@ -195,7 +198,9 @@ class Camera(object):
     def _set_property(self, property_name, value):
         try:
             self.log.info("setting " + property_name + "to " + str(value))
-            self.source.set_tcam_property(property_name, GObject.Value(type(value), value))
+            self.source.set_tcam_property(
+                property_name, GObject.Value(type(value), value)
+            )
         except GLib.Error as error:
             self.log.error(f"Error set Property {property_name}", error)
             raise
@@ -212,7 +217,11 @@ class Camera(object):
             bpp = 1
 
         self.current_frame = numpy.ndarray(
-            (caps.get_structure(0).get_value("height"), caps.get_structure(0).get_value("width"), bpp),
+            (
+                caps.get_structure(0).get_value("height"),
+                caps.get_structure(0).get_value("width"),
+                bpp,
+            ),
             buffer=buf.extract_dup(0, buf.get_size()),
             dtype=numpy.uint8,
         )

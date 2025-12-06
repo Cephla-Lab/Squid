@@ -13,7 +13,12 @@ def test_squid_repo_info():
 
 import numpy as np
 import pytest
-from control.utils import find_spot_location, SpotDetectionMode, get_available_disk_space, threaded_operation_helper
+from control.utils import (
+    find_spot_location,
+    SpotDetectionMode,
+    get_available_disk_space,
+    threaded_operation_helper,
+)
 
 
 def create_test_image(spot_positions, image_size=(480, 640), spot_size=20):
@@ -28,7 +33,9 @@ def create_test_image(spot_positions, image_size=(480, 640), spot_size=20):
     y, x = np.ogrid[: image_size[0], : image_size[1]]
 
     for pos_x, pos_y in spot_positions:
-        spot = np.exp(-((x - pos_x) ** 2 + (y - pos_y) ** 2) / (2 * (spot_size / 4) ** 2))
+        spot = np.exp(
+            -((x - pos_x) ** 2 + (y - pos_y) ** 2) / (2 * (spot_size / 4) ** 2)
+        )
         image += spot
 
     # Normalize and convert to uint8
@@ -201,7 +208,9 @@ def test_threaded_operation_helper():
         callback_result.append((success, error_msg))
 
     # Execute
-    thread = threaded_operation_helper(test_operation, callback=test_callback, arg1="value1", arg2="value2")
+    thread = threaded_operation_helper(
+        test_operation, callback=test_callback, arg1="value1", arg2="value2"
+    )
 
     # Verify thread properties and wait for completion
     assert isinstance(thread, threading.Thread)

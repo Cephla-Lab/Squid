@@ -1,17 +1,28 @@
 from control.widgets.stage._common import *
 
-class AutoFocusWidget(QFrame):
-    signal_autoLevelSetting = Signal(bool)
 
-    def __init__(self, autofocusController, main=None, *args, **kwargs):
+class AutoFocusWidget(QFrame):
+    signal_autoLevelSetting: Signal = Signal(bool)
+
+    def __init__(
+        self, autofocusController: AutoFocusController, *args: Any, **kwargs: Any
+    ) -> None:
         super().__init__(*args, **kwargs)
-        self.autofocusController = autofocusController
+        self.autofocusController: AutoFocusController = autofocusController
         self.log = squid.logging.get_logger(self.__class__.__name__)
+        self.stage: AbstractStage = self.autofocusController.stage
+
+        # UI components
+        self.entry_delta: QDoubleSpinBox
+        self.entry_N: QSpinBox
+        self.btn_autofocus: QPushButton
+        self.btn_autolevel: QPushButton
+        self.grid: QVBoxLayout
+
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        self.stage = self.autofocusController.stage
 
-    def add_components(self):
+    def add_components(self) -> None:
         self.entry_delta = QDoubleSpinBox()
         self.entry_delta.setMinimum(0)
         self.entry_delta.setMaximum(20)
@@ -60,19 +71,23 @@ class AutoFocusWidget(QFrame):
         self.setLayout(self.grid)
 
         # connections
-        self.btn_autofocus.toggled.connect(lambda: self.autofocusController.autofocus(False))
+        self.btn_autofocus.toggled.connect(
+            lambda: self.autofocusController.autofocus(False)
+        )
         self.btn_autolevel.toggled.connect(self.signal_autoLevelSetting.emit)
         self.entry_delta.valueChanged.connect(self.set_deltaZ)
         self.entry_N.valueChanged.connect(self.autofocusController.set_N)
         self.autofocusController.autofocusFinished.connect(self.autofocus_is_finished)
 
-    def set_deltaZ(self, value):
-        mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
+    def set_deltaZ(self, value: float) -> None:
+        mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(
+            1.0
+        )
         deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
         self.log.debug(f"{deltaZ=}")
 
         self.entry_delta.setValue(deltaZ)
         self.autofocusController.set_deltaZ(deltaZ)
 
-    def autofocus_is_finished(self):
+    def autofocus_is_finished(self) -> None:
         self.btn_autofocus.setChecked(False)

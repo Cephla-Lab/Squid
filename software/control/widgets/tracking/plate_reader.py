@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from control.core.acquisition.platereader import PlateReadingController
     from control.core.configuration import ChannelConfigurationManager
 
+
 class PlateReaderAcquisitionWidget(QFrame):
     plateReadingController: "PlateReadingController"
     configurationManager: "ChannelConfigurationManager"
@@ -28,7 +29,7 @@ class PlateReaderAcquisitionWidget(QFrame):
         show_configurations: bool = True,
         main: Optional[QWidget] = None,
         *args: Any,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.plateReadingController = plateReadingController
@@ -113,10 +114,14 @@ class PlateReaderAcquisitionWidget(QFrame):
         # self.timer = QTimer()
 
         # connections
-        self.checkbox_withAutofocus.stateChanged.connect(self.plateReadingController.set_af_flag)
+        self.checkbox_withAutofocus.stateChanged.connect(
+            self.plateReadingController.set_af_flag
+        )
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
-        self.plateReadingController.acquisitionFinished.connect(self.acquisition_is_finished)
+        self.plateReadingController.acquisitionFinished.connect(
+            self.acquisition_is_finished
+        )
 
     def set_saving_dir(self) -> None:
         dialog = QFileDialog()
@@ -136,12 +141,18 @@ class PlateReaderAcquisitionWidget(QFrame):
             # @@@ to do: add a widgetManger to enable and disable widget
             # @@@ to do: emit signal to widgetManager to disable other widgets
             self.setEnabled_all(False)
-            self.plateReadingController.start_new_experiment(self.lineEdit_experimentID.text())
+            self.plateReadingController.start_new_experiment(
+                self.lineEdit_experimentID.text()
+            )
             self.plateReadingController.set_selected_configurations(
                 (item.text() for item in self.list_configurations.selectedItems())
             )
             self.plateReadingController.set_selected_columns(
-                list(map(int, [item.text() for item in self.list_columns.selectedItems()]))
+                list(
+                    map(
+                        int, [item.text() for item in self.list_columns.selectedItems()]
+                    )
+                )
             )
             self.plateReadingController.run_acquisition()
         else:
@@ -152,7 +163,9 @@ class PlateReaderAcquisitionWidget(QFrame):
         self.btn_startAcquisition.setChecked(False)
         self.setEnabled_all(True)
 
-    def setEnabled_all(self, enabled: bool, exclude_btn_startAcquisition: bool = False) -> None:
+    def setEnabled_all(
+        self, enabled: bool, exclude_btn_startAcquisition: bool = False
+    ) -> None:
         self.btn_setSavingDir.setEnabled(enabled)
         self.lineEdit_savingDir.setEnabled(enabled)
         self.lineEdit_experimentID.setEnabled(enabled)
@@ -168,7 +181,9 @@ class PlateReaderAcquisitionWidget(QFrame):
 
 
 class PlateReaderNavigationWidget(QFrame):
-    plateReaderNavigationController: Any  # TODO: Create proper type for PlateReaderNavigationController
+    plateReaderNavigationController: (
+        Any  # TODO: Create proper type for PlateReaderNavigationController
+    )
     dropdown_column: QComboBox
     dropdown_row: QComboBox
     btn_moveto: QPushButton
@@ -180,7 +195,7 @@ class PlateReaderNavigationWidget(QFrame):
         self,
         plateReaderNavigationController: Any,  # TODO: Create proper type for PlateReaderNavigationController
         *args: Any,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.add_components()
@@ -190,10 +205,14 @@ class PlateReaderNavigationWidget(QFrame):
     def add_components(self) -> None:
         self.dropdown_column = QComboBox()
         self.dropdown_column.addItems([""])
-        self.dropdown_column.addItems([str(i + 1) for i in range(PLATE_READER.NUMBER_OF_COLUMNS)])
+        self.dropdown_column.addItems(
+            [str(i + 1) for i in range(PLATE_READER.NUMBER_OF_COLUMNS)]
+        )
         self.dropdown_row = QComboBox()
         self.dropdown_row.addItems([""])
-        self.dropdown_row.addItems([chr(i) for i in range(ord("A"), ord("A") + PLATE_READER.NUMBER_OF_ROWS)])
+        self.dropdown_row.addItems(
+            [chr(i) for i in range(ord("A"), ord("A") + PLATE_READER.NUMBER_OF_ROWS)]
+        )
         self.btn_moveto = QPushButton("Move To")
         self.btn_home = QPushButton("Home")
         self.label_current_location = QLabel()
@@ -237,7 +256,9 @@ class PlateReaderNavigationWidget(QFrame):
             self.plateReaderNavigationController.home()
 
     def move(self) -> None:  # type: ignore[override]
-        self.plateReaderNavigationController.moveto(self.dropdown_column.currentText(), self.dropdown_row.currentText())
+        self.plateReaderNavigationController.moveto(
+            self.dropdown_column.currentText(), self.dropdown_row.currentText()
+        )
 
     def slot_homing_complete(self) -> None:
         self.dropdown_column.setEnabled(True)
@@ -250,5 +271,3 @@ class PlateReaderNavigationWidget(QFrame):
         column = location_str[1:]
         self.dropdown_row.setCurrentText(row)
         self.dropdown_column.setCurrentText(column)
-
-

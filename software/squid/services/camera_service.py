@@ -1,5 +1,6 @@
 # squid/services/camera_service.py
 """Service for camera operations."""
+
 from typing import Optional, Sequence, Tuple, TYPE_CHECKING, Callable
 
 from squid.services.base import BaseService
@@ -100,11 +101,17 @@ class CameraService(BaseService):
     # Task 1.1: ROI methods
     # ============================================================
 
-    def set_region_of_interest(self, x_offset: int, y_offset: int, width: int, height: int) -> None:
+    def set_region_of_interest(
+        self, x_offset: int, y_offset: int, width: int, height: int
+    ) -> None:
         """Set camera region of interest."""
-        self._log.debug(f"Setting ROI: offset=({x_offset}, {y_offset}), size=({width}, {height})")
+        self._log.debug(
+            f"Setting ROI: offset=({x_offset}, {y_offset}), size=({width}, {height})"
+        )
         self._camera.set_region_of_interest(x_offset, y_offset, width, height)
-        self.publish(ROIChanged(x_offset=x_offset, y_offset=y_offset, width=width, height=height))
+        self.publish(
+            ROIChanged(x_offset=x_offset, y_offset=y_offset, width=width, height=height)
+        )
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
         """Get current ROI as (x_offset, y_offset, width, height)."""

@@ -1,20 +1,37 @@
 from control.widgets.stage._common import *
 
+
 class NavigationWidget(QFrame):
     def __init__(
         self,
         stage_service: "StageService",
-        main=None,
-        widget_configuration="full",
-        *args,
-        **kwargs,
-    ):
+        main: Optional[Any] = None,
+        widget_configuration: str = "full",
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.log = squid.logging.get_logger(self.__class__.__name__)
-        self.widget_configuration = widget_configuration
-        self.slide_position = None
+        self.widget_configuration: str = widget_configuration
+        self.slide_position: Optional[str] = None
 
-        self._service = stage_service
+        self._service: "StageService" = stage_service
+
+        # UI components
+        self.label_Xpos: QLabel
+        self.label_Ypos: QLabel
+        self.label_Zpos: QLabel
+        self.entry_dX: QDoubleSpinBox
+        self.entry_dY: QDoubleSpinBox
+        self.entry_dZ: QDoubleSpinBox
+        self.btn_moveX_forward: QPushButton
+        self.btn_moveX_backward: QPushButton
+        self.btn_moveY_forward: QPushButton
+        self.btn_moveY_backward: QPushButton
+        self.btn_moveZ_forward: QPushButton
+        self.btn_moveZ_backward: QPushButton
+        self.checkbox_clickToMove: QCheckBox
+        self.grid: QVBoxLayout
 
         # Subscribe to position updates
         event_bus.subscribe(StagePositionChanged, self._on_position_changed)
@@ -22,25 +39,25 @@ class NavigationWidget(QFrame):
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-        self.position_update_timer = QTimer()
+        self.position_update_timer: QTimer = QTimer()
         self.position_update_timer.setInterval(100)
         self.position_update_timer.timeout.connect(self._update_position)
         self.position_update_timer.start()
 
-    def _update_position(self):
+    def _update_position(self) -> None:
         pos = self._service.get_position()
         self.label_Xpos.setNum(pos.x_mm)
         self.label_Ypos.setNum(pos.y_mm)
         # NOTE: The z label is in um
         self.label_Zpos.setNum(pos.z_mm * 1000)
 
-    def _on_position_changed(self, event: StagePositionChanged):
+    def _on_position_changed(self, event: StagePositionChanged) -> None:
         """Handle position changed event."""
         self.label_Xpos.setNum(event.x_mm)
         self.label_Ypos.setNum(event.y_mm)
         self.label_Zpos.setNum(event.z_mm * 1000)
 
-    def add_components(self):
+    def add_components(self) -> None:
         x_label = QLabel("X :")
         x_label.setFixedWidth(20)
         self.label_Xpos = QLabel()
@@ -61,7 +78,9 @@ class NavigationWidget(QFrame):
 
         self.checkbox_clickToMove = QCheckBox("Click to Move")
         self.checkbox_clickToMove.setChecked(False)
-        self.checkbox_clickToMove.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
+        self.checkbox_clickToMove.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        )
 
         y_label = QLabel("Y :")
         y_label.setFixedWidth(20)
@@ -139,15 +158,15 @@ class NavigationWidget(QFrame):
         self.btn_moveZ_forward.clicked.connect(self.move_z_forward)
         self.btn_moveZ_backward.clicked.connect(self.move_z_backward)
 
-    def set_click_to_move(self, enabled):
+    def set_click_to_move(self, enabled: bool) -> None:
         self.log.info(f"Click to move enabled={enabled}")
         self.setEnabled_all(enabled)
         self.checkbox_clickToMove.setChecked(enabled)
 
-    def get_click_to_move_enabled(self):
+    def get_click_to_move_enabled(self) -> bool:
         return self.checkbox_clickToMove.isChecked()
 
-    def setEnabled_all(self, enabled):
+    def setEnabled_all(self, enabled: bool) -> None:
         self.checkbox_clickToMove.setEnabled(enabled)
         self.btn_moveX_forward.setEnabled(enabled)
         self.btn_moveX_backward.setEnabled(enabled)
@@ -156,37 +175,35 @@ class NavigationWidget(QFrame):
         self.btn_moveZ_forward.setEnabled(enabled)
         self.btn_moveZ_backward.setEnabled(enabled)
 
-    def move_x_forward(self):
+    def move_x_forward(self) -> None:
         self._service.move_x(self.entry_dX.value())
 
-    def move_x_backward(self):
+    def move_x_backward(self) -> None:
         self._service.move_x(-self.entry_dX.value())
 
-    def move_y_forward(self):
+    def move_y_forward(self) -> None:
         self._service.move_y(self.entry_dY.value())
 
-    def move_y_backward(self):
+    def move_y_backward(self) -> None:
         self._service.move_y(-self.entry_dY.value())
 
-    def move_z_forward(self):
+    def move_z_forward(self) -> None:
         self._service.move_z(self.entry_dZ.value() / 1000)
 
-    def move_z_backward(self):
+    def move_z_backward(self) -> None:
         self._service.move_z(-self.entry_dZ.value() / 1000)
 
-    def set_deltaX(self, value):
+    def set_deltaX(self, value: float) -> None:
         mm_per_ustep = self._service.get_x_mm_per_ustep()
         deltaX = round(value / mm_per_ustep) * mm_per_ustep
         self.entry_dX.setValue(deltaX)
 
-    def set_deltaY(self, value):
+    def set_deltaY(self, value: float) -> None:
         mm_per_ustep = self._service.get_y_mm_per_ustep()
         deltaY = round(value / mm_per_ustep) * mm_per_ustep
         self.entry_dY.setValue(deltaY)
 
-    def set_deltaZ(self, value):
+    def set_deltaZ(self, value: float) -> None:
         mm_per_ustep = self._service.get_z_mm_per_ustep()
         deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
         self.entry_dZ.setValue(deltaZ)
-
-

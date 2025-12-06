@@ -1,7 +1,10 @@
 # Focus map widget for managing focus points and surface fitting
-import csv
-from typing import Optional, TYPE_CHECKING
+from __future__ import annotations
 
+import csv
+from typing import Optional, TYPE_CHECKING, List, Tuple, Dict
+
+from qtpy.QtGui import QResizeEvent
 from qtpy.QtWidgets import (
     QFrame,
     QVBoxLayout,
@@ -26,19 +29,47 @@ from control._def import SOFTWARE_POS_LIMIT
 if TYPE_CHECKING:
     from squid.services import StageService
     from squid.abc import AbstractStage
+    from control.core.navigation import NavigationViewer, ScanCoordinates, FocusMap
 
 
 class FocusMapWidget(QFrame):
     """Widget for managing focus map points and surface fitting"""
 
+    _allow_updating_focus_points_on_signal: bool
+    stage: AbstractStage
+    _stage_service: Optional[StageService]
+    navigationViewer: NavigationViewer
+    scanCoordinates: ScanCoordinates
+    focusMap: FocusMap
+    focus_points: List[Tuple[str, float, float, float]]
+    enabled: bool
+    add_margin: bool
+
+    # UI components
+    _layout: QVBoxLayout
+    point_combo: QComboBox
+    update_z_btn: QPushButton
+    add_point_btn: QPushButton
+    remove_point_btn: QPushButton
+    next_point_btn: QPushButton
+    edit_point_btn: QPushButton
+    rows_spin: QSpinBox
+    cols_spin: QSpinBox
+    export_btn: QPushButton
+    import_btn: QPushButton
+    fit_method_combo: QComboBox
+    smoothing_spin: QDoubleSpinBox
+    by_region_checkbox: QCheckBox
+    status_label: QLabel
+
     def __init__(
         self,
-        stage: "AbstractStage",
-        navigationViewer,
-        scanCoordinates,
-        focusMap,
-        stage_service: Optional["StageService"] = None,
-    ):
+        stage: AbstractStage,
+        navigationViewer: NavigationViewer,
+        scanCoordinates: ScanCoordinates,
+        focusMap: FocusMap,
+        stage_service: Optional[StageService] = None,
+    ) -> None:
         super().__init__()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self._allow_updating_focus_points_on_signal = True
@@ -59,9 +90,9 @@ class FocusMapWidget(QFrame):
         self.setEnabled(False)
         self.add_margin = True  # margin for focus grid makes it smaller, but will avoid points at the borders
 
-    def setup_ui(self):
+    def setup_ui(self) -> None:
         """Create and arrange UI components"""
-        self.layout = QVBoxLayout(self)
+        self._layout = QVBoxLayout(self)
 
         # Point combo and Z control
         controls_layout = QHBoxLayout()
@@ -70,7 +101,7 @@ class FocusMapWidget(QFrame):
         controls_layout.addWidget(self.point_combo, stretch=1)
         self.update_z_btn = QPushButton("Update Z")
         controls_layout.addWidget(self.update_z_btn)
-        self.layout.addLayout(controls_layout)
+        self._layout.addLayout(controls_layout)
 
         # Point control buttons - line 1
         point_controls = QHBoxLayout()
@@ -82,7 +113,7 @@ class FocusMapWidget(QFrame):
         point_controls.addWidget(self.remove_point_btn)
         point_controls.addWidget(self.next_point_btn)
         point_controls.addWidget(self.edit_point_btn)
-        self.layout.addLayout(point_controls)
+        self._layout.addLayout(point_controls)
 
         # Point control buttons - line 2
         point_controls_2 = QHBoxLayout()
@@ -106,7 +137,7 @@ class FocusMapWidget(QFrame):
         self.import_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         point_controls_2.addWidget(self.export_btn)
         point_controls_2.addWidget(self.import_btn)
-        self.layout.addLayout(point_controls_2)
+        self._layout.addLayout(point_controls_2)
 
         # Surface fitting controls
         settings_layout = QHBoxLayout()
@@ -124,14 +155,14 @@ class FocusMapWidget(QFrame):
         self.by_region_checkbox = QCheckBox("Fit by Region")
         self.by_region_checkbox.setChecked(False)
         settings_layout.addWidget(self.by_region_checkbox)
-        self.layout.addLayout(settings_layout)
+        self._layout.addLayout(settings_layout)
 
         # Status label - reserve space even when hidden
         self.status_label = QLabel()
         self.status_label.setText(" ")  # Empty text to keep space
-        self.layout.addWidget(self.status_label)
+        self._layout.addWidget(self.status_label)
 
-    def make_connections(self):
+    def make_connections(self) -> None:
         # Auto-navigate when point selection changes
         self.point_combo.currentIndexChanged.connect(self.goto_selected_point)
 
@@ -153,7 +184,7 @@ class FocusMapWidget(QFrame):
         # Connect fitting method change
         self.fit_method_combo.currentTextChanged.connect(self._match_by_region_box)
 
-    def update_point_list(self):
+    def update_point_list(self) -> None:
         """Update point selection combo showing grid coordinates for points"""
         self.point_combo.blockSignals(True)
         curr_focus_point = self.point_combo.currentIndex()
@@ -170,10 +201,12 @@ class FocusMapWidget(QFrame):
                 + "μm"
             )
             self.point_combo.addItem(point_text)
-        self.point_combo.setCurrentIndex(max(0, min(curr_focus_point, len(self.focus_points) - 1)))
+        self.point_combo.setCurrentIndex(
+            max(0, min(curr_focus_point, len(self.focus_points) - 1))
+        )
         self.point_combo.blockSignals(False)
 
-    def edit_current_point(self):
+    def edit_current_point(self) -> None:
         """Edit coordinates of current point in a popup dialog"""
         index = self.point_combo.currentIndex()
         if 0 <= index < len(self.focus_points):
@@ -187,14 +220,18 @@ class FocusMapWidget(QFrame):
             # Add coordinate spinboxes with good precision
             x_spin = QDoubleSpinBox()
             x_spin.setKeyboardTracking(False)
-            x_spin.setRange(SOFTWARE_POS_LIMIT.X_NEGATIVE, SOFTWARE_POS_LIMIT.X_POSITIVE)
+            x_spin.setRange(
+                SOFTWARE_POS_LIMIT.X_NEGATIVE, SOFTWARE_POS_LIMIT.X_POSITIVE
+            )
             x_spin.setDecimals(3)
             x_spin.setValue(x)
             x_spin.setSuffix(" mm")
 
             y_spin = QDoubleSpinBox()
             y_spin.setKeyboardTracking(False)
-            y_spin.setRange(SOFTWARE_POS_LIMIT.Y_NEGATIVE, SOFTWARE_POS_LIMIT.Y_POSITIVE)
+            y_spin.setRange(
+                SOFTWARE_POS_LIMIT.Y_NEGATIVE, SOFTWARE_POS_LIMIT.Y_POSITIVE
+            )
             y_spin.setDecimals(3)
             y_spin.setValue(y)
             y_spin.setSuffix(" mm")
@@ -202,7 +239,8 @@ class FocusMapWidget(QFrame):
             z_spin = QDoubleSpinBox()
             z_spin.setKeyboardTracking(False)
             z_spin.setRange(
-                SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000, SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
+                SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000,
+                SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000,
             )  # Convert mm limits to μm
             z_spin.setDecimals(2)
             z_spin.setValue(z * 1000)  # Convert mm to μm
@@ -228,19 +266,21 @@ class FocusMapWidget(QFrame):
                 self.update_point_list()
                 self.update_focus_point_display()
 
-    def update_focus_point_display(self):
+    def update_focus_point_display(self) -> None:
         """Update all focus points on navigation viewer"""
         self.navigationViewer.clear_focus_points()
         for _, x, y, _ in self.focus_points:
             self.navigationViewer.register_focus_point(x, y)
 
-    def generate_grid(self, rows=4, cols=4):
+    def generate_grid(self, rows: int = 4, cols: int = 4) -> None:
         """Generate focus point grid that spans scan bounds"""
         if self.enabled:
             self.point_combo.blockSignals(True)
             self.focus_points.clear()
             self.navigationViewer.clear_focus_points()
             self.status_label.setText(" ")
+            if self._stage_service is None:
+                return
             current_z = self._stage_service.get_position().z_mm
 
             # Use FocusMap to generate coordinates
@@ -251,22 +291,30 @@ class FocusMapWidget(QFrame):
             # Add points with current z coordinate
             for region_id, coords_list in coordinates.items():
                 for coords in coords_list:
-                    self.focus_points.append((region_id, coords[0], coords[1], current_z))
+                    self.focus_points.append(
+                        (region_id, coords[0], coords[1], current_z)
+                    )
                     self.navigationViewer.register_focus_point(coords[0], coords[1])
 
             self.update_point_list()
             self.point_combo.blockSignals(False)
 
-    def regenerate_grid(self):
+    def regenerate_grid(self) -> None:
         """Generate focus point grid given updated dims"""
         self.generate_grid(self.rows_spin.value(), self.cols_spin.value())
 
-    def add_current_point(self):
+    def add_current_point(self) -> None:
         # Check if any scan regions exist
         if not self.scanCoordinates.has_regions():
-            QMessageBox.warning(self, "No Regions Defined", "Please define scan regions before adding focus points.")
+            QMessageBox.warning(
+                self,
+                "No Regions Defined",
+                "Please define scan regions before adding focus points.",
+            )
             return
 
+        if self._stage_service is None:
+            return
         pos = self._stage_service.get_position()
         region_id = None
 
@@ -275,12 +323,19 @@ class FocusMapWidget(QFrame):
             region_ids = list(self.scanCoordinates.region_centers.keys())
             if not region_ids:
                 QMessageBox.warning(
-                    self, "No Regions Defined", "Please define scan regions before adding focus points."
+                    self,
+                    "No Regions Defined",
+                    "Please define scan regions before adding focus points.",
                 )
                 return
 
             region_id, ok = QInputDialog.getItem(
-                self, "Select Region", "Choose a region:", [str(r) for r in region_ids], 0, False
+                self,
+                "Select Region",
+                "Choose a region:",
+                [str(r) for r in region_ids],
+                0,
+                False,
             )
             if not ok or not region_id:
                 return
@@ -303,16 +358,20 @@ class FocusMapWidget(QFrame):
             self.update_point_list()
             self.navigationViewer.register_focus_point(pos.x_mm, pos.y_mm)
         else:
-            QMessageBox.warning(self, "Region Error", "Could not determine a valid region for this focus point.")
+            QMessageBox.warning(
+                self,
+                "Region Error",
+                "Could not determine a valid region for this focus point.",
+            )
 
-    def remove_current_point(self):
+    def remove_current_point(self) -> None:
         index = self.point_combo.currentIndex()
         if 0 <= index < len(self.focus_points):
             self.focus_points.pop(index)
             self.update_point_list()
             self.update_focus_point_display()
 
-    def goto_next_point(self):
+    def goto_next_point(self) -> None:
         if not self.focus_points:
             return
         current = self.point_combo.currentIndex()
@@ -320,34 +379,35 @@ class FocusMapWidget(QFrame):
         self.point_combo.setCurrentIndex(next_index)
         self.goto_selected_point()
 
-    def goto_selected_point(self):
+    def goto_selected_point(self) -> None:
         if self.enabled:
             index = self.point_combo.currentIndex()
             if 0 <= index < len(self.focus_points):
                 _, x, y, z = self.focus_points[index]
                 self._move_stage_to(x, y, z)
 
-    def _move_stage_to(self, x: float, y: float, z: float):
+    def _move_stage_to(self, x: float, y: float, z: float) -> None:
         """Move stage to position."""
-        self._stage_service.move_to(x_mm=x, y_mm=y, z_mm=z)
+        if self._stage_service is not None:
+            self._stage_service.move_to(x_mm=x, y_mm=y, z_mm=z)
 
-    def update_current_z(self):
+    def update_current_z(self) -> None:
         index = self.point_combo.currentIndex()
-        if 0 <= index < len(self.focus_points):
+        if 0 <= index < len(self.focus_points) and self._stage_service is not None:
             new_z = self._stage_service.get_position().z_mm
             region_id, x, y, _ = self.focus_points[index]
             self.focus_points[index] = (region_id, x, y, new_z)
             self.update_point_list()
 
-    def get_region_points_dict(self):
-        points_dict = {}
+    def get_region_points_dict(self) -> Dict[str, List[Tuple[float, float, float]]]:
+        points_dict: Dict[str, List[Tuple[float, float, float]]] = {}
         for region_id, x, y, z in self.focus_points:
             if region_id not in points_dict:
                 points_dict[region_id] = []
             points_dict[region_id].append((x, y, z))
         return points_dict
 
-    def fit_surface(self):
+    def fit_surface(self) -> bool:
         try:
             method = self.fit_method_combo.currentText()
             rows = self.rows_spin.value()
@@ -357,7 +417,9 @@ class FocusMapWidget(QFrame):
             # Validate settings
             if by_region:
                 scan_regions = set(self.scanCoordinates.region_centers.keys())
-                focus_regions = set(region_id for region_id, _, _, _ in self.focus_points)
+                focus_regions = set(
+                    region_id for region_id, _, _, _ in self.focus_points
+                )
                 if focus_regions != scan_regions:
                     QMessageBox.warning(
                         self,
@@ -395,17 +457,21 @@ class FocusMapWidget(QFrame):
             self.status_label.setText(f"Fitting failed: {str(e)}")
             return False
 
-    def _match_by_region_box(self):
+    def _match_by_region_box(self) -> None:
         if self.fit_method_combo.currentText() == "constant":
             self.by_region_checkbox.setChecked(True)
 
-    def export_focus_points(self):
+    def export_focus_points(self) -> None:
         """Export focus points to a CSV file"""
         if not self.focus_points:
-            QMessageBox.warning(self, "No Focus Points", "There are no focus points to export.")
+            QMessageBox.warning(
+                self, "No Focus Points", "There are no focus points to export."
+            )
             return
 
-        file_path, _ = QFileDialog.getSaveFileName(self, "Export Focus Points", "", "CSV Files (*.csv);;All Files (*)")
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Focus Points", "", "CSV Files (*.csv);;All Files (*)"
+        )
         if not file_path:
             return
         if not file_path.lower().endswith(".csv"):
@@ -421,14 +487,20 @@ class FocusMapWidget(QFrame):
                 for region_id, x, y, z in self.focus_points:
                     writer.writerow([region_id, x, y, z])
 
-            self.status_label.setText(f"Exported {len(self.focus_points)} points to {file_path}")
+            self.status_label.setText(
+                f"Exported {len(self.focus_points)} points to {file_path}"
+            )
 
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", f"Failed to export focus points: {str(e)}")
+            QMessageBox.critical(
+                self, "Export Error", f"Failed to export focus points: {str(e)}"
+            )
 
-    def import_focus_points(self):
+    def import_focus_points(self) -> None:
         """Import focus points from a CSV file"""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Import Focus Points", "", "CSV Files (*.csv);;All Files (*)")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Import Focus Points", "", "CSV Files (*.csv);;All Files (*)"
+        )
 
         if not file_path:
             return
@@ -444,7 +516,9 @@ class FocusMapWidget(QFrame):
                 required_columns = ["Region_ID", "X_mm", "Y_mm", "Z_um"]
                 if not all(col in header for col in required_columns):
                     QMessageBox.warning(
-                        self, "Invalid Format", f"CSV file must contain columns: {', '.join(required_columns)}"
+                        self,
+                        "Invalid Format",
+                        f"CSV file must contain columns: {', '.join(required_columns)}",
                     )
                     return
 
@@ -496,27 +570,29 @@ class FocusMapWidget(QFrame):
             self.status_label.setText(f"Imported {len(imported_points)} focus points")
 
         except Exception as e:
-            QMessageBox.critical(self, "Import Error", f"Failed to import focus points: {str(e)}")
+            QMessageBox.critical(
+                self, "Import Error", f"Failed to import focus points: {str(e)}"
+            )
 
-    def on_regions_updated(self):
+    def on_regions_updated(self) -> None:
         if not self._allow_updating_focus_points_on_signal:
             return
         if self.scanCoordinates.has_regions():
             self.generate_grid(self.rows_spin.value(), self.cols_spin.value())
 
-    def disable_updating_focus_points_on_signal(self):
+    def disable_updating_focus_points_on_signal(self) -> None:
         self._allow_updating_focus_points_on_signal = False
 
-    def enable_updating_focus_points_on_signal(self):
+    def enable_updating_focus_points_on_signal(self) -> None:
         self._allow_updating_focus_points_on_signal = True
 
-    def setEnabled(self, enabled):
+    def setEnabled(self, enabled: bool) -> None:
         self.enabled = enabled
         super().setEnabled(enabled)
         self.navigationViewer.focus_point_overlay_item.setVisible(enabled)
         self.on_regions_updated()
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: Optional[QResizeEvent]) -> None:
         """Handle resize events to maintain button sizing"""
-        super().resizeEvent(event)
+        super().resizeEvent(event)  # type: ignore[arg-type]
         self.update_z_btn.setFixedWidth(self.edit_point_btn.width())

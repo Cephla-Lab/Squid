@@ -39,11 +39,13 @@ class LaserAFConfig(BaseModel):
     pixel_to_um: float = 1
     has_reference: bool = False  # Track if reference has been set
     laser_af_averaging_n: int = LASER_AF_AVERAGING_N
-    displacement_success_window_um: float = (
-        DISPLACEMENT_SUCCESS_WINDOW_UM  # if the displacement is within this window, we consider the move successful
+    displacement_success_window_um: float = DISPLACEMENT_SUCCESS_WINDOW_UM  # if the displacement is within this window, we consider the move successful
+    spot_crop_size: int = (
+        SPOT_CROP_SIZE  # Size of region to crop around spot for correlation
     )
-    spot_crop_size: int = SPOT_CROP_SIZE  # Size of region to crop around spot for correlation
-    correlation_threshold: float = CORRELATION_THRESHOLD  # Minimum correlation coefficient for valid alignment
+    correlation_threshold: float = (
+        CORRELATION_THRESHOLD  # Minimum correlation coefficient for valid alignment
+    )
     pixel_to_um_calibration_distance: float = (
         PIXEL_TO_UM_CALIBRATION_DISTANCE  # Distance moved in um during calibration
     )
@@ -51,20 +53,30 @@ class LaserAFConfig(BaseModel):
     laser_af_range: float = LASER_AF_RANGE  # Maximum reasonable displacement in um
     focus_camera_exposure_time_ms: float = FOCUS_CAMERA_EXPOSURE_TIME_MS
     focus_camera_analog_gain: float = FOCUS_CAMERA_ANALOG_GAIN
-    spot_detection_mode: SpotDetectionMode = SpotDetectionMode(LASER_AF_SPOT_DETECTION_MODE)
+    spot_detection_mode: SpotDetectionMode = SpotDetectionMode(
+        LASER_AF_SPOT_DETECTION_MODE
+    )
     y_window: int = LASER_AF_Y_WINDOW  # Half-height of y-axis crop
     x_window: int = LASER_AF_X_WINDOW  # Half-width of centroid window
     min_peak_width: float = LASER_AF_MIN_PEAK_WIDTH  # Minimum width of peaks
-    min_peak_distance: float = LASER_AF_MIN_PEAK_DISTANCE  # Minimum distance between peaks
+    min_peak_distance: float = (
+        LASER_AF_MIN_PEAK_DISTANCE  # Minimum distance between peaks
+    )
     min_peak_prominence: float = LASER_AF_MIN_PEAK_PROMINENCE  # Minimum peak prominence
     spot_spacing: float = LASER_AF_SPOT_SPACING  # Expected spacing between spots
     filter_sigma: Optional[int] = LASER_AF_FILTER_SIGMA  # Sigma for Gaussian filter
     x_reference: Optional[float] = 0  # Reference position in um
-    reference_image: Optional[str] = None  # Stores base64 encoded reference image for cross-correlation check
+    reference_image: Optional[str] = (
+        None  # Stores base64 encoded reference image for cross-correlation check
+    )
     reference_image_shape: Optional[tuple] = None
     reference_image_dtype: Optional[str] = None
-    initialize_crop_width: int = 1200  # Width of the center crop used for initialization
-    initialize_crop_height: int = 800  # Height of the center crop used for initialization
+    initialize_crop_width: int = (
+        1200  # Width of the center crop used for initialization
+    )
+    initialize_crop_height: int = (
+        800  # Height of the center crop used for initialization
+    )
 
     @property
     def reference_image_cropped(self) -> Optional[np.ndarray]:
@@ -72,11 +84,15 @@ class LaserAFConfig(BaseModel):
         if self.reference_image is None:
             return None
         data = base64.b64decode(self.reference_image.encode("utf-8"))
-        return np.frombuffer(data, dtype=np.dtype(self.reference_image_dtype)).reshape(self.reference_image_shape)
+        return np.frombuffer(data, dtype=np.dtype(self.reference_image_dtype)).reshape(
+            self.reference_image_shape
+        )
 
     @field_validator("spot_detection_mode", mode="before")
     @classmethod
-    def validate_spot_detection_mode(cls, v):
+    def validate_spot_detection_mode(
+        cls: "LaserAFConfig", v: str | SpotDetectionMode
+    ) -> SpotDetectionMode:
         """Convert string to SpotDetectionMode enum if needed"""
         if isinstance(v, str):
             return SpotDetectionMode(v)
@@ -95,11 +111,13 @@ class LaserAFConfig(BaseModel):
         self.reference_image_dtype = str(image.dtype)
         self.has_reference = True
 
-    def model_dump(self, serialize=False, **kwargs):
+    def model_dump(self, serialize: bool = False, **kwargs) -> dict:
         """Ensure proper serialization of enums to strings"""
         data = super().model_dump(**kwargs)
         if serialize:
-            if "spot_detection_mode" in data and isinstance(data["spot_detection_mode"], SpotDetectionMode):
+            if "spot_detection_mode" in data and isinstance(
+                data["spot_detection_mode"], SpotDetectionMode
+            ):
                 data["spot_detection_mode"] = data["spot_detection_mode"].value
         return data
 

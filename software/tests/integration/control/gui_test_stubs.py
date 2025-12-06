@@ -3,7 +3,6 @@ import pathlib
 import control.microscope
 import control.core.navigation.objective_store
 import control.microcontroller
-import control.peripherals.lighting.led as lighting
 
 from control.core.configuration import ChannelConfigurationManager
 from control.core.configuration import ConfigurationManager
@@ -39,23 +38,34 @@ def get_test_illumination_controller(
     )
 
 
-def get_test_navigation_viewer(objective_store: control.core.objective_store.ObjectiveStore, camera_pixel_size: float):
+def get_test_navigation_viewer(
+    objective_store: control.core.objective_store.ObjectiveStore,
+    camera_pixel_size: float,
+):
     return NavigationViewer(objective_store, camera_pixel_size)
 
 
-def get_test_qt_multi_point_controller(microscope: Microscope) -> QtMultiPointController:
+def get_test_qt_multi_point_controller(
+    microscope: Microscope,
+) -> QtMultiPointController:
     live_controller = ts.get_test_live_controller(
-        microscope=microscope, starting_objective=microscope.objective_store.default_objective
+        microscope=microscope,
+        starting_objective=microscope.objective_store.default_objective,
     )
 
     multi_point_controller = QtMultiPointController(
         microscope=microscope,
         live_controller=live_controller,
         autofocus_controller=ts.get_test_autofocus_controller(
-            microscope.camera, microscope.stage, live_controller, microscope.low_level_drivers.microcontroller
+            microscope.camera,
+            microscope.stage,
+            live_controller,
+            microscope.low_level_drivers.microcontroller,
         ),
         channel_configuration_manager=microscope.channel_configuration_manager,
-        scan_coordinates=ts.get_test_scan_coordinates(microscope.objective_store, microscope.stage, microscope.camera),
+        scan_coordinates=ts.get_test_scan_coordinates(
+            microscope.objective_store, microscope.stage, microscope.camera
+        ),
         objective_store=microscope.objective_store,
         laser_autofocus_controller=ts.get_test_laser_autofocus_controller(microscope),
     )

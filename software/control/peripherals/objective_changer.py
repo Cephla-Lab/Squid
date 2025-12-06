@@ -1,6 +1,3 @@
-import os
-import sys
-import time
 import serial
 
 from control.peripherals.xeryon import Xeryon, Stage
@@ -12,7 +9,11 @@ from typing import Optional
 class ObjectiveChanger2PosController:
     def __init__(self, sn: str, stage: Optional[squid.abc.AbstractStage] = None):
         super().__init__()
-        port = [p.device for p in serial.tools.list_ports.comports() if sn == p.serial_number]
+        port = [
+            p.device
+            for p in serial.tools.list_ports.comports()
+            if sn == p.serial_number
+        ]
         self.controller = Xeryon(port[0], 115200)
         self.axisX = self.controller.addAxis(Stage.XLA_1250_3N, "Z")
         self.controller.start()

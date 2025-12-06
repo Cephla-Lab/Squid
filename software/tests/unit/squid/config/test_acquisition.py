@@ -1,4 +1,5 @@
 """Tests for acquisition configuration models."""
+
 import pytest
 from squid.config.acquisition import (
     GridScanConfig,
@@ -105,7 +106,7 @@ class TestAcquisitionConfig:
             channels=[
                 ChannelConfig(name="DAPI", exposure_ms=100),
                 ChannelConfig(name="GFP", exposure_ms=200),
-            ]
+            ],
         )
 
         assert config.experiment_id == "test_001"
@@ -121,7 +122,7 @@ class TestAcquisitionConfig:
                 output_path="/tmp",
                 grid=GridScanConfig(),
                 timelapse=TimelapseConfig(),
-                channels=[]
+                channels=[],
             )
 
     def test_full_serialization(self):
@@ -131,7 +132,7 @@ class TestAcquisitionConfig:
             output_path="/tmp/test",
             grid=GridScanConfig(nx=2),
             timelapse=TimelapseConfig(),
-            channels=[ChannelConfig(name="DAPI", exposure_ms=100)]
+            channels=[ChannelConfig(name="DAPI", exposure_ms=100)],
         )
 
         json_str = config.model_dump_json(indent=2)
@@ -149,7 +150,7 @@ class TestAcquisitionConfig:
             channels=[
                 ChannelConfig(name="DAPI", exposure_ms=100),
                 ChannelConfig(name="GFP", exposure_ms=200),
-            ]
+            ],
         )
 
         # 2 * 3 * 4 * 5 * 2 = 240

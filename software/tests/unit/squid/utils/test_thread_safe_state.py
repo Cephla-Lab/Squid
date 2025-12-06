@@ -1,5 +1,5 @@
 """Tests for thread-safe state utilities."""
-import pytest
+
 import threading
 import time
 from squid.utils.thread_safe_state import ThreadSafeValue, ThreadSafeFlag

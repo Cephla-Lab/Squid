@@ -2,7 +2,10 @@ from control._def import OBJECTIVES, DEFAULT_OBJECTIVE
 from control.core.autofocus import AutoFocusController
 from control.core.autofocus import LaserAutofocusController
 from control.core.display import LiveController
-from control.core.acquisition.multi_point_controller import NoOpCallbacks, MultiPointController
+from control.core.acquisition.multi_point_controller import (
+    NoOpCallbacks,
+    MultiPointController,
+)
 from control.core.acquisition.multi_point_utils import MultiPointControllerFunctions
 from control.core.navigation import ObjectiveStore
 from control.core.navigation import ScanCoordinates
@@ -11,11 +14,15 @@ from control.microscope import Microscope
 from squid.abc import AbstractStage, AbstractCamera
 
 
-def get_test_live_controller(microscope: Microscope, starting_objective) -> LiveController:
+def get_test_live_controller(
+    microscope: Microscope, starting_objective
+) -> LiveController:
     controller = LiveController(microscope=microscope, camera=microscope.camera)
 
     controller.set_microscope_mode(
-        microscope.configuration_manager.channel_manager.get_configurations(objective=starting_objective)[0]
+        microscope.configuration_manager.channel_manager.get_configurations(
+            objective=starting_objective
+        )[0]
     )
     return controller
 
@@ -46,14 +53,18 @@ def get_test_scan_coordinates(
 
 
 def get_test_objective_store():
-    return ObjectiveStore(objectives_dict=OBJECTIVES, default_objective=DEFAULT_OBJECTIVE)
+    return ObjectiveStore(
+        objectives_dict=OBJECTIVES, default_objective=DEFAULT_OBJECTIVE
+    )
 
 
 def get_test_laser_autofocus_controller(microscope: Microscope):
     return LaserAutofocusController(
         microcontroller=microscope.low_level_drivers.microcontroller,
         camera=microscope.addons.camera_focus,
-        liveController=LiveController(microscope=microscope, camera=microscope.addons.camera_focus),
+        liveController=LiveController(
+            microscope=microscope, camera=microscope.addons.camera_focus
+        ),
         stage=microscope.stage,
         piezo=microscope.addons.piezo_stage,
         objectiveStore=microscope.objective_store,
@@ -66,7 +77,8 @@ def get_test_multi_point_controller(
     callbacks: MultiPointControllerFunctions = NoOpCallbacks,
 ) -> MultiPointController:
     live_controller = get_test_live_controller(
-        microscope=microscope, starting_objective=microscope.objective_store.default_objective
+        microscope=microscope,
+        starting_objective=microscope.objective_store.default_objective,
     )
 
     multi_point_controller = MultiPointController(
@@ -80,7 +92,9 @@ def get_test_multi_point_controller(
         ),
         channel_configuration_manager=microscope.channel_configuration_manager,
         scan_coordinates=get_test_scan_coordinates(
-            objective_store=microscope.objective_store, stage=microscope.stage, camera=microscope.camera
+            objective_store=microscope.objective_store,
+            stage=microscope.stage,
+            camera=microscope.camera,
         ),
         callbacks=callbacks,
         objective_store=microscope.objective_store,

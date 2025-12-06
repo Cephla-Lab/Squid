@@ -2,7 +2,6 @@ from lxml import etree as ET
 import json
 import sys
 import os
-import re
 
 import zarr
 from skimage.io import imread
@@ -137,7 +136,11 @@ def create_dask_array_for_single_fov(
     if z_to_use is not None:
         Nz_override = len(z_to_use)
     dimension_data = get_dimensions_for_dataset(
-        dataset_folder_path, sensor_pixel_size_um_default, objective_magnification_default, Nz_override, Nt_override
+        dataset_folder_path,
+        sensor_pixel_size_um_default,
+        objective_magnification_default,
+        Nz_override,
+        Nt_override,
     )
     if t_to_use is not None:
         if max(t_to_use) >= dimension_data["Nt"] or min(t_to_use) < 0:
@@ -158,7 +161,16 @@ def create_dask_array_for_single_fov(
             filenames = []
             for z in z_to_use:
                 image_path = (
-                    str(t) + "/" + str(y) + "_" + str(x) + "_" + str(z) + "_" + channel.strip().replace(" ", "_") + ".*"
+                    str(t)
+                    + "/"
+                    + str(y)
+                    + "_"
+                    + str(x)
+                    + "_"
+                    + str(z)
+                    + "_"
+                    + channel.strip().replace(" ", "_")
+                    + ".*"
                 )
                 image_path = os.path.join(dataset_folder_path, image_path)
                 file_matches = glob(image_path)
@@ -186,7 +198,11 @@ def create_dask_array_for_single_fov(
             filenames = sorted(filenames, key=alphanumeric_key)
             lazy_arrays = [lazy_imread(fn) for fn in filenames]
             dask_arrays = [
-                da.from_delayed(delayed_reader, shape=dimension_data["FOV_shape"], dtype=dimension_data["FOV_dtype"])
+                da.from_delayed(
+                    delayed_reader,
+                    shape=dimension_data["FOV_shape"],
+                    dtype=dimension_data["FOV_dtype"],
+                )
                 for delayed_reader in lazy_arrays
             ]
             stack = da.stack(dask_arrays, axis=0)
@@ -209,7 +225,9 @@ def create_zarr_for_single_fov(
     well=0,
 ):
     control.utils.ensure_directory_exists(saving_path)
-    dimension_data = get_dimensions_for_dataset(dataset_folder_path, sensor_pixel_size_um, objective_magnification)
+    dimension_data = get_dimensions_for_dataset(
+        dataset_folder_path, sensor_pixel_size_um, objective_magnification
+    )
     scale_xy = dimension_data["pixel_size_um"]
     scale_z = dimension_data["dz"]
     if scale_z == 0.0:
@@ -217,10 +235,19 @@ def create_zarr_for_single_fov(
     scale_t = dimension_data["dt"]
     if scale_t == 0.0:
         scale_t = 1.0
-    coord_transform = [{"type": "scale", "scale": [scale_t, 1.0, scale_z, scale_xy, scale_xy]}]
+    coord_transform = [
+        {"type": "scale", "scale": [scale_t, 1.0, scale_z, scale_xy, scale_xy]}
+    ]
 
     fov_dask_array = create_dask_array_for_single_fov(
-        dataset_folder_path, x, y, sensor_pixel_size_um, objective_magnification, z_to_use, t_to_use, well
+        dataset_folder_path,
+        x,
+        y,
+        sensor_pixel_size_um,
+        objective_magnification,
+        z_to_use,
+        t_to_use,
+        well,
     )
     xy_only_dims = fov_dask_array.shape[3:]
     store = parse_url(saving_path, mode="w").store
@@ -236,7 +263,13 @@ def create_zarr_for_single_fov(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5 and len(sys.argv) != 3 and len(sys.argv) != 7 and len(sys.argv) != 8 and len(sys.argv) != 9:
+    if (
+        len(sys.argv) != 5
+        and len(sys.argv) != 3
+        and len(sys.argv) != 7
+        and len(sys.argv) != 8
+        and len(sys.argv) != 9
+    ):
         raise RuntimeError(
             "2 positional arguments required: path to slide data folder, and path to zarr to write. The following 2 positional arguments, if they exist, must be the x-index and the y-index of the FOV to convert (default 0). The last two positional arguments should be the pixel_size_um parameter of the sensor, and the magnification of the objective used. The last two positional arguments are an override on the number of z steps to use and an override on the number of t steps to use."
         )
@@ -264,12 +297,23 @@ if __name__ == "__main__":
 
     try:
         Nt_override = int(sys.argv[8])
-        t_to_use = list(range(Nt_overide))
+        t_to_use = list(range(Nt_override))
     except IndexError:
         t_to_use = None
 
     create_zarr_for_single_fov(
-        folderpath, saving_path, x, y, sensor_pixel_size, objective_magnification, z_to_use, t_to_use
+        folderpath,
+        saving_path,
+        x,
+        y,
+        sensor_pixel_size,
+        objective_magnification,
+        z_to_use,
+        t_to_use,
     )
     print("OME-Zarr written to " + saving_path)
-    print("Use the command\n    $> napari --plugin napari-ome-zarr " + saving_path + "\nto view.")
+    print(
+        "Use the command\n    $> napari --plugin napari-ome-zarr "
+        + saving_path
+        + "\nto view."
+    )

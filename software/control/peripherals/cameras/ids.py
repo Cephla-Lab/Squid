@@ -39,7 +39,12 @@ def get_sn_by_model(model_name):
 
 class Camera(object):
     def __init__(
-        self, sn=None, resolution=(1920, 1080), is_global_shutter=False, rotate_image_angle=None, flip_image=None
+        self,
+        sn=None,
+        resolution=(1920, 1080),
+        is_global_shutter=False,
+        rotate_image_angle=None,
+        flip_image=None,
     ):
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
@@ -100,7 +105,9 @@ class Camera(object):
             self.log.error("iDS camera not found.")
             # TODO(imo): Propagate error in some way and handle
             return
-        self.device = self.device_manager.Devices()[index].OpenDevice(ids_peak.DeviceAccessType_Control)
+        self.device = self.device_manager.Devices()[index].OpenDevice(
+            ids_peak.DeviceAccessType_Control
+        )
         if self.device is None:
             self.log.error("Cannot open iDS camera.")
             # TODO(imo): Propagate error in some way and handle
@@ -131,7 +138,9 @@ class Camera(object):
 
     def _camera_init(self):
         gain_node = self.nodemap.FindNode("Gain")
-        self.log.info(f"gain: min={gain_node.Minimum()}, max={gain_node.Maximum()}, increment={gain_node.Increment()}")
+        self.log.info(
+            f"gain: min={gain_node.Minimum()}, max={gain_node.Maximum()}, increment={gain_node.Increment()}"
+        )
 
         # initialize software trigger
         entries = []
@@ -192,7 +201,7 @@ class Camera(object):
                 buffer = self.datastream.WaitForFinishedBuffer(2000)
                 if buffer is not None:
                     self._on_new_frame(buffer)
-            except Exception as e:
+            except Exception:
                 pass
 
     def _on_new_frame(self, buffer):
@@ -212,7 +221,7 @@ class Camera(object):
 
         # frame ID for hardware triggered acquisition
         if self.trigger_mode == TriggerMode.HARDWARE:
-            if self.frame_ID_offset_hardware_trigger == None:
+            if self.frame_ID_offset_hardware_trigger is None:
                 self.frame_ID_offset_hardware_trigger = self.frame_ID
             self.frame_ID = self.frame_ID - self.frame_ID_offset_hardware_trigger
 
@@ -262,7 +271,7 @@ class Camera(object):
             self.nodemap.FindNode("TriggerSource").SetCurrentEntry("Software")
             self.trigger_mode = TriggerMode.SOFTWARE
         except Exception as e:
-            self.log.error(f"Cannot set Software trigger", e)
+            self.log.error("Cannot set Software trigger", e)
 
     def set_hardware_triggered_acquisition(self):
         self.nodemap.FindNode("TriggerMode").SetCurrentEntry("On")
@@ -335,13 +344,17 @@ class Camera(object):
         # while the acquisition is running
         # NOTE: Re-create the image converter, so old conversion buffers
         #       get freed
-        input_pixel_format = ids_peak_ipl.PixelFormat(self.nodemap.FindNode("PixelFormat").CurrentEntry().Value())
+        input_pixel_format = ids_peak_ipl.PixelFormat(
+            self.nodemap.FindNode("PixelFormat").CurrentEntry().Value()
+        )
         if self.pixel_format == "MONO10":
             output_pixel_format = ids_peak_ipl.PixelFormatName_Mono10
         elif self.pixel_format == "MONO12":
             output_pixel_format = ids_peak_ipl.PixelFormatName_Mono12
 
-        self.image_converter.PreAllocateConversion(input_pixel_format, output_pixel_format, self.Width, self.Height)
+        self.image_converter.PreAllocateConversion(
+            input_pixel_format, output_pixel_format, self.Width, self.Height
+        )
 
         self.datastream.StartAcquisition()
         self.nodemap.FindNode("AcquisitionStart").Execute()
@@ -371,7 +384,9 @@ class Camera(object):
         try:
             self.buffer_list = []
             payload_size = self.nodemap.FindNode("PayloadSize").Value()
-            buffer_amount = self.datastream.NumBuffersAnnouncedMinRequired() + extra_buffer
+            buffer_amount = (
+                self.datastream.NumBuffersAnnouncedMinRequired() + extra_buffer
+            )
 
             for _ in range(buffer_amount):
                 buffer = self.datastream.AllocAndAnnounceBuffer(payload_size)

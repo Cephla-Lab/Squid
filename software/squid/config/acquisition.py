@@ -23,6 +23,7 @@ Usage:
     # Restore from file
     config = AcquisitionConfig.model_validate_json(json_str)
 """
+
 from typing import List, Optional
 from pydantic import BaseModel, field_validator
 
@@ -39,6 +40,7 @@ class GridScanConfig(BaseModel):
         delta_y_mm: Step size in Y (mm)
         delta_z_um: Step size in Z (um)
     """
+
     nx: int = 1
     ny: int = 1
     nz: int = 1
@@ -48,11 +50,11 @@ class GridScanConfig(BaseModel):
 
     model_config = {"frozen": True}
 
-    @field_validator('nx', 'ny', 'nz')
+    @field_validator("nx", "ny", "nz")
     @classmethod
     def must_be_positive(cls, v, info):
         if v < 1:
-            raise ValueError(f'{info.field_name} must be at least 1')
+            raise ValueError(f"{info.field_name} must be at least 1")
         return v
 
 
@@ -64,23 +66,24 @@ class TimelapseConfig(BaseModel):
         n_timepoints: Number of timepoints
         interval_seconds: Time between timepoints
     """
+
     n_timepoints: int = 1
     interval_seconds: float = 0
 
     model_config = {"frozen": True}
 
-    @field_validator('n_timepoints')
+    @field_validator("n_timepoints")
     @classmethod
     def must_be_positive(cls, v):
         if v < 1:
-            raise ValueError('n_timepoints must be at least 1')
+            raise ValueError("n_timepoints must be at least 1")
         return v
 
-    @field_validator('interval_seconds')
+    @field_validator("interval_seconds")
     @classmethod
     def must_be_non_negative(cls, v):
         if v < 0:
-            raise ValueError('interval_seconds must be non-negative')
+            raise ValueError("interval_seconds must be non-negative")
         return v
 
 
@@ -95,6 +98,7 @@ class ChannelConfig(BaseModel):
         illumination_source: Optional illumination source name
         z_offset_um: Z offset for this channel (um)
     """
+
     name: str
     exposure_ms: float
     analog_gain: Optional[float] = None
@@ -103,11 +107,11 @@ class ChannelConfig(BaseModel):
 
     model_config = {"frozen": True}
 
-    @field_validator('exposure_ms')
+    @field_validator("exposure_ms")
     @classmethod
     def exposure_must_be_positive(cls, v):
         if v <= 0:
-            raise ValueError('exposure_ms must be positive')
+            raise ValueError("exposure_ms must be positive")
         return v
 
 
@@ -122,6 +126,7 @@ class AutofocusConfig(BaseModel):
         step_size_um: Step size in um
         every_n_fovs: Run autofocus every N FOVs (0 = only at start)
     """
+
     enabled: bool = False
     algorithm: str = "brenner_gradient"
     n_steps: int = 10
@@ -147,6 +152,7 @@ class AcquisitionConfig(BaseModel):
         channels: List of channels to acquire
         autofocus: Optional autofocus configuration
     """
+
     experiment_id: str
     output_path: str
     grid: GridScanConfig
@@ -156,19 +162,19 @@ class AcquisitionConfig(BaseModel):
 
     model_config = {"frozen": True}
 
-    @field_validator('channels')
+    @field_validator("channels")
     @classmethod
     def must_have_channels(cls, v):
         if not v:
-            raise ValueError('Must have at least one channel')
+            raise ValueError("Must have at least one channel")
         return v
 
     def total_images(self) -> int:
         """Calculate total number of images in acquisition."""
         return (
-            self.grid.nx *
-            self.grid.ny *
-            self.grid.nz *
-            self.timelapse.n_timepoints *
-            len(self.channels)
+            self.grid.nx
+            * self.grid.ny
+            * self.grid.nz
+            * self.timelapse.n_timepoints
+            * len(self.channels)
         )

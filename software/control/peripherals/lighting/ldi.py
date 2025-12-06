@@ -79,7 +79,9 @@ class LDI(LightSource):
         channel = str(channel)
         intensity = "{:.2f}".format(intensity)
         self.log.debug("set:" + channel + "=" + intensity + "\r")
-        self.serial_connection.write_and_check("set:" + channel + "=" + intensity + "\r", "ok")
+        self.serial_connection.write_and_check(
+            "set:" + channel + "=" + intensity + "\r", "ok"
+        )
 
     def get_intensity(self, channel):
         try:
@@ -90,7 +92,7 @@ class LDI(LightSource):
                 channel, value = pair.split("=")
                 intensities[int(channel)] = int(value)
             return intensities[channel]
-        except:
+        except Exception:
             return None
 
     def set_shutter_state(self, channel, on):
@@ -98,23 +100,29 @@ class LDI(LightSource):
         state = str(on)
         if self.active_channel is not None and channel != self.active_channel:
             self.set_active_channel_shutter(False)
-        self.serial_connection.write_and_check("shutter:" + channel + "=" + state + "\r", "ok")
+        self.serial_connection.write_and_check(
+            "shutter:" + channel + "=" + state + "\r", "ok"
+        )
         if on:
             self.active_channel = channel
 
     def get_shutter_state(self, channel):
         try:
-            response = self.serial_connection.write_and_read("shutter?" + channel + "\r")
+            response = self.serial_connection.write_and_read(
+                "shutter?" + channel + "\r"
+            )
             state = response.split("=")[1]
             return 1 if state == "OPEN" else 0
-        except:
+        except Exception:
             return None
 
     def set_active_channel_shutter(self, state):
         channel = str(self.active_channel)
         state = str(state)
         self.log.debug("shutter:" + channel + "=" + state + "\r")
-        self.serial_connection.write_and_check("shutter:" + channel + "=" + state + "\r", "ok")
+        self.serial_connection.write_and_check(
+            "shutter:" + channel + "=" + state + "\r", "ok"
+        )
 
     def shut_down(self):
         for ch in list(set(self.channel_mappings.values())):
@@ -175,7 +183,7 @@ class LDI_Simulation(LightSource):
 
     def set_shutter_state(self, channel, on):
         channel = str(channel)
-        state = str(on)
+        str(on)
         if self.active_channel is not None and channel != self.active_channel:
             self.set_active_channel_shutter(False)
         if on:

@@ -1,5 +1,4 @@
 import pytest
-import control.microscope
 
 
 @pytest.mark.integration

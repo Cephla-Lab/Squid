@@ -1,5 +1,6 @@
 # Statistics display widget
 import locale
+from typing import Dict, Any
 
 from qtpy.QtWidgets import (
     QFrame,
@@ -11,22 +12,29 @@ from qtpy.QtWidgets import (
 
 
 class StatsDisplayWidget(QFrame):
-    def __init__(self, *args, **kwargs):
+    _layout: QVBoxLayout
+    table_widget: QTableWidget
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.initUI()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-    def initUI(self):
-        self.layout = QVBoxLayout()
+    def initUI(self) -> None:
+        self._layout = QVBoxLayout()
         self.table_widget = QTableWidget()
         self.table_widget.setColumnCount(2)
-        self.table_widget.verticalHeader().hide()
-        self.table_widget.horizontalHeader().hide()
-        self.table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.layout.addWidget(self.table_widget)
-        self.setLayout(self.layout)
+        header_v = self.table_widget.verticalHeader()
+        header_h = self.table_widget.horizontalHeader()
+        if header_v is not None:
+            header_v.hide()
+        if header_h is not None:
+            header_h.hide()
+            header_h.setSectionResizeMode(QHeaderView.ResizeToContents)
+        self._layout.addWidget(self.table_widget)
+        self.setLayout(self._layout)
 
-    def display_stats(self, stats):
+    def display_stats(self, stats: Dict[str, Any]) -> None:
         print("displaying parasite stats")
         locale.setlocale(locale.LC_ALL, "")
         self.table_widget.setRowCount(len(stats))
@@ -36,7 +44,7 @@ class StatsDisplayWidget(QFrame):
             value_item = None
             try:
                 value_item = QTableWidgetItem(f"{value:n}")
-            except:
+            except Exception:
                 value_item = QTableWidgetItem(str(value))
             self.table_widget.setItem(row, 0, key_item)
             self.table_widget.setItem(row, 1, value_item)

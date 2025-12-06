@@ -33,7 +33,12 @@ class MovementUpdater(QObject):
     piezo_z_um = Signal(float)
 
     def __init__(
-        self, stage: AbstractStage, piezo: Optional[PiezoStage], movement_threshhold_mm=0.0001, *args, **kwargs
+        self,
+        stage: AbstractStage,
+        piezo: Optional[PiezoStage],
+        movement_threshhold_mm=0.0001,
+        *args,
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.stage: AbstractStage = stage
@@ -114,7 +119,9 @@ class QtMultiPointController(MultiPointController, QObject):
     signal_current_configuration = Signal(ChannelMode)
     signal_register_current_fov = Signal(float, float)
     napari_layers_init = Signal(int, int, object)
-    napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
+    napari_layers_update = Signal(
+        np.ndarray, float, float, int, str
+    )  # image, x_mm, y_mm, k, channel
     signal_set_display_tabs = Signal(list, int)
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
@@ -170,17 +177,29 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
         self.image_to_display.emit(frame.frame)
-        self.image_to_display_multi.emit(frame.frame, info.configuration.illumination_source)
-        self.signal_coordinates.emit(info.position.x_mm, info.position.y_mm, info.position.z_mm, info.region_id)
+        self.image_to_display_multi.emit(
+            frame.frame, info.configuration.illumination_source
+        )
+        self.signal_coordinates.emit(
+            info.position.x_mm, info.position.y_mm, info.position.z_mm, info.region_id
+        )
 
         if not self._napari_inited_for_this_acquisition:
             self._napari_inited_for_this_acquisition = True
-            self.napari_layers_init.emit(frame.frame.shape[0], frame.frame.shape[1], frame.frame.dtype)
+            self.napari_layers_init.emit(
+                frame.frame.shape[0], frame.frame.shape[1], frame.frame.dtype
+            )
 
-        objective_magnification = str(int(self.objectiveStore.get_current_objective_info()["magnification"]))
+        objective_magnification = str(
+            int(self.objectiveStore.get_current_objective_info()["magnification"])
+        )
         napri_layer_name = objective_magnification + "x " + info.configuration.name
         self.napari_layers_update.emit(
-            frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
+            frame.frame,
+            info.position.x_mm,
+            info.position.y_mm,
+            info.z_index,
+            napri_layer_name,
         )
 
     def _signal_current_configuration_fn(self, channel_mode: ChannelMode):
@@ -191,8 +210,12 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_overall_progress_fn(self, overall_progress: OverallProgressUpdate):
         self.signal_acquisition_progress.emit(
-            overall_progress.current_region, overall_progress.total_regions, overall_progress.current_timepoint
+            overall_progress.current_region,
+            overall_progress.total_regions,
+            overall_progress.current_timepoint,
         )
 
     def _signal_region_progress_fn(self, region_progress: RegionProgressUpdate):
-        self.signal_region_progress.emit(region_progress.current_fov, region_progress.region_fovs)
+        self.signal_region_progress.emit(
+            region_progress.current_fov, region_progress.region_fovs
+        )

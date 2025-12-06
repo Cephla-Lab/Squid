@@ -1,6 +1,7 @@
 """
 Serial communication abstractions for Cephla microcontroller.
 """
+
 import abc
 import struct
 import sys
@@ -36,7 +37,6 @@ def payload_to_int(payload, number_of_bytes) -> int:
 
 
 class AbstractCephlaMicroSerial(abc.ABC):
-
     def __init__(self):
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
@@ -103,7 +103,9 @@ class AbstractCephlaMicroSerial(abc.ABC):
 
 class SimSerial(AbstractCephlaMicroSerial):
     @staticmethod
-    def response_bytes_for(command_id, execution_status, x, y, z, theta, joystick_button, switch) -> bytes:
+    def response_bytes_for(
+        command_id, execution_status, x, y, z, theta, joystick_button, switch
+    ) -> bytes:
         """
         - command ID (1 byte)
         - execution status (1 byte)
@@ -117,10 +119,22 @@ class SimSerial(AbstractCephlaMicroSerial):
         """
         crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
-        button_state = joystick_button << BIT_POS_JOYSTICK_BUTTON | switch << BIT_POS_SWITCH
+        button_state = (
+            joystick_button << BIT_POS_JOYSTICK_BUTTON | switch << BIT_POS_SWITCH
+        )
         reserved_state = 0  # This is just filler for the 4 reserved bytes.
         response = bytearray(
-            struct.pack(">BBiiiiBi", command_id, execution_status, x, y, z, theta, button_state, reserved_state)
+            struct.pack(
+                ">BBiiiiBi",
+                command_id,
+                execution_status,
+                x,
+                y,
+                z,
+                theta,
+                button_state,
+                reserved_state,
+            )
         )
         response.append(crc_calculator.calculate_checksum(response))
         return bytes(response)
@@ -310,7 +324,7 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
         # So we just try to write, and if we get an OS error we try to write again but without retrying
         try:
             return self._serial.write(data)
-        except (IOError, OSError, SerialException) as e:
+        except (IOError, OSError, SerialException):
             if reconnect_tries > 0:
                 if not self.reconnect(reconnect_tries):
                     raise
@@ -323,7 +337,7 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
         # So we just try to read, and if we get an OS error we try to read again but without retrying
         try:
             return self._serial.read(count)
-        except (IOError, OSError, SerialException) as e:
+        except (IOError, OSError, SerialException):
             if reconnect_tries > 0:
                 if not self.reconnect(reconnect_tries):
                     raise
@@ -345,14 +359,15 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
             # but the in_waiting does an ioctl to check for the bytes in the read buffer.  This is a system call, so
             # not the best from a performance perspective, but we are operating with 2 mega baud and a system call
             # is insignificant on that timescale!
-            bytes_avail = self._serial.in_waiting
 
             return True
         except OSError:
             return False
 
     def reconnect(self, attempts: int) -> bool:
-        self._log.debug(f"Attempting reconnect to {self._serial.port}.  With max of {attempts} attempts.")
+        self._log.debug(
+            f"Attempting reconnect to {self._serial.port}.  With max of {attempts} attempts."
+        )
         for i in range(attempts):
             this_interval = MicrocontrollerSerial.exponential_backoff_time(
                 i, MicrocontrollerSerial.INITIAL_RECONNECT_INTERVAL
@@ -364,7 +379,9 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
                         self._serial.close()
                     except OSError:
                         pass
-                    self._serial = serial.Serial(port=self._port, baudrate=self._baudrate)
+                    self._serial = serial.Serial(
+                        port=self._port, baudrate=self._baudrate
+                    )
                 except (IOError, OSError, SerialException) as se:
                     if i + 1 == attempts:
                         self._log.error(
@@ -392,19 +409,29 @@ def get_microcontroller_serial_device(
         _log.info(f"Getting serial device for microcontroller {version=}")
         if version == "Arduino Due":
             controller_ports = [
-                p.device for p in serial.tools.list_ports.comports() if "Arduino Due" == p.description
+                p.device
+                for p in serial.tools.list_ports.comports()
+                if "Arduino Due" == p.description
             ]  # autodetect - based on Deepak's code
         else:
             if sn is not None:
-                controller_ports = [p.device for p in serial.tools.list_ports.comports() if sn == p.serial_number]
+                controller_ports = [
+                    p.device
+                    for p in serial.tools.list_ports.comports()
+                    if sn == p.serial_number
+                ]
             else:
                 if sys.platform == "win32":
                     controller_ports = [
-                        p.device for p in serial.tools.list_ports.comports() if p.manufacturer == "Microsoft"
+                        p.device
+                        for p in serial.tools.list_ports.comports()
+                        if p.manufacturer == "Microsoft"
                     ]
                 else:
                     controller_ports = [
-                        p.device for p in serial.tools.list_ports.comports() if p.manufacturer == "Teensyduino"
+                        p.device
+                        for p in serial.tools.list_ports.comports()
+                        if p.manufacturer == "Teensyduino"
                     ]
 
         if not controller_ports:

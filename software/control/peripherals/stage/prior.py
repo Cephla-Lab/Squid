@@ -11,11 +11,17 @@ from squid.config import StageConfig
 class PriorStage(AbstractStage):
     POS_POLLING_PERIOD = 0.25
 
-    def __init__(self, sn: str, baudrate: int = 115200, stage_config: StageConfig = None):
+    def __init__(
+        self, sn: str, baudrate: int = 115200, stage_config: StageConfig = None
+    ):
         # We are not using StageConfig for Prior stage now. Waiting for further update/clarification of this part
         super().__init__(stage_config)
 
-        port = [p.device for p in serial.tools.list_ports.comports() if sn == p.serial_number]
+        port = [
+            p.device
+            for p in serial.tools.list_ports.comports()
+            if sn == p.serial_number
+        ]
         self.serial = serial.Serial(port[0], baudrate=baudrate, timeout=0.1)
         self.current_baudrate = baudrate
 
@@ -269,10 +275,10 @@ class PriorStage(AbstractStage):
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if x:
-            self._send_command(f"PX 0")
+            self._send_command("PX 0")
             self.x_pos = 0
         if y:
-            self._send_command(f"PY 0")
+            self._send_command("PY 0")
             self.y_pos = 0
 
     def wait_for_stop(self):

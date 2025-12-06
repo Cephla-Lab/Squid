@@ -1,7 +1,5 @@
 # tests/squid/services/test_registry.py
 """Tests for ServiceRegistry."""
-import pytest
-from unittest.mock import Mock
 
 
 class TestServiceRegistry:
@@ -19,9 +17,9 @@ class TestServiceRegistry:
         registry = ServiceRegistry(bus)
         service = MockService(bus)
 
-        registry.register('test', service)
+        registry.register("test", service)
 
-        assert registry.get('test') is service
+        assert registry.get("test") is service
 
     def test_get_unknown_returns_none(self):
         """get() should return None for unknown service."""
@@ -30,7 +28,7 @@ class TestServiceRegistry:
 
         registry = ServiceRegistry(EventBus())
 
-        assert registry.get('unknown') is None
+        assert registry.get("unknown") is None
 
     def test_shutdown_calls_all_services(self):
         """shutdown() should call shutdown on all registered services."""
@@ -51,8 +49,8 @@ class TestServiceRegistry:
 
         service1 = MockService(bus)
         service2 = MockService(bus)
-        registry.register('s1', service1)
-        registry.register('s2', service2)
+        registry.register("s1", service1)
+        registry.register("s2", service2)
 
         registry.shutdown()
 

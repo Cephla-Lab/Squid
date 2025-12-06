@@ -1,10 +1,13 @@
 import time
-import threading
 from typing import List, Tuple, Optional, Dict
 import serial
 from serial.tools import list_ports
 import squid.logging
-from squid.abc import AbstractFilterWheelController, FilterWheelInfo, FilterControllerError
+from squid.abc import (
+    AbstractFilterWheelController,
+    FilterWheelInfo,
+    FilterControllerError,
+)
 from squid.config import ZaberFilterWheelConfig
 
 
@@ -35,7 +38,9 @@ class ZaberFilterController(AbstractFilterWheelController):
         self._delay_offset_ms = 0
 
     def _initialize_serial(self, serial_number: str) -> serial.Serial:
-        ports = [p.device for p in list_ports.comports() if serial_number == p.serial_number]
+        ports = [
+            p.device for p in list_ports.comports() if serial_number == p.serial_number
+        ]
         if not ports:
             raise ValueError(f"No device found with serial number: {serial_number}")
         return serial.Serial(
@@ -104,7 +109,9 @@ class ZaberFilterController(AbstractFilterWheelController):
 
             time.sleep(0.5)  # Wait before retrying
 
-        raise FilterControllerError(f"Command '{cmd}' failed after {self.MAX_RETRIES} attempts")
+        raise FilterControllerError(
+            f"Command '{cmd}' failed after {self.MAX_RETRIES} attempts"
+        )
 
     def _parse_response(self, response: str) -> Tuple[bool, str]:
         """
@@ -147,7 +154,9 @@ class ZaberFilterController(AbstractFilterWheelController):
         if index not in self._available_filter_wheels:
             raise ValueError(f"Filter wheel index {index} not found")
         return FilterWheelInfo(
-            index=index, number_of_slots=len(self.VALID_POSITIONS), slot_names=[str(i) for i in self.VALID_POSITIONS]
+            index=index,
+            number_of_slots=len(self.VALID_POSITIONS),
+            slot_names=[str(i) for i in self.VALID_POSITIONS],
         )
 
     def get_current_position(self) -> Tuple[bool, int]:
@@ -160,7 +169,9 @@ class ZaberFilterController(AbstractFilterWheelController):
         return False, 0
 
     def calculate_filter_index(self) -> int:
-        return (self.current_position - self.OFFSET_POSITION) // self.MICROSTEPS_PER_HOLE
+        return (
+            self.current_position - self.OFFSET_POSITION
+        ) // self.MICROSTEPS_PER_HOLE
 
     def move_to_offset_position(self):
         self._move_to_absolute_position(self.OFFSET_POSITION)
@@ -171,7 +182,12 @@ class ZaberFilterController(AbstractFilterWheelController):
             raise FilterControllerError("Failed to initiate filter movement")
         self._wait_for_position(target_position, target_index=None, timeout=timeout)
 
-    def set_filter_wheel_position(self, positions: Dict[int, int], blocking: Optional[bool] = None, timeout: int = 5):
+    def set_filter_wheel_position(
+        self,
+        positions: Dict[int, int],
+        blocking: Optional[bool] = None,
+        timeout: int = 5,
+    ):
         """
         Set the emission filter to the specified position.
 
@@ -210,7 +226,9 @@ class ZaberFilterController(AbstractFilterWheelController):
             self.current_position = target_position
             self.current_index = pos
 
-    def _wait_for_position(self, target_position: int, target_index: Optional[int], timeout: int):
+    def _wait_for_position(
+        self, target_position: int, target_index: Optional[int], timeout: int
+    ):
         """
         Wait for the filter to reach the target position.
 
@@ -271,7 +289,9 @@ class ZaberFilterController(AbstractFilterWheelController):
             time.sleep(0.5)
             success, position = self.get_current_position()
             if not success:
-                raise FilterControllerError("Failed to get current position during homing")
+                raise FilterControllerError(
+                    "Failed to get current position during homing"
+                )
             if position == 0:
                 self.current_position = 0
                 self.move_to_offset_position()
@@ -285,7 +305,9 @@ class ZaberFilterController(AbstractFilterWheelController):
         return self._delay_offset_ms
 
     def set_delay_ms(self, delay_ms: float):
-        raise NotImplementedError("Setting delay ms is not supported for Zaber filter wheel controller")
+        raise NotImplementedError(
+            "Setting delay ms is not supported for Zaber filter wheel controller"
+        )
 
     def get_delay_ms(self) -> Optional[float]:
         return self._config.delay_ms

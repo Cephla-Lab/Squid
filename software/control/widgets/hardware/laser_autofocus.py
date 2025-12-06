@@ -28,17 +28,24 @@ if TYPE_CHECKING:
 
 
 class LaserAutofocusSettingWidget(QWidget):
-
     signal_newExposureTime: Signal = Signal(float)
     signal_newAnalogGain: Signal = Signal(float)
     signal_apply_settings: Signal = Signal()
     signal_laser_spot_location: Signal = Signal(np.ndarray, float, float)
 
-    def __init__(self, streamHandler: "StreamHandler", liveController: LiveController, laserAutofocusController: "LaserAutofocusController", stretch: bool = True) -> None:
+    def __init__(
+        self,
+        streamHandler: "StreamHandler",
+        liveController: LiveController,
+        laserAutofocusController: "LaserAutofocusController",
+        stretch: bool = True,
+    ) -> None:
         super().__init__()
         self.streamHandler: "StreamHandler" = streamHandler
         self.liveController: LiveController = liveController
-        self.laserAutofocusController: "LaserAutofocusController" = laserAutofocusController
+        self.laserAutofocusController: "LaserAutofocusController" = (
+            laserAutofocusController
+        )
         self.stretch: bool = stretch
         self.spinboxes: Dict[str, QDoubleSpinBox] = {}
         self.btn_live: QPushButton
@@ -83,8 +90,12 @@ class LaserAutofocusSettingWidget(QWidget):
         self.exposure_spinbox = QDoubleSpinBox()
         self.exposure_spinbox.setKeyboardTracking(False)
         self.exposure_spinbox.setSingleStep(0.1)
-        self.exposure_spinbox.setRange(*self.liveController.microscope.camera.get_exposure_limits())
-        self.exposure_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_exposure_time_ms)
+        self.exposure_spinbox.setRange(
+            *self.liveController.microscope.camera.get_exposure_limits()
+        )
+        self.exposure_spinbox.setValue(
+            self.laserAutofocusController.laser_af_properties.focus_camera_exposure_time_ms
+        )
         exposure_layout.addWidget(self.exposure_spinbox)
 
         # Analog gain control
@@ -93,7 +104,9 @@ class LaserAutofocusSettingWidget(QWidget):
         self.analog_gain_spinbox = QDoubleSpinBox()
         self.analog_gain_spinbox.setKeyboardTracking(False)
         self.analog_gain_spinbox.setRange(0, 24)
-        self.analog_gain_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_analog_gain)
+        self.analog_gain_spinbox.setValue(
+            self.laserAutofocusController.laser_af_properties.focus_camera_analog_gain
+        )
         analog_gain_layout.addWidget(self.analog_gain_spinbox)
 
         # Add to live group
@@ -108,9 +121,21 @@ class LaserAutofocusSettingWidget(QWidget):
         non_threshold_layout = QVBoxLayout()
 
         # Add non-threshold property spinboxes
-        self._add_spinbox(non_threshold_layout, "Spot Crop Size (pixels):", "spot_crop_size", 1, 500, 0)
         self._add_spinbox(
-            non_threshold_layout, "Calibration Distance (μm):", "pixel_to_um_calibration_distance", 0.1, 20.0, 2
+            non_threshold_layout,
+            "Spot Crop Size (pixels):",
+            "spot_crop_size",
+            1,
+            500,
+            0,
+        )
+        self._add_spinbox(
+            non_threshold_layout,
+            "Calibration Distance (μm):",
+            "pixel_to_um_calibration_distance",
+            0.1,
+            20.0,
+            2,
         )
         non_threshold_group.setLayout(non_threshold_layout)
 
@@ -120,12 +145,29 @@ class LaserAutofocusSettingWidget(QWidget):
         settings_layout = QVBoxLayout()
 
         # Add threshold property spinboxes
-        self._add_spinbox(settings_layout, "Laser AF Averaging N:", "laser_af_averaging_n", 1, 100, 0)
         self._add_spinbox(
-            settings_layout, "Displacement Success Window (μm):", "displacement_success_window_um", 0.1, 10.0, 2
+            settings_layout, "Laser AF Averaging N:", "laser_af_averaging_n", 1, 100, 0
         )
-        self._add_spinbox(settings_layout, "Correlation Threshold:", "correlation_threshold", 0.1, 1.0, 2, 0.1)
-        self._add_spinbox(settings_layout, "Laser AF Range (μm):", "laser_af_range", 1, 1000, 1)
+        self._add_spinbox(
+            settings_layout,
+            "Displacement Success Window (μm):",
+            "displacement_success_window_um",
+            0.1,
+            10.0,
+            2,
+        )
+        self._add_spinbox(
+            settings_layout,
+            "Correlation Threshold:",
+            "correlation_threshold",
+            0.1,
+            1.0,
+            2,
+            0.1,
+        )
+        self._add_spinbox(
+            settings_layout, "Laser AF Range (μm):", "laser_af_range", 1, 1000, 1
+        )
         self.update_threshold_button = QPushButton("Apply without Re-initialization")
         settings_layout.addWidget(self.update_threshold_button)
         settings_group.setLayout(settings_layout)
@@ -136,13 +178,39 @@ class LaserAutofocusSettingWidget(QWidget):
         spot_detection_layout = QVBoxLayout()
 
         # Add spot detection related spinboxes
-        self._add_spinbox(spot_detection_layout, "Y Window (pixels):", "y_window", 1, 500, 0)
-        self._add_spinbox(spot_detection_layout, "X Window (pixels):", "x_window", 1, 500, 0)
-        self._add_spinbox(spot_detection_layout, "Min Peak Width:", "min_peak_width", 1, 100, 1)
-        self._add_spinbox(spot_detection_layout, "Min Peak Distance:", "min_peak_distance", 1, 100, 1)
-        self._add_spinbox(spot_detection_layout, "Min Peak Prominence:", "min_peak_prominence", 0.01, 1.0, 2, 0.1)
-        self._add_spinbox(spot_detection_layout, "Spot Spacing (pixels):", "spot_spacing", 1, 1000, 1)
-        self._add_spinbox(spot_detection_layout, "Filter Sigma:", "filter_sigma", 0, 100, 1, allow_none=True)
+        self._add_spinbox(
+            spot_detection_layout, "Y Window (pixels):", "y_window", 1, 500, 0
+        )
+        self._add_spinbox(
+            spot_detection_layout, "X Window (pixels):", "x_window", 1, 500, 0
+        )
+        self._add_spinbox(
+            spot_detection_layout, "Min Peak Width:", "min_peak_width", 1, 100, 1
+        )
+        self._add_spinbox(
+            spot_detection_layout, "Min Peak Distance:", "min_peak_distance", 1, 100, 1
+        )
+        self._add_spinbox(
+            spot_detection_layout,
+            "Min Peak Prominence:",
+            "min_peak_prominence",
+            0.01,
+            1.0,
+            2,
+            0.1,
+        )
+        self._add_spinbox(
+            spot_detection_layout, "Spot Spacing (pixels):", "spot_spacing", 1, 1000, 1
+        )
+        self._add_spinbox(
+            spot_detection_layout,
+            "Filter Sigma:",
+            "filter_sigma",
+            0,
+            100,
+            1,
+            allow_none=True,
+        )
 
         # Spot detection mode combo box
         spot_mode_layout = QHBoxLayout()
@@ -175,7 +243,9 @@ class LaserAutofocusSettingWidget(QWidget):
         characterization_group = QFrame()
         characterization_layout = QHBoxLayout()
         self.characterization_checkbox = QCheckBox("Laser AF Characterization Mode")
-        self.characterization_checkbox.setChecked(self.laserAutofocusController.characterization_mode)
+        self.characterization_checkbox.setChecked(
+            self.laserAutofocusController.characterization_mode
+        )
         characterization_layout.addWidget(self.characterization_checkbox)
         characterization_group.setLayout(characterization_layout)
 
@@ -198,7 +268,9 @@ class LaserAutofocusSettingWidget(QWidget):
         self.update_threshold_button.clicked.connect(self.update_threshold_settings)
         self.run_spot_detection_button.clicked.connect(self.run_spot_detection)
         self.initialize_button.clicked.connect(self.apply_and_initialize)
-        self.characterization_checkbox.toggled.connect(self.toggle_characterization_mode)
+        self.characterization_checkbox.toggled.connect(
+            self.toggle_characterization_mode
+        )
 
     def _add_spinbox(
         self,
@@ -225,7 +297,9 @@ class LaserAutofocusSettingWidget(QWidget):
         spinbox.setDecimals(decimals)
         spinbox.setSingleStep(step)
         # Get initial value from laser_af_properties
-        current_value = getattr(self.laserAutofocusController.laser_af_properties, property_name)
+        current_value = getattr(
+            self.laserAutofocusController.laser_af_properties, property_name
+        )
         if allow_none and current_value is None:
             spinbox.setValue(min_val - step)
         else:
@@ -267,20 +341,30 @@ class LaserAutofocusSettingWidget(QWidget):
 
         # Update spinboxes
         for prop_name, spinbox in self.spinboxes.items():
-            current_value = getattr(self.laserAutofocusController.laser_af_properties, prop_name)
+            current_value = getattr(
+                self.laserAutofocusController.laser_af_properties, prop_name
+            )
             spinbox.setValue(current_value)
 
         # Update exposure and gain
-        self.exposure_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_exposure_time_ms)
-        self.analog_gain_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_analog_gain)
+        self.exposure_spinbox.setValue(
+            self.laserAutofocusController.laser_af_properties.focus_camera_exposure_time_ms
+        )
+        self.analog_gain_spinbox.setValue(
+            self.laserAutofocusController.laser_af_properties.focus_camera_analog_gain
+        )
 
         # Update spot detection mode
-        current_mode = self.laserAutofocusController.laser_af_properties.spot_detection_mode
+        current_mode = (
+            self.laserAutofocusController.laser_af_properties.spot_detection_mode
+        )
         index = self.spot_mode_combo.findData(current_mode)
         if index >= 0:
             self.spot_mode_combo.setCurrentIndex(index)
 
-        self.update_threshold_button.setEnabled(self.laserAutofocusController.is_initialized)
+        self.update_threshold_button.setEnabled(
+            self.laserAutofocusController.is_initialized
+        )
         self.update_calibration_label()
 
     def apply_and_initialize(self) -> None:
@@ -288,10 +372,14 @@ class LaserAutofocusSettingWidget(QWidget):
 
         updates = {
             "laser_af_averaging_n": int(self.spinboxes["laser_af_averaging_n"].value()),
-            "displacement_success_window_um": self.spinboxes["displacement_success_window_um"].value(),
+            "displacement_success_window_um": self.spinboxes[
+                "displacement_success_window_um"
+            ].value(),
             "spot_crop_size": int(self.spinboxes["spot_crop_size"].value()),
             "correlation_threshold": self.spinboxes["correlation_threshold"].value(),
-            "pixel_to_um_calibration_distance": self.spinboxes["pixel_to_um_calibration_distance"].value(),
+            "pixel_to_um_calibration_distance": self.spinboxes[
+                "pixel_to_um_calibration_distance"
+            ].value(),
             "laser_af_range": self.spinboxes["laser_af_range"].value(),
             "spot_detection_mode": self.spot_mode_combo.currentData(),
             "y_window": int(self.spinboxes["y_window"].value()),
@@ -314,7 +402,9 @@ class LaserAutofocusSettingWidget(QWidget):
     def update_threshold_settings(self) -> None:
         updates = {
             "laser_af_averaging_n": int(self.spinboxes["laser_af_averaging_n"].value()),
-            "displacement_success_window_um": self.spinboxes["displacement_success_window_um"].value(),
+            "displacement_success_window_um": self.spinboxes[
+                "displacement_success_window_um"
+            ].value(),
             "correlation_threshold": self.spinboxes["correlation_threshold"].value(),
             "laser_af_range": self.spinboxes["laser_af_range"].value(),
         }
@@ -338,7 +428,9 @@ class LaserAutofocusSettingWidget(QWidget):
     def illuminate_and_get_frame(self) -> Optional[np.ndarray]:
         # Get a frame from the live controller.  We need to reach deep into the liveController here which
         # is not ideal.
-        microcontroller = self.liveController.microscope.low_level_drivers.microcontroller
+        microcontroller = (
+            self.liveController.microscope.low_level_drivers.microcontroller
+        )
         if microcontroller is not None:
             microcontroller.turn_on_AF_laser()
             microcontroller.wait_till_operation_is_completed()
@@ -355,7 +447,10 @@ class LaserAutofocusSettingWidget(QWidget):
 
     def clear_labels(self) -> None:
         # Remove any existing error or correlation labels
-        if hasattr(self, "spot_detection_error_label") and self.spot_detection_error_label is not None:
+        if (
+            hasattr(self, "spot_detection_error_label")
+            and self.spot_detection_error_label is not None
+        ):
             self.spot_detection_error_label.deleteLater()
             delattr(self, "spot_detection_error_label")
 
@@ -379,7 +474,13 @@ class LaserAutofocusSettingWidget(QWidget):
         frame = self.illuminate_and_get_frame()
         if frame is not None:
             try:
-                result = utils.find_spot_location(frame, mode=mode, params=params, filter_sigma=int(sigma) if sigma else None, debug_plot=True)
+                result = utils.find_spot_location(
+                    frame,
+                    mode=mode,
+                    params=params,
+                    filter_sigma=int(sigma) if sigma else None,
+                    debug_plot=True,
+                )
                 if result is not None:
                     x, y = result
                     self.signal_laser_spot_location.emit(frame, x, y)
@@ -388,11 +489,16 @@ class LaserAutofocusSettingWidget(QWidget):
             except Exception:
                 # Show error message
                 # Clear previous error label if it exists
-                if hasattr(self, "spot_detection_error_label") and self.spot_detection_error_label is not None:
+                if (
+                    hasattr(self, "spot_detection_error_label")
+                    and self.spot_detection_error_label is not None
+                ):
                     self.spot_detection_error_label.deleteLater()
 
                 # Create and add new error label
-                self.spot_detection_error_label: QLabel = QLabel("Spot detection failed!")
+                self.spot_detection_error_label: QLabel = QLabel(
+                    "Spot detection failed!"
+                )
                 layout = self.layout()
                 if layout is not None:
                     layout.addWidget(self.spot_detection_error_label)
@@ -412,9 +518,18 @@ class LaserAutofocusSettingWidget(QWidget):
 
 
 class LaserAutofocusControlWidget(QFrame):
-    def __init__(self, laserAutofocusController: "LaserAutofocusController", liveController: LiveController, main: Optional[QWidget] = None, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        laserAutofocusController: "LaserAutofocusController",
+        liveController: LiveController,
+        main: Optional[QWidget] = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
-        self.laserAutofocusController: "LaserAutofocusController" = laserAutofocusController
+        self.laserAutofocusController: "LaserAutofocusController" = (
+            laserAutofocusController
+        )
         self.liveController: LiveController = liveController
         self.btn_set_reference: QPushButton
         self.label_displacement: QLabel
@@ -473,14 +588,22 @@ class LaserAutofocusControlWidget(QFrame):
 
         # make connections
         self.btn_set_reference.clicked.connect(self.on_set_reference_clicked)
-        self.btn_measure_displacement.clicked.connect(self.on_measure_displacement_clicked)
+        self.btn_measure_displacement.clicked.connect(
+            self.on_measure_displacement_clicked
+        )
         self.btn_move_to_target.clicked.connect(self.move_to_target)
-        self.laserAutofocusController.signal_displacement_um.connect(self.label_displacement.setNum)
+        self.laserAutofocusController.signal_displacement_um.connect(
+            self.label_displacement.setNum
+        )
 
     def update_init_state(self) -> None:
         self.btn_set_reference.setEnabled(self.laserAutofocusController.is_initialized)
-        self.btn_measure_displacement.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)
-        self.btn_move_to_target.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)
+        self.btn_measure_displacement.setEnabled(
+            self.laserAutofocusController.laser_af_properties.has_reference
+        )
+        self.btn_move_to_target.setEnabled(
+            self.laserAutofocusController.laser_af_properties.has_reference
+        )
 
     def move_to_target(self) -> None:
         was_live = self.liveController.is_live

@@ -5,7 +5,11 @@ import serial.tools.list_ports
 from typing import List, Dict, Optional
 
 import squid.logging
-from squid.abc import AbstractFilterWheelController, FilterWheelInfo, FilterControllerError
+from squid.abc import (
+    AbstractFilterWheelController,
+    FilterWheelInfo,
+    FilterControllerError,
+)
 from squid.config import OptospinFilterWheelConfig
 
 
@@ -22,11 +26,19 @@ class Optospin(AbstractFilterWheelController):
         self._config = config
 
         optospin_port = [
-            p.device for p in serial.tools.list_ports.comports() if config.serial_number == p.serial_number
+            p.device
+            for p in serial.tools.list_ports.comports()
+            if config.serial_number == p.serial_number
         ]
         if not optospin_port:
-            raise ValueError(f"No Optospin device found with serial number: {config.serial_number}")
-        self.ser = serial.Serial(optospin_port[0], baudrate=self.DEFAULT_BAUDRATE, timeout=self.DEFAULT_TIMEOUT)
+            raise ValueError(
+                f"No Optospin device found with serial number: {config.serial_number}"
+            )
+        self.ser = serial.Serial(
+            optospin_port[0],
+            baudrate=self.DEFAULT_BAUDRATE,
+            timeout=self.DEFAULT_TIMEOUT,
+        )
         self._available_filter_wheels = []
         self._delay_offset_ms = 0
         self._current_pos = {}
@@ -42,7 +54,9 @@ class Optospin(AbstractFilterWheelController):
                 response = self.ser.read(2)
 
                 if len(response) != 2:
-                    raise serial.SerialTimeoutException("Timeout: No response from device")
+                    raise serial.SerialTimeoutException(
+                        "Timeout: No response from device"
+                    )
 
                 status, length = struct.unpack(">BB", response)
 
@@ -52,7 +66,9 @@ class Optospin(AbstractFilterWheelController):
                 if length > 0:
                     additional_data = self.ser.read(length)
                     if len(additional_data) != length:
-                        raise serial.SerialTimeoutException("Timeout: Incomplete additional data")
+                        raise serial.SerialTimeoutException(
+                            "Timeout: Incomplete additional data"
+                        )
                     return additional_data
                 return None
 
@@ -62,7 +78,9 @@ class Optospin(AbstractFilterWheelController):
                     self.log.error(f"Retrying in {self.DEFAULT_RETRY_DELAY} seconds...")
                     time.sleep(self.DEFAULT_RETRY_DELAY)
                 else:
-                    raise FilterControllerError(f"Command failed after {self.DEFAULT_MAX_RETRIES} attempts: {str(e)}")
+                    raise FilterControllerError(
+                        f"Command failed after {self.DEFAULT_MAX_RETRIES} attempts: {str(e)}"
+                    )
 
     def initialize(self, filter_wheel_indices: List[int]):
         self._available_filter_wheels = filter_wheel_indices
@@ -153,7 +171,9 @@ class Optospin(AbstractFilterWheelController):
         return self._delay_offset_ms
 
     def set_delay_ms(self, delay_ms: float):
-        raise NotImplementedError("Setting delay ms is not supported for Optospin filter wheel controller")
+        raise NotImplementedError(
+            "Setting delay ms is not supported for Optospin filter wheel controller"
+        )
 
     def get_delay_ms(self) -> Optional[float]:
         return self._config.delay_ms

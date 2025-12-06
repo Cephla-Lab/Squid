@@ -1,4 +1,6 @@
 # Camera trigger control widget
+from typing import Any, Optional
+
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QFrame,
@@ -14,20 +16,20 @@ from control._def import TriggerMode
 
 class TriggerControlWidget(QFrame):
     # for synchronized trigger
-    signal_toggle_live = Signal(bool)
-    signal_trigger_mode = Signal(str)
-    signal_trigger_fps = Signal(float)
+    signal_toggle_live: Signal = Signal(bool)
+    signal_trigger_mode: Signal = Signal(str)
+    signal_trigger_fps: Signal = Signal(float)
 
-    def __init__(self, microcontroller2):
+    def __init__(self, microcontroller2: Any) -> None:
         super().__init__()
-        self.fps_trigger = 10
-        self.fps_display = 10
-        self.microcontroller2 = microcontroller2
-        self.triggerMode = TriggerMode.SOFTWARE
+        self.fps_trigger: float = 10
+        self.fps_display: float = 10
+        self.microcontroller2: Any = microcontroller2
+        self.triggerMode: Optional[str] = TriggerMode.SOFTWARE
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-    def add_components(self):
+    def add_components(self) -> None:
         # line 0: trigger mode
         self.triggerMode = None
         self.dropdown_triggerManu = QComboBox()
@@ -63,17 +65,17 @@ class TriggerControlWidget(QFrame):
         grid_line0.addWidget(self.btn_live, 1, 0, 1, 4)
         self.setLayout(grid_line0)
 
-    def toggle_live(self, pressed):
+    def toggle_live(self, pressed: bool) -> None:
         self.signal_toggle_live.emit(pressed)
         if pressed:
             self.microcontroller2.start_camera_trigger()
         else:
             self.microcontroller2.stop_camera_trigger()
 
-    def update_trigger_mode(self):
+    def update_trigger_mode(self) -> None:
         self.signal_trigger_mode.emit(self.dropdown_triggerManu.currentText())
 
-    def update_trigger_fps(self, fps):
+    def update_trigger_fps(self, fps: float) -> None:
         self.fps_trigger = fps
         self.signal_trigger_fps.emit(fps)
         self.microcontroller2.set_camera_trigger_frequency(self.fps_trigger)

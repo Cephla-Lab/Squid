@@ -5,7 +5,6 @@ from control._def import CELLX_MODULATION
 
 
 class CellX:
-
     VALID_MODULATIONS = ["INT", "EXT Digital", "EXT Analog", "EXT Mixed"]
 
     """Wrapper for communicating with LDI over serial"""
@@ -30,12 +29,18 @@ class CellX:
 
     def turn_on(self, channel):
         self.serial_connection.write_and_check(
-            "SOUR" + str(channel) + ":AM:STAT ON\r", "OK", read_delay=0.01, print_response=False
+            "SOUR" + str(channel) + ":AM:STAT ON\r",
+            "OK",
+            read_delay=0.01,
+            print_response=False,
         )
 
     def turn_off(self, channel):
         self.serial_connection.write_and_check(
-            "SOUR" + str(channel) + ":AM:STAT OFF\r", "OK", read_delay=0.01, print_response=False
+            "SOUR" + str(channel) + ":AM:STAT OFF\r",
+            "OK",
+            read_delay=0.01,
+            print_response=False,
         )
 
     def set_laser_power(self, channel, power):
@@ -55,9 +60,14 @@ class CellX:
 
     def set_modulation(self, channel, modulation):
         if modulation not in CellX.VALID_MODULATIONS:
-            raise ValueError(f"Modulation '{modulation}' not in valid modulations: {CellX.VALID_MODULATIONS}")
+            raise ValueError(
+                f"Modulation '{modulation}' not in valid modulations: {CellX.VALID_MODULATIONS}"
+            )
         self.serial_connection.write_and_check(
-            "SOUR" + str(channel) + ":AM:" + modulation + "\r", "OK", read_delay=0.01, print_response=False
+            "SOUR" + str(channel) + ":AM:" + modulation + "\r",
+            "OK",
+            read_delay=0.01,
+            print_response=False,
         )
 
     def close(self):
@@ -98,9 +108,14 @@ class CellX_Simulation:
 
     def set_modulation(self, channel, modulation):
         if modulation not in CellX.VALID_MODULATIONS:
-            raise ValueError(f"modulation '{modulation}' not in valid choices: {CellX.VALID_MODULATIONS}")
+            raise ValueError(
+                f"modulation '{modulation}' not in valid choices: {CellX.VALID_MODULATIONS}"
+            )
         self.serial_connection.write_and_check(
-            "SOUR" + str(channel) + "AM:" + modulation + "\r", "OK", read_delay=0.01, print_response=False
+            "SOUR" + str(channel) + "AM:" + modulation + "\r",
+            "OK",
+            read_delay=0.01,
+            print_response=False,
         )
 
     def close(self):

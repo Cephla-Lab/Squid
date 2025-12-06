@@ -18,9 +18,7 @@ import pyqtgraph as pg
 import cv2
 
 
-
 class StreamHandler(QObject):
-
     image_to_display = Signal(np.ndarray)
     packet_image_to_write = Signal(np.ndarray, int, float)
     packet_image_for_tracking = Signal(np.ndarray, int, float)
@@ -28,7 +26,10 @@ class StreamHandler(QObject):
     signal_new_frame_received = Signal()
 
     def __init__(
-        self, crop_width: int = AF.CROP_WIDTH, crop_height: int = AF.CROP_HEIGHT, display_resolution_scaling: float = 0.5
+        self,
+        crop_width: int = AF.CROP_WIDTH,
+        crop_height: int = AF.CROP_HEIGHT,
+        display_resolution_scaling: float = 0.5,
     ) -> None:
         QObject.__init__(self)
         self.fps_display: float = 1
@@ -78,7 +79,6 @@ class StreamHandler(QObject):
         print(self.display_resolution_scaling)
 
     def on_new_frame(self, camera: Any) -> None:
-
         self.handler_busy = True
         self.signal_new_frame_received.emit()  # self.liveController.turn_off_illumination()
 
@@ -93,7 +93,9 @@ class StreamHandler(QObject):
             print("real camera fps is " + str(self.fps_real))
 
         # crop image
-        image_cropped = utils.crop_image(camera.current_frame, self.crop_width, self.crop_height)
+        image_cropped = utils.crop_image(
+            camera.current_frame, self.crop_width, self.crop_height
+        )
         image_cropped = np.squeeze(image_cropped)
 
         # send image to display
@@ -112,28 +114,38 @@ class StreamHandler(QObject):
         # send image to array display
         self.packet_image_for_array_display.emit(
             image_cropped,
-            (camera.frame_ID - camera.frame_ID_offset_hardware_trigger - 1) % VOLUMETRIC_IMAGING.NUM_PLANES_PER_VOLUME,
+            (camera.frame_ID - camera.frame_ID_offset_hardware_trigger - 1)
+            % VOLUMETRIC_IMAGING.NUM_PLANES_PER_VOLUME,
         )
 
         # send image to write
-        if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
+        if (
+            self.save_image_flag
+            and time_now - self.timestamp_last_save >= 1 / self.fps_save
+        ):
             if camera.is_color:
                 image_cropped = cv2.cvtColor(image_cropped, cv2.COLOR_RGB2BGR)
-            self.packet_image_to_write.emit(image_cropped, camera.frame_ID, camera.timestamp)
+            self.packet_image_to_write.emit(
+                image_cropped, camera.frame_ID, camera.timestamp
+            )
             self.timestamp_last_save = time_now
 
         # send image to track
-        if self.track_flag and time_now - self.timestamp_last_track >= 1 / self.fps_track:
+        if (
+            self.track_flag
+            and time_now - self.timestamp_last_track >= 1 / self.fps_track
+        ):
             # track is a blocking operation - it needs to be
             # @@@ will cropping before emitting the signal lead to speedup?
-            self.packet_image_for_tracking.emit(image_cropped, camera.frame_ID, camera.timestamp)
+            self.packet_image_for_tracking.emit(
+                image_cropped, camera.frame_ID, camera.timestamp
+            )
             self.timestamp_last_track = time_now
 
         self.handler_busy = False
 
 
 class ImageArrayDisplayWindow(QMainWindow):
-
     def __init__(self, window_title: str = "") -> None:
         super().__init__()
         self.setWindowTitle(window_title)

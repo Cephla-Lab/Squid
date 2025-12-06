@@ -121,7 +121,9 @@ def main(args):
 
     # NOTE(imo): This will be expanded as we expand upon `Microscope` functionality.  The expectation is that
     # you can use this to test on real hardware (in addition to the existing unit tests)
-    scope: control.microscope.Microscope = control.microscope.Microscope.build_from_global_config(args.simulate)
+    scope: control.microscope.Microscope = (
+        control.microscope.Microscope.build_from_global_config(args.simulate)
+    )
 
     # NOTE(imo): We will probably put this into __init__.  For now, keep it separate just in case it'd break
     # anything in the gui.
@@ -157,7 +159,7 @@ def main(args):
                 while not focus_cam.get_ready_for_trigger():
                     time.sleep(0.001)
                 focus_cam.send_trigger()
-                focus_frame = focus_cam.read_frame()
+                focus_cam.read_frame()
             finally:
                 scope.low_level_drivers.microcontroller.turn_off_AF_laser()
                 scope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
@@ -165,11 +167,15 @@ def main(args):
         while not scope.camera.get_ready_for_trigger():
             time.sleep(0.001)
         scope.camera.send_trigger()
-        frame = scope.camera.read_frame()
+        scope.camera.read_frame()
 
     scope.camera.stop_streaming()
 
-    counts = {"image_to_display": 0, "packet_image_to_write": 0, "signal_new_frame_received": 0}
+    counts = {
+        "image_to_display": 0,
+        "packet_image_to_write": 0,
+        "signal_new_frame_received": 0,
+    }
 
     def add_count(item):
         nonlocal counts
@@ -207,9 +213,15 @@ def main(args):
     )
 
     mpc_tracker = MpcTestTracker()
-    simple_scan_coordinates = ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
-    simple_scan_coordinates.add_single_fov_region("single_fov_1", x_max / 2.0, y_max / 2.0, z_max / 2.0)
-    simple_scan_coordinates.add_flexible_region("flexible_region", x_max / 3.0, y_max / 3.0, z_max / 3.0, 2, 2)
+    simple_scan_coordinates = ScanCoordinates(
+        scope.objective_store, scope.stage, scope.camera
+    )
+    simple_scan_coordinates.add_single_fov_region(
+        "single_fov_1", x_max / 2.0, y_max / 2.0, z_max / 2.0
+    )
+    simple_scan_coordinates.add_flexible_region(
+        "flexible_region", x_max / 3.0, y_max / 3.0, z_max / 3.0, 2, 2
+    )
 
     mpc = MultiPointController(
         microscope=scope,
@@ -237,7 +249,9 @@ def main(args):
     try:
         while mpc_tracker.counts.finishes <= 0:
             if time.time() - mpc_tracker.last_update_time > update_timeout_s:
-                raise TimeoutError(f"Didn't see an acquisition update after {update_timeout_s}, failing.")
+                raise TimeoutError(
+                    f"Didn't see an acquisition update after {update_timeout_s}, failing."
+                )
             time.sleep(0.1)
     except TimeoutError:
         mpc.request_abort_aquisition()
@@ -265,11 +279,17 @@ if __name__ == "__main__":
     import argparse
     import sys
 
-    ap = argparse.ArgumentParser(description="Create a Microscope object, then run it through its paces")
+    ap = argparse.ArgumentParser(
+        description="Create a Microscope object, then run it through its paces"
+    )
 
-    ap.add_argument("--runtime", type=float, help="Time, in s, to run the test for.", default=60)
+    ap.add_argument(
+        "--runtime", type=float, help="Time, in s, to run the test for.", default=60
+    )
     ap.add_argument("--verbose", action="store_true", help="Turn on debug logging")
-    ap.add_argument("--simulate", action="store_true", help="Run with a simulated microscope")
+    ap.add_argument(
+        "--simulate", action="store_true", help="Run with a simulated microscope"
+    )
 
     args = ap.parse_args()
 

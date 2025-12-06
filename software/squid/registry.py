@@ -22,9 +22,10 @@ Usage:
     # List available implementations
     print(camera_registry.available())  # ["toupcam", "simulated", ...]
 """
+
 from typing import TypeVar, Generic, Dict, Type, Callable, Optional, List, Any
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class Registry(Generic[T]):
@@ -61,9 +62,11 @@ class Registry(Generic[T]):
             class ToupcamCamera(AbstractCamera):
                 ...
         """
+
         def decorator(cls: Type[T]) -> Type[T]:
             self._implementations[name] = cls
             return cls
+
         return decorator
 
     def register_factory(self, name: str, factory: Callable[..., T]) -> None:
@@ -101,10 +104,7 @@ class Registry(Generic[T]):
             return self._factories[name](*args, **kwargs)
         if name in self._implementations:
             return self._implementations[name](*args, **kwargs)
-        raise KeyError(
-            f"Unknown {self.name}: '{name}'. "
-            f"Available: {self.available()}"
-        )
+        raise KeyError(f"Unknown {self.name}: '{name}'. Available: {self.available()}")
 
     def available(self) -> List[str]:
         """

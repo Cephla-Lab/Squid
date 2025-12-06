@@ -16,7 +16,7 @@ import numpy as np
 from scipy.ndimage import label, gaussian_filter
 from scipy import signal
 import os
-from typing import Optional, Tuple, List, Callable
+from typing import Optional, Tuple, List, Callable, Any
 
 from control._def import (
     LASER_AF_Y_WINDOW,
@@ -33,22 +33,26 @@ import squid.logging
 _log = squid.logging.get_logger("control.utils")
 
 
-def crop_image(image, crop_width, crop_height):
-    image_height = image.shape[0]
-    image_width = image.shape[1]
+def crop_image(
+    image: np.ndarray, crop_width: Optional[int], crop_height: Optional[int]
+) -> np.ndarray:
+    image_height: int = image.shape[0]
+    image_width: int = image.shape[1]
     if crop_width is None:
         crop_width = image_width
     if crop_height is None:
         crop_height = image_height
-    roi_left = int(max(image_width / 2 - crop_width / 2, 0))
-    roi_right = int(min(image_width / 2 + crop_width / 2, image_width))
-    roi_top = int(max(image_height / 2 - crop_height / 2, 0))
-    roi_bottom = int(min(image_height / 2 + crop_height / 2, image_height))
-    image_cropped = image[roi_top:roi_bottom, roi_left:roi_right]
+    roi_left: int = int(max(image_width / 2 - crop_width / 2, 0))
+    roi_right: int = int(min(image_width / 2 + crop_width / 2, image_width))
+    roi_top: int = int(max(image_height / 2 - crop_height / 2, 0))
+    roi_bottom: int = int(min(image_height / 2 + crop_height / 2, image_height))
+    image_cropped: np.ndarray = image[roi_top:roi_bottom, roi_left:roi_right]
     return image_cropped
 
 
-def calculate_focus_measure(image, method=FocusMeasureOperator.LAPE):
+def calculate_focus_measure(
+    image: np.ndarray, method: FocusMeasureOperator = FocusMeasureOperator.LAPE
+) -> float:
     if len(image.shape) == 3:
         image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)  # optional
     if method == FocusMeasureOperator.LAPE:
@@ -68,8 +72,8 @@ def calculate_focus_measure(image, method=FocusMeasureOperator.LAPE):
     return focus_measure
 
 
-def unsigned_to_signed(unsigned_array, N):
-    signed = 0
+def unsigned_to_signed(unsigned_array: List[int], N: int) -> float:
+    signed: float = 0
     for i in range(N):
         signed = signed + int(unsigned_array[i]) * (256 ** (N - 1 - i))
     signed = signed - (256**N) / 2
@@ -83,8 +87,10 @@ class FlipVariant(enum.Enum):
     BOTH = "Both"
 
 
-def rotate_and_flip_image(image, rotate_image_angle: float, flip_image: Optional[FlipVariant]):
-    ret_image = image.copy()
+def rotate_and_flip_image(
+    image: np.ndarray, rotate_image_angle: float, flip_image: Optional[FlipVariant]
+) -> np.ndarray:
+    ret_image: np.ndarray = image.copy()
     if rotate_image_angle and rotate_image_angle != 0:
         """
         # ROTATE_90_CLOCKWISE
@@ -110,7 +116,7 @@ def rotate_and_flip_image(image, rotate_image_angle: float, flip_image: Optional
     return ret_image
 
 
-def generate_dpc(im_left, im_right):
+def generate_dpc(im_left: np.ndarray, im_right: np.ndarray) -> np.ndarray:
     # Normalize the images
     im_left = im_left.astype(float) / 255
     im_right = im_right.astype(float) / 255
@@ -126,45 +132,50 @@ def generate_dpc(im_left, im_right):
     return im_dpc
 
 
-def colorize_mask(mask):
+def colorize_mask(mask: np.ndarray) -> np.ndarray:
     # Label the detected objects
     labeled_mask, ___ = label(mask)
     # Color them
-    colored_mask = np.array((labeled_mask * 83) % 255, dtype=np.uint8)
+    colored_mask: np.ndarray = np.array((labeled_mask * 83) % 255, dtype=np.uint8)
     colored_mask = cv2.applyColorMap(colored_mask, cv2.COLORMAP_HSV)
     # make sure background is black
     colored_mask[labeled_mask == 0] = 0
     return colored_mask
 
 
-def colorize_mask_get_counts(mask):
+def colorize_mask_get_counts(mask: np.ndarray) -> Tuple[np.ndarray, int]:
     # Label the detected objects
     labeled_mask, no_cells = label(mask)
     # Color them
-    colored_mask = np.array((labeled_mask * 83) % 255, dtype=np.uint8)
+    colored_mask: np.ndarray = np.array((labeled_mask * 83) % 255, dtype=np.uint8)
     colored_mask = cv2.applyColorMap(colored_mask, cv2.COLORMAP_HSV)
     # make sure background is black
     colored_mask[labeled_mask == 0] = 0
     return colored_mask, no_cells
 
 
-def overlay_mask_dpc(color_mask, im_dpc):
+def overlay_mask_dpc(color_mask: np.ndarray, im_dpc: np.ndarray) -> np.ndarray:
     # Overlay the colored mask and DPC image
     # make DPC 3-channel
     im_dpc = np.stack([im_dpc] * 3, axis=2)
     return (0.75 * im_dpc + 0.25 * color_mask).astype(np.uint8)
 
 
-def centerCrop(image, crop_sz):
+def centerCrop(image: np.ndarray, crop_sz: int) -> np.ndarray:
     center = image.shape
-    x = int(center[1] / 2 - crop_sz / 2)
-    y = int(center[0] / 2 - crop_sz / 2)
-    cropped = image[y : y + crop_sz, x : x + crop_sz]
+    x: int = int(center[1] / 2 - crop_sz / 2)
+    y: int = int(center[0] / 2 - crop_sz / 2)
+    cropped: np.ndarray = image[y : y + crop_sz, x : x + crop_sz]
 
     return cropped
 
 
-def interpolate_plane(triple1, triple2, triple3, point):
+def interpolate_plane(
+    triple1: Tuple[float, float, float],
+    triple2: Tuple[float, float, float],
+    triple3: Tuple[float, float, float],
+    point: Tuple[float, float],
+) -> float:
     """
     Given 3 triples triple1-3 of coordinates (x,y,z)
     and a pair of coordinates (x,y), linearly interpolates
@@ -190,12 +201,12 @@ def interpolate_plane(triple1, triple2, triple3, point):
     return z
 
 
-def create_done_file(path):
-    with open(os.path.join(path, ".done"), "w") as file:
+def create_done_file(path: str) -> None:
+    with open(os.path.join(path, ".done"), "w"):
         pass  # This creates an empty file
 
 
-def ensure_directory_exists(raw_string_path: str):
+def ensure_directory_exists(raw_string_path: str) -> None:
     path: pathlib.Path = pathlib.Path(raw_string_path)
     _log.debug(f"Making sure directory '{path}' exists.")
     path.mkdir(parents=True, exist_ok=True)
@@ -291,7 +302,9 @@ def find_spot_location(
         # Handle different spot detection modes
         if mode == SpotDetectionMode.SINGLE:
             if len(peak_locations) > 1:
-                raise ValueError(f"Found {len(peak_locations)} peaks but expected single peak")
+                raise ValueError(
+                    f"Found {len(peak_locations)} peaks but expected single peak"
+                )
             peak_x = peak_locations[0]
         elif mode == SpotDetectionMode.DUAL_RIGHT:
             peak_x = peak_locations[-1]
@@ -317,7 +330,9 @@ def find_spot_location(
             # Plot original image
             ax1.imshow(image, cmap="gray")
             ax1.axhline(y=peak_y, color="r", linestyle="--", label="Peak Y")
-            ax1.axhline(y=peak_y - p["y_window"], color="g", linestyle="--", label="Crop Window")
+            ax1.axhline(
+                y=peak_y - p["y_window"], color="g", linestyle="--", label="Crop Window"
+            )
             ax1.axhline(y=peak_y + p["y_window"], color="g", linestyle="--")
             ax1.legend()
             ax1.set_title("Original Image with Y-crop Lines")
@@ -325,17 +340,27 @@ def find_spot_location(
             # Plot Y intensity profile
             ax2.plot(y_intensity_profile)
             ax2.axvline(x=peak_y, color="r", linestyle="--", label="Peak Y")
-            ax2.axvline(x=peak_y - p["y_window"], color="g", linestyle="--", label="Crop Window")
+            ax2.axvline(
+                x=peak_y - p["y_window"], color="g", linestyle="--", label="Crop Window"
+            )
             ax2.axvline(x=peak_y + p["y_window"], color="g", linestyle="--")
             ax2.legend()
             ax2.set_title("Y Intensity Profile")
 
             # Plot X intensity profile and detected peaks
             ax3.plot(x_intensity_profile, label="Intensity Profile")
-            ax3.plot(peak_locations, x_intensity_profile[peak_locations], "x", color="r", label="All Peaks")
+            ax3.plot(
+                peak_locations,
+                x_intensity_profile[peak_locations],
+                "x",
+                color="r",
+                label="All Peaks",
+            )
 
             # Plot prominence for all peaks
-            for peak_idx, prominence in zip(peak_locations, peak_properties["prominences"]):
+            for peak_idx, prominence in zip(
+                peak_locations, peak_properties["prominences"]
+            ):
                 ax3.vlines(
                     x=peak_idx,
                     ymin=x_intensity_profile[peak_idx] - prominence,
@@ -344,7 +369,14 @@ def find_spot_location(
                 )
 
             # Highlight selected peak
-            ax3.plot(peak_x, x_intensity_profile[peak_x], "o", color="yellow", markersize=10, label="Selected Peak")
+            ax3.plot(
+                peak_x,
+                x_intensity_profile[peak_x],
+                "o",
+                color="yellow",
+                markersize=10,
+                label="Selected Peak",
+            )
             ax3.axvline(x=peak_x, color="yellow", linestyle="--", alpha=0.5)
 
             ax3.legend()
@@ -361,17 +393,21 @@ def find_spot_location(
     except Exception:
         # TODO: this should not be a blank Exception catch, we should jsut return None above if we have a valid "no spots"
         # case, and let exceptions raise otherwise.
-        _log.exception(f"Error in spot detection")
+        _log.exception("Error in spot detection")
         return None
 
 
-def _calculate_spot_centroid(cropped_image: np.ndarray, peak_x: int, peak_y: int, params: dict) -> Tuple[float, float]:
+def _calculate_spot_centroid(
+    cropped_image: np.ndarray, peak_x: int, peak_y: int, params: dict
+) -> Tuple[float, float]:
     """Calculate precise centroid location in window around peak."""
     h, w = cropped_image.shape
     x, y = np.meshgrid(range(w), range(h))
 
     # Crop region around the peak
-    intensity_window = cropped_image[:, peak_x - params["x_window"] : peak_x + params["x_window"]]
+    intensity_window = cropped_image[
+        :, peak_x - params["x_window"] : peak_x + params["x_window"]
+    ]
     x_coords = x[:, peak_x - params["x_window"] : peak_x + params["x_window"]]
     y_coords = y[:, peak_x - params["x_window"] : peak_x + params["x_window"]]
 
@@ -379,7 +415,9 @@ def _calculate_spot_centroid(cropped_image: np.ndarray, peak_x: int, peak_y: int
     intensity_window = intensity_window.astype(float)
     intensity_window = intensity_window - np.amin(intensity_window)
     if np.amax(intensity_window) > 0:  # Avoid division by zero
-        intensity_window[intensity_window / np.amax(intensity_window) < params["intensity_threshold"]] = 0
+        intensity_window[
+            intensity_window / np.amax(intensity_window) < params["intensity_threshold"]
+        ] = 0
 
     # Calculate centroid
     sum_intensity = np.sum(intensity_window)
@@ -414,7 +452,7 @@ def get_squid_repo_state_description() -> Optional[str]:
         return None
 
 
-def truncate_to_interval(val, interval: int):
+def truncate_to_interval(val: float, interval: int) -> int:
     return int(interval * (val // interval))
 
 
@@ -428,7 +466,9 @@ def get_available_disk_space(directory: pathlib.Path) -> int:
         directory = pathlib.Path(directory)
 
     if not directory.exists():
-        raise ValueError(f"Cannot check for free space in '{directory}' because it does not exist.")
+        raise ValueError(
+            f"Cannot check for free space in '{directory}' because it does not exist."
+        )
 
     if not directory.is_dir():
         raise ValueError(f"Path must be a directory, but '{directory}' is not.")
@@ -439,8 +479,10 @@ def get_available_disk_space(directory: pathlib.Path) -> int:
 
 
 def threaded_operation_helper(
-    operation: Callable, callback: Optional[Callable[[bool, Optional[str]], None]] = None, **kwargs
-):
+    operation: Callable,
+    callback: Optional[Callable[[bool, Optional[str]], None]] = None,
+    **kwargs: Any,
+) -> threading.Thread:
     """
     Helper function to execute an operation in a separate thread, and notify the callback when done.
 
@@ -482,12 +524,12 @@ def get_directory_disk_usage(directory: pathlib.Path) -> int:
 
     Cribbed from the interwebs here: https://stackoverflow.com/a/1392549
     """
-    total_size = 0
+    total_size: int = 0
     if isinstance(directory, str):
         directory = pathlib.Path(directory)
     for dirpath, _, filenames in os.walk(directory.absolute()):
         for f in filenames:
-            fp = os.path.join(dirpath, f)
+            fp: str = os.path.join(dirpath, f)
             # skip if it is symbolic link
             if not os.path.islink(fp):
                 total_size += os.path.getsize(fp)
@@ -501,71 +543,76 @@ class TimingManager:
         start: float
         stop: float
 
-        def elapsed(self):
+        def elapsed(self) -> float:
             return self.stop - self.start
 
     class Timer:
-        def __init__(self, name):
+        def __init__(self, name: str) -> None:
             self._log = squid.logging.get_logger(self.__class__.__name__)
-            self._name = name
+            self._name: str = name
             self._timing_pairs: List[TimingManager.TimingPair] = []
             self._last_start: Optional[float] = None
 
-        def __enter__(self):
+        def __enter__(self) -> "TimingManager.Timer":
             self.start()
+            return self
 
-        def __exit__(self, exc_type, exc_val, exc_tb):
+        def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
             self.stop()
 
-        def start(self):
+        def start(self) -> None:
             if self._last_start:
                 self._log.warning(f"Double start detected for Timer={self._name}")
             self._log.debug(f"Starting name={self._name}")
             self._last_start = time.perf_counter()
 
-        def stop(self):
+        def stop(self) -> None:
             if not self._last_start:
                 self._log.error(f"Timer={self._name} got stop() without start() first.")
                 return
-            this_pair = TimingManager.TimingPair(self._last_start, time.perf_counter())
+            this_pair: TimingManager.TimingPair = TimingManager.TimingPair(
+                self._last_start, time.perf_counter()
+            )
             self._timing_pairs.append(this_pair)
-            self._log.debug(f"Stopping name={self._name} with elapsed={this_pair.elapsed()} [s]")
+            self._log.debug(
+                f"Stopping name={self._name} with elapsed={this_pair.elapsed()} [s]"
+            )
             self._last_start = None
 
-        def get_intervals(self):
+        def get_intervals(self) -> List[float]:
             return [tp.elapsed() for tp in self._timing_pairs]
 
-        def get_report(self):
-            intervals = self.get_intervals()
+        def get_report(self) -> str:
+            intervals: List[float] = self.get_intervals()
 
-            def mean(i):
+            def mean(i: List[float]) -> str:
                 if not len(i):
                     return "N/A"
                 return f"{statistics.mean(i):.4f}"
 
-            def median(i):
+            def median(i: List[float]) -> str:
                 if not len(i):
                     return "N/A"
                 return f"{statistics.median(i):.4f}"
 
-            def min_max(i):
+            def min_max(i: List[float]) -> str:
                 if not len(i):
                     return "N/A"
                 return f"{min(i):.4f}/{max(i):.4f}"
 
-            def total_time(i):
+            def total_time(i: List[float]) -> str:
                 if not len(i):
                     return "N/A"
                 return f"{sum(intervals):.4f}"
 
             return f"{self._name:>30}: (N={len(intervals)}, total={total_time(intervals)} [s]): mean={mean(intervals)} [s], median={median(intervals)} [s], min/max={min_max(intervals)} [s]"
 
-    def __init__(self, name):
-        self._name = name
-        self._timers = collections.OrderedDict()
+    def __init__(self, name: str) -> None:
+        self._name: str = name
+        self._timers: collections.OrderedDict = collections.OrderedDict()
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
-    def get_timer(self, name) -> Timer:
+    def get_timer(self, name: str) -> Timer:
         if name not in self._timers:
             self._log.debug(f"Creating timer={name} for manager={self._name}")
             self._timers[name] = TimingManager.Timer(name)
@@ -573,13 +620,13 @@ class TimingManager:
         return self._timers[name]
 
     def get_report(self) -> str:
-        timer_names = sorted(self._timers.keys())
-        report = f"Timings For {self._name}:\n"
+        timer_names: List[str] = sorted(self._timers.keys())
+        report: str = f"Timings For {self._name}:\n"
         for name in timer_names:
-            timer = self._timers[name]
+            timer: TimingManager.Timer = self._timers[name]
             report += f"  {timer.get_report()}\n"
 
         return report
 
-    def get_intervals(self, name) -> List[float]:
+    def get_intervals(self, name: str) -> List[float]:
         return self.get_timer(name).get_intervals()

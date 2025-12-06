@@ -1,5 +1,3 @@
-import argparse
-import cv2
 import time
 import numpy as np
 import threading
@@ -7,7 +5,7 @@ import threading
 try:
     import seabreeze as sb
     import seabreeze.spectrometers
-except:
+except Exception:
     print("seabreeze import error")
 
 # installation: $ pip3 install seabreeze
@@ -17,12 +15,13 @@ from control._def import *
 
 
 class Spectrometer(object):
-
     def __init__(self, sn=None):
-        if sn == None:
+        if sn is None:
             self.spectrometer = sb.spectrometers.Spectrometer.from_first_available()
         else:
-            self.spectrometer = sb.spectrometers.Spectrometer.Spectrometer.from_serial_number(sn)
+            self.spectrometer = (
+                sb.spectrometers.Spectrometer.Spectrometer.from_serial_number(sn)
+            )
 
         self.new_data_callback_external = None
 
@@ -46,7 +45,7 @@ class Spectrometer(object):
         self.new_data_callback_external = function
 
     def start_streaming(self):
-        if self.streaming_started == False:
+        if not self.streaming_started:
             self.streaming_started = True
             self.streaming_paused = False
             self.thread_streaming.start()
@@ -60,14 +59,14 @@ class Spectrometer(object):
         self.streaming_paused = False
 
     def stream(self):
-        while self.stop_streaming == False:
+        while not self.stop_streaming:
             if self.streaming_paused:
                 time.sleep(0.05)
                 continue
             # avoid conflict
             while self.is_reading_spectrum:
                 time.sleep(0.05)
-            if self.new_data_callback_external != None:
+            if self.new_data_callback_external is not None:
                 self.new_data_callback_external(self.read_spectrum())
 
     def close(self):
@@ -78,7 +77,6 @@ class Spectrometer(object):
 
 
 class Spectrometer_Simulation(object):
-
     def __init__(self, sn=None):
         self.new_data_callback_external = None
         self.streaming_started = False
@@ -100,7 +98,7 @@ class Spectrometer_Simulation(object):
         self.new_data_callback_external = function
 
     def start_streaming(self):
-        if self.streaming_started == False:
+        if not self.streaming_started:
             self.streaming_started = True
             self.streaming_paused = False
             self.thread_streaming.start()
@@ -114,14 +112,14 @@ class Spectrometer_Simulation(object):
         self.streaming_paused = False
 
     def stream(self):
-        while self.stop_streaming == False:
+        while not self.stop_streaming:
             if self.streaming_paused:
                 time.sleep(0.05)
                 continue
             # avoid conflict
             while self.is_reading_spectrum:
                 time.sleep(0.05)
-            if self.new_data_callback_external != None:
+            if self.new_data_callback_external is not None:
                 print("read spectrum...")
                 self.new_data_callback_external(self.read_spectrum())
 

@@ -1,7 +1,4 @@
 """Tests for ApplicationContext."""
-import pytest
-from dataclasses import dataclass
-from typing import Optional
 
 
 class TestControllers:
@@ -89,10 +86,14 @@ class TestExternalControllerCreation:
         from squid.application import ApplicationContext
 
         # Internal creation (default)
-        ctx_internal = ApplicationContext(simulation=True, external_controller_creation=False)
+        ctx_internal = ApplicationContext(
+            simulation=True, external_controller_creation=False
+        )
 
         # External creation
-        ctx_external = ApplicationContext(simulation=True, external_controller_creation=True)
+        ctx_external = ApplicationContext(
+            simulation=True, external_controller_creation=True
+        )
 
         # Both should have valid controllers
         assert ctx_internal.controllers.live is not None

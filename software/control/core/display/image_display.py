@@ -112,7 +112,9 @@ class ImageDisplayWindow(QMainWindow):
         self.is_drawing_line: bool = False
         self.line_start_pos: Optional[Tuple[float, float]] = None
         self.line_end_pos: Optional[Tuple[float, float]] = None
-        self.drawing_cursor: QCursor = QCursor(Qt.CrossCursor)  # Cross cursor for drawing mode
+        self.drawing_cursor: QCursor = QCursor(
+            Qt.CrossCursor
+        )  # Cross cursor for drawing mode
         self.normal_cursor: QCursor = QCursor(Qt.ArrowCursor)  # Normal cursor
         self.preview_line: Optional[Any] = None
         self.start_point_marker: Optional[Any] = None
@@ -195,7 +197,9 @@ class ImageDisplayWindow(QMainWindow):
             self.graphics_widget.view.ui.menuBtn.hide()
             self.LUTWidget: Any = self.graphics_widget.view.getHistogramWidget()
             self.LUTWidget.region.sigRegionChanged.connect(self.update_contrast_limits)
-            self.LUTWidget.region.sigRegionChangeFinished.connect(self.update_contrast_limits)
+            self.LUTWidget.region.sigRegionChangeFinished.connect(
+                self.update_contrast_limits
+            )
         else:
             self.graphics_widget.img = pg.ImageItem(border="w")
             self.graphics_widget.view.addItem(self.graphics_widget.img)
@@ -203,7 +207,9 @@ class ImageDisplayWindow(QMainWindow):
         ## Create ROI
         self.roi_pos: Any = (500, 500)
         self.roi_size: Any = (500, 500)
-        self.ROI: Any = pg.ROI(self.roi_pos, self.roi_size, scaleSnap=True, translateSnap=True)
+        self.ROI: Any = pg.ROI(
+            self.roi_pos, self.roi_size, scaleSnap=True, translateSnap=True
+        )
         self.ROI.setZValue(10)
         self.ROI.addScaleHandle((0, 0), (1, 1))
         self.ROI.addScaleHandle((1, 1), (0, 0))
@@ -234,7 +240,9 @@ class ImageDisplayWindow(QMainWindow):
         self.line_profiler_plot.setLabel("left", "Intensity")
         self.line_profiler_plot.setLabel("bottom", "Position")
         self.line_profiler_widget.hide()  # Initially hidden
-        self.line_profiler_manual_range: bool = False  # Flag to track if y-range is manually set
+        self.line_profiler_manual_range: bool = (
+            False  # Flag to track if y-range is manually set
+        )
 
         # Create splitter
         self.splitter = QSplitter(Qt.Vertical)
@@ -263,11 +271,19 @@ class ImageDisplayWindow(QMainWindow):
 
         # Connect mouse click handler
         if self.show_LUT:
-            self.graphics_widget.view.getView().scene().sigMouseClicked.connect(self.handle_mouse_click)
-            self.graphics_widget.view.getView().scene().sigMouseMoved.connect(self.handle_mouse_move)
+            self.graphics_widget.view.getView().scene().sigMouseClicked.connect(
+                self.handle_mouse_click
+            )
+            self.graphics_widget.view.getView().scene().sigMouseMoved.connect(
+                self.handle_mouse_move
+            )
         else:
-            self.graphics_widget.view.scene().sigMouseClicked.connect(self.handle_mouse_click)
-            self.graphics_widget.view.scene().sigMouseMoved.connect(self.handle_mouse_move)
+            self.graphics_widget.view.scene().sigMouseClicked.connect(
+                self.handle_mouse_click
+            )
+            self.graphics_widget.view.scene().sigMouseMoved.connect(
+                self.handle_mouse_move
+            )
 
         # Set up timer for updating stage and piezo positions
         self.update_timer: QTimer = QTimer()
@@ -348,7 +364,11 @@ class ImageDisplayWindow(QMainWindow):
 
     def create_line_roi(self) -> None:
         """Create a line ROI for intensity profiling."""
-        if self.line_roi is None and self.line_start_pos is not None and self.line_end_pos is not None:
+        if (
+            self.line_roi is None
+            and self.line_start_pos is not None
+            and self.line_end_pos is not None
+        ):
             try:
                 # Convert coordinates to Point objects
                 start_point = pg.Point(self.line_start_pos[0], self.line_start_pos[1])
@@ -403,14 +423,23 @@ class ImageDisplayWindow(QMainWindow):
 
                     # Calculate start and end points
                     start = (pos[0], pos[1])
-                    end = (pos[0] + size[0] * np.cos(angle), pos[1] + size[0] * np.sin(angle))
+                    end = (
+                        pos[0] + size[0] * np.cos(angle),
+                        pos[1] + size[0] * np.sin(angle),
+                    )
 
                     # Convert ROI coordinates to image coordinates
-                    start_img = self.graphics_widget.img.mapFromView(pg.Point(start[0], start[1]))
-                    end_img = self.graphics_widget.img.mapFromView(pg.Point(end[0], end[1]))
+                    start_img = self.graphics_widget.img.mapFromView(
+                        pg.Point(start[0], start[1])
+                    )
+                    end_img = self.graphics_widget.img.mapFromView(
+                        pg.Point(end[0], end[1])
+                    )
 
                     # Get the profile along the line
-                    profile = self.get_line_profile(image, start_img, end_img, size[1])  # size[1] is the width
+                    profile = self.get_line_profile(
+                        image, start_img, end_img, size[1]
+                    )  # size[1] is the width
 
                     # Clear previous plots
                     self.line_profiler_plot.clear()
@@ -419,7 +448,9 @@ class ImageDisplayWindow(QMainWindow):
                     pixel_distance = np.linspace(0, size[0], len(profile))
 
                     # Plot the profile
-                    self.line_profiler_plot.plot(pixel_distance, profile, pen="w", name="Intensity Profile")
+                    self.line_profiler_plot.plot(
+                        pixel_distance, profile, pen="w", name="Intensity Profile"
+                    )
 
                     # Set labels
                     self.line_profiler_plot.setLabel("left", "Intensity")
@@ -434,7 +465,9 @@ class ImageDisplayWindow(QMainWindow):
         except Exception as e:
             self._log.error(f"Error updating line profile: {str(e)}")
 
-    def get_line_profile(self, image: np.ndarray, start: Any, end: Any, width: float = 1) -> np.ndarray:
+    def get_line_profile(
+        self, image: np.ndarray, start: Any, end: Any, width: float = 1
+    ) -> np.ndarray:
         """Get intensity profile along a line with specified width."""
         try:
             # Calculate the line vector
@@ -466,7 +499,9 @@ class ImageDisplayWindow(QMainWindow):
                 y_offset = y + perp_vec[1] * w
 
                 # Get values at these points
-                values = scipy.ndimage.map_coordinates(image, [y_offset, x_offset], order=1)
+                values = scipy.ndimage.map_coordinates(
+                    image, [y_offset, x_offset], order=1
+                )
                 profile += values
 
             # Average the values
@@ -486,9 +521,14 @@ class ImageDisplayWindow(QMainWindow):
                 view_coord = self.graphics_widget.view.mapSceneToView(pos)
 
             # Update preview line if we're drawing
-            if self.is_drawing_line and self.line_start_pos is not None and self.preview_line is not None:
+            if (
+                self.is_drawing_line
+                and self.line_start_pos is not None
+                and self.preview_line is not None
+            ):
                 self.preview_line.setData(
-                    x=[self.line_start_pos[0], view_coord.x()], y=[self.line_start_pos[1], view_coord.y()]
+                    x=[self.line_start_pos[0], view_coord.x()],
+                    y=[self.line_start_pos[1], view_coord.y()],
                 )
 
             image_coord = self.graphics_widget.img.mapFromView(view_coord)
@@ -504,7 +544,11 @@ class ImageDisplayWindow(QMainWindow):
 
                 # Get pixel value
                 image = self.graphics_widget.img.image
-                if image is not None and 0 <= y < image.shape[0] and 0 <= x < image.shape[1]:
+                if (
+                    image is not None
+                    and 0 <= y < image.shape[0]
+                    and 0 <= x < image.shape[1]
+                ):
                     pixel_value = image[y, x]
                     self.last_valid_value = pixel_value
                     self.pixel_value_label.setText(f"Value: {pixel_value}")
@@ -545,12 +589,16 @@ class ImageDisplayWindow(QMainWindow):
                         brush=pg.mkBrush("y"),
                     )
                     if self.show_LUT:
-                        self.graphics_widget.view.getView().addItem(self.start_point_marker)
+                        self.graphics_widget.view.getView().addItem(
+                            self.start_point_marker
+                        )
                     else:
                         self.graphics_widget.view.addItem(self.start_point_marker)
 
                     # Create preview line
-                    self.preview_line = pg.PlotDataItem(pen=pg.mkPen("y", width=2, style=Qt.DashLine))
+                    self.preview_line = pg.PlotDataItem(
+                        pen=pg.mkPen("y", width=2, style=Qt.DashLine)
+                    )
                     if self.show_LUT:
                         self.graphics_widget.view.getView().addItem(self.preview_line)
                     else:
@@ -563,16 +611,22 @@ class ImageDisplayWindow(QMainWindow):
                     # Remove preview line and start point marker
                     if self.preview_line is not None:
                         if self.show_LUT:
-                            self.graphics_widget.view.getView().removeItem(self.preview_line)
+                            self.graphics_widget.view.getView().removeItem(
+                                self.preview_line
+                            )
                         else:
                             self.graphics_widget.view.removeItem(self.preview_line)
                         self.preview_line = None
 
                     if self.start_point_marker is not None:
                         if self.show_LUT:
-                            self.graphics_widget.view.getView().removeItem(self.start_point_marker)
+                            self.graphics_widget.view.getView().removeItem(
+                                self.start_point_marker
+                            )
                         else:
-                            self.graphics_widget.view.removeItem(self.start_point_marker)
+                            self.graphics_widget.view.removeItem(
+                                self.start_point_marker
+                            )
                         self.start_point_marker = None
 
                     self.create_line_roi()
@@ -587,13 +641,17 @@ class ImageDisplayWindow(QMainWindow):
                 # Clean up any remaining preview items
                 if self.preview_line is not None:
                     if self.show_LUT:
-                        self.graphics_widget.view.getView().removeItem(self.preview_line)
+                        self.graphics_widget.view.getView().removeItem(
+                            self.preview_line
+                        )
                     else:
                         self.graphics_widget.view.removeItem(self.preview_line)
                     self.preview_line = None
                 if self.start_point_marker is not None:
                     if self.show_LUT:
-                        self.graphics_widget.view.getView().removeItem(self.start_point_marker)
+                        self.graphics_widget.view.getView().removeItem(
+                            self.start_point_marker
+                        )
                     else:
                         self.graphics_widget.view.removeItem(self.start_point_marker)
                     self.start_point_marker = None
@@ -614,17 +672,27 @@ class ImageDisplayWindow(QMainWindow):
             return
 
         if self.is_within_image(image_coord):
-            x_pixel_centered = int(image_coord.x() - self.graphics_widget.img.width() / 2)
-            y_pixel_centered = int(image_coord.y() - self.graphics_widget.img.height() / 2)
+            x_pixel_centered = int(
+                image_coord.x() - self.graphics_widget.img.width() / 2
+            )
+            y_pixel_centered = int(
+                image_coord.y() - self.graphics_widget.img.height() / 2
+            )
             self.image_click_coordinates.emit(
-                x_pixel_centered, y_pixel_centered, self.graphics_widget.img.width(), self.graphics_widget.img.height()
+                x_pixel_centered,
+                y_pixel_centered,
+                self.graphics_widget.img.width(),
+                self.graphics_widget.img.height(),
             )
 
     def is_within_image(self, coordinates: Any) -> bool:
         try:
             image_width = self.graphics_widget.img.width()
             image_height = self.graphics_widget.img.height()
-            return 0 <= coordinates.x() < image_width and 0 <= coordinates.y() < image_height
+            return (
+                0 <= coordinates.x() < image_width
+                and 0 <= coordinates.y() < image_height
+            )
         except Exception:
             return False
 
@@ -641,18 +709,27 @@ class ImageDisplayWindow(QMainWindow):
                 cv2.rectangle(image, self.ptRect1, self.ptRect2, (255, 255, 255), 4)
                 self.draw_rectangle = False
 
-        info = np.iinfo(image.dtype) if np.issubdtype(image.dtype, np.integer) else np.finfo(image.dtype)
+        info = (
+            np.iinfo(image.dtype)
+            if np.issubdtype(image.dtype, np.integer)
+            else np.finfo(image.dtype)
+        )
         min_val, max_val = info.min, info.max
 
         if self.liveController is not None and self.contrastManager is not None:
             channel_name = self.liveController.currentConfiguration.name
-            if self.contrastManager.acquisition_dtype is not None and self.contrastManager.acquisition_dtype != np.dtype(
-                image.dtype
+            if (
+                self.contrastManager.acquisition_dtype is not None
+                and self.contrastManager.acquisition_dtype != np.dtype(image.dtype)
             ):
                 self.contrastManager.scale_contrast_limits(np.dtype(image.dtype))
-            min_val, max_val = self.contrastManager.get_limits(channel_name, image.dtype)
+            min_val, max_val = self.contrastManager.get_limits(
+                channel_name, image.dtype
+            )
 
-        self.graphics_widget.img.setImage(image, autoLevels=self.autoLevels, levels=(min_val, max_val))
+        self.graphics_widget.img.setImage(
+            image, autoLevels=self.autoLevels, levels=(min_val, max_val)
+        )
 
         if not self.autoLevels:
             if self.show_LUT:
@@ -666,14 +743,21 @@ class ImageDisplayWindow(QMainWindow):
         # Update pixel value based on last valid position
         if self.has_valid_position:
             try:
-                if 0 <= self.last_valid_y < image.shape[0] and 0 <= self.last_valid_x < image.shape[1]:
+                if (
+                    0 <= self.last_valid_y < image.shape[0]
+                    and 0 <= self.last_valid_x < image.shape[1]
+                ):
                     pixel_value = image[self.last_valid_y, self.last_valid_x]
                     self.last_valid_value = pixel_value
-                    self.cursor_position_label.setText(f"Position: ({self.last_valid_x}, {self.last_valid_y})")
+                    self.cursor_position_label.setText(
+                        f"Position: ({self.last_valid_x}, {self.last_valid_y})"
+                    )
                     self.pixel_value_label.setText(f"Value: {pixel_value}")
             except Exception:
                 # If there's an error, keep the last valid values
-                self.cursor_position_label.setText(f"Position: ({self.last_valid_x}, {self.last_valid_y})")
+                self.cursor_position_label.setText(
+                    f"Position: ({self.last_valid_x}, {self.last_valid_y})"
+                )
                 self.pixel_value_label.setText(f"Value: {self.last_valid_value}")
 
         if self.line_roi is not None and self.btn_line_profiler.isChecked():
@@ -701,17 +785,35 @@ class ImageDisplayWindow(QMainWindow):
         marked_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
 
         # Draw horizontal line
-        cv2.line(marked_image, (x - crosshair_size, y), (x + crosshair_size, y), crosshair_color, crosshair_thickness)
+        cv2.line(
+            marked_image,
+            (x - crosshair_size, y),
+            (x + crosshair_size, y),
+            crosshair_color,
+            crosshair_thickness,
+        )
 
         # Draw vertical line
-        cv2.line(marked_image, (x, y - crosshair_size), (x, y + crosshair_size), crosshair_color, crosshair_thickness)
+        cv2.line(
+            marked_image,
+            (x, y - crosshair_size),
+            (x, y + crosshair_size),
+            crosshair_color,
+            crosshair_thickness,
+        )
 
         self.display_image(marked_image)
 
     def update_contrast_limits(self) -> None:
-        if self.show_LUT and self.contrastManager and self.contrastManager.acquisition_dtype:
+        if (
+            self.show_LUT
+            and self.contrastManager
+            and self.contrastManager.acquisition_dtype
+        ):
             min_val, max_val = self.LUTWidget.region.getRegion()
-            self.contrastManager.update_limits(self.liveController.currentConfiguration.name, min_val, max_val)
+            self.contrastManager.update_limits(
+                self.liveController.currentConfiguration.name, min_val, max_val
+            )
 
     def update_ROI(self) -> None:
         self.roi_pos = self.ROI.pos()
@@ -745,7 +847,6 @@ class ImageDisplayWindow(QMainWindow):
 
 
 class ImageArrayDisplayWindow(QMainWindow):
-
     def __init__(self, window_title: str = "") -> None:
         super().__init__()
         self.setWindowTitle(window_title)

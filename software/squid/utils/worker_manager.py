@@ -22,6 +22,7 @@ Usage:
         on_error=lambda r: print(f"Failed: {r.error}")
     )
 """
+
 import faulthandler
 import traceback
 from concurrent.futures import ThreadPoolExecutor, Future
@@ -45,6 +46,7 @@ class WorkerResult:
         stack_trace: Formatted traceback if task failed
         timed_out: True if task exceeded timeout
     """
+
     success: bool
     value: Any = None
     error: Optional[Exception] = None
@@ -54,6 +56,7 @@ class WorkerResult:
 
 class WorkerSignals(QObject):
     """Qt signals emitted by WorkerManager."""
+
     started = pyqtSignal(str)  # task_name
     completed = pyqtSignal(str, object)  # task_name, WorkerResult
     error = pyqtSignal(str, object)  # task_name, WorkerResult
@@ -127,9 +130,7 @@ class WorkerManager:
                 return WorkerResult(success=True, value=result)
             except Exception as e:
                 return WorkerResult(
-                    success=False,
-                    error=e,
-                    stack_trace=traceback.format_exc()
+                    success=False, error=e, stack_trace=traceback.format_exc()
                 )
 
         future = self._executor.submit(wrapped_task)
@@ -138,6 +139,7 @@ class WorkerManager:
         # Set up completion callback
         def on_done(f: Future):
             self._handle_completion(task_name, f, on_complete, on_error)
+
         future.add_done_callback(on_done)
 
         # Set up timeout if requested
@@ -155,7 +157,7 @@ class WorkerManager:
         task_name: str,
         future: Future,
         on_complete: Optional[Callable],
-        on_error: Optional[Callable]
+        on_error: Optional[Callable],
     ):
         """Handle task completion."""
         # Cancel timeout timer if it exists
@@ -171,9 +173,7 @@ class WorkerManager:
             result = future.result(timeout=0)
         except Exception as e:
             result = WorkerResult(
-                success=False,
-                error=e,
-                stack_trace=traceback.format_exc()
+                success=False, error=e, stack_trace=traceback.format_exc()
             )
 
         if result.success:
@@ -202,12 +202,12 @@ class WorkerManager:
         self._log.error(f"Task timed out: {task_name}")
 
         # Dump full thread state for debugging
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"TIMEOUT: Task '{task_name}' exceeded time limit")
-        print(f"Full thread dump follows:")
-        print(f"{'='*60}")
+        print("Full thread dump follows:")
+        print(f"{'=' * 60}")
         faulthandler.dump_traceback()
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
 
         # Emit timeout signal
         self.signals.timeout.emit(task_name)
@@ -216,7 +216,7 @@ class WorkerManager:
         result = WorkerResult(
             success=False,
             error=TimeoutError(f"Task '{task_name}' timed out"),
-            timed_out=True
+            timed_out=True,
         )
         self.signals.error.emit(task_name, result)
 

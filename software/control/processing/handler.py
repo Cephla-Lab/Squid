@@ -1,8 +1,6 @@
 import threading
 import queue
 import numpy as np
-import pandas as pd
-import control.utils as utils
 
 
 def default_image_preprocessor(image, callable_list):
@@ -61,7 +59,9 @@ class ProcessingHandler:
                 self.processing_queue.task_done()
                 break
             else:
-                upload_task = processing_task["function"](*processing_task["args"], **processing_task["kwargs"])
+                upload_task = processing_task["function"](
+                    *processing_task["args"], **processing_task["kwargs"]
+                )
                 self.upload_queue.put(upload_task)
                 self.processing_queue.task_done()
 
@@ -80,16 +80,22 @@ class ProcessingHandler:
                 self.upload_queue.task_done()
 
     def start_processing(self, queue_timeout=None):
-        self.processing_thread = threading.Thread(target=self.processing_queue_handler, args=[queue_timeout])
+        self.processing_thread = threading.Thread(
+            target=self.processing_queue_handler, args=[queue_timeout]
+        )
         self.processing_thread.start()
 
     def start_uploading(self, queue_timeout=None):
-        self.uploading_thread = threading.Thread(target=self.upload_queue_handler, args=[queue_timeout])
+        self.uploading_thread = threading.Thread(
+            target=self.upload_queue_handler, args=[queue_timeout]
+        )
         self.uploading_thread.start()
 
     def end_uploading(self, *args, **kwargs):
         return {"function": "end"}
 
     def end_processing(self):
-        self.processing_queue.put({"function": self.end_uploading, "args": [], "kwargs": {}})
+        self.processing_queue.put(
+            {"function": self.end_uploading, "args": [], "kwargs": {}}
+        )
         self.processing_queue.put({"function": "end"})

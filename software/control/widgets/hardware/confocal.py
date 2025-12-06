@@ -1,4 +1,6 @@
 # Confocal microscope control widgets (XLight, Dragonfly)
+from typing import Any
+
 from qtpy.QtCore import Signal, Qt
 from qtpy.QtWidgets import (
     QWidget,
@@ -15,25 +17,30 @@ from qtpy.QtWidgets import (
 
 
 class SpinningDiskConfocalWidget(QWidget):
+    signal_toggle_confocal_widefield: Signal = Signal(bool)
 
-    signal_toggle_confocal_widefield = Signal(bool)
-
-    def __init__(self, xlight):
+    def __init__(self, xlight: Any) -> None:
         super(SpinningDiskConfocalWidget, self).__init__()
 
-        self.xlight = xlight
+        self.xlight: Any = xlight
 
         self.init_ui()
 
-        self.dropdown_emission_filter.setCurrentText(str(self.xlight.get_emission_filter()))
+        self.dropdown_emission_filter.setCurrentText(
+            str(self.xlight.get_emission_filter())
+        )
         self.dropdown_dichroic.setCurrentText(str(self.xlight.get_dichroic()))
 
-        self.dropdown_emission_filter.currentIndexChanged.connect(self.set_emission_filter)
+        self.dropdown_emission_filter.currentIndexChanged.connect(
+            self.set_emission_filter
+        )
         self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
 
         self.disk_position_state = self.xlight.get_disk_position()
 
-        self.signal_toggle_confocal_widefield.emit(self.disk_position_state)  # signal initial state
+        self.signal_toggle_confocal_widefield.emit(
+            self.disk_position_state
+        )  # signal initial state
 
         if self.disk_position_state == 1:
             self.btn_toggle_widefield.setText("Switch to Widefield")
@@ -48,22 +55,33 @@ class SpinningDiskConfocalWidget(QWidget):
             self.slider_illumination_iris.setValue(illumination_iris)
             self.spinbox_illumination_iris.setValue(illumination_iris)
 
-            self.slider_illumination_iris.sliderReleased.connect(lambda: self.update_illumination_iris(True))
+            self.slider_illumination_iris.sliderReleased.connect(
+                lambda: self.update_illumination_iris(True)
+            )
             # Update spinbox values during sliding without sending to hardware
-            self.slider_illumination_iris.valueChanged.connect(self.spinbox_illumination_iris.setValue)
-            self.spinbox_illumination_iris.editingFinished.connect(lambda: self.update_illumination_iris(False))
+            self.slider_illumination_iris.valueChanged.connect(
+                self.spinbox_illumination_iris.setValue
+            )
+            self.spinbox_illumination_iris.editingFinished.connect(
+                lambda: self.update_illumination_iris(False)
+            )
         if self.xlight.has_emission_iris_diaphragm:
             emission_iris = self.xlight.emission_iris
             self.slider_emission_iris.setValue(emission_iris)
             self.spinbox_emission_iris.setValue(emission_iris)
 
-            self.slider_emission_iris.sliderReleased.connect(lambda: self.update_emission_iris(True))
+            self.slider_emission_iris.sliderReleased.connect(
+                lambda: self.update_emission_iris(True)
+            )
             # Update spinbox values during sliding without sending to hardware
-            self.slider_emission_iris.valueChanged.connect(self.spinbox_emission_iris.setValue)
-            self.spinbox_emission_iris.editingFinished.connect(lambda: self.update_emission_iris(False))
+            self.slider_emission_iris.valueChanged.connect(
+                self.spinbox_emission_iris.setValue
+            )
+            self.spinbox_emission_iris.editingFinished.connect(
+                lambda: self.update_emission_iris(False)
+            )
 
-    def init_ui(self):
-
+    def init_ui(self) -> None:
         emissionFilterLayout = QHBoxLayout()
         emissionFilterLayout.addWidget(QLabel("Emission Position"))
         self.dropdown_emission_filter = QComboBox(self)
@@ -78,7 +96,7 @@ class SpinningDiskConfocalWidget(QWidget):
 
         illuminationIrisLayout = QHBoxLayout()
         illuminationIrisLayout.addWidget(QLabel("Illumination Iris"))
-        self.slider_illumination_iris = QSlider(Qt.Horizontal)
+        self.slider_illumination_iris = QSlider(Qt.Orientation.Horizontal)
         self.slider_illumination_iris.setRange(0, 100)
         self.spinbox_illumination_iris = QSpinBox()
         self.spinbox_illumination_iris.setRange(0, 100)
@@ -88,7 +106,7 @@ class SpinningDiskConfocalWidget(QWidget):
 
         emissionIrisLayout = QHBoxLayout()
         emissionIrisLayout.addWidget(QLabel("Emission Iris"))
-        self.slider_emission_iris = QSlider(Qt.Horizontal)
+        self.slider_emission_iris = QSlider(Qt.Orientation.Horizontal)
         self.slider_emission_iris.setRange(0, 100)
         self.spinbox_emission_iris = QSpinBox()
         self.spinbox_emission_iris.setRange(0, 100)
@@ -100,7 +118,7 @@ class SpinningDiskConfocalWidget(QWidget):
         filterSliderLayout.addWidget(QLabel("Filter Slider"))
         # self.dropdown_filter_slider = QComboBox(self)
         # self.dropdown_filter_slider.addItems(["0", "1", "2", "3"])
-        self.dropdown_filter_slider = QSlider(Qt.Horizontal)
+        self.dropdown_filter_slider = QSlider(Qt.Orientation.Horizontal)
         self.dropdown_filter_slider.setRange(0, 3)
         self.dropdown_filter_slider.setTickPosition(QSlider.TicksBelow)
         self.dropdown_filter_slider.setTickInterval(1)
@@ -137,7 +155,7 @@ class SpinningDiskConfocalWidget(QWidget):
         layout.setColumnStretch(3, 1)
         self.setLayout(layout)
 
-    def enable_all_buttons(self, enable: bool):
+    def enable_all_buttons(self, enable: bool) -> None:
         self.dropdown_emission_filter.setEnabled(enable)
         self.dropdown_dichroic.setEnabled(enable)
         self.btn_toggle_widefield.setEnabled(enable)
@@ -148,13 +166,13 @@ class SpinningDiskConfocalWidget(QWidget):
         self.spinbox_emission_iris.setEnabled(enable)
         self.dropdown_filter_slider.setEnabled(enable)
 
-    def block_iris_control_signals(self, block: bool):
+    def block_iris_control_signals(self, block: bool) -> None:
         self.slider_illumination_iris.blockSignals(block)
         self.spinbox_illumination_iris.blockSignals(block)
         self.slider_emission_iris.blockSignals(block)
         self.spinbox_emission_iris.blockSignals(block)
 
-    def toggle_disk_position(self):
+    def toggle_disk_position(self) -> None:
         self.enable_all_buttons(False)
         if self.disk_position_state == 1:
             self.disk_position_state = self.xlight.set_disk_position(0)
@@ -165,7 +183,7 @@ class SpinningDiskConfocalWidget(QWidget):
         self.enable_all_buttons(True)
         self.signal_toggle_confocal_widefield.emit(self.disk_position_state)
 
-    def toggle_motor(self):
+    def toggle_motor(self) -> None:
         self.enable_all_buttons(False)
         if self.btn_toggle_motor.isChecked():
             self.xlight.set_disk_motor_state(True)
@@ -173,20 +191,22 @@ class SpinningDiskConfocalWidget(QWidget):
             self.xlight.set_disk_motor_state(False)
         self.enable_all_buttons(True)
 
-    def set_emission_filter(self, index):
+    def set_emission_filter(self, index: int) -> None:
         self.enable_all_buttons(False)
         selected_pos = self.dropdown_emission_filter.currentText()
         self.xlight.set_emission_filter(selected_pos)
         self.enable_all_buttons(True)
 
-    def set_dichroic(self, index):
+    def set_dichroic(self, index: int) -> None:
         self.enable_all_buttons(False)
         selected_pos = self.dropdown_dichroic.currentText()
         self.xlight.set_dichroic(selected_pos)
         self.enable_all_buttons(True)
 
-    def update_illumination_iris(self, from_slider: bool):
-        self.block_iris_control_signals(True)  # avoid signals triggered by enable/disable buttons
+    def update_illumination_iris(self, from_slider: bool) -> None:
+        self.block_iris_control_signals(
+            True
+        )  # avoid signals triggered by enable/disable buttons
         self.enable_all_buttons(False)
         if from_slider:
             value = self.slider_illumination_iris.value()
@@ -197,8 +217,10 @@ class SpinningDiskConfocalWidget(QWidget):
         self.enable_all_buttons(True)
         self.block_iris_control_signals(False)
 
-    def update_emission_iris(self, from_slider: bool):
-        self.block_iris_control_signals(True)  # avoid signals triggered by enable/disable buttons
+    def update_emission_iris(self, from_slider: bool) -> None:
+        self.block_iris_control_signals(
+            True
+        )  # avoid signals triggered by enable/disable buttons
         self.enable_all_buttons(False)
         if from_slider:
             value = self.slider_emission_iris.value()
@@ -209,7 +231,7 @@ class SpinningDiskConfocalWidget(QWidget):
         self.enable_all_buttons(True)
         self.block_iris_control_signals(False)
 
-    def set_filter_slider(self, index):
+    def set_filter_slider(self, index: int) -> None:
         self.enable_all_buttons(False)
         position = str(self.dropdown_filter_slider.value())
         self.xlight.set_filter_slider(position)
@@ -217,20 +239,22 @@ class SpinningDiskConfocalWidget(QWidget):
 
 
 class DragonflyConfocalWidget(QWidget):
+    signal_toggle_confocal_widefield: Signal = Signal(bool)
 
-    signal_toggle_confocal_widefield = Signal(bool)
-
-    def __init__(self, dragonfly):
+    def __init__(self, dragonfly: Any) -> None:
         super(DragonflyConfocalWidget, self).__init__()
 
-        self.dragonfly = dragonfly
+        self.dragonfly: Any = dragonfly
+        self.confocal_mode: bool = False
 
         self.init_ui()
 
         # Initialize current states from hardware
         try:
             current_modality = self.dragonfly.get_modality()
-            self.confocal_mode = current_modality == "CONFOCAL" if current_modality else False
+            self.confocal_mode = (
+                current_modality == "CONFOCAL" if current_modality else False
+            )
 
             current_dichroic = self.dragonfly.get_port_selection_dichroic()
             if current_dichroic is not None:
@@ -238,11 +262,15 @@ class DragonflyConfocalWidget(QWidget):
 
             current_port1_filter = self.dragonfly.get_emission_filter(1)
             if current_port1_filter is not None:
-                self.dropdown_port1_emission_filter.setCurrentText(str(current_port1_filter))
+                self.dropdown_port1_emission_filter.setCurrentText(
+                    str(current_port1_filter)
+                )
 
             current_port2_filter = self.dragonfly.get_emission_filter(2)
             if current_port2_filter is not None:
-                self.dropdown_port2_emission_filter.setCurrentText(str(current_port2_filter))
+                self.dropdown_port2_emission_filter.setCurrentText(
+                    str(current_port2_filter)
+                )
 
             current_field_aperture = self.dragonfly.get_field_aperture_wheel_position()
             if current_field_aperture is not None:
@@ -265,14 +293,20 @@ class DragonflyConfocalWidget(QWidget):
         self.btn_toggle_confocal.clicked.connect(self.toggle_confocal_mode)
         self.btn_disk_motor.clicked.connect(self.toggle_disk_motor)
         self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
-        self.dropdown_port1_emission_filter.currentIndexChanged.connect(self.set_port1_emission_filter)
-        self.dropdown_port2_emission_filter.currentIndexChanged.connect(self.set_port2_emission_filter)
-        self.dropdown_field_aperture.currentIndexChanged.connect(self.set_field_aperture)
+        self.dropdown_port1_emission_filter.currentIndexChanged.connect(
+            self.set_port1_emission_filter
+        )
+        self.dropdown_port2_emission_filter.currentIndexChanged.connect(
+            self.set_port2_emission_filter
+        )
+        self.dropdown_field_aperture.currentIndexChanged.connect(
+            self.set_field_aperture
+        )
 
         # Emit initial state
         self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
 
-    def init_ui(self):
+    def init_ui(self) -> None:
         main_layout = QVBoxLayout()
 
         layout_confocal = QHBoxLayout()
@@ -284,7 +318,9 @@ class DragonflyConfocalWidget(QWidget):
         dichroic_label = QLabel("Port Selection")
         dichroic_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         self.dropdown_dichroic = QComboBox(self)
-        self.dropdown_dichroic.addItems(self.dragonfly.get_port_selection_dichroic_info())
+        self.dropdown_dichroic.addItems(
+            self.dragonfly.get_port_selection_dichroic_info()
+        )
 
         layout_confocal.addWidget(self.btn_toggle_confocal)
         layout_confocal.addWidget(self.btn_disk_motor)
@@ -295,7 +331,9 @@ class DragonflyConfocalWidget(QWidget):
         # Row 2: Camera Port 1 Emission Filter and Field Aperture
         port1_emission_label = QLabel("Port 1 Emission Filter")
         self.dropdown_port1_emission_filter = QComboBox(self)
-        self.dropdown_port1_emission_filter.addItems(self.dragonfly.get_emission_filter_info(1))
+        self.dropdown_port1_emission_filter.addItems(
+            self.dragonfly.get_emission_filter_info(1)
+        )
 
         port1_aperture_label = QLabel("Field Aperture")
         self.dropdown_field_aperture = QComboBox(self)
@@ -309,7 +347,9 @@ class DragonflyConfocalWidget(QWidget):
         # Row 3: Camera Port 2 Emission Filter and Field Aperture
         port2_emission_label = QLabel("Port 2 Emission Filter")
         self.dropdown_port2_emission_filter = QComboBox(self)
-        self.dropdown_port2_emission_filter.addItems(self.dragonfly.get_emission_filter_info(2))
+        self.dropdown_port2_emission_filter.addItems(
+            self.dragonfly.get_emission_filter_info(2)
+        )
 
         layout_wheels.addWidget(port2_emission_label, 1, 0)
         layout_wheels.addWidget(self.dropdown_port2_emission_filter, 1, 1)
@@ -319,7 +359,7 @@ class DragonflyConfocalWidget(QWidget):
 
         self.setLayout(main_layout)
 
-    def enable_all_buttons(self, enable: bool):
+    def enable_all_buttons(self, enable: bool) -> None:
         """Enable or disable all controls"""
         self.btn_toggle_confocal.setEnabled(enable)
         self.btn_disk_motor.setEnabled(enable)
@@ -328,13 +368,15 @@ class DragonflyConfocalWidget(QWidget):
         self.dropdown_port2_emission_filter.setEnabled(enable)
         self.dropdown_field_aperture.setEnabled(enable)
 
-    def toggle_confocal_mode(self):
+    def toggle_confocal_mode(self) -> None:
         """Toggle between confocal and widefield modes"""
         self.enable_all_buttons(False)
         try:
             if self.confocal_mode:
                 # Switch to widefield
-                self.dragonfly.set_modality("BF")  # or whatever widefield mode string is
+                self.dragonfly.set_modality(
+                    "BF"
+                )  # or whatever widefield mode string is
                 self.confocal_mode = False
                 self.btn_toggle_confocal.setText("Switch to Confocal")
             else:
@@ -349,7 +391,7 @@ class DragonflyConfocalWidget(QWidget):
         finally:
             self.enable_all_buttons(True)
 
-    def toggle_disk_motor(self):
+    def toggle_disk_motor(self) -> None:
         """Toggle disk motor on/off"""
         self.enable_all_buttons(False)
         try:
@@ -362,7 +404,7 @@ class DragonflyConfocalWidget(QWidget):
         finally:
             self.enable_all_buttons(True)
 
-    def set_dichroic(self, index):
+    def set_dichroic(self, index: int) -> None:
         """Set dichroic position"""
         self.enable_all_buttons(False)
         try:
@@ -373,7 +415,7 @@ class DragonflyConfocalWidget(QWidget):
         finally:
             self.enable_all_buttons(True)
 
-    def set_port1_emission_filter(self, index):
+    def set_port1_emission_filter(self, index: int) -> None:
         """Set port 1 emission filter position"""
         self.enable_all_buttons(False)
         try:
@@ -384,7 +426,7 @@ class DragonflyConfocalWidget(QWidget):
         finally:
             self.enable_all_buttons(True)
 
-    def set_port2_emission_filter(self, index):
+    def set_port2_emission_filter(self, index: int) -> None:
         """Set port 2 emission filter position"""
         self.enable_all_buttons(False)
         try:
@@ -395,7 +437,7 @@ class DragonflyConfocalWidget(QWidget):
         finally:
             self.enable_all_buttons(True)
 
-    def set_field_aperture(self, index):
+    def set_field_aperture(self, index: int) -> None:
         """Set port 1 field aperture position"""
         self.enable_all_buttons(False)
         try:

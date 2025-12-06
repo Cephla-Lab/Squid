@@ -12,6 +12,7 @@ Usage:
     # Later:
     context.shutdown()
 """
+
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
@@ -36,6 +37,7 @@ class Controllers:
     This replaces the pattern where GUI has 20+ instance variables
     for different controllers.
     """
+
     live: "LiveController"
     stream_handler: "StreamHandler"
     multipoint: Optional["MultiPointController"] = None
@@ -62,7 +64,9 @@ class ApplicationContext:
         context.shutdown()
     """
 
-    def __init__(self, simulation: bool = False, external_controller_creation: bool = False):
+    def __init__(
+        self, simulation: bool = False, external_controller_creation: bool = False
+    ):
         """
         Initialize the application context.
 
@@ -80,8 +84,10 @@ class ApplicationContext:
         self._services: Optional["ServiceRegistry"] = None
         self._gui: Optional["HighContentScreeningGui"] = None
 
-        self._log.info(f"Creating ApplicationContext (simulation={simulation}, "
-                       f"external_controller_creation={external_controller_creation})")
+        self._log.info(
+            f"Creating ApplicationContext (simulation={simulation}, "
+            f"external_controller_creation={external_controller_creation})"
+        )
 
         # Build components
         self._build_microscope()
@@ -109,14 +115,20 @@ class ApplicationContext:
         """
         self._log.info("Building controllers...")
 
-        assert self._microscope is not None, "Microscope must be built before controllers"
+        assert self._microscope is not None, (
+            "Microscope must be built before controllers"
+        )
 
         if self._external_controller_creation:
             self._create_controllers_externally()
         else:
             # Wrap controllers that Microscope created internally
-            assert self._microscope.live_controller is not None, "LiveController not created by Microscope"
-            assert self._microscope.stream_handler is not None, "StreamHandler not created by Microscope"
+            assert self._microscope.live_controller is not None, (
+                "LiveController not created by Microscope"
+            )
+            assert self._microscope.stream_handler is not None, (
+                "StreamHandler not created by Microscope"
+            )
 
             self._controllers = Controllers(
                 live=self._microscope.live_controller,
@@ -132,7 +144,9 @@ class ApplicationContext:
         from control.core.display import LiveController
         from control.core.display import StreamHandler, NoOpStreamHandlerFunctions
 
-        assert self._microscope is not None, "Microscope must be built before creating controllers"
+        assert self._microscope is not None, (
+            "Microscope must be built before creating controllers"
+        )
 
         # Create StreamHandler
         stream_handler = StreamHandler(handler_functions=NoOpStreamHandlerFunctions)
@@ -149,7 +163,9 @@ class ApplicationContext:
 
         # Handle focus camera if present
         if self._microscope.addons.camera_focus:
-            stream_handler_focus = StreamHandler(handler_functions=NoOpStreamHandlerFunctions)
+            stream_handler_focus = StreamHandler(
+                handler_functions=NoOpStreamHandlerFunctions
+            )
             live_controller_focus = LiveController(
                 microscope=self._microscope,
                 camera=self._microscope.addons.camera_focus,
@@ -169,7 +185,12 @@ class ApplicationContext:
 
     def _build_services(self) -> None:
         """Build service layer."""
-        from squid.services import ServiceRegistry, CameraService, StageService, PeripheralService
+        from squid.services import (
+            ServiceRegistry,
+            CameraService,
+            StageService,
+            PeripheralService,
+        )
         from squid.events import event_bus
 
         assert self._microscope is not None, "Microscope must be built before services"
@@ -178,17 +199,20 @@ class ApplicationContext:
 
         self._services = ServiceRegistry(event_bus)
 
-        self._services.register('camera',
-            CameraService(self._microscope.camera, event_bus))
+        self._services.register(
+            "camera", CameraService(self._microscope.camera, event_bus)
+        )
 
-        self._services.register('stage',
-            StageService(self._microscope.stage, event_bus))
+        self._services.register(
+            "stage", StageService(self._microscope.stage, event_bus)
+        )
 
-        self._services.register('peripheral',
+        self._services.register(
+            "peripheral",
             PeripheralService(
-                self._microscope.low_level_drivers.microcontroller,
-                event_bus
-            ))
+                self._microscope.low_level_drivers.microcontroller, event_bus
+            ),
+        )
 
         self._log.info("Services built successfully")
 

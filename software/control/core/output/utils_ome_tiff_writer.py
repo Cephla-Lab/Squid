@@ -51,24 +51,36 @@ def validate_capture_info(info: "CaptureInfo", image: np.ndarray) -> None:
     if info.time_point is None:
         raise ValueError("CaptureInfo.time_point is required for OME-TIFF saving")
     if info.total_time_points is None:
-        raise ValueError("CaptureInfo.total_time_points is required for OME-TIFF saving")
+        raise ValueError(
+            "CaptureInfo.total_time_points is required for OME-TIFF saving"
+        )
     if info.total_z_levels is None:
         raise ValueError("CaptureInfo.total_z_levels is required for OME-TIFF saving")
     if info.total_channels is None:
         raise ValueError("CaptureInfo.total_channels is required for OME-TIFF saving")
     if image.ndim != 2:
-        raise NotImplementedError("OME-TIFF saving currently supports 2D grayscale images only")
+        raise NotImplementedError(
+            "OME-TIFF saving currently supports 2D grayscale images only"
+        )
 
 
 def initialize_metadata(info: "CaptureInfo", image: np.ndarray) -> Dict[str, Any]:
     channel_names = info.channel_names or []
-    time_increment = float(info.time_increment_s) if info.time_increment_s is not None else None
+    time_increment = (
+        float(info.time_increment_s) if info.time_increment_s is not None else None
+    )
     time_increment_unit = "s" if time_increment is not None else None
-    physical_size_z = float(info.physical_size_z_um) if info.physical_size_z_um is not None else None
+    physical_size_z = (
+        float(info.physical_size_z_um) if info.physical_size_z_um is not None else None
+    )
     physical_size_z_unit = "µm" if physical_size_z is not None else None
-    physical_size_x = float(info.physical_size_x_um) if info.physical_size_x_um is not None else None
+    physical_size_x = (
+        float(info.physical_size_x_um) if info.physical_size_x_um is not None else None
+    )
     physical_size_x_unit = "µm" if physical_size_x is not None else None
-    physical_size_y = float(info.physical_size_y_um) if info.physical_size_y_um is not None else None
+    physical_size_y = (
+        float(info.physical_size_y_um) if info.physical_size_y_um is not None else None
+    )
     physical_size_y_unit = "µm" if physical_size_y is not None else None
     return {
         "dtype": np.dtype(image.dtype).str,
@@ -83,7 +95,9 @@ def initialize_metadata(info: "CaptureInfo", image: np.ndarray) -> Dict[str, Any
         "channel_names": channel_names,
         "written_indices": [],
         "saved_count": 0,
-        "expected_count": int(info.total_time_points) * int(info.total_z_levels) * int(info.total_channels),
+        "expected_count": int(info.total_time_points)
+        * int(info.total_z_levels)
+        * int(info.total_channels),
         "planes": {},
         "start_time": info.capture_time,
         "completed": False,
@@ -98,7 +112,9 @@ def initialize_metadata(info: "CaptureInfo", image: np.ndarray) -> Dict[str, Any
     }
 
 
-def update_plane_metadata(metadata: Dict[str, Any], info: "CaptureInfo") -> Dict[str, Any]:
+def update_plane_metadata(
+    metadata: Dict[str, Any], info: "CaptureInfo"
+) -> Dict[str, Any]:
     plane_key = f"{info.time_point}-{info.configuration_idx}-{info.z_index}"
     plane_data: Dict[str, Any] = {
         "TheT": int(info.time_point),
@@ -172,7 +188,9 @@ def build_base_ome_xml(metadata: Dict[str, Any]) -> str:
     size_t, size_z, size_c, size_y, size_x = metadata["shape"]
 
     root = ET.Element("{ns}OME".format(ns="{" + ns + "}"), attrib={"Creator": "Squid"})
-    image = ET.SubElement(root, "{ns}Image".format(ns="{" + ns + "}"), attrib={"ID": "Image:0"})
+    image = ET.SubElement(
+        root, "{ns}Image".format(ns="{" + ns + "}"), attrib={"ID": "Image:0"}
+    )
     if metadata.get("start_time") is not None:
         try:
             acq_time = datetime.fromtimestamp(metadata["start_time"]).isoformat()

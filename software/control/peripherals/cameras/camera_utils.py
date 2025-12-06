@@ -52,7 +52,7 @@ def get_camera(
             "simulated",
             config,
             hw_trigger_fn=hw_trigger_fn,
-            hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+            hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn,
         )
 
     try:
@@ -60,7 +60,9 @@ def get_camera(
             import control.peripherals.cameras.toupcam
 
             camera = control.peripherals.cameras.toupcam.ToupcamCamera(
-                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+                config,
+                hw_trigger_fn=hw_trigger_fn,
+                hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn,
             )
         elif config.camera_type == CameraVariant.FLIR:
             import control.peripherals.cameras.flir
@@ -70,7 +72,9 @@ def get_camera(
             import control.peripherals.cameras.hamamatsu
 
             camera = control.peripherals.cameras.hamamatsu.HamamatsuCamera(
-                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+                config,
+                hw_trigger_fn=hw_trigger_fn,
+                hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn,
             )
         elif config.camera_type == CameraVariant.IDS:
             import control.peripherals.cameras.ids
@@ -80,19 +84,25 @@ def get_camera(
             import control.peripherals.cameras.tucsen
 
             camera = control.peripherals.cameras.tucsen.TucsenCamera(
-                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+                config,
+                hw_trigger_fn=hw_trigger_fn,
+                hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn,
             )
         elif config.camera_type == CameraVariant.PHOTOMETRICS:
             import control.peripherals.cameras.photometrics
 
             camera = control.peripherals.cameras.photometrics.PhotometricsCamera(
-                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+                config,
+                hw_trigger_fn=hw_trigger_fn,
+                hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn,
             )
         elif config.camera_type == CameraVariant.ANDOR:
             import control.peripherals.cameras.andor
 
             camera = control.peripherals.cameras.andor.AndorCamera(
-                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+                config,
+                hw_trigger_fn=hw_trigger_fn,
+                hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn,
             )
         elif config.camera_type == CameraVariant.TIS:
             import control.peripherals.cameras.tis
@@ -102,7 +112,9 @@ def get_camera(
             import control.peripherals.cameras.base
 
             camera = control.peripherals.cameras.base.DefaultCamera(
-                config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+                config,
+                hw_trigger_fn=hw_trigger_fn,
+                hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn,
             )
 
         # NOTE(imo): All of these things are hacks before complete migration to AbstractCamera impls.  They can
@@ -111,19 +123,22 @@ def get_camera(
 
         return camera
     except ImportError as e:
-        _log.warning(f"Camera of type: '{config.camera_type}' failed to import.  Falling back to default camera impl.")
+        _log.warning(
+            f"Camera of type: '{config.camera_type}' failed to import.  Falling back to default camera impl."
+        )
         _log.warning(e)
 
         import control.peripherals.cameras.base
 
         return control.cameras.base.DefaultCamera(
-            config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn
+            config,
+            hw_trigger_fn=hw_trigger_fn,
+            hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn,
         )
 
 
 @camera_registry.register("simulated")
 class SimulatedCamera(AbstractCamera):
-
     PIXEL_SIZE_UM = 3.76
     BINNING_TO_RESOLUTION = {
         (1, 1): (1920, 1080),
@@ -154,12 +169,16 @@ class SimulatedCamera(AbstractCamera):
         self._current_frame = None
 
         self._exposure_time_ms = None
-        self.set_exposure_time(20)  # Just some random sane default since that isn't specified in our config.
+        self.set_exposure_time(
+            20
+        )  # Just some random sane default since that isn't specified in our config.
         self._frame_format = CameraFrameFormat.RAW
         self._pixel_format = None
         self.set_pixel_format(self._config.default_pixel_format)
         self._binning = None
-        self.set_binning(self._config.default_binning[0], self._config.default_binning[1])
+        self.set_binning(
+            self._config.default_binning[0], self._config.default_binning[1]
+        )
         self._analog_gain = None
         self.set_analog_gain(0)
         self._white_balance_gains = None
@@ -202,7 +221,9 @@ class SimulatedCamera(AbstractCamera):
         def __call__(self, *args, **kwargs):
             kwarg_pairs = [f"{k}={v}" for (k, v) in kwargs.items()]
             args_str = [str(a) for a in args]
-            self._log.debug(f"Called(*args, **kwargs) -> Called({','.join(args_str)}, {','.join(kwarg_pairs)}")
+            self._log.debug(
+                f"Called(*args, **kwargs) -> Called({','.join(args_str)}, {','.join(kwarg_pairs)}"
+            )
             return self._val
 
     def __getattr__(self, item):
@@ -243,7 +264,11 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
-        return [CameraPixelFormat.MONO8, CameraPixelFormat.MONO12, CameraPixelFormat.MONO16]
+        return [
+            CameraPixelFormat.MONO8,
+            CameraPixelFormat.MONO12,
+            CameraPixelFormat.MONO16,
+        ]
 
     @debug_log
     def get_binning(self) -> Tuple[int, int]:
@@ -302,8 +327,9 @@ class SimulatedCamera(AbstractCamera):
                 # use self._exposure_time and _acquisition_mode so as not to spam the logs,
                 # but this could case issues if subclassed for testing.
                 if (
-                    self._exposure_time_ms / 1000.0
-                ) - time_since <= 0 and self._acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
+                    (self._exposure_time_ms / 1000.0) - time_since <= 0
+                    and self._acquisition_mode == CameraAcquisitionMode.CONTINUOUS
+                ):
                     self._next_frame()
                     last_frame_time = time.time()
                 time.sleep(0.001)
@@ -319,12 +345,16 @@ class SimulatedCamera(AbstractCamera):
                 self._log.info("Already streaming, not starting again.")
                 return
             elif self._streaming_thread.is_alive() and not self._continue_streaming:
-                self._log.info("Looks like streaming is shutting down, waiting before restarting.")
+                self._log.info(
+                    "Looks like streaming is shutting down, waiting before restarting."
+                )
                 timeout_time = time.time() + 1
                 while self._streaming_thread.is_alive() and timeout_time < time.time():
                     time.sleep(0.001)
                 if self._streaming_thread.is_alive():
-                    raise CameraError("Cannot start streaming, camera is inconsisten state")
+                    raise CameraError(
+                        "Cannot start streaming, camera is inconsisten state"
+                    )
 
         self._continue_streaming = True
         self._start_streaming_thread()
@@ -348,7 +378,9 @@ class SimulatedCamera(AbstractCamera):
         return self._white_balance_gains
 
     @debug_log
-    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
+    def set_white_balance_gains(
+        self, red_gain: float, green_gain: float, blue_gain: float
+    ):
         self._white_balance_gains = (red_gain, green_gain, blue_gain)
 
     @debug_log
@@ -376,7 +408,9 @@ class SimulatedCamera(AbstractCamera):
     @debug_log
     def send_trigger(self, illumination_time: Optional[float] = None):
         if self._acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
-            self._log.warning("Sending triggers in continuous acquisition mode is not allowed.")
+            self._log.warning(
+                "Sending triggers in continuous acquisition mode is not allowed."
+            )
             return
         self._next_frame()
 
@@ -387,21 +421,34 @@ class SimulatedCamera(AbstractCamera):
 
         if self.get_frame_id() == 0:
             if self.get_pixel_format() == CameraPixelFormat.MONO8:
-                self._current_raw_frame = np.random.randint(255, size=(height, width), dtype=np.uint8)
-                self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = 200
-            elif self.get_pixel_format() == CameraPixelFormat.MONO12:
-                self._current_raw_frame = np.random.randint(4095, size=(height, width), dtype=np.uint16)
-                self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = (
-                    200 * 16
+                self._current_raw_frame = np.random.randint(
+                    255, size=(height, width), dtype=np.uint8
                 )
+                self._current_raw_frame[
+                    height // 2 - 99 : height // 2 + 100,
+                    width // 2 - 99 : width // 2 + 100,
+                ] = 200
+            elif self.get_pixel_format() == CameraPixelFormat.MONO12:
+                self._current_raw_frame = np.random.randint(
+                    4095, size=(height, width), dtype=np.uint16
+                )
+                self._current_raw_frame[
+                    height // 2 - 99 : height // 2 + 100,
+                    width // 2 - 99 : width // 2 + 100,
+                ] = 200 * 16
                 self._current_raw_frame = self._current_raw_frame << 4
             elif self.get_pixel_format() == CameraPixelFormat.MONO16:
-                self._current_raw_frame = np.random.randint(65535, size=(height, width), dtype=np.uint16)
-                self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = (
-                    200 * 256
+                self._current_raw_frame = np.random.randint(
+                    65535, size=(height, width), dtype=np.uint16
                 )
+                self._current_raw_frame[
+                    height // 2 - 99 : height // 2 + 100,
+                    width // 2 - 99 : width // 2 + 100,
+                ] = 200 * 256
             else:
-                raise NotImplementedError(f"Simulated camera does not support pixel_format={self.get_pixel_format()}")
+                raise NotImplementedError(
+                    f"Simulated camera does not support pixel_format={self.get_pixel_format()}"
+                )
         else:
             self._current_raw_frame = np.roll(self._current_raw_frame, 10, axis=0)
 
@@ -422,7 +469,9 @@ class SimulatedCamera(AbstractCamera):
         return time.time() - self._last_trigger_timestamp > self.get_exposure_time()
 
     @debug_log
-    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+    def set_region_of_interest(
+        self, offset_x: int, offset_y: int, width: int, height: int
+    ):
         self._roi = (offset_x, offset_y, width, height)
 
     @debug_log

@@ -1,5 +1,6 @@
 # squid/services/peripheral_service.py
 """Service for peripheral hardware (DAC, pins, etc.)."""
+
 from squid.services.base import BaseService
 from squid.events import EventBus, SetDACCommand, DACValueChanged
 

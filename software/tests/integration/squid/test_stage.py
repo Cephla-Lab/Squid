@@ -89,11 +89,15 @@ class TestSimulatedStage:
 
         # Try to move beyond positive limit
         simulated_stage.move_x_to(config.X_AXIS.MAX_POSITION + 100)
-        assert simulated_stage.get_pos().x_mm == pytest.approx(config.X_AXIS.MAX_POSITION)
+        assert simulated_stage.get_pos().x_mm == pytest.approx(
+            config.X_AXIS.MAX_POSITION
+        )
 
         # Try to move beyond negative limit
         simulated_stage.move_x_to(config.X_AXIS.MIN_POSITION - 100)
-        assert simulated_stage.get_pos().x_mm == pytest.approx(config.X_AXIS.MIN_POSITION)
+        assert simulated_stage.get_pos().x_mm == pytest.approx(
+            config.X_AXIS.MIN_POSITION
+        )
 
     def test_set_limits_updates_limits(self, simulated_stage):
         """set_limits should update software limits."""
@@ -163,6 +167,8 @@ def test_position_caching():
         pos=p, stage_config=squid.config.get_stage_config(), cache_path=temp_cache_path
     )
 
-    p_read = control.peripherals.stage.stage_utils.get_cached_position(cache_path=temp_cache_path)
+    p_read = control.peripherals.stage.stage_utils.get_cached_position(
+        cache_path=temp_cache_path
+    )
 
     assert p_read == p

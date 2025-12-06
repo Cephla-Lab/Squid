@@ -1,7 +1,7 @@
 # tests/squid/services/test_camera_service.py
 """Tests for CameraService."""
-import pytest
-from unittest.mock import Mock, MagicMock, PropertyMock
+
+from unittest.mock import Mock
 
 
 class TestCameraService:
@@ -68,7 +68,7 @@ class TestCameraService:
         mock_camera.get_exposure_limits.return_value = (0.1, 1000.0)
         bus = EventBus()
 
-        service = CameraService(mock_camera, bus)
+        CameraService(mock_camera, bus)
 
         bus.publish(SetExposureTimeCommand(exposure_time_ms=200.0))
 
@@ -260,7 +260,10 @@ class TestCameraService:
         from squid.config import CameraPixelFormat
 
         mock_camera = Mock()
-        mock_camera.get_available_pixel_formats.return_value = [CameraPixelFormat.MONO8, CameraPixelFormat.MONO16]
+        mock_camera.get_available_pixel_formats.return_value = [
+            CameraPixelFormat.MONO8,
+            CameraPixelFormat.MONO16,
+        ]
         bus = EventBus()
         service = CameraService(mock_camera, bus)
 
@@ -389,7 +392,9 @@ class TestCameraService:
         from squid.abc import CameraAcquisitionMode
 
         mock_camera = Mock()
-        mock_camera.get_acquisition_mode.return_value = CameraAcquisitionMode.SOFTWARE_TRIGGER
+        mock_camera.get_acquisition_mode.return_value = (
+            CameraAcquisitionMode.SOFTWARE_TRIGGER
+        )
         bus = EventBus()
         service = CameraService(mock_camera, bus)
 

@@ -1,8 +1,9 @@
 # Base utility widgets and functions
-import logging
-from typing import TYPE_CHECKING
+from __future__ import annotations
 
-from qtpy.QtCore import Qt, QAbstractTableModel
+import logging
+from typing import TYPE_CHECKING, Optional, List, Any
+from qtpy.QtCore import Qt, QAbstractTableModel, QModelIndex
 from qtpy.QtWidgets import (
     QMainWindow,
     QGroupBox,
@@ -10,7 +11,7 @@ from qtpy.QtWidgets import (
     QWidget,
     QMessageBox,
 )
-from qtpy.QtGui import QBrush, QColor
+from qtpy.QtGui import QBrush, QColor, QCloseEvent
 
 import pandas as pd
 
@@ -20,25 +21,36 @@ if TYPE_CHECKING:
     from control.core.acquisition import MultiPointController
 
 
-def error_dialog(message: str, title: str = "Error"):
+def error_dialog(message: str, title: str = "Error") -> None:
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Warning)
     msg.setText(message)
     msg.setWindowTitle(title)
     msg.setStandardButtons(QMessageBox.Ok)
     msg.setDefaultButton(QMessageBox.Ok)
-    retval = msg.exec_()
+    msg.exec_()
     return
 
 
 def check_space_available_with_error_dialog(
-    multi_point_controller: "MultiPointController", logger: logging.Logger, factor_of_safecty: float = 1.03
+    multi_point_controller: "MultiPointController",
+    logger: logging.Logger,
+    factor_of_safecty: float = 1.03,
 ) -> bool:
     # To check how much disk space is required, we need to have the MultiPointController all configured.  That is
     # a precondition of this function.
     save_directory = multi_point_controller.base_path
-    available_disk_space = utils.get_available_disk_space(save_directory)
-    space_required = factor_of_safecty * multi_point_controller.get_estimated_acquisition_disk_storage()
+    if save_directory is None:
+        return False
+    from pathlib import Path
+
+    available_disk_space = utils.get_available_disk_space(
+        Path(save_directory) if isinstance(save_directory, str) else save_directory
+    )
+    space_required = (
+        factor_of_safecty
+        * multi_point_controller.get_estimated_acquisition_disk_storage()
+    )
     image_count = multi_point_controller.get_acquisition_image_count()
 
     logger.info(
@@ -58,21 +70,25 @@ def check_space_available_with_error_dialog(
 
 
 class WrapperWindow(QMainWindow):
-    def __init__(self, content_widget, *args, **kwargs):
+    def __init__(self, content_widget: QWidget, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.setCentralWidget(content_widget)
         self.hide()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.hide()
         event.ignore()
 
-    def closeForReal(self, event):
+    def closeForReal(self, event: QCloseEvent) -> None:
         super().closeEvent(event)
 
 
 class CollapsibleGroupBox(QGroupBox):
-    def __init__(self, title):
+    higher_layout: QVBoxLayout
+    content: QVBoxLayout
+    content_widget: QWidget
+
+    def __init__(self, title: str) -> None:
         super(CollapsibleGroupBox, self).__init__(title)
         self.setCheckable(True)
         self.setChecked(True)
@@ -85,14 +101,21 @@ class CollapsibleGroupBox(QGroupBox):
         self.setLayout(self.higher_layout)
         self.toggled.connect(self.toggle_content)
 
-    def toggle_content(self, state):
+    def toggle_content(self, state: bool) -> None:
         self.content_widget.setVisible(state)
 
 
 class PandasTableModel(QAbstractTableModel):
     """Model for displaying pandas DataFrame in a QTableView"""
 
-    def __init__(self, data, port_names=None):
+    _data: pd.DataFrame
+    _current_row: int
+    _port_names: List[str]
+    _column_name_map: dict[str, str]
+
+    def __init__(
+        self, data: pd.DataFrame, port_names: Optional[List[str]] = None
+    ) -> None:
         super().__init__()
         self._data = data
         self._current_row = -1
@@ -107,14 +130,16 @@ class PandasTableModel(QAbstractTableModel):
             "repeat": "Repeat",
         }
 
-    def rowCount(self, parent=None):
+    def rowCount(self, parent: Optional[QModelIndex] = None) -> int:
         return len(self._data)
 
-    def columnCount(self, parent=None):
+    def columnCount(self, parent: Optional[QModelIndex] = None) -> int:
         return len(self._data.columns)
 
-    def data(self, index, role=Qt.DisplayRole):
-        if role == Qt.DisplayRole:
+    def data(
+        self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole
+    ) -> Optional[Any]:
+        if role == Qt.ItemDataRole.DisplayRole:
             value = self._data.iloc[index.row(), index.column()]
             if pd.isna(value):
                 return ""
@@ -132,7 +157,7 @@ class PandasTableModel(QAbstractTableModel):
 
             return str(value)
 
-        elif role == Qt.BackgroundRole:
+        elif role == Qt.ItemDataRole.BackgroundRole:
             # Highlight the current row
             if index.row() == self._current_row:
                 return QBrush(QColor(173, 216, 230))  # Light blue
@@ -140,14 +165,27 @@ class PandasTableModel(QAbstractTableModel):
                 return QBrush(QColor(255, 255, 255))  # White
         return None
 
-    def headerData(self, section, orientation, role=Qt.DisplayRole):
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+    def headerData(
+        self,
+        section: int,
+        orientation: Qt.Orientation,
+        role: int = Qt.ItemDataRole.DisplayRole,
+    ) -> Optional[str]:
+        if (
+            orientation == Qt.Orientation.Horizontal
+            and role == Qt.ItemDataRole.DisplayRole
+        ):
             original_name = str(self._data.columns[section])
             return self._column_name_map.get(original_name, original_name)
-        if orientation == Qt.Vertical and role == Qt.DisplayRole:
+        if (
+            orientation == Qt.Orientation.Vertical
+            and role == Qt.ItemDataRole.DisplayRole
+        ):
             return str(section + 1)
         return None
 
-    def set_current_row(self, row_index):
+    def set_current_row(self, row_index: int) -> None:
         self._current_row = row_index
-        self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount() - 1, self.columnCount() - 1))
+        self.dataChanged.emit(
+            self.index(0, 0), self.index(self.rowCount() - 1, self.columnCount() - 1)
+        )

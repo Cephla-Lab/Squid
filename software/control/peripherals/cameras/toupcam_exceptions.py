@@ -1,5 +1,3 @@
-from zipfile import error
-
 from control.peripherals.cameras.toupcam_sdk import HRESULTException
 
 
@@ -45,7 +43,10 @@ def hresult_checker(exception, *error_names):
     except AttributeError:
         raise exception
     for k in hresult_error_lookup.keys():
-        if hresult_error_lookup[k].lower() == signed_to_unsigned(exception.hr, 32).lower():
+        if (
+            hresult_error_lookup[k].lower()
+            == signed_to_unsigned(exception.hr, 32).lower()
+        ):
             if len(error_names) > 0:
                 if k in error_names:
                     return k

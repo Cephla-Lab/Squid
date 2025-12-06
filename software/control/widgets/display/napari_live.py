@@ -2,6 +2,12 @@
 import numpy as np
 from typing import TYPE_CHECKING
 
+from software.control.core.configuration.channel_configuration_manager import (
+    ChannelConfigurationManager,
+)
+from software.control.core.configuration.contrast_manager import ContrastManager
+from software.control.core.display.stream_handler import StreamHandler
+from software.control.core.navigation.objective_store import ObjectiveStore
 import squid.logging
 import pyqtgraph as pg
 import napari
@@ -21,7 +27,11 @@ from qtpy.QtWidgets import (
     QDockWidget,
 )
 
-from control._def import TriggerMode, USE_NAPARI_FOR_LIVE_CONTROL, USE_NAPARI_WELL_SELECTION
+from control._def import (
+    TriggerMode,
+    USE_NAPARI_FOR_LIVE_CONTROL,
+    USE_NAPARI_WELL_SELECTION,
+)
 from control.core.display import LiveController
 
 if TYPE_CHECKING:
@@ -37,19 +47,19 @@ class NapariLiveWidget(QWidget):
 
     def __init__(
         self,
-        streamHandler,
-        liveController,
-        stage: "AbstractStage",
-        objectiveStore,
-        channelConfigurationManager,
-        contrastManager,
-        camera_service: "CameraService",
-        wellSelectionWidget=None,
-        show_trigger_options=True,
-        show_display_options=True,
-        show_autolevel=False,
-        autolevel=False,
-        parent=None,
+        streamHandler: StreamHandler,
+        liveController: LiveController,
+        stage: AbstractStage,
+        objectiveStore: ObjectiveStore,
+        channelConfigurationManager: ChannelConfigurationManager,
+        contrastManager: ContrastManager,
+        camera_service: CameraService,
+        wellSelectionWidget: QWidget = None,
+        show_trigger_options: bool = True,
+        show_display_options: bool = True,
+        show_autolevel: bool = False,
+        autolevel: bool = False,
+        parent: QWidget = None,
     ):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -64,7 +74,7 @@ class NapariLiveWidget(QWidget):
         self.image_width = 0
         self.image_height = 0
         self.dtype = np.uint8
-        self.channels = set()
+        self.channels: set[str] = set()
         self.init_live = False
         self.init_live_rgb = False
         self.init_scale = False
@@ -77,10 +87,12 @@ class NapariLiveWidget(QWidget):
 
         self.initNapariViewer()
         self.addNapariGrayclipColormap()
-        self.initControlWidgets(show_trigger_options, show_display_options, show_autolevel, autolevel)
+        self.initControlWidgets(
+            show_trigger_options, show_display_options, show_autolevel, autolevel
+        )
         self.update_ui_for_mode(self.live_configuration)
 
-    def initNapariViewer(self):
+    def initNapariViewer(self) -> None:
         self.viewer = napari.Viewer(show=False)
         self.viewerWidget = self.viewer.window._qt_window
         self.viewer.dims.axis_labels = ["Y-axis", "X-axis"]
@@ -89,12 +101,12 @@ class NapariLiveWidget(QWidget):
         self.setLayout(self.layout)
         self.customizeViewer()
 
-    def customizeViewer(self):
+    def customizeViewer(self) -> None:
         # Hide the layer buttons
         if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
             self.viewer.window._qt_viewer.layerButtons.hide()
 
-    def updateHistogram(self, layer):
+    def updateHistogram(self, layer: napari.layers.Image) -> None:
         if self.histogram_widget is not None and layer.data is not None:
             self.pg_image_item.setImage(layer.data, autoLevels=False)
             self.histogram_widget.setLevels(*layer.contrast_limits)
@@ -104,29 +116,48 @@ class NapariLiveWidget(QWidget):
             self.histogram_widget.region.setRegion(layer.contrast_limits)
 
             # Update colormap only if it has changed
-            if hasattr(self, "last_colormap") and self.last_colormap != layer.colormap.name:
-                self.histogram_widget.gradient.setColorMap(self.createColorMap(layer.colormap))
+            if (
+                hasattr(self, "last_colormap")
+                and self.last_colormap != layer.colormap.name
+            ):
+                self.histogram_widget.gradient.setColorMap(
+                    self.createColorMap(layer.colormap)
+                )
             self.last_colormap = layer.colormap.name
 
-    def createColorMap(self, colormap):
+    def createColorMap(self, colormap: napari.utils.colormaps.Colormap) -> pg.ColorMap:
         colors = colormap.colors
         positions = np.linspace(0, 1, len(colors))
         return pg.ColorMap(positions, colors)
 
-    def initControlWidgets(self, show_trigger_options, show_display_options, show_autolevel, autolevel):
+    def initControlWidgets(
+        self,
+        show_trigger_options: bool,
+        show_display_options: bool,
+        show_autolevel: bool,
+        autolevel: bool,
+    ) -> None:
         # Initialize histogram widget
         self.pg_image_item = pg.ImageItem()
         self.histogram_widget = pg.HistogramLUTWidget(image=self.pg_image_item)
         self.histogram_widget.setFixedWidth(100)
-        self.histogram_dock = self.viewer.window.add_dock_widget(self.histogram_widget, area="right", name="hist")
+        self.histogram_dock = self.viewer.window.add_dock_widget(
+            self.histogram_widget, area="right", name="hist"
+        )
         self.histogram_dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
         self.histogram_dock.setTitleBarWidget(QWidget())
-        self.histogram_widget.region.sigRegionChanged.connect(self.on_histogram_region_changed)
-        self.histogram_widget.region.sigRegionChangeFinished.connect(self.on_histogram_region_changed)
+        self.histogram_widget.region.sigRegionChanged.connect(
+            self.on_histogram_region_changed
+        )
+        self.histogram_widget.region.sigRegionChangeFinished.connect(
+            self.on_histogram_region_changed
+        )
 
         # Microscope Configuration
         self.dropdown_modeSelection = QComboBox()
-        for config in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for (
+            config
+        ) in self.channelConfigurationManager.get_channel_configurations_for_objective(
             self.objectiveStore.current_objective
         ):
             self.dropdown_modeSelection.addItem(config.name)
@@ -180,11 +211,17 @@ class NapariLiveWidget(QWidget):
         # Illumination Intensity
         self.slider_illuminationIntensity = QSlider(Qt.Horizontal)
         self.slider_illuminationIntensity.setRange(0, 100)
-        self.slider_illuminationIntensity.setValue(int(self.live_configuration.illumination_intensity))
+        self.slider_illuminationIntensity.setValue(
+            int(self.live_configuration.illumination_intensity)
+        )
         self.slider_illuminationIntensity.setTickPosition(QSlider.TicksBelow)
         self.slider_illuminationIntensity.setTickInterval(10)
-        self.slider_illuminationIntensity.valueChanged.connect(self.update_config_illumination_intensity)
-        self.label_illuminationIntensity = QLabel(str(self.slider_illuminationIntensity.value()) + "%")
+        self.slider_illuminationIntensity.valueChanged.connect(
+            self.update_config_illumination_intensity
+        )
+        self.label_illuminationIntensity = QLabel(
+            str(self.slider_illuminationIntensity.value()) + "%"
+        )
         self.slider_illuminationIntensity.valueChanged.connect(
             lambda v: self.label_illuminationIntensity.setText(str(v) + "%")
         )
@@ -198,7 +235,9 @@ class NapariLiveWidget(QWidget):
         ]
         for display_name, mode in trigger_modes:
             self.dropdown_triggerMode.addItem(display_name, mode)
-        self.dropdown_triggerMode.currentIndexChanged.connect(self.on_trigger_mode_changed)
+        self.dropdown_triggerMode.currentIndexChanged.connect(
+            self.on_trigger_mode_changed
+        )
 
         # Trigger FPS
         self.entry_triggerFPS = QDoubleSpinBox()
@@ -218,9 +257,15 @@ class NapariLiveWidget(QWidget):
         self.slider_resolutionScaling.setValue(100)
         self.slider_resolutionScaling.setTickPosition(QSlider.TicksBelow)
         self.slider_resolutionScaling.setTickInterval(10)
-        self.slider_resolutionScaling.valueChanged.connect(self.update_resolution_scaling)
-        self.label_resolutionScaling = QLabel(str(self.slider_resolutionScaling.value()) + "%")
-        self.slider_resolutionScaling.valueChanged.connect(lambda v: self.label_resolutionScaling.setText(str(v) + "%"))
+        self.slider_resolutionScaling.valueChanged.connect(
+            self.update_resolution_scaling
+        )
+        self.label_resolutionScaling = QLabel(
+            str(self.slider_resolutionScaling.value()) + "%"
+        )
+        self.slider_resolutionScaling.valueChanged.connect(
+            lambda v: self.label_resolutionScaling.setText(str(v) + "%")
+        )
 
         # Autolevel
         self.btn_autolevel = QPushButton("Autolevel")
@@ -241,35 +286,53 @@ class NapariLiveWidget(QWidget):
         # Add widgets to layout
         control_layout.addWidget(self.dropdown_modeSelection)
         control_layout.addWidget(self.btn_live)
-        control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        control_layout.addSpacerItem(
+            QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding)
+        )
 
         row1 = make_row(QLabel("Exposure Time"), self.entry_exposureTime)
         control_layout.addLayout(row1)
 
-        row2 = make_row(QLabel("Illumination"), self.slider_illuminationIntensity, self.label_illuminationIntensity)
+        row2 = make_row(
+            QLabel("Illumination"),
+            self.slider_illuminationIntensity,
+            self.label_illuminationIntensity,
+        )
         control_layout.addLayout(row2)
 
         row3 = make_row((QLabel("Analog Gain")), self.entry_analogGain)
         control_layout.addLayout(row3)
-        control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        control_layout.addSpacerItem(
+            QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding)
+        )
 
         if show_trigger_options:
             row0 = make_row(QLabel("Trigger Mode"), self.dropdown_triggerMode)
             control_layout.addLayout(row0)
             row00 = make_row(QLabel("Trigger FPS"), self.entry_triggerFPS)
             control_layout.addLayout(row00)
-            control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
+            control_layout.addSpacerItem(
+                QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding)
+            )
 
         if show_display_options:
             row4 = make_row((QLabel("Display FPS")), self.entry_displayFPS)
             control_layout.addLayout(row4)
-            row5 = make_row(QLabel("Display Resolution"), self.slider_resolutionScaling, self.label_resolutionScaling)
+            row5 = make_row(
+                QLabel("Display Resolution"),
+                self.slider_resolutionScaling,
+                self.label_resolutionScaling,
+            )
             control_layout.addLayout(row5)
-            control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
+            control_layout.addSpacerItem(
+                QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding)
+            )
 
         if show_autolevel:
             control_layout.addWidget(self.btn_autolevel)
-            control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
+            control_layout.addSpacerItem(
+                QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding)
+            )
 
         control_layout.addStretch(1)
 
@@ -278,12 +341,18 @@ class NapariLiveWidget(QWidget):
             live_controls_widget = QWidget()
             live_controls_widget.setLayout(control_layout)
 
-            layer_controls_widget = self.viewer.window._qt_viewer.dockLayerControls.widget()
+            layer_controls_widget = (
+                self.viewer.window._qt_viewer.dockLayerControls.widget()
+            )
             layer_list_widget = self.viewer.window._qt_viewer.dockLayerList.widget()
 
             self.viewer.window._qt_viewer.layerButtons.hide()
-            self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerControls)
-            self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerList)
+            self.viewer.window.remove_dock_widget(
+                self.viewer.window._qt_viewer.dockLayerControls
+            )
+            self.viewer.window.remove_dock_widget(
+                self.viewer.window._qt_viewer.dockLayerList
+            )
 
             # Add the actual dock widgets
             self.dock_layer_controls = self.viewer.window.add_dock_widget(
@@ -296,7 +365,9 @@ class NapariLiveWidget(QWidget):
                 live_controls_widget, area="left", name="live controls", tabify=True
             )
 
-            self.viewer.window.window_menu.addAction(self.dock_live_controls.toggleViewAction())
+            self.viewer.window.window_menu.addAction(
+                self.dock_live_controls.toggleViewAction()
+            )
 
         if USE_NAPARI_WELL_SELECTION:
             well_selector_layout = QVBoxLayout()
@@ -313,27 +384,33 @@ class NapariLiveWidget(QWidget):
             self.dock_well_selector = self.viewer.window.add_dock_widget(
                 well_selector_dock_widget, area="bottom", name="well selector"
             )
-            self.dock_well_selector.setFixedHeight(self.dock_well_selector.minimumSizeHint().height())
+            self.dock_well_selector.setFixedHeight(
+                self.dock_well_selector.minimumSizeHint().height()
+            )
 
         layer_controls_widget = self.viewer.window._qt_viewer.dockLayerControls.widget()
         layer_list_widget = self.viewer.window._qt_viewer.dockLayerList.widget()
 
         self.viewer.window._qt_viewer.layerButtons.hide()
-        self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerControls)
-        self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerList)
+        self.viewer.window.remove_dock_widget(
+            self.viewer.window._qt_viewer.dockLayerControls
+        )
+        self.viewer.window.remove_dock_widget(
+            self.viewer.window._qt_viewer.dockLayerList
+        )
         self.print_window_menu_items()
 
-    def print_window_menu_items(self):
+    def print_window_menu_items(self) -> None:
         print("Items in window_menu:")
         for action in self.viewer.window.window_menu.actions():
             print(action.text())
 
-    def on_histogram_region_changed(self):
+    def on_histogram_region_changed(self) -> None:
         if self.live_configuration.name:
             min_val, max_val = self.histogram_widget.region.getRegion()
             self.updateContrastLimits(self.live_configuration.name, min_val, max_val)
 
-    def toggle_live(self, pressed):
+    def toggle_live(self, pressed: bool) -> None:
         if pressed:
             self.liveController.start_live()
             self.btn_live.setText("Stop Live")
@@ -341,19 +418,19 @@ class NapariLiveWidget(QWidget):
             self.liveController.stop_live()
             self.btn_live.setText("Start Live")
 
-    def toggle_live_controls(self, show):
+    def toggle_live_controls(self, show: bool) -> None:
         if show:
             self.dock_live_controls.show()
         else:
             self.dock_live_controls.hide()
 
-    def toggle_well_selector(self, show):
+    def toggle_well_selector(self, show: bool) -> None:
         if show:
             self.dock_well_selector.show()
         else:
             self.dock_well_selector.hide()
 
-    def replace_well_selector(self, wellSelector):
+    def replace_well_selector(self, wellSelector: QWidget) -> None:
         self.viewer.window.remove_dock_widget(self.dock_well_selector)
         self.wellSelectionWidget = wellSelector
         well_selector_layout = QHBoxLayout()
@@ -366,73 +443,98 @@ class NapariLiveWidget(QWidget):
             well_selector_dock_widget, area="bottom", name="well selector", tabify=True
         )
 
-    def select_new_microscope_mode_by_name(self, config_index):
+    def select_new_microscope_mode_by_name(self, config_index: int) -> None:
         config_name = self.dropdown_modeSelection.itemText(config_index)
-        maybe_new_config = self.channelConfigurationManager.get_channel_configuration_by_name(
-            self.objectiveStore.current_objective, config_name
+        maybe_new_config = (
+            self.channelConfigurationManager.get_channel_configuration_by_name(
+                self.objectiveStore.current_objective, config_name
+            )
         )
 
         if not maybe_new_config:
-            self._log.error(f"User attempted to select config named '{config_name}' but it does not exist!")
+            self._log.error(
+                f"User attempted to select config named '{config_name}' but it does not exist!"
+            )
             return
 
         self.liveController.set_microscope_mode(maybe_new_config)
         self.update_ui_for_mode(maybe_new_config)
 
-    def update_ui_for_mode(self, config):
+    def update_ui_for_mode(self, config: ChannelConfiguration) -> None:
         self.live_configuration = config
         self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
         if self.live_configuration:
             self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
             self.entry_analogGain.setValue(self.live_configuration.analog_gain)
-            self.slider_illuminationIntensity.setValue(int(self.live_configuration.illumination_intensity))
+            self.slider_illuminationIntensity.setValue(
+                int(self.live_configuration.illumination_intensity)
+            )
 
-    def update_config_exposure_time(self, new_value):
+    def update_config_exposure_time(self, new_value: float) -> None:
         self.live_configuration.exposure_time = new_value
         self.channelConfigurationManager.update_configuration(
-            self.objectiveStore.current_objective, self.live_configuration.id, "ExposureTime", new_value
+            self.objectiveStore.current_objective,
+            self.live_configuration.id,
+            "ExposureTime",
+            new_value,
         )
         self.signal_newExposureTime.emit(new_value)
 
-    def update_config_analog_gain(self, new_value):
+    def update_config_analog_gain(self, new_value: float) -> None:
         self.live_configuration.analog_gain = new_value
         self.channelConfigurationManager.update_configuration(
-            self.objectiveStore.current_objective, self.live_configuration.id, "AnalogGain", new_value
+            self.objectiveStore.current_objective,
+            self.live_configuration.id,
+            "AnalogGain",
+            new_value,
         )
         self.signal_newAnalogGain.emit(new_value)
 
-    def update_config_illumination_intensity(self, new_value):
+    def update_config_illumination_intensity(self, new_value: float) -> None:
         self.live_configuration.illumination_intensity = new_value
         self.channelConfigurationManager.update_configuration(
-            self.objectiveStore.current_objective, self.live_configuration.id, "IlluminationIntensity", new_value
+            self.objectiveStore.current_objective,
+            self.live_configuration.id,
+            "IlluminationIntensity",
+            new_value,
         )
         self.liveController.update_illumination()
 
-    def update_resolution_scaling(self, value):
+    def update_resolution_scaling(self, value: float) -> None:
         self.streamHandler.set_display_resolution_scaling(value)
         self.liveController.set_display_resolution_scaling(value)
 
-    def on_trigger_mode_changed(self, index):
+    def on_trigger_mode_changed(self, index: int) -> None:
         # Get the actual value using user data
         actual_value = self.dropdown_triggerMode.itemData(index)
-        print(f"Selected: {self.dropdown_triggerMode.currentText()} (actual value: {actual_value})")
+        print(
+            f"Selected: {self.dropdown_triggerMode.currentText()} (actual value: {actual_value})"
+        )
 
-    def addNapariGrayclipColormap(self):
+    def addNapariGrayclipColormap(self) -> None:
         if hasattr(napari.utils.colormaps.AVAILABLE_COLORMAPS, "grayclip"):
             return
         grayclip = []
         for i in range(255):
             grayclip.append([i / 255, i / 255, i / 255])
         grayclip.append([1, 0, 0])
-        napari.utils.colormaps.AVAILABLE_COLORMAPS["grayclip"] = napari.utils.Colormap(name="grayclip", colors=grayclip)
+        napari.utils.colormaps.AVAILABLE_COLORMAPS["grayclip"] = napari.utils.Colormap(
+            name="grayclip", colors=grayclip
+        )
 
-    def initLiveLayer(self, channel, image_height, image_width, image_dtype, rgb=False):
+    def initLiveLayer(
+        self,
+        channel: str,
+        image_height: int,
+        image_width: int,
+        image_dtype: np.dtype,
+        rgb: bool = False,
+    ) -> None:
         """Initializes the full canvas for each channel based on the acquisition parameters."""
         self.viewer.layers.clear()
         self.image_width = image_width
         self.image_height = image_height
         if self.dtype != np.dtype(image_dtype):
-
             self.contrastManager.scale_contrast_limits(
                 np.dtype(image_dtype)
             )  # Fix This to scale existing contrast limits to new dtype range
@@ -455,7 +557,9 @@ class NapariLiveWidget(QWidget):
             contrast_limits=limits,
             blending="additive",
         )
-        layer.contrast_limits = self.contrastManager.get_limits(self.live_configuration.name, self.dtype)
+        layer.contrast_limits = self.contrastManager.get_limits(
+            self.live_configuration.name, self.dtype
+        )
         layer.mouse_double_click_callbacks.append(self.onDoubleClick)
         layer.events.contrast_limits.connect(self.signalContrastLimits)
         self.updateHistogram(layer)
@@ -468,7 +572,7 @@ class NapariLiveWidget(QWidget):
             self.viewer.camera.zoom = self.previous_scale
             self.viewer.camera.center = self.previous_center
 
-    def updateLiveLayer(self, image, from_autofocus=False):
+    def updateLiveLayer(self, image: np.ndarray, from_autofocus: bool = False) -> None:
         """Updates the canvas with the new image data."""
         if self.dtype != np.dtype(image.dtype):
             self.contrastManager.scale_contrast_limits(np.dtype(image.dtype))
@@ -481,19 +585,33 @@ class NapariLiveWidget(QWidget):
         rgb = len(image.shape) >= 3
 
         if not rgb and not self.init_live or "Live View" not in self.viewer.layers:
-            self.initLiveLayer(self.live_configuration.name, image.shape[0], image.shape[1], image.dtype, rgb)
+            self.initLiveLayer(
+                self.live_configuration.name,
+                image.shape[0],
+                image.shape[1],
+                image.dtype,
+                rgb,
+            )
             self.init_live = True
             self.init_live_rgb = False
             print("init live")
         elif rgb and not self.init_live_rgb:
-            self.initLiveLayer(self.live_configuration.name, image.shape[0], image.shape[1], image.dtype, rgb)
+            self.initLiveLayer(
+                self.live_configuration.name,
+                image.shape[0],
+                image.shape[1],
+                image.dtype,
+                rgb,
+            )
             self.init_live_rgb = True
             self.init_live = False
             print("init live rgb")
 
         layer = self.viewer.layers["Live View"]
         layer.data = image
-        layer.contrast_limits = self.contrastManager.get_limits(self.live_configuration.name)
+        layer.contrast_limits = self.contrastManager.get_limits(
+            self.live_configuration.name
+        )
         self.updateHistogram(layer)
 
         if from_autofocus:
@@ -521,36 +639,47 @@ class NapariLiveWidget(QWidget):
             self.last_was_autofocus = False
         layer.refresh()
 
-    def onDoubleClick(self, layer, event):
+    def onDoubleClick(self, layer: Layer, event: Event) -> None:
         """Handle double-click events and emit centered coordinates if within the data range."""
         coords = layer.world_to_data(event.position)
-        layer_shape = layer.data.shape[0:2] if len(layer.data.shape) >= 3 else layer.data.shape
+        layer_shape = (
+            layer.data.shape[0:2] if len(layer.data.shape) >= 3 else layer.data.shape
+        )
 
-        if coords is not None and (0 <= int(coords[-1]) < layer_shape[-1] and (0 <= int(coords[-2]) < layer_shape[-2])):
+        if coords is not None and (
+            0 <= int(coords[-1]) < layer_shape[-1]
+            and (0 <= int(coords[-2]) < layer_shape[-2])
+        ):
             x_centered = int(coords[-1] - layer_shape[-1] / 2)
             y_centered = int(coords[-2] - layer_shape[-2] / 2)
             # Emit the centered coordinates and dimensions of the layer's data array
-            self.signal_coordinates_clicked.emit(x_centered, y_centered, layer_shape[-1], layer_shape[-2])
+            self.signal_coordinates_clicked.emit(
+                x_centered, y_centered, layer_shape[-1], layer_shape[-2]
+            )
 
-    def set_live_configuration(self, live_configuration):
+    def set_live_configuration(self, live_configuration: ChannelConfiguration) -> None:
         self.live_configuration = live_configuration
 
-    def updateContrastLimits(self, channel, min_val, max_val):
+    def updateContrastLimits(
+        self, channel: str, min_val: float, max_val: float
+    ) -> None:
         self.contrastManager.update_limits(channel, min_val, max_val)
         if "Live View" in self.viewer.layers:
             self.viewer.layers["Live View"].contrast_limits = (min_val, max_val)
 
-    def signalContrastLimits(self, event):
+    def signalContrastLimits(self, event: Event) -> None:
         layer = event.source
         min_val, max_val = map(float, layer.contrast_limits)
-        self.contrastManager.update_limits(self.live_configuration.name, min_val, max_val)
+        self.contrastManager.update_limits(
+            self.live_configuration.name, min_val, max_val
+        )
 
-    def getContrastLimits(self, dtype):
+    def getContrastLimits(self, dtype: np.dtype) -> tuple:
         return self.contrastManager.get_default_limits()
 
-    def resetView(self):
+    def resetView(self) -> None:
         self.viewer.reset_view()
 
-    def activate(self):
+    def activate(self) -> None:
         print("ACTIVATING NAPARI LIVE WIDGET")
         self.viewer.window.activate()

@@ -1,14 +1,32 @@
 from control.widgets.tracking._common import *
 
+
 class DisplacementMeasurementWidget(QFrame):
-    def __init__(self, displacementMeasurementController, waveformDisplay, main=None, *args, **kwargs):
+    entry_x_offset: QDoubleSpinBox
+    entry_y_offset: QDoubleSpinBox
+    entry_x_scaling: QDoubleSpinBox
+    entry_y_scaling: QDoubleSpinBox
+    entry_N_average: QSpinBox
+    entry_N: QSpinBox
+    reading_x: QLabel
+    reading_y: QLabel
+    grid: QGridLayout
+
+    def __init__(
+        self,
+        displacementMeasurementController: Any,
+        waveformDisplay: Any,
+        main: Optional[Any] = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.displacementMeasurementController = displacementMeasurementController
         self.waveformDisplay = waveformDisplay
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-    def add_components(self):
+    def add_components(self) -> None:
         self.entry_x_offset = QDoubleSpinBox()
         self.entry_x_offset.setMinimum(0)
         self.entry_x_offset.setMaximum(3000)
@@ -98,7 +116,7 @@ class DisplacementMeasurementWidget(QFrame):
         self.entry_N.valueChanged.connect(self.update_settings)
         self.entry_N.valueChanged.connect(self.update_waveformDisplay_N)
 
-    def update_settings(self, new_value):
+    def update_settings(self, new_value: float) -> None:
         print("update settings")
         self.displacementMeasurementController.update_settings(
             self.entry_x_offset.value(),
@@ -109,11 +127,9 @@ class DisplacementMeasurementWidget(QFrame):
             self.entry_N.value(),
         )
 
-    def update_waveformDisplay_N(self, N):
+    def update_waveformDisplay_N(self, N: int) -> None:
         self.waveformDisplay.update_N(N)
 
-    def display_readings(self, readings):
+    def display_readings(self, readings: List[float]) -> None:
         self.reading_x.setText("{:.2f}".format(readings[0]))
         self.reading_y.setText("{:.2f}".format(readings[1]))
-
-

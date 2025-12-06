@@ -17,11 +17,12 @@ Usage:
     ready.wait(timeout=5.0)  # Block until set or timeout
     ready.set()              # Wake up waiters
 """
+
 from threading import Lock, Condition
 from typing import TypeVar, Generic, Optional, Callable
 from contextlib import contextmanager
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class ThreadSafeValue(Generic[T]):

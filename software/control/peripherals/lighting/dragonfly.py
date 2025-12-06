@@ -6,7 +6,6 @@ import squid.logging
 
 
 class Dragonfly:
-
     def __init__(self, SN: str):
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.serial_connection = SerialDevice(
@@ -39,7 +38,9 @@ class Dragonfly:
         Returns:
             Response content (without suffix) on success, None on failure
         """
-        response = self.serial_connection.write_and_read(command + "\r", read_delay=read_delay)
+        response = self.serial_connection.write_and_read(
+            command + "\r", read_delay=read_delay
+        )
 
         if response.endswith(":A"):
             # Success - return the response without :A suffix
@@ -47,11 +48,15 @@ class Dragonfly:
         elif response.endswith(":N"):
             # Failure
             self.log.error(f"Command failed: {command} -> {response}")
-            raise SerialDeviceError(f"Dragonfly command failed: {command} -> {response}")
+            raise SerialDeviceError(
+                f"Dragonfly command failed: {command} -> {response}"
+            )
         else:
             # Unexpected response format
             self.log.error(f"Unexpected response format: {command} -> {response}")
-            raise SerialDeviceError(f"Dragonfly unexpected response format: {command} -> {response}")
+            raise SerialDeviceError(
+                f"Dragonfly unexpected response format: {command} -> {response}"
+            )
 
     def get_config(self):
         """Get device configuration and capabilities"""
@@ -115,7 +120,7 @@ class Dragonfly:
             position: Target position
         """
         command = f"AT_PS_POS,1,{position}"
-        response = self._send_command(command)
+        self._send_command(command)
         return position
 
     def get_port_selection_dichroic(self) -> int:
@@ -137,15 +142,23 @@ class Dragonfly:
         Returns:
             Current camera port (1 or 2)
         """
-        if not self.ps_info or not (1 <= self.current_port_selection_dichroic <= len(self.ps_info)):
-            raise ValueError(f"Port selection dichroic info does not match current position: {self.ps_info}")
+        if not self.ps_info or not (
+            1 <= self.current_port_selection_dichroic <= len(self.ps_info)
+        ):
+            raise ValueError(
+                f"Port selection dichroic info does not match current position: {self.ps_info}"
+            )
 
         if self.ps_info[self.current_port_selection_dichroic - 1].endswith("100% Pass"):
             return 1
-        elif self.ps_info[self.current_port_selection_dichroic - 1].endswith("100% Reflect"):
+        elif self.ps_info[self.current_port_selection_dichroic - 1].endswith(
+            "100% Reflect"
+        ):
             return 2
         else:
-            raise ValueError(f"Unknown camera port: {self.ps_info[self.current_port_selection_dichroic - 1]}")
+            raise ValueError(
+                f"Unknown camera port: {self.ps_info[self.current_port_selection_dichroic - 1]}"
+            )
 
     def set_modality(self, modality: str):
         """Set imaging modality
@@ -233,13 +246,15 @@ class Dragonfly:
         Returns:
             Current position
         """
-        response = self._send_command(f"AT_AP_POS,1,?")
+        response = self._send_command("AT_AP_POS,1,?")
         if response.isdigit():
             return int(response)
         else:
             raise ValueError(f"Unknown aperture position: {response}")
 
-    def _get_component_info(self, component_type: str, port: int, index: int | None = None) -> str:
+    def _get_component_info(
+        self, component_type: str, port: int, index: int | None = None
+    ) -> str:
         """Get information about a component
 
         Args:
@@ -259,12 +274,16 @@ class Dragonfly:
 
     def get_emission_filter_info(self, port: int) -> list[str]:
         response = self._send_command(f"AT_FW_COMPO,{port},?")
-        available = response.split(",")[1]  # Not sure about the format of the response. Need to confirm.
+        available = response.split(",")[
+            1
+        ]  # Not sure about the format of the response. Need to confirm.
         if available == "0":
             return []
         else:
             info = []
-            for i in range(1, 8):  # Assume there are 8 positions on the emission filter wheel
+            for i in range(
+                1, 8
+            ):  # Assume there are 8 positions on the emission filter wheel
                 info.append(str(i) + ":" + self._get_component_info("FW", port, i))
             return info
 
@@ -386,7 +405,9 @@ class Dragonfly_Simulation:
         """Get current aperture position"""
         return self.field_aperture_positions.get(1, 1)
 
-    def _get_component_info(self, component_type: str, port: int, index: int | None = None) -> str:
+    def _get_component_info(
+        self, component_type: str, port: int, index: int | None = None
+    ) -> str:
         """Get information about a component"""
         return f"Component {component_type} Port {port} - Simulation"
 

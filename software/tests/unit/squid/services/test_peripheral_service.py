@@ -1,7 +1,7 @@
 # tests/squid/services/test_peripheral_service.py
 """Tests for PeripheralService."""
-import pytest
-from unittest.mock import Mock, MagicMock
+
+from unittest.mock import Mock
 
 
 class TestPeripheralService:
@@ -63,7 +63,7 @@ class TestPeripheralService:
 
         mock_mcu = Mock()
         bus = EventBus()
-        service = PeripheralService(mock_mcu, bus)
+        PeripheralService(mock_mcu, bus)
 
         # Publish command
         bus.publish(SetDACCommand(channel=1, value=75.0))

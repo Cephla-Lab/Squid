@@ -13,13 +13,14 @@ from ctypes import *
 # abosorb platform dependency
 
 __platform_system = platform.system()
-if __platform_system == 'Windows':
-    __dll = windll.LoadLibrary('dcamapi.dll')
+if __platform_system == "Windows":
+    __dll = windll.LoadLibrary("dcamapi.dll")
 else:  # Linux
-    __dll = cdll.LoadLibrary('/usr/local/lib/libdcamapi.so')
+    __dll = cdll.LoadLibrary("/usr/local/lib/libdcamapi.so")
 
 
 # ==== declare constants ====
+
 
 class DCAMERR(IntEnum):
     # status error
@@ -30,14 +31,20 @@ class DCAMERR(IntEnum):
     NOTBUSY = -2147483385  # 0x80000107, API requires busy state.
     EXCLUDED = -2147483376  # 0x80000110, some resource is exclusive and already used
     COOLINGTROUBLE = -2147482878  # 0x80000302, something happens near cooler
-    NOTRIGGER = -2147482877  # 0x80000303, no trigger when necessary. Some camera supports this error.
+    NOTRIGGER = (
+        -2147482877
+    )  # 0x80000303, no trigger when necessary. Some camera supports this error.
     TEMPERATURE_TROUBLE = -2147482876  # 0x80000304, camera warns its temperature
-    TOOFREQUENTTRIGGER = -2147482875  # 0x80000305, input too frequent trigger. Some camera supports this error.
+    TOOFREQUENTTRIGGER = (
+        -2147482875
+    )  # 0x80000305, input too frequent trigger. Some camera supports this error.
     # wait error
     ABORT = -2147483390  # 0x80000102, abort process
     TIMEOUT = -2147483386  # 0x80000106, timeout
     LOSTFRAME = -2147482879  # 0x80000301, frame data is lost
-    MISSINGFRAME_TROUBLE = -2147479802  # 0x80000f06, frame is lost but reason is low lever driver's bug
+    MISSINGFRAME_TROUBLE = (
+        -2147479802
+    )  # 0x80000f06, frame is lost but reason is low lever driver's bug
     INVALIDIMAGE = -2147482847  # 0x80000321, hpk format data is invalid data
     # initialization error
     NORESOURCE = -2147483135  # 0x80000201, not enough resource except memory
@@ -48,7 +55,9 @@ class DCAMERR(IntEnum):
     NOGRABBER = -2147483129  # 0x80000207, no grabber
     NOCOMBINATION = -2147483128  # 0x80000208, no combination on registry
     FAILOPEN = -2147479551  # 0x80001001, DEPRECATED
-    FRAMEGRABBER_NEEDS_FIRMWAREUPDATE = -2147479550  # 0x80001002, need to update frame grabber firmware to use the camera
+    FRAMEGRABBER_NEEDS_FIRMWAREUPDATE = (
+        -2147479550
+    )  # 0x80001002, need to update frame grabber firmware to use the camera
     INVALIDMODULE = -2147483119  # 0x80000211, dcam_init() found invalid module
     INVALIDCOMMPORT = -2147483118  # 0x80000212, invalid serial port
     FAILOPENBUS = -2130702335  # 0x81001001, the bus or driver are not available
@@ -64,23 +73,41 @@ class DCAMERR(IntEnum):
     NOTREADABLE = -2147481564  # 0x80000824, the property is not readable
     INVALIDPROPERTYID = -2147481563  # 0x80000825, the property id is invalid
     NEWAPIREQUIRED = -2147481562  # 0x80000826, old API cannot present the value because only new API need to be used
-    WRONGHANDSHAKE = -2147481561  # 0x80000827, this error happens DCAM get error code from camera unexpectedly
-    NOPROPERTY = -2147481560  # 0x80000828, there is no altenative or influence id, or no more property id
-    INVALIDCHANNEL = -2147481559  # 0x80000829, the property id specifies channel but channel is invalid
-    INVALIDVIEW = -2147481558  # 0x8000082a, the property id specifies channel but channel is invalid
+    WRONGHANDSHAKE = (
+        -2147481561
+    )  # 0x80000827, this error happens DCAM get error code from camera unexpectedly
+    NOPROPERTY = (
+        -2147481560
+    )  # 0x80000828, there is no altenative or influence id, or no more property id
+    INVALIDCHANNEL = (
+        -2147481559
+    )  # 0x80000829, the property id specifies channel but channel is invalid
+    INVALIDVIEW = (
+        -2147481558
+    )  # 0x8000082a, the property id specifies channel but channel is invalid
     INVALIDSUBARRAY = -2147481557  # 0x8000082b, the combination of subarray values are invalid. e.g. DCAM_IDPROP_SUBARRAYHPOS + DCAM_IDPROP_SUBARRAYHSIZE is greater than the number of horizontal pixel of sensor.
-    ACCESSDENY = -2147481556  # 0x8000082c, the property cannot access during this DCAM STATUS
+    ACCESSDENY = (
+        -2147481556
+    )  # 0x8000082c, the property cannot access during this DCAM STATUS
     NOVALUETEXT = -2147481555  # 0x8000082d, the property does not have value text
     WRONGPROPERTYVALUE = -2147481554  # 0x8000082e, at least one property value is wrong
-    DISHARMONY = -2147481552  # 0x80000830, the paired camera does not have same parameter
-    FRAMEBUNDLESHOULDBEOFF = -2147481550  # 0x80000832, framebundle mode should be OFF under current property settings
+    DISHARMONY = (
+        -2147481552
+    )  # 0x80000830, the paired camera does not have same parameter
+    FRAMEBUNDLESHOULDBEOFF = (
+        -2147481550
+    )  # 0x80000832, framebundle mode should be OFF under current property settings
     INVALIDFRAMEINDEX = -2147481549  # 0x80000833, the frame index is invalid
     INVALIDSESSIONINDEX = -2147481548  # 0x80000834, the session index is invalid
-    NOCORRECTIONDATA = -2147481544  # 0x80000838, not take the dark and shading correction data yet.
+    NOCORRECTIONDATA = (
+        -2147481544
+    )  # 0x80000838, not take the dark and shading correction data yet.
     CHANNELDEPENDENTVALUE = -2147481543  # 0x80000839, each channel has own property value so can't return overall property value.
     VIEWDEPENDENTVALUE = -2147481542  # 0x8000083a, each view has own property value so can't return overall property value.
     NODEVICEBUFFER = -2147481541  # 0x8000083b, the frame count is larger than device momory size on using device memory.
-    REQUIREDSNAP = -2147481540  # 0x8000083c, the capture mode is sequence on using device memory.
+    REQUIREDSNAP = (
+        -2147481540
+    )  # 0x8000083c, the capture mode is sequence on using device memory.
     LESSSYSTEMMEMORY = -2147481537  # 0x8000083f, the sysmte memory size is too small. PC doesn't have enough memory or is limited memory by 32bit OS.
     INVALID_SELECTEDLINES = -2147481534  # 0x80000842, the combination of selected lines values are invalid. e.g. DCAM_IDPROP_SELECTEDLINES_VPOS + DCAM_IDPROP_SELECTEDLINES_VSIZE is greater than the number of vertical lines of sensor.
     NOTSUPPORT = -2147479805  # 0x80000f03, camera does not support the function or property with current settings
@@ -88,9 +115,13 @@ class DCAMERR(IntEnum):
     FAILREADCAMERA = -2097147902  # 0x83001002, failed to read data from camera
     FAILWRITECAMERA = -2097147901  # 0x83001003, failed to write data to the camera
     CONFLICTCOMMPORT = -2097147900  # 0x83001004, conflict the com port name user set
-    OPTICS_UNPLUGGED = -2097147899  # 0x83001005, Optics part is unplugged so please check it.
+    OPTICS_UNPLUGGED = (
+        -2097147899
+    )  # 0x83001005, Optics part is unplugged so please check it.
     FAILCALIBRATION = -2097147898  # 0x83001006, fail calibration
-    MISMATCH_CONFIGURATION = -2097147887  # 0x83001011, mismatch between camera output(connection) and frame grabber specs
+    MISMATCH_CONFIGURATION = (
+        -2097147887
+    )  # 0x83001011, mismatch between camera output(connection) and frame grabber specs
     # 0x84000100 - 0x840001FF, DCAMERR_INVALIDMEMBER_x
     INVALIDMEMBER_3 = -2080374525  # 0x84000103, 3th member variable is invalid value
     INVALIDMEMBER_5 = -2080374523  # 0x84000105, 5th member variable is invalid value
@@ -103,13 +134,21 @@ class DCAMERR(IntEnum):
     FAILEDREADDATA = -2080370684  # 0x84001004, DCAMREC failed to read the data
     NOWRECORDING = -2080370683  # 0x84001005, DCAMREC is recording data now
     WRITEFULL = -2080370682  # 0x84001006, DCAMREC writes full frame of the session
-    ALREADYOCCUPIED = -2080370681  # 0x84001007, DCAMREC handle is already occupied by other HDCAM
-    TOOLARGEUSERDATASIZE = -2080370680  # 0x84001008, DCAMREC is set the large value to user data size
+    ALREADYOCCUPIED = (
+        -2080370681
+    )  # 0x84001007, DCAMREC handle is already occupied by other HDCAM
+    TOOLARGEUSERDATASIZE = (
+        -2080370680
+    )  # 0x84001008, DCAMREC is set the large value to user data size
     INVALIDWAITHANDLE = -2080366591  # 0x84002001, DCAMWAIT is invalid handle
     NEWRUNTIMEREQUIRED = -2080366590  # 0x84002002, DCAM Module Version is older than the version that the camera requests
-    VERSIONMISMATCH = -2080366589  # 0x84002003, Camre returns the error on setting parameter to limit version
+    VERSIONMISMATCH = (
+        -2080366589
+    )  # 0x84002003, Camre returns the error on setting parameter to limit version
     RUNAS_FACTORYMODE = -2080366588  # 0x84002004, Camera is running as a factory mode
-    IMAGE_UNKNOWNSIGNATURE = -2080362495  # 0x84003001, sigunature of image header is unknown or corrupted
+    IMAGE_UNKNOWNSIGNATURE = (
+        -2080362495
+    )  # 0x84003001, sigunature of image header is unknown or corrupted
     IMAGE_NEWRUNTIMEREQUIRED = -2080362494  # 0x84003002, version of image header is newer than version that used DCAM supports
     IMAGE_ERRORSTATUSEXIST = -2080362493  # 0x84003003, image header stands error status
     IMAGE_HEADERCORRUPTED = -2080358396  # 0x84004004, image header value is strange
@@ -130,16 +169,21 @@ class DCAMERR(IntEnum):
     NOTIMPLEMENT = -2147479806  # 0x80000f02, not yet implementation
     DELAYEDFRAME = -2147479799  # 0x80000f09, the frame waiting re-load from hardware buffer with SNAPSHOT of DEVICEBUFFER MODE
     DEVICEINITIALIZING = -1342177279  # 0xb0000001
-    APIINIT_INITOPTIONBYTES = -1543438333  # 0xa4010003, DCAMAPI_INIT::initoptionbytes is invalid
+    APIINIT_INITOPTIONBYTES = (
+        -1543438333
+    )  # 0xa4010003, DCAMAPI_INIT::initoptionbytes is invalid
     APIINIT_INITOPTION = -1543438332  # 0xa4010004, DCAMAPI_INIT::initoption is invalid
     INITOPTION_COLLISION_BASE = -1543389184  # 0xa401C000
     INITOPTION_COLLISION_MAX = -1543372801  # 0xa401FFFF
     # Between DCAMERR_INITOPTION_COLLISION_BASE and DCAMERR_INITOPTION_COLLISION_MAX means there is collision with initoption in DCAMAPI_INIT.
     # The value "(error code) - DCAMERR_INITOPTION_COLLISION_BASE" indicates the index which second INITOPTION group happens.
-    MISSPROP_TRIGGERSOURCE = -535822064  # 0xE0100110, the trigger mode is internal or syncreadout on using device memory.
+    MISSPROP_TRIGGERSOURCE = (
+        -535822064
+    )  # 0xE0100110, the trigger mode is internal or syncreadout on using device memory.
     # success
-    SUCCESS = 1  # 1, no error, general success code, app should check the value is positive
-
+    SUCCESS = (
+        1  # 1, no error, general success code, app should check the value is positive
+    )
 
     ALREADYINITIALIZED = -520093695  # 0xE1000001
     ALREADYOPENED = -520093694  # 0xE1000002
@@ -199,13 +243,14 @@ class DCAM_IDSTR(IntEnum):
     DRIVERVERSION = 0x04000106
     MODULEVERSION = 0x04000107
     DCAMAPIVERSION = 0x04000108
-    CAMERA_SERIESNAME = 0x0400012c
+    CAMERA_SERIESNAME = 0x0400012C
 
 
 class DCAMAPI_INITOPTION(IntEnum):
     """
     Initialize parameter.
     """
+
     APIVER__LATEST = 0x00000001
     APIVER__4_0 = 0x00000400
     ENDMARK = 0x00000000
@@ -233,36 +278,62 @@ class DCAM_IDPROP(IntEnum):
     TRIGGERDELAY = 1049184  # 0x00100260, R/W, sec, "TRIGGER DELAY"
     INTERNALTRIGGER_HANDLING = 1049200  # 0x00100270
     TRIGGERMULTIFRAME_COUNT = 1049216  # 0x00100280
-    SYNCREADOUT_SYSTEMBLANK = 1049232  # 0x00100290, R/W, mode, "SYNC READOUT SYSTEM BLANK"
+    SYNCREADOUT_SYSTEMBLANK = (
+        1049232  # 0x00100290, R/W, mode, "SYNC READOUT SYSTEM BLANK"
+    )
     TRIGGERENABLE_ACTIVE = 1049616  # 0x00100410, R/W, mode,    "TRIGGER ENABLE ACTIVE"
     TRIGGERENABLE_POLARITY = 1049632  # 0x00100420
     TRIGGERENABLE_SOURCE = 1049648  # 0x00100430, R/W, mode,    "TRIGGER ENABLE SOURCE"
-    TRIGGERENABLE_BURSTTIMES = 1049664  # 0x00100440, R/W, mode,    "TRIGGER ENABLE BURST TIMES"
-    TRIGGERNUMBER_FORFIRSTIMAGE = 1050640  # 0x00100810, R/O, long, "TRIGGER NUMBER FOR FIRST IMAGE"
-    TRIGGERNUMBER_FORNEXTIMAGE = 1050656  # 0x00100820, R/O, long,  "TRIGGER NUMBER FOR NEXT IMAGE"
+    TRIGGERENABLE_BURSTTIMES = (
+        1049664  # 0x00100440, R/W, mode,    "TRIGGER ENABLE BURST TIMES"
+    )
+    TRIGGERNUMBER_FORFIRSTIMAGE = (
+        1050640  # 0x00100810, R/O, long, "TRIGGER NUMBER FOR FIRST IMAGE"
+    )
+    TRIGGERNUMBER_FORNEXTIMAGE = (
+        1050656  # 0x00100820, R/O, long,  "TRIGGER NUMBER FOR NEXT IMAGE"
+    )
     NUMBEROF_OUTPUTTRIGGERCONNECTOR = 1835024  # 0x001C0010
-    OUTPUTTRIGGER_CHANNELSYNC = 1835056  # 0x001C0030, R/W, mode,   "OUTPUT TRIGGER CHANNEL SYNC"
-    OUTPUTTRIGGER_PROGRAMABLESTART = 1835088  # 0x001C0050, R/W, mode,  "OUTPUT TRIGGER PROGRAMABLE START"
+    OUTPUTTRIGGER_CHANNELSYNC = (
+        1835056  # 0x001C0030, R/W, mode,   "OUTPUT TRIGGER CHANNEL SYNC"
+    )
+    OUTPUTTRIGGER_PROGRAMABLESTART = (
+        1835088  # 0x001C0050, R/W, mode,  "OUTPUT TRIGGER PROGRAMABLE START"
+    )
     OUTPUTTRIGGER_SOURCE = 1835280  # 0x001C0110, R/W, mode,    "OUTPUT TRIGGER SOURCE"
-    OUTPUTTRIGGER_POLARITY = 1835296  # 0x001C0120, R/W, mode,  "OUTPUT TRIGGER POLARITY"
+    OUTPUTTRIGGER_POLARITY = (
+        1835296  # 0x001C0120, R/W, mode,  "OUTPUT TRIGGER POLARITY"
+    )
     OUTPUTTRIGGER_ACTIVE = 1835312  # 0x001C0130, R/W, mode,    "OUTPUT TRIGGER ACTIVE"
     OUTPUTTRIGGER_DELAY = 1835328  # 0x001C0140, R/W, sec,  "OUTPUT TRIGGER DELAY"
     OUTPUTTRIGGER_PERIOD = 1835344  # 0x001C0150, R/W, sec, "OUTPUT TRIGGER PERIOD"
     OUTPUTTRIGGER_KIND = 1835360  # 0x001C0160, R/W, mode,  "OUTPUT TRIGGER KIND"
-    OUTPUTTRIGGER_BASESENSOR = 1835376  # 0x001C0170, R/W, mode,    "OUTPUT TRIGGER BASE SENSOR"
-    OUTPUTTRIGGER_PREHSYNCCOUNT = 1835408  # 0x001C0190, R/W, mode, "OUTPUT TRIGGER PRE HSYNC COUNT"
+    OUTPUTTRIGGER_BASESENSOR = (
+        1835376  # 0x001C0170, R/W, mode,    "OUTPUT TRIGGER BASE SENSOR"
+    )
+    OUTPUTTRIGGER_PREHSYNCCOUNT = (
+        1835408  # 0x001C0190, R/W, mode, "OUTPUT TRIGGER PRE HSYNC COUNT"
+    )
     # - 0x001C10FF for 16 output trigger connector, reserved
-    _OUTPUTTRIGGER = 256  # 0x00000100, the offset of ID for Nth OUTPUT TRIGGER parameter
+    _OUTPUTTRIGGER = (
+        256  # 0x00000100, the offset of ID for Nth OUTPUT TRIGGER parameter
+    )
     MASTERPULSE_MODE = 1966112  # 0x001E0020, R/W, mode,    "MASTER PULSE MODE"
-    MASTERPULSE_TRIGGERSOURCE = 1966128  # 0x001E0030, R/W, mode,   "MASTER PULSE TRIGGER SOURCE"
+    MASTERPULSE_TRIGGERSOURCE = (
+        1966128  # 0x001E0030, R/W, mode,   "MASTER PULSE TRIGGER SOURCE"
+    )
     MASTERPULSE_INTERVAL = 1966144  # 0x001E0040, R/W, sec, "MASTER PULSE INTERVAL"
-    MASTERPULSE_BURSTTIMES = 1966160  # 0x001E0050, R/W, long,  "MASTER PULSE BURST TIMES"
+    MASTERPULSE_BURSTTIMES = (
+        1966160  # 0x001E0050, R/W, long,  "MASTER PULSE BURST TIMES"
+    )
     # Group: FEATURE
     # exposure period
     EXPOSURETIME = 2031888  # 0x001F0110, R/W, sec, "EXPOSURE TIME"
     EXPOSURETIME_CONTROL = 2031920  # 0x001F0130, R/W, mode,    "EXPOSURE TIME CONTROL"
     TRIGGER_FIRSTEXPOSURE = 2032128  # 0x001F0200, R/W, mode,   "TRIGGER FIRST EXPOSURE"
-    TRIGGER_GLOBALEXPOSURE = 2032384  # 0x001F0300, R/W, mode,  "TRIGGER GLOBAL EXPOSURE"
+    TRIGGER_GLOBALEXPOSURE = (
+        2032384  # 0x001F0300, R/W, mode,  "TRIGGER GLOBAL EXPOSURE"
+    )
     FIRSTTRIGGER_BEHAVIOR = 2032400  # 0x001F0310, R/W, mode,   "FIRST TRIGGER BEHAVIOR"
     MULTIFRAME_EXPOSURE = 2035712  # 0x001F1000, R/W, sec,  "MULTI FRAME EXPOSURE TIME"
     # - 0x001F1FFF for 256 MULTI FRAME
@@ -278,40 +349,64 @@ class DCAM_IDPROP(IntEnum):
     EMGAINWARNING_LEVEL = 2097776  # 0x00200270, R/W, long, "EM GAIN WARNING LEVEL"
     EMGAINWARNING_ALARM = 2097792  # 0x00200280, R/W, mode, "EM GAIN WARNING ALARM"
     EMGAINPROTECT_MODE = 2097808  # 0x00200290, R/W, mode,  "EM GAIN PROTECT MODE"
-    EMGAINPROTECT_AFTERFRAMES = 2097824  # 0x002002A0, R/W, long,   "EM GAIN PROTECT AFTER FRAMES"
+    EMGAINPROTECT_AFTERFRAMES = (
+        2097824  # 0x002002A0, R/W, long,   "EM GAIN PROTECT AFTER FRAMES"
+    )
     MEASURED_SENSITIVITY = 2097840  # 0x002002B0, R/O, real,    "MEASURED SENSITIVITY"
     PHOTONIMAGINGMODE = 2097904  # 0x002002F0, R/W, mode,   "PHOTON IMAGING MODE"
     # sensor cooler
     SENSORTEMPERATURE = 2097936  # 0x00200310, R/O, celsius,"SENSOR TEMPERATURE"
     SENSORCOOLER = 2097952  # 0x00200320, R/W, mode,    "SENSOR COOLER"
-    SENSORTEMPERATURETARGET = 2097968  # 0x00200330, R/W, celsius,"SENSOR TEMPERATURE TARGET"
+    SENSORTEMPERATURETARGET = (
+        2097968  # 0x00200330, R/W, celsius,"SENSOR TEMPERATURE TARGET"
+    )
     SENSORCOOLERSTATUS = 2097984  # 0x00200340, R/O, mode,  "SENSOR COOLER STATUS"
     SENSORCOOLERFAN = 2098000  # 0x00200350, R/W, mode, "SENSOR COOLER FAN"
     SENSORTEMPERATURE_AVE = 2098016  # 0x00200360, R/O, celsius,"SENSOR TEMPERATURE AVE"
     SENSORTEMPERATURE_MIN = 2098032  # 0x00200370, R/O, celsius,"SENSOR TEMPERATURE MIN"
     SENSORTEMPERATURE_MAX = 2098048  # 0x00200380, R/O, celsius,"SENSOR TEMPERATURE MAX"
-    SENSORTEMPERATURE_STATUS = 2098064  # 0x00200390, R/O, mode,    "SENSOR TEMPERATURE STATUS"
-    SENSORTEMPERATURE_PROTECT = 2098176  # 0x00200400, R/W, mode,   "SENSOR TEMPERATURE MODE"
+    SENSORTEMPERATURE_STATUS = (
+        2098064  # 0x00200390, R/O, mode,    "SENSOR TEMPERATURE STATUS"
+    )
+    SENSORTEMPERATURE_PROTECT = (
+        2098176  # 0x00200400, R/W, mode,   "SENSOR TEMPERATURE MODE"
+    )
     # mechanical shutter
     MECHANICALSHUTTER = 2098192  # 0x00200410, R/W, mode,   "MECHANICAL SHUTTER"
     # contrast enhance
     CONTRASTGAIN = 3146016  # 0x00300120, R/W, long,    "CONTRAST GAIN"
     CONTRASTOFFSET = 3146032  # 0x00300130, R/W, long,  "CONTRAST OFFSET"
     # 0x00300140 is reserved
-    HIGHDYNAMICRANGE_MODE = 3146064  # 0x00300150, R/W, mode,   "HIGH DYNAMIC RANGE MODE"
+    HIGHDYNAMICRANGE_MODE = (
+        3146064  # 0x00300150, R/W, mode,   "HIGH DYNAMIC RANGE MODE"
+    )
     DIRECTGAIN_MODE = 3146080  # 0x00300160, R/W, mode, "DIRECT GAIN MODE"
-    REALTIMEGAINCORRECT_MODE = 3146096  # 0x00300170, R/W,  mode,   "REALTIME GAIN CORRECT MODE"
-    REALTIMEGAINCORRECT_LEVEL = 3146112  # 0x00300180, R/W, mode,   "REALTIME GAIN CORRECT LEVEL"
-    REALTIMEGAINCORRECT_INTERVAL = 3146128  # 0x00300190, R/W,  mode,   "REALTIME GAIN CORRECT INTERVAL"
+    REALTIMEGAINCORRECT_MODE = (
+        3146096  # 0x00300170, R/W,  mode,   "REALTIME GAIN CORRECT MODE"
+    )
+    REALTIMEGAINCORRECT_LEVEL = (
+        3146112  # 0x00300180, R/W, mode,   "REALTIME GAIN CORRECT LEVEL"
+    )
+    REALTIMEGAINCORRECT_INTERVAL = (
+        3146128  # 0x00300190, R/W,  mode,   "REALTIME GAIN CORRECT INTERVAL"
+    )
     NUMBEROF_REALTIMEGAINCORRECTREGION = 3146144  # 0x003001A0
     # color features
     VIVIDCOLOR = 3146240  # 0x00300200, R/W, mode,  "VIVID COLOR"
     WHITEBALANCEMODE = 3146256  # 0x00300210, R/W, mode,    "WHITEBALANCE MODE"
-    WHITEBALANCETEMPERATURE = 3146272  # 0x00300220, R/W, color-temp., "WHITEBALANCE TEMPERATURE"
-    WHITEBALANCEUSERPRESET = 3146288  # 0x00300230, R/W, long,  "WHITEBALANCE USER PRESET"
+    WHITEBALANCETEMPERATURE = (
+        3146272  # 0x00300220, R/W, color-temp., "WHITEBALANCE TEMPERATURE"
+    )
+    WHITEBALANCEUSERPRESET = (
+        3146288  # 0x00300230, R/W, long,  "WHITEBALANCE USER PRESET"
+    )
     # 0x00300310 is reserved
-    REALTIMEGAINCORRECTREGION_HPOS = 3149824  # 0x00301000, R/W,    long,   "REALTIME GAIN CORRECT REGION HPOS"
-    REALTIMEGAINCORRECTREGION_HSIZE = 3153920  # 0x00302000, R/W,   long,   "REALTIME GAIN CORRECT REGION HSIZE"
+    REALTIMEGAINCORRECTREGION_HPOS = (
+        3149824  # 0x00301000, R/W,    long,   "REALTIME GAIN CORRECT REGION HPOS"
+    )
+    REALTIMEGAINCORRECTREGION_HSIZE = (
+        3153920  # 0x00302000, R/W,   long,   "REALTIME GAIN CORRECT REGION HSIZE"
+    )
     _REALTIMEGAINCORRECTIONREGION = 16  # 0x00000010, the offset of ID for Nth REALTIME GAIN CORRECT REGION parameter
     # Group: ALU
     # ALU
@@ -321,23 +416,41 @@ class DCAM_IDPROP(IntEnum):
     SPOTNOISEREDUCER = 3670320  # 0x00380130, R/W, mode,    "SPOT NOISE REDUCER"
     SUBTRACT = 3670544  # 0x00380210, R/W, mode,    "SUBTRACT"
     SUBTRACTIMAGEMEMORY = 3670560  # 0x00380220, R/W, mode, "SUBTRACT IMAGE MEMORY"
-    STORESUBTRACTIMAGETOMEMORY = 3670576  # 0x00380230, W/O, mode,  "STORE SUBTRACT IMAGE TO MEMORY"
+    STORESUBTRACTIMAGETOMEMORY = (
+        3670576  # 0x00380230, W/O, mode,  "STORE SUBTRACT IMAGE TO MEMORY"
+    )
     SUBTRACTOFFSET = 3670592  # 0x00380240, R/W, long   "SUBTRACT OFFSET"
-    DARKCALIB_STABLEMAXINTENSITY = 3670608  # 0x00380250, R/W, long,    "DARKCALIB STABLE MAX INTENSITY"
+    DARKCALIB_STABLEMAXINTENSITY = (
+        3670608  # 0x00380250, R/W, long,    "DARKCALIB STABLE MAX INTENSITY"
+    )
     SUBTRACT_DATASTATUS = 3670768  # 0x003802F0, R/W    mode,   "SUBTRACT DATA STATUS"
-    SHADINGCALIB_DATASTATUS = 3670784  # 0x00380300, R/W    mode,   "SHADING CALIB DATA STATUS"
+    SHADINGCALIB_DATASTATUS = (
+        3670784  # 0x00380300, R/W    mode,   "SHADING CALIB DATA STATUS"
+    )
     SHADINGCORRECTION = 3670800  # 0x00380310, R/W, mode,   "SHADING CORRECTION"
-    SHADINGCALIBDATAMEMORY = 3670816  # 0x00380320, R/W, mode,  "SHADING CALIB DATA MEMORY"
-    STORESHADINGCALIBDATATOMEMORY = 3670832  # 0x00380330, W/O, mode,   "STORE SHADING DATA TO MEMORY"
+    SHADINGCALIBDATAMEMORY = (
+        3670816  # 0x00380320, R/W, mode,  "SHADING CALIB DATA MEMORY"
+    )
+    STORESHADINGCALIBDATATOMEMORY = (
+        3670832  # 0x00380330, W/O, mode,   "STORE SHADING DATA TO MEMORY"
+    )
     SHADINGCALIB_METHOD = 3670848  # 0x00380340, R/W, mode, "SHADING CALIB METHOD"
     SHADINGCALIB_TARGET = 3670864  # 0x00380350, R/W, long, "SHADING CALIB TARGET"
-    SHADINGCALIB_STABLEMININTENSITY = 3670880  # 0x00380360, R/W, long, "SHADING CALIB STABLE MIN INTENSITY"
+    SHADINGCALIB_STABLEMININTENSITY = (
+        3670880  # 0x00380360, R/W, long, "SHADING CALIB STABLE MIN INTENSITY"
+    )
     SHADINGCALIB_SAMPLES = 3670896  # 0x00380370, R/W, long,    "SHADING CALIB SAMPLES"
-    SHADINGCALIB_STABLESAMPLES = 3670912  # 0x00380380, R/W, long,  "SHADING CALIB STABLE SAMPLES"
-    SHADINGCALIB_STABLEMAXERRORPERCENT = 3670928  # 0x00380390, R/W, long,  "SHADING CALIB STABLE MAX ERROR PERCENT"
+    SHADINGCALIB_STABLESAMPLES = (
+        3670912  # 0x00380380, R/W, long,  "SHADING CALIB STABLE SAMPLES"
+    )
+    SHADINGCALIB_STABLEMAXERRORPERCENT = (
+        3670928  # 0x00380390, R/W, long,  "SHADING CALIB STABLE MAX ERROR PERCENT"
+    )
     FRAMEAVERAGINGMODE = 3670944  # 0x003803A0, R/W, mode,  "FRAME AVERAGING MODE"
     FRAMEAVERAGINGFRAMES = 3670960  # 0x003803B0
-    DARKCALIB_STABLESAMPLES = 3670976  # 0x003803C0, R/W, long, "DARKCALIB STABLE SAMPLES"
+    DARKCALIB_STABLESAMPLES = (
+        3670976  # 0x003803C0, R/W, long, "DARKCALIB STABLE SAMPLES"
+    )
     DARKCALIB_SAMPLES = 3670992  # 0x003803D0, R/W, long,   "DARKCALIB SAMPLES"
     DARKCALIB_TARGET = 3671008  # 0x003803E0, R/W, long,    "DARKCALIB TARGET"
     CAPTUREMODE = 3671056  # 0x00380410, R/W, mode, "CAPTURE MODE"
@@ -345,13 +458,25 @@ class DCAM_IDPROP(IntEnum):
     IMAGEFILTER = 3671136  # 0x00380460, R/W, mode, "IMAGE FILTER"
     INTENSITYLUT_MODE = 3671312  # 0x00380510, R/W, mode,   "INTENSITY LUT MODE"
     INTENSITYLUT_PAGE = 3671328  # 0x00380520, R/W, long,   "INTENSITY LUT PAGE"
-    INTENSITYLUT_WHITECLIP = 3671344  # 0x00380530, R/W, long,  "INTENSITY LUT WHITE CLIP"
-    INTENSITYLUT_BLACKCLIP = 3671360  # 0x00380540, R/W, long,  "INTENSITY LUT BLACK CLIP"
+    INTENSITYLUT_WHITECLIP = (
+        3671344  # 0x00380530, R/W, long,  "INTENSITY LUT WHITE CLIP"
+    )
+    INTENSITYLUT_BLACKCLIP = (
+        3671360  # 0x00380540, R/W, long,  "INTENSITY LUT BLACK CLIP"
+    )
     INTENSITY_GAMMA = 3671392  # 0x00380560, R/W, real, "INTENSITY GAMMA"
-    SENSORGAPCORRECT_MODE = 3671584  # 0x00380620, R/W, long,   "SENSOR GAP CORRECT MODE"
-    ADVANCEDEDGEENHANCEMENT_MODE = 3671600  # 0x00380630, R/W, mode,    "ADVANCED EDGE ENHANCEMENT MODE"
-    ADVANCEDEDGEENHANCEMENT_LEVEL = 3671616  # 0x00380640, R/W, long,   "ADVANCED EDGE ENHANCEMENT LEVEL"
-    SHADINGCALIB_TARGETMIN = 3671680  # 0x00380680, R/W, long,  "SHADING CALIB TARGET MIN"
+    SENSORGAPCORRECT_MODE = (
+        3671584  # 0x00380620, R/W, long,   "SENSOR GAP CORRECT MODE"
+    )
+    ADVANCEDEDGEENHANCEMENT_MODE = (
+        3671600  # 0x00380630, R/W, mode,    "ADVANCED EDGE ENHANCEMENT MODE"
+    )
+    ADVANCEDEDGEENHANCEMENT_LEVEL = (
+        3671616  # 0x00380640, R/W, long,   "ADVANCED EDGE ENHANCEMENT LEVEL"
+    )
+    SHADINGCALIB_TARGETMIN = (
+        3671680  # 0x00380680, R/W, long,  "SHADING CALIB TARGET MIN"
+    )
     # TAP CALIBRATION
     TAPGAINCALIB_METHOD = 3673872  # 0x00380F10, R/W, mode, "TAP GAIN CALIB METHOD"
     TAPCALIB_BASEDATAMEMORY = 3673888  # 0x00380F20
@@ -370,16 +495,26 @@ class DCAM_IDPROP(IntEnum):
     SHUTTER_MODE = 4194640  # 0x00400150, R/W, mode,    "SHUTTER MODE"
     # sensor mode
     SENSORMODE = 4194832  # 0x00400210, R/W, mode,  "SENSOR MODE"
-    SENSORMODE_LINEBUNDLEHEIGHT = 4194896  # 0x00400250, R/W, long, "SENSOR MODE LINE BUNDLEHEIGHT"
-    SENSORMODE_PANORAMICSTARTV = 4194944  # 0x00400280, R/W, long,  "SENSOR MODE PANORAMIC START V"
+    SENSORMODE_LINEBUNDLEHEIGHT = (
+        4194896  # 0x00400250, R/W, long, "SENSOR MODE LINE BUNDLEHEIGHT"
+    )
+    SENSORMODE_PANORAMICSTARTV = (
+        4194944  # 0x00400280, R/W, long,  "SENSOR MODE PANORAMIC START V"
+    )
     SENSORMODE_TDISTAGE = 4194960  # 0x00400290, R/W,   long,   "SENSOR MODE TDI STAGE"
     # other readout mode
     CCDMODE = 4195088  # 0x00400310, R/W, mode, "CCD MODE"
-    EMCCD_CALIBRATIONMODE = 4195104  # 0x00400320, R/W, mode,   "EM CCD CALIBRATION MODE"
+    EMCCD_CALIBRATIONMODE = (
+        4195104  # 0x00400320, R/W, mode,   "EM CCD CALIBRATION MODE"
+    )
     CMOSMODE = 4195152  # 0x00400350, R/W, mode,    "CMOS MODE"
-    MULTILINESENSOR_READOUTMODE = 4195200  # 0x00400380, R/W, mode, "MULTI LINE SENSOR READOUT MODE"
+    MULTILINESENSOR_READOUTMODE = (
+        4195200  # 0x00400380, R/W, mode, "MULTI LINE SENSOR READOUT MODE"
+    )
     MULTILINESENSOR_TOP = 4195216  # 0x00400390, R/W, long, "MULTI LINE SENSOR TOP"
-    MULTILINESENSOR_HEIGHT = 4195232  # 0x004003A0, R/W, long,  "MULTI LINE SENSOR HEIGHT"
+    MULTILINESENSOR_HEIGHT = (
+        4195232  # 0x004003A0, R/W, long,  "MULTI LINE SENSOR HEIGHT"
+    )
     # output mode
     OUTPUT_INTENSITY = 4195344  # 0x00400410, R/W, mode,    "OUTPUT INTENSITY"
     OUTPUTDATA_OPERATION = 4195392  # 0x00400440, R/W, mode,    "OUTPUT DATA OPERATION"
@@ -403,25 +538,45 @@ class DCAM_IDPROP(IntEnum):
     # Group: TIMING
     # synchronous timing
     TIMING_READOUTTIME = 4206608  # 0x00403010, R/O, sec,   "TIMING READOUT TIME"
-    TIMING_CYCLICTRIGGERPERIOD = 4206624  # 0x00403020, R/O, sec,   "TIMING CYCLIC TRIGGER PERIOD"
-    TIMING_MINTRIGGERBLANKING = 4206640  # 0x00403030, R/O, sec,    "TIMING MINIMUM TRIGGER BLANKING"
+    TIMING_CYCLICTRIGGERPERIOD = (
+        4206624  # 0x00403020, R/O, sec,   "TIMING CYCLIC TRIGGER PERIOD"
+    )
+    TIMING_MINTRIGGERBLANKING = (
+        4206640  # 0x00403030, R/O, sec,    "TIMING MINIMUM TRIGGER BLANKING"
+    )
     # 0x00403040 is reserved
-    TIMING_MINTRIGGERINTERVAL = 4206672  # 0x00403050, R/O, sec,    "TIMING MINIMUM TRIGGER INTERVAL"
+    TIMING_MINTRIGGERINTERVAL = (
+        4206672  # 0x00403050, R/O, sec,    "TIMING MINIMUM TRIGGER INTERVAL"
+    )
     TIMING_EXPOSURE = 4206688  # 0x00403060, R/O, mode, "TIMING EXPOSURE"
-    TIMING_INVALIDEXPOSUREPERIOD = 4206704  # 0x00403070, R/O, sec, "INVALID EXPOSURE PERIOD"
-    TIMING_FRAMESKIPNUMBER = 4206720  # 0x00403080, R/W, long,  "TIMING FRAME SKIP NUMBER"
-    TIMING_GLOBALEXPOSUREDELAY = 4206736  # 0x00403090, R/O, sec,   "TIMING GLOBAL EXPOSURE DELAY"
+    TIMING_INVALIDEXPOSUREPERIOD = (
+        4206704  # 0x00403070, R/O, sec, "INVALID EXPOSURE PERIOD"
+    )
+    TIMING_FRAMESKIPNUMBER = (
+        4206720  # 0x00403080, R/W, long,  "TIMING FRAME SKIP NUMBER"
+    )
+    TIMING_GLOBALEXPOSUREDELAY = (
+        4206736  # 0x00403090, R/O, sec,   "TIMING GLOBAL EXPOSURE DELAY"
+    )
     INTERNALFRAMERATE = 4208656  # 0x00403810, R/W, 1/sec,  "INTERNAL FRAME RATE"
-    INTERNAL_FRAMEINTERVAL = 4208672  # 0x00403820, R/W, sec,   "INTERNAL FRAME INTERVAL"
+    INTERNAL_FRAMEINTERVAL = (
+        4208672  # 0x00403820, R/W, sec,   "INTERNAL FRAME INTERVAL"
+    )
     INTERNALLINERATE = 4208688  # 0x00403830, R/W, 1/sec,   "INTERNAL LINE RATE"
     INTERNALLINESPEED = 4208704  # 0x00403840, R/W, m/sec,  "INTERNAL LINE SPEEED"
     INTERNAL_LINEINTERVAL = 4208720  # 0x00403850, R/W, sec,    "INTERNAL LINE INTERVAL"
-    INTERNALLINERATE_CONTROL = 4208752  # 0x00403870, R/W, mode,    "INTERNAL LINE RATE CONTROL"
+    INTERNALLINERATE_CONTROL = (
+        4208752  # 0x00403870, R/W, mode,    "INTERNAL LINE RATE CONTROL"
+    )
     # system information
     TIMESTAMP_PRODUCER = 4262416  # 0x00410A10, R/O, mode,  "TIME STAMP PRODUCER"
     FRAMESTAMP_PRODUCER = 4262432  # 0x00410A20, R/O, mode, "FRAME STAMP PRODUCER"
-    TRANSFERINFO_FRAMECOUNT = 4262672  # 0x00410B10, R/O, long, "TRANSFER INFO FRAME COUNT"
-    TRANSFERINFO_LOSTCOUNT = 4262673  # 0x00410B11, R/O, long,  "TRANSFER INFO LOST COUNT"
+    TRANSFERINFO_FRAMECOUNT = (
+        4262672  # 0x00410B10, R/O, long, "TRANSFER INFO FRAME COUNT"
+    )
+    TRANSFERINFO_LOSTCOUNT = (
+        4262673  # 0x00410B11, R/O, long,  "TRANSFER INFO LOST COUNT"
+    )
     # Group: READOUT
     # image information
     # 0x00420110 is reserved
@@ -440,14 +595,20 @@ class DCAM_IDPROP(IntEnum):
     IMAGE_TOPOFFSETBYTES = 4325968  # 0x00420250
     IMAGE_PIXELTYPE = 4326000  # 0x00420270, R/W, DCAM_PIXELTYPE,   "IMAGE PIXEL TYPE"
     IMAGE_CAMERASTAMP = 4326144  # 0x00420300, R/W, long,   "IMAGE CAMERA STAMP"
-    RECORDFIXEDBYTES_PERFILE = 4326416  # 0x00420410, R/O,  long    "RECORD FIXED BYTES PER FILE"
+    RECORDFIXEDBYTES_PERFILE = (
+        4326416  # 0x00420410, R/O,  long    "RECORD FIXED BYTES PER FILE"
+    )
     RECORDFIXEDBYTES_PERSESSION = 4326432  # 0x00420420
-    RECORDFIXEDBYTES_PERFRAME = 4326448  # 0x00420430, R/O, long    "RECORD FIXED BYTES PER FRAME"
+    RECORDFIXEDBYTES_PERFRAME = (
+        4326448  # 0x00420430, R/O, long    "RECORD FIXED BYTES PER FRAME"
+    )
     # frame bundle
     FRAMEBUNDLE_MODE = 4329488  # 0x00421010, R/W, mode,    "FRAMEBUNDLE MODE"
     FRAMEBUNDLE_NUMBER = 4329504  # 0x00421020, R/W, long,  "FRAMEBUNDLE NUMBER"
     FRAMEBUNDLE_ROWBYTES = 4329520  # 0x00421030, R/O,  long,   "FRAMEBUNDLE ROWBYTES"
-    FRAMEBUNDLE_FRAMESTEPBYTES = 4329536  # 0x00421040, R/O, long,  "FRAMEBUNDLE FRAME STEP BYTES"
+    FRAMEBUNDLE_FRAMESTEPBYTES = (
+        4329536  # 0x00421040, R/O, long,  "FRAMEBUNDLE FRAME STEP BYTES"
+    )
     # partial area
     NUMBEROF_PARTIALAREA = 4390928  # 0x00430010
     PARTIALAREA_HPOS = 4395008  # 0x00431000, R/W, long,    "PARTIAL AREA HPOS"
@@ -462,15 +623,21 @@ class DCAM_IDPROP(IntEnum):
     _MULTILINE = 16  # 0x00000010, the offset of ID for Nth MULTI LINE
     # defect
     DEFECTCORRECT_MODE = 4653072  # 0x00470010, R/W, mode,  "DEFECT CORRECT MODE"
-    NUMBEROF_DEFECTCORRECT = 4653088  # 0x00470020, R/W, long,  "NUMBER OF DEFECT CORRECT"
-    HOTPIXELCORRECT_LEVEL = 4653104  # 0x00470030, R/W, mode,   "HOT PIXEL CORRECT LEVEL"
+    NUMBEROF_DEFECTCORRECT = (
+        4653088  # 0x00470020, R/W, long,  "NUMBER OF DEFECT CORRECT"
+    )
+    HOTPIXELCORRECT_LEVEL = (
+        4653104  # 0x00470030, R/W, mode,   "HOT PIXEL CORRECT LEVEL"
+    )
     DEFECTCORRECT_HPOS = 4657152  # 0x00471000, R/W, long,  "DEFECT CORRECT HPOS"
     DEFECTCORRECT_METHOD = 4665344  # 0x00473000, R/W, mode,    "DEFECT CORRECT METHOD"
     # - 0x0047FFFF for 256 DEFECT
     _DEFECTCORRECT = 16  # 0x00000010, the offset of ID for Nth DEFECT
     # Group: device buffer countrol
     DEVICEBUFFER_MODE = 4784128  # 0x00490000, R/W, mode,   "DEVICE BUFFER MODE"
-    DEVICEBUFFER_FRAMECOUNTMAX = 4784160  # 0x00490020, R/O, long,  "DEVICE BUFFER FRAME COUNT MAX"
+    DEVICEBUFFER_FRAMECOUNTMAX = (
+        4784160  # 0x00490020, R/O, long,  "DEVICE BUFFER FRAME COUNT MAX"
+    )
     # Group: CALIBREGION
     CALIBREGION_MODE = 4203536  # 0x00402410, R/W, mode,    "CALIBRATE REGION MODE"
     NUMBEROF_CALIBREGION = 4203552  # 0x00402420
@@ -488,12 +655,20 @@ class DCAM_IDPROP(IntEnum):
     # Group: Camera Status
     CAMERASTATUS_INTENSITY = 5050640  # 0x004D1110, R/O, mode,  "CAMERASTATUS INTENSITY"
     CAMERASTATUS_INPUTTRIGGER = 5050656  # 0x004D1120
-    CAMERASTATUS_CALIBRATION = 5050672  # 0x004D1130, R/O, mode,    "CAMERASTATUS CALIBRATION"
+    CAMERASTATUS_CALIBRATION = (
+        5050672  # 0x004D1130, R/O, mode,    "CAMERASTATUS CALIBRATION"
+    )
     # Group: Back Focus Position
-    BACKFOCUSPOS_TARGET = 8405008  # 0x00804010, R/W, micro-meter,"BACK FOCUS POSITION TARGET"
-    BACKFOCUSPOS_CURRENT = 8405024  # 0x00804020, R/O, micro-meter,"BACK FOCUS POSITION CURRENT"
+    BACKFOCUSPOS_TARGET = (
+        8405008  # 0x00804010, R/W, micro-meter,"BACK FOCUS POSITION TARGET"
+    )
+    BACKFOCUSPOS_CURRENT = (
+        8405024  # 0x00804020, R/O, micro-meter,"BACK FOCUS POSITION CURRENT"
+    )
     BACKFOCUSPOS_LOADFROMMEMORY = 8405072  # 0x00804050
-    BACKFOCUSPOS_STORETOMEMORY = 8405088  # 0x00804060, W/O, long, "BACK FOCUS POSITION STORE TO MEMORY"
+    BACKFOCUSPOS_STORETOMEMORY = (
+        8405088  # 0x00804060, W/O, long, "BACK FOCUS POSITION STORE TO MEMORY"
+    )
     # Group: MAICO
     CONFOCAL_SCANMODE = 9502736  # 0x00910010, R/W, mode,   "CONFOCAL SCAN MODE"
     CONFOCAL_SCANLINES = 9502752  # 0x00910020, R/W, long,  "CONFOCAL SCANLINES"
@@ -505,13 +680,19 @@ class DCAM_IDPROP(IntEnum):
     SUBUNIT_PMTGAIN = 9503488  # 0x00910300, R/W, real, "SUBUNIT PMTGAIN"
     SUBUNIT_PINHOLESIZE = 9503744  # 0x00910400, R/O, long, "SUBUNIT PINHOLE SIZE"
     SUBUNIT_WAVELENGTH = 9504000  # 0x00910500, R/O, long,  "SUBUNIT WAVELENGTH"
-    SUBUNIT_TOPOFFSETBYTES = 9504256  # 0x00910600, R/O, long,  "SUBUNIT TOP OFFSET BYTES"
+    SUBUNIT_TOPOFFSETBYTES = (
+        9504256  # 0x00910600, R/O, long,  "SUBUNIT TOP OFFSET BYTES"
+    )
     _SUBUNIT = 16  # 0x00000010, the offset of ID for Nth Subunit parameter
     # Group: SYSTEM
     # system property
     SYSTEM_ALIVE = 16711696  # 0x00FF0010, R/O, mode,   "SYSTEM ALIVE"
-    CONVERSIONFACTOR_COEFF = 16769040  # 0x00FFE010, R/O, double,   "CONVERSION FACTOR COEFF"
-    CONVERSIONFACTOR_OFFSET = 16769056  # 0x00FFE020, R/O, double,  "CONVERSION FACTOR OFFSET"
+    CONVERSIONFACTOR_COEFF = (
+        16769040  # 0x00FFE010, R/O, double,   "CONVERSION FACTOR COEFF"
+    )
+    CONVERSIONFACTOR_OFFSET = (
+        16769056  # 0x00FFE020, R/O, double,  "CONVERSION FACTOR OFFSET"
+    )
 
 
 # ==== declare structures for DCAM-API functions ====
@@ -520,12 +701,12 @@ class DCAM_IDPROP(IntEnum):
 class DCAMAPI_INIT(Structure):
     _pack_ = 8
     _fields_ = [
-        ('size', c_int32),
-        ('iDeviceCount', c_int32),  # out
-        ('reserved', c_int32),
-        ('initoptionbytes', c_int32),
-        ('initoption', POINTER(c_int32)),
-        ('guid', c_void_p)  # const DCAM_GUID*
+        ("size", c_int32),
+        ("iDeviceCount", c_int32),  # out
+        ("reserved", c_int32),
+        ("initoptionbytes", c_int32),
+        ("initoption", POINTER(c_int32)),
+        ("guid", c_void_p),  # const DCAM_GUID*
     ]
 
     def __init__(self):
@@ -535,9 +716,9 @@ class DCAMAPI_INIT(Structure):
 class DCAMDEV_OPEN(Structure):
     _pack_ = 8
     _fields_ = [
-        ('size', c_int32),
-        ('index', c_int32),
-        ('hdcam', c_void_p)  # out
+        ("size", c_int32),
+        ("index", c_int32),
+        ("hdcam", c_void_p),  # out
     ]
 
     def __init__(self):
@@ -548,10 +729,10 @@ class DCAMDEV_OPEN(Structure):
 class DCAMDEV_STRING(Structure):
     _pack_ = 8
     _fields_ = [
-        ('size', c_int32),
-        ('iString', c_int32),
-        ('text', c_char_p),
-        ('textbytes', c_int32)
+        ("size", c_int32),
+        ("iString", c_int32),
+        ("text", c_char_p),
+        ("textbytes", c_int32),
     ]
 
     def __init__(self):
@@ -568,6 +749,7 @@ class DCAM_PROP:
         """
         Attributer flags.
         """
+
         HASRANGE = -2147483647  # 0x80000000
         HASSTEP = 0x40000000
         HASDEFAULT = 0x20000000
@@ -591,6 +773,7 @@ class DCAM_PROP:
         """
         property types.
         """
+
         NONE = 0
         MODE = 1
         LONG = 2
@@ -601,18 +784,21 @@ class DCAM_PROP:
         """
         Attributer2 flags.
         """
+
     ARRAYBASE = 134217728  # 0x08000000
     ARRAYELEMENT = 67108864  # 0x04000000
     REAL32 = 33554432  # 0x02000000
     INITIALIZEIMPROPER = 1  # 0x00000001
-    CHANNELSEPARATEDDATA = 262144  # 0x00040000, Channel 0 value is total of each channels.
-
+    CHANNELSEPARATEDDATA = (
+        262144  # 0x00040000, Channel 0 value is total of each channels.
+    )
 
 
 class DCAMPROP_OPTION(IntEnum):
     """
     options
     """
+
     PRIOR = -16777215  # 0xFF000000
     NEXT = 0x01000000
     NEAREST = 0x80000000
@@ -627,6 +813,7 @@ class DCAMPROP_UNIT(IntEnum):
     """
     Unit of value
     """
+
     SECOND = 1
     CELSIUS = 2
     KELVIN = 3
@@ -636,11 +823,11 @@ class DCAMPROP_UNIT(IntEnum):
     MICROMETER = 7
     NONE = 0
 
+
 # property values
 
 
 class DCAMPROP:
-
     class SENSORMODE(IntEnum):
         AREA = 1
         LINE = 3
@@ -1068,27 +1255,28 @@ class DCAMPROP:
         OFF = 1
         ON = 2
 
+
 class DCAMPROP_ATTR(Structure):
     _pack_ = 8
     _fields_ = [
-        ('cbSize', c_int32),
-        ('iProp', c_int32),
-        ('option', c_int32),
-        ('iReserved1', c_int32),
-        ('attribute', c_int32),
-        ('iGroup', c_int32),
-        ('iUnit', c_int32),
-        ('attribute2', c_int32),
-        ('valuemin', c_double),
-        ('valuemax', c_double),
-        ('valuestep', c_double),
-        ('valuedefault', c_double),
-        ('nMaxChannel', c_int32),
-        ('iReserved3', c_int32),
-        ('nMaxView', c_int32),
-        ('iProp_NumberOfElement', c_int32),
-        ('iProp_ArrayBase', c_int32),
-        ('iPropStep_Element', c_int32)
+        ("cbSize", c_int32),
+        ("iProp", c_int32),
+        ("option", c_int32),
+        ("iReserved1", c_int32),
+        ("attribute", c_int32),
+        ("iGroup", c_int32),
+        ("iUnit", c_int32),
+        ("attribute2", c_int32),
+        ("valuemin", c_double),
+        ("valuemax", c_double),
+        ("valuestep", c_double),
+        ("valuedefault", c_double),
+        ("nMaxChannel", c_int32),
+        ("iReserved3", c_int32),
+        ("nMaxView", c_int32),
+        ("iProp_NumberOfElement", c_int32),
+        ("iProp_ArrayBase", c_int32),
+        ("iPropStep_Element", c_int32),
     ]
 
     def __init__(self):
@@ -1131,11 +1319,11 @@ class DCAMPROP_ATTR(Structure):
 class DCAMPROP_VALUETEXT(Structure):
     _pack_ = 8
     _fields_ = [
-        ('cbSize', c_int32),
-        ('iProp', c_int32),
-        ('value', c_double),
-        ('text', c_char_p),
-        ('textbytes', c_int32)
+        ("cbSize", c_int32),
+        ("iProp", c_int32),
+        ("value", c_double),
+        ("text", c_char_p),
+        ("textbytes", c_int32),
     ]
 
     def __init__(self):
@@ -1149,10 +1337,7 @@ class DCAMPROP_VALUETEXT(Structure):
 
 class DCAM_TIMESTAMP(Structure):
     _pack_ = 8
-    _fields_ = [
-        ('sec', c_uint32),
-        ('microsec', c_int32)
-    ]
+    _fields_ = [("sec", c_uint32), ("microsec", c_int32)]
 
     def __init__(self):
         self.sec = 0
@@ -1162,10 +1347,10 @@ class DCAM_TIMESTAMP(Structure):
 class DCAMCAP_TRANSFERINFO(Structure):
     _pack_ = 8
     _fields_ = [
-        ('size', c_int32),
-        ('iKind', c_int32),
-        ('nNewestFrameIndex', c_int32),
-        ('nFrameCount', c_int32)
+        ("size", c_int32),
+        ("iKind", c_int32),
+        ("nNewestFrameIndex", c_int32),
+        ("nFrameCount", c_int32),
     ]
 
     def __init__(self):
@@ -1178,20 +1363,20 @@ class DCAMCAP_TRANSFERINFO(Structure):
 class DCAMBUF_FRAME(Structure):
     _pack_ = 8
     _fields_ = [
-        ('size', c_int32),
-        ('iKind', c_int32),
-        ('option', c_int32),
-        ('iFrame', c_int32),
-        ('buf', c_void_p),
-        ('rowbytes', c_int32),
-        ('type', c_int32),  # DCAM_PIXELTYPE
-        ('width', c_int32),
-        ('height', c_int32),
-        ('left', c_int32),
-        ('top', c_int32),
-        ('timestamp', DCAM_TIMESTAMP),
-        ('framestamp', c_int32),
-        ('camerastamp', c_int32)
+        ("size", c_int32),
+        ("iKind", c_int32),
+        ("option", c_int32),
+        ("iFrame", c_int32),
+        ("buf", c_void_p),
+        ("rowbytes", c_int32),
+        ("type", c_int32),  # DCAM_PIXELTYPE
+        ("width", c_int32),
+        ("height", c_int32),
+        ("left", c_int32),
+        ("top", c_int32),
+        ("timestamp", DCAM_TIMESTAMP),
+        ("framestamp", c_int32),
+        ("camerastamp", c_int32),
     ]
 
     def __init__(self):
@@ -1214,10 +1399,10 @@ class DCAMBUF_FRAME(Structure):
 class DCAMWAIT_OPEN(Structure):
     _pack_ = 8
     _fields_ = [
-        ('size', c_int32),
-        ('supportevent', c_int32),  # out
-        ('hwait', c_void_p),  # out
-        ('hdcam', c_void_p)
+        ("size", c_int32),
+        ("supportevent", c_int32),  # out
+        ("hwait", c_void_p),  # out
+        ("hdcam", c_void_p),
     ]
 
     def __init__(self):
@@ -1227,32 +1412,33 @@ class DCAMWAIT_OPEN(Structure):
 class DCAMWAIT_START(Structure):
     _pack_ = 8
     _fields_ = [
-        ('size', c_int32),
-        ('eventhappened', c_int32),  # out
-        ('eventmask', c_int32),
-        ('timeout', c_int32)
+        ("size", c_int32),
+        ("eventhappened", c_int32),  # out
+        ("eventmask", c_int32),
+        ("timeout", c_int32),
     ]
 
     def __init__(self):
         self.size = sizeof(DCAMWAIT_START)
 
 
-if __platform_system == 'Windows':
+if __platform_system == "Windows":
+
     class DCAMREC_OPEN(Structure):  # DCAMREC_OPENW
         _pack_ = 8
         _fields_ = [
-            ('size', c_int32),  # [in] size of this structure.
-            ('reserved', c_int32),  # [in]
-            ('hrec', c_void_p),  # [out]
-            ('path', c_wchar_p),  # [in] wchar_t*
-            ('ext', c_wchar_p),  # [in] wchar_t*
-            ('maxframepersession', c_int32),  # [in]
-            ('userdatasize', c_int32),  # [in]
-            ('userdatasize_session', c_int32),  # [in]
-            ('userdatasize_file', c_int32),  # [in]
-            ('usertextsize', c_int32),  # [in]
-            ('usertextsize_session', c_int32),  # [in]
-            ('usertextsize_file', c_int32),  # [in]
+            ("size", c_int32),  # [in] size of this structure.
+            ("reserved", c_int32),  # [in]
+            ("hrec", c_void_p),  # [out]
+            ("path", c_wchar_p),  # [in] wchar_t*
+            ("ext", c_wchar_p),  # [in] wchar_t*
+            ("maxframepersession", c_int32),  # [in]
+            ("userdatasize", c_int32),  # [in]
+            ("userdatasize_session", c_int32),  # [in]
+            ("userdatasize_file", c_int32),  # [in]
+            ("usertextsize", c_int32),  # [in]
+            ("usertextsize_session", c_int32),  # [in]
+            ("usertextsize_file", c_int32),  # [in]
         ]
 
         def __init__(self):
@@ -1340,7 +1526,7 @@ dcamcap_firetrigger = __dll.dcamcap_firetrigger
 dcamcap_firetrigger.argtypes = [c_void_p, c_int32]
 dcamcap_firetrigger.restype = DCAMERR
 
-if __platform_system == 'Windows':
+if __platform_system == "Windows":
     dcamcap_record = __dll.dcamcap_record
     dcamcap_record.argtypes = [c_void_p, c_void_p]
     dcamcap_record.restype = DCAMERR
@@ -1358,7 +1544,7 @@ dcamwait_abort = __dll.dcamwait_abort
 dcamwait_abort.argtypes = [c_void_p]
 dcamwait_abort.restype = DCAMERR
 
-if __platform_system == 'Windows':
+if __platform_system == "Windows":
     dcamrec_open = __dll.dcamrec_openW
     dcamrec_open.argtypes = [POINTER(DCAMREC_OPEN)]  # DCAMREC_OPENW
     dcamrec_open.restype = DCAMERR
@@ -1366,4 +1552,3 @@ if __platform_system == 'Windows':
     dcamrec_close = __dll.dcamrec_close
     dcamrec_close.argtypes = [c_void_p]
     dcamrec_close.restype = DCAMERR
-

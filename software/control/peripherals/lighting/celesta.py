@@ -25,7 +25,9 @@ def lumencor_httpcommand(command="GET IP", ip="192.168.201.200"):
     """
     command_full = r"http://" + ip + "/service/?command=" + command.replace(" ", "%20")
     with urllib.request.urlopen(command_full) as response:
-        message = eval(response.read())  # the default is conveniently JSON so eval creates dictionary
+        message = eval(
+            response.read()
+        )  # the default is conveniently JSON so eval creates dictionary
     return message
 
 
@@ -48,7 +50,7 @@ class CELESTA(LightSource):
             assert self.message["message"] == "A IP " + self.ip
             self.n_lasers = self.get_number_lasers()
             self.live = True
-        except:
+        except Exception:
             log.error(traceback.format_exc())
             self.live = False
             log.error("Failed to connect to Lumencor Laser at ip: 192.168.201.200")
@@ -121,13 +123,17 @@ class CELESTA(LightSource):
             ttl_enable = "1"
         else:
             ttl_enable = "0"
-        self.message = lumencor_httpcommand(command="SET TTLENABLE " + ttl_enable, ip=self.ip)
+        self.message = lumencor_httpcommand(
+            command="SET TTLENABLE " + ttl_enable, ip=self.ip
+        )
 
     def get_shutter_state(self, laser_id):
         """
         Return True/False the laser is on/off.
         """
-        self.message = lumencor_httpcommand(command="GET CH " + str(laser_id), ip=self.ip)
+        self.message = lumencor_httpcommand(
+            command="GET CH " + str(laser_id), ip=self.ip
+        )
         response = self.message["message"]
         self.on = response[-1] == "1"
         return self.on
@@ -146,7 +152,9 @@ class CELESTA(LightSource):
         """
         Return the current laser power.
         """
-        self.message = lumencor_httpcommand(command="GET CHINT " + str(laser_id), ip=self.ip)
+        self.message = lumencor_httpcommand(
+            command="GET CHINT " + str(laser_id), ip=self.ip
+        )
         log.debug("command = 'GET CHINT " + str(laser_id) + "'")
         response = self.message["message"]
         power = float(response.split(" ")[-1])
@@ -158,10 +166,14 @@ class CELESTA(LightSource):
         Turn the laser on/off.
         """
         if on:
-            self.message = lumencor_httpcommand(command="SET CH " + str(laser_id) + " 1", ip=self.ip)
+            self.message = lumencor_httpcommand(
+                command="SET CH " + str(laser_id) + " 1", ip=self.ip
+            )
             self.on = True
         else:
-            self.message = lumencor_httpcommand(command="SET CH " + str(laser_id) + " 0", ip=self.ip)
+            self.message = lumencor_httpcommand(
+                command="SET CH " + str(laser_id) + " 0", ip=self.ip
+            )
             self.on = False
         log.debug(f"Turning On/Off {self.on} {self.message}")
 
@@ -169,7 +181,8 @@ class CELESTA(LightSource):
         log.debug(f"Setting intensity to {intensity}")
         power_in_mw = self.pmax * intensity / 100
         self.message = lumencor_httpcommand(
-            command="SET CHINT " + str(laser_id) + " " + str(int(power_in_mw)), ip=self.ip
+            command="SET CHINT " + str(laser_id) + " " + str(int(power_in_mw)),
+            ip=self.ip,
         )
         if self.message["message"][0] == "A":
             return True

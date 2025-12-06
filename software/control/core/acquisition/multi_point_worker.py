@@ -28,7 +28,14 @@ from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.logging
 import control.core.acquisition.job_processing
-from control.core.acquisition.job_processing import CaptureInfo, SaveImageJob, Job, JobImage, JobRunner, JobResult
+from control.core.acquisition.job_processing import (
+    CaptureInfo,
+    SaveImageJob,
+    Job,
+    JobImage,
+    JobRunner,
+    JobResult,
+)
 from squid.config import CameraPixelFormat
 from squid.utils.safe_callback import safe_callback
 from squid.utils.thread_safe_state import ThreadSafeValue, ThreadSafeFlag
@@ -60,9 +67,13 @@ class MultiPointWorker:
         self.piezo: Optional[PiezoStage] = scope.addons.piezo_stage
         self.liveController = live_controller
         self.autofocusController: Optional[AutoFocusController] = auto_focus_controller
-        self.laser_auto_focus_controller: Optional[LaserAutofocusController] = laser_auto_focus_controller
+        self.laser_auto_focus_controller: Optional[LaserAutofocusController] = (
+            laser_auto_focus_controller
+        )
         self.objectiveStore: ObjectiveStore = objective_store
-        self.channelConfigurationManager: ChannelConfigurationManager = channel_configuration_mananger
+        self.channelConfigurationManager: ChannelConfigurationManager = (
+            channel_configuration_mananger
+        )
         self.fluidics = scope.addons.fluidics
         self.use_fluidics = acquisition_parameters.use_fluidics
 
@@ -78,11 +89,15 @@ class MultiPointWorker:
         self.do_autofocus = acquisition_parameters.do_autofocus
         self.do_reflection_af = acquisition_parameters.do_reflection_autofocus
         self.use_piezo = acquisition_parameters.use_piezo
-        self.display_resolution_scaling = acquisition_parameters.display_resolution_scaling
+        self.display_resolution_scaling = (
+            acquisition_parameters.display_resolution_scaling
+        )
 
         self.experiment_ID = acquisition_parameters.experiment_ID
         self.base_path = acquisition_parameters.base_path
-        self.experiment_path = os.path.join(self.base_path or "", self.experiment_ID or "")
+        self.experiment_path = os.path.join(
+            self.base_path or "", self.experiment_ID or ""
+        )
         self.selected_configurations = acquisition_parameters.selected_configurations
 
         # Pre-compute acquisition metadata that remains constant throughout the run.
@@ -97,19 +112,25 @@ class MultiPointWorker:
             self._pixel_size_um = None
         self._time_increment_s = self.dt if self.Nt > 1 and self.dt > 0 else None
         self._physical_size_z_um = self.deltaZ if self.NZ > 1 else None
-        self.timestamp_acquisition_started = acquisition_parameters.acquisition_start_time
+        self.timestamp_acquisition_started = (
+            acquisition_parameters.acquisition_start_time
+        )
 
         self.time_point = 0
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
         self._last_time_point_z_pos = {}
-        self.scan_region_fov_coords_mm = (
-            acquisition_parameters.scan_position_information.scan_region_fov_coords_mm.copy()
+        self.scan_region_fov_coords_mm = acquisition_parameters.scan_position_information.scan_region_fov_coords_mm.copy()
+        self.scan_region_coords_mm = (
+            acquisition_parameters.scan_position_information.scan_region_coords_mm
         )
-        self.scan_region_coords_mm = acquisition_parameters.scan_position_information.scan_region_coords_mm
-        self.scan_region_names = acquisition_parameters.scan_position_information.scan_region_names
-        self.z_stacking_config = acquisition_parameters.z_stacking_config  # default 'from bottom'
+        self.scan_region_names = (
+            acquisition_parameters.scan_position_information.scan_region_names
+        )
+        self.z_stacking_config = (
+            acquisition_parameters.z_stacking_config
+        )  # default 'from bottom'
         self.z_range = acquisition_parameters.z_range
 
         self.crop = SEGMENTATION_CROP
@@ -154,10 +175,16 @@ class MultiPointWorker:
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
         self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
-        self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
+        self._log.info(
+            f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}"
+        )
         for job_class in job_classes:
             self._log.info(f"Creating job runner for {job_class.__name__} jobs")
-            job_runner = control.core.job_processing.JobRunner() if Acquisition.USE_MULTIPROCESSING else None
+            job_runner = (
+                control.core.job_processing.JobRunner()
+                if Acquisition.USE_MULTIPROCESSING
+                else None
+            )
             if job_runner:
                 job_runner.daemon = True
                 job_runner.start()
@@ -173,7 +200,9 @@ class MultiPointWorker:
         try:
             start_time: int = time.perf_counter_ns()
             self.camera.start_streaming()
-            this_image_callback_id = self.camera.add_frame_callback(self._image_callback)
+            this_image_callback_id = self.camera.add_frame_callback(
+                self._image_callback
+            )
             sleep_time: float = min(self.dt / 20.0, 0.5)
 
             while self.time_point < self.Nt:
@@ -183,7 +212,9 @@ class MultiPointWorker:
                     break
 
                 if self.fluidics and self.use_fluidics:
-                    self.fluidics.update_port(self.time_point)  # use the port in PORT_LIST
+                    self.fluidics.update_port(
+                        self.time_point
+                    )  # use the port in PORT_LIST
                     # For MERFISH, before imaging, run the first 3 sequences (Add probe, wash buffer, imaging buffer)
                     self.fluidics.run_before_imaging()
                     self.fluidics.wait_for_completion()
@@ -200,9 +231,11 @@ class MultiPointWorker:
                 if self.dt == 0:  # continous acquisition
                     pass
                 else:  # timed acquisition
-
                     # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
-                    while time.time() > self.timestamp_acquisition_started + self.time_point * self.dt:
+                    while (
+                        time.time()
+                        > self.timestamp_acquisition_started + self.time_point * self.dt
+                    ):
                         self._log.info("skip time point " + str(self.time_point + 1))
                         self.time_point = self.time_point + 1
 
@@ -211,9 +244,14 @@ class MultiPointWorker:
                         break  # no waiting after taking the last time point
 
                     # wait until it's time to do the next acquisition
-                    while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
+                    while (
+                        time.time()
+                        < self.timestamp_acquisition_started + self.time_point * self.dt
+                    ):
                         if self.abort_requested_fn():
-                            self._log.debug("In run wait loop, abort_acquisition_requested=True")
+                            self._log.debug(
+                                "In run wait loop, abort_acquisition_requested=True"
+                            )
                             break
                         self._sleep(sleep_time)
 
@@ -222,9 +260,13 @@ class MultiPointWorker:
 
             # Since we use callback based acquisition, make sure to wait for any final images to come in
             self._wait_for_outstanding_callback_images()
-            self._log.info(f"Time taken for acquisition/processing: {(time.perf_counter_ns() - start_time) / 1e9} [s]")
+            self._log.info(
+                f"Time taken for acquisition/processing: {(time.perf_counter_ns() - start_time) / 1e9} [s]"
+            )
         except TimeoutError as te:
-            self._log.error("Operation timed out during acquisition, aborting acquisition!")
+            self._log.error(
+                "Operation timed out during acquisition, aborting acquisition!"
+            )
             self._log.error(te)
             self.request_abort_fn()
         except Exception as e:
@@ -245,7 +287,9 @@ class MultiPointWorker:
         # If there are outstanding frames, wait for them to come in.
         self._log.info("Waiting for any outstanding frames.")
         if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
-            self._log.warning("Timed out waiting for the last outstanding frames at end of acquisition!")
+            self._log.warning(
+                "Timed out waiting for the last outstanding frames at end of acquisition!"
+            )
 
         if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
             self._log.warning("Timed out waiting for the last image to process!")
@@ -291,12 +335,16 @@ class MultiPointWorker:
             start: float = time.time()
             self.microcontroller.enable_joystick(False)
 
-            self._log.debug("multipoint acquisition - time point " + str(self.time_point + 1))
+            self._log.debug(
+                "multipoint acquisition - time point " + str(self.time_point + 1)
+            )
 
             # for each time point, create a new folder
             if self.experiment_path:
                 utils.ensure_directory_exists(str(self.experiment_path))
-            current_path: str = os.path.join(self.experiment_path, f"{self.time_point:0{FILE_ID_PADDING}}")
+            current_path: str = os.path.join(
+                self.experiment_path, f"{self.time_point:0{FILE_ID_PADDING}}"
+            )
             utils.ensure_directory_exists(str(current_path))
 
             # create a dataframe to save coordinates
@@ -309,7 +357,9 @@ class MultiPointWorker:
                 self.run_coordinate_acquisition(current_path)
 
             # finished region scan
-            self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
+            self.coordinates_pd.to_csv(
+                os.path.join(current_path, "coordinates.csv"), index=False, header=True
+            )
 
             utils.create_done_file(current_path)
             self._log.debug(f"Single time point took: {time.time() - start} [s]")
@@ -324,14 +374,24 @@ class MultiPointWorker:
         else:
             self.move_to_z_level(self.z_range[0])
 
-        self.z_pos: float = self.stage.get_pos().z_mm  # zpos at the beginning of the scan
+        self.z_pos: float = (
+            self.stage.get_pos().z_mm
+        )  # zpos at the beginning of the scan
 
     def initialize_coordinates_dataframe(self) -> None:
         base_columns: List[str] = ["z_level", "x (mm)", "y (mm)", "z (um)", "time"]
         piezo_column: List[str] = ["z_piezo (um)"] if self.use_piezo else []
-        self.coordinates_pd: pd.DataFrame = pd.DataFrame(columns=["region", "fov"] + base_columns + piezo_column)
+        self.coordinates_pd: pd.DataFrame = pd.DataFrame(
+            columns=["region", "fov"] + base_columns + piezo_column
+        )
 
-    def update_coordinates_dataframe(self, region_id: str, z_level: int, pos: squid.abc.Pos, fov: Optional[int] = None) -> None:
+    def update_coordinates_dataframe(
+        self,
+        region_id: str,
+        z_level: int,
+        pos: squid.abc.Pos,
+        fov: Optional[int] = None,
+    ) -> None:
         base_data = {
             "z_level": [z_level],
             "x (mm)": [pos.x_mm],
@@ -341,11 +401,17 @@ class MultiPointWorker:
         }
         piezo_data = {"z_piezo (um)": [self.z_piezo_um]} if self.use_piezo else {}
 
-        new_row: pd.DataFrame = pd.DataFrame({"region": [region_id], "fov": [fov], **base_data, **piezo_data})
+        new_row: pd.DataFrame = pd.DataFrame(
+            {"region": [region_id], "fov": [fov], **base_data, **piezo_data}
+        )
 
-        self.coordinates_pd = pd.concat([self.coordinates_pd, new_row], ignore_index=True)
+        self.coordinates_pd = pd.concat(
+            [self.coordinates_pd, new_row], ignore_index=True
+        )
 
-    def move_to_coordinate(self, coordinate_mm: Tuple[float, ...], region_id: str, fov: int) -> None:
+    def move_to_coordinate(
+        self, coordinate_mm: Tuple[float, ...], region_id: str, fov: int
+    ) -> None:
         self._log.info(f"moving to coordinate {coordinate_mm}")
         x_mm: float = coordinate_mm[0]
         self.stage.move_x_to(x_mm)
@@ -363,7 +429,9 @@ class MultiPointWorker:
                 self._log.info(f"Moved to last z position {last_z_mm} [mm]")
                 return
             else:
-                self._log.warning(f"No last z position found for region {region_id}, fov {fov}")
+                self._log.warning(
+                    f"No last z position found for region {region_id}, fov {fov}"
+                )
         if len(coordinate_mm) == 3:
             z_mm: float = coordinate_mm[2]
             self.move_to_z_level(z_mm)
@@ -393,7 +461,9 @@ class MultiPointWorker:
         Prints a summary, then returns True if the result was successful or False otherwise.
         """
         if job_result.exception is not None:
-            self._log.error(f"Error while running job {job_result.job_id}: {job_result.exception}")
+            self._log.error(
+                f"Error while running job {job_result.job_id}: {job_result.exception}"
+            )
             return False
         else:
             self._log.info(f"Got result for job {job_result.job_id}, it completed!")
@@ -402,7 +472,9 @@ class MultiPointWorker:
     def run_coordinate_acquisition(self, current_path: str) -> None:
         n_regions: int = len(self.scan_region_coords_mm)
 
-        for region_index, (region_id, coordinates) in enumerate(self.scan_region_fov_coords_mm.items()):
+        for region_index, (region_id, coordinates) in enumerate(
+            self.scan_region_fov_coords_mm.items()
+        ):
             self.callbacks.signal_overall_progress(
                 OverallProgressUpdate(
                     current_region=region_index + 1,
@@ -412,13 +484,20 @@ class MultiPointWorker:
                 )
             )
             self.num_fovs = len(coordinates)
-            self.total_scans = self.num_fovs * self.NZ * len(self.selected_configurations)
+            self.total_scans = (
+                self.num_fovs * self.NZ * len(self.selected_configurations)
+            )
 
             for fov, coordinate_mm in enumerate(coordinates):
                 # Just so the job result queues don't get too big, check and print a summary of intermediate results here
                 with self._timing.get_timer("job result summaries"):
-                    if not self._summarize_runner_outputs() and self._abort_on_failed_job:
-                        self._log.error("Some jobs failed, aborting acquisition because abort_on_failed_job=True")
+                    if (
+                        not self._summarize_runner_outputs()
+                        and self._abort_on_failed_job
+                    ):
+                        self._log.error(
+                            "Some jobs failed, aborting acquisition because abort_on_failed_job=True"
+                        )
                         self.request_abort_fn()
                         return
 
@@ -444,19 +523,34 @@ class MultiPointWorker:
             self.z_piezo_um: float = self.piezo.position
 
         for z_level in range(self.NZ):
-            file_ID: str = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
+            file_ID: str = (
+                f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
+            )
 
             acquire_pos: squid.abc.Pos = self.stage.get_pos()
-            metadata: Dict[str, float] = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
+            metadata: Dict[str, float] = {
+                "x": acquire_pos.x_mm,
+                "y": acquire_pos.y_mm,
+                "z": acquire_pos.z_mm,
+            }
             self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
 
-            if z_level == 0 and (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
+            if (
+                z_level == 0
+                and (self.do_reflection_af or self.do_autofocus)
+                and self.Nt > 1
+            ):
                 self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
 
             # laser af characterization mode
-            if self.laser_auto_focus_controller and self.laser_auto_focus_controller.characterization_mode:
+            if (
+                self.laser_auto_focus_controller
+                and self.laser_auto_focus_controller.characterization_mode
+            ):
                 image: np.ndarray = self.laser_auto_focus_controller.get_image()
-                saving_path: str = os.path.join(current_path, file_ID + "_laser af camera" + ".bmp")
+                saving_path: str = os.path.join(
+                    current_path, file_ID + "_laser af camera" + ".bmp"
+                )
                 iio.imwrite(saving_path, image)
 
             # iterate through selected modes
@@ -469,10 +563,18 @@ class MultiPointWorker:
                     # TODO(imo): This really should not look for a string in a user configurable name.  We
                     # need some proper flag on the config to signal this instead...
                     if "RGB" in config.name:
-                        self.acquire_rgb_image(config, file_ID, current_path, z_level, region_id, fov)
+                        self.acquire_rgb_image(
+                            config, file_ID, current_path, z_level, region_id, fov
+                        )
                     else:
                         self.acquire_camera_image(
-                            config, file_ID, current_path, z_level, region_id=region_id, fov=fov, config_idx=config_idx
+                            config,
+                            file_ID,
+                            current_path,
+                            z_level,
+                            region_id=region_id,
+                            fov=fov,
+                            config_idx=config_idx,
                         )
 
                 if self.NZ == 1:  # TODO: handle z offset for z stack
@@ -485,7 +587,9 @@ class MultiPointWorker:
                     + 1
                 )
                 self.callbacks.signal_region_progress(
-                    RegionProgressUpdate(current_fov=current_image, region_fovs=self.total_scans)
+                    RegionProgressUpdate(
+                        current_fov=current_image, region_fovs=self.total_scans
+                    )
                 )
 
             # updates coordinates df
@@ -519,8 +623,10 @@ class MultiPointWorker:
                 and (self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0)
             ):
                 configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
-                config_AF = self.channelConfigurationManager.get_channel_configuration_by_name(
-                    self.objectiveStore.current_objective, configuration_name_AF
+                config_AF = (
+                    self.channelConfigurationManager.get_channel_configuration_by_name(
+                        self.objectiveStore.current_objective, configuration_name_AF
+                    )
                 )
                 self._select_config(config_AF)
                 if (
@@ -534,7 +640,9 @@ class MultiPointWorker:
                 self.laser_auto_focus_controller.move_to_target(0)
             except Exception as e:
                 file_ID: str = f"{region_id}_focus_camera.bmp"
-                saving_path: str = os.path.join(self.base_path, self.experiment_ID, str(self.time_point), file_ID)
+                saving_path: str = os.path.join(
+                    self.base_path, self.experiment_ID, str(self.time_point), file_ID
+                )
                 iio.imwrite(saving_path, self.laser_auto_focus_controller.image)
                 self._log.error(
                     "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
@@ -551,7 +659,9 @@ class MultiPointWorker:
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def handle_z_offset(self, config: ChannelMode, not_offset: bool) -> None:
-        if config.z_offset is not None:  # perform z offset for config, assume z_offset is in um
+        if (
+            config.z_offset is not None
+        ):  # perform z offset for config, assume z_offset is in um
             if config.z_offset != 0.0:
                 direction: int = 1 if not_offset else -1
                 self._log.info("Moving Z offset" + str(config.z_offset * direction))
@@ -576,7 +686,7 @@ class MultiPointWorker:
             result: Any = safe_callback(
                 self._process_camera_frame,
                 camera_frame,
-                on_error=self._handle_callback_error
+                on_error=self._handle_callback_error,
             )
 
             if not result.success:
@@ -603,10 +713,14 @@ class MultiPointWorker:
 
             with self._timing.get_timer("job creation and dispatch"):
                 for job_class, job_runner in self._job_runners:
-                    job = job_class(capture_info=info, capture_image=JobImage(image_array=image))
+                    job = job_class(
+                        capture_info=info, capture_image=JobImage(image_array=image)
+                    )
                     if job_runner is not None:
                         if not job_runner.dispatch(job):
-                            raise RuntimeError("Failed to dispatch multiprocessing job!")
+                            raise RuntimeError(
+                                "Failed to dispatch multiprocessing job!"
+                            )
                     else:
                         # NOTE(imo): We don't have any way of people using results, so for now just
                         # run and ignore it.
@@ -634,7 +748,14 @@ class MultiPointWorker:
         return (self.camera.get_total_frame_time() / 1e3) + 10
 
     def acquire_camera_image(
-        self, config: ChannelMode, file_ID: str, current_path: str, k: int, region_id: str, fov: int, config_idx: int
+        self,
+        config: ChannelMode,
+        file_ID: str,
+        current_path: str,
+        k: int,
+        region_id: str,
+        fov: int,
+        config_idx: int,
     ) -> None:
         self._select_config(config)
 
@@ -653,7 +774,9 @@ class MultiPointWorker:
         # This is some large timeout that we use just so as to not block forever
         with self._timing.get_timer("_ready_for_next_trigger.wait"):
             if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
-                self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
+                self._log.error(
+                    "Frame callback never set _have_last_triggered_image callback! Aborting acquisition."
+                )
                 self.request_abort_fn()
                 return
         with self._timing.get_timer("get_ready_for_trigger re-check"):
@@ -696,7 +819,9 @@ class MultiPointWorker:
 
         with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
             if self.liveController.trigger_mode == TriggerMode.HARDWARE:
-                exposure_done_time: float = time.time() + self.camera.get_total_frame_time() / 1e3
+                exposure_done_time: float = (
+                    time.time() + self.camera.get_total_frame_time() / 1e3
+                )
                 # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
                 # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
                 self._sleep(max(0.0, exposure_done_time - time.time()))
@@ -709,9 +834,13 @@ class MultiPointWorker:
                 #
                 # If we wait for longer than 5x the exposure + 2 seconds, abort the acquisition because something is
                 # wrong.
-                non_hw_frame_timeout: float = 5 * self.camera.get_total_frame_time() / 1e3 + 2
+                non_hw_frame_timeout: float = (
+                    5 * self.camera.get_total_frame_time() / 1e3 + 2
+                )
                 if not self._ready_for_next_trigger.wait(non_hw_frame_timeout):
-                    self._log.error("Timed out waiting {non_hw_frame_timeout} [s] for a frame, aborting acquisition.")
+                    self._log.error(
+                        "Timed out waiting {non_hw_frame_timeout} [s] for a frame, aborting acquisition."
+                    )
                     self.request_abort_fn()
                     # Let this fall through so we still turn off illumination.  Let the caller actually break out
                     # of the acquisition.
@@ -725,12 +854,26 @@ class MultiPointWorker:
         # self._log.debug(f"Sleeping for {time_to_sleep} [s]")
         time.sleep(time_to_sleep)
 
-    def acquire_rgb_image(self, config: ChannelMode, file_ID: str, current_path: str, k: int, region_id: str, fov: int) -> None:
+    def acquire_rgb_image(
+        self,
+        config: ChannelMode,
+        file_ID: str,
+        current_path: str,
+        k: int,
+        region_id: str,
+        fov: int,
+    ) -> None:
         # go through the channels
-        rgb_channels: List[str] = ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]
+        rgb_channels: List[str] = [
+            "BF LED matrix full_R",
+            "BF LED matrix full_G",
+            "BF LED matrix full_B",
+        ]
         images: Dict[str, np.ndarray] = {}
 
-        for config_ in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for (
+            config_
+        ) in self.channelConfigurationManager.get_channel_configurations_for_objective(
             self.objectiveStore.current_objective
         ):
             if config_.name in rgb_channels:
@@ -743,7 +886,9 @@ class MultiPointWorker:
                     self.wait_till_operation_is_completed()
 
                 # read camera frame
-                self.camera.send_trigger(illumination_time=self.camera.get_exposure_time())
+                self.camera.send_trigger(
+                    illumination_time=self.camera.get_exposure_time()
+                )
                 image: Optional[np.ndarray] = self.camera.read_frame()
                 if image is None:
                     print("self.camera.read_frame() returned None")
@@ -793,13 +938,21 @@ class MultiPointWorker:
             self.construct_rgb_image(images, current_capture_info)
 
     @staticmethod
-    def handle_rgb_generation(current_round_images: Dict[str, np.ndarray], capture_info: CaptureInfo) -> None:
-        keys_to_check: List[str] = ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]
+    def handle_rgb_generation(
+        current_round_images: Dict[str, np.ndarray], capture_info: CaptureInfo
+    ) -> None:
+        keys_to_check: List[str] = [
+            "BF LED matrix full_R",
+            "BF LED matrix full_G",
+            "BF LED matrix full_B",
+        ]
         if all(key in current_round_images for key in keys_to_check):
             print("constructing RGB image")
             print(current_round_images["BF LED matrix full_R"].dtype)
             size: Tuple[int, ...] = current_round_images["BF LED matrix full_R"].shape
-            rgb_image: np.ndarray = np.zeros((*size, 3), dtype=current_round_images["BF LED matrix full_R"].dtype)
+            rgb_image: np.ndarray = np.zeros(
+                (*size, 3), dtype=current_round_images["BF LED matrix full_R"].dtype
+            )
             print(rgb_image.shape)
             rgb_image[:, :, 0] = current_round_images["BF LED matrix full_R"]
             rgb_image[:, :, 1] = current_round_images["BF LED matrix full_G"]
@@ -813,7 +966,8 @@ class MultiPointWorker:
                 if rgb_image.dtype == np.uint16:
                     iio.imwrite(
                         os.path.join(
-                            capture_info.save_directory, capture_info.file_id + "_BF_LED_matrix_full_RGB.tiff"
+                            capture_info.save_directory,
+                            capture_info.file_id + "_BF_LED_matrix_full_RGB.tiff",
                         ),
                         rgb_image,
                     )
@@ -821,13 +975,21 @@ class MultiPointWorker:
                     iio.imwrite(
                         os.path.join(
                             capture_info.save_directory,
-                            capture_info.file_id + "_BF_LED_matrix_full_RGB." + Acquisition.IMAGE_FORMAT,
+                            capture_info.file_id
+                            + "_BF_LED_matrix_full_RGB."
+                            + Acquisition.IMAGE_FORMAT,
                         ),
                         rgb_image,
                     )
 
-    def handle_rgb_channels(self, images: Dict[str, np.ndarray], capture_info: CaptureInfo) -> None:
-        for channel in ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]:
+    def handle_rgb_channels(
+        self, images: Dict[str, np.ndarray], capture_info: CaptureInfo
+    ) -> None:
+        for channel in [
+            "BF LED matrix full_R",
+            "BF LED matrix full_G",
+            "BF LED matrix full_B",
+        ]:
             image_to_display: np.ndarray = utils.crop_image(
                 images[channel],
                 round(images[channel].shape[1] * self.display_resolution_scaling),
@@ -848,12 +1010,23 @@ class MultiPointWorker:
                 capture_info.file_id
                 + "_"
                 + channel.replace(" ", "_")
-                + (".tiff" if images[channel].dtype == np.uint16 else "." + Acquisition.IMAGE_FORMAT)
+                + (
+                    ".tiff"
+                    if images[channel].dtype == np.uint16
+                    else "." + Acquisition.IMAGE_FORMAT
+                )
             )
-            iio.imwrite(os.path.join(capture_info.save_directory, file_name), images[channel])
+            iio.imwrite(
+                os.path.join(capture_info.save_directory, file_name), images[channel]
+            )
 
-    def construct_rgb_image(self, images: Dict[str, np.ndarray], capture_info: CaptureInfo) -> None:
-        rgb_image: np.ndarray = np.zeros((*images["BF LED matrix full_R"].shape, 3), dtype=images["BF LED matrix full_R"].dtype)
+    def construct_rgb_image(
+        self, images: Dict[str, np.ndarray], capture_info: CaptureInfo
+    ) -> None:
+        rgb_image: np.ndarray = np.zeros(
+            (*images["BF LED matrix full_R"].shape, 3),
+            dtype=images["BF LED matrix full_R"].dtype,
+        )
         rgb_image[:, :, 0] = images["BF LED matrix full_R"]
         rgb_image[:, :, 1] = images["BF LED matrix full_G"]
         rgb_image[:, :, 2] = images["BF LED matrix full_B"]
@@ -883,13 +1056,19 @@ class MultiPointWorker:
         file_name: str = (
             capture_info.file_id
             + "_BF_LED_matrix_full_RGB"
-            + (".tiff" if rgb_image.dtype == np.uint16 else "." + Acquisition.IMAGE_FORMAT)
+            + (
+                ".tiff"
+                if rgb_image.dtype == np.uint16
+                else "." + Acquisition.IMAGE_FORMAT
+            )
         )
         iio.imwrite(os.path.join(capture_info.save_directory, file_name), rgb_image)
 
     def handle_acquisition_abort(self, current_path: str) -> None:
         # Save coordinates.csv
-        self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
+        self.coordinates_pd.to_csv(
+            os.path.join(current_path, "coordinates.csv"), index=False, header=True
+        )
         self.microcontroller.enable_joystick(True)
 
         self._wait_for_outstanding_callback_images()
@@ -917,7 +1096,9 @@ class MultiPointWorker:
         else:
             rel_z_to_start: float
             if self.z_stacking_config == "FROM CENTER":
-                rel_z_to_start = -self.deltaZ * (self.NZ - 1) + self.deltaZ * round((self.NZ - 1) / 2)
+                rel_z_to_start = -self.deltaZ * (self.NZ - 1) + self.deltaZ * round(
+                    (self.NZ - 1) / 2
+                )
             else:
                 rel_z_to_start = -self.deltaZ * (self.NZ - 1)
 

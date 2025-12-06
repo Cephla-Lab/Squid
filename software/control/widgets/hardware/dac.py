@@ -18,12 +18,7 @@ if TYPE_CHECKING:
 
 
 class DACControWidget(QFrame):
-    def __init__(
-        self,
-        peripheral_service: "PeripheralService",
-        *args,
-        **kwargs
-    ):
+    def __init__(self, peripheral_service: "PeripheralService", *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self._service = peripheral_service
@@ -34,8 +29,8 @@ class DACControWidget(QFrame):
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-    def add_components(self):
-        self.slider_DAC0 = QSlider(Qt.Horizontal)
+    def add_components(self) -> None:
+        self.slider_DAC0 = QSlider(Qt.Orientation.Horizontal)
         self.slider_DAC0.setTickPosition(QSlider.TicksBelow)
         self.slider_DAC0.setMinimum(0)
         self.slider_DAC0.setMaximum(100)
@@ -49,7 +44,7 @@ class DACControWidget(QFrame):
         self.entry_DAC0.setValue(0)
         self.entry_DAC0.setKeyboardTracking(False)
 
-        self.slider_DAC1 = QSlider(Qt.Horizontal)
+        self.slider_DAC1 = QSlider(Qt.Orientation.Horizontal)
         self.slider_DAC1.setTickPosition(QSlider.TicksBelow)
         self.slider_DAC1.setMinimum(0)
         self.slider_DAC1.setMaximum(100)
@@ -84,15 +79,15 @@ class DACControWidget(QFrame):
         self.grid.addLayout(grid_line1, 1, 0)
         self.setLayout(self.grid)
 
-    def set_DAC0(self, value):
+    def set_DAC0(self, value: float) -> None:
         """Set DAC0 output (0-100%)."""
         self._service.set_dac(channel=0, percentage=value)
 
-    def set_DAC1(self, value):
+    def set_DAC1(self, value: float) -> None:
         """Set DAC1 output (0-100%)."""
         self._service.set_dac(channel=1, percentage=value)
 
-    def _on_dac_changed(self, event: DACValueChanged):
+    def _on_dac_changed(self, event: DACValueChanged) -> None:
         """Handle DAC value changed event."""
         # Update UI without triggering signal loops
         if event.channel == 0:

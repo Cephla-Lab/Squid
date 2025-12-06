@@ -18,10 +18,7 @@ import numpy as np
 from datetime import datetime
 
 
-
-
 class SpectrumStreamHandler(QObject):
-
     spectrum_to_display = Signal(np.ndarray)
     spectrum_to_write = Signal(np.ndarray)
     signal_new_spectrum_received = Signal()
@@ -69,13 +66,15 @@ class SpectrumStreamHandler(QObject):
             self.spectrum_to_display.emit(data)
             self.timestamp_last_display = time_now
         # send image to write
-        if self.save_spectrum_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
+        if (
+            self.save_spectrum_flag
+            and time_now - self.timestamp_last_save >= 1 / self.fps_save
+        ):
             self.spectrum_to_write.emit(data)
             self.timestamp_last_save = time_now
 
 
 class SpectrumSaver(QObject):
-
     stop_recording = Signal()
 
     def __init__(self) -> None:
@@ -103,9 +102,16 @@ class SpectrumSaver(QObject):
                 file_ID = int(self.counter % self.max_num_file_per_folder)
                 # create a new folder
                 if file_ID == 0:
-                    utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID, str(folder_ID)))
+                    utils.ensure_directory_exists(
+                        os.path.join(self.base_path, self.experiment_ID, str(folder_ID))
+                    )
 
-                saving_path = os.path.join(self.base_path, self.experiment_ID, str(folder_ID), str(file_ID) + ".csv")
+                saving_path = os.path.join(
+                    self.base_path,
+                    self.experiment_ID,
+                    str(folder_ID),
+                    str(file_ID) + ".csv",
+                )
                 np.savetxt(saving_path, data, delimiter=",")
 
                 self.counter = self.counter + 1
@@ -130,10 +136,16 @@ class SpectrumSaver(QObject):
     def set_recording_time_limit(self, time_limit: float) -> None:
         self.recording_time_limit = time_limit
 
-    def start_new_experiment(self, experiment_ID: str, add_timestamp: bool = True) -> None:
+    def start_new_experiment(
+        self, experiment_ID: str, add_timestamp: bool = True
+    ) -> None:
         if add_timestamp:
             # generate unique experiment ID
-            self.experiment_ID = experiment_ID + "_spectrum_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+            self.experiment_ID = (
+                experiment_ID
+                + "_spectrum_"
+                + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+            )
         else:
             self.experiment_ID = experiment_ID
         self.recording_start_time = time.time()

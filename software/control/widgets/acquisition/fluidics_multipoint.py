@@ -1,22 +1,15 @@
 # Fluidics multi-point acquisition widget
-import os
-import json
-import re
 import math
 import time
-import logging
-import yaml
-from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
-import numpy as np
 import pandas as pd
 
 import squid.logging
 
 if TYPE_CHECKING:
     from squid.services import StageService
-from qtpy.QtCore import Signal, Qt, QTimer
+from qtpy.QtCore import Signal, QTimer
 from qtpy.QtWidgets import (
     QFrame,
     QVBoxLayout,
@@ -26,38 +19,20 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QDoubleSpinBox,
     QSpinBox,
-    QComboBox,
     QPushButton,
     QCheckBox,
-    QRadioButton,
-    QButtonGroup,
     QFileDialog,
     QMessageBox,
     QSizePolicy,
-    QTableWidget,
-    QTableWidgetItem,
-    QTabWidget,
-    QHeaderView,
     QAbstractItemView,
-    QGroupBox,
-    QScrollArea,
     QWidget,
-    QDialog,
     QListWidget,
-    QListWidgetItem,
-    QApplication,
     QProgressBar,
-    QSpacerItem,
-    QShortcut,
 )
-from qtpy.QtGui import QIcon, QColor, QBrush, QKeySequence
+from qtpy.QtGui import QIcon
 
 from control._def import *
-import control.utils as utils
-from control.widgets.base import error_dialog, check_space_available_with_error_dialog
-from control.widgets.wellplate import WellSelectionWidget
 from squid.abc import AbstractStage
-
 
 
 class MultiPointWithFluidicsWidget(QFrame):
@@ -135,7 +110,9 @@ class MultiPointWithFluidicsWidget(QFrame):
 
         # Channel configurations
         self.list_configurations = QListWidget()
-        for microscope_configuration in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for (
+            microscope_configuration
+        ) in self.channelConfigurationManager.get_channel_configurations_for_objective(
             self.objectiveStore.current_objective
         ):
             self.list_configurations.addItems([microscope_configuration.name])
@@ -143,8 +120,12 @@ class MultiPointWithFluidicsWidget(QFrame):
 
         # Reflection AF checkbox
         self.checkbox_withReflectionAutofocus = QCheckBox("Reflection AF")
-        self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
-        self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
+        self.checkbox_withReflectionAutofocus.setChecked(
+            MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
+        )
+        self.multipointController.set_reflection_af_flag(
+            MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
+        )
 
         # Piezo checkbox
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
@@ -254,12 +235,22 @@ class MultiPointWithFluidicsWidget(QFrame):
         # self.btn_init_fluidics.clicked.connect(self.init_fluidics)
         self.entry_deltaZ.valueChanged.connect(self.set_deltaZ)
         self.entry_NZ.valueChanged.connect(self.multipointController.set_NZ)
-        self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
+        self.checkbox_withReflectionAutofocus.toggled.connect(
+            self.multipointController.set_reflection_af_flag
+        )
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
-        self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
-        self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
-        self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
-        self.multipointController.signal_region_progress.connect(self.update_region_progress)
+        self.list_configurations.itemSelectionChanged.connect(
+            self.emit_selected_channels
+        )
+        self.multipointController.acquisition_finished.connect(
+            self.acquisition_is_finished
+        )
+        self.multipointController.signal_acquisition_progress.connect(
+            self.update_acquisition_progress
+        )
+        self.multipointController.signal_region_progress.connect(
+            self.update_region_progress
+        )
         self.signal_acquisition_started.connect(self.display_progress_bar)
         self.eta_timer.timeout.connect(self.update_eta_display)
 
@@ -269,22 +260,30 @@ class MultiPointWithFluidicsWidget(QFrame):
         if pressed:
             if not self.base_path_is_set:
                 self.btn_startAcquisition.setChecked(False)
-                QMessageBox.warning(self, "Warning", "Please choose base saving directory first")
+                QMessageBox.warning(
+                    self, "Warning", "Please choose base saving directory first"
+                )
                 return
 
             if not self.list_configurations.selectedItems():
                 self.btn_startAcquisition.setChecked(False)
-                QMessageBox.warning(self, "Warning", "Please select at least one imaging channel")
+                QMessageBox.warning(
+                    self, "Warning", "Please select at least one imaging channel"
+                )
                 return
 
             if self.multipointController.acquisition_in_progress():
-                self._log.warning("Acquisition in progress or aborting, cannot start another yet.")
+                self._log.warning(
+                    "Acquisition in progress or aborting, cannot start another yet."
+                )
                 self.btn_startAcquisition.setChecked(False)
                 return
 
             if not rounds:
                 self.btn_startAcquisition.setChecked(False)
-                QMessageBox.warning(self, "Warning", "Please enter valid round numbers (1-24)")
+                QMessageBox.warning(
+                    self, "Warning", "Please enter valid round numbers (1-24)"
+                )
                 return
 
             self.setEnabled_all(False)
@@ -294,18 +293,26 @@ class MultiPointWithFluidicsWidget(QFrame):
             self.multipointController.set_deltaZ(self.entry_deltaZ.value())
             self.multipointController.set_NZ(self.entry_NZ.value())
             self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
-            self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
-            self.multipointController.set_use_fluidics(True)  # may be set to False from other widgets
+            self.multipointController.set_reflection_af_flag(
+                self.checkbox_withReflectionAutofocus.isChecked()
+            )
+            self.multipointController.set_use_fluidics(
+                True
+            )  # may be set to False from other widgets
             self.multipointController.set_selected_configurations(
                 [item.text() for item in self.list_configurations.selectedItems()]
             )
             self.multipointController.set_Nt(len(rounds))
             self.multipointController.fluidics.set_rounds(rounds)
-            self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
+            self.multipointController.start_new_experiment(
+                self.lineEdit_experimentID.text()
+            )
 
             # Emit signals
             self.signal_acquisition_started.emit(True)
-            self.signal_acquisition_shape.emit(self.entry_NZ.value(), self.entry_deltaZ.value())
+            self.signal_acquisition_shape.emit(
+                self.entry_NZ.value(), self.entry_deltaZ.value()
+            )
 
             # Start acquisition
             self.multipointController.run_acquisition()
@@ -339,14 +346,18 @@ class MultiPointWithFluidicsWidget(QFrame):
         if self.checkbox_usePiezo.isChecked():
             deltaZ = value
         else:
-            mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
+            mm_per_ustep = (
+                1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
+            )
             deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
         self.entry_deltaZ.setValue(deltaZ)
         self.multipointController.set_deltaZ(deltaZ)
 
     def emit_selected_channels(self):
         """Emit signal with list of selected channel names"""
-        selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
+        selected_channels = [
+            item.text() for item in self.list_configurations.selectedItems()
+        ]
         self.signal_acquisition_channels.emit(selected_channels)
 
     def acquisition_is_finished(self):
@@ -399,13 +410,17 @@ class MultiPointWithFluidicsWidget(QFrame):
 
             # Calculate ETA
             fov_per_second = processed_fovs / elapsed_time
-            self.eta_seconds = remaining_fovs / fov_per_second if fov_per_second > 0 else 0
+            self.eta_seconds = (
+                remaining_fovs / fov_per_second if fov_per_second > 0 else 0
+            )
             self.update_eta_display()
 
             # Start or restart the timer
             self.eta_timer.start(1000)  # Update every 1000 ms (1 second)
 
-    def update_acquisition_progress(self, current_region, num_regions, current_time_point):
+    def update_acquisition_progress(
+        self, current_region, num_regions, current_time_point
+    ):
         self.current_region = current_region
         self.current_time_point = current_time_point
 
@@ -478,7 +493,9 @@ class MultiPointWithFluidicsWidget(QFrame):
             # Validate CSV format
             required_columns = ["region", "x (mm)", "y (mm)"]
             if not all(col in df.columns for col in required_columns):
-                raise ValueError("CSV file must contain 'region', 'x (mm)', and 'y (mm)' columns")
+                raise ValueError(
+                    "CSV file must contain 'region', 'x (mm)', and 'y (mm)' columns"
+                )
 
             # Clear existing coordinates
             self.scanCoordinates.clear_regions()
@@ -501,7 +518,11 @@ class MultiPointWithFluidicsWidget(QFrame):
 
         except Exception as e:
             self._log.error(f"Failed to load coordinates: {str(e)}")
-            QMessageBox.warning(self, "Load Error", f"Failed to load coordinates from {file_path}\nError: {str(e)}")
+            QMessageBox.warning(
+                self,
+                "Load Error",
+                f"Failed to load coordinates from {file_path}\nError: {str(e)}",
+            )
 
     def init_fluidics(self):
         """Initialize the fluidics system"""
@@ -524,7 +545,7 @@ class MultiPointWithFluidicsWidget(QFrame):
             if not rounds_str:
                 return []
 
-            rounds = []
+            rounds: list[int] = []
 
             # Split by comma and process each part
             for part in rounds_str.split(","):
@@ -541,7 +562,9 @@ class MultiPointWithFluidicsWidget(QFrame):
                     # Handle single number
                     num = int(part)
                     if num < 1 or num > 24:
-                        raise ValueError(f"Invalid number {num}: Must be between 1 and 24")
+                        raise ValueError(
+                            f"Invalid number {num}: Must be between 1 and 24"
+                        )
                     rounds.append(num)
 
             self.nRound = len(rounds)
@@ -551,8 +574,10 @@ class MultiPointWithFluidicsWidget(QFrame):
         except ValueError as e:
             QMessageBox.warning(self, "Invalid Input", str(e))
             return []
-        except Exception as e:
-            QMessageBox.warning(self, "Invalid Input", "Please enter valid round numbers (e.g., '1-3,5,7-10')")
+        except Exception:
+            QMessageBox.warning(
+                self,
+                "Invalid Input",
+                "Please enter valid round numbers (e.g., '1-3,5,7-10')",
+            )
             return []
-
-

@@ -1,4 +1,3 @@
-import dataclasses
 from contextlib import contextmanager
 from abc import ABC, abstractmethod
 from typing import Callable, Optional, Tuple, Sequence, List, Dict
@@ -12,7 +11,7 @@ import numpy.typing as npt
 from dataclasses import dataclass
 
 import squid.logging
-from squid.config import AxisConfig, StageConfig, CameraConfig, CameraPixelFormat
+from squid.config import StageConfig, CameraConfig, CameraPixelFormat
 from squid.exceptions import SquidTimeout
 import control.utils
 
@@ -368,7 +367,9 @@ class CameraError(RuntimeError):
 
 class AbstractCamera(metaclass=abc.ABCMeta):
     @staticmethod
-    def calculate_new_roi_for_binning(old_binning, old_roi, new_binning) -> Tuple[int, int, int, int]:
+    def calculate_new_roi_for_binning(
+        old_binning, old_roi, new_binning
+    ) -> Tuple[int, int, int, int]:
         """
         When changing binning, we may want the roi to change such that the FOV is the same as before the binning
         factors change. This calculates the new roi to keep the FOV the same given we change to this new resolution.
@@ -381,7 +382,11 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
         Returns a 4-tuple of (offset_x, offset_y, width, height)
         """
-        if not isinstance(old_binning, tuple) or not isinstance(new_binning, tuple) or not isinstance(old_roi, tuple):
+        if (
+            not isinstance(old_binning, tuple)
+            or not isinstance(new_binning, tuple)
+            or not isinstance(old_roi, tuple)
+        ):
             raise ValueError("Need tuple args.")
 
         def rounded_int(num) -> int:
@@ -413,7 +418,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         self._config = camera_config
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self._hw_trigger_fn: Optional[Callable[[Optional[float]], bool]] = hw_trigger_fn
-        self._hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]] = hw_set_strobe_delay_ms_fn
+        self._hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]] = (
+            hw_set_strobe_delay_ms_fn
+        )
 
         # Frame callbacks is a list of (id, callback) managed by add_frame_callback and remove_frame_callback.
         # Your frame receiving functions should call self._send_frame_to_callbacks(frame), and doesn't need
@@ -472,7 +479,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def remove_frame_callback(self, callback_id: int) -> None:
         try:
             idx_to_remove = [t[0] for t in self._frame_callbacks].index(callback_id)
-            self._log.debug(f"Removing callback with id={callback_id} at idx={idx_to_remove}.")
+            self._log.debug(
+                f"Removing callback with id={callback_id} at idx={idx_to_remove}."
+            )
             del self._frame_callbacks[idx_to_remove]
         except ValueError:
             self._log.warning(f"No callback with id={callback_id}, cannot remove it.")
@@ -646,7 +655,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def get_is_streaming(self):
         pass
 
-    def _process_raw_frame(self, raw_frame: npt.NDArray[np.uint8]) -> npt.NDArray[np.uint8]:
+    def _process_raw_frame(
+        self, raw_frame: npt.NDArray[np.uint8]
+    ) -> npt.NDArray[np.uint8]:
         """
         Takes a raw nd array from a camera, and processes it such that it can be used directly in a
         CameraFrame as the frame field.  This takes care of rotating, resizing, etc the raw frame such that
@@ -656,7 +667,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         # Apply rotation and flip
         image = control.utils.rotate_and_flip_image(
-            raw_frame, rotate_image_angle=self._config.rotate_image_angle or 0.0, flip_image=self._config.flip
+            raw_frame,
+            rotate_image_angle=self._config.rotate_image_angle or 0.0,
+            flip_image=self._config.flip,
         )
 
         # Apply software crop
@@ -671,10 +684,26 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         Returns the final crop size of the image (after software crop).
         """
         binning_x, binning_y = self.get_binning()
-        crop_width = int(self._config.crop_width / binning_x) if self._config.crop_width else None
-        crop_height = int(self._config.crop_height / binning_y) if self._config.crop_height else None
-        crop_width = int(crop_width * self._software_crop_width_ratio) if crop_width is not None else None
-        crop_height = int(crop_height * self._software_crop_height_ratio) if crop_height is not None else None
+        crop_width = (
+            int(self._config.crop_width / binning_x)
+            if self._config.crop_width
+            else None
+        )
+        crop_height = (
+            int(self._config.crop_height / binning_y)
+            if self._config.crop_height
+            else None
+        )
+        crop_width = (
+            int(crop_width * self._software_crop_width_ratio)
+            if crop_width is not None
+            else None
+        )
+        crop_height = (
+            int(crop_height * self._software_crop_height_ratio)
+            if crop_height is not None
+            else None
+        )
         return crop_width, crop_height
 
     def get_fov_size_mm(self) -> Optional[float]:
@@ -742,7 +771,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
+    def set_white_balance_gains(
+        self, red_gain: float, green_gain: float, blue_gain: float
+    ):
         """
         Set the (R, G, B) white balance gains.
         """
@@ -833,7 +864,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+    def set_region_of_interest(
+        self, offset_x: int, offset_y: int, width: int, height: int
+    ):
         """
         Set the region of interest of the camera so that returned frames only contain this subset of the full sensor image.
         """

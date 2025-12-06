@@ -11,7 +11,9 @@ class ContrastManager:
         self.contrast_limits = {}
         self.acquisition_dtype = None
 
-    def update_limits(self, channel: str, min_val: Union[int, float], max_val: Union[int, float]) -> None:
+    def update_limits(
+        self, channel: str, min_val: Union[int, float], max_val: Union[int, float]
+    ) -> None:
         self.contrast_limits[channel] = (min_val, max_val)
 
     def get_limits(
@@ -45,18 +47,20 @@ class ContrastManager:
         source_info = np.iinfo(self.acquisition_dtype)
         target_info = np.iinfo(target_dtype)
 
-        scaled_min = (min_val - source_info.min) / (source_info.max - source_info.min) * (
-            target_info.max - target_info.min
-        ) + target_info.min
-        scaled_max = (max_val - source_info.min) / (source_info.max - source_info.min) * (
-            target_info.max - target_info.min
-        ) + target_info.min
+        scaled_min = (min_val - source_info.min) / (
+            source_info.max - source_info.min
+        ) * (target_info.max - target_info.min) + target_info.min
+        scaled_max = (max_val - source_info.min) / (
+            source_info.max - source_info.min
+        ) * (target_info.max - target_info.min) + target_info.min
 
         return scaled_min, scaled_max
 
     def scale_contrast_limits(self, target_dtype: npt.DTypeLike) -> None:
         print(f"{self.acquisition_dtype} -> {target_dtype}")
         for channel in self.contrast_limits.keys():
-            self.contrast_limits[channel] = self.get_scaled_limits(channel, target_dtype)
+            self.contrast_limits[channel] = self.get_scaled_limits(
+                channel, target_dtype
+            )
 
         self.acquisition_dtype = target_dtype

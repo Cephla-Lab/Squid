@@ -1,20 +1,34 @@
 from control.widgets.wellplate._common import *
 
+if TYPE_CHECKING:
+    from control.widgets.display.navigation import NavigationViewer
+    from control.core.display import StreamHandler, LiveController
+
+
 class WellplateFormatWidget(QWidget):
+    signalWellplateSettings: Signal = Signal(
+        QVariant, float, float, int, int, float, float, int, int, int
+    )
 
-    signalWellplateSettings = Signal(QVariant, float, float, int, int, float, float, int, int, int)
-
-    def __init__(self, stage: AbstractStage, navigationViewer, streamHandler, liveController):
+    def __init__(
+        self,
+        stage: AbstractStage,
+        navigationViewer: "NavigationViewer",
+        streamHandler: "StreamHandler",
+        liveController: "LiveController",
+    ) -> None:
         super().__init__()
-        self.stage = stage
-        self.navigationViewer = navigationViewer
-        self.streamHandler = streamHandler
-        self.liveController = liveController
-        self.wellplate_format = WELLPLATE_FORMAT
-        self.csv_path = SAMPLE_FORMATS_CSV_PATH  # 'sample_formats.csv'
+        self.stage: AbstractStage = stage
+        self.navigationViewer: "NavigationViewer" = navigationViewer
+        self.streamHandler: "StreamHandler" = streamHandler
+        self.liveController: "LiveController" = liveController
+        self.wellplate_format: str = WELLPLATE_FORMAT
+        self.csv_path: str = SAMPLE_FORMATS_CSV_PATH  # 'sample_formats.csv'
+        self.label: QLabel
+        self.comboBox: QComboBox
         self.initUI()
 
-    def initUI(self):
+    def initUI(self) -> None:
         layout = QHBoxLayout(self)
         self.label = QLabel("Sample Format", self)
         self.comboBox = QComboBox(self)
@@ -27,7 +41,7 @@ class WellplateFormatWidget(QWidget):
         if index >= 0:
             self.comboBox.setCurrentIndex(index)
 
-    def populate_combo_box(self):
+    def populate_combo_box(self) -> None:
         self.comboBox.clear()
         for format_, settings in WELLPLATE_FORMAT_SETTINGS.items():
             self.comboBox.addItem(format_, format_)
@@ -37,13 +51,17 @@ class WellplateFormatWidget(QWidget):
         index = self.comboBox.count() - 1  # Get the index of the last item
         font = QFont()
         font.setItalic(True)
-        self.comboBox.setItemData(index, font, Qt.FontRole)
+        self.comboBox.setItemData(index, font, Qt.ItemDataRole.FontRole)
 
-    def wellplateChanged(self, index):
+    def wellplateChanged(self, index: int) -> None:
         self.wellplate_format = self.comboBox.itemData(index)
         if self.wellplate_format == "custom":
-            calibration_dialog = WellplateCalibration(
-                self, self.stage, self.navigationViewer, self.streamHandler, self.liveController
+            calibration_dialog = WellplateCalibration(  # type: ignore[name-defined]
+                self,
+                self.stage,
+                self.navigationViewer,
+                self.streamHandler,
+                self.liveController,
             )
             result = calibration_dialog.exec_()
             if result == QDialog.Rejected:
@@ -53,11 +71,13 @@ class WellplateFormatWidget(QWidget):
         else:
             self.setWellplateSettings(self.wellplate_format)
 
-    def setWellplateSettings(self, wellplate_format):
+    def setWellplateSettings(self, wellplate_format: str) -> None:
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
             settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
         elif wellplate_format == "glass slide":
-            self.signalWellplateSettings.emit(QVariant("glass slide"), 0, 0, 0, 0, 0, 0, 0, 1, 1)
+            self.signalWellplateSettings.emit(
+                QVariant("glass slide"), 0, 0, 0, 0, 0, 0, 0, 1, 1
+            )
             return
         else:
             print(f"Wellplate format {wellplate_format} not recognized")
@@ -76,7 +96,9 @@ class WellplateFormatWidget(QWidget):
             settings["cols"],
         )
 
-    def getWellplateSettings(self, wellplate_format):
+    def getWellplateSettings(
+        self, wellplate_format: str
+    ) -> Optional[Dict[str, Union[str, int, float]]]:
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
             settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
         elif wellplate_format == "glass slide":
@@ -96,7 +118,9 @@ class WellplateFormatWidget(QWidget):
             return None
         return settings
 
-    def add_custom_format(self, name, settings):
+    def add_custom_format(
+        self, name: str, settings: Dict[str, Union[int, float]]
+    ) -> None:
         WELLPLATE_FORMAT_SETTINGS[name] = settings
         self.populate_combo_box()
         index = self.comboBox.findData(name)
@@ -104,7 +128,7 @@ class WellplateFormatWidget(QWidget):
             self.comboBox.setCurrentIndex(index)
         self.wellplateChanged(index)
 
-    def save_formats_to_csv(self):
+    def save_formats_to_csv(self) -> None:
         cache_path = os.path.join("cache", self.csv_path)
         os.makedirs("cache", exist_ok=True)
 
@@ -127,7 +151,7 @@ class WellplateFormatWidget(QWidget):
                 writer.writerow({**{"format": format_}, **settings})
 
     @staticmethod
-    def parse_csv_row(row):
+    def parse_csv_row(row: Dict[str, str]) -> Dict[str, Union[int, float]]:
         return {
             "a1_x_mm": float(row["a1_x_mm"]),
             "a1_y_mm": float(row["a1_y_mm"]),
@@ -139,5 +163,3 @@ class WellplateFormatWidget(QWidget):
             "rows": int(row["rows"]),
             "cols": int(row["cols"]),
         }
-
-

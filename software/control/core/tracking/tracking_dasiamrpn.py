@@ -56,7 +56,14 @@ class Tracker_Image(object):
             # load net
             self.net = SiamRPNvot()
             self.net.load_state_dict(
-                torch.load(join(realpath(dirname(__file__)), "DaSiamRPN", "code", "SiamRPNOTB.model"))
+                torch.load(
+                    join(
+                        realpath(dirname(__file__)),
+                        "DaSiamRPN",
+                        "code",
+                        "SiamRPNOTB.model",
+                    )
+                )
             )
             self.net.eval().cuda()
             print("Finished loading net ...")
@@ -87,8 +94,12 @@ class Tracker_Image(object):
         self.state: Optional[Dict[str, Any]] = None
         self.net: Any = None
 
-    def track(self, image: np.ndarray, thresh_image: Optional[np.ndarray], is_first_frame: bool = False) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
-
+    def track(
+        self,
+        image: np.ndarray,
+        thresh_image: Optional[np.ndarray],
+        is_first_frame: bool = False,
+    ) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
         # case 1: initialize the tracker
         if is_first_frame or not self.trackerActive:
             # tracker initialization - using ROI
@@ -98,10 +109,12 @@ class Tracker_Image(object):
                 self.isCentroidFound = True
             # tracker initialization - using thresholded image
             else:
-                self.isCentroidFound, self.centroid_image, self.bbox = image_processing.find_centroid_basic_Rect(
-                    thresh_image
+                self.isCentroidFound, self.centroid_image, self.bbox = (
+                    image_processing.find_centroid_basic_Rect(thresh_image)
                 )
-                self.bbox = image_processing.scale_square_bbox(self.bbox, Tracking.BBOX_SCALE_FACTOR, square=True)
+                self.bbox = image_processing.scale_square_bbox(
+                    self.bbox, Tracking.BBOX_SCALE_FACTOR, square=True
+                )
             # initialize the tracker
             if self.bbox is not None:
                 print("Starting tracker with initial bbox: {}".format(self.bbox))
@@ -112,12 +125,17 @@ class Tracker_Image(object):
         # case 2: continue tracking an object using tracking
         else:
             # Find centroid using the tracking.
-            objectFound, self.bbox = self._update_tracker(image, thresh_image)  # (x,y,w,h)
+            objectFound, self.bbox = self._update_tracker(
+                image, thresh_image
+            )  # (x,y,w,h)
             if objectFound:
                 self.isCentroidFound = True
                 self.centroid_image = self.centroid_from_bbox(self.bbox) + self.origin
                 self.bbox = np.array(self.bbox)
-                self.bbox[0], self.bbox[1] = self.bbox[0] + self.origin[0], self.bbox[1] + self.origin[1]
+                self.bbox[0], self.bbox[1] = (
+                    self.bbox[0] + self.origin[0],
+                    self.bbox[1] + self.origin[1],
+                )
                 self.rect_pts = self.rectpts_from_bbox(self.bbox)
             else:
                 print("No object found ...")
@@ -138,7 +156,9 @@ class Tracker_Image(object):
             print("Using {} tracker".format(self.tracker_type))
             pass
 
-    def _initialize_tracker(self, image: np.ndarray, centroid: np.ndarray, bbox: Tuple[int, int, int, int]) -> None:
+    def _initialize_tracker(
+        self, image: np.ndarray, centroid: np.ndarray, bbox: Tuple[int, int, int, int]
+    ) -> None:
         bbox = tuple(int(x) for x in bbox)
         # check if the image is color or not
         if len(image.shape) < 3:
@@ -156,7 +176,10 @@ class Tracker_Image(object):
         elif self.tracker_type in self.NEURALNETTRACKERS.keys():
             # Initialize the tracker with this centroid position
             print("Initializing with daSiamRPN tracker")
-            target_pos, target_sz = np.array([centroid[0], centroid[1]]), np.array([bbox[2], bbox[3]])
+            target_pos, target_sz = (
+                np.array([centroid[0], centroid[1]]),
+                np.array([bbox[2], bbox[3]]),
+            )
             if not self.is_color:
                 image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
             self.state = SiamRPN_init(image, target_pos, target_sz, self.net)
@@ -164,7 +187,9 @@ class Tracker_Image(object):
         else:
             pass
 
-    def _update_tracker(self, image: np.ndarray, thresh_image: Optional[np.ndarray]) -> Tuple[bool, Optional[Tuple[int, int, int, int]]]:
+    def _update_tracker(
+        self, image: np.ndarray, thresh_image: Optional[np.ndarray]
+    ) -> Tuple[bool, Optional[Tuple[int, int, int, int]]]:
         # Input: image or thresh_image
         # Output: new_bbox based on tracking
         new_bbox: Optional[Tuple[int, int, int, int]] = None
@@ -185,7 +210,9 @@ class Tracker_Image(object):
             ok = True
             if ok:
                 # (x,y,w,h)
-                new_bbox = cxy_wh_2_rect(self.state["target_pos"], self.state["target_sz"])
+                new_bbox = cxy_wh_2_rect(
+                    self.state["target_pos"], self.state["target_sz"]
+                )
                 new_bbox = [int(l) for l in new_bbox]
                 # print('Updated daSiamRPN tracker')
             return ok, new_bbox
@@ -197,9 +224,13 @@ class Tracker_Image(object):
 
             # Get the latest thresholded image from the queue
             # thresh_image =
-            pts, thresh_image_cropped = image_processing.crop(thresh_image, self.centroid_image, self.searchArea)
+            pts, thresh_image_cropped = image_processing.crop(
+                thresh_image, self.centroid_image, self.searchArea
+            )
             self.origin = pts[0]
-            isCentroidFound, centroid, new_bbox = image_processing.find_centroid_basic_Rect(thresh_image_cropped)
+            isCentroidFound, centroid, new_bbox = (
+                image_processing.find_centroid_basic_Rect(thresh_image_cropped)
+            )
             return isCentroidFound, new_bbox
         # @@@ Can add additional methods here for future tracker implementations
 
@@ -221,9 +252,14 @@ class Tracker_Image(object):
         centroid = np.array([cx, cy])
         return centroid
 
-    def rectpts_from_bbox(self, bbox: Tuple[int, int, int, int]) -> Optional[np.ndarray]:
+    def rectpts_from_bbox(
+        self, bbox: Tuple[int, int, int, int]
+    ) -> Optional[np.ndarray]:
         if self.bbox is not None:
-            pts = np.array([[bbox[0], bbox[1]], [bbox[0] + bbox[2], bbox[1] + bbox[3]]], dtype="int")
+            pts = np.array(
+                [[bbox[0], bbox[1]], [bbox[0] + bbox[2], bbox[1] + bbox[3]]],
+                dtype="int",
+            )
         else:
             pts = None
         return pts

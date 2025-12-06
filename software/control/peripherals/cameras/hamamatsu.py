@@ -6,7 +6,12 @@ import pydantic
 
 from squid.abc import AbstractCamera, CameraError
 from squid.config import CameraConfig, CameraPixelFormat
-from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
+from squid.abc import (
+    CameraFrame,
+    CameraFrameFormat,
+    CameraGainRange,
+    CameraAcquisitionMode,
+)
 from control.peripherals.cameras.dcam import Dcam, Dcamapi
 from control.peripherals.cameras.dcamapi4 import *
 import control.utils
@@ -40,7 +45,9 @@ class HamamatsuCamera(AbstractCamera):
             raise CameraError("Dcam api init result is invalid.")
 
         if cam_count < 1:
-            raise ValueError("No Dcam api cameras available - is the hardware plugged in?")
+            raise ValueError(
+                "No Dcam api cameras available - is the hardware plugged in?"
+            )
 
         if sn is not None:
             for idx in range(cam_count):
@@ -67,7 +74,9 @@ class HamamatsuCamera(AbstractCamera):
             (4, 4): (576, 576),
         }
 
-        capabilities = HamamatsuCapabilities(binning_to_resolution=supported_resolutions)
+        capabilities = HamamatsuCapabilities(
+            binning_to_resolution=supported_resolutions
+        )
 
         return camera, capabilities
 
@@ -110,7 +119,9 @@ class HamamatsuCamera(AbstractCamera):
 
     def _set_prop(self, dcam_prop, prop_value):
         if not self._camera.prop_setvalue(dcam_prop, prop_value):
-            self._log.error(f"Failed to set property {dcam_prop}={prop_value}: {self._camera.lasterr()}")
+            self._log.error(
+                f"Failed to set property {dcam_prop}={prop_value}: {self._camera.lasterr()}"
+            )
             return False
         return True
 
@@ -129,7 +140,9 @@ class HamamatsuCamera(AbstractCamera):
             # to continue.
             try:
                 wait_time = int(round(self._read_thread_wait_period_s * 1000.0))
-                frame_ready = self._camera.wait_event(DCAMWAIT_CAPEVENT.FRAMEREADY, wait_time)
+                frame_ready = self._camera.wait_event(
+                    DCAMWAIT_CAPEVENT.FRAMEREADY, wait_time
+                )
 
                 if frame_ready:
                     # The dcam driver handles setting the correct width and height, so we can use the
@@ -138,13 +151,17 @@ class HamamatsuCamera(AbstractCamera):
                     self._trigger_sent.clear()
 
                     if isinstance(raw_frame, bool):
-                        self._log.error("Frame read resulted in boolean, must be an error.")
+                        self._log.error(
+                            "Frame read resulted in boolean, must be an error."
+                        )
                         continue
 
                     processed_frame = self._process_raw_frame(raw_frame)
                     with self._frame_lock:
                         camera_frame = CameraFrame(
-                            frame_id=self._current_frame.frame_id + 1 if self._current_frame else 1,
+                            frame_id=self._current_frame.frame_id + 1
+                            if self._current_frame
+                            else 1,
                             timestamp=time.time(),
                             frame=processed_frame,
                             frame_format=self.get_frame_format(),
@@ -160,14 +177,18 @@ class HamamatsuCamera(AbstractCamera):
                 # interpreter.
                 time.sleep(0.001)
 
-            except Exception as e:
-                self._log.exception("Exception in read loop, ignoring and trying to continue.")
+            except Exception:
+                self._log.exception(
+                    "Exception in read loop, ignoring and trying to continue."
+                )
         self._read_thread_running.clear()
 
     @staticmethod
     def _last_dcam_error_string_direct(last_error: DCAMERR):
-
-        reverse_error_map = {enum_entry.value: enum_name for (enum_name, enum_entry) in DCAMERR.__members__.items()}
+        reverse_error_map = {
+            enum_entry.value: enum_name
+            for (enum_name, enum_entry) in DCAMERR.__members__.items()
+        }
 
         if last_error not in reverse_error_map:
             return f"{last_error}:{reverse_error_map[last_error]}"
@@ -187,7 +208,9 @@ class HamamatsuCamera(AbstractCamera):
                 self._hw_set_strobe_delay_ms_fn(strobe_time_ms)
 
         if not self._set_prop(DCAM_IDPROP.EXPOSURETIME, camera_exposure_time_s):
-            raise CameraError(f"Failed to set exposure time to {exposure_time_ms=} ({camera_exposure_time_s=} [s])")
+            raise CameraError(
+                f"Failed to set exposure time to {exposure_time_ms=} ({camera_exposure_time_s=} [s])"
+            )
 
         self._exposure_time_ms = exposure_time_ms
         self._trigger_sent.clear()
@@ -202,7 +225,10 @@ class HamamatsuCamera(AbstractCamera):
 
     def get_strobe_time(self) -> float:
         resolution = self.get_resolution()
-        line_interval_s = self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL) * resolution[1]
+        line_interval_s = (
+            self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL)
+            * resolution[1]
+        )
         trigger_delay_s = self._camera.prop_getvalue(DCAM_IDPROP.TRIGGERDELAY)
 
         if isinstance(line_interval_s, bool) or isinstance(trigger_delay_s, bool):
@@ -232,10 +258,15 @@ class HamamatsuCamera(AbstractCamera):
             except ValueError:
                 raise ValueError(f"Unknown or unsupported pixel format={pixel_format}")
         if pixel_format not in self._PIXEL_FORMAT_TO_DCAM_FORMAT:
-            raise ValueError(f"Pixel format {pixel_format} is not supported by this camera.")
+            raise ValueError(
+                f"Pixel format {pixel_format} is not supported by this camera."
+            )
 
         with self._pause_streaming():
-            if not self._set_prop(DCAM_IDPROP.IMAGE_PIXELTYPE, self._PIXEL_FORMAT_TO_DCAM_FORMAT[pixel_format]):
+            if not self._set_prop(
+                DCAM_IDPROP.IMAGE_PIXELTYPE,
+                self._PIXEL_FORMAT_TO_DCAM_FORMAT[pixel_format],
+            ):
                 raise CameraError(f"Failed to set pixel format to {pixel_format}")
 
     def get_pixel_format(self) -> CameraPixelFormat:
@@ -248,7 +279,9 @@ class HamamatsuCamera(AbstractCamera):
         _dcam_to_pixel = {v: k for (k, v) in self._PIXEL_FORMAT_TO_DCAM_FORMAT.items()}
 
         if dcam_pixel_format not in _dcam_to_pixel:
-            raise ValueError(f"Camera returned unknown pixel format code: {dcam_pixel_format}")
+            raise ValueError(
+                f"Camera returned unknown pixel format code: {dcam_pixel_format}"
+            )
 
         return _dcam_to_pixel[dcam_pixel_format]
 
@@ -291,9 +324,13 @@ class HamamatsuCamera(AbstractCamera):
                 return True
 
             elif self._read_thread is not None:
-                self._log.warning("Read thread already exists, but not marked as running.  Still attempting start.")
+                self._log.warning(
+                    "Read thread already exists, but not marked as running.  Still attempting start."
+                )
 
-            self._read_thread = threading.Thread(target=self._read_frames_when_available, daemon=True)
+            self._read_thread = threading.Thread(
+                target=self._read_frames_when_available, daemon=True
+            )
             self._read_thread_keep_running.set()
             self._read_thread.start()
 
@@ -305,10 +342,14 @@ class HamamatsuCamera(AbstractCamera):
             return True
 
         if not self._allocate_read_buffers():
-            self._log.error(f"Couldn't allocate read buffers for streaming: {self._last_dcam_error_string()}")
+            self._log.error(
+                f"Couldn't allocate read buffers for streaming: {self._last_dcam_error_string()}"
+            )
             return False
         if not self._camera.cap_start():
-            self._log.error(f"Failed to start streaming: {self._last_dcam_error_string()}")
+            self._log.error(
+                f"Failed to start streaming: {self._last_dcam_error_string()}"
+            )
             return False
 
         self._trigger_sent.clear()
@@ -336,11 +377,15 @@ class HamamatsuCamera(AbstractCamera):
         self._log.debug("Stopping Hamamatsu streaming.")
         success = True
         if not self._camera.cap_stop():
-            self._log.error(f"Failed to stop camera streaming: {self._last_dcam_error_string()}")
+            self._log.error(
+                f"Failed to stop camera streaming: {self._last_dcam_error_string()}"
+            )
             success = False
 
         if not self._camera.buf_release():
-            self._log.error(f"Failed to release camera buffers: {self._last_dcam_error_string()}")
+            self._log.error(
+                f"Failed to release camera buffers: {self._last_dcam_error_string()}"
+            )
             success = False
 
         self._log.debug(f"Stopped with {success=}")
@@ -379,19 +424,31 @@ class HamamatsuCamera(AbstractCamera):
             return self._current_frame.frame_id if self._current_frame else -1
 
     def get_white_balance_gains(self) -> Tuple[float, float, float]:
-        raise NotImplementedError("White Balance Gains not implemented for the Hamamatsu driver.")
+        raise NotImplementedError(
+            "White Balance Gains not implemented for the Hamamatsu driver."
+        )
 
-    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
-        raise NotImplementedError("White Balance Gains not implemented for the Hamamatsu driver.")
+    def set_white_balance_gains(
+        self, red_gain: float, green_gain: float, blue_gain: float
+    ):
+        raise NotImplementedError(
+            "White Balance Gains not implemented for the Hamamatsu driver."
+        )
 
     def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
-        raise NotImplementedError("White Balance Gains not implemented for the Hamamatsu driver.")
+        raise NotImplementedError(
+            "White Balance Gains not implemented for the Hamamatsu driver."
+        )
 
     def set_black_level(self, black_level: float):
-        raise NotImplementedError("Black levels are not implemented for the Hamamatsu driver.")
+        raise NotImplementedError(
+            "Black levels are not implemented for the Hamamatsu driver."
+        )
 
     def get_black_level(self) -> float:
-        raise NotImplementedError("Black levels are not implemented for the Hamamatsu driver.")
+        raise NotImplementedError(
+            "Black levels are not implemented for the Hamamatsu driver."
+        )
 
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
         with self._pause_streaming():
@@ -401,14 +458,20 @@ class HamamatsuCamera(AbstractCamera):
                 dcam_trigger_source = DCAMPROP.TRIGGERSOURCE.INTERNAL
             elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
                 dcam_trigger_source = DCAMPROP.TRIGGERSOURCE.EXTERNAL
-                if not self._set_prop(DCAM_IDPROP.TRIGGERPOLARITY, DCAMPROP.TRIGGERPOLARITY.POSITIVE):
-                    self._log.error(f"Failed to set positive trigger polarity for hardware trigger.")
+                if not self._set_prop(
+                    DCAM_IDPROP.TRIGGERPOLARITY, DCAMPROP.TRIGGERPOLARITY.POSITIVE
+                ):
+                    self._log.error(
+                        "Failed to set positive trigger polarity for hardware trigger."
+                    )
                     return False
             else:
                 raise ValueError(f"Unhandled {acquisition_mode=}")
 
             if not self._set_prop(DCAM_IDPROP.TRIGGERSOURCE, dcam_trigger_source):
-                self._log.error(f"Failed to set acquisition mode to {acquisition_mode=}")
+                self._log.error(
+                    f"Failed to set acquisition mode to {acquisition_mode=}"
+                )
                 return False
             self.set_exposure_time(self._exposure_time_ms)
         return True
@@ -431,11 +494,16 @@ class HamamatsuCamera(AbstractCamera):
             raise ValueError(f"Unknown dcam trigger source mode {dcam_mode=}")
 
     def send_trigger(self, illumination_time: Optional[float] = None):
-        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
-            raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
+        if (
+            self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER
+            and not self._hw_trigger_fn
+        ):
+            raise CameraError(
+                "In HARDWARE_TRIGGER mode, but no hw trigger function given."
+            )
 
         if not self.get_is_streaming():
-            raise CameraError(f"Camera is not streaming, cannot send trigger.")
+            raise CameraError("Camera is not streaming, cannot send trigger.")
 
         if not self.get_ready_for_trigger():
             raise CameraError(
@@ -445,20 +513,28 @@ class HamamatsuCamera(AbstractCamera):
             self._hw_trigger_fn(illumination_time)
         elif self.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER:
             if not self._camera.cap_firetrigger():
-                raise CameraError(f"Failed to send software trigger: {self._last_dcam_error_string()}")
+                raise CameraError(
+                    f"Failed to send software trigger: {self._last_dcam_error_string()}"
+                )
 
             self._last_trigger_timestamp = time.time()
             self._trigger_sent.set()
 
     def get_ready_for_trigger(self) -> bool:
-        if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
+        if time.time() - self._last_trigger_timestamp > 1.5 * (
+            (self.get_total_frame_time() + 4) / 1000.0
+        ):
             self._trigger_sent.clear()
         return not self._trigger_sent.is_set()
 
-    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+    def set_region_of_interest(
+        self, offset_x: int, offset_y: int, width: int, height: int
+    ):
         # Numbers are in unbinned pixels. Supports C15440-20UP (ORCA-Fusion BT) only.
         with self._pause_streaming():
-            roi_mode_on = self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.ON)
+            roi_mode_on = self._camera.prop_setvalue(
+                DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.ON
+            )
 
             def fail(msg):
                 """
@@ -468,7 +544,9 @@ class HamamatsuCamera(AbstractCamera):
                 raise ValueError(msg)
 
             if not roi_mode_on:
-                raise CameraError("Failed to turn on roi mode on camera, cannot set roi.")
+                raise CameraError(
+                    "Failed to turn on roi mode on camera, cannot set roi."
+                )
 
             offset_x = control.utils.truncate_to_interval(offset_x, 4)
             if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHPOS, int(offset_x)):
@@ -500,10 +578,14 @@ class HamamatsuCamera(AbstractCamera):
     def set_temperature(self, temperature_deg_c: Optional[float]):
         # Commented out since setting temperature is not supported in Model C15440-20UP (ORCA-Fusion BT)
         # self._camera.prop_setvalue(DCAM_IDPROP.SENSORTEMPERATURETARGET, temperature_deg_c)
-        raise NotImplementedError("Setting temperature is not supported for this camera.")
+        raise NotImplementedError(
+            "Setting temperature is not supported for this camera."
+        )
 
     def get_temperature(self) -> float:
         return self._camera.prop_getvalue(DCAM_IDPROP.SENSORTEMPERATURE)
 
     def set_temperature_reading_callback(self, func) -> Callable[[float], None]:
-        raise NotImplementedError("Setting temperature reading callback is not supported for this camera.")
+        raise NotImplementedError(
+            "Setting temperature reading callback is not supported for this camera."
+        )

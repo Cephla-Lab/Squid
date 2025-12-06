@@ -98,7 +98,9 @@ def setup_single_window_layout(gui: "HighContentScreeningGui") -> None:
     gui.dock_wellSelection.showTitleBar()
     if not USE_NAPARI_WELL_SELECTION or gui.live_only_mode:
         gui.dock_wellSelection.addWidget(gui.wellSelectionWidget)
-        gui.dock_wellSelection.setFixedHeight(gui.dock_wellSelection.minimumSizeHint().height())
+        gui.dock_wellSelection.setFixedHeight(
+            gui.dock_wellSelection.minimumSizeHint().height()
+        )
         main_dockArea.addDock(gui.dock_wellSelection, "bottom")
 
     dock_controlPanel = dock.Dock("Controls", autoOrientation=False)
@@ -117,8 +119,12 @@ def setup_multi_window_layout(gui: "HighContentScreeningGui") -> None:
     gui.setCentralWidget(gui.centralWidget)
     gui.tabbedImageDisplayWindow = QMainWindow()
     gui.tabbedImageDisplayWindow.setCentralWidget(gui.imageDisplayTabs)
-    gui.tabbedImageDisplayWindow.setWindowFlags(gui.windowFlags() | Qt.CustomizeWindowHint)
-    gui.tabbedImageDisplayWindow.setWindowFlags(gui.windowFlags() & ~Qt.WindowCloseButtonHint)
+    gui.tabbedImageDisplayWindow.setWindowFlags(
+        gui.windowFlags() | Qt.CustomizeWindowHint
+    )
+    gui.tabbedImageDisplayWindow.setWindowFlags(
+        gui.windowFlags() & ~Qt.WindowCloseButtonHint
+    )
     (width_min, height_min) = get_main_window_minimum_size()
     gui.tabbedImageDisplayWindow.setFixedSize(width_min, height_min)
     gui.tabbedImageDisplayWindow.show()

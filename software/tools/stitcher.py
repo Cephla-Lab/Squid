@@ -1,7 +1,7 @@
 import cv2
-import imagej, scyjava
+import imagej
+import scyjava
 import os
-import shutil
 import tifffile
 from glob import glob
 import numpy as np
@@ -10,7 +10,9 @@ import multiprocessing as mp
 JVM_MAX_MEMORY_GB = 4.0
 
 
-def compute_overlap_percent(deltaX, deltaY, image_width, image_height, pixel_size_xy, min_overlap=0):
+def compute_overlap_percent(
+    deltaX, deltaY, image_width, image_height, pixel_size_xy, min_overlap=0
+):
     """Helper function to calculate percent overlap between images in
     a grid"""
     shift_x = deltaX / pixel_size_xy
@@ -31,13 +33,20 @@ def stitch_slide_mp(*args, **kwargs):
 
 
 def migrate_tile_config(
-    fovs_path, coord_name, channel_name_source, z_index_source, channel_name_target, z_index_target
+    fovs_path,
+    coord_name,
+    channel_name_source,
+    z_index_source,
+    channel_name_target,
+    z_index_target,
 ):
     channel_name_source = channel_name_source.replace(" ", "_")
     channel_name_target = channel_name_target.replace(" ", "_")
 
     if z_index_source == z_index_target and channel_name_source == channel_name_target:
-        raise RuntimeError("Source and target for channel/z-index migration are the same!")
+        raise RuntimeError(
+            "Source and target for channel/z-index migration are the same!"
+        )
 
     tile_conf_name_source = (
         "TileConfiguration_COORD_"
@@ -60,7 +69,9 @@ def migrate_tile_config(
     tile_config_source_path = os.path.join(fovs_path, tile_conf_name_source)
 
     if not os.path.isfile(tile_config_source_path):
-        tile_config_source_path = tile_config_source_path.replace(".registered.txt", ".txt")
+        tile_config_source_path = tile_config_source_path.replace(
+            ".registered.txt", ".txt"
+        )
 
     assert os.path.isfile(tile_config_source_path)
 
@@ -96,7 +107,7 @@ def stitch_slide(
     abs_displacement_threshold=3.50,
     tile_downsampling=0.5,
     recompute_overlap=False,
-    **kwargs
+    **kwargs,
 ):
     st = Stitcher()
     st.stitch_slide(
@@ -111,7 +122,7 @@ def stitch_slide(
         abs_displacement_threshold,
         tile_downsampling,
         recompute_overlap,
-        **kwargs
+        **kwargs,
     )
 
 
@@ -133,7 +144,7 @@ class Stitcher:
         abs_displacement_threshold=3.50,
         tile_downsampling=0.5,
         recompute_overlap=False,
-        **kwargs
+        **kwargs,
     ):
         for time_index in time_indices:
             self.stitch_single_time_point(
@@ -148,7 +159,7 @@ class Stitcher:
                 abs_displacement_threshold,
                 tile_downsampling,
                 recompute_overlap,
-                **kwargs
+                **kwargs,
             )
 
     def stitch_single_time_point(
@@ -164,7 +175,7 @@ class Stitcher:
         abs_displacement_threshold=3.50,
         tile_downsampling=0.5,
         recompute_overlap=False,
-        **kwargs
+        **kwargs,
     ):
         fovs_path = os.path.join(slide_path, str(time_index))
         for coord_name in coord_names:
@@ -205,7 +216,9 @@ class Stitcher:
                         registered_z_index = z_index
                         registered_channel_name = channel_name.replace(" ", "_")
 
-    def stitch_single_channel_from_tile_config(self, fovs_path, channel_name, z_index, coord_name):
+    def stitch_single_channel_from_tile_config(
+        self, fovs_path, channel_name, z_index, coord_name
+    ):
         """
         Stitches images using grid/collection stitching, reading registered
         positions from a tile configuration path that has been migrated from an
@@ -213,11 +226,25 @@ class Stitcher:
         """
         channel_name = channel_name.replace(" ", "_")
         tile_conf_name = (
-            "TileConfiguration_COORD_" + coord_name + "_Z_" + str(z_index) + "_" + channel_name + ".registered.txt"
+            "TileConfiguration_COORD_"
+            + coord_name
+            + "_Z_"
+            + str(z_index)
+            + "_"
+            + channel_name
+            + ".registered.txt"
         )
         assert os.path.isfile(os.path.join(fovs_path, tile_conf_name))
 
-        stitching_output_dir = "COORD_" + coord_name + "_Z_" + str(z_index) + "_" + channel_name + "_stitched/"
+        stitching_output_dir = (
+            "COORD_"
+            + coord_name
+            + "_Z_"
+            + str(z_index)
+            + "_"
+            + channel_name
+            + "_stitched/"
+        )
 
         stitching_output_dir = os.path.join(fovs_path, stitching_output_dir)
 
@@ -270,35 +297,61 @@ class Stitcher:
         """
         channel_name = channel_name.replace(" ", "_")
 
-        file_search_name = coord_name + "0_0_" + str(z_index) + "_" + channel_name + ".*"
+        file_search_name = (
+            coord_name + "0_0_" + str(z_index) + "_" + channel_name + ".*"
+        )
 
         ext_glob = list(glob(os.path.join(fovs_path, file_search_name)))
 
         file_ext = ext_glob[0].split(".")[-1]
 
-        y_length_pattern = coord_name + "*_0_" + str(z_index) + "_" + channel_name + "." + file_ext
+        y_length_pattern = (
+            coord_name + "*_0_" + str(z_index) + "_" + channel_name + "." + file_ext
+        )
 
-        x_length_pattern = coord_name + "0_*_" + str(z_index) + "_" + channel_name + "." + file_ext
+        x_length_pattern = (
+            coord_name + "0_*_" + str(z_index) + "_" + channel_name + "." + file_ext
+        )
 
         grid_size_y = len(list(glob(os.path.join(fovs_path, y_length_pattern))))
 
         grid_size_x = len(list(glob(os.path.join(fovs_path, x_length_pattern))))
 
-        stitching_filename_pattern = coord_name + "{y}_{x}_" + str(z_index) + "_" + channel_name + "." + file_ext
+        stitching_filename_pattern = (
+            coord_name + "{y}_{x}_" + str(z_index) + "_" + channel_name + "." + file_ext
+        )
 
-        stitching_output_dir = "COORD_" + coord_name + "_Z_" + str(z_index) + "_" + channel_name + "_stitched/"
+        stitching_output_dir = (
+            "COORD_"
+            + coord_name
+            + "_Z_"
+            + str(z_index)
+            + "_"
+            + channel_name
+            + "_stitched/"
+        )
 
-        tile_conf_name = "TileConfiguration_COORD_" + coord_name + "_Z_" + str(z_index) + "_" + channel_name + ".txt"
+        tile_conf_name = (
+            "TileConfiguration_COORD_"
+            + coord_name
+            + "_Z_"
+            + str(z_index)
+            + "_"
+            + channel_name
+            + ".txt"
+        )
 
         stitching_output_dir = os.path.join(fovs_path, stitching_output_dir)
 
         os.makedirs(stitching_output_dir, exist_ok=True)
 
-        sample_tile_name = coord_name + "0_0_" + str(z_index) + "_" + channel_name + "." + file_ext
+        sample_tile_name = (
+            coord_name + "0_0_" + str(z_index) + "_" + channel_name + "." + file_ext
+        )
         sample_tile_shape = cv2.imread(os.path.join(fovs_path, sample_tile_name)).shape
 
-        tile_downsampled_width = int(sample_tile_shape[1] * tile_downsampling)
-        tile_downsampled_height = int(sample_tile_shape[0] * tile_downsampling)
+        int(sample_tile_shape[1] * tile_downsampling)
+        int(sample_tile_shape[0] * tile_downsampling)
         stitching_params = {
             "type": "Filename defined position",
             "order": "Defined by filename",
@@ -341,7 +394,11 @@ def images_identical(im_1, im_2):
 
 
 def combine_stitched_channels(
-    stitched_image_folder_path, write_multiscale_tiff=False, pixel_size_um=1.0, tile_side_length=1024, subresolutions=3
+    stitched_image_folder_path,
+    write_multiscale_tiff=False,
+    pixel_size_um=1.0,
+    tile_side_length=1024,
+    subresolutions=3,
 ):
     """Combines the three channel images created into one TIFF. Currently
     not recommended to run this with multiscale TIFF enabled, combining
@@ -409,7 +466,7 @@ def combine_stitched_channels(
                 subifds=subresolutions,
                 resolution=(1e4 / pixel_size_um, 1e4 / pixel_size_um),
                 metadata=metadata,
-                **options
+                **options,
             )
             for level in range(subresolutions):
                 mag = 2 ** (level + 1)
@@ -418,7 +475,10 @@ def combine_stitched_channels(
                 else:
                     subdata = data[:, ::mag, ::mag]
                 tif.write(
-                    subdata, subfiletype=1, resolution=(1e4 / mag / pixel_size_um, 1e3 / mag / pixel_size_um), **options
+                    subdata,
+                    subfiletype=1,
+                    resolution=(1e4 / mag / pixel_size_um, 1e3 / mag / pixel_size_um),
+                    **options,
                 )
 
             if combine_to_mono:
@@ -429,7 +489,10 @@ def combine_stitched_channels(
     else:
         cv2.imwrite(output_path, data)
 
-    channel_files = [os.path.join(stitched_image_folder_path, "img_t1_z1_c") + str(i + 1) for i in range(3)]
+    channel_files = [
+        os.path.join(stitched_image_folder_path, "img_t1_z1_c") + str(i + 1)
+        for i in range(3)
+    ]
 
     for filename in channel_files:
         try:

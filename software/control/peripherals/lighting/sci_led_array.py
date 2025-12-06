@@ -31,10 +31,14 @@ class SciMicroscopyLEDArray:
         self.turn_on_delay = turn_on_delay
 
     def write(self, command):
-        self.serial_connection.write_and_check(command + "\r", "", read_delay=0.01, print_response=True)
+        self.serial_connection.write_and_check(
+            command + "\r", "", read_delay=0.01, print_response=True
+        )
 
     def check_about(self):
-        self.serial_connection.write_and_check("about" + "\r", "=", read_delay=0.01, print_response=True)
+        self.serial_connection.write_and_check(
+            "about" + "\r", "=", read_delay=0.01, print_response=True
+        )
 
     def set_distance(self, array_distance):
         # array distance in mm
@@ -50,7 +54,10 @@ class SciMicroscopyLEDArray:
         self.NA = NA
         NA = str(int(NA * 100))
         self.serial_connection.write_and_check(
-            "na." + NA + "\r", "Current NA is 0." + NA, read_delay=0.01, print_response=False
+            "na." + NA + "\r",
+            "Current NA is 0." + NA,
+            read_delay=0.01,
+            print_response=False,
         )
 
     def set_color(self, color):
@@ -59,30 +66,44 @@ class SciMicroscopyLEDArray:
         g = int(255 * color[1])
         b = int(255 * color[2])
         self.serial_connection.write_and_check(
-            f"sc.{r}.{g}.{b}\r", f"Current color balance values are {r}.{g}.{b}", read_delay=0.01, print_response=False
+            f"sc.{r}.{g}.{b}\r",
+            f"Current color balance values are {r}.{g}.{b}",
+            read_delay=0.01,
+            print_response=False,
         )
 
     def set_brightness(self, brightness):
         # 0 to 100
         brightness = str(int(255 * (brightness / 100.0)))
         self.serial_connection.write_and_check(
-            f"sb.{brightness}\r", f"Current brightness value is {brightness}.", read_delay=0.01, print_response=False
+            f"sb.{brightness}\r",
+            f"Current brightness value is {brightness}.",
+            read_delay=0.01,
+            print_response=False,
         )
 
     def turn_on_bf(self):
-        self.serial_connection.write_and_check(f"bf\r", "-==-", read_delay=0.01, print_response=False)
+        self.serial_connection.write_and_check(
+            "bf\r", "-==-", read_delay=0.01, print_response=False
+        )
 
     def turn_on_dpc(self, quadrant):
-        self.serial_connection.write_and_check(f"dpc.{quadrant[0]}\r", "-==-", read_delay=0.01, print_response=False)
+        self.serial_connection.write_and_check(
+            f"dpc.{quadrant[0]}\r", "-==-", read_delay=0.01, print_response=False
+        )
 
     def turn_on_df(self):
-        self.serial_connection.write_and_check(f"df\r", "-==-", read_delay=0.01, print_response=False)
+        self.serial_connection.write_and_check(
+            "df\r", "-==-", read_delay=0.01, print_response=False
+        )
 
     def set_illumination(self, illumination):
         self.illumination = illumination
 
     def clear(self):
-        self.serial_connection.write_and_check("x\r", "-==-", read_delay=0.01, print_response=False)
+        self.serial_connection.write_and_check(
+            "x\r", "-==-", read_delay=0.01, print_response=False
+        )
 
     def turn_on_illumination(self):
         if self.illumination is not None:

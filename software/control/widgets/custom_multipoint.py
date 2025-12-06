@@ -1,9 +1,8 @@
-from qtpy.QtCore import *
+from qtpy.QtCore import *  # type: ignore[assignment, misc]
 from qtpy.QtWidgets import *
-from qtpy.QtGui import *
+from qtpy.QtGui import *  # type: ignore[assignment, misc]
 import pandas as pd
 import numpy as np
-import time
 
 from control.widgets import FlexibleMultiPointWidget
 import squid.logging
@@ -19,7 +18,7 @@ class TemplateMultiPointWidget(FlexibleMultiPointWidget):
         super().__init__(multipointController, stage, main, *args, **kwargs)
         self.region_id = 0
 
-    def add_components(self):
+    def add_components(self) -> None:
         # Call parent's add_components to set up base UI
         super().add_components()
 
@@ -50,15 +49,21 @@ class TemplateMultiPointWidget(FlexibleMultiPointWidget):
         self.btn_load_template = QPushButton("Load Template")
         self.btn_add_from_template = QPushButton("Add Using Template")
         self.dropdown_template = QComboBox()
-        self.dropdown_template.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.dropdown_template.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred
+        )
 
         # Create template controls layout
         temp = QHBoxLayout()
         temp.addWidget(QLabel("Template     "))
         temp.addWidget(self.dropdown_template)
         self.grid_template = QGridLayout()
-        self.grid_template.addLayout(temp, 0, 0, 1, 6)  # Span across all columns except the last
-        self.grid_template.addWidget(self.btn_load_template, 0, 6, 1, 2)  # Align with other buttons
+        self.grid_template.addLayout(
+            temp, 0, 0, 1, 6
+        )  # Span across all columns except the last
+        self.grid_template.addWidget(
+            self.btn_load_template, 0, 6, 1, 2
+        )  # Align with other buttons
 
         # a row with add using template, next, clear
         self.grid_add_next_clear = QGridLayout()
@@ -73,7 +78,7 @@ class TemplateMultiPointWidget(FlexibleMultiPointWidget):
             self.grid_add_next_clear.setColumnStretch(i, 1)
             self.grid_add_next_clear.setColumnStretch(i + 4, 1)
 
-    def setup_layout(self):
+    def setup_layout(self) -> None:
         self.grid = QVBoxLayout()
         self.grid.addLayout(self.grid_line0)
         self.grid.addLayout(self.grid_template)
@@ -86,14 +91,16 @@ class TemplateMultiPointWidget(FlexibleMultiPointWidget):
 
         self.grid_location_list_line3.setEnabled(False)
 
-    def setup_connections(self):
+    def setup_connections(self) -> None:
         super().setup_connections()
         self.btn_load_template.clicked.connect(self.load_template)
         self.btn_add_from_template.clicked.connect(self.add_from_template)
 
-    def load_template(self):
+    def load_template(self) -> None:
         """Load a template CSV file with predefined positions"""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Load Template", "", "CSV Files (*.csv);;All Files (*)")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Template", "", "CSV Files (*.csv);;All Files (*)"
+        )
         if not file_path:
             return
 
@@ -105,16 +112,23 @@ class TemplateMultiPointWidget(FlexibleMultiPointWidget):
             self.templates[template_name] = template_df
 
             # Update dropdown
-            if template_name not in [self.dropdown_template.itemText(i) for i in range(self.dropdown_template.count())]:
+            if template_name not in [
+                self.dropdown_template.itemText(i)
+                for i in range(self.dropdown_template.count())
+            ]:
                 self.dropdown_template.addItem(template_name)
                 self.dropdown_template.setCurrentText(template_name)
 
-            self._log.info(f"Loaded template '{template_name}' with {len(template_df)} positions")
+            self._log.info(
+                f"Loaded template '{template_name}' with {len(template_df)} positions"
+            )
 
         except Exception as e:
-            QMessageBox.warning(self, "Template Error", f"Failed to load template: {str(e)}")
+            QMessageBox.warning(
+                self, "Template Error", f"Failed to load template: {str(e)}"
+            )
 
-    def add_from_template(self):
+    def add_from_template(self) -> None:
         """Add locations from the selected template"""
         self.region_id = self.region_id + 1
 
@@ -130,9 +144,13 @@ class TemplateMultiPointWidget(FlexibleMultiPointWidget):
         ref_x, ref_y, ref_z = pos.x_mm, pos.y_mm, pos.z_mm
 
         # Check required columns
-        if not all(col in template_df.columns for col in ["x_offset_mm", "y_offset_mm"]):
+        if not all(
+            col in template_df.columns for col in ["x_offset_mm", "y_offset_mm"]
+        ):
             QMessageBox.warning(
-                self, "Template Error", "Template must contain 'x_offset_mm', and 'y_offset_mm' columns"
+                self,
+                "Template Error",
+                "Template must contain 'x_offset_mm', and 'y_offset_mm' columns",
             )
             return
 
@@ -146,27 +164,42 @@ class TemplateMultiPointWidget(FlexibleMultiPointWidget):
 
             # Store actual values in location_list
             self.location_list = np.vstack((self.location_list, [[x, y, ref_z]]))
-            self.location_ids = np.append(self.location_ids, f"R{len(self.location_ids)}")
+            self.location_ids = np.append(
+                self.location_ids, f"R{len(self.location_ids)}"
+            )
 
-            location_str = f"x:{round(x,3)} mm  y:{round(y,3)} mm  z:{round(ref_z*1000,1)} μm"
+            location_str = (
+                f"x:{round(x, 3)} mm  y:{round(y, 3)} mm  z:{round(ref_z * 1000, 1)} μm"
+            )
             self.dropdown_location_list.addItem(location_str)
 
             row = self.table_location_list.rowCount()
             self.table_location_list.insertRow(row)
             self.table_location_list.setItem(row, 0, QTableWidgetItem(str(round(x, 3))))
             self.table_location_list.setItem(row, 1, QTableWidgetItem(str(round(y, 3))))
-            self.table_location_list.setItem(row, 2, QTableWidgetItem(str(round(ref_z * 1000, 1))))
-            self.table_location_list.setItem(row, 3, QTableWidgetItem(str(self.region_id)))
+            self.table_location_list.setItem(
+                row, 2, QTableWidgetItem(str(round(ref_z * 1000, 1)))
+            )
+            self.table_location_list.setItem(
+                row, 3, QTableWidgetItem(str(self.region_id))
+            )
 
         self.scanCoordinates.add_template_region(
-            ref_x, ref_y, ref_z, template_df["x_offset_mm"], template_df["y_offset_mm"], str(self.region_id)
+            ref_x,
+            ref_y,
+            ref_z,
+            template_df["x_offset_mm"],
+            template_df["y_offset_mm"],
+            str(self.region_id),
         )
-        self._log.info(f"Added {len(template_df)} locations from template '{template_name}'")
+        self._log.info(
+            f"Added {len(template_df)} locations from template '{template_name}'"
+        )
 
         # Release signal blocks
         self.table_location_list.blockSignals(False)
         self.dropdown_location_list.blockSignals(False)
 
-    def clear(self):
+    def clear(self) -> None:
         super().clear()
         self.region_id = 0

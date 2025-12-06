@@ -54,7 +54,9 @@ class TrackingController(QObject):
 
         self.tracking_time_interval_s: float = 0
 
-        self.display_resolution_scaling: float = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
+        self.display_resolution_scaling: float = (
+            Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
+        )
         self.counter: int = 0
         self.experiment_ID: Optional[str] = None
         self.base_path: Optional[str] = None
@@ -77,10 +79,11 @@ class TrackingController(QObject):
         self.pixel_size_um_scaled: float = 1.0
 
     def start_tracking(self) -> None:
-
         # save pre-tracking configuration
         self._log.info("start tracking")
-        self.configuration_before_running_tracking = self.liveController.currentConfiguration
+        self.configuration_before_running_tracking = (
+            self.liveController.currentConfiguration
+        )
 
         # stop live
         if self.liveController.is_live:
@@ -121,18 +124,25 @@ class TrackingController(QObject):
         self.trackingWorker.finished.connect(self.trackingWorker.deleteLater)
         self.trackingWorker.finished.connect(self.thread.quit)
         self.trackingWorker.image_to_display.connect(self.slot_image_to_display)
-        self.trackingWorker.image_to_display_multi.connect(self.slot_image_to_display_multi)
-        self.trackingWorker.signal_current_configuration.connect(self.slot_current_configuration)
+        self.trackingWorker.image_to_display_multi.connect(
+            self.slot_image_to_display_multi
+        )
+        self.trackingWorker.signal_current_configuration.connect(
+            self.slot_current_configuration
+        )
         # self.thread.finished.connect(self.thread.deleteLater)
         self.thread.finished.connect(self.thread.quit)
         # start the thread
         self.thread.start()
 
     def _on_tracking_stopped(self) -> None:
-
         # restore the previous selected mode
-        self.signal_current_configuration.emit(self.configuration_before_running_tracking)
-        self.liveController.set_microscope_mode(self.configuration_before_running_tracking)
+        self.signal_current_configuration.emit(
+            self.configuration_before_running_tracking
+        )
+        self.liveController.set_microscope_mode(
+            self.configuration_before_running_tracking
+        )
 
         # re-enable callback
         if self.camera_callback_was_enabled_before_tracking:
@@ -150,22 +160,31 @@ class TrackingController(QObject):
         self.signal_tracking_stopped.emit()
         QApplication.processEvents()
 
-    def start_new_experiment(self, experiment_ID: str) -> None:  # @@@ to do: change name to prepare_folder_for_new_experiment
+    def start_new_experiment(
+        self, experiment_ID: str
+    ) -> None:  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
-        self.experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+        self.experiment_ID = (
+            experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+        )
         self.recording_start_time = time.time()
         # create a new folder
         try:
-            utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
+            utils.ensure_directory_exists(
+                os.path.join(self.base_path, self.experiment_ID)
+            )
             self.channelConfigurationManager.save_current_configuration_to_path(
                 self.objectiveStore.current_objective,
-                os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml",
+                os.path.join(self.base_path, self.experiment_ID)
+                + "/configurations.xml",
             )  # save the configuration for the experiment
         except Exception:
             self._log.info("error in making a new folder")
             pass
 
-    def set_selected_configurations(self, selected_configurations_name: List[str]) -> None:
+    def set_selected_configurations(
+        self, selected_configurations_name: List[str]
+    ) -> None:
         self.selected_configurations = []
         for configuration_name in selected_configurations_name:
             config = self.channelConfigurationManager.get_channel_configuration_by_name(
@@ -176,7 +195,9 @@ class TrackingController(QObject):
 
     def toggle_stage_tracking(self, state: int) -> None:
         self.flag_stage_tracking_enabled = state > 0
-        self._log.info("set stage tracking enabled to " + str(self.flag_stage_tracking_enabled))
+        self._log.info(
+            "set stage tracking enabled to " + str(self.flag_stage_tracking_enabled)
+        )
 
     def toggel_enable_af(self, state: int) -> None:
         self.flag_AF_enabled = state > 0
@@ -196,7 +217,9 @@ class TrackingController(QObject):
     def slot_image_to_display(self, image: np.ndarray) -> None:
         self.image_to_display.emit(image)
 
-    def slot_image_to_display_multi(self, image: np.ndarray, illumination_source: int) -> None:
+    def slot_image_to_display_multi(
+        self, image: np.ndarray, illumination_source: int
+    ) -> None:
         self.image_to_display_multi.emit(image, illumination_source)
 
     def slot_current_configuration(self, configuration: ChannelMode) -> None:
@@ -213,7 +236,10 @@ class TrackingController(QObject):
 
     def update_image_resizing_factor(self, image_resizing_factor: float) -> None:
         self.image_resizing_factor = image_resizing_factor
-        self._log.info("update tracking image resizing factor to " + str(self.image_resizing_factor))
+        self._log.info(
+            "update tracking image resizing factor to "
+            + str(self.image_resizing_factor)
+        )
         self.pixel_size_um_scaled = self.pixel_size_um / self.image_resizing_factor
 
 
@@ -230,22 +256,33 @@ class TrackingWorker(QObject):
 
         self.camera: AbstractCamera = self.trackingController.camera
         self.stage: AbstractStage = self.trackingController.stage
-        self.microcontroller: "Microcontroller" = self.trackingController.microcontroller
+        self.microcontroller: "Microcontroller" = (
+            self.trackingController.microcontroller
+        )
         self.liveController: "LiveController" = self.trackingController.liveController
         self.autofocusController: Any = self.trackingController.autofocusController
-        self.channelConfigurationManager: Any = self.trackingController.channelConfigurationManager
-        self.imageDisplayWindow: "ImageDisplayWindow" = self.trackingController.imageDisplayWindow
-        self.display_resolution_scaling: float = self.trackingController.display_resolution_scaling
+        self.channelConfigurationManager: Any = (
+            self.trackingController.channelConfigurationManager
+        )
+        self.imageDisplayWindow: "ImageDisplayWindow" = (
+            self.trackingController.imageDisplayWindow
+        )
+        self.display_resolution_scaling: float = (
+            self.trackingController.display_resolution_scaling
+        )
         self.counter: int = self.trackingController.counter
         self.experiment_ID: Optional[str] = self.trackingController.experiment_ID
         self.base_path: Optional[str] = self.trackingController.base_path
-        self.selected_configurations: List[ChannelMode] = self.trackingController.selected_configurations
+        self.selected_configurations: List[ChannelMode] = (
+            self.trackingController.selected_configurations
+        )
         self.tracker: tracking.Tracker_Image = trackingController.tracker
 
         self.number_of_selected_configurations: int = len(self.selected_configurations)
 
         self.image_saver: ImageSaver_Tracking = ImageSaver_Tracking(
-            base_path=os.path.join(self.base_path, self.experiment_ID), image_format="bmp"
+            base_path=os.path.join(self.base_path, self.experiment_ID),
+            image_format="bmp",
         )
 
         self.txt_file: Optional[TextIOWrapper] = None
@@ -260,17 +297,22 @@ class TrackingWorker(QObject):
         self.microcontroller.wait_till_operation_is_completed()
 
     def run(self) -> None:
-
         tracking_frame_counter = 0
 
         # save metadata
-        self.txt_file = open(os.path.join(self.base_path, self.experiment_ID, "metadata.txt"), "w+")
-        self.txt_file.write("t0: " + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f") + "\n")
+        self.txt_file = open(
+            os.path.join(self.base_path, self.experiment_ID, "metadata.txt"), "w+"
+        )
+        self.txt_file.write(
+            "t0: " + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f") + "\n"
+        )
         self.txt_file.write("objective: " + self.trackingController.objective + "\n")
         self.txt_file.close()
 
         # create a file for logging
-        self.csv_file = open(os.path.join(self.base_path, self.experiment_ID, "track.csv"), "w+")
+        self.csv_file = open(
+            os.path.join(self.base_path, self.experiment_ID, "track.csv"), "w+"
+        )
         self.csv_file.write(
             "dt (s), x_stage (mm), y_stage (mm), z_stage (mm), x_image (mm), y_image(mm), image_filename\n"
         )
@@ -334,24 +376,36 @@ class TrackingWorker(QObject):
                 # display image
                 image_to_display_ = utils.crop_image(
                     image_,
-                    round(image_.shape[1] * self.liveController.display_resolution_scaling),
-                    round(image_.shape[0] * self.liveController.display_resolution_scaling),
+                    round(
+                        image_.shape[1] * self.liveController.display_resolution_scaling
+                    ),
+                    round(
+                        image_.shape[0] * self.liveController.display_resolution_scaling
+                    ),
                 )
-                self.image_to_display_multi.emit(image_to_display_, config_.illumination_source)
+                self.image_to_display_multi.emit(
+                    image_to_display_, config_.illumination_source
+                )
                 # save image
                 if self.trackingController.flag_save_image:
                     if camera_frame.is_color():
                         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-                    self.image_saver.enqueue(image_, tracking_frame_counter, str(config_.name))
+                    self.image_saver.enqueue(
+                        image_, tracking_frame_counter, str(config_.name)
+                    )
 
             # track
-            object_found, centroid, rect_pts = self.tracker.track(image, None, is_first_frame=is_first_frame)
+            object_found, centroid, rect_pts = self.tracker.track(
+                image, None, is_first_frame=is_first_frame
+            )
             if not object_found:
                 self._log.error("tracker: object not found")
                 break
             in_plane_position_error_pixel = image_center - centroid
             in_plane_position_error_mm = (
-                in_plane_position_error_pixel * self.trackingController.pixel_size_um_scaled / 1000
+                in_plane_position_error_pixel
+                * self.trackingController.pixel_size_um_scaled
+                / 1000
             )
             x_error_mm = in_plane_position_error_mm[0]
             y_error_mm = in_plane_position_error_mm[1]
@@ -368,7 +422,9 @@ class TrackingWorker(QObject):
 
             # save image
             if self.trackingController.flag_save_image:
-                self.image_saver.enqueue(image, tracking_frame_counter, str(config.name))
+                self.image_saver.enqueue(
+                    image, tracking_frame_counter, str(config.name)
+                )
 
             # save position data
             self.csv_file.write(
@@ -391,7 +447,10 @@ class TrackingWorker(QObject):
                 self.csv_file.flush()
 
             # wait till tracking interval has elapsed
-            while time.time() - timestamp_last_frame < self.trackingController.tracking_time_interval_s:
+            while (
+                time.time() - timestamp_last_frame
+                < self.trackingController.tracking_time_interval_s
+            ):
                 time.sleep(0.005)
 
             # increament counter

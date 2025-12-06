@@ -1,7 +1,7 @@
 from control.widgets.wellplate._common import *
 
-class Well1536SelectionWidget(QWidget):
 
+class Well1536SelectionWidget(QWidget):
     signal_wellSelected = Signal(bool)
     signal_wellSelectedPos = Signal(float, float)
 
@@ -87,7 +87,9 @@ class Well1536SelectionWidget(QWidget):
 
         control_widget = QWidget()
         control_widget.setLayout(layout_controls)
-        control_widget.setFixedHeight(image_height)  # Set the height of controls to match the image
+        control_widget.setFixedHeight(
+            image_height
+        )  # Set the height of controls to match the image
 
         layout.addWidget(control_widget)
         self.setLayout(layout)
@@ -132,7 +134,9 @@ class Well1536SelectionWidget(QWidget):
                 print(f"Removed well {cell_name}")
             else:
                 # If the well is not selected, add it
-                self.selected_cells[(row, col)] = "#1f77b4"  # Add to selected cells with blue color
+                self.selected_cells[(row, col)] = (
+                    "#1f77b4"  # Add to selected cells with blue color
+                )
                 self.add_well_to_selection_input(cell_name)
                 print(f"Added well {cell_name}")
 
@@ -213,8 +217,14 @@ class Well1536SelectionWidget(QWidget):
                 if end_row and end_col:  # It's a range
                     end_row_index = self.row_to_index(end_row)
                     end_col_index = int(end_col) - 1
-                    for row in range(min(start_row_index, end_row_index), max(start_row_index, end_row_index) + 1):
-                        for col in range(min(start_col_index, end_col_index), max(start_col_index, end_col_index) + 1):
+                    for row in range(
+                        min(start_row_index, end_row_index),
+                        max(start_row_index, end_row_index) + 1,
+                    ):
+                        for col in range(
+                            min(start_col_index, end_col_index),
+                            max(start_col_index, end_col_index) + 1,
+                        ):
                             self.selected_cells[(row, col)] = "#1f77b4"
                 else:  # It's a single cell
                     self.selected_cells[(start_row_index, start_col_index)] = "#1f77b4"
@@ -238,5 +248,3 @@ class Well1536SelectionWidget(QWidget):
     def get_selected_cells(self):
         list_of_selected_cells = list(self.selected_cells.keys())
         return list_of_selected_cells
-
-

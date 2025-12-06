@@ -8,7 +8,9 @@ from control.microcontroller import Microcontroller
 
 def get_test_micro() -> control.microcontroller.Microcontroller:
     return control.microcontroller.Microcontroller(
-        serial_device=control.microcontroller.get_microcontroller_serial_device(simulated=True)
+        serial_device=control.microcontroller.get_microcontroller_serial_device(
+            simulated=True
+        )
     )
 
 
@@ -19,7 +21,7 @@ def assert_pos_almost_equal(expected, actual):
 
 
 def test_create_simulated_microcontroller():
-    micro = get_test_micro()
+    get_test_micro()
 
 
 def test_microcontroller_simulated_positions():
@@ -194,7 +196,13 @@ def test_home_directions():
         control.microcontroller.HomingDirection.HOMING_DIRECTION_BACKWARD,
     )
 
-    home_methods = (test_micro.home_x, test_micro.home_y, test_micro.home_z, test_micro.home_w, test_micro.home_theta)
+    home_methods = (
+        test_micro.home_x,
+        test_micro.home_y,
+        test_micro.home_z,
+        test_micro.home_w,
+        test_micro.home_theta,
+    )
 
     def wait():
         test_micro.wait_till_operation_is_completed()
@@ -215,5 +223,7 @@ def test_payload_helpers():
     assert Microcontroller._int_to_payload(2**16 - 1, 2) == 2**16 - 1
     assert Microcontroller._int_to_payload(2**16, 2) == 2**16
 
-    assert Microcontroller._payload_to_int([0x00, 0x00, 0x00, 0xFF, 0xFF], 5) == 2**16 - 1
+    assert (
+        Microcontroller._payload_to_int([0x00, 0x00, 0x00, 0xFF, 0xFF], 5) == 2**16 - 1
+    )
     assert Microcontroller._payload_to_int([0xFF, 0xFF], 2) == -1

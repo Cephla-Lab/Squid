@@ -8,9 +8,7 @@ import sys
 import platformdirs
 
 _squid_root_logger_name = "squid"
-_baseline_log_format = (
-    "%(asctime)s.%(msecs)03d - %(thread_id)d - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
-)
+_baseline_log_format = "%(asctime)s.%(msecs)03d - %(thread_id)d - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
 _baseline_log_dateformat = "%Y-%m-%d %H:%M:%S"
 
 
@@ -34,7 +32,8 @@ class _CustomFormatter(py_logging.Formatter):
     # NOTE(imo): The datetime hackery is so that we can have millisecond timestamps using a period instead
     # of comma.  The default asctime + datefmt uses a comma.
     FORMATTERS = {
-        level: py_logging.Formatter(fmt, datefmt=_baseline_log_dateformat) for (level, fmt) in FORMATS.items()
+        level: py_logging.Formatter(fmt, datefmt=_baseline_log_dateformat)
+        for (level, fmt) in FORMATS.items()
     }
 
     def format(self, record):
@@ -94,7 +93,10 @@ def set_stdout_log_level(level: int) -> None:
         handler.setLevel(level)
 
 
-def register_crash_handler(handler: Callable[[Type[BaseException], BaseException, TracebackType], None], call_existing_too: bool = True) -> None:
+def register_crash_handler(
+    handler: Callable[[Type[BaseException], BaseException, TracebackType], None],
+    call_existing_too: bool = True,
+) -> None:
     """
     We want to make sure any uncaught exceptions are logged, so we have this mechanism for putting a hook into
     the python system that does custom logging when an exception bubbles all the way to the top.
@@ -113,7 +115,9 @@ def register_crash_handler(handler: Callable[[Type[BaseException], BaseException
 
     logger = get_logger()
 
-    def new_excepthook(exception_type: Type[BaseException], value: BaseException, tb: TracebackType):
+    def new_excepthook(
+        exception_type: Type[BaseException], value: BaseException, tb: TracebackType
+    ):
         try:
             handler(exception_type, value, tb)
         except BaseException as e:
@@ -159,7 +163,9 @@ def setup_uncaught_exception_logging() -> None:
     """
     logger = get_logger()
 
-    def uncaught_exception_logger(exception_type: Type[BaseException], value: BaseException, tb: TracebackType) -> None:
+    def uncaught_exception_logger(
+        exception_type: Type[BaseException], value: BaseException, tb: TracebackType
+    ) -> None:
         logger.exception("Uncaught Exception!", exc_info=value)
 
     register_crash_handler(uncaught_exception_logger, call_existing_too=False)
@@ -178,7 +184,9 @@ def add_file_logging(log_filename: str, replace_existing: bool = False) -> bool:
                 if replace_existing:
                     root_logger.removeHandler(handler)
                 else:
-                    log.error(f"RotatingFileHandler already exists for {abs_path}, and replace_existing==False!")
+                    log.error(
+                        f"RotatingFileHandler already exists for {abs_path}, and replace_existing==False!"
+                    )
                     return False
 
     log_file_existed = False
@@ -195,7 +203,9 @@ def add_file_logging(log_filename: str, replace_existing: bool = False) -> bool:
     )
     new_handler.setLevel(py_logging.DEBUG)
 
-    formatter = py_logging.Formatter(fmt=_baseline_log_format, datefmt=_baseline_log_dateformat)
+    formatter = py_logging.Formatter(
+        fmt=_baseline_log_format, datefmt=_baseline_log_dateformat
+    )
     new_handler.setFormatter(formatter)
     new_handler.addFilter(_thread_id_filter)
 

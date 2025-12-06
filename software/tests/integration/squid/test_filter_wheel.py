@@ -1,8 +1,9 @@
-import pytest
-
-import squid.config
 import control.peripherals.filter_wheel.utils
-from squid.config import FilterWheelConfig, FilterWheelControllerVariant, SquidFilterWheelConfig
+from squid.config import (
+    FilterWheelConfig,
+    FilterWheelControllerVariant,
+    SquidFilterWheelConfig,
+)
 
 
 def test_create_simulated_filter_wheel():

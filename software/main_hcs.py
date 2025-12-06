@@ -24,7 +24,7 @@ squid.logging.setup_uncaught_exception_logging()
 # app specific libraries
 import control.gui_hcs as gui
 from configparser import ConfigParser
-from control.widgets import ConfigEditorBackwardsCompatible, StageUtils
+from control.widgets import ConfigEditorBackwardsCompatible
 from control._def import CACHED_CONFIG_FILE_PATH
 from control._def import USE_TERMINAL_CONSOLE
 import control.utils
@@ -42,9 +42,15 @@ def show_config(cfp, configpath, main_gui):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--simulation", help="Run the GUI with simulated hardware.", action="store_true")
-    parser.add_argument("--live-only", help="Run the GUI only the live viewer.", action="store_true")
-    parser.add_argument("--verbose", help="Turn on verbose logging (DEBUG level)", action="store_true")
+    parser.add_argument(
+        "--simulation", help="Run the GUI with simulated hardware.", action="store_true"
+    )
+    parser.add_argument(
+        "--live-only", help="Run the GUI only the live viewer.", action="store_true"
+    )
+    parser.add_argument(
+        "--verbose", help="Turn on verbose logging (DEBUG level)", action="store_true"
+    )
     args = parser.parse_args()
 
     log = squid.logging.get_logger("main_hcs")
@@ -53,11 +59,15 @@ if __name__ == "__main__":
         log.info("Turning on debug logging.")
         squid.logging.set_stdout_log_level(logging.DEBUG)
 
-    if not squid.logging.add_file_logging(f"{squid.logging.get_default_log_directory()}/main_hcs.log"):
+    if not squid.logging.add_file_logging(
+        f"{squid.logging.get_default_log_directory()}/main_hcs.log"
+    ):
         log.error("Couldn't setup logging to file!")
         sys.exit(1)
 
-    log.info(f"Squid Repository State: {control.utils.get_squid_repo_state_description()}")
+    log.info(
+        f"Squid Repository State: {control.utils.get_squid_repo_state_description()}"
+    )
 
     legacy_config = False
     cf_editor_parser = ConfigParser()
@@ -65,7 +75,9 @@ if __name__ == "__main__":
     if config_files:
         cf_editor_parser.read(CACHED_CONFIG_FILE_PATH)
     else:
-        log.error("configuration*.ini file not found, defaulting to legacy configuration")
+        log.error(
+            "configuration*.ini file not found, defaulting to legacy configuration"
+        )
         legacy_config = True
     app = QApplication([])
     app.setStyle("Fusion")
@@ -79,14 +91,16 @@ if __name__ == "__main__":
         microscope=context.microscope,
         services=context.services,
         is_simulation=args.simulation,
-        live_only_mode=args.live_only
+        live_only_mode=args.live_only,
     )
 
     file_menu = QMenu("File", win)
 
     if not legacy_config:
         config_action = QAction("Microscope Settings", win)
-        config_action.triggered.connect(lambda: show_config(cf_editor_parser, config_files[0], win))
+        config_action.triggered.connect(
+            lambda: show_config(cf_editor_parser, config_files[0], win)
+        )
         file_menu.addAction(config_action)
 
     microscope_utils_menu = QMenu("Utils", win)

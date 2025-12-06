@@ -16,7 +16,9 @@ class FilterWheelControllerVariant(enum.Enum):
     XLIGHT = "XLIGHT"
 
     @staticmethod
-    def from_string(filter_wheel_controller_string: str) -> Optional["FilterWheelControllerVariant"]:
+    def from_string(
+        filter_wheel_controller_string: str,
+    ) -> Optional["FilterWheelControllerVariant"]:
         """
         Attempts to convert the given string to a filter wheel controller variant.  This ignores all letter cases.
         """
@@ -66,7 +68,9 @@ class FilterWheelConfig(pydantic.BaseModel):
     indices: list[int]
 
     # Controller-specific configuration
-    controller_config: Optional[Union[SquidFilterWheelConfig, ZaberFilterWheelConfig, OptospinFilterWheelConfig]] = None
+    controller_config: Optional[
+        Union[SquidFilterWheelConfig, ZaberFilterWheelConfig, OptospinFilterWheelConfig]
+    ] = None
 
 
 def _load_filter_wheel_config() -> Optional[FilterWheelConfig]:
@@ -74,11 +78,15 @@ def _load_filter_wheel_config() -> Optional[FilterWheelConfig]:
     if not _def.USE_EMISSION_FILTER_WHEEL:
         return None
 
-    controller_type = FilterWheelControllerVariant.from_string(_def.EMISSION_FILTER_WHEEL_TYPE)
+    controller_type = FilterWheelControllerVariant.from_string(
+        _def.EMISSION_FILTER_WHEEL_TYPE
+    )
     if controller_type is None:
         return None
 
-    controller_config: Optional[Union[SquidFilterWheelConfig, ZaberFilterWheelConfig, OptospinFilterWheelConfig]] = None
+    controller_config: Optional[
+        Union[SquidFilterWheelConfig, ZaberFilterWheelConfig, OptospinFilterWheelConfig]
+    ] = None
     if controller_type == FilterWheelControllerVariant.SQUID:
         controller_config = SquidFilterWheelConfig(
             max_index=_def.SQUID_FILTERWHEEL_MAX_INDEX,
@@ -165,7 +173,12 @@ class AxisConfig(pydantic.BaseModel):
 
     def convert_to_real_units(self, usteps: float) -> float:
         if self.USE_ENCODER:
-            return usteps * self.MOVEMENT_SIGN.value * self.ENCODER_STEP_SIZE * self.ENCODER_SIGN.value
+            return (
+                usteps
+                * self.MOVEMENT_SIGN.value
+                * self.ENCODER_STEP_SIZE
+                * self.ENCODER_SIGN.value
+            )
         else:
             return (
                 usteps
@@ -177,7 +190,11 @@ class AxisConfig(pydantic.BaseModel):
     def convert_real_units_to_ustep(self, real_unit: float) -> int:
         return round(
             real_unit
-            / (self.MOVEMENT_SIGN.value * self.SCREW_PITCH / (self.MICROSTEPS_PER_STEP * self.FULL_STEPS_PER_REV))
+            / (
+                self.MOVEMENT_SIGN.value
+                * self.SCREW_PITCH
+                / (self.MICROSTEPS_PER_STEP * self.FULL_STEPS_PER_REV)
+            )
         )
 
 
@@ -465,7 +482,9 @@ class CameraConfig(pydantic.BaseModel):
     default_binning: Optional[Tuple[int, int]] = None
 
     # The default ROI of the camera for hardware cropping. Input should be: offset_x, offset_y, width, height
-    default_roi: Optional[Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]] = None
+    default_roi: Optional[
+        Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]
+    ] = None
 
     # The angle the camera should rotate this image right as it comes off the camera,
     # and before giving it to the rest of the system.
@@ -519,7 +538,18 @@ def _old_camera_variant_to_enum(old_string) -> CameraVariant:
     raise ValueError(f"Unknown old camera type {old_string=}")
 
 
-def _get_camera_model_enum(model: str, cam_type: CameraVariant) -> Optional[Union[GxipyCameraModel, TucsenCameraModel, ToupcamCameraModel, HamamatsuCameraModel, PhotometricsCameraModel, AndorCameraModel]]:
+def _get_camera_model_enum(
+    model: str, cam_type: CameraVariant
+) -> Optional[
+    Union[
+        GxipyCameraModel,
+        TucsenCameraModel,
+        ToupcamCameraModel,
+        HamamatsuCameraModel,
+        PhotometricsCameraModel,
+        AndorCameraModel,
+    ]
+]:
     """Convert string camera model to appropriate enum type."""
     if cam_type == CameraVariant.GXIPY:
         return GxipyCameraModel.from_string(model) if model else None
@@ -538,9 +568,20 @@ def _get_camera_model_enum(model: str, cam_type: CameraVariant) -> Optional[Unio
 
 _camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.CAMERA_TYPE),
-    camera_model=_get_camera_model_enum(_def.MAIN_CAMERA_MODEL, _old_camera_variant_to_enum(_def.CAMERA_TYPE)) if hasattr(_def, 'MAIN_CAMERA_MODEL') and _def.MAIN_CAMERA_MODEL else None,
-    default_pixel_format=CameraPixelFormat.from_string(_def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT) if isinstance(_def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT, str) else _def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT,
-    default_binning=(_def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT, _def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT),
+    camera_model=_get_camera_model_enum(
+        _def.MAIN_CAMERA_MODEL, _old_camera_variant_to_enum(_def.CAMERA_TYPE)
+    )
+    if hasattr(_def, "MAIN_CAMERA_MODEL") and _def.MAIN_CAMERA_MODEL
+    else None,
+    default_pixel_format=CameraPixelFormat.from_string(
+        _def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT
+    )
+    if isinstance(_def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT, str)
+    else _def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT,
+    default_binning=(
+        _def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT,
+        _def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT,
+    ),
     default_roi=(
         _def.CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT,
         _def.CAMERA_CONFIG.ROI_OFFSET_Y_DEFAULT,
@@ -555,7 +596,9 @@ _camera_config = CameraConfig(
     default_fan_speed=_def.CAMERA_CONFIG.FAN_SPEED_DEFAULT,
     default_black_level=_def.CAMERA_CONFIG.BLACKLEVEL_VALUE_DEFAULT,
     default_white_balance_gains=RGBValue(
-        r=_def.CAMERA_CONFIG.AWB_RATIOS_R, g=_def.CAMERA_CONFIG.AWB_RATIOS_G, b=_def.CAMERA_CONFIG.AWB_RATIOS_B
+        r=_def.CAMERA_CONFIG.AWB_RATIOS_R,
+        g=_def.CAMERA_CONFIG.AWB_RATIOS_G,
+        b=_def.CAMERA_CONFIG.AWB_RATIOS_B,
     ),
 )
 
@@ -570,7 +613,11 @@ def get_camera_config() -> CameraConfig:
 
 _autofocus_camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE),
-    camera_model=_get_camera_model_enum(_def.FOCUS_CAMERA_MODEL, _old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE)) if hasattr(_def, 'FOCUS_CAMERA_MODEL') and _def.FOCUS_CAMERA_MODEL else None,
+    camera_model=_get_camera_model_enum(
+        _def.FOCUS_CAMERA_MODEL, _old_camera_variant_to_enum(_def.FOCUS_CAMERA_TYPE)
+    )
+    if hasattr(_def, "FOCUS_CAMERA_MODEL") and _def.FOCUS_CAMERA_MODEL
+    else None,
     default_pixel_format=CameraPixelFormat.MONO8,
     default_binning=(1, 1),
     rotate_image_angle=None,

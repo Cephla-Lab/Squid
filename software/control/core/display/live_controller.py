@@ -29,7 +29,9 @@ class LiveController:
         self.microscope: "Microscope" = microscope
         self.camera: AbstractCamera = camera
         self.currentConfiguration: Optional["ChannelMode"] = None
-        self.trigger_mode: Optional[TriggerMode] = TriggerMode.SOFTWARE  # @@@ change to None
+        self.trigger_mode: Optional[TriggerMode] = (
+            TriggerMode.SOFTWARE
+        )  # @@@ change to None
         self.is_live: bool = False
         self.control_illumination: bool = control_illumination
         self.illumination_on: bool = False
@@ -59,9 +61,16 @@ class LiveController:
             return
         if "LED matrix" not in self.currentConfiguration.name:
             self.microscope.illumination_controller.turn_on_illumination(
-                int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
+                int(
+                    utils_channel.extract_wavelength_from_config_name(
+                        self.currentConfiguration.name
+                    )
+                )
             )
-        elif self.microscope.addons.sci_microscopy_led_array and "LED matrix" in self.currentConfiguration.name:
+        elif (
+            self.microscope.addons.sci_microscopy_led_array
+            and "LED matrix" in self.currentConfiguration.name
+        ):
             self.microscope.addons.sci_microscopy_led_array.turn_on_illumination()
         # LED matrix
         else:
@@ -73,9 +82,16 @@ class LiveController:
             return
         if "LED matrix" not in self.currentConfiguration.name:
             self.microscope.illumination_controller.turn_off_illumination(
-                int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
+                int(
+                    utils_channel.extract_wavelength_from_config_name(
+                        self.currentConfiguration.name
+                    )
+                )
             )
-        elif self.microscope.addons.sci_microscopy_led_array and "LED matrix" in self.currentConfiguration.name:
+        elif (
+            self.microscope.addons.sci_microscopy_led_array
+            and "LED matrix" in self.currentConfiguration.name
+        ):
             self.microscope.addons.sci_microscopy_led_array.turn_off_illumination()
         # LED matrix
         else:
@@ -114,20 +130,30 @@ class LiveController:
                 elif "DF LED matrix" in self.currentConfiguration.name:
                     led_mode = "df"
                 else:
-                    self._log.warning("Unknown configuration name, using default mode 'bf'.")
+                    self._log.warning(
+                        "Unknown configuration name, using default mode 'bf'."
+                    )
                     led_mode = "bf"
 
                 led_array.set_color(led_colors)
                 led_array.set_brightness(intensity)
                 led_array.set_illumination(led_mode)
             else:
-                micro: Microcontroller = self.microscope.low_level_drivers.microcontroller
+                micro: Microcontroller = (
+                    self.microscope.low_level_drivers.microcontroller
+                )
                 if "BF LED matrix full_R" in self.currentConfiguration.name:
-                    micro.set_illumination_led_matrix(illumination_source, r=(intensity / 100), g=0, b=0)
+                    micro.set_illumination_led_matrix(
+                        illumination_source, r=(intensity / 100), g=0, b=0
+                    )
                 elif "BF LED matrix full_G" in self.currentConfiguration.name:
-                    micro.set_illumination_led_matrix(illumination_source, r=0, g=(intensity / 100), b=0)
+                    micro.set_illumination_led_matrix(
+                        illumination_source, r=0, g=(intensity / 100), b=0
+                    )
                 elif "BF LED matrix full_B" in self.currentConfiguration.name:
-                    micro.set_illumination_led_matrix(illumination_source, r=0, g=0, b=(intensity / 100))
+                    micro.set_illumination_led_matrix(
+                        illumination_source, r=0, g=0, b=(intensity / 100)
+                    )
                 else:
                     micro.set_illumination_led_matrix(
                         illumination_source,
@@ -137,14 +163,28 @@ class LiveController:
                     )
         else:
             # update illumination
-            wavelength = int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
+            wavelength = int(
+                utils_channel.extract_wavelength_from_config_name(
+                    self.currentConfiguration.name
+                )
+            )
             self.microscope.illumination_controller.set_intensity(wavelength, intensity)
-            if self.microscope.addons.nl5 and NL5_USE_DOUT and "Fluorescence" in self.currentConfiguration.name:
-                self.microscope.addons.nl5.set_active_channel(NL5_WAVENLENGTH_MAP[wavelength])
+            if (
+                self.microscope.addons.nl5
+                and NL5_USE_DOUT
+                and "Fluorescence" in self.currentConfiguration.name
+            ):
+                self.microscope.addons.nl5.set_active_channel(
+                    NL5_WAVENLENGTH_MAP[wavelength]
+                )
                 if NL5_USE_AOUT:
-                    self.microscope.addons.nl5.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
+                    self.microscope.addons.nl5.set_laser_power(
+                        NL5_WAVENLENGTH_MAP[wavelength], int(intensity)
+                    )
                 if self.microscope.addons.cellx and ENABLE_CELLX:
-                    self.microscope.addons.cellx.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
+                    self.microscope.addons.cellx.set_laser_power(
+                        NL5_WAVENLENGTH_MAP[wavelength], int(intensity)
+                    )
 
         # set emission filter position
         if ENABLE_SPINNING_DISK_CONFOCAL:
@@ -166,12 +206,17 @@ class LiveController:
                 except Exception as e:
                     print("not setting emission filter position due to " + str(e))
 
-        if self.microscope.addons.emission_filter_wheel and self.enable_channel_auto_filter_switching:
+        if (
+            self.microscope.addons.emission_filter_wheel
+            and self.enable_channel_auto_filter_switching
+        ):
             try:
                 if self.trigger_mode == TriggerMode.SOFTWARE:
                     self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(0)
                 elif self.trigger_mode == TriggerMode.HARDWARE:
-                    self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(-self.camera.get_strobe_time())
+                    self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(
+                        -self.camera.get_strobe_time()
+                    )
                 self.microscope.addons.emission_filter_wheel.set_filter_wheel_position(
                     {1: self.currentConfiguration.emission_filter_position}
                 )
@@ -182,13 +227,18 @@ class LiveController:
         self.is_live = True
         self.camera.start_streaming()
         if self.trigger_mode == TriggerMode.SOFTWARE or (
-            self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+            self.trigger_mode == TriggerMode.HARDWARE
+            and self.use_internal_timer_for_hardware_trigger
         ):
-            self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
+            self.camera.enable_callbacks(
+                True
+            )  # in case it's disabled e.g. by the laser AF controller
             self._start_triggerred_acquisition()
         # if controlling the laser displacement measurement camera
         if self.for_displacement_measurement:
-            self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
+            self.microscope.low_level_drivers.microcontroller.set_pin_level(
+                MCU_PINS.AF_LASER, 1
+            )
 
     def stop_live(self) -> None:
         if self.is_live:
@@ -198,14 +248,17 @@ class LiveController:
             if self.trigger_mode == TriggerMode.CONTINUOUS:
                 self.camera.stop_streaming()
             if (self.trigger_mode == TriggerMode.SOFTWARE) or (
-                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+                self.trigger_mode == TriggerMode.HARDWARE
+                and self.use_internal_timer_for_hardware_trigger
             ):
                 self._stop_triggerred_acquisition()
             if self.control_illumination:
                 self.turn_off_illumination()
             # if controlling the laser displacement measurement camera
             if self.for_displacement_measurement:
-                self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
+                self.microscope.low_level_drivers.microcontroller.set_pin_level(
+                    MCU_PINS.AF_LASER, 0
+                )
 
     def _trigger_acquisition_timer_fn(self) -> None:
         if self.trigger_acquisition():
@@ -252,13 +305,17 @@ class LiveController:
             self.timer_trigger.cancel()
         self.timer_trigger = None
 
-    def _start_new_timer(self, maybe_custom_interval_ms: Optional[float] = None) -> None:
+    def _start_new_timer(
+        self, maybe_custom_interval_ms: Optional[float] = None
+    ) -> None:
         self._stop_existing_timer()
         if maybe_custom_interval_ms:
             interval_s = maybe_custom_interval_ms / 1000.0
         else:
             interval_s = self.timer_trigger_interval / 1000.0
-        self.timer_trigger = threading.Timer(interval_s, self._trigger_acquisition_timer_fn)
+        self.timer_trigger = threading.Timer(
+            interval_s, self._trigger_acquisition_timer_fn
+        )
         self.timer_trigger.daemon = True
         self.timer_trigger.start()
 
@@ -281,7 +338,8 @@ class LiveController:
     def set_trigger_mode(self, mode: TriggerMode) -> None:
         if mode == TriggerMode.SOFTWARE:
             if self.is_live and (
-                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+                self.trigger_mode == TriggerMode.HARDWARE
+                and self.use_internal_timer_for_hardware_trigger
             ):
                 self._stop_triggerred_acquisition()
             self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
@@ -298,7 +356,8 @@ class LiveController:
                 self._start_triggerred_acquisition()
         if mode == TriggerMode.CONTINUOUS:
             if (self.trigger_mode == TriggerMode.SOFTWARE) or (
-                self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+                self.trigger_mode == TriggerMode.HARDWARE
+                and self.use_internal_timer_for_hardware_trigger
             ):
                 self._stop_triggerred_acquisition()
             self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
@@ -306,14 +365,14 @@ class LiveController:
 
     def set_trigger_fps(self, fps: float) -> None:
         if (self.trigger_mode == TriggerMode.SOFTWARE) or (
-            self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+            self.trigger_mode == TriggerMode.HARDWARE
+            and self.use_internal_timer_for_hardware_trigger
         ):
             self._set_trigger_fps(fps)
 
     # set microscope mode
     # @@@ to do: change softwareTriggerGenerator to TriggerGeneratror
     def set_microscope_mode(self, configuration: "ChannelMode") -> None:
-
         self.currentConfiguration = configuration
         self._log.info("setting microscope mode to " + self.currentConfiguration.name)
 

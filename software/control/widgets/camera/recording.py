@@ -4,8 +4,16 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from control.core.display import StreamHandler, ImageSaver
 
+
 class RecordingWidget(QFrame):
-    def __init__(self, streamHandler: StreamHandler, imageSaver: ImageSaver, main: Optional[QWidget] = None, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        streamHandler: StreamHandler,
+        imageSaver: ImageSaver,
+        main: Optional[QWidget] = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.imageSaver = imageSaver  # for saving path control
         self.streamHandler = streamHandler
@@ -76,7 +84,9 @@ class RecordingWidget(QFrame):
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_record.clicked.connect(self.toggle_recording)
         self.entry_saveFPS.valueChanged.connect(self.streamHandler.set_save_fps)
-        self.entry_timeLimit.valueChanged.connect(self.imageSaver.set_recording_time_limit)
+        self.entry_timeLimit.valueChanged.connect(
+            self.imageSaver.set_recording_time_limit
+        )
         self.imageSaver.stop_recording.connect(self.stop_recording)
 
     def set_saving_dir(self) -> None:
@@ -112,7 +122,15 @@ class RecordingWidget(QFrame):
 
 
 class MultiCameraRecordingWidget(QFrame):
-    def __init__(self, streamHandler: Dict[str, "StreamHandler"], imageSaver: Dict[str, "ImageSaver"], channels: List[str], main: Optional[QWidget] = None, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        streamHandler: Dict[str, "StreamHandler"],
+        imageSaver: Dict[str, "ImageSaver"],
+        channels: List[str],
+        main: Optional[QWidget] = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.imageSaver = imageSaver  # for saving path control
         self.streamHandler = streamHandler
@@ -182,8 +200,12 @@ class MultiCameraRecordingWidget(QFrame):
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_record.clicked.connect(self.toggle_recording)
         for channel in self.channels:
-            self.entry_saveFPS.valueChanged.connect(self.streamHandler[channel].set_save_fps)
-            self.entry_timeLimit.valueChanged.connect(self.imageSaver[channel].set_recording_time_limit)
+            self.entry_saveFPS.valueChanged.connect(
+                self.streamHandler[channel].set_save_fps
+            )
+            self.entry_timeLimit.valueChanged.connect(
+                self.imageSaver[channel].set_recording_time_limit
+            )
             self.imageSaver[channel].stop_recording.connect(self.stop_recording)
 
     def set_saving_dir(self) -> None:
@@ -206,10 +228,16 @@ class MultiCameraRecordingWidget(QFrame):
             self.lineEdit_experimentID.setEnabled(False)
             self.btn_setSavingDir.setEnabled(False)
             experiment_ID = self.lineEdit_experimentID.text()
-            experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
-            utils.ensure_directory_exists(os.path.join(self.save_dir_base, experiment_ID))
+            experiment_ID = (
+                experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+            )
+            utils.ensure_directory_exists(
+                os.path.join(self.save_dir_base, experiment_ID)
+            )
             for channel in self.channels:
-                self.imageSaver[channel].start_new_experiment(os.path.join(experiment_ID, channel), add_timestamp=False)
+                self.imageSaver[channel].start_new_experiment(
+                    os.path.join(experiment_ID, channel), add_timestamp=False
+                )
                 self.streamHandler[channel].start_recording()
         else:
             for channel in self.channels:

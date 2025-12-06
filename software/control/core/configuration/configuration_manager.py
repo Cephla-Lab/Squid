@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 from typing import List, Optional, TYPE_CHECKING
 
-from control.core.configuration.channel_configuration_manager import ChannelConfigurationManager
+from control.core.configuration.channel_configuration_manager import (
+    ChannelConfigurationManager,
+)
 import control._def
 
 if TYPE_CHECKING:

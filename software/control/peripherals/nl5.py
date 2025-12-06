@@ -3,9 +3,7 @@ import json
 
 
 class NL5:
-
     def __init__(self):
-
         self.rcm = RCM_API.RCM_API()
         self.rcm.initialize_device(simulated=False)
         self.load_settings()
@@ -19,7 +17,7 @@ class NL5:
         self.rcm.set_float_parameter(self.rcm.OFFSET_SCAN_X, offset_x)
 
     def start_acquisition(self):
-        ret = self.rcm.start_acquisition()
+        self.rcm.start_acquisition()
 
     def start_continuous_acquisition(self):
         self.rcm.start_acquisition()
@@ -36,10 +34,14 @@ class NL5:
     def set_active_channel(self, channel):
         self.active_channel = channel
         for i in range(1, 5):
-            self.rcm.set_integer_parameter(getattr(self.rcm, f"LASER_{i}_SELECTED"), 1 if i == channel else 0)
+            self.rcm.set_integer_parameter(
+                getattr(self.rcm, f"LASER_{i}_SELECTED"), 1 if i == channel else 0
+            )
 
     def set_laser_power(self, channel, power):
-        self.rcm.set_integer_parameter(getattr(self.rcm, f"LASER_{channel}_POWER"), power)
+        self.rcm.set_integer_parameter(
+            getattr(self.rcm, f"LASER_{channel}_POWER"), power
+        )
 
     def set_bypass_offset(self, offset):
         self.bypass_offset = offset
@@ -47,7 +49,9 @@ class NL5:
 
     def set_line_speed(self, speed, save_setting=False):
         self.line_speed = speed
-        self.rcm.set_integer_parameter(self.rcm.LINE_FREQUENCY, speed)  # speed in mrad/s
+        self.rcm.set_integer_parameter(
+            self.rcm.LINE_FREQUENCY, speed
+        )  # speed in mrad/s
         if save_setting:
             self.save_settings()
 
@@ -93,7 +97,6 @@ class NL5:
 
 
 class NL5_Simulation:
-
     def __init__(self):
         self.load_settings()
 

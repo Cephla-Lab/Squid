@@ -13,8 +13,15 @@ from qtpy.QtWidgets import QFrame, QWidget, QVBoxLayout, QGridLayout
 
 
 class WaveformDisplay(QFrame):
-
-    def __init__(self, N=1000, include_x=True, include_y=True, main=None, *args, **kwargs):
+    def __init__(
+        self,
+        N: int = 1000,
+        include_x: bool = True,
+        include_y: bool = True,
+        main: QWidget = None,
+        *args,
+        **kwargs,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.N = N
         self.include_x = include_x
@@ -22,7 +29,7 @@ class WaveformDisplay(QFrame):
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-    def add_components(self):
+    def add_components(self) -> None:
         self.plotWidget = {}
         self.plotWidget["X"] = PlotWidget("X", N=self.N, add_legend=True)
         self.plotWidget["Y"] = PlotWidget("X", N=self.N, add_legend=True)
@@ -34,31 +41,55 @@ class WaveformDisplay(QFrame):
             layout.addWidget(self.plotWidget["Y"], 1, 0)
         self.setLayout(layout)
 
-    def plot(self, time, data):
+    def plot(self, time: np.ndarray, data: np.ndarray) -> None:
         if self.include_x:
-            self.plotWidget["X"].plot(time, data[0, :], "X", color=(255, 255, 255), clear=True)
+            self.plotWidget["X"].plot(
+                time, data[0, :], "X", color=(255, 255, 255), clear=True
+            )
         if self.include_y:
-            self.plotWidget["Y"].plot(time, data[1, :], "Y", color=(255, 255, 255), clear=True)
+            self.plotWidget["Y"].plot(
+                time, data[1, :], "Y", color=(255, 255, 255), clear=True
+            )
 
-    def update_N(self, N):
+    def update_N(self, N: int) -> None:
         self.N = N
         self.plotWidget["X"].update_N(N)
         self.plotWidget["Y"].update_N(N)
 
 
 class PlotWidget(pg.GraphicsLayoutWidget):
-
-    def __init__(self, title="", N=1000, parent=None, add_legend=False):
+    def __init__(
+        self,
+        title: str = "",
+        N: int = 1000,
+        parent: QWidget = None,
+        add_legend: bool = False,
+    ) -> None:
         super().__init__(parent)
-        self.plotWidget = self.addPlot(title="", axisItems={"bottom": pg.DateAxisItem()})
+        self.plotWidget = self.addPlot(
+            title="", axisItems={"bottom": pg.DateAxisItem()}
+        )
         if add_legend:
             self.plotWidget.addLegend()
         self.N = N
 
-    def plot(self, x, y, label, color, clear=False):
-        self.plotWidget.plot(x[-self.N :], y[-self.N :], pen=pg.mkPen(color=color, width=4), name=label, clear=clear)
+    def plot(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        label: str,
+        color: tuple,
+        clear: bool = False,
+    ) -> None:
+        self.plotWidget.plot(
+            x[-self.N :],
+            y[-self.N :],
+            pen=pg.mkPen(color=color, width=4),
+            name=label,
+            clear=clear,
+        )
 
-    def update_N(self, N):
+    def update_N(self, N: int) -> None:
         self.N = N
 
 
@@ -69,7 +100,7 @@ class SurfacePlotWidget(QWidget):
 
     signal_point_clicked = Signal(float, float)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget = None) -> None:
         super().__init__(parent)
         self._log = squid.logging.get_logger(__name__)
 
@@ -89,21 +120,21 @@ class SurfacePlotWidget(QWidget):
         self.canvas.mpl_connect("scroll_event", self.on_scroll)
         self.canvas.mpl_connect("button_press_event", self.on_click)
 
-        self.x = list()
-        self.y = list()
-        self.z = list()
-        self.regions = list()
+        self._x_coords: list[float] = []
+        self._y_coords: list[float] = []
+        self._z_coords: list[float] = []
+        self.regions: list[int] = []
 
-    def clear(self):
-        self.x.clear()
-        self.y.clear()
-        self.z.clear()
+    def clear(self) -> None:
+        self._x_coords.clear()
+        self._y_coords.clear()
+        self._z_coords.clear()
         self.regions.clear()
 
-    def add_point(self, x: float, y: float, z: float, region: int):
-        self.x.append(x)
-        self.y.append(y)
-        self.z.append(z)
+    def add_point(self, x: float, y: float, z: float, region: int) -> None:
+        self._x_coords.append(x)
+        self._y_coords.append(y)
+        self._z_coords.append(z)
         self.regions.append(region)
 
     def plot(self) -> None:
@@ -119,9 +150,9 @@ class SurfacePlotWidget(QWidget):
             # Clear previous plot
             self.ax.clear()
 
-            x = np.array(self.x).astype(float)
-            y = np.array(self.y).astype(float)
-            z = np.array(self.z).astype(float)
+            x = np.array(self._x_coords).astype(float)
+            y = np.array(self._y_coords).astype(float)
+            z = np.array(self._z_coords).astype(float)
             regions = np.array(self.regions)
 
             # plot surface by region
@@ -130,11 +161,23 @@ class SurfacePlotWidget(QWidget):
                     mask = regions == r
                     num_points = np.sum(mask)
                     if num_points >= 4:
-                        grid_x, grid_y = np.mgrid[min(x[mask]) : max(x[mask]) : 10j, min(y[mask]) : max(y[mask]) : 10j]
-                        grid_z = griddata((x[mask], y[mask]), z[mask], (grid_x, grid_y), method="cubic")
-                        self.ax.plot_surface(grid_x, grid_y, grid_z, cmap="viridis", edgecolor="none")
+                        grid_x, grid_y = np.mgrid[
+                            min(x[mask]) : max(x[mask]) : 10j,
+                            min(y[mask]) : max(y[mask]) : 10j,
+                        ]  # type: ignore[misc]
+                        grid_z = griddata(
+                            (x[mask], y[mask]),
+                            z[mask],
+                            (grid_x, grid_y),
+                            method="cubic",
+                        )
+                        self.ax.plot_surface(
+                            grid_x, grid_y, grid_z, cmap="viridis", edgecolor="none"
+                        )
                     else:
-                        self._log.debug(f"Region {r} has only {num_points} point(s), skipping surface interpolation")
+                        self._log.debug(
+                            f"Region {r} has only {num_points} point(s), skipping surface interpolation"
+                        )
                 except Exception as e:
                     raise Exception(f"Cannot plot region {r}: {e}")
 
@@ -161,7 +204,7 @@ class SurfacePlotWidget(QWidget):
         except Exception as e:
             self._log.error(f"Error plotting surface: {e}")
 
-    def on_scroll(self, event):
+    def on_scroll(self, event: Any) -> None:
         scale = 1.1 if event.button == "up" else 0.9
 
         def zoom(lim):
@@ -174,7 +217,7 @@ class SurfacePlotWidget(QWidget):
         self.ax.set_zlim(zoom(self.ax.get_zlim()))
         self.canvas.draw()
 
-    def on_click(self, event):
+    def on_click(self, event: Any) -> None:
         if not self.plot_populated:
             return
         if not event.dblclick or event.inaxes != self.ax:
@@ -184,23 +227,30 @@ class SurfacePlotWidget(QWidget):
         self.canvas.button_pressed = None  # FIX: Avoids AttributeError
 
         # Project 3D points to 2D screen space
-        x2d, y2d, _ = proj3d.proj_transform(self.x, self.y, self.z, self.ax.get_proj())
+        x2d, y2d, _ = proj3d.proj_transform(
+            self._x_coords, self._y_coords, self._z_coords, self.ax.get_proj()
+        )
         dists = np.hypot(x2d - event.xdata, y2d - event.ydata)
         idx = np.argmin(dists)
 
         # Threshold in data coordinates
         display_thresh = 0.05 * max(
-            self.ax.get_xlim()[1] - self.ax.get_xlim()[0], self.ax.get_ylim()[1] - self.ax.get_ylim()[0]
+            self.ax.get_xlim()[1] - self.ax.get_xlim()[0],
+            self.ax.get_ylim()[1] - self.ax.get_ylim()[0],
         )
         if dists[idx] > display_thresh:
             return
 
         # Change point color
-        self.colors = ["r"] * len(self.x)
+        self.colors = ["r"] * len(self._x_coords)
         self.colors[idx] = "g"
         self.scatter.remove()
-        self.scatter = self.ax.scatter(self.x, self.y, self.z, c=self.colors, s=30)
+        self.scatter = self.ax.scatter(
+            self._x_coords, self._y_coords, self._z_coords, c=self.colors, s=30
+        )
 
-        print(f"Clicked Point: x={self.x[idx]:.3f}, y={self.y[idx]:.3f}, z={self.z[idx]:.3f}")
+        print(
+            f"Clicked Point: x={self._x_coords[idx]:.3f}, y={self._y_coords[idx]:.3f}, z={self._z_coords[idx]:.3f}"
+        )
         self.canvas.draw()
-        self.signal_point_clicked.emit(self.x[idx], self.y[idx])
+        self.signal_point_clicked.emit(self._x_coords[idx], self._y_coords[idx])

@@ -124,7 +124,10 @@ def main(args):
     )
 
     cam = squid.camera.utils.get_camera(
-        force_this_camera_config, simulated, hw_trigger_fn=hw_trigger, hw_set_strobe_delay_ms_fn=strobe_delay_fn
+        force_this_camera_config,
+        simulated,
+        hw_trigger_fn=hw_trigger,
+        hw_set_strobe_delay_ms_fn=strobe_delay_fn,
     )
 
     stats = Stats()
@@ -133,7 +136,7 @@ def main(args):
         stats.callback_frame(frame)
 
     log.info("Registering frame callback...")
-    callback_id = cam.add_frame_callback(frame_callback)
+    cam.add_frame_callback(frame_callback)
 
     cam.set_exposure_time(args.exposure)
 
@@ -184,7 +187,9 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(description="hammer a camera to test it.")
 
-    ap.add_argument("--runtime", type=float, help="Time, in s, to run the test for.", default=60)
+    ap.add_argument(
+        "--runtime", type=float, help="Time, in s, to run the test for.", default=60
+    )
     ap.add_argument(
         "--hardware_trigger",
         action="store_true",
@@ -197,7 +202,12 @@ if __name__ == "__main__":
         help="A comma separated 2-tuple to use as the camera binning.  EG 1,1 or 2,2",
         default="1,1",
     )
-    ap.add_argument("--report_interval", type=int, help="Report every this many frames captured.", default=100)
+    ap.add_argument(
+        "--report_interval",
+        type=int,
+        help="Report every this many frames captured.",
+        default=100,
+    )
     ap.add_argument("--verbose", action="store_true", help="Turn on debug logging")
     ap.add_argument(
         "--camera",

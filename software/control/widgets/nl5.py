@@ -1,4 +1,5 @@
 import sys
+from typing import Any
 from PyQt5.QtWidgets import (
     QApplication,
     QWidget,
@@ -9,15 +10,13 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QSpinBox,
     QPushButton,
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
 )
-from PyQt5.QtCore import Qt
 
 
 class NL5SettingsDialog(QDialog):
-    def __init__(self, nl5):
+    def __init__(self, nl5: Any) -> None:
         super().__init__()
         self.nl5 = nl5
         self.setWindowTitle("NL5 Settings")
@@ -52,7 +51,7 @@ class NL5SettingsDialog(QDialog):
 
         self.setLayout(layout)
 
-    def accept(self):
+    def accept(self) -> None:
         self.nl5.set_scan_amplitude(self.scan_amplitude_input.value())
         self.nl5.set_offset_x(self.offset_x_input.value())
         self.nl5.set_bypass_offset(self.bypass_offset_input.value())
@@ -61,7 +60,7 @@ class NL5SettingsDialog(QDialog):
 
 
 class NL5Widget(QWidget):
-    def __init__(self, nl5):
+    def __init__(self, nl5: Any) -> None:
         super().__init__()
 
         self.nl5 = nl5
@@ -120,21 +119,21 @@ class NL5Widget(QWidget):
         layout.addLayout(layout2)
         self.setLayout(layout)
 
-    def show_settings_dialog(self):
+    def show_settings_dialog(self) -> None:
         dialog = NL5SettingsDialog(self.nl5)
         dialog.exec_()
 
-    def update_bypass(self, checked):
+    def update_bypass(self, checked: bool) -> None:
         self.nl5.set_bypass(checked)
         self.start_acquisition_button.setEnabled(not checked)
 
-    def update_exposure_delay(self, value):
+    def update_exposure_delay(self, value: int) -> None:
         self.nl5.set_exposure_delay(value)
 
-    def update_line_speed(self, value):
+    def update_line_speed(self, value: int) -> None:
         self.nl5.set_line_speed(value)
 
-    def update_fov_x(self, value):
+    def update_fov_x(self, value: int) -> None:
         self.nl5.set_fov_x(value)
 
 

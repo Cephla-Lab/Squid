@@ -20,10 +20,14 @@ def test_create_simulated_hcs_with_or_without_piezo(qtbot, monkeypatch):
 
     control._def.HAS_OBJECTIVE_PIEZO = True
     scope_with = control.microscope.Microscope.build_from_global_config(True)
-    with_piezo = control.gui_hcs.HighContentScreeningGui(microscope=scope_with, is_simulation=True)
+    with_piezo = control.gui_hcs.HighContentScreeningGui(
+        microscope=scope_with, is_simulation=True
+    )
     qtbot.add_widget(with_piezo)
 
     control._def.HAS_OBJECTIVE_PIEZO = False
     scope_without = control.microscope.Microscope.build_from_global_config(True)
-    without_piezo = control.gui_hcs.HighContentScreeningGui(microscope=scope_without, is_simulation=True)
+    without_piezo = control.gui_hcs.HighContentScreeningGui(
+        microscope=scope_without, is_simulation=True
+    )
     qtbot.add_widget(without_piezo)

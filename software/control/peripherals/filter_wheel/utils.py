@@ -8,7 +8,12 @@ from squid.config import FilterWheelConfig, FilterWheelControllerVariant
 class SimulatedFilterWheelController(AbstractFilterWheelController):
     """Simulated filter wheel controller for testing purposes."""
 
-    def __init__(self, number_of_wheels: int = 1, slots_per_wheel: int = 8, simulate_delays: bool = True):
+    def __init__(
+        self,
+        number_of_wheels: int = 1,
+        slots_per_wheel: int = 8,
+        simulate_delays: bool = True,
+    ):
         """
         Initialize the simulated filter wheel controller.
 
@@ -83,13 +88,16 @@ class SimulatedFilterWheelController(AbstractFilterWheelController):
 
             if position < 1 or position > self.slots_per_wheel:
                 raise ValueError(
-                    f"Invalid position {position} for wheel {wheel_index}. " f"Valid range: 1-{self.slots_per_wheel}"
+                    f"Invalid position {position} for wheel {wheel_index}. "
+                    f"Valid range: 1-{self.slots_per_wheel}"
                 )
 
             current_pos = self._positions.get(wheel_index, 1)
 
             if position != current_pos:
-                self.log.info(f"Moving filter wheel {wheel_index} from position {current_pos} to {position}")
+                self.log.info(
+                    f"Moving filter wheel {wheel_index} from position {current_pos} to {position}"
+                )
 
                 if self.simulate_delays:
                     delay_s = (self._delay_ms + self._delay_offset_ms) / 1000
@@ -156,7 +164,9 @@ def get_filter_wheel_controller(
     if config.controller_type == FilterWheelControllerVariant.SQUID:
         if microcontroller is None:
             raise ValueError("SquidFilterWheel requires a microcontroller instance")
-        return SquidFilterWheel(microcontroller=microcontroller, config=config.controller_config)
+        return SquidFilterWheel(
+            microcontroller=microcontroller, config=config.controller_config
+        )
 
     elif config.controller_type == FilterWheelControllerVariant.ZABER:
         return ZaberFilterController(config=config.controller_config)
@@ -165,4 +175,6 @@ def get_filter_wheel_controller(
         return Optospin(config=config.controller_config)
 
     else:
-        raise ValueError(f"Unknown or unsupported filter wheel controller type: {config.controller_type}")
+        raise ValueError(
+            f"Unknown or unsupported filter wheel controller type: {config.controller_type}"
+        )

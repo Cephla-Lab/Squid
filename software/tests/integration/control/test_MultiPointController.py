@@ -3,7 +3,7 @@ import threading
 import control._def
 import control.microscope
 from control.core.acquisition import MultiPointController
-from control.core.acquisition.multi_point_utils import MultiPointControllerFunctions, AcquisitionParameters
+from control.core.acquisition.multi_point_utils import MultiPointControllerFunctions
 
 import tests.control.test_stubs as ts
 
@@ -15,7 +15,9 @@ def test_multi_point_controller_image_count_calculation():
     control._def.MERGE_CHANNELS = False
     all_configuration_names = [
         config.name
-        for config in mpc.channelConfigurationManager.get_configurations(mpc.objectiveStore.current_objective)
+        for config in mpc.channelConfigurationManager.get_configurations(
+            mpc.objectiveStore.current_objective
+        )
     ]
     nz = 2
     nt = 3
@@ -33,7 +35,10 @@ def test_multi_point_controller_image_count_calculation():
     # NOTE: If the coordinates below aren't in the valid range for our stage, it silently fails to add regions.
     x_min = mpc.stage.get_config().X_AXIS.MIN_POSITION + 0.01
     y_min = mpc.stage.get_config().Y_AXIS.MIN_POSITION + 0.01
-    z_mid = (mpc.stage.get_config().Z_AXIS.MAX_POSITION - mpc.stage.get_config().Z_AXIS.MIN_POSITION) / 2.0
+    z_mid = (
+        mpc.stage.get_config().Z_AXIS.MAX_POSITION
+        - mpc.stage.get_config().Z_AXIS.MIN_POSITION
+    ) / 2.0
     mpc.scanCoordinates.add_flexible_region(1, x_min, y_min, z_mid, 1, 1, 0)
 
     assert mpc.get_acquisition_image_count() == (nt * nz * 1 * 1)
@@ -58,7 +63,9 @@ def test_multi_point_controller_image_count_calculation():
 
     # When we merge, there's an extra image per fov (where we merge all the configs for that fov).
     control._def.MERGE_CHANNELS = True
-    assert mpc.get_acquisition_image_count() == final_number_of_fov * (all_config_count + 1)
+    assert mpc.get_acquisition_image_count() == final_number_of_fov * (
+        all_config_count + 1
+    )
 
 
 def test_multi_point_controller_disk_space_estimate():
@@ -68,12 +75,14 @@ def test_multi_point_controller_disk_space_estimate():
     control._def.MERGE_CHANNELS = False
     all_configuration_names = [
         config.name
-        for config in mpc.channelConfigurationManager.get_configurations(mpc.objectiveStore.current_objective)
+        for config in mpc.channelConfigurationManager.get_configurations(
+            mpc.objectiveStore.current_objective
+        )
     ]
     nz = 2
     nt = 3
     assert len(all_configuration_names) > 0
-    all_config_count = len(all_configuration_names)
+    len(all_configuration_names)
 
     mpc.set_NZ(nz)
     mpc.set_Nt(nt)
@@ -87,7 +96,10 @@ def test_multi_point_controller_disk_space_estimate():
     # NOTE: If the coordinates below aren't in the valid range for our stage, it silently fails to add regions.
     x_min = mpc.stage.get_config().X_AXIS.MIN_POSITION + 0.01
     y_min = mpc.stage.get_config().Y_AXIS.MIN_POSITION + 0.01
-    z_mid = (mpc.stage.get_config().Z_AXIS.MAX_POSITION - mpc.stage.get_config().Z_AXIS.MIN_POSITION) / 2.0
+    z_mid = (
+        mpc.stage.get_config().Z_AXIS.MAX_POSITION
+        - mpc.stage.get_config().Z_AXIS.MIN_POSITION
+    ) / 2.0
     mpc.scanCoordinates.add_flexible_region(1, x_min, y_min, z_mid, 1, 1, 0)
 
     # Add 9 more regions with a single fov
@@ -101,7 +113,7 @@ def test_multi_point_controller_disk_space_estimate():
     # Add a multiple FOV region with 5 in each of x and y dirs.
     mpc.scanCoordinates.add_flexible_region(123, x_min + 11, y_min + 11, z_mid, 5, 5, 0)
 
-    final_number_of_fov = nt * nz * (10 + 25)
+    nt * nz * (10 + 25)
     # It is tricky to calculate the exact value here, but since we are capturing >3000 images it should at least
     # be in the multi-GB range.
     assert mpc.get_estimated_acquisition_disk_storage() > 1e9
@@ -167,11 +179,15 @@ def add_some_coordinates(mpc: MultiPointController):
     mpc.scanCoordinates.add_single_fov_region(
         "region_2", center_x=min_x + 0.5, center_y=min_y + 0.5, center_z=min_z + 0.1
     )
-    mpc.scanCoordinates.add_flexible_region("region_grid", max_x / 2.0, max_y / 2.0, max_z / 2.0, 3, 3, 10)
+    mpc.scanCoordinates.add_flexible_region(
+        "region_grid", max_x / 2.0, max_y / 2.0, max_z / 2.0, 3, 3, 10
+    )
 
 
 def select_some_configs(mpc: MultiPointController, objective: str):
-    all_config_names = [m.name for m in mpc.channelConfigurationManager.get_configurations(objective)]
+    all_config_names = [
+        m.name for m in mpc.channelConfigurationManager.get_configurations(objective)
+    ]
     first_two_config_names = all_config_names[:2]
     mpc.set_selected_configurations(selected_configurations_name=first_two_config_names)
 
@@ -180,7 +196,9 @@ def test_multi_point_controller_basic_acquisition():
     control._def.MERGE_CHANNELS = False
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
-    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    mpc = ts.get_test_multi_point_controller(
+        microscope=scope, callbacks=tt.get_callbacks()
+    )
 
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
@@ -205,7 +223,9 @@ def test_multi_point_with_laser_af():
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
 
-    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    mpc = ts.get_test_multi_point_controller(
+        microscope=scope, callbacks=tt.get_callbacks()
+    )
 
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
@@ -213,7 +233,9 @@ def test_multi_point_with_laser_af():
     scope.addons.camera_focus.send_trigger()
     laser_af_ref_image = scope.addons.camera_focus.read_frame()
     assert laser_af_ref_image is not None
-    mpc.laserAutoFocusController.laser_af_properties.set_reference_image(laser_af_ref_image)
+    mpc.laserAutoFocusController.laser_af_properties.set_reference_image(
+        laser_af_ref_image
+    )
 
     mpc.run_acquisition()
 
@@ -235,7 +257,9 @@ def test_multi_point_with_contrast_af():
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
 
-    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    mpc = ts.get_test_multi_point_controller(
+        microscope=scope, callbacks=tt.get_callbacks()
+    )
 
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)

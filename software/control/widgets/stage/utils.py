@@ -1,32 +1,43 @@
 from control.widgets.stage._common import *
 
+
 class StageUtils(QDialog):
     """Dialog containing microscope utility functions like homing, zeroing, and slide positioning."""
 
-    signal_threaded_stage_move_started = Signal()
-    signal_loading_position_reached = Signal()
-    signal_scanning_position_reached = Signal()
+    signal_threaded_stage_move_started: Signal = Signal()
+    signal_loading_position_reached: Signal = Signal()
+    signal_scanning_position_reached: Signal = Signal()
 
     def __init__(
         self,
         stage_service: "StageService",
-        live_controller: LiveController = None,
+        live_controller: Optional[LiveController] = None,
         is_wellplate: bool = False,
-        parent=None
-    ):
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
         self.log = squid.logging.get_logger(self.__class__.__name__)
-        self.live_controller = live_controller
-        self.is_wellplate = is_wellplate
-        self.slide_position = None
+        self.live_controller: Optional[LiveController] = live_controller
+        self.is_wellplate: bool = is_wellplate
+        self.slide_position: Optional[str] = None
+        self._was_live: bool = False
 
-        self._service = stage_service
+        self._service: "StageService" = stage_service
+
+        # UI components
+        self.btn_home_X: QPushButton
+        self.btn_home_Y: QPushButton
+        self.btn_home_Z: QPushButton
+        self.btn_zero_X: QPushButton
+        self.btn_zero_Y: QPushButton
+        self.btn_zero_Z: QPushButton
+        self.btn_load_slide: QPushButton
 
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
         self.setup_ui()
 
-    def setup_ui(self):
+    def setup_ui(self) -> None:
         """Setup the UI components."""
         # Create buttons
         self.btn_home_X = QPushButton("Home X")
@@ -99,20 +110,20 @@ class StageUtils(QDialog):
 
         self.setLayout(main_layout)
 
-    def home_x(self):
+    def home_x(self) -> None:
         """Home X axis with confirmation dialog."""
         self._show_confirmation_dialog(x=True, y=False, z=False, theta=False)
 
-    def home_y(self):
+    def home_y(self) -> None:
         """Home Y axis with confirmation dialog."""
         self._show_confirmation_dialog(x=False, y=True, z=False, theta=False)
 
-    def home_z(self):
+    def home_z(self) -> None:
         """Home Z axis with confirmation dialog."""
         self._show_confirmation_dialog(x=False, y=False, z=True, theta=False)
         self._service.move_to_safety_position()
 
-    def _show_confirmation_dialog(self, x: bool, y: bool, z: bool, theta: bool):
+    def _show_confirmation_dialog(self, x: bool, y: bool, z: bool, theta: bool) -> None:
         """Display a confirmation dialog and home the specified axis if confirmed."""
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Information)
@@ -125,22 +136,24 @@ class StageUtils(QDialog):
         if QMessageBox.Ok == retval:
             self._service.home(x=x, y=y, z=z)
 
-    def zero_x(self):
+    def zero_x(self) -> None:
         """Zero X axis position."""
         self._service.zero(x=True, y=False, z=False)
 
-    def zero_y(self):
+    def zero_y(self) -> None:
         """Zero Y axis position."""
         self._service.zero(x=False, y=True, z=False)
 
-    def zero_z(self):
+    def zero_z(self) -> None:
         """Zero Z axis position."""
         self._service.zero(x=False, y=False, z=True)
 
-    def switch_position(self):
+    def switch_position(self) -> None:
         """Switch between loading and scanning positions."""
-        self._was_live = self.live_controller.is_live
-        if self._was_live:
+        self._was_live = (
+            self.live_controller.is_live if self.live_controller is not None else False
+        )
+        if self._was_live and self.live_controller is not None:
             self.live_controller.stop_live()
         self.signal_threaded_stage_move_started.emit()
         if self.slide_position != "loading":
@@ -157,28 +170,30 @@ class StageUtils(QDialog):
             )
         self.btn_load_slide.setEnabled(False)
 
-    def _callback_loading_position_reached(self, success: bool, error_message: Optional[str]):
+    def _callback_loading_position_reached(
+        self, success: bool, error_message: Optional[str]
+    ) -> None:
         """Handle slide loading position reached signal."""
         self.slide_position = "loading"
         self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
-        if self._was_live:
+        if self._was_live and self.live_controller is not None:
             self.live_controller.start_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
 
-    def _callback_scanning_position_reached(self, success: bool, error_message: Optional[str]):
+    def _callback_scanning_position_reached(
+        self, success: bool, error_message: Optional[str]
+    ) -> None:
         """Handle slide scanning position reached signal."""
         self.slide_position = "scanning"
         self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
-        if self._was_live:
+        if self._was_live and self.live_controller is not None:
             self.live_controller.start_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_scanning_position_reached.emit()
-
-

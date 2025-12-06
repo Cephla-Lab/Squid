@@ -91,7 +91,8 @@ class AutofocusWorker:
                     image = self.camera.read_frame()
                 else:
                     self.microcontroller.send_hardware_trigger(
-                        control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
+                        control_illumination=True,
+                        illumination_on_time_us=self.camera.get_exposure_time() * 1000,
                     )
                     image = self.camera.read_frame()
             if image is None:
@@ -104,9 +105,15 @@ class AutofocusWorker:
             self._image_to_display_fn(image)
 
             timestamp_0 = time.time()
-            focus_measure = utils.calculate_focus_measure(image, control._def.FOCUS_MEASURE_OPERATOR)
+            focus_measure = utils.calculate_focus_measure(
+                image, control._def.FOCUS_MEASURE_OPERATOR
+            )
             timestamp_1 = time.time()
-            self._log.info("             calculating focus measure took " + str(timestamp_1 - timestamp_0) + " second")
+            self._log.info(
+                "             calculating focus measure took "
+                + str(timestamp_1 - timestamp_0)
+                + " second"
+            )
             focus_measure_vs_z[i] = focus_measure
             self._log.debug(f"{i} {focus_measure}")
             focus_measure_max = max(focus_measure, focus_measure_max)

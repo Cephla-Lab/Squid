@@ -1,17 +1,29 @@
 from control.widgets.stage._common import *
 
+
 class PiezoWidget(QFrame):
-    def __init__(self, piezo: PiezoStage, *args, **kwargs):
+    def __init__(self, piezo: PiezoStage, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.piezo = piezo
-        self.piezo_displacement_um = 0.00
+        self.piezo: PiezoStage = piezo
+        self.piezo_displacement_um: float = 0.00
+
+        # UI components
+        self.slider: QSlider
+        self.spinBox: QDoubleSpinBox
+        self.home_btn: QPushButton
+        self.increment_spinBox: QDoubleSpinBox
+        self.move_up_btn: QPushButton
+        self.move_down_btn: QPushButton
+
         self.add_components()
 
-    def add_components(self):
+    def add_components(self) -> None:
         # Row 1: Slider and Double Spin Box for direct control
-        self.slider = QSlider(Qt.Horizontal, self)
+        self.slider = QSlider(Qt.Orientation.Horizontal, self)
         self.slider.setMinimum(0)
-        self.slider.setMaximum(int(self.piezo.range_um * 100))  # Multiplied by 100 for 0.01 precision
+        self.slider.setMaximum(
+            int(self.piezo.range_um * 100)
+        )  # Multiplied by 100 for 0.01 precision
         self.slider.setValue(int(self.piezo._home_position_um * 100))
 
         self.spinBox = QDoubleSpinBox(self)
@@ -60,50 +72,54 @@ class PiezoWidget(QFrame):
         self.move_down_btn.clicked.connect(lambda: self.adjust_position(False))
         self.home_btn.clicked.connect(self.home)
 
-    def update_from_slider(self, value):
-        self.piezo_displacement_um = value / 100  # Convert back to float with two decimal places
+    def update_from_slider(self, value: int) -> None:
+        self.piezo_displacement_um = (
+            value / 100
+        )  # Convert back to float with two decimal places
         self.update_spinBox()
         self.update_piezo_position()
 
-    def update_from_spinBox(self, value):
+    def update_from_spinBox(self, value: float) -> None:
         self.piezo_displacement_um = value
         self.update_slider()
         self.update_piezo_position()
 
-    def update_spinBox(self):
+    def update_spinBox(self) -> None:
         self.spinBox.blockSignals(True)
         self.spinBox.setValue(self.piezo_displacement_um)
         self.spinBox.blockSignals(False)
 
-    def update_slider(self):
+    def update_slider(self) -> None:
         self.slider.blockSignals(True)
         self.slider.setValue(int(self.piezo_displacement_um * 100))
         self.slider.blockSignals(False)
 
-    def update_piezo_position(self):
+    def update_piezo_position(self) -> None:
         self.piezo.move_to(self.piezo_displacement_um)
 
-    def adjust_position(self, up):
+    def adjust_position(self, up: bool) -> None:
         increment = self.increment_spinBox.value()
         if up:
-            self.piezo_displacement_um = min(self.piezo.range_um, self.spinBox.value() + increment)
+            self.piezo_displacement_um = min(
+                self.piezo.range_um, self.spinBox.value() + increment
+            )
         else:
             self.piezo_displacement_um = max(0, self.spinBox.value() - increment)
         self.update_spinBox()
         self.update_slider()
         self.update_piezo_position()
 
-    def home(self):
+    def home(self) -> None:
         self.piezo.home()
         self.piezo_displacement_um = self.piezo._home_position_um
         self.update_spinBox()
         self.update_slider()
 
-    def update_displacement_um_display(self, displacement=None):
+    def update_displacement_um_display(
+        self, displacement: Optional[float] = None
+    ) -> None:
         if displacement is None:
             displacement = self.piezo.position
         self.piezo_displacement_um = round(displacement, 2)
         self.update_spinBox()
         self.update_slider()
-
-

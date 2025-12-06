@@ -1,5 +1,6 @@
 from control.widgets.wellplate._common import *
 
+
 class SampleSettingsWidget(QFrame):
     def __init__(self, ObjectivesWidget, WellplateFormatWidget, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -17,7 +18,9 @@ class SampleSettingsWidget(QFrame):
 
         # Connect signals for saving settings
         self.objectivesWidget.signal_objective_changed.connect(self.save_settings)
-        self.wellplateFormatWidget.signalWellplateSettings.connect(lambda *args: self.save_settings())
+        self.wellplateFormatWidget.signalWellplateSettings.connect(
+            lambda *args: self.save_settings()
+        )
 
     def save_settings(self):
         """Save current objective and wellplate format to cache"""
@@ -29,11 +32,3 @@ class SampleSettingsWidget(QFrame):
 
         with open("cache/objective_and_sample_format.txt", "w") as f:
             json.dump(data, f)
-
-
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-from mpl_toolkits.mplot3d import proj3d
-from scipy.interpolate import griddata
-
-

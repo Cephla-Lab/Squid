@@ -1,12 +1,6 @@
 # Flexible multi-point acquisition widget
-import os
-import json
-import re
 import math
 import time
-import logging
-import yaml
-from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
 import numpy as np
@@ -30,38 +24,25 @@ from qtpy.QtWidgets import (
     QComboBox,
     QPushButton,
     QCheckBox,
-    QRadioButton,
-    QButtonGroup,
     QFileDialog,
     QMessageBox,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
-    QHeaderView,
     QAbstractItemView,
-    QGroupBox,
-    QScrollArea,
-    QWidget,
-    QDialog,
     QListWidget,
-    QListWidgetItem,
-    QApplication,
     QProgressBar,
     QSpacerItem,
     QShortcut,
 )
-from qtpy.QtGui import QIcon, QColor, QBrush, QKeySequence
+from qtpy.QtGui import QIcon, QKeySequence
 
 from control._def import *
-import control.utils as utils
 from control.widgets.base import error_dialog, check_space_available_with_error_dialog
-from control.widgets.wellplate import WellSelectionWidget
 from squid.abc import AbstractStage
 
 
 class FlexibleMultiPointWidget(QFrame):
-
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
     signal_acquisition_shape = Signal(int, float)  # Nz, dz
@@ -117,11 +98,15 @@ class FlexibleMultiPointWidget(QFrame):
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
-        self.lineEdit_experimentID.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.lineEdit_experimentID.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
         self.lineEdit_experimentID.setFixedWidth(96)
 
         self.dropdown_location_list = QComboBox()
-        self.dropdown_location_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.dropdown_location_list.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
         self.btn_add = QPushButton("Add")
         self.btn_remove = QPushButton("Remove")
         self.btn_previous = QPushButton("Previous")
@@ -246,7 +231,9 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_Nt.setFixedWidth(max_num_width)
 
         self.list_configurations = QListWidget()
-        for microscope_configuration in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for (
+            microscope_configuration
+        ) in self.channelConfigurationManager.get_channel_configurations_for_objective(
             self.objectiveStore.current_objective
         ):
             self.list_configurations.addItems([microscope_configuration.name])
@@ -255,12 +242,20 @@ class FlexibleMultiPointWidget(QFrame):
         )  # ref: https://doc.qt.io/qt-5/qabstractitemview.html#SelectionMode-enum
 
         self.checkbox_withAutofocus = QCheckBox("Contrast AF")
-        self.checkbox_withAutofocus.setChecked(MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT)
-        self.multipointController.set_af_flag(MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT)
+        self.checkbox_withAutofocus.setChecked(
+            MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT
+        )
+        self.multipointController.set_af_flag(
+            MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT
+        )
 
         self.checkbox_withReflectionAutofocus = QCheckBox("Reflection AF")
-        self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
-        self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
+        self.checkbox_withReflectionAutofocus.setChecked(
+            MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
+        )
+        self.multipointController.set_reflection_af_flag(
+            MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
+        )
 
         self.checkbox_genAFMap = QCheckBox("Generate Focus Map")
         self.checkbox_genAFMap.setChecked(False)
@@ -280,10 +275,16 @@ class FlexibleMultiPointWidget(QFrame):
         # Add new components for Z-range
         self.entry_minZ = QDoubleSpinBox()
         self.entry_minZ.setKeyboardTracking(False)
-        self.entry_minZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_minZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
+        self.entry_minZ.setMinimum(
+            SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000
+        )  # Convert to μm
+        self.entry_minZ.setMaximum(
+            SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
+        )  # Convert to μm
         self.entry_minZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_minZ.setValue(self._stage_service.get_position().z_mm * 1000)  # Set to current position
+        self.entry_minZ.setValue(
+            self._stage_service.get_position().z_mm * 1000
+        )  # Set to current position
         self.entry_minZ.setSuffix(" μm")
         # self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.set_minZ_button = QPushButton("Set")
@@ -291,17 +292,25 @@ class FlexibleMultiPointWidget(QFrame):
 
         self.entry_maxZ = QDoubleSpinBox()
         self.entry_maxZ.setKeyboardTracking(False)
-        self.entry_maxZ.setMinimum(SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000)  # Convert to μm
-        self.entry_maxZ.setMaximum(SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000)  # Convert to μm
+        self.entry_maxZ.setMinimum(
+            SOFTWARE_POS_LIMIT.Z_NEGATIVE * 1000
+        )  # Convert to μm
+        self.entry_maxZ.setMaximum(
+            SOFTWARE_POS_LIMIT.Z_POSITIVE * 1000
+        )  # Convert to μm
         self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
-        self.entry_maxZ.setValue(self._stage_service.get_position().z_mm * 1000)  # Set to current position
+        self.entry_maxZ.setValue(
+            self._stage_service.get_position().z_mm * 1000
+        )  # Set to current position
         self.entry_maxZ.setSuffix(" μm")
         # self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.set_maxZ_button = QPushButton("Set")
         self.set_maxZ_button.clicked.connect(self.set_z_max)
 
         self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
+        self.combobox_z_stack.addItems(
+            ["From Bottom (Z-min)", "From Center", "From Top (Z-max)"]
+        )
 
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
@@ -335,8 +344,12 @@ class FlexibleMultiPointWidget(QFrame):
         temp3 = QHBoxLayout()
         temp3.addWidget(QLabel("Location List"))
         temp3.addWidget(self.dropdown_location_list)
-        self.grid_location_list_line1.addLayout(temp3, 0, 0, 1, 6)  # Span across all columns except the last
-        self.grid_location_list_line1.addWidget(self.btn_update_z, 0, 6, 1, 2)  # Align with other buttons
+        self.grid_location_list_line1.addLayout(
+            temp3, 0, 0, 1, 6
+        )  # Span across all columns except the last
+        self.grid_location_list_line1.addWidget(
+            self.btn_update_z, 0, 6, 1, 2
+        )  # Align with other buttons
 
         self.grid_location_list_line2 = QGridLayout()
         # Make all buttons span 2 columns for consistent width
@@ -348,11 +361,15 @@ class FlexibleMultiPointWidget(QFrame):
         self.grid_location_list_line3 = QGridLayout()
         self.grid_location_list_line3.addWidget(self.btn_import_locations, 2, 0, 1, 3)
         self.grid_location_list_line3.addWidget(self.btn_export_locations, 2, 3, 1, 3)
-        self.grid_location_list_line3.addWidget(self.btn_show_table_location_list, 2, 6, 1, 2)
+        self.grid_location_list_line3.addWidget(
+            self.btn_show_table_location_list, 2, 6, 1, 2
+        )
 
         # Create spacer items
         EDGE_SPACING = 4  # Adjust this value as needed
-        edge_spacer = QSpacerItem(EDGE_SPACING, 0, QSizePolicy.Fixed, QSizePolicy.Minimum)
+        edge_spacer = QSpacerItem(
+            EDGE_SPACING, 0, QSizePolicy.Fixed, QSizePolicy.Minimum
+        )
 
         # Create first row layouts
         if self.use_overlap:
@@ -426,8 +443,12 @@ class FlexibleMultiPointWidget(QFrame):
         self.z_max_layout.addWidget(QLabel("Z-max"), Qt.AlignRight)
         self.z_max_layout.addWidget(self.entry_maxZ)
 
-        self.grid_acquisition.addLayout(self.z_min_layout, 5, 0, 1, 4)  # hide this in toggle
-        self.grid_acquisition.addLayout(self.z_max_layout, 5, 4, 1, 4)  # hide this in toggle
+        self.grid_acquisition.addLayout(
+            self.z_min_layout, 5, 0, 1, 4
+        )  # hide this in toggle
+        self.grid_acquisition.addLayout(
+            self.z_max_layout, 5, 4, 1, 4
+        )  # hide this in toggle
 
         grid_af = QVBoxLayout()
         grid_af.addWidget(self.checkbox_withAutofocus)
@@ -474,7 +495,9 @@ class FlexibleMultiPointWidget(QFrame):
         self.grid_acquisition.setRowStretch(0, 0)  # Nx/Ny and overlap row
         self.grid_acquisition.setRowStretch(1, 0)  # dz/Nz and dt/Nt row
         self.grid_acquisition.setRowStretch(2, 0)  # Z-range row
-        self.grid_acquisition.setRowStretch(3, 1)  # Configuration/AF row - allow this to stretch
+        self.grid_acquisition.setRowStretch(
+            3, 1
+        )  # Configuration/AF row - allow this to stretch
         self.grid_acquisition.setRowStretch(4, 0)  # Last row
 
         # Row : Progress Bar
@@ -503,19 +526,33 @@ class FlexibleMultiPointWidget(QFrame):
         self.entry_NY.valueChanged.connect(self.multipointController.set_NY)
         self.entry_NZ.valueChanged.connect(self.multipointController.set_NZ)
         self.entry_Nt.valueChanged.connect(self.multipointController.set_Nt)
-        self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
+        self.checkbox_genAFMap.toggled.connect(
+            self.multipointController.set_gen_focus_map_flag
+        )
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
-        self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
-        self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
+        self.checkbox_withAutofocus.toggled.connect(
+            self.multipointController.set_af_flag
+        )
+        self.checkbox_withReflectionAutofocus.toggled.connect(
+            self.multipointController.set_reflection_af_flag
+        )
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
-        self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
-        self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
+        self.multipointController.acquisition_finished.connect(
+            self.acquisition_is_finished
+        )
+        self.list_configurations.itemSelectionChanged.connect(
+            self.emit_selected_channels
+        )
         # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
-        self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
-        self.multipointController.signal_region_progress.connect(self.update_region_progress)
+        self.multipointController.signal_acquisition_progress.connect(
+            self.update_acquisition_progress
+        )
+        self.multipointController.signal_region_progress.connect(
+            self.update_region_progress
+        )
         self.signal_acquisition_started.connect(self.display_progress_bar)
         self.eta_timer.timeout.connect(self.update_eta_display)
 
@@ -579,7 +616,7 @@ class FlexibleMultiPointWidget(QFrame):
                 self.entry_minZ.valueChanged.disconnect(self.update_Nz)
                 self.entry_maxZ.valueChanged.disconnect(self.update_Nz)
                 self.entry_deltaZ.valueChanged.disconnect(self.update_Nz)
-            except:
+            except Exception:
                 pass
             # When Z-range is not specified, set Z-min and Z-max to current Z position
             current_z = self._stage_service.get_position().z_mm * 1000
@@ -637,7 +674,9 @@ class FlexibleMultiPointWidget(QFrame):
             self.checkbox_withReflectionAutofocus.isChecked()
             and not self.multipointController.laserAutoFocusController.set_reference()
         ):
-            error_dialog("Failed to set reference for reflection autofocus. Is the laser autofocus initialized?")
+            error_dialog(
+                "Failed to set reference for reflection autofocus. Is the laser autofocus initialized?"
+            )
 
     def update_z(self):
         z_mm = self._stage_service.get_position().z_mm
@@ -646,9 +685,11 @@ class FlexibleMultiPointWidget(QFrame):
         self.scanCoordinates.region_centers[self.location_ids[index]][2] = z_mm
         self.scanCoordinates.region_fov_coordinates[self.location_ids[index]] = [
             (coord[0], coord[1], z_mm)
-            for coord in self.scanCoordinates.region_fov_coordinates[self.location_ids[index]]
+            for coord in self.scanCoordinates.region_fov_coordinates[
+                self.location_ids[index]
+            ]
         ]
-        location_str = f"x:{round(self.location_list[index,0],3)} mm  y:{round(self.location_list[index,1],3)} mm  z:{round(z_mm * 1000.0,3)} μm"
+        location_str = f"x:{round(self.location_list[index, 0], 3)} mm  y:{round(self.location_list[index, 1], 3)} mm  z:{round(z_mm * 1000.0, 3)} μm"
         self.dropdown_location_list.setItemText(index, location_str)
 
     def update_Nz(self):
@@ -680,14 +721,19 @@ class FlexibleMultiPointWidget(QFrame):
             # Calculate ETA
             fov_per_second = processed_fovs / elapsed_time
             self.eta_seconds = (
-                remaining_fovs / fov_per_second + (Nt - 1 - self.current_time_point) * dt if fov_per_second > 0 else 0
+                remaining_fovs / fov_per_second
+                + (Nt - 1 - self.current_time_point) * dt
+                if fov_per_second > 0
+                else 0
             )
             self.update_eta_display()
 
             # Start or restart the timer
             self.eta_timer.start(1000)  # Update every 1000 ms (1 second)
 
-    def update_acquisition_progress(self, current_region, num_regions, current_time_point):
+    def update_acquisition_progress(
+        self, current_region, num_regions, current_time_point
+    ):
         self._log.debug(
             f"updating acquisition progress for {current_region=}, {num_regions=}, {current_time_point=}..."
         )
@@ -701,7 +747,9 @@ class FlexibleMultiPointWidget(QFrame):
         progress_parts = []
         # Update timepoint progress if there are multiple timepoints and the timepoint has changed
         if self.entry_Nt.value() > 1:
-            progress_parts.append(f"Time {current_time_point + 1}/{self.entry_Nt.value()}")
+            progress_parts.append(
+                f"Time {current_time_point + 1}/{self.entry_Nt.value()}"
+            )
 
         # Update region progress if there are multiple regions
         if num_regions > 1:
@@ -774,7 +822,9 @@ class FlexibleMultiPointWidget(QFrame):
         if self.checkbox_usePiezo.isChecked():
             deltaZ = value
         else:
-            mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
+            mm_per_ustep = (
+                1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
+            )
             deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
         self.entry_deltaZ.setValue(deltaZ)
         self.multipointController.set_deltaZ(deltaZ)
@@ -787,12 +837,14 @@ class FlexibleMultiPointWidget(QFrame):
         self.base_path_is_set = True
 
     def emit_selected_channels(self):
-        selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
+        selected_channels = [
+            item.text() for item in self.list_configurations.selectedItems()
+        ]
         self.signal_acquisition_channels.emit(selected_channels)
 
     def toggle_acquisition(self, pressed):
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
-        if self.base_path_is_set == False:
+        if not self.base_path_is_set:
             self.btn_startAcquisition.setChecked(False)
             error_dialog("Please choose base saving directory first")
             return
@@ -802,7 +854,9 @@ class FlexibleMultiPointWidget(QFrame):
             return
         if pressed:
             if self.multipointController.acquisition_in_progress():
-                self._log.warning("Acquisition in progress or aborting, cannot start another yet.")
+                self._log.warning(
+                    "Acquisition in progress or aborting, cannot start another yet."
+                )
                 self.btn_startAcquisition.setChecked(False)
                 return
 
@@ -834,29 +888,43 @@ class FlexibleMultiPointWidget(QFrame):
             self.multipointController.set_deltat(self.entry_dt.value())
             self.multipointController.set_Nt(self.entry_Nt.value())
             self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
-            self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
-            self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+            self.multipointController.set_af_flag(
+                self.checkbox_withAutofocus.isChecked()
+            )
+            self.multipointController.set_reflection_af_flag(
+                self.checkbox_withReflectionAutofocus.isChecked()
+            )
             self.multipointController.set_base_path(self.lineEdit_savingDir.text())
             self.multipointController.set_use_fluidics(False)
             self.multipointController.set_selected_configurations(
                 (item.text() for item in self.list_configurations.selectedItems())
             )
-            self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
+            self.multipointController.start_new_experiment(
+                self.lineEdit_experimentID.text()
+            )
 
-            if not check_space_available_with_error_dialog(self.multipointController, self._log):
-                self._log.error("Failed to start acquisition.  Not enough disk space available.")
+            if not check_space_available_with_error_dialog(
+                self.multipointController, self._log
+            ):
+                self._log.error(
+                    "Failed to start acquisition.  Not enough disk space available."
+                )
                 self.btn_startAcquisition.setChecked(False)
                 return
 
             # @@@ to do: add a widgetManger to enable and disable widget
             # @@@ to do: emit signal to widgetManager to disable other widgets
-            self.is_current_acquisition_widget = True  # keep track of what widget started the acquisition
+            self.is_current_acquisition_widget = (
+                True  # keep track of what widget started the acquisition
+            )
             self.btn_startAcquisition.setText("Stop\n Acquisition ")
             self.setEnabled_all(False)
 
             # emit signals
             self.signal_acquisition_started.emit(True)
-            self.signal_acquisition_shape.emit(self.entry_NZ.value(), self.entry_deltaZ.value())
+            self.signal_acquisition_shape.emit(
+                self.entry_NZ.value(), self.entry_deltaZ.value()
+            )
 
             # Start coordinate-based acquisition
             self.multipointController.run_acquisition()
@@ -876,22 +944,36 @@ class FlexibleMultiPointWidget(QFrame):
             name = row_ind[0]
             if not np.any(np.all(self.location_list[:, :2] == [x, y], axis=1)):
                 location_str = (
-                    "x:" + str(round(x, 3)) + "mm  y:" + str(round(y, 3)) + "mm  z:" + str(round(1000 * z, 1)) + "μm"
+                    "x:"
+                    + str(round(x, 3))
+                    + "mm  y:"
+                    + str(round(y, 3))
+                    + "mm  z:"
+                    + str(round(1000 * z, 1))
+                    + "μm"
                 )
                 self.dropdown_location_list.addItem(location_str)
                 self.location_list = np.vstack((self.location_list, [[x, y, z]]))
                 self.location_ids = np.append(self.location_ids, name)
                 self.table_location_list.insertRow(self.table_location_list.rowCount())
                 self.table_location_list.setItem(
-                    self.table_location_list.rowCount() - 1, 0, QTableWidgetItem(str(round(x, 3)))
+                    self.table_location_list.rowCount() - 1,
+                    0,
+                    QTableWidgetItem(str(round(x, 3))),
                 )
                 self.table_location_list.setItem(
-                    self.table_location_list.rowCount() - 1, 1, QTableWidgetItem(str(round(y, 3)))
+                    self.table_location_list.rowCount() - 1,
+                    1,
+                    QTableWidgetItem(str(round(y, 3))),
                 )
                 self.table_location_list.setItem(
-                    self.table_location_list.rowCount() - 1, 2, QTableWidgetItem(str(round(z * 1000, 1)))
+                    self.table_location_list.rowCount() - 1,
+                    2,
+                    QTableWidgetItem(str(round(z * 1000, 1))),
                 )
-                self.table_location_list.setItem(self.table_location_list.rowCount() - 1, 3, QTableWidgetItem(name))
+                self.table_location_list.setItem(
+                    self.table_location_list.rowCount() - 1, 3, QTableWidgetItem(name)
+                )
                 index = self.dropdown_location_list.count() - 1
                 self.dropdown_location_list.setCurrentIndex(index)
                 print(self.location_list)
@@ -908,7 +990,9 @@ class FlexibleMultiPointWidget(QFrame):
         region_id = f"R{len(self.location_ids)}"
 
         # Check for duplicates using rounded values for comparison
-        if not np.any(np.all(self.location_list[:, :2] == [round(x, 3), round(y, 3)], axis=1)):
+        if not np.any(
+            np.all(self.location_list[:, :2] == [round(x, 3), round(y, 3)], axis=1)
+        ):
             # Block signals to prevent triggering cell_was_changed
             self.table_location_list.blockSignals(True)
             self.dropdown_location_list.blockSignals(True)
@@ -918,13 +1002,17 @@ class FlexibleMultiPointWidget(QFrame):
             self.location_ids = np.append(self.location_ids, region_id)
 
             # Update both UI elements at the same time
-            location_str = f"x:{round(x,3)} mm  y:{round(y,3)} mm  z:{round(z*1000,1)} μm"
+            location_str = (
+                f"x:{round(x, 3)} mm  y:{round(y, 3)} mm  z:{round(z * 1000, 1)} μm"
+            )
             self.dropdown_location_list.addItem(location_str)
             row = self.table_location_list.rowCount()
             self.table_location_list.insertRow(row)
             self.table_location_list.setItem(row, 0, QTableWidgetItem(str(round(x, 3))))
             self.table_location_list.setItem(row, 1, QTableWidgetItem(str(round(y, 3))))
-            self.table_location_list.setItem(row, 2, QTableWidgetItem(str(round(z * 1000, 1))))
+            self.table_location_list.setItem(
+                row, 2, QTableWidgetItem(str(round(z * 1000, 1)))
+            )
             self.table_location_list.setItem(row, 3, QTableWidgetItem(region_id))
 
             # Store actual values in region coordinates
@@ -1011,7 +1099,10 @@ class FlexibleMultiPointWidget(QFrame):
                 self.navigationViewer.clear_overlay()
 
             print(f"Remaining location IDs: {self.location_ids}")
-            for region_id, fov_coords in self.scanCoordinates.region_fov_coordinates.items():
+            for (
+                region_id,
+                fov_coords,
+            ) in self.scanCoordinates.region_fov_coordinates.items():
                 self.navigationViewer.register_fovs_to_image(fov_coords)
 
             # Re-enable signals
@@ -1024,7 +1115,9 @@ class FlexibleMultiPointWidget(QFrame):
         # index = min(index + 1, max_index)
         num_regions = self.dropdown_location_list.count()
         if num_regions <= 0:
-            self._log.error("Cannot move to next location, because there are no locations in the list")
+            self._log.error(
+                "Cannot move to next location, because there are no locations in the list"
+            )
             return
 
         index = (index + 1) % num_regions
@@ -1061,16 +1154,19 @@ class FlexibleMultiPointWidget(QFrame):
 
     def go_to(self, index):
         if index != -1:
-            if index < len(self.location_list):  # to avoid giving errors when adding new points
+            if index < len(
+                self.location_list
+            ):  # to avoid giving errors when adding new points
                 x = self.location_list[index, 0]
                 y = self.location_list[index, 1]
                 z = self.location_list[index, 2]
                 self._move_stage_to(x, y, z)
                 self.table_location_list.selectRow(index)
 
-    def _move_stage_to(self, x: float, y: float, z: float):
+    def _move_stage_to(self, x: float, y: float, z: float) -> None:
         """Move stage to position."""
-        self._stage_service.move_to(x_mm=x, y_mm=y, z_mm=z)
+        if self._stage_service is not None:
+            self._stage_service.move_to(x_mm=x, y_mm=y, z_mm=z)
 
     def cell_was_clicked(self, row, column):
         self.dropdown_location_list.setCurrentIndex(row)
@@ -1081,7 +1177,9 @@ class FlexibleMultiPointWidget(QFrame):
 
         # Clear all FOVs for this region
         if region_id in self.scanCoordinates.region_fov_coordinates.keys():
-            self.navigationViewer.deregister_fovs_from_image(self.scanCoordinates.region_fov_coordinates[region_id])
+            self.navigationViewer.deregister_fovs_from_image(
+                self.scanCoordinates.region_fov_coordinates[region_id]
+            )
 
         # Handle the changed value
         val_edit = self.table_location_list.item(row, column).text()
@@ -1122,14 +1220,16 @@ class FlexibleMultiPointWidget(QFrame):
             self.location_ids[row] = new_id
             # Update dictionary keys
             if region_id in self.scanCoordinates.region_centers:
-                self.scanCoordinates.region_centers[new_id] = self.scanCoordinates.region_centers.pop(region_id)
+                self.scanCoordinates.region_centers[new_id] = (
+                    self.scanCoordinates.region_centers.pop(region_id)
+                )
             if region_id in self.scanCoordinates.region_fov_coordinates:
-                self.scanCoordinates.region_fov_coordinates[new_id] = self.scanCoordinates.region_fov_coordinates.pop(
-                    region_id
+                self.scanCoordinates.region_fov_coordinates[new_id] = (
+                    self.scanCoordinates.region_fov_coordinates.pop(region_id)
                 )
 
         # Update UI
-        location_str = f"x:{round(self.location_list[row,0],3)} mm  y:{round(self.location_list[row,1],3)} mm  z:{round(1000*self.location_list[row,2],3)} μm"
+        location_str = f"x:{round(self.location_list[row, 0], 3)} mm  y:{round(self.location_list[row, 1], 3)} mm  z:{round(1000 * self.location_list[row, 2], 3)} μm"
         self.dropdown_location_list.setItemText(row, location_str)
         self.go_to(row)
 
@@ -1155,15 +1255,21 @@ class FlexibleMultiPointWidget(QFrame):
         )
         self.dropdown_location_list.setItemText(index, location_str)
         if self.table_location_list.rowCount() > index:
-            self.table_location_list.setItem(index, 2, QTableWidgetItem(str(round(1000 * z_mm, 1))))
+            self.table_location_list.setItem(
+                index, 2, QTableWidgetItem(str(round(1000 * z_mm, 1)))
+            )
 
         self.table_location_list.blockSignals(False)
         self.dropdown_location_list.blockSignals(False)
 
     def export_location_list(self):
-        file_path, _ = QFileDialog.getSaveFileName(self, "Export Location List", "", "CSV Files (*.csv);;All Files (*)")
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Location List", "", "CSV Files (*.csv);;All Files (*)"
+        )
         if file_path:
-            location_list_df = pd.DataFrame(self.location_list, columns=["x (mm)", "y (mm)", "z (mm)"])
+            location_list_df = pd.DataFrame(
+                self.location_list, columns=["x (mm)", "y (mm)", "z (mm)"]
+            )
             location_list_df["ID"] = self.location_ids
             location_list_df["i"] = 0
             location_list_df["j"] = 0
@@ -1171,12 +1277,16 @@ class FlexibleMultiPointWidget(QFrame):
             location_list_df.to_csv(file_path, index=False, header=True)
 
     def import_location_list(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Import Location List", "", "CSV Files (*.csv);;All Files (*)")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Import Location List", "", "CSV Files (*.csv);;All Files (*)"
+        )
         if file_path:
             location_list_df = pd.read_csv(file_path)
             location_list_df_relevant = None
             try:
-                location_list_df_relevant = location_list_df[["x (mm)", "y (mm)", "z (mm)"]]
+                location_list_df_relevant = location_list_df[
+                    ["x (mm)", "y (mm)", "z (mm)"]
+                ]
             except KeyError:
                 self._log.error("Improperly formatted location list being imported")
                 return
@@ -1208,18 +1318,28 @@ class FlexibleMultiPointWidget(QFrame):
                     self.dropdown_location_list.setCurrentIndex(index)
                     self.location_list = np.vstack((self.location_list, [[x, y, z]]))
                     self.location_ids = np.append(self.location_ids, region_id)
-                    self.table_location_list.insertRow(self.table_location_list.rowCount())
-                    self.table_location_list.setItem(
-                        self.table_location_list.rowCount() - 1, 0, QTableWidgetItem(str(round(x, 3)))
+                    self.table_location_list.insertRow(
+                        self.table_location_list.rowCount()
                     )
                     self.table_location_list.setItem(
-                        self.table_location_list.rowCount() - 1, 1, QTableWidgetItem(str(round(y, 3)))
+                        self.table_location_list.rowCount() - 1,
+                        0,
+                        QTableWidgetItem(str(round(x, 3))),
                     )
                     self.table_location_list.setItem(
-                        self.table_location_list.rowCount() - 1, 2, QTableWidgetItem(str(round(1000 * z, 1)))
+                        self.table_location_list.rowCount() - 1,
+                        1,
+                        QTableWidgetItem(str(round(y, 3))),
                     )
                     self.table_location_list.setItem(
-                        self.table_location_list.rowCount() - 1, 3, QTableWidgetItem(region_id)
+                        self.table_location_list.rowCount() - 1,
+                        2,
+                        QTableWidgetItem(str(round(1000 * z, 1))),
+                    )
+                    self.table_location_list.setItem(
+                        self.table_location_list.rowCount() - 1,
+                        3,
+                        QTableWidgetItem(region_id),
                     )
                     if self.use_overlap:
                         self.scanCoordinates.add_flexible_region(
@@ -1250,7 +1370,9 @@ class FlexibleMultiPointWidget(QFrame):
 
     def on_snap_images(self):
         if not self.list_configurations.selectedItems():
-            QMessageBox.warning(self, "Warning", "Please select at least one imaging channel")
+            QMessageBox.warning(
+                self, "Warning", "Please select at least one imaging channel"
+            )
             return
 
         # Set the selected channels for acquisition
@@ -1271,7 +1393,9 @@ class FlexibleMultiPointWidget(QFrame):
         self.multipointController.set_z_range(z, z)
 
         # Start the acquisition process for the single FOV
-        self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
+        self.multipointController.start_new_experiment(
+            "snapped images" + self.lineEdit_experimentID.text()
+        )
         self.multipointController.run_acquisition(acquire_current_fov=True)
 
     def acquisition_is_finished(self):

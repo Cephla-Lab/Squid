@@ -11,7 +11,9 @@ class LaserAFSettingManager:
     """Manages JSON-based laser autofocus configurations."""
 
     def __init__(self):
-        self.autofocus_configurations: Dict[str, LaserAFConfig] = {}  # Dict[str, Dict[str, Any]]
+        self.autofocus_configurations: Dict[
+            str, LaserAFConfig
+        ] = {}  # Dict[str, Dict[str, Any]]
         self.current_profile_path: Optional[Path] = None
 
     def set_profile_path(self, profile_path: Path) -> None:
@@ -39,7 +41,9 @@ class LaserAFSettingManager:
             objective_path.mkdir(parents=True)
         config_file = objective_path / "laser_af_settings.json"
 
-        config_dict = self.autofocus_configurations[objective].model_dump(serialize=True)
+        config_dict = self.autofocus_configurations[objective].model_dump(
+            serialize=True
+        )
         with open(config_file, "w") as f:
             json.dump(config_dict, f, indent=4)
 
@@ -52,7 +56,10 @@ class LaserAFSettingManager:
         return self.autofocus_configurations
 
     def update_laser_af_settings(
-        self, objective: str, updates: Dict[str, Any], crop_image: Optional[np.ndarray] = None
+        self,
+        objective: str,
+        updates: Dict[str, Any],
+        crop_image: Optional[np.ndarray] = None,
     ) -> None:
         if objective not in self.autofocus_configurations:
             self.autofocus_configurations[objective] = LaserAFConfig(**updates)

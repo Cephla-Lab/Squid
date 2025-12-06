@@ -19,7 +19,7 @@ class FilterControllerWidget(QFrame):
         liveController: LiveController,
         main=None,
         *args,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.filterController: AbstractFilterWheelController = filterController
@@ -33,7 +33,7 @@ class FilterControllerWidget(QFrame):
         try:
             wheel_info = self.filterController.get_filter_wheel_info(self.wheel_index)
             num_positions = wheel_info.number_of_slots
-        except:
+        except Exception:
             # Fallback to 7 positions if we can't get info
             num_positions = 7
 
@@ -41,7 +41,9 @@ class FilterControllerWidget(QFrame):
         for i in range(1, num_positions + 1):
             self.comboBox.addItem(f"Position {i}")
 
-        self.checkBox = QCheckBox("Disable filter wheel movement on changing Microscope Configuration", self)
+        self.checkBox = QCheckBox(
+            "Disable filter wheel movement on changing Microscope Configuration", self
+        )
 
         # Create buttons
         self.get_position_btn = QPushButton("Get Position")
@@ -58,7 +60,13 @@ class FilterControllerWidget(QFrame):
         layout.addWidget(self.next_btn, 3, 1)
         layout.addWidget(self.previous_btn, 3, 2)
         layout.addWidget(
-            QLabel("For acquisition, filter wheel positions need to be set in channel configurations."), 4, 0, 1, 3
+            QLabel(
+                "For acquisition, filter wheel positions need to be set in channel configurations."
+            ),
+            4,
+            0,
+            1,
+            3,
         )
 
         self.setLayout(layout)
@@ -78,10 +86,14 @@ class FilterControllerWidget(QFrame):
     def update_position_from_controller(self):
         """Poll the current position from the controller and update the dropdown."""
         try:
-            current_pos = self.filterController.get_filter_wheel_position().get(self.wheel_index, 1)
+            current_pos = self.filterController.get_filter_wheel_position().get(
+                self.wheel_index, 1
+            )
             # Block signals temporarily to avoid triggering position change
             self.comboBox.blockSignals(True)
-            self.comboBox.setCurrentIndex(current_pos - 1)  # Convert 1-indexed to 0-indexed
+            self.comboBox.setCurrentIndex(
+                current_pos - 1
+            )  # Convert 1-indexed to 0-indexed
             self.comboBox.blockSignals(False)
             print(f"Filter wheel position updated: {current_pos}")
         except Exception as e:
@@ -91,18 +103,24 @@ class FilterControllerWidget(QFrame):
         """Handle position selection from combo box."""
         if index >= 0:
             position = index + 1  # Combo box is 0-indexed, positions are 1-indexed
-            self.filterController.set_filter_wheel_position({self.wheel_index: position})
+            self.filterController.set_filter_wheel_position(
+                {self.wheel_index: position}
+            )
 
     def go_to_next_position(self):
         """Move to the next position."""
         try:
-            current_pos = self.filterController.get_filter_wheel_position().get(self.wheel_index, 1)
+            current_pos = self.filterController.get_filter_wheel_position().get(
+                self.wheel_index, 1
+            )
             wheel_info = self.filterController.get_filter_wheel_info(self.wheel_index)
             max_pos = wheel_info.number_of_slots
 
             if current_pos < max_pos:
                 new_pos = current_pos + 1
-                self.filterController.set_filter_wheel_position({self.wheel_index: new_pos})
+                self.filterController.set_filter_wheel_position(
+                    {self.wheel_index: new_pos}
+                )
                 self.comboBox.setCurrentIndex(new_pos - 1)  # Update combo box
         except Exception as e:
             print(f"Error moving to next position: {e}")
@@ -110,11 +128,15 @@ class FilterControllerWidget(QFrame):
     def go_to_previous_position(self):
         """Move to the previous position."""
         try:
-            current_pos = self.filterController.get_filter_wheel_position().get(self.wheel_index, 1)
+            current_pos = self.filterController.get_filter_wheel_position().get(
+                self.wheel_index, 1
+            )
 
             if current_pos > 1:
                 new_pos = current_pos - 1
-                self.filterController.set_filter_wheel_position({self.wheel_index: new_pos})
+                self.filterController.set_filter_wheel_position(
+                    {self.wheel_index: new_pos}
+                )
                 self.comboBox.setCurrentIndex(new_pos - 1)  # Update combo box
         except Exception as e:
             print(f"Error moving to previous position: {e}")

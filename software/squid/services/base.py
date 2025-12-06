@@ -1,12 +1,13 @@
 # squid/services/base.py
 """Base class for all services."""
+
 from abc import ABC
 from typing import List, Tuple, Type, Callable, TypeVar
 
 import squid.logging
 from squid.events import EventBus, Event
 
-E = TypeVar('E', bound=Event)
+E = TypeVar("E", bound=Event)
 
 
 class BaseService(ABC):

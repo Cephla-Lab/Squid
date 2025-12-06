@@ -1,16 +1,38 @@
 from control.widgets.tracking._common import *
+from qtpy.QtWidgets import QListWidget, QAbstractItemView
+from qtpy.QtGui import QIcon
+from qtpy.QtCore import QMetaObject
+from control.widgets.hardware.objectives import ObjectivesWidget
+
 
 class TrackingControllerWidget(QFrame):
+    trackingController: TrackingController
+    objectiveStore: ObjectiveStore
+    channelConfigurationManager: ChannelConfigurationManager
+    base_path_is_set: bool
+    btn_setSavingDir: QPushButton
+    lineEdit_savingDir: QLineEdit
+    lineEdit_experimentID: QLineEdit
+    objectivesWidget: ObjectivesWidget
+    dropdown_objective: QComboBox
+    dropdown_tracker: QComboBox
+    entry_tracking_interval: QDoubleSpinBox
+    list_configurations: QListWidget
+    checkbox_withAutofocus: QCheckBox
+    checkbox_saveImages: QCheckBox
+    btn_track: QPushButton
+    checkbox_enable_stage_tracking: QCheckBox
+    grid: QVBoxLayout
+
     def __init__(
         self,
         trackingController: TrackingController,
-        objectiveStore,
-        channelConfigurationManager,
-        show_configurations=True,
-        main=None,
-        *args,
-        **kwargs,
-    ):
+        objectiveStore: ObjectiveStore,
+        channelConfigurationManager: ChannelConfigurationManager,
+        show_configurations: bool = True,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.trackingController = trackingController
         self.objectiveStore = objectiveStore
@@ -23,7 +45,7 @@ class TrackingControllerWidget(QFrame):
             lambda button_pressed: self.handle_button_state(button_pressed)
         )
 
-    def add_components(self, show_configurations):
+    def add_components(self, show_configurations: bool) -> None:
         self.btn_setSavingDir = QPushButton("Browse")
         self.btn_setSavingDir.setDefault(False)
         self.btn_setSavingDir.setIcon(QIcon("assets/icon/folder.png"))
@@ -53,7 +75,9 @@ class TrackingControllerWidget(QFrame):
         self.entry_tracking_interval.setValue(0)
 
         self.list_configurations = QListWidget()
-        for microscope_configuration in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for (
+            microscope_configuration
+        ) in self.channelConfigurationManager.get_channel_configurations_for_objective(
             self.objectiveStore.current_objective
         ):
             self.list_configurations.addItems([microscope_configuration.name])
@@ -120,60 +144,81 @@ class TrackingControllerWidget(QFrame):
         self.setLayout(self.grid)
 
         # connections - buttons, checkboxes, entries
-        self.checkbox_enable_stage_tracking.stateChanged.connect(self.trackingController.toggle_stage_tracking)
-        self.checkbox_withAutofocus.stateChanged.connect(self.trackingController.toggel_enable_af)
-        self.checkbox_saveImages.stateChanged.connect(self.trackingController.toggel_save_images)
-        self.entry_tracking_interval.valueChanged.connect(self.trackingController.set_tracking_time_interval)
+        self.checkbox_enable_stage_tracking.stateChanged.connect(
+            self.trackingController.toggle_stage_tracking
+        )
+        self.checkbox_withAutofocus.stateChanged.connect(
+            self.trackingController.toggel_enable_af
+        )
+        self.checkbox_saveImages.stateChanged.connect(
+            self.trackingController.toggel_save_images
+        )
+        self.entry_tracking_interval.valueChanged.connect(
+            self.trackingController.set_tracking_time_interval
+        )
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_track.clicked.connect(self.toggle_acquisition)
         # connections - selections and entries
         self.dropdown_tracker.currentIndexChanged.connect(self.update_tracker)
         # self.dropdown_objective.currentIndexChanged.connect(self.update_pixel_size)
-        self.objectivesWidget.dropdown.currentIndexChanged.connect(self.update_pixel_size)
+        self.objectivesWidget.dropdown.currentIndexChanged.connect(
+            self.update_pixel_size
+        )
         # controller to widget
-        self.trackingController.signal_tracking_stopped.connect(self.slot_tracking_stopped)
+        self.trackingController.signal_tracking_stopped.connect(
+            self.slot_tracking_stopped
+        )
 
         # run initialization functions
         self.update_pixel_size()
-        self.trackingController.update_image_resizing_factor(1)  # to add: image resizing slider
+        self.trackingController.update_image_resizing_factor(
+            1
+        )  # to add: image resizing slider
 
     # TODO(imo): This needs testing!
-    def handle_button_pressed(self, button_state):
-        QMetaObject.invokeMethod(self, "slot_joystick_button_pressed", Qt.AutoConnection, button_state)
+    def handle_button_pressed(self, button_state: bool) -> None:
+        QMetaObject.invokeMethod(
+            self,
+            "slot_joystick_button_pressed",
+            Qt.ConnectionType.AutoConnection,
+            button_state,
+        )  # type: ignore[call-overload]
 
-    def slot_joystick_button_pressed(self, button_state):
+    def slot_joystick_button_pressed(self, button_state: bool) -> None:
         self.btn_track.setChecked(button_state)
         if self.btn_track.isChecked():
-            if self.base_path_is_set == False:
+            if not self.base_path_is_set:
                 self.btn_track.setChecked(False)
                 msg = QMessageBox()
                 msg.setText("Please choose base saving directory first")
                 msg.exec_()
                 return
             self.setEnabled_all(False)
-            self.trackingController.start_new_experiment(self.lineEdit_experimentID.text())
+            self.trackingController.start_new_experiment(
+                self.lineEdit_experimentID.text()
+            )
             self.trackingController.set_selected_configurations(
-                (item.text() for item in self.list_configurations.selectedItems())
+                list(item.text() for item in self.list_configurations.selectedItems())
             )
             self.trackingController.start_tracking()
         else:
             self.trackingController.stop_tracking()
 
-    def slot_tracking_stopped(self):
+    def slot_tracking_stopped(self) -> None:
         self.btn_track.setChecked(False)
         self.setEnabled_all(True)
         print("tracking stopped")
 
-    def set_saving_dir(self):
+    def set_saving_dir(self) -> None:
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
         self.trackingController.set_base_path(save_dir_base)
         self.lineEdit_savingDir.setText(save_dir_base)
         self.base_path_is_set = True
 
-    def toggle_acquisition(self, pressed):
+    def toggle_acquisition(self, pressed: bool) -> None:
         if pressed:
-            if self.base_path_is_set == False:
+            if not self.base_path_is_set:
                 self.btn_track.setChecked(False)
                 msg = QMessageBox()
                 msg.setText("Please choose base saving directory first")
@@ -182,15 +227,17 @@ class TrackingControllerWidget(QFrame):
             # @@@ to do: add a widgetManger to enable and disable widget
             # @@@ to do: emit signal to widgetManager to disable other widgets
             self.setEnabled_all(False)
-            self.trackingController.start_new_experiment(self.lineEdit_experimentID.text())
+            self.trackingController.start_new_experiment(
+                self.lineEdit_experimentID.text()
+            )
             self.trackingController.set_selected_configurations(
-                (item.text() for item in self.list_configurations.selectedItems())
+                list(item.text() for item in self.list_configurations.selectedItems())
             )
             self.trackingController.start_tracking()
         else:
             self.trackingController.stop_tracking()
 
-    def setEnabled_all(self, enabled):
+    def setEnabled_all(self, enabled: bool) -> None:
         self.btn_setSavingDir.setEnabled(enabled)
         self.lineEdit_savingDir.setEnabled(enabled)
         self.lineEdit_experimentID.setEnabled(enabled)
@@ -198,21 +245,12 @@ class TrackingControllerWidget(QFrame):
         # self.dropdown_objective
         self.list_configurations.setEnabled(enabled)
 
-    def update_tracker(self, index):
-        self.trackingController.update_tracker_selection(self.dropdown_tracker.currentText())
-
-    def update_pixel_size(self):
-        objective = self.dropdown_objective.currentText()
-        self.trackingController.objective = objective
-        # self.internal_state.data['Objective'] = self.objective
-        # TODO: these pixel size code needs to be updated.
-        pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR] / (
-            TUBE_LENS_MM / (OBJECTIVES[objective]["tube_lens_f_mm"] / OBJECTIVES[objective]["magnification"])
+    def update_tracker(self, index: int) -> None:
+        self.trackingController.update_tracker_selection(
+            self.dropdown_tracker.currentText()
         )
-        self.trackingController.update_pixel_size(pixel_size_um)
-        print("pixel size is " + str(pixel_size_um) + " μm")
 
-    def update_pixel_size(self):
+    def update_pixel_size(self) -> None:
         objective = self.objectiveStore.current_objective
         self.trackingController.objective = objective
         objective_info = self.objectiveStore.objectives_dict[objective]
@@ -221,8 +259,8 @@ class TrackingControllerWidget(QFrame):
         tube_lens_mm = TUBE_LENS_MM
         # TODO: these pixel size code needs to be updated.
         pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
-        pixel_size_xy = pixel_size_um / (magnification / (objective_tube_lens_mm / tube_lens_mm))
+        pixel_size_xy = pixel_size_um / (
+            magnification / (objective_tube_lens_mm / tube_lens_mm)
+        )
         self.trackingController.update_pixel_size(pixel_size_xy)
         print(f"pixel size is {pixel_size_xy:.2f} μm")
-
-

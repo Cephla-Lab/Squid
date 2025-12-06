@@ -1,28 +1,27 @@
 from control.widgets.camera._common import *
 
-class LiveControlWidget(QFrame):
 
-    signal_newExposureTime = Signal(float)
-    signal_newAnalogGain = Signal(float)
-    signal_autoLevelSetting = Signal(bool)
-    signal_live_configuration = Signal(object)
-    signal_start_live = Signal()
+class LiveControlWidget(QFrame):
+    signal_newExposureTime: Signal = Signal(float)
+    signal_newAnalogGain: Signal = Signal(float)
+    signal_autoLevelSetting: Signal = Signal(bool)
+    signal_live_configuration: Signal = Signal(object)
+    signal_start_live: Signal = Signal()
 
     def __init__(
         self,
-        streamHandler,
-        liveController,
-        objectiveStore,
-        channelConfigurationManager,
-        show_trigger_options=True,
-        show_display_options=False,
-        show_autolevel=False,
-        autolevel=False,
-        stretch=True,
-        main=None,
-        *args,
-        **kwargs,
-    ):
+        streamHandler: StreamHandler,
+        liveController: LiveController,
+        objectiveStore: ObjectiveStore,
+        channelConfigurationManager: ChannelConfigurationManager,
+        show_trigger_options: bool = True,
+        show_display_options: bool = False,
+        show_autolevel: bool = False,
+        autolevel: bool = False,
+        stretch: bool = True,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.liveController = liveController
@@ -35,22 +34,41 @@ class LiveControlWidget(QFrame):
         self.liveController.set_trigger_fps(self.fps_trigger)
         self.streamHandler.set_display_fps(self.fps_display)
 
-        self.currentConfiguration = self.channelConfigurationManager.get_channel_configurations_for_objective(
-            self.objectiveStore.current_objective
-        )[0]
+        self.currentConfiguration = (
+            self.channelConfigurationManager.get_channel_configurations_for_objective(
+                self.objectiveStore.current_objective
+            )[0]
+        )
 
-        self.add_components(show_trigger_options, show_display_options, show_autolevel, autolevel, stretch)
+        self.add_components(
+            show_trigger_options,
+            show_display_options,
+            show_autolevel,
+            autolevel,
+            stretch,
+        )
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.liveController.set_microscope_mode(self.currentConfiguration)
         self.update_ui_for_mode(self.currentConfiguration)
 
         self.is_switching_mode = False  # flag used to prevent from settings being set by twice - from both mode change slot and value change slot; another way is to use blockSignals(True)
 
-    def add_components(self, show_trigger_options, show_display_options, show_autolevel, autolevel, stretch):
+    def add_components(
+        self,
+        show_trigger_options: bool,
+        show_display_options: bool,
+        show_autolevel: bool,
+        autolevel: bool,
+        stretch: bool,
+    ) -> None:
         # line 0: trigger mode
         self.dropdown_triggerManu = QComboBox()
-        self.dropdown_triggerManu.addItems([TriggerMode.SOFTWARE, TriggerMode.HARDWARE, TriggerMode.CONTINUOUS])
-        self.dropdown_triggerManu.setCurrentText(self.camera.get_acquisition_mode().value)
+        self.dropdown_triggerManu.addItems(
+            [TriggerMode.SOFTWARE, TriggerMode.HARDWARE, TriggerMode.CONTINUOUS]
+        )
+        self.dropdown_triggerManu.setCurrentText(
+            self.camera.get_acquisition_mode().value
+        )
         sizePolicy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.dropdown_triggerManu.setSizePolicy(sizePolicy)
 
@@ -71,7 +89,9 @@ class LiveControlWidget(QFrame):
 
         # line 2: choose microscope mode / channel
         self.dropdown_modeSelection = QComboBox()
-        for mode in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for (
+            mode
+        ) in self.channelConfigurationManager.get_channel_configurations_for_objective(
             self.objectiveStore.current_objective
         ):
             self.dropdown_modeSelection.addItem(mode.name)
@@ -94,11 +114,13 @@ class LiveControlWidget(QFrame):
             self.entry_analogGain.setSingleStep(gain_range.gain_step)
             self.entry_analogGain.setValue(self.currentConfiguration.analog_gain)
         except NotImplementedError:
-            self._log.info("Camera does not support analog gain, disabling analog gain control.")
+            self._log.info(
+                "Camera does not support analog gain, disabling analog gain control."
+            )
             self.entry_analogGain.setValue(0)
             self.entry_analogGain.setEnabled(False)
 
-        self.slider_illuminationIntensity = QSlider(Qt.Horizontal)
+        self.slider_illuminationIntensity = QSlider(Qt.Orientation.Horizontal)
         self.slider_illuminationIntensity.setTickPosition(QSlider.TicksBelow)
         self.slider_illuminationIntensity.setMinimum(0)
         self.slider_illuminationIntensity.setMaximum(100)
@@ -170,23 +192,29 @@ class LiveControlWidget(QFrame):
         self.setLayout(self.grid)
 
         # connections
-        self.dropdown_triggerManu.currentTextChanged.connect(self.liveController.set_trigger_mode)
+        self.dropdown_triggerManu.currentTextChanged.connect(
+            self.liveController.set_trigger_mode
+        )
         self.entry_triggerFPS.valueChanged.connect(self.liveController.set_trigger_fps)
         self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
-        self.dropdown_modeSelection.currentTextChanged.connect(self.update_configuration)
+        self.dropdown_modeSelection.currentTextChanged.connect(
+            self.update_configuration
+        )
         self.entry_exposureTime.valueChanged.connect(self.update_camera_exposure_time)
         self.entry_analogGain.valueChanged.connect(self.update_camera_analog_gain)
         self.slider_illuminationIntensity.valueChanged.connect(
             lambda x: self.entry_illuminationIntensity.setValue(x)
         )
-        self.slider_illuminationIntensity.valueChanged.connect(self.update_illumination_intensity)
+        self.slider_illuminationIntensity.valueChanged.connect(
+            self.update_illumination_intensity
+        )
         self.entry_illuminationIntensity.valueChanged.connect(
             lambda x: self.slider_illuminationIntensity.setValue(int(x))
         )
         self.btn_autolevel.toggled.connect(self.signal_autoLevelSetting.emit)
         self.btn_live.clicked.connect(self.toggle_live)
 
-    def toggle_live(self, pressed):
+    def toggle_live(self, pressed: bool) -> None:
         if pressed:
             self.signal_live_configuration.emit(self.currentConfiguration)
             self.signal_start_live.emit()
@@ -195,20 +223,24 @@ class LiveControlWidget(QFrame):
             self.liveController.stop_live()
             self.btn_live.setText("Start Live")
 
-    def update_configuration(self, conf_name):
+    def update_configuration(self, conf_name: str) -> None:
         self.is_switching_mode = True
         # identify the mode selected (note that mode id is 1 indexed)
-        self.currentConfiguration = self.channelConfigurationManager.get_channel_configuration_by_name(
-            self.objectiveStore.current_objective, conf_name
+        self.currentConfiguration = (
+            self.channelConfigurationManager.get_channel_configuration_by_name(
+                self.objectiveStore.current_objective, conf_name
+            )
         )
 
-        self._log.info(f"Mode changed to {self.currentConfiguration.name} ({self.currentConfiguration.illumination_source})")
+        self._log.info(
+            f"Mode changed to {self.currentConfiguration.name} ({self.currentConfiguration.illumination_source})"
+        )
         self.update_ui_for_mode(self.currentConfiguration)
         self.signal_live_configuration.emit(self.currentConfiguration)
         self.liveController.set_microscope_mode(self.currentConfiguration)
         self.is_switching_mode = False
 
-    def update_ui_for_mode(self, configuration):
+    def update_ui_for_mode(self, configuration: "ChannelMode") -> None:
         self.entry_exposureTime.blockSignals(True)
         self.entry_exposureTime.setValue(configuration.exposure_time)
         self.entry_exposureTime.blockSignals(False)
@@ -218,42 +250,46 @@ class LiveControlWidget(QFrame):
         self.entry_analogGain.blockSignals(False)
 
         self.slider_illuminationIntensity.blockSignals(True)
-        self.slider_illuminationIntensity.setValue(int(configuration.illumination_intensity))
+        self.slider_illuminationIntensity.setValue(
+            int(configuration.illumination_intensity)
+        )
         self.slider_illuminationIntensity.blockSignals(False)
 
         self.entry_illuminationIntensity.blockSignals(True)
         self.entry_illuminationIntensity.setValue(configuration.illumination_intensity)
         self.entry_illuminationIntensity.blockSignals(False)
 
-    def update_camera_exposure_time(self, exposure_time):
+    def update_camera_exposure_time(self, exposure_time: float) -> None:
         if not self.is_switching_mode:
             self.currentConfiguration.exposure_time = exposure_time
             self.liveController.set_microscope_mode(self.currentConfiguration)
 
-    def update_camera_analog_gain(self, analog_gain):
+    def update_camera_analog_gain(self, analog_gain: float) -> None:
         if not self.is_switching_mode:
             self.currentConfiguration.analog_gain = analog_gain
             self.liveController.set_microscope_mode(self.currentConfiguration)
 
-    def update_illumination_intensity(self, intensity):
+    def update_illumination_intensity(self, intensity: float) -> None:
         if not self.is_switching_mode:
             self.currentConfiguration.illumination_intensity = intensity
             self.liveController.set_microscope_mode(self.currentConfiguration)
 
-    def set_live_configuration(self, configuration):
+    def set_live_configuration(self, configuration: Optional["ChannelMode"]) -> None:
         if configuration is None:
             return
         self.dropdown_modeSelection.setCurrentText(configuration.name)
 
-    def set_trigger_mode(self, trigger_mode):
+    def set_trigger_mode(self, trigger_mode: str) -> None:
         self.dropdown_triggerManu.setCurrentText(trigger_mode)
         self.liveController.set_trigger_mode(self.dropdown_triggerManu.currentText())
 
-    def refresh_mode_list(self):
+    def refresh_mode_list(self) -> None:
         """Refresh the mode dropdown when profile changes."""
         current_text = self.dropdown_modeSelection.currentText()
         self.dropdown_modeSelection.clear()
-        for mode in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for (
+            mode
+        ) in self.channelConfigurationManager.get_channel_configurations_for_objective(
             self.objectiveStore.current_objective
         ):
             self.dropdown_modeSelection.addItem(mode.name)
@@ -264,7 +300,7 @@ class LiveControlWidget(QFrame):
         elif self.dropdown_modeSelection.count() > 0:
             self.dropdown_modeSelection.setCurrentIndex(0)
 
-    def update_camera_settings(self):
+    def update_camera_settings(self) -> None:
         """Update UI to reflect current camera settings."""
         self.entry_exposureTime.blockSignals(True)
         self.entry_exposureTime.setValue(self.camera.get_exposure_time())
@@ -276,5 +312,3 @@ class LiveControlWidget(QFrame):
         except NotImplementedError:
             pass
         self.entry_analogGain.blockSignals(False)
-
-

@@ -1,31 +1,20 @@
 # Fluidics control widgets
-import os
-import time
-from datetime import datetime
 
-import numpy as np
-import pandas as pd
 
 import squid.logging
-from qtpy.QtCore import Signal, Qt, QTimer
+from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QGridLayout,
     QLabel,
     QLineEdit,
-    QDoubleSpinBox,
-    QSpinBox,
     QComboBox,
     QPushButton,
-    QCheckBox,
     QTextEdit,
     QTableView,
-    QHeaderView,
     QFileDialog,
     QMessageBox,
-    QSizePolicy,
     QGroupBox,
 )
 
@@ -34,11 +23,10 @@ from control.widgets.base import PandasTableModel
 
 
 class FluidicsWidget(QWidget):
-
     log_message_signal = Signal(str)
     fluidics_initialized_signal = Signal()
 
-    def __init__(self, fluidics, parent=None):
+    def __init__(self, fluidics: Fluidics, parent=None) -> None:
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
@@ -51,7 +39,7 @@ class FluidicsWidget(QWidget):
         self.setup_ui()
         self.log_message_signal.connect(self.log_status)
 
-    def setup_ui(self):
+    def setup_ui(self) -> None:
         # Main layout
         main_layout = QHBoxLayout()
         self.setLayout(main_layout)
@@ -80,7 +68,9 @@ class FluidicsWidget(QWidget):
         prime_row.addWidget(QLabel("Fill Tubing With"))
         self.prime_fill_combo = QComboBox()
         self.prime_fill_combo.addItems(self.fluidics.available_port_names)
-        self.prime_fill_combo.setCurrentIndex(25 - 1)  # Usually Port 25 should be the common wash buffer port
+        self.prime_fill_combo.setCurrentIndex(
+            25 - 1
+        )  # Usually Port 25 should be the common wash buffer port
         prime_row.addWidget(self.prime_fill_combo)
         prime_row.addWidget(QLabel("Volume (µL)"))
         self.txt_prime_volume = QLineEdit()
@@ -172,7 +162,9 @@ class FluidicsWidget(QWidget):
 
         # Emergency Stop button
         self.btn_emergency_stop = QPushButton("Emergency Stop")
-        self.btn_emergency_stop.setStyleSheet("background-color: red; color: white; font-weight: bold;")
+        self.btn_emergency_stop.setStyleSheet(
+            "background-color: red; color: white; font-weight: bold;"
+        )
         sequences_layout.addWidget(self.btn_emergency_stop)
 
         sequences_group.setLayout(sequences_layout)
@@ -193,7 +185,7 @@ class FluidicsWidget(QWidget):
         self.enable_controls(False)
         self.btn_emergency_stop.setEnabled(False)
 
-    def initialize_fluidics(self):
+    def initialize_fluidics(self) -> None:
         """Initialize the fluidics system"""
         self.log_status("Initializing fluidics system...")
         self.fluidics.initialize()
@@ -202,7 +194,7 @@ class FluidicsWidget(QWidget):
         self.btn_emergency_stop.setEnabled(True)
         self.fluidics_initialized_signal.emit()
 
-    def set_sequence_callbacks(self):
+    def set_sequence_callbacks(self) -> None:
         callbacks = {
             "on_finished": self.on_finish,
             "on_error": self.on_finish,
@@ -211,7 +203,7 @@ class FluidicsWidget(QWidget):
         }
         self.fluidics.worker_callbacks = callbacks
 
-    def set_manual_control_callbacks(self):
+    def set_manual_control_callbacks(self) -> None:
         # TODO: use better logging description
         callbacks = {
             "on_finished": lambda: self.on_finish("Operation completed"),
@@ -221,7 +213,7 @@ class FluidicsWidget(QWidget):
         }
         self.fluidics.worker_callbacks = callbacks
 
-    def load_sequences(self):
+    def load_sequences(self) -> None:
         """Open file dialog to load sequences from CSV"""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load Fluidics Sequences", "", "CSV Files (*.csv);;All Files (*)"
@@ -232,7 +224,9 @@ class FluidicsWidget(QWidget):
             try:
                 self.sequence_df = self.fluidics.load_sequences(file_path)
                 self.sequence_df.drop("include", axis=1, inplace=True)
-                model = PandasTableModel(self.sequence_df, self.fluidics.available_port_names)
+                model = PandasTableModel(
+                    self.sequence_df, self.fluidics.available_port_names
+                )
                 self.sequences_table.setModel(model)
                 self.sequences_table.resizeColumnsToContents()
                 self.sequences_table.horizontalHeader().setStretchLastSection(True)
@@ -240,7 +234,7 @@ class FluidicsWidget(QWidget):
             except Exception as e:
                 self.log_status(f"Error loading sequences: {str(e)}")
 
-    def start_prime(self):
+    def start_prime(self) -> None:
         self.set_manual_control_callbacks()
         ports = self.get_port_list(self.txt_prime_ports.text())
         fill_port = self.prime_fill_combo.currentIndex() + 1
@@ -249,12 +243,14 @@ class FluidicsWidget(QWidget):
         if not ports or not fill_port or not volume:
             return
 
-        self.log_status(f"Starting prime: Ports {ports}, Fill with {fill_port}, Volume {volume}µL")
+        self.log_status(
+            f"Starting prime: Ports {ports}, Fill with {fill_port}, Volume {volume}µL"
+        )
         self.fluidics.priming(ports, fill_port, volume)
         self.enable_controls(False)
         self.set_sequence_callbacks()
 
-    def start_cleanup(self):
+    def start_cleanup(self) -> None:
         self.set_manual_control_callbacks()
         ports = self.get_port_list(self.txt_cleanup_ports.text())
         fill_port = self.cleanup_fill_combo.currentIndex() + 1
@@ -264,12 +260,14 @@ class FluidicsWidget(QWidget):
         if not ports or not fill_port or not volume or not repeat:
             return
 
-        self.log_status(f"Starting cleanup: Ports {ports}, Fill with {fill_port}, Volume {volume}µL, Repeat {repeat}x")
+        self.log_status(
+            f"Starting cleanup: Ports {ports}, Fill with {fill_port}, Volume {volume}µL, Repeat {repeat}x"
+        )
         self.fluidics.clean_up(ports, fill_port, volume, repeat)
         self.enable_controls(False)
         self.set_sequence_callbacks()
 
-    def start_manual_flow(self):
+    def start_manual_flow(self) -> None:
         self.set_manual_control_callbacks()
         port = self.manual_port_combo.currentIndex() + 1
         flow_rate = int(self.txt_manual_flow_rate.text())
@@ -278,19 +276,21 @@ class FluidicsWidget(QWidget):
         if not port or not flow_rate or not volume:
             return
 
-        self.log_status(f"Flow reagent: Port {port}, Flow rate {flow_rate}µL/min, Volume {volume}µL")
+        self.log_status(
+            f"Flow reagent: Port {port}, Flow rate {flow_rate}µL/min, Volume {volume}µL"
+        )
         self.fluidics.manual_flow(port, flow_rate, volume)
         self.enable_controls(False)
         self.set_sequence_callbacks()
 
-    def empty_syringe_pump(self):
+    def empty_syringe_pump(self) -> None:
         self.log_status("Empty syringe pump to waste")
         self.enable_controls(False)
         self.fluidics.empty_syringe_pump()
         self.log_status("Operation completed")
         self.enable_controls(True)
 
-    def emergency_stop(self):
+    def emergency_stop(self) -> None:
         self.fluidics.emergency_stop()
 
     def get_port_list(self, text: str) -> list:
@@ -307,9 +307,11 @@ class FluidicsWidget(QWidget):
         try:
             ports_str = text.strip()
             if not ports_str:
-                return [i for i in range(1, len(self.fluidics.available_port_names) + 1)]
+                return [
+                    i for i in range(1, len(self.fluidics.available_port_names) + 1)
+                ]
 
-            port_list = []
+            port_list: list[int] = []
 
             # Split by comma and process each part
             for part in ports_str.split(","):
@@ -326,7 +328,9 @@ class FluidicsWidget(QWidget):
                     # Handle single number
                     num = int(part)
                     if num < 1 or num > 28:
-                        raise ValueError(f"Invalid number {num}: Must be between 1 and 28")
+                        raise ValueError(
+                            f"Invalid number {num}: Must be between 1 and 28"
+                        )
                     port_list.append(num)
 
             return port_list
@@ -334,26 +338,32 @@ class FluidicsWidget(QWidget):
         except ValueError as e:
             QMessageBox.warning(self, "Invalid Input", str(e))
             return []
-        except Exception as e:
-            QMessageBox.warning(self, "Invalid Input", "Please enter valid port numbers (e.g., '1-3,5,7-10')")
+        except Exception:
+            QMessageBox.warning(
+                self,
+                "Invalid Input",
+                "Please enter valid port numbers (e.g., '1-3,5,7-10')",
+            )
             return []
 
-    def update_progress(self, idx, seq_num, status):
+    def update_progress(self, idx: int, seq_num: int, status: str) -> None:
         self.sequences_table.model().set_current_row(idx)
-        self.log_message_signal.emit(f"Sequence {self.sequence_df.iloc[idx]['sequence_name']} {status}")
+        self.log_message_signal.emit(
+            f"Sequence {self.sequence_df.iloc[idx]['sequence_name']} {status}"
+        )
 
-    def on_finish(self, status=None):
+    def on_finish(self, status: str = None) -> None:
         self.enable_controls(True)
         try:
             self.sequences_table.model().set_current_row(-1)
-        except:
+        except Exception:
             pass
         if status is None:
             status = "Sequence section completed"
         self.fluidics.reset_abort()
         self.log_message_signal.emit(status)
 
-    def on_estimate(self, time, n):
+    def on_estimate(self, time: float, n: int) -> None:
         self.log_message_signal.emit(f"Estimated time: {time}s, Sequences: {n}")
 
     def enable_controls(self, enabled: bool):
@@ -363,7 +373,7 @@ class FluidicsWidget(QWidget):
         self.btn_manual_flow.setEnabled(enabled)
         self.btn_empty_syringe_pump.setEnabled(enabled)
 
-    def log_status(self, message):
+    def log_status(self, message: str) -> None:
         current_time = QDateTime.currentDateTime().toString("hh:mm:ss")
         self.status_text.append(f"[{current_time}] {message}")
         # Scroll to bottom
@@ -371,5 +381,3 @@ class FluidicsWidget(QWidget):
         scrollbar.setValue(scrollbar.maximum())
         # Also log to console
         self._log.info(message)
-
-

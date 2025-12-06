@@ -16,12 +16,13 @@ Usage:
         log.error(f"Operation failed: {result.error}")
         # Handle gracefully instead of crashing
 """
+
 from typing import Callable, TypeVar, Generic, Optional, Any
 from dataclasses import dataclass
 import traceback
 import squid.logging
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 _log = squid.logging.get_logger("squid.utils.safe_callback")
 
@@ -37,6 +38,7 @@ class CallbackResult(Generic[T]):
         error: Exception that was raised (None if success)
         stack_trace: Formatted stack trace (None if success)
     """
+
     success: bool
     value: Optional[T] = None
     error: Optional[Exception] = None
@@ -52,7 +54,7 @@ def safe_callback(
     callback: Callable[..., T],
     *args: Any,
     on_error: Optional[Callable[[Exception, str], None]] = None,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> CallbackResult[T]:
     """
     Execute a callback with error containment.
@@ -90,8 +92,4 @@ def safe_callback(
             except Exception as handler_error:
                 _log.error(f"Error handler also failed: {handler_error}")
 
-        return CallbackResult(
-            success=False,
-            error=e,
-            stack_trace=stack
-        )
+        return CallbackResult(success=False, error=e, stack_trace=stack)

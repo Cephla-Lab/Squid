@@ -7,7 +7,7 @@ from typing import Union
 import json
 import csv
 import squid.logging
-from enum import Enum, auto
+from enum import Enum
 
 log = squid.logging.get_logger(__name__)
 
@@ -299,7 +299,9 @@ class FocusMeasureOperator(Enum):
     TENENGRAD = "TENENGRAD"
 
     @staticmethod
-    def convert_to_enum(option: Union[str, "FocusMeasureOperator"]) -> "FocusMeasureOperator":
+    def convert_to_enum(
+        option: Union[str, "FocusMeasureOperator"],
+    ) -> "FocusMeasureOperator":
         """
         Attempts to convert the given string to a FocusMeasureOperator.  This ignores all letter cases.
         """
@@ -481,7 +483,9 @@ TRACKERS = ["csrt", "kcf", "mil", "tld", "medianflow", "mosse", "daSiamRPN"]
 DEFAULT_TRACKER = "csrt"
 
 ENABLE_TRACKING = False
-TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS = False  # set to true when doing multimodal acquisition
+TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS = (
+    False  # set to true when doing multimodal acquisition
+)
 
 
 class CAMERA_CONFIG:
@@ -573,7 +577,10 @@ ENABLE_RECORDING = False
 
 RESUME_LIVE_AFTER_ACQUISITION = True
 
-CAMERA_SN = {"ch 1": "SN1", "ch 2": "SN2"}  # for multiple cameras, to be overwritten in the configuration file
+CAMERA_SN = {
+    "ch 1": "SN1",
+    "ch 2": "SN2",
+}  # for multiple cameras, to be overwritten in the configuration file
 
 ENABLE_STROBE_OUTPUT = False
 
@@ -636,7 +643,9 @@ CLASSIFICATION_MODEL_PATH2 = "models/resnet18_en/version2/best.pt"
 CLASSIFICATION_TEST_MODE = False
 CLASSIFICATION_TH = 0.3
 
-SEGMENTATION_MODEL_PATH = "models/m2unet_model_flat_erode1_wdecay5_smallbatch/model_4000_11.pth"
+SEGMENTATION_MODEL_PATH = (
+    "models/m2unet_model_flat_erode1_wdecay5_smallbatch/model_4000_11.pth"
+)
 ENABLE_SEGMENTATION = True
 USE_TRT_SEGMENTATION = False
 SEGMENTATION_CROP = 1500
@@ -686,7 +695,17 @@ CELLX_MODULATION = "EXT Digital"
 NL5_USE_AOUT = False
 NL5_USE_DOUT = True
 NL5_TRIGGER_PIN = 2
-NL5_WAVENLENGTH_MAP = {405: 1, 470: 2, 488: 2, 545: 3, 555: 3, 561: 3, 637: 4, 638: 4, 640: 4}
+NL5_WAVENLENGTH_MAP = {
+    405: 1,
+    470: 2,
+    488: 2,
+    545: 3,
+    555: 3,
+    561: 3,
+    637: 4,
+    638: 4,
+    640: 4,
+}
 
 # Laser AF characterization mode
 LASER_AF_CHARACTERIZATION_MODE = False
@@ -709,7 +728,9 @@ SCIMICROSCOPY_LED_ARRAY_SN = None
 SCIMICROSCOPY_LED_ARRAY_DISTANCE = 50
 SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA = 0.8
 SCIMICROSCOPY_LED_ARRAY_DEFAULT_COLOR = [1, 1, 1]
-SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY = 0.03  # time to wait before trigger the camera (in seconds)
+SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY = (
+    0.03  # time to wait before trigger the camera (in seconds)
+)
 
 # Navigation Settings
 ENABLE_CLICK_TO_MOVE_BY_DEFAULT = True
@@ -910,10 +931,14 @@ config_files = glob.glob("." + "/" + "configuration*.ini")
 if config_files:
     if len(config_files) > 1:
         if CACHED_CONFIG_FILE_PATH in config_files:
-            log.info(f"defaulting to last cached config file at '{CACHED_CONFIG_FILE_PATH}'")
+            log.info(
+                f"defaulting to last cached config file at '{CACHED_CONFIG_FILE_PATH}'"
+            )
             config_files = [CACHED_CONFIG_FILE_PATH]
         else:
-            log.error("multiple machine configuration files found, the program will exit")
+            log.error(
+                "multiple machine configuration files found, the program will exit"
+            )
             sys.exit(1)
     log.info("load machine-specific configuration")
     # exec(open(config_files[0]).read())
@@ -935,7 +960,7 @@ if config_files:
         pop_items = None
         try:
             pop_items = cfp.items(classkeyupper)
-        except:
+        except Exception:
             continue
         if type(locals()[classkey]) is not type:
             continue
@@ -950,7 +975,9 @@ else:
     config_files = glob.glob("." + "/" + "configuration*.txt")
     if config_files:
         if len(config_files) > 1:
-            log.error("multiple machine configuration files found, the program will exit")
+            log.error(
+                "multiple machine configuration files found, the program will exit"
+            )
             sys.exit(1)
         log.info("load machine-specific configuration")
         exec(open(config_files[0]).read())
@@ -962,10 +989,16 @@ try:
     with open("cache/objective_and_sample_format.txt", "r") as f:
         cached_settings = json.load(f)
         DEFAULT_OBJECTIVE = (
-            cached_settings.get("objective") if cached_settings.get("objective") in OBJECTIVES else "20x"
+            cached_settings.get("objective")
+            if cached_settings.get("objective") in OBJECTIVES
+            else "20x"
         )
         WELLPLATE_FORMAT = str(cached_settings.get("wellplate_format"))
-        WELLPLATE_FORMAT = WELLPLATE_FORMAT + " well plate" if WELLPLATE_FORMAT.isdigit() else WELLPLATE_FORMAT
+        WELLPLATE_FORMAT = (
+            WELLPLATE_FORMAT + " well plate"
+            if WELLPLATE_FORMAT.isdigit()
+            else WELLPLATE_FORMAT
+        )
         if WELLPLATE_FORMAT not in WELLPLATE_FORMAT_SETTINGS:
             WELLPLATE_FORMAT = "96 well plate"
 except (FileNotFoundError, json.JSONDecodeError):
@@ -977,10 +1010,18 @@ NUMBER_OF_SKIP = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT][
 ]  # num rows/cols to skip on wellplate edge
 WELL_SIZE_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["well_size_mm"]
 WELL_SPACING_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["well_spacing_mm"]
-A1_X_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_x_mm"]  # measured stage position - to update
-A1_Y_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_mm"]  # measured stage position - to update
-A1_X_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_x_pixel"]  # coordinate on the png
-A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_pixel"]  # coordinate on the png
+A1_X_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT][
+    "a1_x_mm"
+]  # measured stage position - to update
+A1_Y_MM = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT][
+    "a1_y_mm"
+]  # measured stage position - to update
+A1_X_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT][
+    "a1_x_pixel"
+]  # coordinate on the png
+A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT][
+    "a1_y_pixel"
+]  # coordinate on the png
 
 ##########################################################
 ##### end of loading machine specific configurations #####

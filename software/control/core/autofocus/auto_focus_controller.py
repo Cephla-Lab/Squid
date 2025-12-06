@@ -71,8 +71,12 @@ class AutoFocusController:
             pos = self.stage.get_pos()
 
             # z here is in mm because that's how the navigation controller stores it
-            target_z = utils.interpolate_plane(*self.focus_map_coords[:3], (pos.x_mm, pos.y_mm))
-            self._log.info(f"Interpolated target z as {target_z} mm from focus map, moving there.")
+            target_z = utils.interpolate_plane(
+                *self.focus_map_coords[:3], (pos.x_mm, pos.y_mm)
+            )
+            self._log.info(
+                f"Interpolated target z as {target_z} mm from focus map, moving there."
+            )
             self.stage.move_z_to(target_z)
             self.autofocus_in_progress = False
             self._finished_fn()
@@ -109,7 +113,10 @@ class AutoFocusController:
 
         self._keep_running.set()
         self._autofocus_worker = AutofocusWorker(
-            self, self._on_autofocus_completed, self._image_to_display_fn, self._keep_running
+            self,
+            self._on_autofocus_completed,
+            self._image_to_display_fn,
+            self._keep_running,
         )
         self._focus_thread = Thread(target=self._autofocus_worker.run, daemon=True)
         self._focus_thread.start()
@@ -141,7 +148,9 @@ class AutoFocusController:
             self.use_focus_map = False
             return
         if len(self.focus_map_coords) < 3:
-            self._log.error("Not enough coordinates (less than 3) for focus map generation, disabling focus map.")
+            self._log.error(
+                "Not enough coordinates (less than 3) for focus map generation, disabling focus map."
+            )
             self.use_focus_map = False
             return
         x1, y1, _ = self.focus_map_coords[0]
@@ -150,7 +159,9 @@ class AutoFocusController:
 
         detT = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
         if detT == 0:
-            self._log.error("Your 3 x-y coordinates are linear, cannot use to interpolate, disabling focus map.")
+            self._log.error(
+                "Your 3 x-y coordinates are linear, cannot use to interpolate, disabling focus map."
+            )
             self.use_focus_map = False
             return
 
@@ -162,7 +173,12 @@ class AutoFocusController:
         self.focus_map_coords = []
         self.set_focus_map_use(False)
 
-    def gen_focus_map(self, coord1: Tuple[float, float], coord2: Tuple[float, float], coord3: Tuple[float, float]) -> None:
+    def gen_focus_map(
+        self,
+        coord1: Tuple[float, float],
+        coord2: Tuple[float, float],
+        coord3: Tuple[float, float],
+    ) -> None:
         """
         Navigate to 3 coordinates and get your focus-map coordinates
         by autofocusing there and saving the z-values.
@@ -179,7 +195,9 @@ class AutoFocusController:
         self.focus_map_coords = []
 
         for coord in [coord1, coord2, coord3]:
-            self._log.info(f"Navigating to coordinates ({coord[0]},{coord[1]}) to sample for focus map")
+            self._log.info(
+                f"Navigating to coordinates ({coord[0]},{coord[1]}) to sample for focus map"
+            )
             self.stage.move_x_to(coord[0])
             self.stage.move_y_to(coord[1])
 
@@ -188,7 +206,9 @@ class AutoFocusController:
             self.wait_till_autofocus_has_completed()
             pos = self.stage.get_pos()
 
-            self._log.info(f"Adding coordinates ({pos.x_mm},{pos.y_mm},{pos.z_mm}) to focus map")
+            self._log.info(
+                f"Adding coordinates ({pos.x_mm},{pos.y_mm},{pos.z_mm}) to focus map"
+            )
             self.focus_map_coords.append((pos.x_mm, pos.y_mm, pos.z_mm))
 
         self._log.info("Generated focus map.")

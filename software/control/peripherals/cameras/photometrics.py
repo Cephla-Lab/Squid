@@ -1,7 +1,6 @@
 from pyvcam import pvc
 from pyvcam.camera import Camera as PVCam
 from typing import Callable, Optional, Tuple, Sequence
-import numpy as np
 import threading
 import time
 
@@ -33,7 +32,9 @@ class PhotometricsCamera(AbstractCamera):
                 # Open by index (not commonly used for Photometrics)
                 cameras = list(PVCam.detect_camera())
                 if index >= len(cameras):
-                    raise CameraError(f"Camera index {index} out of range. Found {len(cameras)} cameras.")
+                    raise CameraError(
+                        f"Camera index {index} out of range. Found {len(cameras)} cameras."
+                    )
                 cam = cameras[index]
             else:
                 # Open first available camera
@@ -77,7 +78,9 @@ class PhotometricsCamera(AbstractCamera):
         # Camera configuration
         self._exposure_time_ms = 20  # set it to some default value
 
-        self._pixel_format = CameraPixelFormat.MONO16  # Initialize pixel format to 16bit (Dynamic Range Mode)
+        self._pixel_format = (
+            CameraPixelFormat.MONO16
+        )  # Initialize pixel format to 16bit (Dynamic Range Mode)
         # Initialize ROI values to full frame, or we may get None values if default ROI is not set
         self._crop_roi = (0, 0, 3200, 3200)
         self._configure_camera()
@@ -97,7 +100,9 @@ class PhotometricsCamera(AbstractCamera):
         self._camera.speed_table_index = 0
         self._camera.exp_out_mode = 3  # Rolling shutter mode
         try:
-            self.set_region_of_interest(*self._config.default_roi)  # 25mm FOV ROI: 240, 240, 2720, 2720
+            self.set_region_of_interest(
+                *self._config.default_roi
+            )  # 25mm FOV ROI: 240, 240, 2720, 2720
         except Exception as e:
             self._log.error(f"Failed to set crop ROI: {e}")
         self._log.info(f"Cropped area: {self._camera.shape(0)}")
@@ -150,9 +155,13 @@ class PhotometricsCamera(AbstractCamera):
                 return True
 
             elif self._read_thread is not None:
-                self._log.warning("Read thread already exists, but not marked as running. Still attempting start.")
+                self._log.warning(
+                    "Read thread already exists, but not marked as running. Still attempting start."
+                )
 
-            self._read_thread = threading.Thread(target=self._wait_for_frame, daemon=True)
+            self._read_thread = threading.Thread(
+                target=self._wait_for_frame, daemon=True
+            )
             self._read_thread_keep_running.set()
             self._read_thread.start()
 
@@ -197,7 +206,9 @@ class PhotometricsCamera(AbstractCamera):
 
                 with self._frame_lock:
                     camera_frame = CameraFrame(
-                        frame_id=self._current_frame.frame_id + 1 if self._current_frame else 1,
+                        frame_id=self._current_frame.frame_id + 1
+                        if self._current_frame
+                        else 1,
                         timestamp=time.time(),
                         frame=processed_frame,
                         frame_format=self.get_frame_format(),
@@ -314,7 +325,11 @@ class PhotometricsCamera(AbstractCamera):
         return self._pixel_format
 
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
-        return [CameraPixelFormat.MONO8, CameraPixelFormat.MONO12, CameraPixelFormat.MONO16]
+        return [
+            CameraPixelFormat.MONO8,
+            CameraPixelFormat.MONO12,
+            CameraPixelFormat.MONO16,
+        ]
 
     def set_binning(self, binning_factor_x: int, binning_factor_y: int):
         if binning_factor_x != 1 or binning_factor_y != 1:
@@ -345,19 +360,31 @@ class PhotometricsCamera(AbstractCamera):
         raise NotImplementedError("Analog gain is not supported by this camera.")
 
     def get_white_balance_gains(self) -> Tuple[float, float, float]:
-        raise NotImplementedError("White balance gains are not supported by this camera.")
+        raise NotImplementedError(
+            "White balance gains are not supported by this camera."
+        )
 
-    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
-        raise NotImplementedError("White balance gains are not supported by this camera.")
+    def set_white_balance_gains(
+        self, red_gain: float, green_gain: float, blue_gain: float
+    ):
+        raise NotImplementedError(
+            "White balance gains are not supported by this camera."
+        )
 
     def set_auto_white_balance_gains(self, on: bool):
-        raise NotImplementedError("Auto white balance gains are not supported by this camera.")
+        raise NotImplementedError(
+            "Auto white balance gains are not supported by this camera."
+        )
 
     def set_black_level(self, black_level: float):
-        raise NotImplementedError("Black level adjustment is not supported by this camera.")
+        raise NotImplementedError(
+            "Black level adjustment is not supported by this camera."
+        )
 
     def get_black_level(self) -> float:
-        raise NotImplementedError("Black level adjustment is not supported by this camera.")
+        raise NotImplementedError(
+            "Black level adjustment is not supported by this camera."
+        )
 
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
         with self._pause_streaming():
@@ -369,7 +396,9 @@ class PhotometricsCamera(AbstractCamera):
                 elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
                     self._camera.exp_mode = "Edge Trigger"
                 else:
-                    raise ValueError(f"Unsupported acquisition mode: {acquisition_mode}")
+                    raise ValueError(
+                        f"Unsupported acquisition mode: {acquisition_mode}"
+                    )
 
                 self._acquisition_mode = acquisition_mode
                 self._set_exposure_time_imp(self._exposure_time_ms)
@@ -388,11 +417,20 @@ class PhotometricsCamera(AbstractCamera):
     }
 
     def get_acquisition_mode(self) -> CameraAcquisitionMode:
-        if PhotometricsCamera._TRIGGER_CODE_MAPPING_KINETIX[self._camera.exp_mode] == "Internal Trigger":
+        if (
+            PhotometricsCamera._TRIGGER_CODE_MAPPING_KINETIX[self._camera.exp_mode]
+            == "Internal Trigger"
+        ):
             return CameraAcquisitionMode.CONTINUOUS
-        elif PhotometricsCamera._TRIGGER_CODE_MAPPING_KINETIX[self._camera.exp_mode] == "Software Trigger Edge":
+        elif (
+            PhotometricsCamera._TRIGGER_CODE_MAPPING_KINETIX[self._camera.exp_mode]
+            == "Software Trigger Edge"
+        ):
             return CameraAcquisitionMode.SOFTWARE_TRIGGER
-        elif PhotometricsCamera._TRIGGER_CODE_MAPPING_KINETIX[self._camera.exp_mode] == "Edge Trigger":
+        elif (
+            PhotometricsCamera._TRIGGER_CODE_MAPPING_KINETIX[self._camera.exp_mode]
+            == "Edge Trigger"
+        ):
             return CameraAcquisitionMode.HARDWARE_TRIGGER
         else:
             raise ValueError(
@@ -400,8 +438,13 @@ class PhotometricsCamera(AbstractCamera):
             )
 
     def send_trigger(self, illumination_time: Optional[float] = None):
-        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
-            raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
+        if (
+            self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER
+            and not self._hw_trigger_fn
+        ):
+            raise CameraError(
+                "In HARDWARE_TRIGGER mode, but no hw trigger function given."
+            )
 
         if not self.get_is_streaming():
             raise CameraError("Camera is not streaming, cannot send trigger.")
@@ -422,11 +465,15 @@ class PhotometricsCamera(AbstractCamera):
                 raise CameraError(f"Failed to send software trigger: {e}")
 
     def get_ready_for_trigger(self) -> bool:
-        if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
+        if time.time() - self._last_trigger_timestamp > 1.5 * (
+            (self.get_total_frame_time() + 4) / 1000.0
+        ):
             self._trigger_sent.clear()
         return not self._trigger_sent.is_set()
 
-    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+    def set_region_of_interest(
+        self, offset_x: int, offset_y: int, width: int, height: int
+    ):
         with self._pause_streaming():
             try:
                 self._camera.set_roi(offset_x, offset_y, width, height)
@@ -445,7 +492,9 @@ class PhotometricsCamera(AbstractCamera):
         with self._pause_streaming():
             try:
                 if temperature_deg_c < -15 or temperature_deg_c > 15:
-                    raise ValueError(f"Temperature must be between -15 and 15 C, got {temperature_deg_c} C")
+                    raise ValueError(
+                        f"Temperature must be between -15 and 15 C, got {temperature_deg_c} C"
+                    )
                 self._camera.temp_setpoint = int(temperature_deg_c)
             except Exception as e:
                 raise CameraError(f"Failed to set temperature: {e}")
@@ -459,7 +508,9 @@ class PhotometricsCamera(AbstractCamera):
                 raise CameraError(f"Failed to get temperature: {e}")
 
     def set_temperature_reading_callback(self, callback: Callable):
-        raise NotImplementedError("Temperature reading callback is not supported by this camera.")
+        raise NotImplementedError(
+            "Temperature reading callback is not supported by this camera."
+        )
 
     def _calculate_strobe_delay(self):
         """Calculate strobe delay based on pixel format and ROI."""

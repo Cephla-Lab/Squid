@@ -1,13 +1,13 @@
 """Module to control DCAM on the console.
-This imports dcamapi4 and implements functions and classes 
+This imports dcamapi4 and implements functions and classes
 Dcamapi and Dcam to make DCAM easier to use.
 Dcamapi initializes DCAM only.
-The declarations of classes and functions in this file 
+The declarations of classes and functions in this file
 are subject to change without notice.
 """
 
-__date__ = '2021-06-30'
-__copyright__ = 'Copyright (C) 2021-2024 Hamamatsu Photonics K.K.'
+__date__ = "2021-06-30"
+__copyright__ = "Copyright (C) 2021-2024 Hamamatsu Photonics K.K."
 
 from control.peripherals.cameras.dcamapi4 import *
 # DCAM-API v4 module
@@ -19,6 +19,7 @@ import numpy as np
 
 # ==== DCAMAPI helper functions ====
 
+
 def dcammisc_setupframe(hdcam, bufframe: DCAMBUF_FRAME):
     """Setup DCAMBUF_FRAME instance.
     Setup DCAMBUF_FRAME instance based on camera setting with hdcam.
@@ -26,7 +27,7 @@ def dcammisc_setupframe(hdcam, bufframe: DCAMBUF_FRAME):
     Args:
         hdcam (c_void_p): DCAM handle.
         bufframe (DCAMBUF_FRAME): Frame information.
-    
+
     Returns:
         DCAMERR: DCAMERR value.
     """
@@ -40,12 +41,12 @@ def dcammisc_setupframe(hdcam, bufframe: DCAMBUF_FRAME):
         err = dcamprop_getvalue(hdcam, idprop, byref(fValue))
         if not err.is_failed():
             bufframe.width = int(fValue.value)
-            
+
             idprop = DCAM_IDPROP.IMAGE_HEIGHT
             err = dcamprop_getvalue(hdcam, idprop, byref(fValue))
             if not err.is_failed():
                 bufframe.height = int(fValue.value)
-                
+
                 idprop = DCAM_IDPROP.FRAMEBUNDLE_MODE
                 err = dcamprop_getvalue(hdcam, idprop, byref(fValue))
                 if not err.is_failed() and int(fValue.value) == DCAMPROP.MODE.ON:
@@ -69,18 +70,18 @@ def dcammisc_alloc_ndarray(frame: DCAMBUF_FRAME, framebundlenum=1):
     Args:
         frame (DCAMBUF_FRAME): Frame information.
         framebundlenum (int): Frame Bundle number.
-    
+
     Returns:
         NumPy ndarray: NumPy ndarray buffer.
         bool: False if failed to allocate NumPy ndarray buffer.
     """
     height = frame.height * framebundlenum
-        
+
     if frame.type == DCAM_PIXELTYPE.MONO16:
-        return np.zeros((height, frame.width), dtype='uint16')
+        return np.zeros((height, frame.width), dtype="uint16")
 
     if frame.type == DCAM_PIXELTYPE.MONO8:
-        return np.zeros((height, frame.width), dtype='uint8')
+        return np.zeros((height, frame.width), dtype="uint8")
 
     return False
 
@@ -91,7 +92,9 @@ def dcammisc_alloc_ndarray(frame: DCAMBUF_FRAME, framebundlenum=1):
 class Dcamapi:
     # class instance
     __lasterr = DCAMERR.SUCCESS  # the last error from functions with dcamapi_ prefix.
-    __bInitialized = False  # Once Dcamapi.init() is called, then True.  Dcamapi.uninit() reset this.
+    __bInitialized = (
+        False  # Once Dcamapi.init() is called, then True.  Dcamapi.uninit() reset this.
+    )
     __devicecount = 0
 
     @classmethod
@@ -123,7 +126,9 @@ class Dcamapi:
             bool: True if initialize DCAM-API was succeeded. False if dcamapi_init() returned DCAMERR except SUCCESS. lasterr() returns the DCAMERR value.
         """
         if cls.__bInitialized:
-            return cls.__result(DCAMERR.ALREADYINITIALIZED)  # dcamapi_init() is called. New Error.
+            return cls.__result(
+                DCAMERR.ALREADYINITIALIZED
+            )  # dcamapi_init() is called. New Error.
 
         paraminit = DCAMAPI_INIT()
         err = dcamapi_init(byref(paraminit))
@@ -165,6 +170,7 @@ class Dcamapi:
 
         return cls.__devicecount
 
+
 # ==== Dcam class ====
 
 
@@ -177,7 +183,7 @@ class Dcam:
         self.__bufframe = DCAMBUF_FRAME()
 
     def __repr__(self):
-        return 'Dcam()'
+        return "Dcam()"
 
     def __result(self, errvalue):
         """Keep last error code.
@@ -219,7 +225,9 @@ class Dcam:
             bool: True if get DCAM handle was succeeded. False if dcamdev_open() returned DCAMERR except SUCCESS. lasterr() returns the DCAMERR value.
         """
         if self.is_opened():
-            return self.__result(DCAMERR.ALREADYOPENED)  # instance is already opened. New Error.
+            return self.__result(
+                DCAMERR.ALREADYOPENED
+            )  # instance is already opened. New Error.
 
         paramopen = DCAMDEV_OPEN()
         if index >= 0:
@@ -358,7 +366,9 @@ class Dcam:
 
         cDouble = c_double(fValue)
         cOption = c_int32(option)
-        ret = self.__result(dcamprop_setgetvalue(self.__hdcam, idprop, byref(cDouble), cOption))
+        ret = self.__result(
+            dcamprop_setgetvalue(self.__hdcam, idprop, byref(cDouble), cOption)
+        )
         if ret is False:
             return False
 
@@ -381,7 +391,9 @@ class Dcam:
 
         cDouble = c_double(fValue)
         cOption = c_int32(option)
-        ret = self.__result(dcamprop_queryvalue(self.__hdcam, idprop, byref(cDouble), cOption))
+        ret = self.__result(
+            dcamprop_queryvalue(self.__hdcam, idprop, byref(cDouble), cOption)
+        )
         if ret is False:
             return False
 
@@ -425,7 +437,9 @@ class Dcam:
             return self.__result(DCAMERR.INVALIDHANDLE)  # instance is not opened yet.
 
         textbuf = create_string_buffer(256)
-        ret = self.__result(dcamprop_getname(self.__hdcam, idprop, textbuf, sizeof(textbuf)))
+        ret = self.__result(
+            dcamprop_getname(self.__hdcam, idprop, textbuf, sizeof(textbuf))
+        )
         if ret is False:
             return False
 
@@ -505,18 +519,22 @@ class Dcam:
         """
         if not self.is_opened():
             return self.__result(DCAMERR.INVALIDHANDLE)  # instance is not opened yet.
-        
+
         framebundlenum = 1
 
         fValue = c_double()
-        err = dcamprop_getvalue(self.__hdcam, DCAM_IDPROP.FRAMEBUNDLE_MODE, byref(fValue))
+        err = dcamprop_getvalue(
+            self.__hdcam, DCAM_IDPROP.FRAMEBUNDLE_MODE, byref(fValue)
+        )
         if not err.is_failed() and int(fValue.value) == DCAMPROP.MODE.ON:
-            err = dcamprop_getvalue(self.__hdcam, DCAM_IDPROP.FRAMEBUNDLE_NUMBER, byref(fValue))
+            err = dcamprop_getvalue(
+                self.__hdcam, DCAM_IDPROP.FRAMEBUNDLE_NUMBER, byref(fValue)
+            )
             if not err.is_failed():
                 framebundlenum = int(fValue.value)
             else:
                 return False
-        
+
         npBuf = dcammisc_alloc_ndarray(self.__bufframe, framebundlenum)
         if npBuf is False:
             return self.__result(DCAMERR.INVALIDPIXELTYPE)
@@ -636,7 +654,9 @@ class Dcam:
             return self.__result(DCAMERR.INVALIDHANDLE)  # instance is not opened yet.
 
         paramtransferinfo = DCAMCAP_TRANSFERINFO()
-        ret = self.__result(dcamcap_transferinfo(self.__hdcam, byref(paramtransferinfo)))
+        ret = self.__result(
+            dcamcap_transferinfo(self.__hdcam, byref(paramtransferinfo))
+        )
         if ret is False:
             return False
 
@@ -658,7 +678,6 @@ class Dcam:
             return False
 
         return True
-
 
     # dcamwait functions
 
@@ -744,5 +763,3 @@ class Dcam:
         # ret is DCAMWAIT_CAPEVENT.FRAMEREADY
 
         return True
-
-

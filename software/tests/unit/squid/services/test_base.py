@@ -1,7 +1,5 @@
 # tests/squid/services/test_base.py
 """Tests for BaseService class."""
-import pytest
-from unittest.mock import Mock, MagicMock
 
 
 class TestBaseService:

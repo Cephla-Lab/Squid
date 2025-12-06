@@ -23,7 +23,6 @@ from squid.abc import AbstractCamera
 
 
 class PDAFController(QObject):
-
     # input: stream from camera 1, stream from camera 2
     # input: from internal_states shared variables
     # output: amount of defocus, which may be read by or emitted to focusTrackingController (that manages focus tracking on/off, PID coefficients)
@@ -56,7 +55,9 @@ class PDAFController(QObject):
         if self.locked:
             return
         self.image2 = np.copy(image)
-        self.image2 = np.fliplr(self.image2)  # can be flipud depending on camera orientation
+        self.image2 = np.fliplr(
+            self.image2
+        )  # can be flipud depending on camera orientation
         self.image2_received = True
         if self.image1_received:
             self.calculate_defocus()
@@ -99,7 +100,10 @@ class PDAFController(QObject):
         error: float
         phasediff: float
         shifts, error, phasediff = skimage.registration.phase_cross_correlation(
-            self.image1, self.image2, upsample_factor=self.registration_upsample_factor, space="real"
+            self.image1,
+            self.image2,
+            upsample_factor=self.registration_upsample_factor,
+            space="real",
         )
         print(shifts)  # for debugging
         return float(shifts[0])  # can be shifts[1] - depending on camera orientation
@@ -109,7 +113,6 @@ class PDAFController(QObject):
 
 
 class TwoCamerasPDAFCalibrationController(QObject):
-
     acquisitionFinished = Signal()
     image_to_display_camera1 = Signal(np.ndarray)
     image_to_display_camera2 = Signal(np.ndarray)
@@ -148,7 +151,9 @@ class TwoCamerasPDAFCalibrationController(QObject):
         self.do_autofocus: bool = False
         self.crop_width: int = Acquisition.CROP_WIDTH
         self.crop_height: int = Acquisition.CROP_HEIGHT
-        self.display_resolution_scaling: float = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
+        self.display_resolution_scaling: float = (
+            Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
+        )
         self.counter: int = 0
         self.experiment_ID: Optional[str] = None
         self.base_path: Optional[str] = None
@@ -193,26 +198,39 @@ class TwoCamerasPDAFCalibrationController(QObject):
     def set_base_path(self, path: str) -> None:
         self.base_path = path
 
-    def start_new_experiment(self, experiment_ID: str) -> None:  # @@@ to do: change name to prepare_folder_for_new_experiment
+    def start_new_experiment(
+        self, experiment_ID: str
+    ) -> None:  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
-        self.experiment_ID = experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d %H-%M-%S.%f")
+        self.experiment_ID = (
+            experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d %H-%M-%S.%f")
+        )
         self.recording_start_time = time.time()
         # create a new folder
         try:
-            utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
+            utils.ensure_directory_exists(
+                os.path.join(self.base_path, self.experiment_ID)
+            )
             if self.configurationManager:
                 self.configurationManager.write_configuration(
-                    os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml"
+                    os.path.join(self.base_path, self.experiment_ID)
+                    + "/configurations.xml"
                 )  # save the configuration for the experiment
         except Exception:
             pass
 
-    def set_selected_configurations(self, selected_configurations_name: List[str]) -> None:
+    def set_selected_configurations(
+        self, selected_configurations_name: List[str]
+    ) -> None:
         self.selected_configurations = []
         for configuration_name in selected_configurations_name:
             self.selected_configurations.append(
                 next(
-                    (config for config in self.configurationManager.configurations if config.name == configuration_name)
+                    (
+                        config
+                        for config in self.configurationManager.configurations
+                        if config.name == configuration_name
+                    )
                 )
             )
 
@@ -276,7 +294,9 @@ class TwoCamerasPDAFCalibrationController(QObject):
 
     def _run_multipoint_single(self) -> None:
         # for each time point, create a new folder
-        current_path: str = os.path.join(self.base_path, self.experiment_ID, str(self.time_point))
+        current_path: str = os.path.join(
+            self.base_path, self.experiment_ID, str(self.time_point)
+        )
         os.mkdir(current_path)
 
         # z-stack
@@ -290,12 +310,23 @@ class TwoCamerasPDAFCalibrationController(QObject):
                     image: Optional[np.ndarray] = self.camera1.read_frame()
                     image = utils.crop_image(image, self.crop_width, self.crop_height)
                     saving_path: str = os.path.join(
-                        current_path, "camera1_" + file_ID + str(config.name) + "." + Acquisition.IMAGE_FORMAT
+                        current_path,
+                        "camera1_"
+                        + file_ID
+                        + str(config.name)
+                        + "."
+                        + Acquisition.IMAGE_FORMAT,
                     )
                     image_to_display: np.ndarray = utils.crop_image(
                         image,
-                        round(self.crop_width * self.liveController1.display_resolution_scaling),
-                        round(self.crop_height * self.liveController1.display_resolution_scaling),
+                        round(
+                            self.crop_width
+                            * self.liveController1.display_resolution_scaling
+                        ),
+                        round(
+                            self.crop_height
+                            * self.liveController1.display_resolution_scaling
+                        ),
                     )
                     self.image_to_display_camera1.emit(image_to_display)
                     if self.camera1.is_color:
@@ -306,12 +337,23 @@ class TwoCamerasPDAFCalibrationController(QObject):
                     image = self.camera2.read_frame()
                     image = utils.crop_image(image, self.crop_width, self.crop_height)
                     saving_path = os.path.join(
-                        current_path, "camera2_" + file_ID + str(config.name) + "." + Acquisition.IMAGE_FORMAT
+                        current_path,
+                        "camera2_"
+                        + file_ID
+                        + str(config.name)
+                        + "."
+                        + Acquisition.IMAGE_FORMAT,
                     )
                     image_to_display = utils.crop_image(
                         image,
-                        round(self.crop_width * self.liveController2.display_resolution_scaling),
-                        round(self.crop_height * self.liveController2.display_resolution_scaling),
+                        round(
+                            self.crop_width
+                            * self.liveController2.display_resolution_scaling
+                        ),
+                        round(
+                            self.crop_height
+                            * self.liveController2.display_resolution_scaling
+                        ),
                     )
                     self.image_to_display_camera2.emit(image_to_display)
                     if self.camera2.is_color:
@@ -322,11 +364,19 @@ class TwoCamerasPDAFCalibrationController(QObject):
                 self.camera1.send_trigger()
                 image = self.camera1.read_frame()
                 image = utils.crop_image(image, self.crop_width, self.crop_height)
-                saving_path = os.path.join(current_path, "camera1_" + file_ID + "." + Acquisition.IMAGE_FORMAT)
+                saving_path = os.path.join(
+                    current_path, "camera1_" + file_ID + "." + Acquisition.IMAGE_FORMAT
+                )
                 image_to_display = utils.crop_image(
                     image,
-                    round(self.crop_width * self.liveController1.display_resolution_scaling),
-                    round(self.crop_height * self.liveController1.display_resolution_scaling),
+                    round(
+                        self.crop_width
+                        * self.liveController1.display_resolution_scaling
+                    ),
+                    round(
+                        self.crop_height
+                        * self.liveController1.display_resolution_scaling
+                    ),
                 )
                 self.image_to_display_camera1.emit(image_to_display)
                 if self.camera1.is_color:
@@ -336,11 +386,19 @@ class TwoCamerasPDAFCalibrationController(QObject):
                 self.camera2.send_trigger()
                 image = self.camera2.read_frame()
                 image = utils.crop_image(image, self.crop_width, self.crop_height)
-                saving_path = os.path.join(current_path, "camera2_" + file_ID + "." + Acquisition.IMAGE_FORMAT)
+                saving_path = os.path.join(
+                    current_path, "camera2_" + file_ID + "." + Acquisition.IMAGE_FORMAT
+                )
                 image_to_display = utils.crop_image(
                     image,
-                    round(self.crop_width * self.liveController2.display_resolution_scaling),
-                    round(self.crop_height * self.liveController2.display_resolution_scaling),
+                    round(
+                        self.crop_width
+                        * self.liveController2.display_resolution_scaling
+                    ),
+                    round(
+                        self.crop_height
+                        * self.liveController2.display_resolution_scaling
+                    ),
                 )
                 self.image_to_display_camera2.emit(image_to_display)
                 if self.camera2.is_color:

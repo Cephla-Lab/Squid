@@ -44,7 +44,9 @@ class LaserAutofocusController(QObject):
         self.stage: AbstractStage = stage
         self.piezo: Optional[PiezoStage] = piezo
         self.objectiveStore: Optional[ObjectiveStore] = objectiveStore
-        self.laserAFSettingManager: Optional[LaserAFSettingManager] = laserAFSettingManager
+        self.laserAFSettingManager: Optional[LaserAFSettingManager] = (
+            laserAFSettingManager
+        )
         self.characterization_mode: bool = control._def.LASER_AF_CHARACTERIZATION_MODE
 
         self.is_initialized: bool = False
@@ -52,9 +54,13 @@ class LaserAutofocusController(QObject):
         self.laser_af_properties: LaserAFConfig = LaserAFConfig()
         self.reference_crop: Optional[np.ndarray] = None
 
-        self.spot_spacing_pixels: Optional[float] = None  # spacing between the spots from the two interfaces (unit: pixel)
+        self.spot_spacing_pixels: Optional[float] = (
+            None  # spacing between the spots from the two interfaces (unit: pixel)
+        )
 
-        self.image: Optional[np.ndarray] = None  # for saving the focus camera image for debugging when centroid cannot be found
+        self.image: Optional[np.ndarray] = (
+            None  # for saving the focus camera image for debugging when centroid cannot be found
+        )
 
         # Load configurations if provided
         if self.laserAFSettingManager:
@@ -88,17 +94,27 @@ class LaserAutofocusController(QObject):
         self.is_initialized = True
 
         # Update cache if objective store and laser_af_settings is available
-        if self.objectiveStore and self.laserAFSettingManager and self.objectiveStore.current_objective:
+        if (
+            self.objectiveStore
+            and self.laserAFSettingManager
+            and self.objectiveStore.current_objective
+        ):
             self.laserAFSettingManager.update_laser_af_settings(
                 self.objectiveStore.current_objective, config.model_dump()
             )
 
     def load_cached_configuration(self) -> None:
         """Load configuration from the cache if available."""
-        laser_af_settings: Dict[str, Any] = self.laserAFSettingManager.get_laser_af_settings()
-        current_objective: Optional[str] = self.objectiveStore.current_objective if self.objectiveStore else None
+        laser_af_settings: Dict[str, Any] = (
+            self.laserAFSettingManager.get_laser_af_settings()
+        )
+        current_objective: Optional[str] = (
+            self.objectiveStore.current_objective if self.objectiveStore else None
+        )
         if current_objective and current_objective in laser_af_settings:
-            config = self.laserAFSettingManager.get_settings_for_objective(current_objective)
+            config = self.laserAFSettingManager.get_settings_for_objective(
+                current_objective
+            )
 
             # Update camera settings
             self.camera.set_exposure_time(config.focus_camera_exposure_time_ms)
@@ -124,9 +140,13 @@ class LaserAutofocusController(QObject):
         self.camera.set_region_of_interest(0, 0, 3088, 2064)
 
         # update camera settings
-        self.camera.set_exposure_time(self.laser_af_properties.focus_camera_exposure_time_ms)
+        self.camera.set_exposure_time(
+            self.laser_af_properties.focus_camera_exposure_time_ms
+        )
         try:
-            self.camera.set_analog_gain(self.laser_af_properties.focus_camera_analog_gain)
+            self.camera.set_analog_gain(
+                self.laser_af_properties.focus_camera_analog_gain
+            )
         except NotImplementedError:
             pass
 
@@ -161,7 +181,9 @@ class LaserAutofocusController(QObject):
         )
         self.reference_crop = None
         config.set_reference_image(None)
-        self._log.info(f"Laser spot location on the full sensor is ({int(x)}, {int(y)})")
+        self._log.info(
+            f"Laser spot location on the full sensor is ({int(x)}, {int(y)})"
+        )
 
         self.initialize_manual(config)
 
@@ -170,7 +192,9 @@ class LaserAutofocusController(QObject):
             self._log.error("Failed to calibrate pixel-to-um conversion")
             return False
 
-        self.laserAFSettingManager.save_configurations(self.objectiveStore.current_objective)
+        self.laserAFSettingManager.save_configurations(
+            self.objectiveStore.current_objective
+        )
 
         return True
 
@@ -185,7 +209,9 @@ class LaserAutofocusController(QObject):
             self.microcontroller.turn_on_AF_laser()
             self.microcontroller.wait_till_operation_is_completed()
         except TimeoutError:
-            self._log.exception("Faield to turn on AF laser before pixel to um calibration, cannot continue!")
+            self._log.exception(
+                "Faield to turn on AF laser before pixel to um calibration, cannot continue!"
+            )
             return False
 
         # Move to first position and measure
@@ -200,7 +226,9 @@ class LaserAutofocusController(QObject):
                 self.microcontroller.turn_off_AF_laser()
                 self.microcontroller.wait_till_operation_is_completed()
             except TimeoutError:
-                self._log.exception("Error turning off AF laser after spot calibration failure (position 1)")
+                self._log.exception(
+                    "Error turning off AF laser after spot calibration failure (position 1)"
+                )
                 # Just fall through since we are already on a failure path.
             return False
         x0, y0 = result
@@ -216,7 +244,9 @@ class LaserAutofocusController(QObject):
                 self.microcontroller.turn_off_AF_laser()
                 self.microcontroller.wait_till_operation_is_completed()
             except TimeoutError:
-                self._log.exception("Error turning off AF laser after spot calibration failure (position 2)")
+                self._log.exception(
+                    "Error turning off AF laser after spot calibration failure (position 2)"
+                )
                 # Just fall through since we are already on a failure path.
             return False
         x1, y1 = result
@@ -239,19 +269,25 @@ class LaserAutofocusController(QObject):
             pixel_to_um = 0.4  # Simulation value
             self._log.warning("Using simulation value for pixel_to_um conversion")
         else:
-            pixel_to_um = self.laser_af_properties.pixel_to_um_calibration_distance / (x1 - x0)
+            pixel_to_um = self.laser_af_properties.pixel_to_um_calibration_distance / (
+                x1 - x0
+            )
         self._log.info(f"Pixel to um conversion factor is {pixel_to_um:.3f} um/pixel")
         calibration_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # Update config with new calibration values
         self.laser_af_properties = self.laser_af_properties.model_copy(
-            update={"pixel_to_um": pixel_to_um, "calibration_timestamp": calibration_timestamp}
+            update={
+                "pixel_to_um": pixel_to_um,
+                "calibration_timestamp": calibration_timestamp,
+            }
         )
 
         # Update cache
         if self.objectiveStore and self.laserAFSettingManager:
             self.laserAFSettingManager.update_laser_af_settings(
-                self.objectiveStore.current_objective, self.laser_af_properties.model_dump()
+                self.objectiveStore.current_objective,
+                self.laser_af_properties.model_dump(),
             )
 
         return True
@@ -264,8 +300,12 @@ class LaserAutofocusController(QObject):
     def update_threshold_properties(self, updates: dict) -> None:
         """Update threshold properties. Save settings without re-initializing."""
         self.laser_af_properties = self.laser_af_properties.model_copy(update=updates)
-        self.laserAFSettingManager.update_laser_af_settings(self.objectiveStore.current_objective, updates)
-        self.laserAFSettingManager.save_configurations(self.objectiveStore.current_objective)
+        self.laserAFSettingManager.update_laser_af_settings(
+            self.objectiveStore.current_objective, updates
+        )
+        self.laserAFSettingManager.save_configurations(
+            self.objectiveStore.current_objective
+        )
         self._log.info("Updated threshold properties")
 
     def measure_displacement(self) -> float:
@@ -284,7 +324,9 @@ class LaserAutofocusController(QObject):
             self.microcontroller.turn_on_AF_laser()
             self.microcontroller.wait_till_operation_is_completed()
         except TimeoutError:
-            self._log.exception("Turning on AF laser timed out, failed to measure displacement.")
+            self._log.exception(
+                "Turning on AF laser timed out, failed to measure displacement."
+            )
             return finish_with(float("nan"))
 
         # get laser spot location
@@ -295,17 +337,23 @@ class LaserAutofocusController(QObject):
             self.microcontroller.turn_off_AF_laser()
             self.microcontroller.wait_till_operation_is_completed()
         except TimeoutError:
-            self._log.exception("Turning off AF laser timed out!  We got a displacement but laser may still be on.")
+            self._log.exception(
+                "Turning off AF laser timed out!  We got a displacement but laser may still be on."
+            )
             # Continue with the measurement, but we're essentially in an unknown / weird state here.  It's not clear
             # what we should do.
 
         if result is None:
-            self._log.error("Failed to detect laser spot during displacement measurement")
+            self._log.error(
+                "Failed to detect laser spot during displacement measurement"
+            )
             return finish_with(float("nan"))  # Signal invalid measurement
 
         x, y = result
         # calculate displacement
-        displacement_um = (x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
+        displacement_um = (
+            x - self.laser_af_properties.x_reference
+        ) * self.laser_af_properties.pixel_to_um
         return finish_with(displacement_um)
 
     def move_to_target(self, target_um: float) -> bool:
@@ -322,10 +370,14 @@ class LaserAutofocusController(QObject):
             return False
 
         current_displacement_um = self.measure_displacement()
-        self._log.info(f"Current laser AF displacement: {current_displacement_um:.1f} μm")
+        self._log.info(
+            f"Current laser AF displacement: {current_displacement_um:.1f} μm"
+        )
 
         if math.isnan(current_displacement_um):
-            self._log.error("Cannot move to target: failed to measure current displacement")
+            self._log.error(
+                "Cannot move to target: failed to measure current displacement"
+            )
             return False
 
         if abs(current_displacement_um) > self.laser_af_properties.laser_af_range:
@@ -387,7 +439,9 @@ class LaserAutofocusController(QObject):
             self.microcontroller.turn_off_AF_laser()
             self.microcontroller.wait_till_operation_is_completed()
         except TimeoutError:
-            self._log.exception("Failed to turn off AF laser after setting reference, laser is in an unknown state!")
+            self._log.exception(
+                "Failed to turn off AF laser after setting reference, laser is in an unknown state!"
+            )
             # Continue on since we got our reading, but the system is potentially in a weird state!
 
         if result is None or reference_image is None:
@@ -399,12 +453,22 @@ class LaserAutofocusController(QObject):
         # Store cropped and normalized reference image
         center_y = int(reference_image.shape[0] / 2)
         x_start = max(0, int(x) - self.laser_af_properties.spot_crop_size // 2)
-        x_end = min(reference_image.shape[1], int(x) + self.laser_af_properties.spot_crop_size // 2)
+        x_end = min(
+            reference_image.shape[1],
+            int(x) + self.laser_af_properties.spot_crop_size // 2,
+        )
         y_start = max(0, center_y - self.laser_af_properties.spot_crop_size // 2)
-        y_end = min(reference_image.shape[0], center_y + self.laser_af_properties.spot_crop_size // 2)
+        y_end = min(
+            reference_image.shape[0],
+            center_y + self.laser_af_properties.spot_crop_size // 2,
+        )
 
-        reference_crop = reference_image[y_start:y_end, x_start:x_end].astype(np.float32)
-        self.reference_crop = (reference_crop - np.mean(reference_crop)) / np.max(reference_crop)
+        reference_crop = reference_image[y_start:y_end, x_start:x_end].astype(
+            np.float32
+        )
+        self.reference_crop = (reference_crop - np.mean(reference_crop)) / np.max(
+            reference_crop
+        )
 
         self.signal_displacement_um.emit(0)
         self._log.info(f"Set reference position to ({x:.1f}, {y:.1f})")
@@ -416,10 +480,15 @@ class LaserAutofocusController(QObject):
         # Update cached file. reference_crop needs to be saved.
         self.laserAFSettingManager.update_laser_af_settings(
             self.objectiveStore.current_objective,
-            {"x_reference": x + self.laser_af_properties.x_offset, "has_reference": True},
+            {
+                "x_reference": x + self.laser_af_properties.x_offset,
+                "has_reference": True,
+            },
             crop_image=self.reference_crop,
         )
-        self.laserAFSettingManager.save_configurations(self.objectiveStore.current_objective)
+        self.laserAFSettingManager.save_configurations(
+            self.objectiveStore.current_objective
+        )
 
         self._log.info("Reference spot position set")
 
@@ -451,7 +520,9 @@ class LaserAutofocusController(QObject):
             self.microcontroller.turn_on_AF_laser()
             self.microcontroller.wait_till_operation_is_completed()
         except TimeoutError:
-            self._log.exception("Failed to turn on AF laser for verifying spot alignment.")
+            self._log.exception(
+                "Failed to turn on AF laser for verifying spot alignment."
+            )
             return failure_return_value
 
         # TODO: create a function to get the current image (taking care of trigger mode checking and laser on/off switching)
@@ -466,7 +537,9 @@ class LaserAutofocusController(QObject):
             self.microcontroller.turn_off_AF_laser()
             self.microcontroller.wait_till_operation_is_completed()
         except TimeoutError:
-            self._log.exception("Failed to turn off AF laser after verifying spot alignment, laser in unknown state!")
+            self._log.exception(
+                "Failed to turn off AF laser after verifying spot alignment, laser in unknown state!"
+            )
             # Continue on because we got a reading, but the system is in a potentially weird and unknown state here.
 
         if self.reference_crop is None:
@@ -482,15 +555,27 @@ class LaserAutofocusController(QObject):
         center_y: int = int(current_image.shape[0] / 2)
 
         x_start: int = max(0, center_x - self.laser_af_properties.spot_crop_size // 2)
-        x_end: int = min(current_image.shape[1], center_x + self.laser_af_properties.spot_crop_size // 2)
+        x_end: int = min(
+            current_image.shape[1],
+            center_x + self.laser_af_properties.spot_crop_size // 2,
+        )
         y_start: int = max(0, center_y - self.laser_af_properties.spot_crop_size // 2)
-        y_end: int = min(current_image.shape[0], center_y + self.laser_af_properties.spot_crop_size // 2)
+        y_end: int = min(
+            current_image.shape[0],
+            center_y + self.laser_af_properties.spot_crop_size // 2,
+        )
 
-        current_crop: np.ndarray = current_image[y_start:y_end, x_start:x_end].astype(np.float32)
-        current_norm: np.ndarray = (current_crop - np.mean(current_crop)) / np.max(current_crop)
+        current_crop: np.ndarray = current_image[y_start:y_end, x_start:x_end].astype(
+            np.float32
+        )
+        current_norm: np.ndarray = (current_crop - np.mean(current_crop)) / np.max(
+            current_crop
+        )
 
         # Calculate normalized cross correlation
-        correlation: float = np.corrcoef(current_norm.ravel(), self.reference_crop.ravel())[0, 1]
+        correlation: float = np.corrcoef(
+            current_norm.ravel(), self.reference_crop.ravel()
+        )[0, 1]
 
         self._log.info(f"Cross correlation with reference: {correlation:.3f}")
 
@@ -507,7 +592,9 @@ class LaserAutofocusController(QObject):
         return self.camera.read_frame()
 
     def _get_laser_spot_centroid(
-        self, remove_background: bool = False, use_center_crop: Optional[Tuple[int, int]] = None
+        self,
+        remove_background: bool = False,
+        use_center_crop: Optional[Tuple[int, int]] = None,
     ) -> Optional[Tuple[float, float]]:
         """Get the centroid location of the laser spot.
 
@@ -529,7 +616,9 @@ class LaserAutofocusController(QObject):
             try:
                 image = self.get_new_frame()
                 if image is None:
-                    self._log.warning(f"Failed to read frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}")
+                    self._log.warning(
+                        f"Failed to read frame {i + 1}/{self.laser_af_properties.laser_af_averaging_n}"
+                    )
                     continue
 
                 self.image = image  # store for debugging # TODO: add to return instead of storing
@@ -538,11 +627,15 @@ class LaserAutofocusController(QObject):
                 full_height, full_width = image.shape[:2]
 
                 if use_center_crop is not None:
-                    image = utils.crop_image(image, use_center_crop[0], use_center_crop[1])
+                    image = utils.crop_image(
+                        image, use_center_crop[0], use_center_crop[1]
+                    )
 
                 if remove_background:
                     # remove background using top hat filter
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (50, 50))  # TODO: tmp hard coded value
+                    kernel = cv2.getStructuringElement(
+                        cv2.MORPH_ELLIPSE, (50, 50)
+                    )  # TODO: tmp hard coded value
                     image = cv2.morphologyEx(image, cv2.MORPH_TOPHAT, kernel)
 
                 # calculate centroid
@@ -578,7 +671,8 @@ class LaserAutofocusController(QObject):
 
                 if (
                     self.laser_af_properties.has_reference
-                    and abs(x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
+                    and abs(x - self.laser_af_properties.x_reference)
+                    * self.laser_af_properties.pixel_to_um
                     > self.laser_af_properties.laser_af_range
                 ):
                     self._log.warning(
@@ -609,7 +703,9 @@ class LaserAutofocusController(QObject):
         x: float = tmp_x / successful_detections
         y: float = tmp_y / successful_detections
 
-        self._log.debug(f"Spot centroid found at ({x:.1f}, {y:.1f}) from {successful_detections} detections")
+        self._log.debug(
+            f"Spot centroid found at ({x:.1f}, {y:.1f}) from {successful_detections} detections"
+        )
         return (x, y)
 
     def get_image(self) -> Optional[np.ndarray]:
@@ -625,7 +721,9 @@ class LaserAutofocusController(QObject):
             self.microcontroller.turn_on_AF_laser()
             self.microcontroller.wait_till_operation_is_completed()
         except TimeoutError:
-            self._log.exception("Failed to turn on laser AF laser before get_image, cannot get image.")
+            self._log.exception(
+                "Failed to turn on laser AF laser before get_image, cannot get image."
+            )
             return None
 
         try:

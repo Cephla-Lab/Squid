@@ -1,40 +1,15 @@
 # Common imports for wellplate widgets
-import numpy as np
-import json
-import math
-import time
-from typing import Optional, TYPE_CHECKING
+from __future__ import annotations
 
-import squid.logging
 
-if TYPE_CHECKING:
-    from squid.services import StageService
+try:
+    import pyqtgraph as pg
+except ImportError:
+    pg = None
 
-from qtpy.QtCore import Signal, Qt, QTimer, QVariant
-from qtpy.QtWidgets import (
-    QWidget,
-    QFrame,
-    QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QGridLayout,
-    QLabel,
-    QLineEdit,
-    QDoubleSpinBox,
-    QSpinBox,
-    QComboBox,
-    QPushButton,
-    QCheckBox,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QAbstractItemView,
-    QSizePolicy,
-    QGroupBox,
-    QMessageBox,
-    QFileDialog,
-)
-from qtpy.QtGui import QColor, QBrush, QFont
-
-from control._def import *
-from squid.abc import AbstractStage
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    Image = None  # type: ignore[misc, assignment]
+    ImageDraw = None  # type: ignore[misc, assignment]
+    ImageFont = None  # type: ignore[misc, assignment]

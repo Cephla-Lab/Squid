@@ -2,9 +2,7 @@ import os
 import tempfile
 from configparser import ConfigParser
 
-import pytest
 
-import tests.control.gui_test_stubs
 import control.widgets
 
 

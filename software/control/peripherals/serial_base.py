@@ -14,7 +14,16 @@ class SerialDevice:
     or serial number.
     """
 
-    def __init__(self, port=None, VID=None, PID=None, SN=None, baudrate=9600, read_timeout=0.1, **kwargs):
+    def __init__(
+        self,
+        port=None,
+        VID=None,
+        PID=None,
+        SN=None,
+        baudrate=9600,
+        read_timeout=0.1,
+        **kwargs,
+    ):
         # Initialize the serial connection
         self.port = port
         self.VID = VID
@@ -39,9 +48,13 @@ class SerialDevice:
                     break
 
         if self.port is not None:
-            self.serial = serial.Serial(self.port, baudrate=baudrate, timeout=read_timeout, **kwargs)
+            self.serial = serial.Serial(
+                self.port, baudrate=baudrate, timeout=read_timeout, **kwargs
+            )
 
-    def open_ser(self, SN=None, VID=None, PID=None, baudrate=None, read_timeout=None, **kwargs):
+    def open_ser(
+        self, SN=None, VID=None, PID=None, baudrate=None, read_timeout=None, **kwargs
+    ):
         if self.serial is not None and not self.serial.is_open:
             self.serial.open()
 
@@ -117,7 +130,9 @@ class SerialDevice:
             else:
                 time.sleep(attempt_delay)  # Wait before retrying
 
-        raise SerialDeviceError("Max attempts reached without receiving expected response.")
+        raise SerialDeviceError(
+            "Max attempts reached without receiving expected response."
+        )
 
     def write_and_read(self, command, read_delay=0.1, max_attempts=3, attempt_delay=1):
         for attempt in range(max_attempts):

@@ -4,7 +4,6 @@ from enum import Enum
 import time
 import math
 import serial.tools.list_ports
-import re
 
 SETTINGS_FILENAME = "control/Xeryon_settings.txt"
 LIBRARY_VERSION = "v1.88"
@@ -94,7 +93,9 @@ class Xeryon:
         """
         return len(self.getAllAxis()) <= 1
 
-    def start(self, external_communication_thread=False, external_settings_default=None):
+    def start(
+        self, external_communication_thread=False, external_settings_default=None
+    ):
         """
         :return: Nothing.
         This functions NEEDS to be ran before any commands are executed.
@@ -106,7 +107,9 @@ class Xeryon:
                 "Cannot start the system without stages. The stages don't have to be connnected, only initialized in the software."
             )
 
-        comm = self.getCommunication().start(external_communication_thread)  # Start communication
+        comm = self.getCommunication().start(
+            external_communication_thread
+        )  # Start communication
 
         for axis in self.getAllAxis():
             axis.reset()
@@ -221,9 +224,12 @@ class Xeryon:
                 file = open(external_settings_default, "r")
 
             for line in file.readlines():  # For each line:
-                if "=" in line and line.find("%") != 0:  # Check if it's a command and not a comment or blank line.
-
-                    line = line.strip("\n\r").replace(" ", "")  # Strip spaces and newlines.
+                if (
+                    "=" in line and line.find("%") != 0
+                ):  # Check if it's a command and not a comment or blank line.
+                    line = line.strip("\n\r").replace(
+                        " ", ""
+                    )  # Strip spaces and newlines.
                     axis = self.getAllAxis()[0]  # Default select the first axis.
                     if ":" in line:  # Check if axis is specified
                         axis = self.getAxis(line.split(":")[0])
@@ -235,7 +241,9 @@ class Xeryon:
                         # BUT It's a multi-axis system ==> so these settings are for the master.
                         if "%" in line:  # Ignore comments
                             line = line.split("%")[0]
-                        self.setMasterSetting(line.split("=")[0], line.split("=")[1], True)
+                        self.setMasterSetting(
+                            line.split("=")[0], line.split("=")[1], True
+                        )
                         continue
 
                     if "%" in line:  # Ignore comments
@@ -244,7 +252,9 @@ class Xeryon:
                     tag = line.split("=")[0]
                     value = line.split("=")[1]
 
-                    axis.setSetting(tag, value, True, doNotSendThrough=True)  # Update settings for specified axis.
+                    axis.setSetting(
+                        tag, value, True, doNotSendThrough=True
+                    )  # Update settings for specified axis.
 
             file.close()  # Close file
         except FileNotFoundError as e:
@@ -306,7 +316,6 @@ class Xeryon:
                 "Automatically searching for COM-Port. If you want to speed things up you should manually provide it inside the controller object."
             )
         ports = list(serial.tools.list_ports.comports())
-        com_port = None
         for port in ports:
             if "04D8" in str(port.hwid):
                 self.setCOMPort(str(port.device))
@@ -349,11 +358,15 @@ class Axis:
     settings = None  # Stores all the settings from the settings file
     stage = None  # Specifies the type of stage used in this axis.
     units = Units.mm  # Specifies the units this axis is currently working in.
-    update_nb = 0  # This number increments each time an update is recieved from the controller.
+    update_nb = (
+        0  # This number increments each time an update is recieved from the controller.
+    )
     was_valid_DPOS = False  # if True, the STEP command takes DPOS as the refrence. It's called "targeted_position=1/0" in the Microcontroller
     def_poli_value = str(DEFAULT_POLI_VALUE)
 
-    isLogging = False  # Stores if this axis is currently "Logging": it's storing its axis_data.
+    isLogging = (
+        False  # Stores if this axis is currently "Logging": it's storing its axis_data.
+    )
     logs = {}  # This stores all the data. It's a dictionary of the form:
 
     previous_epos = [0, 0]  # Two samples to calculate speed
@@ -375,8 +388,12 @@ class Axis:
             self.__waitForUpdate()
             outputConsole("Searching index for axis " + str(self) + ".")
             while not self.isEncoderValid():  # While index not found, wait.
-                if not self.isSearchingIndex():  # Check if searching for index bit is true.
-                    outputConsole("Index is not found, but stopped searching for index.", True)
+                if (
+                    not self.isSearchingIndex()
+                ):  # Check if searching for index bit is true.
+                    outputConsole(
+                        "Index is not found, but stopped searching for index.", True
+                    )
                     return False
                     break
                 time.sleep(0.2)
@@ -394,7 +411,9 @@ class Axis:
             direction = -1
         self.sendCommand("MOVE=" + str(direction))
 
-    def setDPOS(self, value, differentUnits=None, outputToConsole=True, forceWaiting=False):
+    def setDPOS(
+        self, value, differentUnits=None, outputToConsole=True, forceWaiting=False
+    ):
         """
         :param value: The new value DPOS has to become.
         :param differentUnits: If the value isn't specified in the current units, specify the correct units.
@@ -404,14 +423,20 @@ class Axis:
         Note: This function makes use of the sendCommand function, which is blocking the program until the position is reached.
         """
         unit = self.units  # Current units
-        if differentUnits is not None:  # If the value given are in different units than the current units:
+        if (
+            differentUnits is not None
+        ):  # If the value given are in different units than the current units:
             unit = differentUnits  # Then specify the unit in differentUnits argument.
 
-        DPOS = int(self.convertUnitsToEncoder(value, unit))  # Convert into encoder units.
+        DPOS = int(
+            self.convertUnitsToEncoder(value, unit)
+        )  # Convert into encoder units.
         error = False
 
         self.__sendCommand("DPOS=" + str(DPOS))
-        self.was_valid_DPOS = True  # And keep it True in order to avoid an accumulating error.
+        self.was_valid_DPOS = (
+            True  # And keep it True in order to avoid an accumulating error.
+        )
         # self.__waitForUpdate()
 
         # Block all futher processes until position is reached.
@@ -426,11 +451,14 @@ class Axis:
 
             # Wait until EPOS is within PTO2 AND positionReached status is received.
             while not (self.__isWithinTol(DPOS) and self.isPositionReached()):
-
                 # Check if stage is at left end or right end. ==> out of range movement.
                 if self.isAtLeftEnd() or self.isAtRightEnd():
                     # TODO: fix this so it does not go off while positioning on the limit value.
-                    outputConsole("DPOS is out or range. (1) " + getDposEposString(value, self.getEPOS(), unit), True)
+                    outputConsole(
+                        "DPOS is out or range. (1) "
+                        + getDposEposString(value, self.getEPOS(), unit),
+                        True,
+                    )
                     error = True
                     return False
 
@@ -460,7 +488,9 @@ class Axis:
                     return False
 
                 if self.isSafetyTimeoutTriggered():
-                    outputConsole("Position not reached. (6) TOU2 (Timeout 2) triggered.", True)
+                    outputConsole(
+                        "Position not reached. (6) TOU2 (Timeout 2) triggered.", True
+                    )
                     error = True
                     return False
 
@@ -488,7 +518,9 @@ class Axis:
 
                 time.sleep(0.01)
 
-        if outputToConsole and error is False and DISABLE_WAITING is False:  # Output new DPOS & EPOS if necessary
+        if (
+            outputToConsole and error is False and DISABLE_WAITING is False
+        ):  # Output new DPOS & EPOS if necessary
             outputConsole(getDposEposString(value, self.getEPOS(), unit))
 
         return True
@@ -561,9 +593,9 @@ class Axis:
             # From -180 => +180
             # -180 *(val // 180 % 2) + (val % 180)
             encoderUnitsPerRevolution = self.convertUnitsToEncoder(360, Units.deg)
-            new_DPOS = -encoderUnitsPerRevolution / 2 * (new_DPOS // (encoderUnitsPerRevolution / 2) % 2) + (
-                new_DPOS % (encoderUnitsPerRevolution / 2)
-            )
+            new_DPOS = -encoderUnitsPerRevolution / 2 * (
+                new_DPOS // (encoderUnitsPerRevolution / 2) % 2
+            ) + (new_DPOS % (encoderUnitsPerRevolution / 2))
 
         self.setDPOS(
             new_DPOS, Units.enc, False, forceWaiting=forceWaiting
@@ -599,7 +631,9 @@ class Axis:
         """
         self.isLogging = True
         if increase_poli:
-            self.xeryon_object.getAllAxis()[0].setSetting("POLI", "1")  # also adapt it for the master
+            self.xeryon_object.getAllAxis()[0].setSetting(
+                "POLI", "1"
+            )  # also adapt it for the master
             self.setSetting("POLI", "1")
         self.__waitForUpdate()  # To make sure the POLI is set.
         # DISABLE_WAITING isn't checked here, because it is really necessary.
@@ -625,13 +659,19 @@ class Axis:
 
                 timestamps.append(round(timestamps[-1] + dT, 2))
 
-            epos_in_units = [self.convertEncoderUnitsToUnits(pos) for pos in logs["EPOS"]]
+            epos_in_units = [
+                self.convertEncoderUnitsToUnits(pos) for pos in logs["EPOS"]
+            ]
 
             logs["TIME"] = timestamps
             logs["EPOS"] = epos_in_units
 
-        self.setSetting("POLI", str(self.def_poli_value))  # Restore POLI back to default value.
-        self.xeryon_object.getAllAxis()[0].setSetting("POLI", str(self.def_poli_value))  # also adapt it for the master
+        self.setSetting(
+            "POLI", str(self.def_poli_value)
+        )  # Restore POLI back to default value.
+        self.xeryon_object.getAllAxis()[0].setSetting(
+            "POLI", str(self.def_poli_value)
+        )  # also adapt it for the master
         return logs
 
     def getFrequency(self):
@@ -698,7 +738,9 @@ class Axis:
         """
         if self.stage.isLineair:
             speed = int(
-                self.convertEncoderUnitsToUnits(self.convertUnitsToEncoder(speed, self.units), Units.mu)
+                self.convertEncoderUnitsToUnits(
+                    self.convertUnitsToEncoder(speed, self.units), Units.mu
+                )
             )  # Convert to micrometer
         else:
             speed = self.convertEncoderUnitsToUnits(
@@ -870,7 +912,14 @@ class Axis:
         :return:        Return an adjusted value for this setting.
         """
         # Apply multipliers (different units in settings file and in controller)
-        if "MAMP" in tag or "MIMP" in tag or "OFSA" in tag or "OFSB" in tag or "AMPL" in tag or "MAM2" in tag:
+        if (
+            "MAMP" in tag
+            or "MIMP" in tag
+            or "OFSA" in tag
+            or "OFSB" in tag
+            or "AMPL" in tag
+            or "MAM2" in tag
+        ):
             # Use amplitude multiplier.
             value = str(int(int(value) * self.stage.amplitudeMultiplier))
         elif "PHAC" in tag or "PHAS" in tag:
@@ -990,7 +1039,9 @@ class Axis:
 
             if is_numeric(val):
                 if (
-                    tag not in NOT_SETTING_COMMANDS and "EPOS" not in tag and "DPOS" not in tag
+                    tag not in NOT_SETTING_COMMANDS
+                    and "EPOS" not in tag
+                    and "DPOS" not in tag
                 ):  # The received command is a setting that's requested.
                     self.setSetting(
                         tag, val, doNotSendThrough=True
@@ -1008,7 +1059,9 @@ class Axis:
                         )
 
                     if self.isPositionFailTriggered():
-                        outputConsole("Safety timeout TOU3 went off, the 'position fail' status bit went high.")
+                        outputConsole(
+                            "Safety timeout TOU3 went off, the 'position fail' status bit went high."
+                        )
 
                     if (
                         self.isThermalProtection1()
@@ -1038,13 +1091,25 @@ class Axis:
                             self.xeryon_object.setMasterSetting("ENBL", "1")
                             outputConsole("'ENBL=1' is automatically send.")
 
-                if "EPOS" in tag:  # This uses "EPOS" as an indicator that a new round of data is coming in.
+                if (
+                    "EPOS" in tag
+                ):  # This uses "EPOS" as an indicator that a new round of data is coming in.
                     # previous_epos is a list containing two numbers: the two previous EPOS values
                     self.previous_epos = [self.previous_epos[-1], int(val)]
-                    self.update_nb += 1  # This update_nb is for the function __waitForUpdate
+                    self.update_nb += (
+                        1  # This update_nb is for the function __waitForUpdate
+                    )
 
                 if self.isLogging:  # Log all received data if logging is enabled.
-                    if tag not in ["SRNO", "XLS ", "XRTU", "XLA ", "XTRA", "SOFT", "SYNC"]:  # This data is useless.
+                    if tag not in [
+                        "SRNO",
+                        "XLS ",
+                        "XRTU",
+                        "XLA ",
+                        "XTRA",
+                        "SOFT",
+                        "SYNC",
+                    ]:  # This data is useless.
                         if self.logs.get(tag) is None:
                             self.logs[tag] = []
 
@@ -1062,9 +1127,9 @@ class Axis:
                     # calculate SSPD
                     if len(self.previous_epos) >= 2:
                         if t2 - t1 > 0:
-                            self.axis_data["SSPD"] = (self.previous_epos[1] - self.previous_epos[0]) / (
-                                (t2 - t1) * 10
-                            )  # encoder units / ms
+                            self.axis_data["SSPD"] = (
+                                self.previous_epos[1] - self.previous_epos[0]
+                            ) / ((t2 - t1) * 10)  # encoder units / ms
 
                             if self.isLogging:
                                 if self.logs.get("SSPD") is None:
@@ -1125,7 +1190,9 @@ class Axis:
         elif units == Units.rad:
             return round(value * 10**6 * 1 / self.stage.encoderResolution)
         elif units == Units.deg:
-            return round(value * (2 * math.pi) / 360 * 10**6 / self.stage.encoderResolution)
+            return round(
+                value * (2 * math.pi) / 360 * 10**6 / self.stage.encoderResolution
+            )
         else:
             self.xeryon_object.stop()
             raise ("Unexpected unit")
@@ -1231,7 +1298,9 @@ class Communication:
         if self.COM_port is None:
             self.xeryon_object.findCOMPort()
         if self.COM_port is None:  # No com port found
-            raise Exception("No COM_port could automatically be found. You should provide it manually.")
+            raise Exception(
+                "No COM_port could automatically be found. You should provide it manually."
+            )
 
         try:
             self.ser = serial.Serial(self.COM_port, self.baud, timeout=0.01)
@@ -1246,7 +1315,12 @@ class Communication:
             else:
                 return self.__processData
         except Exception as e:
-            outputConsole("An error occured while trying to connect to COM: " + str(self.COM_port), True, True)
+            outputConsole(
+                "An error occured while trying to connect to COM: "
+                + str(self.COM_port),
+                True,
+                True,
+            )
             outputConsole(str(e), True, True)
             raise Exception("Could not conect to COM " + str(self.COM_port))
 
@@ -1276,7 +1350,6 @@ class Communication:
         """
         try:
             while self.stop_thread is False and self.ser.is_open:  # Infinite loop
-
                 # SEND 10 LINES, then go further to reading.
                 dataToSend = list(self.readyToSend[0:10])
                 self.readyToSend = self.readyToSend[10:]
@@ -1286,12 +1359,15 @@ class Communication:
 
                 max_to_read = 10
                 try:
-                    while self.ser.in_waiting > 0 and max_to_read > 0:  # While there is data to read
+                    while (
+                        self.ser.in_waiting > 0 and max_to_read > 0
+                    ):  # While there is data to read
                         reading = self.ser.readline().decode()  # Read a single line
 
                         if "=" in reading:  # Line contains a command.
-
-                            if len(reading.split(":")) == 2:  # check if an axis is specified
+                            if (
+                                len(reading.split(":")) == 2
+                            ):  # check if an axis is specified
                                 axis = self.xeryon_object.getAxis(reading.split(":")[0])
                                 reading = reading.split(":")[1]
                                 if axis is None:
@@ -1317,7 +1393,10 @@ class Communication:
         except Exception as e:
             print("An error has occured that crashed the communication thread.")
             print(str(e))
-            raise OSError("An error has occurred that crashed the communicaiton thread. \n" + str(e))
+            raise OSError(
+                "An error has occurred that crashed the communicaiton thread. \n"
+                + str(e)
+            )
 
     def closeCommunication(self):
         self.stop_thread = True
@@ -1422,8 +1501,9 @@ class Stage(Enum):
     XRTU_40_73_OLD = (False, "XRTU=73", (2 * math.pi * 1e6) / 86400, 100)
     XRTU_40_3_OLD = (False, "XRTU=3", (2 * math.pi * 1e6) / 1800000, 100)  # ?
 
-    def __init__(self, isLineair, encoderResolutionCommand, encoderResolution, speedMultiplier):
-
+    def __init__(
+        self, isLineair, encoderResolutionCommand, encoderResolution, speedMultiplier
+    ):
         self.isLineair = isLineair
         self.encoderResolutionCommand = encoderResolutionCommand
         self.encoderResolution = encoderResolution  # ALTIJD IN nm / nanorad !!! ==> Verschillend met windows interface.
@@ -1456,7 +1536,16 @@ def getDposEposString(DPOS, EPOS, Unit):
     """
     :return: A string containting the EPOS & DPOS value's and the current units.
     """
-    return str("DPOS: " + str(DPOS) + " " + str(Unit) + " and EPOS: " + str(EPOS) + " " + str(Unit))
+    return str(
+        "DPOS: "
+        + str(DPOS)
+        + " "
+        + str(Unit)
+        + " and EPOS: "
+        + str(EPOS)
+        + " "
+        + str(Unit)
+    )
 
 
 def outputConsole(message, error=False, force=True):

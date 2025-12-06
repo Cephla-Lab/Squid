@@ -1,43 +1,69 @@
 from control.widgets.wellplate._common import *
 
-class WellSelectionWidget(QTableWidget):
-    signal_wellSelected = Signal(bool)
-    signal_wellSelectedPos = Signal(float, float)
+if TYPE_CHECKING:
+    from control.widgets.wellplate.format import WellplateFormatWidget
 
-    def __init__(self, format_, wellplateFormatWidget, *args, **kwargs):
+
+class WellSelectionWidget(QTableWidget):
+    signal_wellSelected: Signal = Signal(bool)
+    signal_wellSelectedPos: Signal = Signal(float, float)
+
+    def __init__(
+        self,
+        format_: str,
+        wellplateFormatWidget: "WellplateFormatWidget",
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super(WellSelectionWidget, self).__init__(*args, **kwargs)
-        self.wellplateFormatWidget = wellplateFormatWidget
+        self.wellplateFormatWidget: "WellplateFormatWidget" = wellplateFormatWidget
         self.cellDoubleClicked.connect(self.onDoubleClick)
         self.itemSelectionChanged.connect(self.onSelectionChanged)
-        self.fixed_height = 400
+        self.fixed_height: int = 400
+        self.format: str = ""
+        self.rows: int = 0
+        self.columns: int = 0
+        self.spacing_mm: float = 0.0
+        self.number_of_skip: int = 0
+        self.a1_x_mm: float = 0.0
+        self.a1_y_mm: float = 0.0
+        self.a1_x_pixel: int = 0
+        self.a1_y_pixel: int = 0
+        self.well_size_mm: float = 0.0
         self.setFormat(format_)
 
-    def setFormat(self, format_):
+    def setFormat(self, format_: str) -> None:
         self.format = format_
         settings = self.wellplateFormatWidget.getWellplateSettings(self.format)
-        self.rows = settings["rows"]
-        self.columns = settings["cols"]
-        self.spacing_mm = settings["well_spacing_mm"]
-        self.number_of_skip = settings["number_of_skip"]
-        self.a1_x_mm = settings["a1_x_mm"]
-        self.a1_y_mm = settings["a1_y_mm"]
-        self.a1_x_pixel = settings["a1_x_pixel"]
-        self.a1_y_pixel = settings["a1_y_pixel"]
-        self.well_size_mm = settings["well_size_mm"]
+        if settings is None:
+            return
+        self.rows = int(settings["rows"])
+        self.columns = int(settings["cols"])
+        self.spacing_mm = float(settings["well_spacing_mm"])
+        self.number_of_skip = int(settings["number_of_skip"])
+        self.a1_x_mm = float(settings["a1_x_mm"])
+        self.a1_y_mm = float(settings["a1_y_mm"])
+        self.a1_x_pixel = int(settings["a1_x_pixel"])
+        self.a1_y_pixel = int(settings["a1_y_pixel"])
+        self.well_size_mm = float(settings["well_size_mm"])
 
         self.setRowCount(self.rows)
         self.setColumnCount(self.columns)
         self.initUI()
         self.setData()
 
-    def initUI(self):
+    def initUI(self) -> None:
         # Disable editing, scrollbars, and other interactions
         self.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.verticalScrollBar().setDisabled(True)
-        self.horizontalScrollBar().setDisabled(True)
-        self.setFocusPolicy(Qt.NoFocus)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        v_scroll = self.verticalScrollBar()
+        h_scroll = self.horizontalScrollBar()
+        if v_scroll is not None:
+            v_scroll.setDisabled(True)
+        if h_scroll is not None:
+            h_scroll.setDisabled(True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setTabKeyNavigation(False)
         self.setDragEnabled(False)
         self.setAcceptDrops(False)
@@ -49,31 +75,39 @@ class WellSelectionWidget(QTableWidget):
             font.setPointSize(6)  # You can adjust this value as needed
         else:
             font = QFont()
-        self.horizontalHeader().setFont(font)
-        self.verticalHeader().setFont(font)
+        h_header = self.horizontalHeader()
+        v_header = self.verticalHeader()
+        if h_header is not None:
+            h_header.setFont(font)
+        if v_header is not None:
+            v_header.setFont(font)
 
-        self.setLayout()
+        self._setLayout()
 
-    def setLayout(self):
+    def _setLayout(self) -> None:
         # Calculate available space and cell size
-        header_height = self.horizontalHeader().height()
-        available_height = self.fixed_height - header_height  # Fixed height of 408 pixels
+        h_header = self.horizontalHeader()
+        v_header = self.verticalHeader()
+        header_height = h_header.height() if h_header is not None else 0
+        available_height = (
+            self.fixed_height - header_height
+        )  # Fixed height of 408 pixels
 
         # Calculate cell size based on the minimum of available height and width
         cell_size = available_height // self.rowCount()
 
-        self.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        self.verticalHeader().setDefaultSectionSize(cell_size)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        self.horizontalHeader().setDefaultSectionSize(cell_size)
+        if v_header is not None:
+            v_header.setSectionResizeMode(QHeaderView.Fixed)
+            v_header.setDefaultSectionSize(cell_size)
+            v_header.setMinimumSectionSize(cell_size)
+            v_header.setMaximumSectionSize(cell_size)
+        if h_header is not None:
+            h_header.setSectionResizeMode(QHeaderView.Fixed)
+            h_header.setDefaultSectionSize(cell_size)
+            h_header.setMinimumSectionSize(cell_size)
+            h_header.setMaximumSectionSize(cell_size)
 
-        # Ensure sections do not resize
-        self.verticalHeader().setMinimumSectionSize(cell_size)
-        self.verticalHeader().setMaximumSectionSize(cell_size)
-        self.horizontalHeader().setMinimumSectionSize(cell_size)
-        self.horizontalHeader().setMaximumSectionSize(cell_size)
-
-        row_header_width = self.verticalHeader().width()
+        row_header_width = v_header.width() if v_header is not None else 0
 
         # Calculate total width and height
         total_height = (self.rowCount() * cell_size) + header_height
@@ -85,12 +119,14 @@ class WellSelectionWidget(QTableWidget):
 
         # Force the widget to update its layout
         self.updateGeometry()
-        self.viewport().update()
+        viewport = self.viewport()
+        if viewport is not None:
+            viewport.update()
 
-    def onWellplateChanged(self):
+    def onWellplateChanged(self) -> None:
         self.setFormat(self.wellplateFormatWidget.wellplate_format)
 
-    def setData(self):
+    def setData(self) -> None:
         for i in range(self.rowCount()):
             for j in range(self.columnCount()):
                 item = self.item(i, j)
@@ -98,20 +134,40 @@ class WellSelectionWidget(QTableWidget):
                     item = QTableWidgetItem()
                     self.setItem(i, j, item)
                 # Reset to selectable by default
-                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                item.setFlags(
+                    Qt.ItemFlag(
+                        Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                    )
+                )
 
         if self.number_of_skip > 0 and self.format != 0:
             for i in range(self.number_of_skip):
                 for j in range(self.columns):  # Apply to rows
-                    self.item(i, j).setFlags(self.item(i, j).flags() & ~Qt.ItemIsSelectable)
-                    self.item(self.rows - 1 - i, j).setFlags(
-                        self.item(self.rows - 1 - i, j).flags() & ~Qt.ItemIsSelectable
-                    )
+                    item_ij = self.item(i, j)
+                    if item_ij is not None:
+                        item_ij.setFlags(
+                            Qt.ItemFlag(item_ij.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                        )
+                    item_bot = self.item(self.rows - 1 - i, j)
+                    if item_bot is not None:
+                        item_bot.setFlags(
+                            Qt.ItemFlag(
+                                item_bot.flags() & ~Qt.ItemFlag.ItemIsSelectable
+                            )
+                        )
                 for k in range(self.rows):  # Apply to columns
-                    self.item(k, i).setFlags(self.item(k, i).flags() & ~Qt.ItemIsSelectable)
-                    self.item(k, self.columns - 1 - i).setFlags(
-                        self.item(k, self.columns - 1 - i).flags() & ~Qt.ItemIsSelectable
-                    )
+                    item_ki = self.item(k, i)
+                    if item_ki is not None:
+                        item_ki.setFlags(
+                            Qt.ItemFlag(item_ki.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                        )
+                    item_right = self.item(k, self.columns - 1 - i)
+                    if item_right is not None:
+                        item_right.setFlags(
+                            Qt.ItemFlag(
+                                item_right.flags() & ~Qt.ItemFlag.ItemIsSelectable
+                            )
+                        )
 
         # Update row headers
         row_headers = []
@@ -126,12 +182,18 @@ class WellSelectionWidget(QTableWidget):
         self.setVerticalHeaderLabels(row_headers)
 
         # Adjust vertical header width after setting labels
-        self.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        v_header = self.verticalHeader()
+        if v_header is not None:
+            v_header.setSectionResizeMode(QHeaderView.ResizeToContents)
 
-    def onDoubleClick(self, row, col):
+    def onDoubleClick(self, row: int, col: int) -> None:
         print("double click well", row, col)
-        if (row >= 0 + self.number_of_skip and row <= self.rows - 1 - self.number_of_skip) and (
-            col >= 0 + self.number_of_skip and col <= self.columns - 1 - self.number_of_skip
+        if (
+            row >= 0 + self.number_of_skip
+            and row <= self.rows - 1 - self.number_of_skip
+        ) and (
+            col >= 0 + self.number_of_skip
+            and col <= self.columns - 1 - self.number_of_skip
         ):
             x_mm = col * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
             y_mm = row * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
@@ -141,31 +203,39 @@ class WellSelectionWidget(QTableWidget):
         else:
             self.signal_wellSelected.emit(False)
 
-    def onSingleClick(self, row, col):
+    def onSingleClick(self, row: int, col: int) -> None:
         print("single click well", row, col)
-        if (row >= 0 + self.number_of_skip and row <= self.rows - 1 - self.number_of_skip) and (
-            col >= 0 + self.number_of_skip and col <= self.columns - 1 - self.number_of_skip
+        if (
+            row >= 0 + self.number_of_skip
+            and row <= self.rows - 1 - self.number_of_skip
+        ) and (
+            col >= 0 + self.number_of_skip
+            and col <= self.columns - 1 - self.number_of_skip
         ):
             self.signal_wellSelected.emit(True)
         else:
             self.signal_wellSelected.emit(False)
 
-    def onSelectionChanged(self):
+    def onSelectionChanged(self) -> None:
         # Check if there are any selected indexes before proceeding
         if self.format != "glass slide":
             has_selection = bool(self.selectedIndexes())
             self.signal_wellSelected.emit(has_selection)
 
-    def get_selected_cells(self):
-        list_of_selected_cells = []
+    def get_selected_cells(self) -> List[Tuple[int, int]]:
+        list_of_selected_cells: List[Tuple[int, int]] = []
         print("getting selected cells...")
         if self.format == "glass slide":
             return list_of_selected_cells
         for index in self.selectedIndexes():
             row, col = index.row(), index.column()
             # Check if the cell is within the allowed bounds
-            if (row >= 0 + self.number_of_skip and row <= self.rows - 1 - self.number_of_skip) and (
-                col >= 0 + self.number_of_skip and col <= self.columns - 1 - self.number_of_skip
+            if (
+                row >= 0 + self.number_of_skip
+                and row <= self.rows - 1 - self.number_of_skip
+            ) and (
+                col >= 0 + self.number_of_skip
+                and col <= self.columns - 1 - self.number_of_skip
             ):
                 list_of_selected_cells.append((row, col))
         if list_of_selected_cells:
@@ -174,18 +244,23 @@ class WellSelectionWidget(QTableWidget):
             print("no cells")
         return list_of_selected_cells
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: Optional[QResizeEvent]) -> None:
         self.initUI()
         super().resizeEvent(event)
 
-    def wheelEvent(self, event):
+    def wheelEvent(self, event: Optional[QWheelEvent]) -> None:
         # Ignore wheel events to prevent scrolling
-        event.ignore()
+        if event is not None:
+            event.ignore()
 
-    def scrollTo(self, index, hint=QAbstractItemView.EnsureVisible):
+    def scrollTo(
+        self,
+        index: QModelIndex,
+        hint: QAbstractItemView.ScrollHint = QAbstractItemView.EnsureVisible,
+    ) -> None:
         pass
 
-    def set_white_boundaries_style(self):
+    def set_white_boundaries_style(self) -> None:
         style = """
         QTableWidget {
             gridline-color: white;
@@ -196,5 +271,3 @@ class WellSelectionWidget(QTableWidget):
         }
         """
         self.setStyleSheet(style)
-
-

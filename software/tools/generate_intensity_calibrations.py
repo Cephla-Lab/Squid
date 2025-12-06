@@ -12,7 +12,11 @@ sys.path.append(software_dir)
 os.chdir(software_dir)
 
 from PM16 import PM16
-from control.peripherals.lighting.led import IlluminationController, IntensityControlMode, ShutterControlMode
+from control.peripherals.lighting.led import (
+    IlluminationController,
+    IntensityControlMode,
+    ShutterControlMode,
+)
 import control.microcontroller as microcontroller
 from control._def import *
 
@@ -20,7 +24,9 @@ from control._def import *
 def plot_calibration(data: pd.DataFrame, wavelength: int, output_dir: Path):
     """Generate and save calibration plot."""
     plt.figure(figsize=(10, 6))
-    plt.plot(data["DAC Percent"], data["Optical Power (mW)"], "bo-", label="Measured Data")
+    plt.plot(
+        data["DAC Percent"], data["Optical Power (mW)"], "bo-", label="Measured Data"
+    )
     plt.xlabel("DAC Percent")
     plt.ylabel("Optical Power (mW)")
     plt.title(f"Intensity Calibration - {wavelength}nm")
@@ -35,7 +41,11 @@ def plot_calibration(data: pd.DataFrame, wavelength: int, output_dir: Path):
 
 
 def generate_calibration(
-    pm: PM16, controller: IlluminationController, wavelength: int, dac_steps: List[float], early_stop_mW: float = 500
+    pm: PM16,
+    controller: IlluminationController,
+    wavelength: int,
+    dac_steps: List[float],
+    early_stop_mW: float = 500,
 ) -> pd.DataFrame:
     """Generate calibration data for a specific wavelength."""
     print(f"\nGenerating calibration for {wavelength}nm...")
@@ -82,7 +92,9 @@ def generate_calibration(
 def main():
     # Calibration parameters
     WAVELENGTHS = [405, 470, 638]  # Wavelengths to calibrate
-    DAC_STEPS = np.arange(0, 100.1, 0.5)  # DAC values to measure (0, 0.1, 0.2, ..., 100)
+    DAC_STEPS = np.arange(
+        0, 100.1, 0.5
+    )  # DAC values to measure (0, 0.1, 0.2, ..., 100)
     OUTPUT_DIR = "intensity_calibrations"  # Output directory for calibration files
     EARLY_STOP_mW = 500  # Early stop at 500 mW
 
@@ -98,7 +110,9 @@ def main():
 
     # Initialize illumination controller
     mcu = microcontroller.Microcontroller(
-        serial_device=microcontroller.get_microcontroller_serial_device(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)
+        serial_device=microcontroller.get_microcontroller_serial_device(
+            version=CONTROLLER_VERSION, sn=CONTROLLER_SN
+        )
     )
     controller = IlluminationController(
         mcu,
@@ -112,7 +126,9 @@ def main():
         print(f"\nCalibrating {wavelength} nm...")
 
         # Generate calibration data
-        calibration_data = generate_calibration(pm, controller, wavelength, DAC_STEPS, EARLY_STOP_mW)
+        calibration_data = generate_calibration(
+            pm, controller, wavelength, DAC_STEPS, EARLY_STOP_mW
+        )
 
         # Save to CSV
         output_file = output_dir / f"{wavelength}.csv"

@@ -1,6 +1,6 @@
 # tests/squid/test_events_commands.py
 """Tests for command and state event types."""
-import pytest
+
 from dataclasses import is_dataclass
 
 
@@ -27,8 +27,8 @@ class TestCommandEvents:
         """MoveStageCommand should have axis and distance."""
         from squid.events import MoveStageCommand
 
-        cmd = MoveStageCommand(axis='x', distance_mm=1.5)
-        assert cmd.axis == 'x'
+        cmd = MoveStageCommand(axis="x", distance_mm=1.5)
+        assert cmd.axis == "x"
         assert cmd.distance_mm == 1.5
 
 

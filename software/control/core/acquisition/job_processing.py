@@ -123,13 +123,16 @@ class SaveImageJob(Job):
             }
             # Add requested fields: human-readable time and optional piezo position
             try:
-                metadata["time"] = datetime.fromtimestamp(info.capture_time).strftime("%Y-%m-%d %H:%M:%S.%f")
+                metadata["time"] = datetime.fromtimestamp(info.capture_time).strftime(
+                    "%Y-%m-%d %H:%M:%S.%f"
+                )
             except Exception:
                 metadata["time"] = info.capture_time
             if info.z_piezo_um is not None:
                 metadata["z_piezo (um)"] = info.z_piezo_um
             output_path: str = os.path.join(
-                info.save_directory, f"{info.region_id}_{info.fov:0{_def.FILE_ID_PADDING}}_stack.tiff"
+                info.save_directory,
+                f"{info.region_id}_{info.fov:0{_def.FILE_ID_PADDING}}_stack.tiff",
             )
             # Ensure channel information is preserved across common TIFF readers by:
             # - embedding full metadata as JSON in ImageDescription (description=)
@@ -139,7 +142,9 @@ class SaveImageJob(Job):
 
             # extratags format: (code, dtype, count, value, writeonce)
             # PageName (285) expects ASCII; dtype 's' denotes a null-terminated string in tifffile
-            extratags: List[Tuple[int, str, int, str, bool]] = [(285, "s", 0, page_name, False)]
+            extratags: List[Tuple[int, str, int, str, bool]] = [
+                (285, "s", 0, page_name, False)
+            ]
 
             with tifffile.TiffWriter(output_path, append=True) as tiff_writer:
                 tiff_writer.write(
@@ -178,7 +183,9 @@ class SaveImageJob(Job):
         lock_path: str = _metadata_lock_path(metadata_path)
 
         with _acquire_file_lock(lock_path):
-            metadata: Optional[Dict[str, Any]] = ome_tiff_writer.load_metadata(metadata_path)
+            metadata: Optional[Dict[str, Any]] = ome_tiff_writer.load_metadata(
+                metadata_path
+            )
             if metadata is None:
                 metadata = ome_tiff_writer.initialize_metadata(info, image)
                 target_dtype: np.dtype = np.dtype(metadata["dtype"])
@@ -194,12 +201,16 @@ class SaveImageJob(Job):
             else:
                 expected_shape: Tuple[int, ...] = tuple(metadata["shape"])
                 if expected_shape[-2:] != image.shape[-2:]:
-                    raise ValueError("Image dimensions do not match existing OME memmap stack")
+                    raise ValueError(
+                        "Image dimensions do not match existing OME memmap stack"
+                    )
                 if not metadata.get("channel_names") and info.channel_names:
                     metadata["channel_names"] = info.channel_names
 
             target_dtype: np.dtype = np.dtype(metadata["dtype"])
-            image_to_store: np.ndarray = image if image.dtype == target_dtype else image.astype(target_dtype)
+            image_to_store: np.ndarray = (
+                image if image.dtype == target_dtype else image.astype(target_dtype)
+            )
 
             time_point: int = int(info.time_point)
             z_index: int = int(info.z_index)
@@ -212,7 +223,9 @@ class SaveImageJob(Job):
             if not (0 <= channel_index < shape[2]):
                 raise ValueError("Channel index out of range for OME stack")
 
-            stack: np.ndarray = tifffile.memmap(output_path, dtype=target_dtype, mode="r+")
+            stack: np.ndarray = tifffile.memmap(
+                output_path, dtype=target_dtype, mode="r+"
+            )
             if stack.shape != shape:
                 stack.shape = shape
             try:
@@ -293,13 +306,21 @@ class JobRunner(multiprocessing.Process):
                 job = self._input_queue.get(timeout=self._input_timeout)
                 self._log.info(f"Running job {job.job_id}...")
                 result: Any = job.run()
-                self._log.info(f"Job {job.job_id} returned. Sending result to output queue.")
-                self._output_queue.put_nowait(JobResult(job_id=job.job_id, result=result, exception=None))
+                self._log.info(
+                    f"Job {job.job_id} returned. Sending result to output queue."
+                )
+                self._output_queue.put_nowait(
+                    JobResult(job_id=job.job_id, result=result, exception=None)
+                )
                 self._log.debug(f"Result for {job.job_id} is on output queue.")
             except queue.Empty:
                 pass
             except Exception as e:
                 if job:
-                    self._log.exception(f"Job {job.job_id} failed! Returning exception result.")
-                    self._output_queue.put_nowait(JobResult(job_id=job.job_id, result=None, exception=e))
+                    self._log.exception(
+                        f"Job {job.job_id} failed! Returning exception result."
+                    )
+                    self._output_queue.put_nowait(
+                        JobResult(job_id=job.job_id, result=None, exception=e)
+                    )
         self._log.info("Shutdown request received, exiting run.")
