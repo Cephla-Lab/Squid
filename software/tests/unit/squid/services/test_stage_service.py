@@ -111,7 +111,7 @@ class TestStageService:
         mock_stage.move_z_to.assert_called_once_with(5.0, True)
 
     def test_home_calls_stage(self):
-        """home should call stage.home."""
+        """home should call stage.home with all 4 axis params."""
         from squid.services.stage_service import StageService
         from squid.events import EventBus
 
@@ -122,7 +122,51 @@ class TestStageService:
         service = StageService(mock_stage, bus)
         service.home(x=True, y=True, z=False)
 
-        mock_stage.home.assert_called_once_with(True, True, False)
+        # Should pass theta=False by default
+        mock_stage.home.assert_called_once_with(True, True, False, False)
+
+    def test_home_with_theta(self):
+        """home should support theta axis."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        service.home(x=True, y=True, z=True, theta=True)
+
+        mock_stage.home.assert_called_once_with(True, True, True, True)
+
+    def test_zero_calls_stage(self):
+        """zero should call stage.zero with all 4 axis params."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        service.zero(x=True, y=False, z=True)
+
+        # Should pass theta=False by default
+        mock_stage.zero.assert_called_once_with(True, False, True, False)
+
+    def test_zero_with_theta(self):
+        """zero should support theta axis."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        service.zero(x=True, y=True, z=True, theta=True)
+
+        mock_stage.zero.assert_called_once_with(True, True, True, True)
 
     def test_get_position(self):
         """get_position should return stage position."""

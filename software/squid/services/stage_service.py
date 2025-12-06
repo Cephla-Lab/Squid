@@ -80,14 +80,14 @@ class StageService(BaseService):
         """Get current position."""
         return self._stage.get_pos()
 
-    def home(self, x: bool = False, y: bool = False, z: bool = False):
+    def home(self, x: bool = False, y: bool = False, z: bool = False, theta: bool = False):
         """Home specified axes."""
-        self._stage.home(x, y, z)
+        self._stage.home(x, y, z, theta)
         self._publish_position()
 
-    def zero(self, x: bool = False, y: bool = False, z: bool = False):
+    def zero(self, x: bool = False, y: bool = False, z: bool = False, theta: bool = False):
         """Zero specified axes."""
-        self._stage.zero(x, y, z)
+        self._stage.zero(x, y, z, theta)
         self._publish_position()
 
     def _publish_position(self):
