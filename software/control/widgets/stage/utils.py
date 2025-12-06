@@ -1,0 +1,184 @@
+from control.widgets.stage._common import *
+
+class StageUtils(QDialog):
+    """Dialog containing microscope utility functions like homing, zeroing, and slide positioning."""
+
+    signal_threaded_stage_move_started = Signal()
+    signal_loading_position_reached = Signal()
+    signal_scanning_position_reached = Signal()
+
+    def __init__(
+        self,
+        stage_service: "StageService",
+        live_controller: LiveController = None,
+        is_wellplate: bool = False,
+        parent=None
+    ):
+        super().__init__(parent)
+        self.log = squid.logging.get_logger(self.__class__.__name__)
+        self.live_controller = live_controller
+        self.is_wellplate = is_wellplate
+        self.slide_position = None
+
+        self._service = stage_service
+
+        self.setWindowTitle("Stage Utils")
+        self.setModal(False)  # Allow interaction with main window while dialog is open
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup the UI components."""
+        # Create buttons
+        self.btn_home_X = QPushButton("Home X")
+        self.btn_home_X.setDefault(False)
+        self.btn_home_X.setEnabled(HOMING_ENABLED_X)
+
+        self.btn_home_Y = QPushButton("Home Y")
+        self.btn_home_Y.setDefault(False)
+        self.btn_home_Y.setEnabled(HOMING_ENABLED_Y)
+
+        self.btn_home_Z = QPushButton("Home Z")
+        self.btn_home_Z.setDefault(False)
+        self.btn_home_Z.setEnabled(HOMING_ENABLED_Z)
+
+        self.btn_zero_X = QPushButton("Zero X")
+        self.btn_zero_X.setDefault(False)
+
+        self.btn_zero_Y = QPushButton("Zero Y")
+        self.btn_zero_Y.setDefault(False)
+
+        self.btn_zero_Z = QPushButton("Zero Z")
+        self.btn_zero_Z.setDefault(False)
+
+        self.btn_load_slide = QPushButton("Move To Loading Position")
+        self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
+
+        # Connect buttons to functions
+        self.btn_home_X.clicked.connect(self.home_x)
+        self.btn_home_Y.clicked.connect(self.home_y)
+        self.btn_home_Z.clicked.connect(self.home_z)
+        self.btn_zero_X.clicked.connect(self.zero_x)
+        self.btn_zero_Y.clicked.connect(self.zero_y)
+        self.btn_zero_Z.clicked.connect(self.zero_z)
+        self.btn_load_slide.clicked.connect(self.switch_position)
+
+        # Layout
+        main_layout = QVBoxLayout()
+
+        # Homing section
+        homing_group = QGroupBox("Homing")
+        homing_layout = QHBoxLayout()
+        homing_layout.addWidget(self.btn_home_X)
+        homing_layout.addWidget(self.btn_home_Y)
+        homing_layout.addWidget(self.btn_home_Z)
+        homing_group.setLayout(homing_layout)
+
+        # Zero section
+        zero_group = QGroupBox("Zero Position")
+        zero_layout = QHBoxLayout()
+        zero_layout.addWidget(self.btn_zero_X)
+        zero_layout.addWidget(self.btn_zero_Y)
+        zero_layout.addWidget(self.btn_zero_Z)
+        zero_group.setLayout(zero_layout)
+
+        # Slide positioning section
+        slide_group = QGroupBox("Slide Positioning")
+        slide_layout = QVBoxLayout()
+        slide_layout.addWidget(self.btn_load_slide)
+        slide_group.setLayout(slide_layout)
+
+        # Add sections to main layout
+        main_layout.addWidget(homing_group)
+        main_layout.addWidget(zero_group)
+        main_layout.addWidget(slide_group)
+
+        # Close button
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        main_layout.addWidget(close_button)
+
+        self.setLayout(main_layout)
+
+    def home_x(self):
+        """Home X axis with confirmation dialog."""
+        self._show_confirmation_dialog(x=True, y=False, z=False, theta=False)
+
+    def home_y(self):
+        """Home Y axis with confirmation dialog."""
+        self._show_confirmation_dialog(x=False, y=True, z=False, theta=False)
+
+    def home_z(self):
+        """Home Z axis with confirmation dialog."""
+        self._show_confirmation_dialog(x=False, y=False, z=True, theta=False)
+        self._service.move_to_safety_position()
+
+    def _show_confirmation_dialog(self, x: bool, y: bool, z: bool, theta: bool):
+        """Display a confirmation dialog and home the specified axis if confirmed."""
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Information)
+        msg.setText("Confirm your action")
+        msg.setInformativeText("Click OK to run homing")
+        msg.setWindowTitle("Confirmation")
+        msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Cancel)
+        retval = msg.exec_()
+        if QMessageBox.Ok == retval:
+            self._service.home(x=x, y=y, z=z)
+
+    def zero_x(self):
+        """Zero X axis position."""
+        self._service.zero(x=True, y=False, z=False)
+
+    def zero_y(self):
+        """Zero Y axis position."""
+        self._service.zero(x=False, y=True, z=False)
+
+    def zero_z(self):
+        """Zero Z axis position."""
+        self._service.zero(x=False, y=False, z=True)
+
+    def switch_position(self):
+        """Switch between loading and scanning positions."""
+        self._was_live = self.live_controller.is_live
+        if self._was_live:
+            self.live_controller.stop_live()
+        self.signal_threaded_stage_move_started.emit()
+        if self.slide_position != "loading":
+            self._service.move_to_loading_position(
+                blocking=False,
+                callback=self._callback_loading_position_reached,
+                is_wellplate=self.is_wellplate,
+            )
+        else:
+            self._service.move_to_scanning_position(
+                blocking=False,
+                callback=self._callback_scanning_position_reached,
+                is_wellplate=self.is_wellplate,
+            )
+        self.btn_load_slide.setEnabled(False)
+
+    def _callback_loading_position_reached(self, success: bool, error_message: Optional[str]):
+        """Handle slide loading position reached signal."""
+        self.slide_position = "loading"
+        self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
+        self.btn_load_slide.setText("Move to Scanning Position")
+        self.btn_load_slide.setEnabled(True)
+        if self._was_live:
+            self.live_controller.start_live()
+        if not success:
+            QMessageBox.warning(self, "Error", error_message)
+        self.signal_loading_position_reached.emit()
+
+    def _callback_scanning_position_reached(self, success: bool, error_message: Optional[str]):
+        """Handle slide scanning position reached signal."""
+        self.slide_position = "scanning"
+        self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
+        self.btn_load_slide.setText("Move to Loading Position")
+        self.btn_load_slide.setEnabled(True)
+        if self._was_live:
+            self.live_controller.start_live()
+        if not success:
+            QMessageBox.warning(self, "Error", error_message)
+        self.signal_scanning_position_reached.emit()
+
+
