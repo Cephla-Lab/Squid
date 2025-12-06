@@ -618,7 +618,7 @@ class WellplateCalibration(QDialog):
 
     def setCorner(self, index):
         if self.corners[index] is None:
-            pos = self.stage.get_pos()
+            pos = self._stage_service.get_position()
             x = pos.x_mm
             y = pos.y_mm
 
