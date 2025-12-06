@@ -187,3 +187,19 @@ class CameraService(BaseService):
         """Set camera black level."""
         self._log.debug(f"Setting black level: {level}")
         self._camera.set_black_level(level)
+
+    # ============================================================
+    # Read-only camera properties
+    # ============================================================
+
+    def get_gain_range(self):
+        """Get camera gain range."""
+        return self._camera.get_gain_range()
+
+    def get_acquisition_mode(self):
+        """Get current acquisition mode."""
+        return self._camera.get_acquisition_mode()
+
+    def get_pixel_size_binned_um(self) -> float:
+        """Get pixel size after binning in microns."""
+        return self._camera.get_pixel_size_binned_um()

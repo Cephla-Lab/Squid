@@ -359,3 +359,54 @@ class TestCameraService:
         service.set_black_level(10.0)
 
         mock_camera.set_black_level.assert_called_once_with(10.0)
+
+    # ============================================================
+    # Task 2: Read-only camera properties
+    # ============================================================
+
+    def test_get_gain_range(self):
+        """get_gain_range should return camera value."""
+        from squid.services.camera_service import CameraService
+        from squid.events import EventBus
+
+        mock_camera = Mock()
+        mock_gain_range = Mock()
+        mock_gain_range.min_gain = 0.0
+        mock_gain_range.max_gain = 24.0
+        mock_camera.get_gain_range.return_value = mock_gain_range
+        bus = EventBus()
+        service = CameraService(mock_camera, bus)
+
+        result = service.get_gain_range()
+
+        assert result.min_gain == 0.0
+        assert result.max_gain == 24.0
+
+    def test_get_acquisition_mode(self):
+        """get_acquisition_mode should return camera value."""
+        from squid.services.camera_service import CameraService
+        from squid.events import EventBus
+        from squid.abc import CameraAcquisitionMode
+
+        mock_camera = Mock()
+        mock_camera.get_acquisition_mode.return_value = CameraAcquisitionMode.SOFTWARE_TRIGGER
+        bus = EventBus()
+        service = CameraService(mock_camera, bus)
+
+        result = service.get_acquisition_mode()
+
+        assert result == CameraAcquisitionMode.SOFTWARE_TRIGGER
+
+    def test_get_pixel_size_binned_um(self):
+        """get_pixel_size_binned_um should return camera value."""
+        from squid.services.camera_service import CameraService
+        from squid.events import EventBus
+
+        mock_camera = Mock()
+        mock_camera.get_pixel_size_binned_um.return_value = 6.5
+        bus = EventBus()
+        service = CameraService(mock_camera, bus)
+
+        result = service.get_pixel_size_binned_um()
+
+        assert result == 6.5
