@@ -1,6 +1,8 @@
 # Common imports for wellplate widgets
 from __future__ import annotations
 
+import json
+import os
 from typing import TYPE_CHECKING, Any, Optional, Dict, List, Tuple, Union
 
 from qtpy.QtCore import Qt, Signal, QModelIndex, QVariant

@@ -31,7 +31,7 @@ class LiveControlWidget(QFrame):
         self.channelConfigurationManager = channelConfigurationManager
         self.fps_trigger = 10
         self.fps_display = 10
-        self.liveController.set_trigger_fps(self.fps_trigger)
+        event_bus.publish(SetTriggerFPSCommand(fps=self.fps_trigger))
         self.streamHandler.set_display_fps(self.fps_display)
 
         self.currentConfiguration = (
@@ -48,10 +48,21 @@ class LiveControlWidget(QFrame):
             stretch,
         )
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        self.liveController.set_microscope_mode(self.currentConfiguration)
+        event_bus.publish(
+            SetMicroscopeModeCommand(
+                configuration_name=self.currentConfiguration.name,
+                objective=self.objectiveStore.current_objective,
+            )
+        )
         self.update_ui_for_mode(self.currentConfiguration)
 
         self.is_switching_mode = False  # flag used to prevent from settings being set by twice - from both mode change slot and value change slot; another way is to use blockSignals(True)
+
+        # Subscribe to state changes from the bus
+        event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
+        event_bus.subscribe(TriggerModeChanged, self._on_trigger_mode_changed)
+        event_bus.subscribe(TriggerFPSChanged, self._on_trigger_fps_changed)
+        event_bus.subscribe(MicroscopeModeChanged, self._on_microscope_mode_changed)
 
     def add_components(
         self,
@@ -193,9 +204,11 @@ class LiveControlWidget(QFrame):
 
         # connections
         self.dropdown_triggerManu.currentTextChanged.connect(
-            self.liveController.set_trigger_mode
+            lambda mode: event_bus.publish(SetTriggerModeCommand(mode=mode))
         )
-        self.entry_triggerFPS.valueChanged.connect(self.liveController.set_trigger_fps)
+        self.entry_triggerFPS.valueChanged.connect(
+            lambda fps: event_bus.publish(SetTriggerFPSCommand(fps=fps))
+        )
         self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
         self.dropdown_modeSelection.currentTextChanged.connect(
             self.update_configuration
@@ -218,10 +231,36 @@ class LiveControlWidget(QFrame):
         if pressed:
             self.signal_live_configuration.emit(self.currentConfiguration)
             self.signal_start_live.emit()
+            event_bus.publish(StartLiveCommand(configuration=self.currentConfiguration.name))
+        else:
+            event_bus.publish(StopLiveCommand())
+
+    def _on_live_state_changed(self, event: LiveStateChanged) -> None:
+        """Handle live state changes from the event bus."""
+        if event.is_live:
+            self.btn_live.setChecked(True)
             self.btn_live.setText("Stop Live")
         else:
-            self.liveController.stop_live()
+            self.btn_live.setChecked(False)
             self.btn_live.setText("Start Live")
+
+    def _on_trigger_mode_changed(self, event: TriggerModeChanged) -> None:
+        """Handle trigger mode change from service."""
+        self.dropdown_triggerManu.blockSignals(True)
+        self.dropdown_triggerManu.setCurrentText(event.mode)
+        self.dropdown_triggerManu.blockSignals(False)
+
+    def _on_trigger_fps_changed(self, event: TriggerFPSChanged) -> None:
+        """Handle trigger FPS change from service."""
+        self.entry_triggerFPS.blockSignals(True)
+        self.entry_triggerFPS.setValue(event.fps)
+        self.entry_triggerFPS.blockSignals(False)
+
+    def _on_microscope_mode_changed(self, event: MicroscopeModeChanged) -> None:
+        """Handle microscope mode change from service."""
+        self.dropdown_modeSelection.blockSignals(True)
+        self.dropdown_modeSelection.setCurrentText(event.configuration_name)
+        self.dropdown_modeSelection.blockSignals(False)
 
     def update_configuration(self, conf_name: str) -> None:
         self.is_switching_mode = True
@@ -237,7 +276,12 @@ class LiveControlWidget(QFrame):
         )
         self.update_ui_for_mode(self.currentConfiguration)
         self.signal_live_configuration.emit(self.currentConfiguration)
-        self.liveController.set_microscope_mode(self.currentConfiguration)
+        event_bus.publish(
+            SetMicroscopeModeCommand(
+                configuration_name=self.currentConfiguration.name,
+                objective=self.objectiveStore.current_objective,
+            )
+        )
         self.is_switching_mode = False
 
     def update_ui_for_mode(self, configuration: "ChannelMode") -> None:
@@ -281,7 +325,7 @@ class LiveControlWidget(QFrame):
 
     def set_trigger_mode(self, trigger_mode: str) -> None:
         self.dropdown_triggerManu.setCurrentText(trigger_mode)
-        self.liveController.set_trigger_mode(self.dropdown_triggerManu.currentText())
+        event_bus.publish(SetTriggerModeCommand(mode=self.dropdown_triggerManu.currentText()))
 
     def refresh_mode_list(self) -> None:
         """Refresh the mode dropdown when profile changes."""
@@ -300,6 +344,10 @@ class LiveControlWidget(QFrame):
         elif self.dropdown_modeSelection.count() > 0:
             self.dropdown_modeSelection.setCurrentIndex(0)
 
+    def toggle_autolevel(self, enabled: bool) -> None:
+        """Toggle autolevel on or off."""
+        self.btn_autolevel.setChecked(enabled)
+
     def update_camera_settings(self) -> None:
         """Update UI to reflect current camera settings."""
         self.entry_exposureTime.blockSignals(True)
@@ -312,3 +360,14 @@ class LiveControlWidget(QFrame):
         except NotImplementedError:
             pass
         self.entry_analogGain.blockSignals(False)
+
+    def select_new_microscope_mode_by_name(self, mode_name: str) -> None:
+        """Select a microscope mode by name in the dropdown.
+
+        If the mode doesn't exist in the current list, selects the first available mode.
+        """
+        index = self.dropdown_modeSelection.findText(mode_name)
+        if index >= 0:
+            self.dropdown_modeSelection.setCurrentIndex(index)
+        elif self.dropdown_modeSelection.count() > 0:
+            self.dropdown_modeSelection.setCurrentIndex(0)

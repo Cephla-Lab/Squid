@@ -42,6 +42,7 @@ dependencies = [
     "aicsimageio",
     "basicpy",
     "gitpython",
+    "platformdirs",
     "matplotlib",
     "pydantic_xml",
     "pyvisa",

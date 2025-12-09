@@ -16,12 +16,14 @@ class WellplateFormatWidget(QWidget):
         navigationViewer: "NavigationViewer",
         streamHandler: "StreamHandler",
         liveController: "LiveController",
+        stage_service: Optional["StageService"] = None,
     ) -> None:
         super().__init__()
         self.stage: AbstractStage = stage
         self.navigationViewer: "NavigationViewer" = navigationViewer
         self.streamHandler: "StreamHandler" = streamHandler
         self.liveController: "LiveController" = liveController
+        self.stage_service: Optional["StageService"] = stage_service
         self.wellplate_format: str = WELLPLATE_FORMAT
         self.csv_path: str = SAMPLE_FORMATS_CSV_PATH  # 'sample_formats.csv'
         self.label: QLabel
@@ -62,6 +64,7 @@ class WellplateFormatWidget(QWidget):
                 self.navigationViewer,
                 self.streamHandler,
                 self.liveController,
+                stage_service=self.stage_service,
             )
             result = calibration_dialog.exec_()
             if result == QDialog.Rejected:

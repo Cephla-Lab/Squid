@@ -42,6 +42,7 @@ import control.peripherals.cameras.camera_utils
 import squid.config
 import squid.logging
 import control.peripherals.stage.stage_utils
+from squid.events import event_bus, MoveStageCommand, MoveStageToCommand
 
 log = squid.logging.get_logger(__name__)
 
@@ -97,8 +98,17 @@ class HighContentScreeningGui(QMainWindow):
     ):
         super().__init__(*args, **kwargs)
 
+        if services is None:
+            raise ValueError(
+                "HighContentScreeningGui requires a ServiceRegistry. "
+                "Pass ApplicationContext.services."
+            )
+
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self._services = services  # Store for passing to widgets
+        self._stage_service = self._services.get("stage")
+        if self._stage_service is None:
+            raise ValueError("Stage service is required for stage operations.")
 
         self.microscope: control.microscope.Microscope = microscope
         self.stage: AbstractStage = microscope.stage
@@ -255,22 +265,29 @@ class HighContentScreeningGui(QMainWindow):
                 self.log.info(
                     f"Cache position exists.  Moving to: ({cached_pos.x_mm},{cached_pos.y_mm},{cached_pos.z_mm}) [mm]"
                 )
-                self.stage.move_x_to(cached_pos.x_mm)
-                self.stage.move_y_to(cached_pos.y_mm)
+                event_bus.publish(
+                    MoveStageToCommand(
+                        x_mm=cached_pos.x_mm,
+                        y_mm=cached_pos.y_mm,
+                    )
+                )
 
-                if (int(Z_HOME_SAFETY_POINT) / 1000.0) < cached_pos.z_mm:
-                    self.stage.move_z_to(cached_pos.z_mm)
-                else:
+                target_z = (
+                    cached_pos.z_mm
+                    if (int(Z_HOME_SAFETY_POINT) / 1000.0) < cached_pos.z_mm
+                    else int(Z_HOME_SAFETY_POINT) / 1000.0
+                )
+                if target_z != cached_pos.z_mm:
                     self.log.info(
                         "Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT"
                     )
-                    self.stage.move_z_to(int(Z_HOME_SAFETY_POINT) / 1000.0)
+                event_bus.publish(MoveStageToCommand(z_mm=target_z))
             else:
                 self.log.info(
                     "Cache position is not exists.  Moving Z axis to safety position"
                 )
-                control.peripherals.stage.stage_utils.move_z_axis_to_safety_position(
-                    self.stage
+                event_bus.publish(
+                    MoveStageToCommand(z_mm=int(Z_HOME_SAFETY_POINT) / 1000.0)
                 )
 
             if ENABLE_WELLPLATE_MULTIPOINT:
@@ -357,9 +374,10 @@ class HighContentScreeningGui(QMainWindow):
             raise ValueError("Microcontroller must be none-None for hardware setup.")
 
         try:
-            x_config = self.stage.get_config().X_AXIS
-            y_config = self.stage.get_config().Y_AXIS
-            z_config = self.stage.get_config().Z_AXIS
+            stage_config = self._stage_service.get_config()
+            x_config = stage_config.X_AXIS
+            y_config = stage_config.Y_AXIS
+            z_config = stage_config.Z_AXIS
             self.log.info(
                 f"Setting stage limits to:"
                 f" x=[{x_config.MIN_POSITION},{x_config.MAX_POSITION}],"
@@ -367,7 +385,7 @@ class HighContentScreeningGui(QMainWindow):
                 f" z=[{z_config.MIN_POSITION},{z_config.MAX_POSITION}]"
             )
 
-            self.stage.set_limits(
+            self._stage_service.set_limits(
                 x_pos_mm=x_config.MAX_POSITION,
                 x_neg_mm=x_config.MIN_POSITION,
                 y_pos_mm=y_config.MAX_POSITION,
@@ -1188,8 +1206,8 @@ class HighContentScreeningGui(QMainWindow):
             self.log.debug(
                 f"Click to move enabled, click at {click_x=}, {click_y=} results in relative move of {delta_x=} [mm], {delta_y=} [mm]"
             )
-            self.stage.move_x(delta_x)
-            self.stage.move_y(delta_y)
+            event_bus.publish(MoveStageCommand(axis="x", distance_mm=delta_x))
+            event_bus.publish(MoveStageCommand(axis="y", distance_mm=delta_y))
         else:
             self.log.debug(
                 f"Click to move disabled, ignoring click at {click_x=}, {click_y=}"
@@ -1205,8 +1223,7 @@ class HighContentScreeningGui(QMainWindow):
             )
 
     def move_to_mm(self, x_mm: float, y_mm: float) -> None:
-        self.stage.move_x_to(x_mm)
-        self.stage.move_y_to(y_mm)
+        event_bus.publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
 
     def closeEvent(self, event: QCloseEvent) -> None:
         # Show confirmation dialog
@@ -1224,7 +1241,8 @@ class HighContentScreeningGui(QMainWindow):
 
         try:
             control.peripherals.stage.stage_utils.cache_position(
-                pos=self.stage.get_pos(), stage_config=self.stage.get_config()
+                pos=self._stage_service.get_position(),
+                stage_config=self._stage_service.get_config(),
             )
         except ValueError as e:
             self.log.error(
@@ -1244,7 +1262,7 @@ class HighContentScreeningGui(QMainWindow):
         self.camera.close()
 
         # retract z
-        self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
+        event_bus.publish(MoveStageToCommand(z_mm=OBJECTIVE_RETRACTED_POS_MM))
 
         # reset objective changer
         if USE_XERYON:

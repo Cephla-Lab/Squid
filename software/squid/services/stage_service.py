@@ -10,6 +10,9 @@ from squid.events import (
     MoveStageCommand,
     MoveStageToCommand,
     HomeStageCommand,
+    ZeroStageCommand,
+    MoveStageToLoadingPositionCommand,
+    MoveStageToScanningPositionCommand,
     StagePositionChanged,
 )
 import control._def as _def
@@ -37,6 +40,13 @@ class StageService(BaseService):
         self.subscribe(MoveStageCommand, self._on_move_command)
         self.subscribe(MoveStageToCommand, self._on_move_to_command)
         self.subscribe(HomeStageCommand, self._on_home_command)
+        self.subscribe(ZeroStageCommand, self._on_zero_command)
+        self.subscribe(
+            MoveStageToLoadingPositionCommand, self._on_move_to_loading_command
+        )
+        self.subscribe(
+            MoveStageToScanningPositionCommand, self._on_move_to_scanning_command
+        )
 
     def _on_move_command(self, event: MoveStageCommand):
         if event.axis == "x":
@@ -50,7 +60,24 @@ class StageService(BaseService):
         self.move_to(event.x_mm, event.y_mm, event.z_mm)
 
     def _on_home_command(self, event: HomeStageCommand):
-        self.home(event.x, event.y, event.z)
+        self.home(event.x, event.y, event.z, event.theta)
+
+    def _on_zero_command(self, event: ZeroStageCommand):
+        self.zero(event.x, event.y, event.z, event.theta)
+
+    def _on_move_to_loading_command(self, event: MoveStageToLoadingPositionCommand):
+        self.move_to_loading_position(
+            blocking=event.blocking,
+            callback=event.callback,
+            is_wellplate=event.is_wellplate,
+        )
+
+    def _on_move_to_scanning_command(self, event: MoveStageToScanningPositionCommand):
+        self.move_to_scanning_position(
+            blocking=event.blocking,
+            callback=event.callback,
+            is_wellplate=event.is_wellplate,
+        )
 
     def move_x(self, distance_mm: float, blocking: bool = True):
         """Move X axis by relative distance."""
@@ -104,7 +131,15 @@ class StageService(BaseService):
     def _publish_position(self):
         """Publish current position."""
         pos = self._stage.get_pos()
-        self.publish(StagePositionChanged(x_mm=pos.x_mm, y_mm=pos.y_mm, z_mm=pos.z_mm, theta_rad=pos.theta_rad))
+        theta = getattr(pos, "theta_rad", None)
+        self.publish(
+            StagePositionChanged(
+                x_mm=pos.x_mm,
+                y_mm=pos.y_mm,
+                z_mm=pos.z_mm,
+                theta_rad=theta,
+            )
+        )
 
     # ============================================================
     # Task 2.1: Theta axis methods
@@ -142,10 +177,17 @@ class StageService(BaseService):
         x_neg_mm: Optional[float] = None,
         y_pos_mm: Optional[float] = None,
         y_neg_mm: Optional[float] = None,
+        z_pos_mm: Optional[float] = None,
+        z_neg_mm: Optional[float] = None,
     ) -> None:
         """Set movement limits."""
         self._stage.set_limits(
-            x_pos_mm=x_pos_mm, x_neg_mm=x_neg_mm, y_pos_mm=y_pos_mm, y_neg_mm=y_neg_mm
+            x_pos_mm=x_pos_mm,
+            x_neg_mm=x_neg_mm,
+            y_pos_mm=y_pos_mm,
+            y_neg_mm=y_neg_mm,
+            z_pos_mm=z_pos_mm,
+            z_neg_mm=z_neg_mm,
         )
 
     def get_x_mm_per_ustep(self) -> float:

@@ -1,4 +1,5 @@
 from control.widgets.stage._common import *
+from squid.events import MoveStageCommand
 
 
 class NavigationWidget(QFrame):
@@ -176,22 +177,34 @@ class NavigationWidget(QFrame):
         self.btn_moveZ_backward.setEnabled(enabled)
 
     def move_x_forward(self) -> None:
-        self._service.move_x(self.entry_dX.value())
+        event_bus.publish(
+            MoveStageCommand(axis="x", distance_mm=self.entry_dX.value())
+        )
 
     def move_x_backward(self) -> None:
-        self._service.move_x(-self.entry_dX.value())
+        event_bus.publish(
+            MoveStageCommand(axis="x", distance_mm=-self.entry_dX.value())
+        )
 
     def move_y_forward(self) -> None:
-        self._service.move_y(self.entry_dY.value())
+        event_bus.publish(
+            MoveStageCommand(axis="y", distance_mm=self.entry_dY.value())
+        )
 
     def move_y_backward(self) -> None:
-        self._service.move_y(-self.entry_dY.value())
+        event_bus.publish(
+            MoveStageCommand(axis="y", distance_mm=-self.entry_dY.value())
+        )
 
     def move_z_forward(self) -> None:
-        self._service.move_z(self.entry_dZ.value() / 1000)
+        event_bus.publish(
+            MoveStageCommand(axis="z", distance_mm=self.entry_dZ.value() / 1000)
+        )
 
     def move_z_backward(self) -> None:
-        self._service.move_z(-self.entry_dZ.value() / 1000)
+        event_bus.publish(
+            MoveStageCommand(axis="z", distance_mm=-(self.entry_dZ.value() / 1000))
+        )
 
     def set_deltaX(self, value: float) -> None:
         mm_per_ustep = self._service.get_x_mm_per_ustep()

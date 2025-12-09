@@ -70,3 +70,76 @@ class TestPeripheralService:
 
         # Should have called hardware (75% of 65535 = 49151.25 → 49151)
         mock_mcu.analog_write_onboard_DAC.assert_called_once_with(1, 49151)
+
+    def test_handles_start_trigger_command(self):
+        """Should respond to StartCameraTriggerCommand events."""
+        from squid.services.peripheral_service import PeripheralService
+        from squid.events import EventBus, StartCameraTriggerCommand
+
+        mock_mcu = Mock()
+        bus = EventBus()
+        PeripheralService(mock_mcu, bus)
+
+        bus.publish(StartCameraTriggerCommand())
+
+        mock_mcu.start_camera_trigger.assert_called_once()
+
+    def test_handles_stop_trigger_command(self):
+        """Should respond to StopCameraTriggerCommand events."""
+        from squid.services.peripheral_service import PeripheralService
+        from squid.events import EventBus, StopCameraTriggerCommand
+
+        mock_mcu = Mock()
+        bus = EventBus()
+        PeripheralService(mock_mcu, bus)
+
+        bus.publish(StopCameraTriggerCommand())
+
+        mock_mcu.stop_camera_trigger.assert_called_once()
+
+    def test_handles_set_trigger_frequency_command(self):
+        """Should respond to SetCameraTriggerFrequencyCommand events."""
+        from squid.services.peripheral_service import PeripheralService
+        from squid.events import EventBus, SetCameraTriggerFrequencyCommand
+
+        mock_mcu = Mock()
+        bus = EventBus()
+        PeripheralService(mock_mcu, bus)
+
+        bus.publish(SetCameraTriggerFrequencyCommand(fps=12.5))
+
+        mock_mcu.set_camera_trigger_frequency.assert_called_once_with(12.5)
+
+    def test_handles_af_laser_commands(self):
+        """Should respond to AF laser on/off commands and wait when requested."""
+        from squid.services.peripheral_service import PeripheralService
+        from squid.events import (
+            EventBus,
+            TurnOnAFLaserCommand,
+            TurnOffAFLaserCommand,
+        )
+
+        mock_mcu = Mock()
+        bus = EventBus()
+        PeripheralService(mock_mcu, bus)
+
+        bus.publish(TurnOnAFLaserCommand())
+        bus.publish(TurnOffAFLaserCommand())
+
+        mock_mcu.turn_on_AF_laser.assert_called_once()
+        mock_mcu.turn_off_AF_laser.assert_called_once()
+        assert mock_mcu.wait_till_operation_is_completed.call_count == 2
+
+    def test_add_joystick_button_listener(self):
+        """add_joystick_button_listener should delegate to microcontroller."""
+        from squid.services.peripheral_service import PeripheralService
+        from squid.events import EventBus
+
+        mock_mcu = Mock()
+        bus = EventBus()
+        service = PeripheralService(mock_mcu, bus)
+
+        listener = Mock()
+        service.add_joystick_button_listener(listener)
+
+        mock_mcu.add_joystick_button_listener.assert_called_once_with(listener)

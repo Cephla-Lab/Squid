@@ -74,6 +74,24 @@ class TestCameraService:
 
         mock_camera.set_exposure_time.assert_called_once_with(200.0)
 
+    def test_handles_set_analog_gain_command(self):
+        """Should respond to SetAnalogGainCommand events."""
+        from squid.services.camera_service import CameraService
+        from squid.events import EventBus, SetAnalogGainCommand
+
+        mock_camera = Mock()
+        mock_gain_range = Mock()
+        mock_gain_range.min_gain = 0.0
+        mock_gain_range.max_gain = 24.0
+        mock_camera.get_gain_range.return_value = mock_gain_range
+        bus = EventBus()
+
+        CameraService(mock_camera, bus)
+
+        bus.publish(SetAnalogGainCommand(gain=5.0))
+
+        mock_camera.set_analog_gain.assert_called_once_with(5.0)
+
     def test_get_exposure_time(self):
         """get_exposure_time should return camera value."""
         from squid.services.camera_service import CameraService

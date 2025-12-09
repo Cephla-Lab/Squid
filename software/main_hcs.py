@@ -51,6 +51,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--verbose", help="Turn on verbose logging (DEBUG level)", action="store_true"
     )
+    parser.add_argument(
+        "--debug-bus",
+        help="Print all messages going through the event bus",
+        action="store_true",
+    )
     args = parser.parse_args()
 
     log = squid.logging.get_logger("main_hcs")
@@ -86,6 +91,16 @@ if __name__ == "__main__":
 
     # Create application context (centralizes microscope and controller creation)
     context = ApplicationContext(simulation=args.simulation)
+
+    # Enable event bus debug mode if requested
+    if args.debug_bus:
+        from squid.events import event_bus
+
+        # Ensure debug logging is enabled so the messages are visible
+        if not args.verbose:
+            squid.logging.set_stdout_log_level(logging.DEBUG)
+        event_bus.set_debug(True)
+        log.info("Event bus debug mode enabled")
 
     win = gui.HighContentScreeningGui(
         microscope=context.microscope,

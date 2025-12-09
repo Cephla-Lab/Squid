@@ -163,6 +163,16 @@ class SurfacePlotWidget(QWidget):
                     mask = regions == r
                     num_points = np.sum(mask)
                     if num_points >= 4:
+                        x_range = max(x[mask]) - min(x[mask])
+                        y_range = max(y[mask]) - min(y[mask])
+                        # Skip if points are collinear or have no spread in X or Y
+                        if x_range < 1e-9 or y_range < 1e-9:
+                            self._log.debug(
+                                f"Region {r} has collinear or degenerate points "
+                                f"(x_range={x_range:.2e}, y_range={y_range:.2e}), "
+                                "skipping surface interpolation"
+                            )
+                            continue
                         grid_x, grid_y = np.mgrid[
                             min(x[mask]) : max(x[mask]) : 10j,
                             min(y[mask]) : max(y[mask]) : 10j,

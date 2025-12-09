@@ -15,20 +15,123 @@ from squid.config import StageConfig, CameraConfig, CameraPixelFormat
 from squid.exceptions import SquidTimeout
 import control.utils
 
+#
+# Peripheral Interfaces
+#
+class ObjectiveChanger(ABC):
+    @abstractmethod
+    def __init__(self):
+        """Initialize the objective changer and establish communication."""
+        pass
 
-@dataclass
+    @abstractmethod
+    def current_position(self) -> int:
+        """Get the current position of the objective changer."""
+        pass
+
+    @abstractmethod
+    def num_positions(self) -> int:
+        """Get the number of positions of the objective changer."""
+        pass
+
+    @abstractmethod
+    def objective_info(self) -> ObjectiveInfo | None:
+        """Get the information about the current objective."""
+        pass
+
+    @abstractmethod
+    def set_position(self, position: int) -> None:
+        """Set the position of the objective changer."""
+        pass
+
+class SpinningDiskController(ABC):
+    @abstractmethod
+    def __init__(self):
+        """Initialize the spinning disk controller and establish communication."""
+        pass
+
+    @abstractmethod
+    def is_spinning(self) -> bool:
+        """Get the current spinning state of the spinning disk."""
+        pass
+
+    @abstractmethod
+    def disk_position(self) -> str:
+        """Get the current disk position of the spinning disk."""
+        pass
+
+    @abstractmethod
+    def current_dichroic(self) -> int:
+        """Get the current dichroic of the spinning disk."""
+        pass
+
+    @abstractmethod
+    def current_emission_filter(self) -> int:
+        """Get the current emission filter of the spinning disk."""
+        pass
+
+    @abstractmethod
+    def set_disk_position(self, position: str) -> None:
+        """Set the disk position of the spinning disk."""
+        pass
+
+    @abstractmethod
+    def start_disk(self) -> None:
+        """Start the spinning disk."""
+        pass
+
+    @abstractmethod
+    def stop_disk(self) -> None:
+        """Stop the spinning disk."""
+        pass
+
+    @abstractmethod
+    def set_dichroic(self, position: int) -> None:
+        """Set the dichroic of the spinning disk."""
+        pass
+
+    @abstractmethod
+    def set_emission_filter(self, position: int) -> None:
+        """Set the emission filter of the spinning disk."""
+        pass
+
+class PiezoStage(ABC):
+    @abstractmethod
+    def __init__(self):
+        """Initialize the piezo stage and establish communication."""
+        pass
+
+    @abstractmethod
+    def position_um(self) -> float:
+        """Get the current position of the piezo stage."""
+        pass
+
+    @abstractmethod
+    def range_um(self) -> Tuple[float, float]:
+        """Get the range of the piezo stage."""
+        pass
+
+    @abstractmethod
+    def move_to(self, position_um: float) -> None:
+        """Move the piezo stage to the given position."""
+        pass
+
+    @abstractmethod
+    def move_relative(self, delta_um: float) -> None:
+        """Move the piezo stage relative to the current position."""
+        pass
+
+
+@dataclass(frozen=True)
+class ObjectiveInfo:
+    index: int
+    name: str
+
+@dataclass(frozen=True)
 class FilterWheelInfo:
-    """Information about a single filter wheel."""
-
     index: int
     number_of_slots: int
-    slot_names: List[str]
-
-
-class FilterControllerError(Exception):
-    """Custom exception for FilterController errors."""
-
-    pass
+    slot_names: list[str]
 
 
 class AbstractFilterWheelController(ABC):
@@ -130,15 +233,17 @@ class LightSource(ABC):
         pass
 
     @abstractmethod
-    def initialize(self):
+    def initialize(self) -> bool:
         """
         Initialize the connection and settings for the light source.
-        Returns True if successful, False otherwise.
+
+        Returns:
+            True if successful, False otherwise.
         """
         pass
 
     @abstractmethod
-    def set_intensity_control_mode(self, mode: enum.Enum):
+    def set_intensity_control_mode(self, mode: enum.Enum) -> None:
         """
         Set intensity control mode.
 
@@ -148,7 +253,7 @@ class LightSource(ABC):
         pass
 
     @abstractmethod
-    def get_intensity_control_mode(self):
+    def get_intensity_control_mode(self) -> enum.Enum:
         """
         Get current intensity control mode.
 
@@ -158,7 +263,7 @@ class LightSource(ABC):
         pass
 
     @abstractmethod
-    def set_shutter_control_mode(self, mode: enum.Enum):
+    def set_shutter_control_mode(self, mode: enum.Enum) -> None:
         """
         Set shutter control mode.
 
@@ -168,7 +273,7 @@ class LightSource(ABC):
         pass
 
     @abstractmethod
-    def get_shutter_control_mode(self):
+    def get_shutter_control_mode(self) -> enum.Enum:
         """
         Get current shutter control mode.
 
@@ -178,7 +283,7 @@ class LightSource(ABC):
         pass
 
     @abstractmethod
-    def set_shutter_state(self, channel, state):
+    def set_shutter_state(self, channel: int, state: bool) -> None:
         """
         Turn a specific channel on or off.
 
@@ -189,7 +294,7 @@ class LightSource(ABC):
         pass
 
     @abstractmethod
-    def get_shutter_state(self, channel):
+    def get_shutter_state(self, channel: int) -> bool:
         """
         Get the current shutter state of a specific channel.
 
@@ -202,7 +307,7 @@ class LightSource(ABC):
         pass
 
     @abstractmethod
-    def set_intensity(self, channel, intensity):
+    def set_intensity(self, channel: int, intensity: float) -> None:
         """
         Set the intensity for a specific channel.
 
@@ -213,7 +318,7 @@ class LightSource(ABC):
         pass
 
     @abstractmethod
-    def get_intensity(self, channel) -> float:
+    def get_intensity(self, channel: int) -> float:
         """
         Get the current intensity of a specific channel.
 
@@ -226,10 +331,13 @@ class LightSource(ABC):
         pass
 
     @abstractmethod
-    def shut_down(self):
+    def shut_down(self) -> None:
         """Safely shut down the light source."""
         pass
 
+#
+# Stage Interface
+#
 
 class Pos(pydantic.BaseModel):
     x_mm: float
@@ -249,27 +357,27 @@ class AbstractStage(metaclass=abc.ABCMeta):
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
     @abc.abstractmethod
-    def move_x(self, rel_mm: float, blocking: bool = True):
+    def move_x(self, rel_mm: float, blocking: bool = True) -> None:
         pass
 
     @abc.abstractmethod
-    def move_y(self, rel_mm: float, blocking: bool = True):
+    def move_y(self, rel_mm: float, blocking: bool = True) -> None:
         pass
 
     @abc.abstractmethod
-    def move_z(self, rel_mm: float, blocking: bool = True):
+    def move_z(self, rel_mm: float, blocking: bool = True) -> None:
         pass
 
     @abc.abstractmethod
-    def move_x_to(self, abs_mm: float, blocking: bool = True):
+    def move_x_to(self, abs_mm: float, blocking: bool = True) -> None:
         pass
 
     @abc.abstractmethod
-    def move_y_to(self, abs_mm: float, blocking: bool = True):
+    def move_y_to(self, abs_mm: float, blocking: bool = True) -> None:
         pass
 
     @abc.abstractmethod
-    def move_z_to(self, abs_mm: float, blocking: bool = True):
+    def move_z_to(self, abs_mm: float, blocking: bool = True) -> None:
         pass
 
     # TODO(imo): We need a stop or halt or something along these lines
@@ -304,10 +412,11 @@ class AbstractStage(metaclass=abc.ABCMeta):
         z_neg_mm: Optional[float] = None,
         theta_pos_rad: Optional[float] = None,
         theta_neg_rad: Optional[float] = None,
-    ):
+    ) -> None:
         pass
 
-    def get_config(self) -> StageConfig:
+    @property
+    def config(self) -> StageConfig:
         return self._config
 
     def wait_for_idle(self, timeout_s: float) -> None:
@@ -368,7 +477,7 @@ class CameraError(RuntimeError):
 class AbstractCamera(metaclass=abc.ABCMeta):
     @staticmethod
     def calculate_new_roi_for_binning(
-        old_binning, old_roi, new_binning
+        old_binning: Tuple[int, int], old_roi: Tuple[int, int, int, int], new_binning: Tuple[int, int]
     ) -> Tuple[int, int, int, int]:
         """
         When changing binning, we may want the roi to change such that the FOV is the same as before the binning
@@ -389,7 +498,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         ):
             raise ValueError("Need tuple args.")
 
-        def rounded_int(num) -> int:
+        def rounded_int(num: float) -> int:
             return int(round(num))
 
         return (
@@ -402,9 +511,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def __init__(
         self,
         camera_config: CameraConfig,
-        hw_trigger_fn: Optional[Callable[[Optional[float]], bool]],
-        hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]],
-    ):
+        hw_trigger_fn: Optional[Callable[[Optional[float]], bool]] = None,
+        hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]] = None,
+    ) -> None:
         """
         Init should open the camera, configure it as needed based on camera_config and reasonable
         defaults, and make it immediately available for use in grabbing frames.
@@ -434,7 +543,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         self._software_crop_height_ratio = 1.0
 
     @contextmanager
-    def _pause_streaming(self):
+    def _pause_streaming(self) -> Generator[None, None, None]:
         was_streaming = self.get_is_streaming()
         try:
             if was_streaming:
@@ -499,7 +608,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
             cb(camera_frame)
 
     @abc.abstractmethod
-    def set_exposure_time(self, exposure_time_ms: float):
+    def set_exposure_time(self, exposure_time_ms: float) -> None:
         """
         Sets the exposure time in ms.  This should also take care of setting the strobe delay (if needed).  If in
         HARDWARE acquisition mode, you're guaranteed to have a self._hw_set_strobe_delay_ms_fn to help with this.
@@ -549,7 +658,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def set_pixel_format(self, pixel_format: squid.config.CameraPixelFormat):
+    def set_pixel_format(self, pixel_format: squid.config.CameraPixelFormat) -> bool:
         """
         If this camera supports the given pixel format, enable it and make sure that all
         subsequent captures use this pixel format.
@@ -570,7 +679,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def set_binning(self, binning_factor_x: int, binning_factor_y: int):
+    def set_binning(self, binning_factor_x: int, binning_factor_y: int) -> bool:
         """
         Set the binning factor of the camera. Usually we set hardware binning here, so calling
         this may change buffer size, readout speed, etc. Update these settings as needed.
@@ -613,7 +722,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def set_analog_gain(self, analog_gain: float):
+    def set_analog_gain(self, analog_gain: float) -> bool:
         """
         Set analog gain as an input multiple.  EG 1 = no gain, 100 = 100x gain.
         """
@@ -634,7 +743,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def start_streaming(self):
+    def start_streaming(self) -> bool:
         """
         This starts camera frame streaming.  Whether this results in frames immediately depends
         on the current triggering mode.  If frames require triggering, no frames will come until
@@ -645,14 +754,14 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def stop_streaming(self):
+    def stop_streaming(self) -> bool:
         """
         Stops camera frame streaming, which means frames will only come in with a call go get_frame
         """
         pass
 
     @abc.abstractmethod
-    def get_is_streaming(self):
+    def get_is_streaming(self) -> bool:
         pass
 
     def _process_raw_frame(
@@ -841,7 +950,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def send_trigger(self, illumination_time: Optional[float] = None):
+    def send_trigger(self, illumination_time: Optional[float] = None) -> None:
         """
         If in an acquisition mode that needs triggering, send a trigger.  If in HARDWARE_TRIGGER mode, you are
         guaranteed to have a self._hw_trigger_fn and should call that.  If in CONTINUOUS mode, this can be
@@ -866,7 +975,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def set_region_of_interest(
         self, offset_x: int, offset_y: int, width: int, height: int
-    ):
+    ) -> None:
         """
         Set the region of interest of the camera so that returned frames only contain this subset of the full sensor image.
         """
@@ -880,7 +989,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def set_temperature(self, temperature_deg_c: Optional[float]):
+    def set_temperature(self, temperature_deg_c: Optional[float]) -> None:
         """
         Set the desired temperature of the camera in degrees C.  If None is given as input, use
         a sane default for the camera.
@@ -895,14 +1004,14 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def set_temperature_reading_callback(self, callback: Callable):
+    def set_temperature_reading_callback(self, callback: Callable) -> None:
         """
         Set the callback to be called when the temperature reading changes.
         """
         pass
 
     @abc.abstractmethod
-    def close(self):
+    def close(self) -> None:
         """
         Close the camera.
         """

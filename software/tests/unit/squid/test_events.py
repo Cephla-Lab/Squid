@@ -113,3 +113,35 @@ class TestEventBus:
         bus.publish(TestEvent(message="test"))
 
         assert len(received) == 0
+
+
+def test_trigger_events_are_dataclasses():
+    """Trigger events should be proper dataclasses."""
+    from dataclasses import fields
+
+    from squid.events import (
+        SetTriggerFPSCommand,
+        SetTriggerModeCommand,
+        TriggerFPSChanged,
+        TriggerModeChanged,
+    )
+
+    # Commands have required fields
+    assert "mode" in [f.name for f in fields(SetTriggerModeCommand)]
+    assert "fps" in [f.name for f in fields(SetTriggerFPSCommand)]
+
+    # State events have required fields
+    assert "mode" in [f.name for f in fields(TriggerModeChanged)]
+    assert "fps" in [f.name for f in fields(TriggerFPSChanged)]
+
+
+def test_microscope_mode_events():
+    """Microscope mode events should have required fields."""
+    from squid.events import MicroscopeModeChanged, SetMicroscopeModeCommand
+
+    cmd = SetMicroscopeModeCommand(configuration_name="GFP", objective="20x")
+    assert cmd.configuration_name == "GFP"
+    assert cmd.objective == "20x"
+
+    evt = MicroscopeModeChanged(configuration_name="GFP")
+    assert evt.configuration_name == "GFP"

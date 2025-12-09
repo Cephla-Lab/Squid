@@ -11,7 +11,7 @@ from qtpy.QtWidgets import (
     QSlider,
 )
 
-from squid.events import event_bus, DACValueChanged
+from squid.events import event_bus, DACValueChanged, SetDACCommand
 
 if TYPE_CHECKING:
     from squid.services import PeripheralService
@@ -81,11 +81,11 @@ class DACControWidget(QFrame):
 
     def set_DAC0(self, value: float) -> None:
         """Set DAC0 output (0-100%)."""
-        self._service.set_dac(channel=0, percentage=value)
+        event_bus.publish(SetDACCommand(channel=0, value=value))
 
     def set_DAC1(self, value: float) -> None:
         """Set DAC1 output (0-100%)."""
-        self._service.set_dac(channel=1, percentage=value)
+        event_bus.publish(SetDACCommand(channel=1, value=value))
 
     def _on_dac_changed(self, event: DACValueChanged) -> None:
         """Handle DAC value changed event."""

@@ -21,6 +21,11 @@ from qtpy.QtGui import QColor
 from control._def import SpotDetectionMode
 from control.core.display import LiveController
 from control import utils
+from squid.events import (
+    event_bus,
+    TurnOnAFLaserCommand,
+    TurnOffAFLaserCommand,
+)
 
 if TYPE_CHECKING:
     from control.core.display import StreamHandler
@@ -428,20 +433,13 @@ class LaserAutofocusSettingWidget(QWidget):
     def illuminate_and_get_frame(self) -> Optional[np.ndarray]:
         # Get a frame from the live controller.  We need to reach deep into the liveController here which
         # is not ideal.
-        microcontroller = (
-            self.liveController.microscope.low_level_drivers.microcontroller
-        )
-        if microcontroller is not None:
-            microcontroller.turn_on_AF_laser()
-            microcontroller.wait_till_operation_is_completed()
+        event_bus.publish(TurnOnAFLaserCommand())
         self.liveController.trigger_acquisition()
 
         try:
             frame = self.liveController.camera.read_frame()
         finally:
-            if microcontroller is not None:
-                microcontroller.turn_off_AF_laser()
-                microcontroller.wait_till_operation_is_completed()
+            event_bus.publish(TurnOffAFLaserCommand())
 
         return frame
 

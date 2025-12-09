@@ -38,6 +38,16 @@ from squid.abc import AbstractStage
 from control.utils_config import ChannelMode as ChannelConfiguration
 
 from squid.services import CameraService
+from squid.events import (
+    event_bus,
+    StartLiveCommand,
+    StopLiveCommand,
+    LiveStateChanged,
+    SetTriggerFPSCommand,
+    SetMicroscopeModeCommand,
+    TriggerFPSChanged,
+    MicroscopeModeChanged,
+)
 
 if TYPE_CHECKING:
     pass
@@ -95,6 +105,11 @@ class NapariLiveWidget(QWidget):
             show_trigger_options, show_display_options, show_autolevel, autolevel
         )
         self.update_ui_for_mode(self.live_configuration)
+
+        # Subscribe to state changes from the bus
+        event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
+        event_bus.subscribe(TriggerFPSChanged, self._on_trigger_fps_changed)
+        event_bus.subscribe(MicroscopeModeChanged, self._on_microscope_mode_changed)
 
     def initNapariViewer(self) -> None:
         self.viewer = napari.Viewer(show=False)
@@ -247,7 +262,9 @@ class NapariLiveWidget(QWidget):
         self.entry_triggerFPS = QDoubleSpinBox()
         self.entry_triggerFPS.setRange(0.02, 1000)
         self.entry_triggerFPS.setValue(self.fps_trigger)
-        self.entry_triggerFPS.valueChanged.connect(self.liveController.set_trigger_fps)
+        self.entry_triggerFPS.valueChanged.connect(
+            lambda fps: event_bus.publish(SetTriggerFPSCommand(fps=fps))
+        )
 
         # Display FPS
         self.entry_displayFPS = QDoubleSpinBox()
@@ -416,11 +433,30 @@ class NapariLiveWidget(QWidget):
 
     def toggle_live(self, pressed: bool) -> None:
         if pressed:
-            self.liveController.start_live()
+            event_bus.publish(StartLiveCommand(configuration=self.live_configuration.name))
+        else:
+            event_bus.publish(StopLiveCommand())
+
+    def _on_live_state_changed(self, event: LiveStateChanged) -> None:
+        """Handle live state changes from the event bus."""
+        if event.is_live:
+            self.btn_live.setChecked(True)
             self.btn_live.setText("Stop Live")
         else:
-            self.liveController.stop_live()
+            self.btn_live.setChecked(False)
             self.btn_live.setText("Start Live")
+
+    def _on_trigger_fps_changed(self, event: TriggerFPSChanged) -> None:
+        """Handle trigger FPS change from service."""
+        self.entry_triggerFPS.blockSignals(True)
+        self.entry_triggerFPS.setValue(event.fps)
+        self.entry_triggerFPS.blockSignals(False)
+
+    def _on_microscope_mode_changed(self, event: MicroscopeModeChanged) -> None:
+        """Handle microscope mode change from service."""
+        self.dropdown_modeSelection.blockSignals(True)
+        self.dropdown_modeSelection.setCurrentText(event.configuration_name)
+        self.dropdown_modeSelection.blockSignals(False)
 
     def toggle_live_controls(self, show: bool) -> None:
         if show:
@@ -461,7 +497,12 @@ class NapariLiveWidget(QWidget):
             )
             return
 
-        self.liveController.set_microscope_mode(maybe_new_config)
+        event_bus.publish(
+            SetMicroscopeModeCommand(
+                configuration_name=config_name,
+                objective=self.objectiveStore.current_objective,
+            )
+        )
         self.update_ui_for_mode(maybe_new_config)
 
     def update_ui_for_mode(self, config: ChannelConfiguration) -> None:

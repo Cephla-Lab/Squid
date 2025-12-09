@@ -1,4 +1,12 @@
 from control.widgets.stage._common import *
+from squid.events import (
+    HomeStageCommand,
+    MoveStageToCommand,
+    MoveStageToLoadingPositionCommand,
+    MoveStageToScanningPositionCommand,
+    ZeroStageCommand,
+)
+from control._def import Z_HOME_SAFETY_POINT
 
 
 class StageUtils(QDialog):
@@ -121,7 +129,9 @@ class StageUtils(QDialog):
     def home_z(self) -> None:
         """Home Z axis with confirmation dialog."""
         self._show_confirmation_dialog(x=False, y=False, z=True, theta=False)
-        self._service.move_to_safety_position()
+        event_bus.publish(
+            MoveStageToCommand(z_mm=int(Z_HOME_SAFETY_POINT) / 1000.0)
+        )
 
     def _show_confirmation_dialog(self, x: bool, y: bool, z: bool, theta: bool) -> None:
         """Display a confirmation dialog and home the specified axis if confirmed."""
@@ -134,19 +144,19 @@ class StageUtils(QDialog):
         msg.setDefaultButton(QMessageBox.Cancel)
         retval = msg.exec_()
         if QMessageBox.Ok == retval:
-            self._service.home(x=x, y=y, z=z)
+            event_bus.publish(HomeStageCommand(x=x, y=y, z=z, theta=theta))
 
     def zero_x(self) -> None:
         """Zero X axis position."""
-        self._service.zero(x=True, y=False, z=False)
+        event_bus.publish(ZeroStageCommand(x=True, y=False, z=False, theta=False))
 
     def zero_y(self) -> None:
         """Zero Y axis position."""
-        self._service.zero(x=False, y=True, z=False)
+        event_bus.publish(ZeroStageCommand(x=False, y=True, z=False, theta=False))
 
     def zero_z(self) -> None:
         """Zero Z axis position."""
-        self._service.zero(x=False, y=False, z=True)
+        event_bus.publish(ZeroStageCommand(x=False, y=False, z=True, theta=False))
 
     def switch_position(self) -> None:
         """Switch between loading and scanning positions."""
@@ -157,16 +167,20 @@ class StageUtils(QDialog):
             self.live_controller.stop_live()
         self.signal_threaded_stage_move_started.emit()
         if self.slide_position != "loading":
-            self._service.move_to_loading_position(
-                blocking=False,
-                callback=self._callback_loading_position_reached,
-                is_wellplate=self.is_wellplate,
+            event_bus.publish(
+                MoveStageToLoadingPositionCommand(
+                    blocking=False,
+                    callback=self._callback_loading_position_reached,
+                    is_wellplate=self.is_wellplate,
+                )
             )
         else:
-            self._service.move_to_scanning_position(
-                blocking=False,
-                callback=self._callback_scanning_position_reached,
-                is_wellplate=self.is_wellplate,
+            event_bus.publish(
+                MoveStageToScanningPositionCommand(
+                    blocking=False,
+                    callback=self._callback_scanning_position_reached,
+                    is_wellplate=self.is_wellplate,
+                )
             )
         self.btn_load_slide.setEnabled(False)
 

@@ -12,6 +12,13 @@ from qtpy.QtWidgets import (
 )
 
 from control._def import TriggerMode
+from squid.events import (
+    event_bus,
+    StartCameraTriggerCommand,
+    StopCameraTriggerCommand,
+    SetCameraTriggerFrequencyCommand,
+)
+from squid.services import PeripheralService
 
 
 class TriggerControlWidget(QFrame):
@@ -20,11 +27,11 @@ class TriggerControlWidget(QFrame):
     signal_trigger_mode: Signal = Signal(str)
     signal_trigger_fps: Signal = Signal(float)
 
-    def __init__(self, microcontroller2: Any) -> None:
+    def __init__(self, peripheral_service: PeripheralService) -> None:
         super().__init__()
         self.fps_trigger: float = 10
         self.fps_display: float = 10
-        self.microcontroller2: Any = microcontroller2
+        self.peripheral_service: PeripheralService = peripheral_service
         self.triggerMode: Optional[str] = TriggerMode.SOFTWARE
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -54,7 +61,9 @@ class TriggerControlWidget(QFrame):
         self.entry_triggerFPS.valueChanged.connect(self.update_trigger_fps)
 
         # inititialization
-        self.microcontroller2.set_camera_trigger_frequency(self.fps_trigger)
+        event_bus.publish(
+            SetCameraTriggerFrequencyCommand(fps=float(self.entry_triggerFPS.value()))
+        )
 
         # layout
         grid_line0 = QGridLayout()
@@ -68,9 +77,9 @@ class TriggerControlWidget(QFrame):
     def toggle_live(self, pressed: bool) -> None:
         self.signal_toggle_live.emit(pressed)
         if pressed:
-            self.microcontroller2.start_camera_trigger()
+            event_bus.publish(StartCameraTriggerCommand())
         else:
-            self.microcontroller2.stop_camera_trigger()
+            event_bus.publish(StopCameraTriggerCommand())
 
     def update_trigger_mode(self) -> None:
         self.signal_trigger_mode.emit(self.dropdown_triggerManu.currentText())
@@ -78,4 +87,4 @@ class TriggerControlWidget(QFrame):
     def update_trigger_fps(self, fps: float) -> None:
         self.fps_trigger = fps
         self.signal_trigger_fps.emit(fps)
-        self.microcontroller2.set_camera_trigger_frequency(self.fps_trigger)
+        event_bus.publish(SetCameraTriggerFrequencyCommand(fps=self.fps_trigger))

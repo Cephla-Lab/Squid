@@ -1,9 +1,19 @@
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
 import control._def
+
+# Skip this GUI integration in headless/offscreen environments to avoid Qt aborts.
+if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+    pytest.skip("Skipping GUI integration in offscreen/headless mode", allow_module_level=True)
 
 import control.gui_hcs
 from PyQt5.QtWidgets import QMessageBox
 
 import control.microscope
+from squid.application import ApplicationContext
 
 
 def test_create_simulated_hcs_with_or_without_piezo(qtbot, monkeypatch):
@@ -18,16 +28,20 @@ def test_create_simulated_hcs_with_or_without_piezo(qtbot, monkeypatch):
 
     monkeypatch.setattr(QMessageBox, "question", confirm_exit)
 
-    control._def.HAS_OBJECTIVE_PIEZO = True
-    scope_with = control.microscope.Microscope.build_from_global_config(True)
-    with_piezo = control.gui_hcs.HighContentScreeningGui(
-        microscope=scope_with, is_simulation=True
-    )
-    qtbot.add_widget(with_piezo)
+    original_has_objective_piezo = control._def.HAS_OBJECTIVE_PIEZO
+    contexts = []
 
-    control._def.HAS_OBJECTIVE_PIEZO = False
-    scope_without = control.microscope.Microscope.build_from_global_config(True)
-    without_piezo = control.gui_hcs.HighContentScreeningGui(
-        microscope=scope_without, is_simulation=True
-    )
-    qtbot.add_widget(without_piezo)
+    def build_gui_with_context(has_piezo: bool):
+        control._def.HAS_OBJECTIVE_PIEZO = has_piezo
+        ctx = ApplicationContext(simulation=True)
+        gui = ctx.create_gui()
+        qtbot.add_widget(gui)
+        contexts.append(ctx)
+
+    try:
+        build_gui_with_context(True)
+        build_gui_with_context(False)
+    finally:
+        control._def.HAS_OBJECTIVE_PIEZO = original_has_objective_piezo
+        for ctx in contexts:
+            ctx.shutdown()

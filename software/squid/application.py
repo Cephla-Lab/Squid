@@ -12,21 +12,20 @@ Usage:
     # Later:
     context.shutdown()
 """
-
+from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 import squid.logging
 
-if TYPE_CHECKING:
-    from control.microscope import Microscope
-    from control.core.display import LiveController
-    from control.core.display import StreamHandler
-    from control.core.acquisition import MultiPointController
-    from control.core.configuration import ChannelConfigurationManager
-    from control.core.navigation import ObjectiveStore
-    from control.gui_hcs import HighContentScreeningGui
-    from squid.services import ServiceRegistry
+from control.microscope import Microscope
+from control.core.display import LiveController
+from control.core.display import StreamHandler
+from control.core.acquisition import MultiPointController
+from control.core.configuration import ChannelConfigurationManager
+from control.core.navigation import ObjectiveStore
+from control.gui_hcs import HighContentScreeningGui
+from squid.services import ServiceRegistry
 
 
 @dataclass
@@ -190,6 +189,9 @@ class ApplicationContext:
             CameraService,
             StageService,
             PeripheralService,
+            LiveService,
+            TriggerService,
+            MicroscopeModeService,
         )
         from squid.events import event_bus
 
@@ -211,6 +213,23 @@ class ApplicationContext:
             "peripheral",
             PeripheralService(
                 self._microscope.low_level_drivers.microcontroller, event_bus
+            ),
+        )
+
+        self._services.register(
+            "live", LiveService(self._microscope.live_controller, event_bus)
+        )
+
+        self._services.register(
+            "trigger", TriggerService(self._microscope.live_controller, event_bus)
+        )
+
+        self._services.register(
+            "microscope_mode",
+            MicroscopeModeService(
+                self._microscope.live_controller,
+                self._microscope.channel_configuration_manager,
+                event_bus,
             ),
         )
 

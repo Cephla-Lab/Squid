@@ -1,4 +1,11 @@
 from control.widgets.wellplate._common import *
+from squid.events import (
+    MoveStageCommand,
+    event_bus,
+    StartLiveCommand,
+    StopLiveCommand,
+    LiveStateChanged,
+)
 
 if TYPE_CHECKING:
     from control.widgets.display.navigation import NavigationViewer
@@ -25,9 +32,13 @@ class WellplateCalibration(QDialog):
         self.navigationViewer: "NavigationViewer" = navigationViewer
         self.streamHandler: "StreamHandler" = streamHandler
         self.liveController: "LiveController" = liveController
+        self._is_live: bool = False
         self.was_live: bool = self.liveController.is_live
         self.corners: List[Optional[Tuple[float, float]]] = [None, None, None]
         self.show_virtual_joystick: bool = True  # FLAG
+
+        # Subscribe to live state changes
+        event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
 
         # UI elements
         self.mode_group: QButtonGroup
@@ -176,9 +187,9 @@ class WellplateCalibration(QDialog):
             self.streamHandler.image_to_display.connect(self.live_viewer.display_image)  # type: ignore[attr-defined]
 
         if not self.was_live:
-            self.liveController.start_live()
+            event_bus.publish(StartLiveCommand())
 
-        # when the dialog closes i want to # self.liveController.stop_live() if live was stopped before. . . if it was on before, leave it on
+        # when the dialog closes i want to stop live if live was stopped before. . . if it was on before, leave it on
         layout.addWidget(self.live_viewer)
 
         # Right column for joystick and sensitivity controls
@@ -221,7 +232,7 @@ class WellplateCalibration(QDialog):
         layout.addLayout(self.right_layout)
 
         if not self.was_live:
-            self.liveController.start_live()
+            event_bus.publish(StartLiveCommand())
 
     def toggleVirtualJoystick(self, state: Union[bool, int]) -> None:
         if state:
@@ -308,8 +319,8 @@ class WellplateCalibration(QDialog):
     def _move_stage_relative(self, dx: float, dy: float) -> None:
         """Move stage by relative distance."""
         if self._stage_service is not None:
-            self._stage_service.move_x(dx)
-            self._stage_service.move_y(dy)
+            event_bus.publish(MoveStageCommand(axis="x", distance_mm=dx))
+            event_bus.publish(MoveStageCommand(axis="y", distance_mm=dy))
 
     def setCorner(self, index):
         if self.corners[index] is None:
@@ -589,22 +600,30 @@ class WellplateCalibration(QDialog):
 
         return center, radius
 
+    def _on_live_state_changed(self, event: LiveStateChanged) -> None:
+        """Track live state from the event bus."""
+        self._is_live = event.is_live
+
+    def _stop_live_if_needed(self) -> None:
+        """Stop live view if it wasn't initially on."""
+        if not self.was_live and self._is_live:
+            event_bus.publish(StopLiveCommand())
+        # Unsubscribe from events
+        event_bus.unsubscribe(LiveStateChanged, self._on_live_state_changed)
+
     def closeEvent(self, event):
         # Stop live view if it wasn't initially on
-        if not self.was_live:
-            self.liveController.stop_live()
+        self._stop_live_if_needed()
         super().closeEvent(event)
 
     def accept(self):
         # Stop live view if it wasn't initially on
-        if not self.was_live:
-            self.liveController.stop_live()
+        self._stop_live_if_needed()
         super().accept()
 
     def reject(self):
         # This method is called when the dialog is closed without accepting
-        if not self.was_live:
-            self.liveController.stop_live()
+        self._stop_live_if_needed()
         sample = self.navigationViewer.sample
 
         # Convert sample string to format int

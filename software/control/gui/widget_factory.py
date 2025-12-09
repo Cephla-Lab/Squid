@@ -117,7 +117,11 @@ def create_wellplate_widgets(gui: "HighContentScreeningGui") -> None:
     import control.core.core as core
 
     gui.wellplateFormatWidget = widgets.WellplateFormatWidget(
-        gui.stage, gui.navigationViewer, gui.streamHandler, gui.liveController
+        gui.stage,
+        gui.navigationViewer,
+        gui.streamHandler,
+        gui.liveController,
+        stage_service=gui._services.get("stage") if gui._services else None,
     )
     if WELLPLATE_FORMAT != "1536 well plate":
         gui.wellSelectionWidget = widgets.WellSelectionWidget(
@@ -231,5 +235,6 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
             gui.trackingController,
             gui.objectiveStore,
             gui.channelConfigurationManager,
+            peripheral_service=gui._services.get("peripheral") if gui._services else None,
             show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
         )

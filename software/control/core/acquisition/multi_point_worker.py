@@ -181,7 +181,7 @@ class MultiPointWorker:
         for job_class in job_classes:
             self._log.info(f"Creating job runner for {job_class.__name__} jobs")
             job_runner = (
-                control.core.job_processing.JobRunner()
+                control.core.acquisition.job_processing.JobRunner()
                 if Acquisition.USE_MULTIPROCESSING
                 else None
             )

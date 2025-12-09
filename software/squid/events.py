@@ -56,11 +56,21 @@ class EventBus:
 
         # Unsubscribe
         bus.unsubscribe(ImageCaptured, self.on_image)
+
+        # Enable debug mode to print all events
+        bus.set_debug(True)
     """
 
     def __init__(self):
         self._subscribers: Dict[Type[Event], List[Callable]] = {}
         self._lock = Lock()
+        self._debug = False
+
+    def set_debug(self, enabled: bool) -> None:
+        """Enable or disable debug mode to print all events."""
+        self._debug = enabled
+        if enabled:
+            _log.info("EventBus debug mode enabled - all events will be logged")
 
     def subscribe(self, event_type: Type[E], handler: Callable[[E], None]) -> None:
         """
@@ -97,6 +107,9 @@ class EventBus:
         Args:
             event: The event to publish
         """
+        if self._debug:
+            _log.debug(f"[EventBus] {type(event).__name__}: {event}")
+
         with self._lock:
             handlers = list(self._subscribers.get(type(event), []))
 
@@ -190,6 +203,41 @@ class SetDACCommand(Event):
 
 
 @dataclass
+class StartCameraTriggerCommand(Event):
+    """Command to start camera hardware trigger."""
+
+    pass
+
+
+@dataclass
+class StopCameraTriggerCommand(Event):
+    """Command to stop camera hardware trigger."""
+
+    pass
+
+
+@dataclass
+class SetCameraTriggerFrequencyCommand(Event):
+    """Command to set camera trigger frequency (Hz)."""
+
+    fps: float
+
+
+@dataclass
+class TurnOnAFLaserCommand(Event):
+    """Command to turn on AF laser."""
+
+    wait_for_completion: bool = True
+
+
+@dataclass
+class TurnOffAFLaserCommand(Event):
+    """Command to turn off AF laser."""
+
+    wait_for_completion: bool = True
+
+
+@dataclass
 class MoveStageCommand(Event):
     """Command to move stage by relative distance."""
 
@@ -213,6 +261,35 @@ class HomeStageCommand(Event):
     x: bool = False
     y: bool = False
     z: bool = False
+    theta: bool = False
+
+
+@dataclass
+class ZeroStageCommand(Event):
+    """Command to zero stage axes."""
+
+    x: bool = False
+    y: bool = False
+    z: bool = False
+    theta: bool = False
+
+
+@dataclass
+class MoveStageToLoadingPositionCommand(Event):
+    """Command to move stage to loading position."""
+
+    blocking: bool = True
+    callback: Optional[Callable[[bool, Optional[str]], None]] = None
+    is_wellplate: bool = True
+
+
+@dataclass
+class MoveStageToScanningPositionCommand(Event):
+    """Command to move stage to scanning position."""
+
+    blocking: bool = True
+    callback: Optional[Callable[[bool, Optional[str]], None]] = None
+    is_wellplate: bool = True
 
 
 @dataclass
@@ -264,6 +341,7 @@ class StagePositionChanged(Event):
     x_mm: float
     y_mm: float
     z_mm: float
+    theta_rad: Optional[float] = None
 
 
 @dataclass
@@ -311,3 +389,66 @@ class PixelFormatChanged(Event):
     """Notification that pixel format changed."""
 
     pixel_format: "CameraPixelFormat"  # Forward reference to avoid circular import
+
+
+# ============================================================
+# Trigger Control Commands
+# ============================================================
+
+
+@dataclass
+class SetTriggerModeCommand(Event):
+    """Command to set camera trigger mode."""
+
+    mode: str  # "Software", "Hardware", "Continuous"
+
+
+@dataclass
+class SetTriggerFPSCommand(Event):
+    """Command to set trigger frequency."""
+
+    fps: float
+
+
+# ============================================================
+# Trigger State Events
+# ============================================================
+
+
+@dataclass
+class TriggerModeChanged(Event):
+    """Notification that trigger mode changed."""
+
+    mode: str
+
+
+@dataclass
+class TriggerFPSChanged(Event):
+    """Notification that trigger FPS changed."""
+
+    fps: float
+
+
+# ============================================================
+# Microscope Mode Commands
+# ============================================================
+
+
+@dataclass
+class SetMicroscopeModeCommand(Event):
+    """Command to set microscope mode/channel configuration."""
+
+    configuration_name: str
+    objective: str
+
+
+# ============================================================
+# Microscope Mode State Events
+# ============================================================
+
+
+@dataclass
+class MicroscopeModeChanged(Event):
+    """Notification that microscope mode changed."""
+
+    configuration_name: str

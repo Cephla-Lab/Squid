@@ -18,6 +18,23 @@ Usage:
 
 import pytest
 from typing import Generator
+import sys
+import importlib.util
+import pathlib
+
+# Force use of lightweight stub modules for napari/pyqtgraph to avoid heavy
+# dependencies and cache writes during tests.
+_repo_root = pathlib.Path(__file__).resolve().parent.parent
+for _mod_name in ["napari", "pyqtgraph"]:
+    _stub_init = _repo_root / _mod_name / "__init__.py"
+    if _stub_init.exists():
+        _spec = importlib.util.spec_from_file_location(
+            _mod_name, _stub_init, submodule_search_locations=[str(_repo_root / _mod_name)]
+        )
+        if _spec and _spec.loader:
+            _module = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_module)
+            sys.modules[_mod_name] = _module
 
 import squid.config
 from squid.events import EventBus
@@ -220,6 +237,16 @@ def event_bus() -> Generator[EventBus, None, None]:
     bus = EventBus()
     yield bus
     bus.clear()
+
+
+# Lightweight qtbot stub for environments without pytest-qt autoloaded.
+@pytest.fixture
+def qtbot():
+    class _QtBot:
+        def add_widget(self, widget):
+            return widget
+
+    return _QtBot()
 
 
 # ============================================================================

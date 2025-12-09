@@ -1,4 +1,5 @@
 from control.widgets.tracking._common import *
+from squid.services import PeripheralService
 from qtpy.QtWidgets import QListWidget, QAbstractItemView
 from qtpy.QtGui import QIcon
 from qtpy.QtCore import QMetaObject
@@ -29,6 +30,7 @@ class TrackingControllerWidget(QFrame):
         trackingController: TrackingController,
         objectiveStore: ObjectiveStore,
         channelConfigurationManager: ChannelConfigurationManager,
+        peripheral_service: PeripheralService,
         show_configurations: bool = True,
         *args: Any,
         **kwargs: Any,
@@ -37,12 +39,15 @@ class TrackingControllerWidget(QFrame):
         self.trackingController = trackingController
         self.objectiveStore = objectiveStore
         self.channelConfigurationManager = channelConfigurationManager
+        self.peripheral_service = peripheral_service
         self.base_path_is_set = False
+        if self.peripheral_service is None:
+            raise ValueError("PeripheralService is required for tracking controller.")
         self.add_components(show_configurations)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-        self.trackingController.microcontroller.add_joystick_button_listener(
-            lambda button_pressed: self.handle_button_state(button_pressed)
+        self.peripheral_service.add_joystick_button_listener(
+            lambda button_pressed: self.handle_button_pressed(button_pressed)
         )
 
     def add_components(self, show_configurations: bool) -> None:

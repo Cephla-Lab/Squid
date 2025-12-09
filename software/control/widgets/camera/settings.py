@@ -45,7 +45,7 @@ class CameraSettingsWidget(QFrame):
         self.entry_exposureTime.setSingleStep(1)
         default_exposure = 20.0
         self.entry_exposureTime.setValue(default_exposure)
-        self._service.set_exposure_time(default_exposure)
+        event_bus.publish(SetExposureTimeCommand(exposure_time_ms=default_exposure))
 
         self.entry_analogGain = QDoubleSpinBox()
         try:
@@ -54,7 +54,7 @@ class CameraSettingsWidget(QFrame):
             self.entry_analogGain.setMaximum(gain_range.max_gain)
             self.entry_analogGain.setSingleStep(gain_range.gain_step)
             self.entry_analogGain.setValue(gain_range.min_gain)
-            self._service.set_analog_gain(gain_range.min_gain)
+            event_bus.publish(SetAnalogGainCommand(gain=gain_range.min_gain))
         except NotImplementedError:
             self._log.info(
                 "Camera does not support analog gain, disabling analog gain control."
@@ -130,8 +130,8 @@ class CameraSettingsWidget(QFrame):
         self.label_temperature_measured.setFrameStyle(QFrame.Panel | QFrame.Sunken)
 
         # connection
-        self.entry_exposureTime.valueChanged.connect(self._service.set_exposure_time)
-        self.entry_analogGain.valueChanged.connect(self._set_analog_gain_via_service)
+        self.entry_exposureTime.valueChanged.connect(self._publish_exposure_time)
+        self.entry_analogGain.valueChanged.connect(self._publish_analog_gain)
         self.dropdown_pixelFormat.currentTextChanged.connect(
             lambda s: self._service.set_pixel_format(CameraPixelFormat.from_string(s))
         )
@@ -240,13 +240,9 @@ class CameraSettingsWidget(QFrame):
 
     def set_analog_gain_if_supported(self, gain: float) -> None:
         try:
-            self._service.set_analog_gain(gain)
+            event_bus.publish(SetAnalogGainCommand(gain=gain))
         except NotImplementedError:
             self._log.warning(f"Cannot set gain to {gain}, gain not supported.")
-
-    def _set_analog_gain_via_service(self, gain: float) -> None:
-        """Set analog gain through service layer."""
-        self._service.set_analog_gain(gain)
 
     def _on_exposure_changed(self, event: ExposureTimeChanged) -> None:
         """Handle exposure time changed event."""
@@ -275,6 +271,14 @@ class CameraSettingsWidget(QFrame):
 
     def set_analog_gain(self, analog_gain: float) -> None:
         self.entry_analogGain.setValue(analog_gain)
+
+    def _publish_exposure_time(self, exposure_time: float) -> None:
+        """Publish exposure time change via event bus."""
+        event_bus.publish(SetExposureTimeCommand(exposure_time_ms=exposure_time))
+
+    def _publish_analog_gain(self, analog_gain: float) -> None:
+        """Publish analog gain change via event bus."""
+        event_bus.publish(SetAnalogGainCommand(gain=analog_gain))
 
     def set_Width(self) -> None:
         width = int(self.entry_ROI_width.value() // 8) * 8

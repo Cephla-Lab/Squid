@@ -15,6 +15,16 @@ class MockPos:
     z_mm: float
 
 
+@dataclass
+class MockPosWithTheta:
+    """Mock position including theta for testing."""
+
+    x_mm: float
+    y_mm: float
+    z_mm: float
+    theta_rad: float
+
+
 class TestStageService:
     """Test suite for StageService."""
 
@@ -80,6 +90,26 @@ class TestStageService:
         assert received[0].x_mm == 10.0
         assert received[0].y_mm == 20.0
         assert received[0].z_mm == 30.0
+        assert received[0].theta_rad is None
+
+    def test_move_publishes_theta_when_available(self):
+        """move_x should publish theta when present on Pos."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus, StagePositionChanged
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPosWithTheta(10.0, 20.0, 30.0, 1.23)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+
+        received = []
+        bus.subscribe(StagePositionChanged, lambda e: received.append(e))
+
+        service.move_x(1.0)
+
+        assert len(received) == 1
+        assert received[0].theta_rad == 1.23
 
     def test_handles_move_command(self):
         """Should respond to MoveStageCommand events."""
@@ -95,6 +125,86 @@ class TestStageService:
         bus.publish(MoveStageCommand(axis="x", distance_mm=5.0))
 
         mock_stage.move_x.assert_called_once_with(5.0, True)
+
+    def test_handles_home_command(self):
+        """Should respond to HomeStageCommand events."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus, HomeStageCommand
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+
+        StageService(mock_stage, bus)
+
+        bus.publish(HomeStageCommand(x=True, y=False, z=True, theta=True))
+
+        mock_stage.home.assert_called_once_with(True, False, True, True)
+
+    def test_handles_zero_command(self):
+        """Should respond to ZeroStageCommand events."""
+        from squid.services.stage_service import StageService
+        from squid.events import EventBus, ZeroStageCommand
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+
+        StageService(mock_stage, bus)
+
+        bus.publish(ZeroStageCommand(x=True, y=True, z=False, theta=True))
+
+        mock_stage.zero.assert_called_once_with(True, True, False, True)
+
+    def test_handles_move_to_loading_position_command(self):
+        """Should respond to MoveStageToLoadingPositionCommand events."""
+        from squid.services.stage_service import StageService
+        from squid.events import (
+            EventBus,
+            MoveStageToLoadingPositionCommand,
+        )
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        service.move_to_loading_position = Mock()
+
+        bus.publish(
+            MoveStageToLoadingPositionCommand(
+                blocking=False, callback=None, is_wellplate=False
+            )
+        )
+
+        service.move_to_loading_position.assert_called_once_with(
+            blocking=False, callback=None, is_wellplate=False
+        )
+
+    def test_handles_move_to_scanning_position_command(self):
+        """Should respond to MoveStageToScanningPositionCommand events."""
+        from squid.services.stage_service import StageService
+        from squid.events import (
+            EventBus,
+            MoveStageToScanningPositionCommand,
+        )
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+
+        service = StageService(mock_stage, bus)
+        service.move_to_scanning_position = Mock()
+
+        bus.publish(
+            MoveStageToScanningPositionCommand(
+                blocking=False, callback=None, is_wellplate=True
+            )
+        )
+
+        service.move_to_scanning_position.assert_called_once_with(
+            blocking=False, callback=None, is_wellplate=True
+        )
 
     def test_move_to_calls_stage(self):
         """move_to should call stage.move_x_to/move_y_to/move_z_to."""
@@ -267,10 +377,22 @@ class TestStageService:
         bus = EventBus()
 
         service = StageService(mock_stage, bus)
-        service.set_limits(x_pos_mm=10.0, x_neg_mm=-10.0, y_pos_mm=20.0, y_neg_mm=-20.0)
+        service.set_limits(
+            x_pos_mm=10.0,
+            x_neg_mm=-10.0,
+            y_pos_mm=20.0,
+            y_neg_mm=-20.0,
+            z_pos_mm=30.0,
+            z_neg_mm=-30.0,
+        )
 
         mock_stage.set_limits.assert_called_once_with(
-            x_pos_mm=10.0, x_neg_mm=-10.0, y_pos_mm=20.0, y_neg_mm=-20.0
+            x_pos_mm=10.0,
+            x_neg_mm=-10.0,
+            y_pos_mm=20.0,
+            y_neg_mm=-20.0,
+            z_pos_mm=30.0,
+            z_neg_mm=-30.0,
         )
 
     def test_get_x_mm_per_ustep(self):
