@@ -21,11 +21,9 @@ from control.core.acquisition.multi_point_utils import (
     RegionProgressUpdate,
 )
 from control.core.navigation import ObjectiveStore
-from control.microcontroller import Microcontroller
 from control.microscope import Microscope
-from control.peripherals.piezo import PiezoStage
 from control.utils_config import ChannelMode
-from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
+from squid.abc import CameraFrame, CameraFrameFormat
 import squid.logging
 import control.core.acquisition.job_processing
 from control.core.acquisition.job_processing import (
@@ -42,7 +40,14 @@ from squid.utils.thread_safe_state import ThreadSafeValue, ThreadSafeFlag
 from squid.utils.worker_manager import WorkerManager
 
 if TYPE_CHECKING:
-    from squid.services import CameraService, StageService, PeripheralService, PiezoService
+    from squid.services import (
+        CameraService,
+        StageService,
+        PeripheralService,
+        PiezoService,
+        FluidicsService,
+        NL5Service,
+    )
     from squid.controllers import MicroscopeModeController
     from squid.events import EventBus
 
@@ -73,6 +78,8 @@ class MultiPointWorker:
         stage_service: Optional["StageService"] = None,
         peripheral_service: Optional["PeripheralService"] = None,
         piezo_service: Optional["PiezoService"] = None,
+        fluidics_service: Optional["FluidicsService"] = None,
+        nl5_service: Optional["NL5Service"] = None,
         microscope_mode_controller: Optional["MicroscopeModeController"] = None,
         event_bus: Optional["EventBus"] = None,
     ):
@@ -80,11 +87,13 @@ class MultiPointWorker:
         self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
         self.microscope: Microscope = scope
 
-        # Store services (will be used if provided, otherwise fall back to direct access)
+        # Store services (required for service-based architecture)
         self._camera_service = camera_service
         self._stage_service = stage_service
         self._peripheral_service = peripheral_service
         self._piezo_service = piezo_service
+        self._fluidics_service = fluidics_service
+        self._nl5_service = nl5_service
         self._mode_controller = microscope_mode_controller
         self._event_bus = event_bus
 
@@ -93,12 +102,7 @@ class MultiPointWorker:
         self._total_images_to_acquire: int = 0
         self._images_acquired: int = 0
 
-        # Keep direct references for backwards compatibility during migration
-        # These will be removed once all callers pass services
-        self.camera: AbstractCamera = scope.camera
-        self.microcontroller: Microcontroller = scope.low_level_drivers.microcontroller
-        self.stage: squid.abc.AbstractStage = scope.stage
-        self.piezo: Optional[PiezoStage] = scope.addons.piezo_stage
+        # Controller references (controller-to-controller is fine)
         self.liveController = live_controller
         self.autofocusController: Optional[AutoFocusController] = auto_focus_controller
         self.laser_auto_focus_controller: Optional[LaserAutofocusController] = (
@@ -108,7 +112,6 @@ class MultiPointWorker:
         self.channelConfigurationManager: ChannelConfigurationManager = (
             channel_configuration_mananger
         )
-        self.fluidics = scope.addons.fluidics
         self.use_fluidics = acquisition_parameters.use_fluidics
         self._aborted: bool = False
 
@@ -227,123 +230,71 @@ class MultiPointWorker:
         self._abort_on_failed_job = abort_on_failed_jobs
 
     # =========================================================================
-    # Service/hardware helper methods
+    # Service helper methods
     # =========================================================================
     def _camera_get_pixel_size_binned_um(self) -> Optional[float]:
-        return (
-            self._camera_service.get_pixel_size_binned_um()
-            if self._camera_service
-            else self.camera.get_pixel_size_binned_um()
-        )
+        return self._camera_service.get_pixel_size_binned_um() if self._camera_service else None
 
     def _camera_add_frame_callback(self, callback: Callable) -> str:
-        if self._camera_service:
-            return self._camera_service.add_frame_callback(callback)
-        return self.camera.add_frame_callback(callback)
+        return self._camera_service.add_frame_callback(callback)
 
     def _camera_remove_frame_callback(self, callback_id: str) -> None:
-        if self._camera_service:
-            self._camera_service.remove_frame_callback(callback_id)
-        else:
-            self.camera.remove_frame_callback(callback_id)
+        self._camera_service.remove_frame_callback(callback_id)
 
     def _camera_start_streaming(self) -> None:
-        if self._camera_service:
-            self._camera_service.start_streaming()
-        else:
-            self.camera.start_streaming()
+        self._camera_service.start_streaming()
 
     def _camera_stop_streaming(self) -> None:
-        if self._camera_service:
-            self._camera_service.stop_streaming()
-        else:
-            self.camera.stop_streaming()
+        self._camera_service.stop_streaming()
 
     def _camera_send_trigger(self, illumination_time: Optional[float]) -> None:
-        if self._camera_service:
-            self._camera_service.send_trigger(illumination_time=illumination_time)
-        else:
-            self.camera.send_trigger(illumination_time=illumination_time)
+        self._camera_service.send_trigger(illumination_time=illumination_time)
 
     def _camera_get_ready_for_trigger(self) -> bool:
-        if self._camera_service:
-            return self._camera_service.get_ready_for_trigger()
-        return self.camera.get_ready_for_trigger()
+        return self._camera_service.get_ready_for_trigger()
 
     def _camera_get_total_frame_time(self) -> float:
-        if self._camera_service:
-            return self._camera_service.get_total_frame_time()
-        return self.camera.get_total_frame_time()
+        return self._camera_service.get_total_frame_time()
 
     def _camera_read_frame(self):
-        if self._camera_service:
-            return self._camera_service.read_frame()
-        return self.camera.read_frame()
+        return self._camera_service.read_frame()
 
     def _camera_get_exposure_time(self) -> Optional[float]:
-        if self._camera_service:
-            return self._camera_service.get_exposure_time()
-        return self.camera.get_exposure_time()
+        return self._camera_service.get_exposure_time()
 
     def _stage_get_pos(self) -> "squid.abc.Pos":
-        if self._stage_service:
-            return self._stage_service.get_position()
-        return self.stage.get_pos()
+        return self._stage_service.get_position()
 
     def _stage_move_x_to(self, x_mm: float) -> None:
-        if self._stage_service:
-            self._stage_service.move_x_to(x_mm)
-            self._stage_service.wait_for_idle()
-        else:
-            self.stage.move_x_to(x_mm)
-            self.stage.wait_for_idle()
+        self._stage_service.move_x_to(x_mm)
+        self._stage_service.wait_for_idle()
 
     def _stage_move_y_to(self, y_mm: float) -> None:
-        if self._stage_service:
-            self._stage_service.move_y_to(y_mm)
-            self._stage_service.wait_for_idle()
-        else:
-            self.stage.move_y_to(y_mm)
-            self.stage.wait_for_idle()
+        self._stage_service.move_y_to(y_mm)
+        self._stage_service.wait_for_idle()
 
     def _stage_move_z_to(self, z_mm: float) -> None:
-        if self._stage_service:
-            self._stage_service.move_z_to(z_mm)
-            self._stage_service.wait_for_idle()
-        else:
-            self.stage.move_z_to(z_mm)
-            self.stage.wait_for_idle()
+        self._stage_service.move_z_to(z_mm)
+        self._stage_service.wait_for_idle()
 
     def _stage_move_z(self, delta_mm: float) -> None:
-        if self._stage_service:
-            self._stage_service.move_z(delta_mm)
-            self._stage_service.wait_for_idle()
-        else:
-            self.stage.move_z(delta_mm)
-            self.stage.wait_for_idle()
+        self._stage_service.move_z(delta_mm)
+        self._stage_service.wait_for_idle()
 
     def _peripheral_enable_joystick(self, enabled: bool) -> None:
-        if self._peripheral_service:
-            self._peripheral_service.enable_joystick(enabled)
-        else:
-            self.microcontroller.enable_joystick(enabled)
+        self._peripheral_service.enable_joystick(enabled)
 
     def _peripheral_wait_till_operation_is_completed(self) -> None:
-        if self._peripheral_service:
-            self._peripheral_service.wait_till_operation_is_completed()
-        else:
-            self.microcontroller.wait_till_operation_is_completed()
+        self._peripheral_service.wait_till_operation_is_completed()
 
     def _piezo_get_position(self) -> float:
         if self._piezo_service:
             return self._piezo_service.get_position()
-        return self.piezo.position if self.piezo else 0.0
+        return 0.0
 
     def _piezo_move_to(self, position_um: float) -> None:
         if self._piezo_service:
             self._piezo_service.move_to(position_um)
-        elif self.piezo:
-            self.piezo.move_to(position_um)
 
     def update_use_piezo(self, value: bool) -> None:
         self.use_piezo = value
@@ -431,21 +382,21 @@ class MultiPointWorker:
                     self._log.debug("In run, abort_acquisition_requested=True")
                     break
 
-                if self.fluidics and self.use_fluidics:
-                    self.fluidics.update_port(
+                if self._fluidics_service and self.use_fluidics:
+                    self._fluidics_service.update_port(
                         self.time_point
                     )  # use the port in PORT_LIST
                     # For MERFISH, before imaging, run the first 3 sequences (Add probe, wash buffer, imaging buffer)
-                    self.fluidics.run_before_imaging()
-                    self.fluidics.wait_for_completion()
+                    self._fluidics_service.run_before_imaging()
+                    self._fluidics_service.wait_for_completion()
 
                 with self._timing.get_timer("run_single_time_point"):
                     self.run_single_time_point()
 
-                if self.fluidics and self.use_fluidics:
+                if self._fluidics_service and self.use_fluidics:
                     # For MERFISH, after imaging, run the following 2 sequences (Cleavage buffer, SSC rinse)
-                    self.fluidics.run_after_imaging()
-                    self.fluidics.wait_for_completion()
+                    self._fluidics_service.run_after_imaging()
+                    self._fluidics_service.wait_for_completion()
 
                 self.time_point = self.time_point + 1
                 if self.dt == 0:  # continous acquisition
@@ -753,10 +704,7 @@ class MultiPointWorker:
             self.prepare_z_stack()
 
         if self.use_piezo:
-            if self._piezo_service:
-                self.z_piezo_um: float = self._piezo_service.get_position()
-            else:
-                self.z_piezo_um: float = self.piezo.position
+            self.z_piezo_um: float = self._piezo_get_position()
 
         for z_level in range(self.NZ):
             file_ID: str = (
@@ -993,6 +941,9 @@ class MultiPointWorker:
         self.request_abort_fn()
 
     def _frame_wait_timeout_s(self) -> float:
+        override = getattr(self, "frame_wait_timeout_override_s", None)
+        if override is not None:
+            return override
         return (self._camera_get_total_frame_time() / 1e3) + 10
 
     def acquire_camera_image(
@@ -1018,7 +969,13 @@ class MultiPointWorker:
                 # TODO(imo): This used to use the "reset_image_ready_flag=False" on the read_frame, but oinly the toupcam camera implementation had the
                 #  "reset_image_ready_flag" arg, so this is broken for all other cameras.  Also this used to do some other funky stuff like setting internal camera flags.
                 #   I am pretty sure this is broken!
-                self.microscope.addons.nl5.start_acquisition()
+                if self._nl5_service:
+                    try:
+                        self._nl5_service.start_acquisition()
+                    except Exception:
+                        self._log.exception("Failed to start NL5 acquisition via service")
+                else:
+                    self._log.warning("NL5 service unavailable; skipping start_acquisition()")
         # This is some large timeout that we use just so as to not block forever
         with self._timing.get_timer("_ready_for_next_trigger.wait"):
             if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):

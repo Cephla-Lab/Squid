@@ -10,6 +10,8 @@ from squid.abc import CameraAcquisitionMode, AbstractCamera
 from squid.services import CameraService
 from squid.services.peripheral_service import PeripheralService
 from squid.services.illumination_service import IlluminationService
+from squid.services.filter_wheel_service import FilterWheelService
+from squid.services.nl5_service import NL5Service
 from squid.events import (
     EventBus,
     StartLiveCommand,
@@ -54,6 +56,8 @@ class LiveController:
         camera_service: Optional[CameraService] = None,
         illumination_service: Optional[IlluminationService] = None,
         peripheral_service: Optional[PeripheralService] = None,
+        filter_wheel_service: Optional[FilterWheelService] = None,
+        nl5_service: Optional[NL5Service] = None,
         control_illumination: bool = True,
         use_internal_timer_for_hardware_trigger: bool = True,
         for_displacement_measurement: bool = False,
@@ -67,6 +71,8 @@ class LiveController:
         self._camera_service = camera_service
         self._illumination_service = illumination_service
         self._peripheral_service = peripheral_service
+        self._filter_wheel_service = filter_wheel_service
+        self._nl5_service = nl5_service
         self.currentConfiguration: Optional["ChannelMode"] = None
         self.trigger_mode: Optional[TriggerMode] = (
             TriggerMode.SOFTWARE
@@ -171,16 +177,16 @@ class LiveController:
                 self._log.exception("Failed to turn on illumination via service")
         # Fallback to legacy hardware paths if service unavailable
         if "LED matrix" not in self.currentConfiguration.name:
-            self.microscope.illumination_controller.turn_on_illumination(
-                wavelength
-            )
-        elif (
-            self.microscope.addons.sci_microscopy_led_array
-            and "LED matrix" in self.currentConfiguration.name
-        ):
+            if hasattr(self.microscope, "illumination_controller"):
+                self.microscope.illumination_controller.turn_on_illumination(
+                    wavelength
+                )
+            else:
+                self._log.warning("No illumination controller available to turn on channel")
+        elif self.microscope.addons.sci_microscopy_led_array and "LED matrix" in self.currentConfiguration.name:
             self.microscope.addons.sci_microscopy_led_array.turn_on_illumination()
         else:
-            self.microscope.low_level_drivers.microcontroller.turn_on_illumination()
+            self._log.warning("LED matrix illumination controller unavailable; skipping turn on")
         self.illumination_on = True
 
     def turn_off_illumination(self) -> None:
@@ -205,16 +211,14 @@ class LiveController:
             except Exception:
                 self._log.exception("Failed to turn off illumination via service")
         if "LED matrix" not in self.currentConfiguration.name:
-            self.microscope.illumination_controller.turn_off_illumination(
-                wavelength
-            )
-        elif (
-            self.microscope.addons.sci_microscopy_led_array
-            and "LED matrix" in self.currentConfiguration.name
-        ):
+            if hasattr(self.microscope, "illumination_controller"):
+                self.microscope.illumination_controller.turn_off_illumination(
+                    wavelength
+                )
+        elif self.microscope.addons.sci_microscopy_led_array and "LED matrix" in self.currentConfiguration.name:
             self.microscope.addons.sci_microscopy_led_array.turn_off_illumination()
         else:
-            self.microscope.low_level_drivers.microcontroller.turn_off_illumination()
+            self._log.warning("LED matrix illumination controller unavailable; skipping turn off")
         self.illumination_on = False
 
     def update_illumination(self) -> None:
@@ -304,21 +308,24 @@ class LiveController:
             )
             self.microscope.illumination_controller.set_intensity(wavelength, intensity)
             if (
-                self.microscope.addons.nl5
+                self._nl5_service
                 and NL5_USE_DOUT
                 and "Fluorescence" in self.currentConfiguration.name
             ):
-                self.microscope.addons.nl5.set_active_channel(
-                    NL5_WAVENLENGTH_MAP[wavelength]
-                )
-                if NL5_USE_AOUT:
-                    self.microscope.addons.nl5.set_laser_power(
-                        NL5_WAVENLENGTH_MAP[wavelength], int(intensity)
+                try:
+                    self._nl5_service.set_active_channel(
+                        NL5_WAVENLENGTH_MAP[wavelength]
                     )
-                if self.microscope.addons.cellx and ENABLE_CELLX:
-                    self.microscope.addons.cellx.set_laser_power(
-                        NL5_WAVENLENGTH_MAP[wavelength], int(intensity)
-                    )
+                    if NL5_USE_AOUT:
+                        self._nl5_service.set_laser_power(
+                            NL5_WAVENLENGTH_MAP[wavelength], int(intensity)
+                        )
+                    if self.microscope.addons.cellx and ENABLE_CELLX:
+                        self.microscope.addons.cellx.set_laser_power(
+                            NL5_WAVENLENGTH_MAP[wavelength], int(intensity)
+                        )
+                except Exception:
+                    self._log.exception("Failed to set NL5 laser power via service")
 
         # set emission filter position
         if ENABLE_SPINNING_DISK_CONFOCAL:
@@ -341,21 +348,20 @@ class LiveController:
                     print("not setting emission filter position due to " + str(e))
 
         if (
-            self.microscope.addons.emission_filter_wheel
+            self._filter_wheel_service
+            and self._filter_wheel_service.is_available()
             and self.enable_channel_auto_filter_switching
         ):
             try:
-                if self.trigger_mode == TriggerMode.SOFTWARE:
-                    self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(0)
-                elif self.trigger_mode == TriggerMode.HARDWARE:
-                    self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(
-                        -self.camera.get_strobe_time()
-                    )
-                self.microscope.addons.emission_filter_wheel.set_filter_wheel_position(
+                delay = 0
+                if self.trigger_mode == TriggerMode.HARDWARE:
+                    delay = -self.camera.get_strobe_time()
+                self._filter_wheel_service.set_delay_offset_ms(delay)
+                self._filter_wheel_service.set_filter_wheel_position(
                     {1: self.currentConfiguration.emission_filter_position}
                 )
-            except Exception as e:
-                print("not setting emission filter position due to " + str(e))
+            except Exception:
+                self._log.exception("Failed to set emission filter position via service")
 
     def start_live(self) -> None:
         with self._lock:
@@ -383,9 +389,7 @@ class LiveController:
                     except Exception:
                         self._log.exception("Failed to turn on AF laser via peripheral service")
                 else:
-                    self.microscope.low_level_drivers.microcontroller.set_pin_level(
-                        MCU_PINS.AF_LASER, 1
-                    )
+                    self._log.warning("Peripheral service missing; cannot toggle AF laser safely")
 
     def stop_live(self) -> None:
         with self._lock:
@@ -412,9 +416,7 @@ class LiveController:
                         except Exception:
                             self._log.exception("Failed to turn off AF laser via peripheral service")
                     else:
-                        self.microscope.low_level_drivers.microcontroller.set_pin_level(
-                            MCU_PINS.AF_LASER, 0
-                        )
+                        self._log.warning("Peripheral service missing; cannot toggle AF laser safely")
 
     def _trigger_acquisition_timer_fn(self) -> None:
         if self.trigger_acquisition():
@@ -454,12 +456,6 @@ class LiveController:
                     self.turn_on_illumination()
 
             self.trigger_ID = self.trigger_ID + 1
-
-            self.camera.send_trigger(self.camera.get_exposure_time())
-
-            if self.trigger_mode == TriggerMode.SOFTWARE:
-                if self.control_illumination and not self.illumination_on:
-                    self.turn_on_illumination()
 
             if self._camera_service:
                 self._camera_service.send_trigger()

@@ -27,7 +27,13 @@ import control.microscope
 import squid.abc
 
 if TYPE_CHECKING:
-    from squid.services import CameraService, StageService, PeripheralService, PiezoService
+    from squid.services import (
+        CameraService,
+        StageService,
+        PeripheralService,
+        PiezoService,
+        NL5Service,
+    )
     from squid.events import EventBus
 
 
@@ -155,6 +161,7 @@ class QtMultiPointController(MultiPointController, QObject):
         stage_service: Optional["StageService"] = None,
         peripheral_service: Optional["PeripheralService"] = None,
         piezo_service: Optional["PiezoService"] = None,
+        nl5_service: Optional["NL5Service"] = None,
         event_bus: Optional["EventBus"] = None,
     ):
         MultiPointController.__init__(
@@ -180,6 +187,7 @@ class QtMultiPointController(MultiPointController, QObject):
             stage_service=stage_service,
             peripheral_service=peripheral_service,
             piezo_service=piezo_service,
+            nl5_service=nl5_service,
             event_bus=event_bus,
         )
         QObject.__init__(self)
@@ -209,11 +217,10 @@ class QtMultiPointController(MultiPointController, QObject):
             self._pending_frames.clear()
 
         self.acquisition_finished.emit()
-        if self._stage_service:
-            finish_pos = self._stage_service.get_position()
-        else:
-            finish_pos = self.stage.get_pos()
-        self.signal_register_current_fov.emit(finish_pos.x_mm, finish_pos.y_mm)
+        # Note: We don't emit signal_register_current_fov here because:
+        # 1. The stage has returned to start position, not an acquired FOV
+        # 2. The scan grid will be redrawn by reset_coordinates()
+        # 3. Emitting here would add an extra blue rectangle at the return position
 
     def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
         # Avoid heavy UI updates during multipoint if disabled in config

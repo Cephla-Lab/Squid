@@ -10,6 +10,10 @@ from squid.services.stage_service import StageService
 from squid.services.illumination_service import IlluminationService
 from squid.services.filter_wheel_service import FilterWheelService
 from squid.services.piezo_service import PiezoService
+from squid.services.fluidics_service import FluidicsService
+from squid.services.objective_changer_service import ObjectiveChangerService
+from squid.services.spinning_disk_service import SpinningDiskService
+from squid.services.nl5_service import NL5Service
 from squid.events import EventBus
 
 
@@ -76,4 +80,8 @@ __all__ = [
     "IlluminationService",
     "FilterWheelService",
     "PiezoService",
+    "FluidicsService",
+    "ObjectiveChangerService",
+    "SpinningDiskService",
+    "NL5Service",
 ]

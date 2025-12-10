@@ -17,13 +17,18 @@ def test_move_command_updates_position_and_emits_event(simulated_stage):
     bus = EventBus()
     service = StageService(simulated_stage, bus)
 
+    # Start at the stage's minimum X so a small relative move is valid.
+    x_min = simulated_stage.get_config().X_AXIS.MIN_POSITION
+    simulated_stage.set_position(x_mm=x_min)
+
     position_events = []
     bus.subscribe(StagePositionChanged, lambda e: position_events.append(e))
 
     bus.publish(MoveStageCommand(axis="x", distance_mm=1.0))
 
-    assert simulated_stage.get_pos().x_mm == pytest.approx(1.0)
-    assert position_events and position_events[-1].x_mm == pytest.approx(1.0)
+    expected = x_min + 1.0
+    assert simulated_stage.get_pos().x_mm == pytest.approx(expected)
+    assert position_events and position_events[-1].x_mm == pytest.approx(expected)
 
 
 @pytest.mark.integration

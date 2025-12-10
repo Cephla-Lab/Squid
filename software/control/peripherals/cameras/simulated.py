@@ -638,10 +638,15 @@ class SimulatedMainCamera(SimulatedCameraBase):
     def _create_frame(self, width: int, height: int, max_val: int, dtype) -> np.ndarray:
         """Create a microscope image with simulated cells."""
         # Calculate effective pixel size at sample plane
-        # Note: _create_frame receives full ROI dimensions (pre-binning), and binning
-        # is applied afterward in _next_frame(). So we use unbinned pixel size here.
-        # pixel_size_um = sensor_pixel_size * lens_factor (no binning factor!)
-        pixel_size_um = self.PIXEL_SIZE_UM * self._pixel_size_factor
+        # IMPORTANT: Even though _create_frame receives full ROI dimensions (pre-binning),
+        # we need to use the BINNED pixel size for world coordinate calculations.
+        # This is because the image content must match what the acquisition system expects:
+        # - The acquisition calculates FOV using binned pixel size × pixel_size_factor
+        # - So the simulated image must cover the same physical area
+        # After this frame is created, _next_frame() will apply binning which shrinks
+        # the pixel count but each binned pixel covers the same physical area.
+        binning_x, binning_y = self.get_binning()
+        pixel_size_um = self.PIXEL_SIZE_UM * binning_x * self._pixel_size_factor
 
         # Log first few frames at INFO level, then DEBUG
         if self._frame_id < 5:

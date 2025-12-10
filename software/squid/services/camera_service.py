@@ -174,6 +174,11 @@ class CameraService(BaseService):
         with self._lock:
             return self._camera.get_resolution()
 
+    def get_crop_size(self) -> Tuple[int, int]:
+        """Get current crop size (width, height)."""
+        with self._lock:
+            return self._camera.get_crop_size()
+
     # ============================================================
     # Task 1.2: Binning methods
     # ============================================================

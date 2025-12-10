@@ -1828,6 +1828,10 @@ class WellplateMultiPointWidget(QFrame):
     def update_live_coordinates(self, pos: squid.abc.Pos):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
             return
+        # Don't update scan coordinates during acquisition - prevents the grid from
+        # jumping when stage returns to start position after acquisition
+        if self._acquisition_in_progress:
+            return
         # Don't update scan coordinates if we're navigating focus points. A temporary fix for focus map with glass slide.
         # This disables updating scanning grid when focus map is checked
         if self.focusMapWidget is not None and self.focusMapWidget.enabled:

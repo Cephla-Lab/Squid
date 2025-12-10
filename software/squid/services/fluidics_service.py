@@ -104,5 +104,23 @@ class FluidicsService(BaseService):
         with self._lock:
             return self._fluidics.get_fill_tubing_with()
 
+    # Methods used by MultiPointWorker for acquisition
+    def update_port(self, time_point: int) -> None:
+        """Update the port based on time point (for PORT_LIST cycling)."""
+        with self._lock:
+            self._fluidics.update_port(time_point)
 
-    
+    def run_before_imaging(self) -> None:
+        """Run fluidics sequences before imaging (e.g., add probe, wash, imaging buffer)."""
+        with self._lock:
+            self._fluidics.run_before_imaging()
+
+    def run_after_imaging(self) -> None:
+        """Run fluidics sequences after imaging (e.g., cleavage buffer, rinse)."""
+        with self._lock:
+            self._fluidics.run_after_imaging()
+
+    def wait_for_completion(self) -> None:
+        """Wait for current fluidics operation to complete."""
+        with self._lock:
+            self._fluidics.wait_for_completion()

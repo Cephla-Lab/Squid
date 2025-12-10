@@ -18,6 +18,9 @@ _log = squid.logging.get_logger("squid.camera.utils")
 camera_registry = Registry[AbstractCamera]("camera")
 
 # Import simulated cameras to trigger registration
+from control.peripherals.cameras.simulated import (  # noqa: F401, E402
+    SimulatedMainCamera as SimulatedCamera,
+)
 import control.peripherals.cameras.simulated  # noqa: F401, E402
 
 

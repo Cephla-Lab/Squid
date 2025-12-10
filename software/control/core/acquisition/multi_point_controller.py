@@ -48,7 +48,14 @@ from squid.events import (
 )
 
 if TYPE_CHECKING:
-    from squid.services import CameraService, StageService, PeripheralService, PiezoService
+    from squid.services import (
+        CameraService,
+        StageService,
+        PeripheralService,
+        PiezoService,
+        FluidicsService,
+        NL5Service,
+    )
     from squid.events import EventBus
 
 
@@ -79,6 +86,8 @@ class MultiPointController:
         stage_service: Optional["StageService"] = None,
         peripheral_service: Optional["PeripheralService"] = None,
         piezo_service: Optional["PiezoService"] = None,
+        fluidics_service: Optional["FluidicsService"] = None,
+        nl5_service: Optional["NL5Service"] = None,
         event_bus: Optional["EventBus"] = None,
     ):
         super().__init__()
@@ -109,7 +118,12 @@ class MultiPointController:
         self._stage_service = stage_service
         self._peripheral_service = peripheral_service
         self._piezo_service = piezo_service
+        self._fluidics_service = fluidics_service
+        self._nl5_service = nl5_service
         self._event_bus = event_bus
+
+        if self._stage_service is None or self._camera_service is None:
+            raise ValueError("MultiPointController requires StageService and CameraService")
 
         # Subscribe to EventBus commands
         if self._event_bus:
@@ -280,7 +294,7 @@ class MultiPointController:
                 pass
         # TODO: USE OBJECTIVE STORE DATA
         acquisition_parameters["sensor_pixel_size_um"] = (
-            self.camera.get_pixel_size_binned_um()
+            self._camera_service.get_pixel_size_binned_um()
         )
         acquisition_parameters["tube_lens_mm"] = control._def.TUBE_LENS_MM
         f = open(
@@ -349,23 +363,23 @@ class MultiPointController:
             )
 
     def _temporary_get_an_image_hack(self) -> Tuple[Optional[np.ndarray], bool]:
-        was_streaming: bool = self.camera.get_is_streaming()
-        callbacks_were_enabled: bool = self.camera.get_callbacks_enabled()
-        self.camera.enable_callbacks(False)
+        was_streaming: bool = self._camera_service.get_is_streaming()
+        callbacks_were_enabled: bool = self._camera_service.get_callbacks_enabled()
+        self._camera_service.enable_callbacks(False)
         test_frame: Optional[CameraFrame] = None
         if not was_streaming:
-            self.camera.start_streaming()
+            self._camera_service.start_streaming()
         try:
             if (
                 self.liveController.trigger_mode == control._def.TriggerMode.SOFTWARE
                 or self.liveController.trigger_mode == control._def.TriggerMode.HARDWARE
             ):
-                self.camera.send_trigger()
-            test_frame = self.camera.read_camera_frame()
+                self._camera_service.send_trigger()
+            test_frame = self._camera_service.read_camera_frame()
         finally:
-            self.camera.enable_callbacks(callbacks_were_enabled)
+            self._camera_service.enable_callbacks(callbacks_were_enabled)
             if not was_streaming:
-                self.camera.stop_streaming()
+                self._camera_service.stop_streaming()
         return (
             (test_frame.frame, test_frame.is_color()) if test_frame else (None, False)
         )
@@ -403,11 +417,11 @@ class MultiPointController:
 
         if test_image is None:
             is_color = squid.abc.CameraPixelFormat.is_color_format(
-                self.camera.get_pixel_format()
+                self._camera_service.get_pixel_format()
             )
             # Do our best to create a fake image with the correct properties.
             # TODO(imo): It'd be better to pull this from our camera but need to wait for AbstractCamera for a consistent way to do that.
-            width, height = self.camera.get_crop_size()
+            width, height = self._camera_service.get_crop_size()
             test_image = np.random.randint(
                 2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16
             )
@@ -442,7 +456,7 @@ class MultiPointController:
         self._publish_acquisition_state(in_progress=True)
 
         self._log.info("start multipoint")
-        self._start_position = self.stage.get_pos()
+        self._start_position = self._stage_service.get_position()
 
         if self.z_range is None:
             self.z_range = (
@@ -453,7 +467,7 @@ class MultiPointController:
         acquisition_scan_coordinates: ScanCoordinates = self.scanCoordinates
         self.run_acquisition_current_fov: bool = False
         if acquire_current_fov:
-            pos = self.stage.get_pos()
+            pos = self._stage_service.get_position()
             # No callback - we don't want to clobber existing info with this one off fov acquisition
             acquisition_scan_coordinates = ScanCoordinates(
                 objectiveStore=self.scanCoordinates.objectiveStore,
@@ -498,7 +512,7 @@ class MultiPointController:
             return
 
         self._log.info(
-            f"num fovs: {sum(len(coords) for coords in scan_position_information.scan_region_fov_coords_mm)}"
+            f"num fovs: {sum(len(coords) for coords in scan_position_information.scan_region_fov_coords_mm.values())}"
         )
         self._log.info(
             f"num regions: {len(scan_position_information.scan_region_coords_mm)}"
@@ -507,6 +521,9 @@ class MultiPointController:
         self._log.info(
             f"region centers: {scan_position_information.scan_region_coords_mm}"
         )
+        # Debug: show FOV counts per region
+        for region_id, coords in scan_position_information.scan_region_fov_coords_mm.items():
+            self._log.info(f"  region '{region_id}': {len(coords)} FOVs")
 
         self.abort_acqusition_requested: bool = False
 
@@ -521,11 +538,11 @@ class MultiPointController:
             self.liveController_was_live_before_multipoint: bool = False
 
         self.camera_callback_was_enabled_before_multipoint: bool = (
-            self.camera.get_callbacks_enabled()
+            self._camera_service.get_callbacks_enabled()
         )
         # We need callbacks, because we trigger and then use callbacks for image processing.  This
         # lets us do overlapping triggering (soon).
-        self.camera.enable_callbacks(True)
+        self._camera_service.enable_callbacks(True)
 
         # run the acquisition
         self.timestamp_acquisition_started: float = time.time()
@@ -606,8 +623,8 @@ class MultiPointController:
                 self.autofocusController.set_focus_map_use(True)
 
                 # Return to center position
-                self.stage.move_x_to(x_center)
-                self.stage.move_y_to(y_center)
+                self._stage_service.move_x_to(x_center)
+                self._stage_service.move_y_to(y_center)
 
             except ValueError:
                 self._log.exception(
@@ -647,8 +664,15 @@ class MultiPointController:
             stage_service=self._stage_service,
             peripheral_service=self._peripheral_service,
             piezo_service=self._piezo_service,
+            fluidics_service=self._fluidics_service,
+            nl5_service=self._nl5_service,
             event_bus=self._event_bus,
         )
+        # Allow tests/simulation to override long frame wait timeouts.
+        if hasattr(self, "frame_wait_timeout_override_s"):
+            self.multiPointWorker.frame_wait_timeout_override_s = getattr(
+                self, "frame_wait_timeout_override_s"
+            )
 
         self.thread: Thread = Thread(
             target=self.multiPointWorker.run, name="Acquisition thread", daemon=True
@@ -698,14 +722,7 @@ class MultiPointController:
             )
 
         # Restore callbacks to pre-acquisition state
-        self.camera.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
-
-        # re-enable live if it's previously on
-        if (
-            self.liveController_was_live_before_multipoint
-            and control._def.RESUME_LIVE_AFTER_ACQUISITION
-        ):
-            self.liveController.start_live()
+        self._camera_service.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
 
         # emit the acquisition finished signal to enable the UI
         self._log.info(
@@ -716,6 +733,8 @@ class MultiPointController:
         if self.run_acquisition_current_fov:
             self.run_acquisition_current_fov = False
 
+        # Move stage back to start position BEFORE re-enabling live mode
+        # This prevents live frames from being captured at intermediate positions
         if self._start_position:
             x_mm: float = self._start_position.x_mm
             y_mm: float = self._start_position.y_mm
@@ -723,13 +742,22 @@ class MultiPointController:
             self._log.info(
                 f"Moving back to start position: (x,y,z) [mm] = ({x_mm}, {y_mm}, {z_mm})"
             )
-            self.stage.move_x_to(x_mm)
-            self.stage.move_y_to(y_mm)
-            self.stage.move_z_to(z_mm)
+            self._stage_service.move_x_to(x_mm)
+            self._stage_service.move_y_to(y_mm)
+            self._stage_service.move_z_to(z_mm)
             self._start_position = None
 
-        ending_pos: squid.abc.Pos = self.stage.get_pos()
-        self.callbacks.signal_current_fov(ending_pos.x_mm, ending_pos.y_mm)
+        # Note: We don't emit signal_current_fov here because:
+        # 1. The stage has returned to start position, not an acquired FOV
+        # 2. The scan grid will be redrawn by reset_coordinates() called from acquisition_is_finished()
+        # 3. Emitting here would add an extra blue rectangle at the start position
+
+        # re-enable live AFTER stage has returned to start position
+        if (
+            self.liveController_was_live_before_multipoint
+            and control._def.RESUME_LIVE_AFTER_ACQUISITION
+        ):
+            self.liveController.start_live()
 
         # Publish acquisition finished state
         self._publish_acquisition_state(in_progress=False)

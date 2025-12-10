@@ -25,9 +25,11 @@ from squid.events import (
 )
 
 if TYPE_CHECKING:
-    from squid.abc import ObjectiveChanger, SpinningDiskController, PiezoStage
     from squid.events import EventBus
     from control.core.navigation.objective_store import ObjectiveStore
+    from squid.services.objective_changer_service import ObjectiveChangerService
+    from squid.services.spinning_disk_service import SpinningDiskService
+    from squid.services.piezo_service import PiezoService
 
 
 @dataclass(frozen=True)
@@ -64,15 +66,15 @@ class PeripheralsController:
 
     def __init__(
         self,
-        objective_changer: Optional["ObjectiveChanger"],
-        spinning_disk: Optional["SpinningDiskController"],
-        piezo: Optional["PiezoStage"],
+        objective_service: Optional["ObjectiveChangerService"],
+        spinning_disk_service: Optional["SpinningDiskService"],
+        piezo_service: Optional["PiezoService"],
         objective_store: Optional["ObjectiveStore"],
         event_bus: "EventBus",
     ) -> None:
-        self._objective_changer = objective_changer
-        self._spinning_disk = spinning_disk
-        self._piezo = piezo
+        self._objective_service = objective_service
+        self._spinning_disk_service = spinning_disk_service
+        self._piezo_service = piezo_service
         self._objective_store = objective_store
         self._bus = event_bus
         self._lock = threading.RLock()
@@ -80,16 +82,16 @@ class PeripheralsController:
         self._state = self._read_initial_state()
 
         # Subscribe to commands
-        if objective_changer:
+        if objective_service:
             self._bus.subscribe(SetObjectiveCommand, self._on_set_objective)
 
-        if spinning_disk:
+        if spinning_disk_service:
             self._bus.subscribe(SetSpinningDiskPositionCommand, self._on_set_disk_position)
             self._bus.subscribe(SetSpinningDiskSpinningCommand, self._on_set_spinning)
             self._bus.subscribe(SetDiskDichroicCommand, self._on_set_dichroic)
             self._bus.subscribe(SetDiskEmissionFilterCommand, self._on_set_emission)
 
-        if piezo:
+        if piezo_service:
             self._bus.subscribe(SetPiezoPositionCommand, self._on_set_piezo)
             self._bus.subscribe(MovePiezoRelativeCommand, self._on_move_piezo_relative)
 
@@ -104,11 +106,11 @@ class PeripheralsController:
         obj_name = None
         pixel_size = None
 
-        if self._objective_changer:
+        if self._objective_service:
             with self._lock:
                 try:
-                    obj_pos = self._objective_changer.current_position
-                    info = self._objective_changer.get_objective_info(obj_pos)
+                    obj_pos = self._objective_service.get_current_position()
+                    info = self._objective_service.get_objective_info(obj_pos)
                 except Exception:
                     info = None
                 if info:
@@ -116,23 +118,21 @@ class PeripheralsController:
                     pixel_size = getattr(info, "pixel_size_um", None)
 
         disk_state = None
-        if self._spinning_disk:
+        if self._spinning_disk_service:
             with self._lock:
                 disk_state = SpinningDiskState(
-                    is_available=True,
-                    is_disk_in=getattr(self._spinning_disk, "is_disk_in", False),
-                    is_spinning=getattr(self._spinning_disk, "is_spinning", False),
-                    motor_speed=getattr(self._spinning_disk, "disk_motor_speed", 0),
-                    dichroic=getattr(self._spinning_disk, "current_dichroic", 0),
-                    emission_filter=getattr(
-                        self._spinning_disk, "current_emission_filter", 0
-                    ),
+                    is_available=self._spinning_disk_service.is_available(),
+                    is_disk_in=self._spinning_disk_service.is_disk_in(),
+                    is_spinning=self._spinning_disk_service.is_spinning(),
+                    motor_speed=self._spinning_disk_service.motor_speed(),
+                    dichroic=self._spinning_disk_service.current_dichroic(),
+                    emission_filter=self._spinning_disk_service.current_emission_filter(),
                 )
 
         piezo_pos = None
-        if self._piezo:
+        if self._piezo_service:
             with self._lock:
-                piezo_pos = getattr(self._piezo, "position_um", None)
+                piezo_pos = getattr(self._piezo_service, "get_position", lambda: None)()
 
         return PeripheralsState(
             objective_position=obj_pos,
@@ -146,16 +146,16 @@ class PeripheralsController:
 
     def _on_set_objective(self, cmd: SetObjectiveCommand) -> None:
         """Handle SetObjectiveCommand."""
-        if not self._objective_changer:
+        if not self._objective_service:
             return
 
         with self._lock:
-            self._objective_changer.set_position(cmd.position)
+            self._objective_service.set_position(cmd.position)
             try:
-                actual = self._objective_changer.current_position
+                actual = self._objective_service.get_current_position()
             except Exception:
                 actual = cmd.position
-            info = self._objective_changer.get_objective_info(actual)
+            info = self._objective_service.get_objective_info(actual)
 
             obj_name = info.name if info else None
             pixel_size = info.pixel_size_um if info else None
@@ -190,49 +190,49 @@ class PeripheralsController:
     # --- Spinning Disk ---
 
     def _on_set_disk_position(self, cmd: SetSpinningDiskPositionCommand) -> None:
-        if not self._spinning_disk:
+        if not self._spinning_disk_service:
             return
 
         with self._lock:
-            self._spinning_disk.set_disk_position(cmd.in_beam)
+            self._spinning_disk_service.set_disk_position(cmd.in_beam)
         self._update_disk_state()
 
     def _on_set_spinning(self, cmd: SetSpinningDiskSpinningCommand) -> None:
-        if not self._spinning_disk:
+        if not self._spinning_disk_service:
             return
 
         with self._lock:
-            self._spinning_disk.set_spinning(cmd.spinning)
+            self._spinning_disk_service.set_spinning(cmd.spinning)
         self._update_disk_state()
 
     def _on_set_dichroic(self, cmd: SetDiskDichroicCommand) -> None:
-        if not self._spinning_disk:
+        if not self._spinning_disk_service:
             return
 
         with self._lock:
-            self._spinning_disk.set_dichroic(cmd.position)
+            self._spinning_disk_service.set_dichroic(cmd.position)
         self._update_disk_state()
 
     def _on_set_emission(self, cmd: SetDiskEmissionFilterCommand) -> None:
-        if not self._spinning_disk:
+        if not self._spinning_disk_service:
             return
 
         with self._lock:
-            self._spinning_disk.set_emission_filter(cmd.position)
+            self._spinning_disk_service.set_emission_filter(cmd.position)
         self._update_disk_state()
 
     def _update_disk_state(self) -> None:
-        if not self._spinning_disk:
+        if not self._spinning_disk_service:
             return
 
         with self._lock:
             disk_state = SpinningDiskState(
-                is_available=True,
-                is_disk_in=self._spinning_disk.is_disk_in,
-                is_spinning=self._spinning_disk.is_spinning,
-                motor_speed=self._spinning_disk.disk_motor_speed,
-                dichroic=self._spinning_disk.current_dichroic,
-                emission_filter=self._spinning_disk.current_emission_filter,
+                is_available=self._spinning_disk_service.is_available(),
+                is_disk_in=self._spinning_disk_service.is_disk_in(),
+                is_spinning=self._spinning_disk_service.is_spinning(),
+                motor_speed=self._spinning_disk_service.motor_speed(),
+                dichroic=self._spinning_disk_service.current_dichroic(),
+                emission_filter=self._spinning_disk_service.current_emission_filter(),
             )
             # Update state inside lock
             self._state = replace(self._state, spinning_disk=disk_state)
@@ -251,14 +251,14 @@ class PeripheralsController:
     # --- Piezo ---
 
     def _on_set_piezo(self, cmd: SetPiezoPositionCommand) -> None:
-        if not self._piezo:
+        if not self._piezo_service:
             return
 
         with self._lock:
-            min_pos, max_pos = self._piezo.range_um
+            min_pos, max_pos = self._piezo_service.get_range()
             clamped = max(min_pos, min(max_pos, cmd.position_um))
-            self._piezo.move_to(clamped)
-            actual = self._piezo.position_um
+            self._piezo_service.move_to(clamped)
+            actual = self._piezo_service.get_position()
             # Update state inside lock
             self._state = replace(self._state, piezo_position_um=actual)
 
@@ -266,12 +266,12 @@ class PeripheralsController:
         self._bus.publish(PiezoPositionChanged(position_um=actual))
 
     def _on_move_piezo_relative(self, cmd: MovePiezoRelativeCommand) -> None:
-        if not self._piezo:
+        if not self._piezo_service:
             return
 
         with self._lock:
-            self._piezo.move_relative(cmd.delta_um)
-            actual = self._piezo.position_um
+            self._piezo_service.move_relative(cmd.delta_um)
+            actual = self._piezo_service.get_position()
             # Update state inside lock
             self._state = replace(self._state, piezo_position_um=actual)
 
@@ -281,10 +281,10 @@ class PeripheralsController:
     # --- Convenience methods ---
 
     def has_objective_changer(self) -> bool:
-        return self._objective_changer is not None
+        return self._objective_service is not None
 
     def has_spinning_disk(self) -> bool:
-        return self._spinning_disk is not None
+        return self._spinning_disk_service is not None
 
     def has_piezo(self) -> bool:
-        return self._piezo is not None
+        return self._piezo_service is not None

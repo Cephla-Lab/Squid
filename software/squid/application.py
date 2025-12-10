@@ -14,7 +14,7 @@ Usage:
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 import squid.logging
 
@@ -129,9 +129,13 @@ class ApplicationContext:
         assert self._microscope is not None, (
             "Microscope must be built before controllers"
         )
+        microscope_mode_controller: Optional[MicroscopeModeController] = None
+        peripherals_controller: Optional[PeripheralsController] = None
 
         if self._external_controller_creation:
             self._create_controllers_externally()
+            self._log.info("Controllers built successfully")
+            return
         else:
             # Wrap controllers that Microscope created internally
             assert self._microscope.live_controller is not None, (
@@ -151,6 +155,8 @@ class ApplicationContext:
                 self._microscope.live_controller._camera_service = self._services.get("camera")
                 self._microscope.live_controller._illumination_service = self._services.get("illumination")  # type: ignore[attr-defined]
                 self._microscope.live_controller._peripheral_service = self._services.get("peripheral")  # type: ignore[attr-defined]
+                self._microscope.live_controller._filter_wheel_service = self._services.get("filter_wheel")  # type: ignore[attr-defined]
+                self._microscope.live_controller._nl5_service = self._services.get("nl5")  # type: ignore[attr-defined]
         # Refresh channel configs now that controller exists
         self._refresh_channel_configs(microscope_mode_controller)
 
@@ -158,10 +164,10 @@ class ApplicationContext:
             live=self._microscope.live_controller,
             stream_handler=self._microscope.stream_handler,
             microscope_mode=microscope_mode_controller,
-                peripherals=peripherals_controller,
-                channel_config_manager=self._microscope.channel_configuration_manager,
-                objective_store=self._microscope.objective_store,
-            )
+            peripherals=peripherals_controller,
+            channel_config_manager=self._microscope.channel_configuration_manager,
+            objective_store=self._microscope.objective_store,
+        )
 
         self._log.info("Controllers built successfully")
 
@@ -185,6 +191,8 @@ class ApplicationContext:
             camera_service=self._services.get("camera") if self._services else None,
             illumination_service=self._services.get("illumination") if self._services else None,
             peripheral_service=self._services.get("peripheral") if self._services else None,
+            filter_wheel_service=self._services.get("filter_wheel") if self._services else None,
+            nl5_service=self._services.get("nl5") if self._services else None,
         )
 
         # Assign controllers to Microscope (it expects these to exist)
@@ -258,15 +266,15 @@ class ApplicationContext:
         """Create PeripheralsController with dependencies."""
         assert self._microscope is not None
 
-        # Get optional hardware from microscope addons
-        objective_changer = getattr(self._microscope.addons, "objective_changer", None)
-        spinning_disk = getattr(self._microscope.addons, "xlight", None)
-        piezo = getattr(self._microscope.addons, "piezo_stage", None)
+        # Get services for optional peripherals
+        objective_service = self._services.get("objective_changer") if self._services else None
+        spinning_disk_service = self._services.get("spinning_disk") if self._services else None
+        piezo_service = self._services.get("piezo") if self._services else None
 
         return PeripheralsController(
-            objective_changer=objective_changer,
-            spinning_disk=spinning_disk,
-            piezo=piezo,
+            objective_service=objective_service,
+            spinning_disk_service=spinning_disk_service,
+            piezo_service=piezo_service,
             objective_store=self._microscope.objective_store,
             event_bus=event_bus,
         )
@@ -303,6 +311,10 @@ class ApplicationContext:
             IlluminationService,
             FilterWheelService,
             PiezoService,
+            FluidicsService,
+            ObjectiveChangerService,
+            SpinningDiskService,
+            NL5Service,
         )
         from squid.events import event_bus
 
@@ -355,6 +367,35 @@ class ApplicationContext:
             "piezo",
             PiezoService(piezo, event_bus),
         )
+
+        # Fluidics service (for MERFISH and other fluidics-based protocols)
+        fluidics = getattr(self._microscope.addons, "fluidics", None)
+        if fluidics:
+            self._services.register(
+                "fluidics",
+                FluidicsService(fluidics, event_bus),
+            )
+
+        objective_changer = getattr(self._microscope.addons, "objective_changer", None)
+        if objective_changer:
+            self._services.register(
+                "objective_changer",
+                ObjectiveChangerService(objective_changer, event_bus),
+            )
+
+        spinning_disk = getattr(self._microscope.addons, "xlight", None)
+        if spinning_disk:
+            self._services.register(
+                "spinning_disk",
+                SpinningDiskService(spinning_disk, event_bus),
+            )
+
+        nl5 = getattr(self._microscope.addons, "nl5", None)
+        if nl5:
+            self._services.register(
+                "nl5",
+                NL5Service(nl5, event_bus),
+            )
 
         self._log.info("Services built successfully")
 

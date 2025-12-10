@@ -32,10 +32,10 @@ def test_simulated_camera():
     sim_cam.send_trigger()
     frame = sim_cam.read_frame()
     (frame_height, frame_width, *_) = frame.shape
-    (res_width, res_height) = sim_cam.get_resolution()
+    crop_width, crop_height = sim_cam.get_crop_size()
 
-    assert frame_width == res_width
-    assert frame_height == res_height
+    assert frame_width == crop_width
+    assert frame_height == crop_height
 
 
 def test_new_roi_for_binning():

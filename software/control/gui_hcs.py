@@ -42,7 +42,7 @@ import control.peripherals.cameras.camera_utils
 import squid.config
 import squid.logging
 import control.peripherals.stage.stage_utils
-from squid.events import event_bus, MoveStageCommand, MoveStageToCommand
+from squid.events import event_bus, MoveStageCommand, MoveStageToCommand, HomeStageCommand, StopLiveCommand
 
 log = squid.logging.get_logger(__name__)
 
@@ -389,6 +389,7 @@ class HighContentScreeningGui(QMainWindow):
             stage_service=self._services.get("stage"),
             peripheral_service=self._services.get("peripheral"),
             piezo_service=self._services.get("piezo"),
+            nl5_service=self._services.get("nl5"),
             event_bus=self._event_bus,
         )
 
@@ -418,7 +419,7 @@ class HighContentScreeningGui(QMainWindow):
                 z_neg_mm=z_config.MIN_POSITION,
             )
 
-            self.microscope.home_xyz()
+            event_bus.publish(HomeStageCommand(x=True, y=True, z=True, theta=False))
 
         except TimeoutError as e:
             # If we can't recover from a timeout, at least do our best to make sure the system is left in a safe
@@ -1323,23 +1324,43 @@ class HighContentScreeningGui(QMainWindow):
             )
         self.movement_update_timer.stop()
 
-        if self.emission_filter_wheel:
+        filter_service = self._services.get("filter_wheel") if self._services else None
+        if filter_service:
+            try:
+                filter_service.set_filter_wheel_position({1: 1})
+            except Exception:
+                self.log.exception("Failed to reset emission filter wheel via service")
+        elif self.emission_filter_wheel:
             self.emission_filter_wheel.set_filter_wheel_position({1: 1})
             self.emission_filter_wheel.close()
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveController_focus_camera.stop_live()
             self.imageDisplayWindow_focus.close()
 
-        self.liveController.stop_live()
-        self.camera.stop_streaming()
-        self.camera.close()
+        event_bus.publish(StopLiveCommand())
+        camera_service = self._services.get("camera") if self._services else None
+        if camera_service:
+            try:
+                camera_service.stop_streaming()
+            except Exception:
+                self.log.exception("Failed to stop camera streaming via service during shutdown")
+        else:
+            self.camera.stop_streaming()
+            self.camera.close()
 
         # retract z
         event_bus.publish(MoveStageToCommand(z_mm=OBJECTIVE_RETRACTED_POS_MM))
 
         # reset objective changer
         if USE_XERYON:
-            self.objective_changer.moveToZero()
+            objective_service = self._services.get("objective_changer") if self._services else None
+            if objective_service:
+                try:
+                    objective_service.set_position(0)
+                except Exception:
+                    self.log.exception("Failed to reset objective changer via service during shutdown")
+            elif self.objective_changer:
+                self.objective_changer.moveToZero()
 
         self.microcontroller.turn_off_all_pid()
 

@@ -434,6 +434,11 @@ class NapariMosaicDisplayWidget(QWidget):
         x_pos = int(
             math.floor((x_mm - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm)
         )
+        self._log.info(
+            f"  -> inserting tile at pixel pos=({x_pos}, {y_pos}), image.shape={image.shape}, "
+            f"viewer_pixel_size_mm={self.viewer_pixel_size_mm:.6f}, "
+            f"top_left_coord={self.top_left_coordinate}, layer.data.shape={layer.data.shape}"
+        )
 
         # ensure indices are within bounds
         y_end = min(y_pos + image.shape[0], layer.data.shape[0])

@@ -704,6 +704,8 @@ class NavigationViewer(QFrame):
         return current_FOV_top_left, current_FOV_bottom_right
 
     def draw_current_fov(self, x_mm: float, y_mm: float) -> None:
+        # Ensure FOV size is current before drawing
+        self.update_fov_size()
         self.fov_overlay.fill(0)
         current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
             x_mm, y_mm
@@ -718,6 +720,8 @@ class NavigationViewer(QFrame):
         self.fov_overlay_item.setImage(self.fov_overlay)
 
     def register_fov(self, x_mm: float, y_mm: float) -> None:
+        # Ensure FOV size is current before drawing
+        self.update_fov_size()
         color = (0, 0, 255, 255)  # Blue RGBA
         current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
             x_mm, y_mm
@@ -783,6 +787,8 @@ class NavigationViewer(QFrame):
 
     def register_focus_point(self, x_mm: float, y_mm: float) -> None:
         """Draw focus point marker as filled circle centered on the FOV"""
+        # Ensure FOV size is current before drawing
+        self.update_fov_size()
         color = (0, 255, 0, 255)  # Green RGBA
         # Get FOV corner coordinates, then calculate FOV center pixel coordinates
         current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
@@ -851,6 +857,8 @@ class NavigationViewer(QFrame):
 
     def _redraw_scan_overlay(self) -> None:
         """Redraw all registered FOVs with current zoom-adjusted thickness."""
+        # Ensure FOV size is current before drawing
+        self.update_fov_size()
         # Clear overlay
         self.scan_overlay.fill(0)
 

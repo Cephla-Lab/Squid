@@ -75,6 +75,28 @@ class FilterWheelService(BaseService):
             self._wheel.set_filter_wheel_position(position, wheel_index)
             return self._wheel.get_filter_wheel_position(wheel_index)
 
+    def set_delay_offset_ms(self, delay_ms: int) -> None:
+        """Set timing offset when hardware supports it."""
+        if self._wheel is None:
+            return  # No hardware; ignore in simulation/tests
+        with self._lock:
+            setter = getattr(self._wheel, "set_delay_offset_ms", None)
+            if setter:
+                setter(delay_ms)
+            else:
+                raise AttributeError("Underlying filter wheel does not support delay offsets")
+
+    def set_filter_wheel_position(self, position: dict) -> None:
+        """Compatibility helper for emission filter wheels using mapping API."""
+        if self._wheel is None:
+            return  # No hardware; ignore in simulation/tests
+        with self._lock:
+            setter = getattr(self._wheel, "set_filter_wheel_position", None)
+            if setter:
+                setter(position)
+            else:
+                raise AttributeError("Underlying filter wheel does not support position mapping")
+
     def get_position(self, wheel_index: int = 0) -> int:
         if self._wheel is None:
             raise ValueError("Filter wheel hardware not available")
