@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from contextlib import contextmanager
 from abc import ABC, abstractmethod
 from typing import Callable, Optional, Tuple, Sequence, List, Dict
@@ -15,117 +17,144 @@ from squid.config import StageConfig, CameraConfig, CameraPixelFormat
 from squid.exceptions import SquidTimeout
 import control.utils
 
+
+@dataclass(frozen=True)
+class ObjectiveInfo:
+    """Metadata about an objective lens."""
+
+    index: int
+    name: str
+    magnification: float = 1.0
+    na: float = 0.0
+    pixel_size_um: float = 1.0
+    parfocal_offset_um: float = 0.0
+
 #
 # Peripheral Interfaces
 #
 class ObjectiveChanger(ABC):
+    """Motorized objective turret."""
+
     @abstractmethod
     def __init__(self):
         """Initialize the objective changer and establish communication."""
         pass
 
+    @property
     @abstractmethod
     def current_position(self) -> int:
-        """Get the current position of the objective changer."""
+        """Current objective position (0-indexed)."""
         pass
 
+    @property
     @abstractmethod
     def num_positions(self) -> int:
-        """Get the number of positions of the objective changer."""
-        pass
-
-    @abstractmethod
-    def objective_info(self) -> ObjectiveInfo | None:
-        """Get the information about the current objective."""
+        """Number of objective positions."""
         pass
 
     @abstractmethod
     def set_position(self, position: int) -> None:
-        """Set the position of the objective changer."""
+        """Change to specified objective position."""
+        pass
+
+    @abstractmethod
+    def get_objective_info(self, position: int) -> ObjectiveInfo | None:
+        """Get metadata for objective at position."""
         pass
 
 class SpinningDiskController(ABC):
+    """Spinning disk confocal unit (xLight, Dragonfly, etc.)."""
+
     @abstractmethod
     def __init__(self):
         """Initialize the spinning disk controller and establish communication."""
         pass
 
+    @property
+    @abstractmethod
+    def is_disk_in(self) -> bool:
+        """True if disk is in the beam path."""
+        pass
+
+    @property
     @abstractmethod
     def is_spinning(self) -> bool:
-        """Get the current spinning state of the spinning disk."""
+        """True if disk is spinning."""
         pass
 
+    @property
     @abstractmethod
-    def disk_position(self) -> str:
-        """Get the current disk position of the spinning disk."""
+    def disk_motor_speed(self) -> int:
+        """Current disk motor speed."""
         pass
 
+    @property
     @abstractmethod
     def current_dichroic(self) -> int:
-        """Get the current dichroic of the spinning disk."""
+        """Current dichroic position."""
         pass
 
+    @property
     @abstractmethod
     def current_emission_filter(self) -> int:
-        """Get the current emission filter of the spinning disk."""
+        """Current emission filter position."""
         pass
 
     @abstractmethod
-    def set_disk_position(self, position: str) -> None:
-        """Set the disk position of the spinning disk."""
+    def set_disk_position(self, in_beam: bool) -> None:
+        """Move disk in/out of beam path."""
         pass
 
     @abstractmethod
-    def start_disk(self) -> None:
-        """Start the spinning disk."""
+    def set_spinning(self, spinning: bool) -> None:
+        """Start/stop disk spinning."""
         pass
 
     @abstractmethod
-    def stop_disk(self) -> None:
-        """Stop the spinning disk."""
+    def set_disk_motor_speed(self, speed: int) -> None:
+        """Set disk motor speed."""
         pass
 
     @abstractmethod
     def set_dichroic(self, position: int) -> None:
-        """Set the dichroic of the spinning disk."""
+        """Set dichroic position."""
         pass
 
     @abstractmethod
     def set_emission_filter(self, position: int) -> None:
-        """Set the emission filter of the spinning disk."""
+        """Set emission filter position."""
         pass
 
 class PiezoStage(ABC):
+    """Fast Z piezo for fine focus."""
+
     @abstractmethod
     def __init__(self):
         """Initialize the piezo stage and establish communication."""
         pass
 
+    @property
     @abstractmethod
     def position_um(self) -> float:
-        """Get the current position of the piezo stage."""
+        """Current position in micrometers."""
         pass
 
+    @property
     @abstractmethod
     def range_um(self) -> Tuple[float, float]:
-        """Get the range of the piezo stage."""
+        """Valid position range (min, max) in micrometers."""
         pass
 
     @abstractmethod
     def move_to(self, position_um: float) -> None:
-        """Move the piezo stage to the given position."""
+        """Move to absolute position."""
         pass
 
     @abstractmethod
     def move_relative(self, delta_um: float) -> None:
-        """Move the piezo stage relative to the current position."""
+        """Move relative to current position."""
         pass
 
-
-@dataclass(frozen=True)
-class ObjectiveInfo:
-    index: int
-    name: str
 
 @dataclass(frozen=True)
 class FilterWheelInfo:
@@ -818,11 +847,28 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def get_fov_size_mm(self) -> Optional[float]:
         """
         Returns the size of the camera field of view in millimeters (after ROI and software crop).
+        For backwards compatibility, returns the width. Use get_fov_width_mm/get_fov_height_mm for
+        explicit dimensions.
+        """
+        return self.get_fov_width_mm()
+
+    def get_fov_width_mm(self) -> Optional[float]:
+        """
+        Returns the width of the camera field of view in millimeters (after ROI and software crop).
         """
         crop_width = self.get_crop_size()[0]
         if crop_width is None:
             return None
         return crop_width * self.get_pixel_size_binned_um() / 1000
+
+    def get_fov_height_mm(self) -> Optional[float]:
+        """
+        Returns the height of the camera field of view in millimeters (after ROI and software crop).
+        """
+        crop_height = self.get_crop_size()[1]
+        if crop_height is None:
+            return None
+        return crop_height * self.get_pixel_size_binned_um() / 1000
 
     def set_software_crop_ratio(self, width_ratio: float, height_ratio: float) -> None:
         """

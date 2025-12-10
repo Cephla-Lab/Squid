@@ -1,6 +1,7 @@
 # squid/services/stage_service.py
 """Service for stage operations."""
 
+import threading
 from typing import Optional, Callable, TYPE_CHECKING
 from threading import Thread
 
@@ -33,6 +34,7 @@ class StageService(BaseService):
     def __init__(self, stage: "AbstractStage", event_bus: EventBus):
         super().__init__(event_bus)
         self._stage = stage
+        self._lock = threading.RLock()
         self._scanning_position_z_mm: Optional[float] = (
             None  # Track Z position for loading/scanning
         )
@@ -81,17 +83,20 @@ class StageService(BaseService):
 
     def move_x(self, distance_mm: float, blocking: bool = True):
         """Move X axis by relative distance."""
-        self._stage.move_x(distance_mm, blocking)
+        with self._lock:
+            self._stage.move_x(distance_mm, blocking)
         self._publish_position()
 
     def move_y(self, distance_mm: float, blocking: bool = True):
         """Move Y axis by relative distance."""
-        self._stage.move_y(distance_mm, blocking)
+        with self._lock:
+            self._stage.move_y(distance_mm, blocking)
         self._publish_position()
 
     def move_z(self, distance_mm: float, blocking: bool = True):
         """Move Z axis by relative distance."""
-        self._stage.move_z(distance_mm, blocking)
+        with self._lock:
+            self._stage.move_z(distance_mm, blocking)
         self._publish_position()
 
     def move_to(
@@ -102,35 +107,40 @@ class StageService(BaseService):
         blocking: bool = True,
     ):
         """Move to absolute position."""
-        if x_mm is not None:
-            self._stage.move_x_to(x_mm, blocking)
-        if y_mm is not None:
-            self._stage.move_y_to(y_mm, blocking)
-        if z_mm is not None:
-            self._stage.move_z_to(z_mm, blocking)
+        with self._lock:
+            if x_mm is not None:
+                self._stage.move_x_to(x_mm, blocking)
+            if y_mm is not None:
+                self._stage.move_y_to(y_mm, blocking)
+            if z_mm is not None:
+                self._stage.move_z_to(z_mm, blocking)
         self._publish_position()
 
     def get_position(self) -> "Pos":
         """Get current position."""
-        return self._stage.get_pos()
+        with self._lock:
+            return self._stage.get_pos()
 
     def home(
         self, x: bool = False, y: bool = False, z: bool = False, theta: bool = False
     ):
         """Home specified axes."""
-        self._stage.home(x, y, z, theta)
+        with self._lock:
+            self._stage.home(x, y, z, theta)
         self._publish_position()
 
     def zero(
         self, x: bool = False, y: bool = False, z: bool = False, theta: bool = False
     ):
         """Zero specified axes."""
-        self._stage.zero(x, y, z, theta)
+        with self._lock:
+            self._stage.zero(x, y, z, theta)
         self._publish_position()
 
     def _publish_position(self):
         """Publish current position."""
-        pos = self._stage.get_pos()
+        with self._lock:
+            pos = self._stage.get_pos()
         theta = getattr(pos, "theta_rad", None)
         self.publish(
             StagePositionChanged(
@@ -147,12 +157,14 @@ class StageService(BaseService):
 
     def move_theta(self, distance_rad: float, blocking: bool = True) -> None:
         """Move theta axis by relative distance."""
-        self._stage.move_theta(distance_rad, blocking)  # type: ignore[attr-defined]
+        with self._lock:
+            self._stage.move_theta(distance_rad, blocking)  # type: ignore[attr-defined]
         self._publish_position()
 
     def move_theta_to(self, abs_rad: float, blocking: bool = True) -> None:
         """Move theta to absolute position."""
-        self._stage.move_theta_to(abs_rad, blocking)  # type: ignore[attr-defined]
+        with self._lock:
+            self._stage.move_theta_to(abs_rad, blocking)  # type: ignore[attr-defined]
         self._publish_position()
 
     # ============================================================
@@ -161,7 +173,8 @@ class StageService(BaseService):
 
     def get_config(self):
         """Get stage configuration."""
-        return self._stage.get_config()
+        with self._lock:
+            return self._stage.get_config()
 
     # ============================================================
     # Task 3A: Synchronization and positioning methods
@@ -169,7 +182,8 @@ class StageService(BaseService):
 
     def wait_for_idle(self, timeout: float = 10.0):
         """Wait for stage to finish movement."""
-        self._stage.wait_for_idle(timeout)
+        with self._lock:
+            self._stage.wait_for_idle(timeout)
 
     def set_limits(
         self,
@@ -181,30 +195,35 @@ class StageService(BaseService):
         z_neg_mm: Optional[float] = None,
     ) -> None:
         """Set movement limits."""
-        self._stage.set_limits(
-            x_pos_mm=x_pos_mm,
-            x_neg_mm=x_neg_mm,
-            y_pos_mm=y_pos_mm,
-            y_neg_mm=y_neg_mm,
-            z_pos_mm=z_pos_mm,
-            z_neg_mm=z_neg_mm,
-        )
+        with self._lock:
+            self._stage.set_limits(
+                x_pos_mm=x_pos_mm,
+                x_neg_mm=x_neg_mm,
+                y_pos_mm=y_pos_mm,
+                y_neg_mm=y_neg_mm,
+                z_pos_mm=z_pos_mm,
+                z_neg_mm=z_neg_mm,
+            )
 
     def get_x_mm_per_ustep(self) -> float:
         """Get mm per microstep for X axis."""
-        return 1.0 / self._stage.x_mm_to_usteps(1.0)  # type: ignore[attr-defined]
+        with self._lock:
+            return 1.0 / self._stage.x_mm_to_usteps(1.0)  # type: ignore[attr-defined]
 
     def get_y_mm_per_ustep(self) -> float:
         """Get mm per microstep for Y axis."""
-        return 1.0 / self._stage.y_mm_to_usteps(1.0)  # type: ignore[attr-defined]
+        with self._lock:
+            return 1.0 / self._stage.y_mm_to_usteps(1.0)  # type: ignore[attr-defined]
 
     def get_z_mm_per_ustep(self) -> float:
         """Get mm per microstep for Z axis."""
-        return 1.0 / self._stage.z_mm_to_usteps(1.0)  # type: ignore[attr-defined]
+        with self._lock:
+            return 1.0 / self._stage.z_mm_to_usteps(1.0)  # type: ignore[attr-defined]
 
     def move_to_safety_position(self):
         """Move Z to safety position."""
-        self._stage.move_z_to(int(_def.Z_HOME_SAFETY_POINT) / 1000.0)
+        with self._lock:
+            self._stage.move_z_to(int(_def.Z_HOME_SAFETY_POINT) / 1000.0)
         self._publish_position()
 
     def _move_to_loading_position_impl(self, is_wellplate: bool):
@@ -280,3 +299,25 @@ class StageService(BaseService):
         return control.utils.threaded_operation_helper(
             self._move_to_scanning_position_impl, callback, is_wellplate=is_wellplate
         )
+
+    # ============================================================
+    # Blocking move methods (for acquisition)
+    # ============================================================
+
+    def move_x_to(self, x_mm: float, blocking: bool = True) -> None:
+        """Move X axis to absolute position."""
+        with self._lock:
+            self._stage.move_x_to(x_mm, blocking)
+        self._publish_position()
+
+    def move_y_to(self, y_mm: float, blocking: bool = True) -> None:
+        """Move Y axis to absolute position."""
+        with self._lock:
+            self._stage.move_y_to(y_mm, blocking)
+        self._publish_position()
+
+    def move_z_to(self, z_mm: float, blocking: bool = True) -> None:
+        """Move Z axis to absolute position."""
+        with self._lock:
+            self._stage.move_z_to(z_mm, blocking)
+        self._publish_position()

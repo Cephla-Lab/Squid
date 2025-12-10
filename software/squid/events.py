@@ -345,6 +345,15 @@ class StagePositionChanged(Event):
 
 
 @dataclass
+class IlluminationStateChanged(Event):
+    """Notification that illumination changed."""
+
+    channel: int
+    intensity: float
+    on: bool
+
+
+@dataclass
 class LiveStateChanged(Event):
     """Notification that live view state changed."""
 
@@ -452,3 +461,236 @@ class MicroscopeModeChanged(Event):
     """Notification that microscope mode changed."""
 
     configuration_name: str
+
+
+# ============================================================================
+# Peripheral Commands
+# ============================================================================
+
+
+@dataclass
+class SetFilterPositionCommand(Event):
+    """Set filter wheel position."""
+
+    position: int
+    wheel_index: int = 0
+
+
+@dataclass
+class SetObjectiveCommand(Event):
+    """Change objective lens."""
+
+    position: int
+
+
+@dataclass
+class SetSpinningDiskPositionCommand(Event):
+    """Move disk in/out of beam path."""
+
+    in_beam: bool
+
+
+@dataclass
+class SetSpinningDiskSpinningCommand(Event):
+    """Start/stop disk spinning."""
+
+    spinning: bool
+
+
+@dataclass
+class SetDiskDichroicCommand(Event):
+    """Set spinning disk dichroic position."""
+
+    position: int
+
+
+@dataclass
+class SetDiskEmissionFilterCommand(Event):
+    """Set spinning disk emission filter position."""
+
+    position: int
+
+
+@dataclass
+class SetPiezoPositionCommand(Event):
+    """Set piezo Z position (absolute)."""
+
+    position_um: float
+
+
+@dataclass
+class MovePiezoRelativeCommand(Event):
+    """Move piezo Z relative to current position."""
+
+    delta_um: float
+
+
+# ============================================================================
+# Peripheral State Events
+# ============================================================================
+
+
+@dataclass
+class FilterPositionChanged(Event):
+    """Filter wheel position changed."""
+
+    position: int
+    wheel_index: int = 0
+
+
+@dataclass
+class ObjectiveChanged(Event):
+    """Objective lens changed."""
+
+    position: int
+    objective_name: Optional[str] = None
+    magnification: Optional[float] = None
+    pixel_size_um: Optional[float] = None
+
+
+@dataclass
+class PixelSizeChanged(Event):
+    """Pixel size changed (due to objective or binning change)."""
+
+    pixel_size_um: float
+
+
+@dataclass
+class SpinningDiskStateChanged(Event):
+    """Spinning disk state changed."""
+
+    is_disk_in: bool
+    is_spinning: bool
+    motor_speed: int
+    dichroic: int
+    emission_filter: int
+
+
+@dataclass
+class PiezoPositionChanged(Event):
+    """Piezo Z position changed."""
+
+    position_um: float
+
+
+# ============================================================================
+# Acquisition Commands
+# ============================================================================
+
+
+@dataclass
+class StartAcquisitionCommand(Event):
+    """Start multi-point acquisition."""
+
+    # Note: Full config passed separately or via controller state
+    experiment_id: Optional[str] = None
+
+
+@dataclass
+class StopAcquisitionCommand(Event):
+    """Stop acquisition."""
+
+    pass
+
+
+@dataclass
+class PauseAcquisitionCommand(Event):
+    """Pause acquisition."""
+
+    pass
+
+
+@dataclass
+class ResumeAcquisitionCommand(Event):
+    """Resume paused acquisition."""
+
+    pass
+
+
+# ============================================================================
+# Acquisition State Events
+# ============================================================================
+
+
+@dataclass
+class AcquisitionProgress(Event):
+    """Progress update during acquisition."""
+
+    current_fov: int
+    total_fovs: int
+    current_round: int
+    total_rounds: int
+    current_channel: str
+    progress_percent: float
+    eta_seconds: Optional[float] = None
+
+
+@dataclass
+class AcquisitionPaused(Event):
+    """Acquisition was paused."""
+
+    pass
+
+
+@dataclass
+class AcquisitionResumed(Event):
+    """Acquisition was resumed."""
+
+    pass
+
+
+# ============================================================================
+# Autofocus Commands
+# ============================================================================
+
+
+@dataclass
+class StartAutofocusCommand(Event):
+    """Start autofocus."""
+
+    pass
+
+
+@dataclass
+class StopAutofocusCommand(Event):
+    """Stop autofocus."""
+
+    pass
+
+
+@dataclass
+class SetAutofocusParamsCommand(Event):
+    """Configure autofocus parameters."""
+
+    n_planes: Optional[int] = None
+    delta_z_um: Optional[float] = None
+    focus_metric: Optional[str] = None
+
+
+# ============================================================================
+# Autofocus State Events
+# ============================================================================
+
+
+@dataclass
+class AutofocusProgress(Event):
+    """Autofocus progress update."""
+
+    current_step: int
+    total_steps: int
+    current_z: float
+    best_z: Optional[float]
+    best_score: Optional[float]
+
+
+@dataclass
+class AutofocusCompleted(Event):
+    """Autofocus completed."""
+
+    success: bool
+    z_position: Optional[float]
+    score: Optional[float]
+    error: Optional[str] = None
+
+
+# Note: FocusChanged already exists above (line ~170)

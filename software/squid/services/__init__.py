@@ -7,9 +7,9 @@ from squid.services.base import BaseService
 from squid.services.peripheral_service import PeripheralService
 from squid.services.camera_service import CameraService
 from squid.services.stage_service import StageService
-from squid.services.live_service import LiveService
-from squid.services.trigger_service import TriggerService
-from squid.services.microscope_mode_service import MicroscopeModeService
+from squid.services.illumination_service import IlluminationService
+from squid.services.filter_wheel_service import FilterWheelService
+from squid.services.piezo_service import PiezoService
 from squid.events import EventBus
 
 
@@ -73,7 +73,7 @@ __all__ = [
     "PeripheralService",
     "CameraService",
     "StageService",
-    "LiveService",
-    "TriggerService",
-    "MicroscopeModeService",
+    "IlluminationService",
+    "FilterWheelService",
+    "PiezoService",
 ]

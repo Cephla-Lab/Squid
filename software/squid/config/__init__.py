@@ -515,6 +515,10 @@ class CameraConfig(pydantic.BaseModel):
     # After initialization, set the white balance gains to this once. Only valid for color cameras.
     default_white_balance_gains: Optional[RGBValue] = None
 
+    # Whether this camera is a focus camera (e.g., laser autofocus camera).
+    # Used by simulated cameras to generate appropriate test images.
+    is_focus_camera: bool = False
+
 
 def _old_camera_variant_to_enum(old_string) -> CameraVariant:
     if old_string == "Toupcam":
@@ -622,6 +626,7 @@ _autofocus_camera_config = CameraConfig(
     default_binning=(1, 1),
     rotate_image_angle=None,
     flip=None,
+    is_focus_camera=True,
 )
 
 

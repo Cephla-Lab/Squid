@@ -26,6 +26,8 @@ from control.core.configuration import ChannelConfigurationManager
 from control.core.navigation import ObjectiveStore
 from control.gui_hcs import HighContentScreeningGui
 from squid.services import ServiceRegistry
+from squid.controllers import MicroscopeModeController, PeripheralsController
+from squid.events import event_bus
 
 
 @dataclass
@@ -39,6 +41,8 @@ class Controllers:
 
     live: "LiveController"
     stream_handler: "StreamHandler"
+    microscope_mode: Optional["MicroscopeModeController"] = None
+    peripherals: Optional["PeripheralsController"] = None
     multipoint: Optional["MultiPointController"] = None
     channel_config_manager: Optional["ChannelConfigurationManager"] = None
     objective_store: Optional["ObjectiveStore"] = None
@@ -90,8 +94,13 @@ class ApplicationContext:
 
         # Build components
         self._build_microscope()
-        self._build_controllers()
+        # Build services before controllers so controllers can receive them
         self._build_services()
+        self._build_controllers()
+        # Subscribe to objective changes to refresh channel configs
+        from squid.events import ObjectiveChanged
+
+        event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
 
     def _build_microscope(self) -> None:
         """Build the microscope from configuration."""
@@ -128,10 +137,25 @@ class ApplicationContext:
             assert self._microscope.stream_handler is not None, (
                 "StreamHandler not created by Microscope"
             )
+            # Ensure LiveController is bus-enabled
+            self._microscope.live_controller.attach_event_bus(event_bus)
 
-            self._controllers = Controllers(
-                live=self._microscope.live_controller,
-                stream_handler=self._microscope.stream_handler,
+            # Create new controllers that manage mode and peripherals
+            microscope_mode_controller = self._create_microscope_mode_controller()
+            peripherals_controller = self._create_peripherals_controller()
+            # Inject services into LiveController for service-based operations
+            if self._services:
+                self._microscope.live_controller._camera_service = self._services.get("camera")
+                self._microscope.live_controller._illumination_service = self._services.get("illumination")  # type: ignore[attr-defined]
+                self._microscope.live_controller._peripheral_service = self._services.get("peripheral")  # type: ignore[attr-defined]
+        # Refresh channel configs now that controller exists
+        self._refresh_channel_configs(microscope_mode_controller)
+
+        self._controllers = Controllers(
+            live=self._microscope.live_controller,
+            stream_handler=self._microscope.stream_handler,
+            microscope_mode=microscope_mode_controller,
+                peripherals=peripherals_controller,
                 channel_config_manager=self._microscope.channel_configuration_manager,
                 objective_store=self._microscope.objective_store,
             )
@@ -150,10 +174,14 @@ class ApplicationContext:
         # Create StreamHandler
         stream_handler = StreamHandler(handler_functions=NoOpStreamHandlerFunctions)
 
-        # Create LiveController (needs microscope reference)
+        # Create LiveController with EventBus for event-driven communication
         live_controller = LiveController(
             microscope=self._microscope,
             camera=self._microscope.camera,
+            event_bus=event_bus,
+            camera_service=self._services.get("camera") if self._services else None,
+            illumination_service=self._services.get("illumination") if self._services else None,
+            peripheral_service=self._services.get("peripheral") if self._services else None,
         )
 
         # Assign controllers to Microscope (it expects these to exist)
@@ -168,19 +196,99 @@ class ApplicationContext:
             live_controller_focus = LiveController(
                 microscope=self._microscope,
                 camera=self._microscope.addons.camera_focus,
+                event_bus=event_bus,
                 control_illumination=False,
                 for_displacement_measurement=True,
             )
             self._microscope.stream_handler_focus = stream_handler_focus
             self._microscope.live_controller_focus = live_controller_focus
 
+        # Create new controllers that manage mode and peripherals
+        microscope_mode_controller = self._create_microscope_mode_controller()
+        peripherals_controller = self._create_peripherals_controller()
+        self._refresh_channel_configs(microscope_mode_controller)
+
         # Create Controllers container
         self._controllers = Controllers(
             live=live_controller,
             stream_handler=stream_handler,
+            microscope_mode=microscope_mode_controller,
+            peripherals=peripherals_controller,
             channel_config_manager=self._microscope.channel_configuration_manager,
             objective_store=self._microscope.objective_store,
         )
+
+    def _create_microscope_mode_controller(self) -> MicroscopeModeController:
+        """Create MicroscopeModeController with dependencies."""
+        assert self._microscope is not None
+
+        channel_configs = self._get_channel_configs_for_current_objective()
+        camera_service = (
+            self._services.get("camera") if self._services is not None else None
+        )
+        illumination_service = (
+            self._services.get("illumination") if self._services is not None else None
+        )
+        filter_wheel_service = (
+            self._services.get("filter_wheel") if self._services is not None else None
+        )
+
+        return MicroscopeModeController(
+            camera_service=camera_service,
+            illumination_service=illumination_service,
+            filter_wheel_service=filter_wheel_service,
+            channel_configs=channel_configs,
+            event_bus=event_bus,
+        )
+
+    def _refresh_channel_configs(
+        self, controller: Optional[MicroscopeModeController]
+    ) -> None:
+        """Update channel configs on the controller from the current objective."""
+        if controller is None:
+            return
+        channel_configs = self._get_channel_configs_for_current_objective()
+        if channel_configs:
+            controller.update_channel_configs(channel_configs)
+
+    def _create_peripherals_controller(self) -> PeripheralsController:
+        """Create PeripheralsController with dependencies."""
+        assert self._microscope is not None
+
+        # Get optional hardware from microscope addons
+        objective_changer = getattr(self._microscope.addons, "objective_changer", None)
+        spinning_disk = getattr(self._microscope.addons, "xlight", None)
+        piezo = getattr(self._microscope.addons, "piezo_stage", None)
+
+        return PeripheralsController(
+            objective_changer=objective_changer,
+            spinning_disk=spinning_disk,
+            piezo=piezo,
+            objective_store=self._microscope.objective_store,
+            event_bus=event_bus,
+        )
+
+    def _get_channel_configs_for_current_objective(self) -> dict:
+        """Return channel config mapping for the current objective."""
+        assert self._microscope is not None
+        manager = self._microscope.channel_configuration_manager
+        objective_store = self._microscope.objective_store
+        if manager is None or objective_store is None:
+            return {}
+        current_obj = getattr(objective_store, "current_objective", None)
+        if not current_obj:
+            return {}
+        try:
+            configs = manager.get_configurations(current_obj)
+        except Exception:
+            return {}
+        return {mode.name: mode for mode in configs}
+
+    # Event handlers
+    def _on_objective_changed(self, event) -> None:
+        """Refresh channel configs when objective changes."""
+        if self._controllers and self._controllers.microscope_mode:
+            self._refresh_channel_configs(self._controllers.microscope_mode)
 
     def _build_services(self) -> None:
         """Build service layer."""
@@ -189,9 +297,9 @@ class ApplicationContext:
             CameraService,
             StageService,
             PeripheralService,
-            LiveService,
-            TriggerService,
-            MicroscopeModeService,
+            IlluminationService,
+            FilterWheelService,
+            PiezoService,
         )
         from squid.events import event_bus
 
@@ -205,6 +313,13 @@ class ApplicationContext:
             "camera", CameraService(self._microscope.camera, event_bus)
         )
 
+        # Focus camera service for laser autofocus
+        if self._microscope.addons.camera_focus:
+            self._services.register(
+                "camera_focus",
+                CameraService(self._microscope.addons.camera_focus, event_bus),
+            )
+
         self._services.register(
             "stage", StageService(self._microscope.stage, event_bus)
         )
@@ -216,21 +331,26 @@ class ApplicationContext:
             ),
         )
 
+        if getattr(self._microscope, "illumination_controller", None):
+            self._services.register(
+                "illumination",
+                IlluminationService(
+                    self._microscope.illumination_controller,
+                    event_bus,
+                ),
+            )
+
+        filter_wheel = getattr(self._microscope.addons, "emission_filter_wheel", None)
         self._services.register(
-            "live", LiveService(self._microscope.live_controller, event_bus)
+            "filter_wheel",
+            FilterWheelService(filter_wheel, event_bus),
         )
 
+        # Piezo service (integral to Z-stack acquisition and focus locking)
+        piezo = getattr(self._microscope.addons, "piezo_stage", None)
         self._services.register(
-            "trigger", TriggerService(self._microscope.live_controller, event_bus)
-        )
-
-        self._services.register(
-            "microscope_mode",
-            MicroscopeModeService(
-                self._microscope.live_controller,
-                self._microscope.channel_configuration_manager,
-                event_bus,
-            ),
+            "piezo",
+            PiezoService(piezo, event_bus),
         )
 
         self._log.info("Services built successfully")
