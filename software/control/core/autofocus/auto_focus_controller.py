@@ -17,6 +17,8 @@ from squid.abc import AbstractCamera, AbstractStage
 
 if TYPE_CHECKING:
     from control.microscope import NL5
+    from squid.services import CameraService, StageService, PeripheralService
+    from squid.events import EventBus
 
 
 class AutoFocusController:
@@ -29,11 +31,18 @@ class AutoFocusController:
         finished_fn: Callable[[], None],
         image_to_display_fn: Callable[[np.ndarray], None],
         nl5: Optional[NL5],
+        # Service-based parameters (optional for backwards compatibility)
+        camera_service: Optional["CameraService"] = None,
+        stage_service: Optional["StageService"] = None,
+        peripheral_service: Optional["PeripheralService"] = None,
+        event_bus: Optional["EventBus"] = None,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self._autofocus_worker: Optional[AutofocusWorker] = None
         self._focus_thread: Optional[Thread] = None
         self._keep_running = threading.Event()
+
+        # Direct hardware references (for fallback)
         self.camera: AbstractCamera = camera
         self.stage: AbstractStage = stage
         self.microcontroller: Microcontroller = microcontroller
@@ -41,6 +50,12 @@ class AutoFocusController:
         self._finished_fn = finished_fn
         self._image_to_display_fn = image_to_display_fn
         self.nl5: Optional[NL5] = nl5
+
+        # Service references
+        self._camera_service = camera_service
+        self._stage_service = stage_service
+        self._peripheral_service = peripheral_service
+        self._event_bus = event_bus
 
         # Start with "Reasonable" defaults.
         self.N: int = 10
@@ -67,8 +82,13 @@ class AutoFocusController:
         if self.use_focus_map and (not focus_map_override):
             self.autofocus_in_progress = True
 
-            self.stage.wait_for_idle(1.0)
-            pos = self.stage.get_pos()
+            # Use service if available, otherwise direct access
+            if self._stage_service:
+                self._stage_service.wait_for_idle(1.0)
+                pos = self._stage_service.get_position()
+            else:
+                self.stage.wait_for_idle(1.0)
+                pos = self.stage.get_pos()
 
             # z here is in mm because that's how the navigation controller stores it
             target_z = utils.interpolate_plane(
@@ -77,7 +97,10 @@ class AutoFocusController:
             self._log.info(
                 f"Interpolated target z as {target_z} mm from focus map, moving there."
             )
-            self.stage.move_z_to(target_z)
+            if self._stage_service:
+                self._stage_service.move_z_to(target_z)
+            else:
+                self.stage.move_z_to(target_z)
             self.autofocus_in_progress = False
             self._finished_fn()
             return
@@ -89,9 +112,17 @@ class AutoFocusController:
             self.was_live_before_autofocus = False
 
         # temporarily disable call back -> image does not go through streamHandler
-        if self.camera.get_callbacks_enabled():
+        if self._camera_service:
+            callbacks_enabled = self._camera_service.get_callbacks_enabled()
+        else:
+            callbacks_enabled = self.camera.get_callbacks_enabled()
+
+        if callbacks_enabled:
             self.callback_was_enabled_before_autofocus = True
-            self.camera.enable_callbacks(False)
+            if self._camera_service:
+                self._camera_service.enable_callbacks(False)
+            else:
+                self.camera.enable_callbacks(False)
         else:
             self.callback_was_enabled_before_autofocus = False
 
@@ -124,7 +155,10 @@ class AutoFocusController:
     def _on_autofocus_completed(self) -> None:
         # re-enable callback
         if self.callback_was_enabled_before_autofocus:
-            self.camera.enable_callbacks(True)
+            if self._camera_service:
+                self._camera_service.enable_callbacks(True)
+            else:
+                self.camera.enable_callbacks(True)
 
         # re-enable live if it's previously on
         if self.was_live_before_autofocus:
@@ -198,13 +232,21 @@ class AutoFocusController:
             self._log.info(
                 f"Navigating to coordinates ({coord[0]},{coord[1]}) to sample for focus map"
             )
-            self.stage.move_x_to(coord[0])
-            self.stage.move_y_to(coord[1])
+            if self._stage_service:
+                self._stage_service.move_x_to(coord[0])
+                self._stage_service.move_y_to(coord[1])
+            else:
+                self.stage.move_x_to(coord[0])
+                self.stage.move_y_to(coord[1])
 
             self._log.info("Autofocusing")
             self.autofocus(True)
             self.wait_till_autofocus_has_completed()
-            pos = self.stage.get_pos()
+
+            if self._stage_service:
+                pos = self._stage_service.get_position()
+            else:
+                pos = self.stage.get_pos()
 
             self._log.info(
                 f"Adding coordinates ({pos.x_mm},{pos.y_mm},{pos.z_mm}) to focus map"
@@ -216,11 +258,17 @@ class AutoFocusController:
     def add_current_coords_to_focus_map(self) -> None:
         if len(self.focus_map_coords) >= 3:
             self._log.info("Replacing last coordinate on focus map.")
-        self.stage.wait_for_idle(timeout_s=0.5)
+        if self._stage_service:
+            self._stage_service.wait_for_idle(timeout_s=0.5)
+        else:
+            self.stage.wait_for_idle(timeout_s=0.5)
         self._log.info("Autofocusing")
         self.autofocus(True)
         self.wait_till_autofocus_has_completed()
-        pos = self.stage.get_pos()
+        if self._stage_service:
+            pos = self._stage_service.get_position()
+        else:
+            pos = self.stage.get_pos()
         x = pos.x_mm
         y = pos.y_mm
         z = pos.z_mm

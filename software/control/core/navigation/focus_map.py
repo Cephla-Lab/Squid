@@ -416,13 +416,18 @@ class NavigationViewer(QFrame):
         self.a1_y_pixel: float = A1_Y_PIXEL
         self.location_update_threshold_mm: float = 0.2
         self.box_color: Tuple[int, int, int] = (255, 0, 0)
-        self.box_line_thickness: int = 2
+        self.box_line_thickness: int = 1
         self.x_mm: Optional[float] = None
         self.y_mm: Optional[float] = None
         self.mm_per_pixel: float = 0.0
         self.origin_x_pixel: float = 0.0
         self.origin_y_pixel: float = 0.0
         self.fov_size_mm: float = 0.0
+        self.fov_width_mm: float = 0.0
+        self.fov_height_mm: float = 0.0
+        self._registered_fovs: List[Tuple[float, float]] = []  # Store FOV positions for redrawing
+        self._base_line_thickness: int = 1  # Base thickness at 1:1 zoom
+        self._current_thickness: int = 1  # Track current thickness to avoid unnecessary redraws
         self.image_height: int = 0
         self.image_width: int = 0
         self.rows: int = 0
@@ -474,6 +479,8 @@ class NavigationViewer(QFrame):
         self.setLayout(self.grid)
         # Connect double-click handler
         self.view.scene().sigMouseClicked.connect(self.handle_mouse_click)
+        # Connect zoom handler for dynamic line thickness
+        self.view.sigRangeChanged.connect(self._on_view_range_changed)
 
     def _position_button(self) -> None:
         """Position the clear button at the bottom-right corner of the graphics widget"""
@@ -560,9 +567,15 @@ class NavigationViewer(QFrame):
         self.update_fov_size()
 
     def update_fov_size(self) -> None:
-        self.fov_size_mm = (
-            self.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
-        )
+        pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
+        self.fov_size_mm = self.camera.get_fov_size_mm() * pixel_size_factor
+        # Support non-square FOV if camera provides height
+        if hasattr(self.camera, 'get_fov_height_mm') and self.camera.get_fov_height_mm() is not None:
+            self.fov_width_mm = self.fov_size_mm
+            self.fov_height_mm = self.camera.get_fov_height_mm() * pixel_size_factor
+        else:
+            self.fov_width_mm = self.fov_size_mm
+            self.fov_height_mm = self.fov_size_mm
 
     def redraw_fov(self) -> None:
         self.clear_overlay()
@@ -636,29 +649,33 @@ class NavigationViewer(QFrame):
     def get_FOV_pixel_coordinates(
         self, x_mm: float, y_mm: float
     ) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        # Use separate width and height for non-square FOV
+        fov_half_width = (self.fov_width_mm if self.fov_width_mm > 0 else self.fov_size_mm) / 2
+        fov_half_height = (self.fov_height_mm if self.fov_height_mm > 0 else self.fov_size_mm) / 2
+
         if self.sample == "glass slide":
             current_FOV_top_left = (
                 round(
                     self.origin_x_pixel
                     + x_mm / self.mm_per_pixel
-                    - self.fov_size_mm / 2 / self.mm_per_pixel
+                    - fov_half_width / self.mm_per_pixel
                 ),
                 round(
                     self.image_height
                     - (self.origin_y_pixel + y_mm / self.mm_per_pixel)
-                    - self.fov_size_mm / 2 / self.mm_per_pixel
+                    - fov_half_height / self.mm_per_pixel
                 ),
             )
             current_FOV_bottom_right = (
                 round(
                     self.origin_x_pixel
                     + x_mm / self.mm_per_pixel
-                    + self.fov_size_mm / 2 / self.mm_per_pixel
+                    + fov_half_width / self.mm_per_pixel
                 ),
                 round(
                     self.image_height
                     - (self.origin_y_pixel + y_mm / self.mm_per_pixel)
-                    + self.fov_size_mm / 2 / self.mm_per_pixel
+                    + fov_half_height / self.mm_per_pixel
                 ),
             )
         else:
@@ -666,22 +683,22 @@ class NavigationViewer(QFrame):
                 round(
                     self.origin_x_pixel
                     + x_mm / self.mm_per_pixel
-                    - self.fov_size_mm / 2 / self.mm_per_pixel
+                    - fov_half_width / self.mm_per_pixel
                 ),
                 round(
                     (self.origin_y_pixel + y_mm / self.mm_per_pixel)
-                    - self.fov_size_mm / 2 / self.mm_per_pixel
+                    - fov_half_height / self.mm_per_pixel
                 ),
             )
             current_FOV_bottom_right = (
                 round(
                     self.origin_x_pixel
                     + x_mm / self.mm_per_pixel
-                    + self.fov_size_mm / 2 / self.mm_per_pixel
+                    + fov_half_width / self.mm_per_pixel
                 ),
                 round(
                     (self.origin_y_pixel + y_mm / self.mm_per_pixel)
-                    + self.fov_size_mm / 2 / self.mm_per_pixel
+                    + fov_half_height / self.mm_per_pixel
                 ),
             )
         return current_FOV_top_left, current_FOV_bottom_right
@@ -723,30 +740,20 @@ class NavigationViewer(QFrame):
         Args:
             fov_list: List of tuples (x_mm, y_mm) or (x_mm, y_mm, z_mm), or list of FovCenter objects
         """
+        self._log.info(f"register_fovs_to_image called with {len(fov_list) if fov_list else 0} FOVs")
         if not fov_list:
             return
 
-        color = (252, 174, 30, 128)  # Yellow RGBA
+        # Store FOV positions for redrawing on zoom
         for fov in fov_list:
-            # Handle tuple (2D or 3D) and FovCenter object formats
             if isinstance(fov, tuple):
-                x_mm = fov[0]
-                y_mm = fov[1]
+                x_mm, y_mm = fov[0], fov[1]
             else:
-                x_mm = fov.x_mm
-                y_mm = fov.y_mm
-            current_FOV_top_left, current_FOV_bottom_right = (
-                self.get_FOV_pixel_coordinates(x_mm, y_mm)
-            )
-            cv2.rectangle(
-                self.scan_overlay,
-                current_FOV_top_left,
-                current_FOV_bottom_right,
-                color,
-                self.box_line_thickness,
-            )
-        # Single update after all rectangles are drawn
-        self.scan_overlay_item.setImage(self.scan_overlay)
+                x_mm, y_mm = fov.x_mm, fov.y_mm
+            self._registered_fovs.append((x_mm, y_mm))
+
+        # Draw with current zoom-adjusted thickness
+        self._redraw_scan_overlay()
 
     def deregister_fovs_from_image(
         self, fov_list: List[Union[Tuple[float, ...], FovCenter]]
@@ -760,26 +767,19 @@ class NavigationViewer(QFrame):
         if not fov_list:
             return
 
+        # Remove FOVs from stored list
         for fov in fov_list:
-            # Handle tuple (2D or 3D) and FovCenter object formats
             if isinstance(fov, tuple):
-                x_mm = fov[0]
-                y_mm = fov[1]
+                x_mm, y_mm = fov[0], fov[1]
             else:
-                x_mm = fov.x_mm
-                y_mm = fov.y_mm
-            current_FOV_top_left, current_FOV_bottom_right = (
-                self.get_FOV_pixel_coordinates(x_mm, y_mm)
-            )
-            cv2.rectangle(
-                self.scan_overlay,
-                current_FOV_top_left,
-                current_FOV_bottom_right,
-                (0, 0, 0, 0),
-                self.box_line_thickness,
-            )
-        # Single update after all rectangles are cleared
-        self.scan_overlay_item.setImage(self.scan_overlay)
+                x_mm, y_mm = fov.x_mm, fov.y_mm
+            try:
+                self._registered_fovs.remove((x_mm, y_mm))
+            except ValueError:
+                pass  # FOV not in list, ignore
+
+        # Redraw remaining FOVs
+        self._redraw_scan_overlay()
 
     def register_focus_point(self, x_mm: float, y_mm: float) -> None:
         """Draw focus point marker as filled circle centered on the FOV"""
@@ -805,15 +805,79 @@ class NavigationViewer(QFrame):
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
 
     def clear_slide(self) -> None:
+        self._log.info("clear_slide called")
         self.background_image = self.background_image_copy.copy()
         self.background_item.setImage(self.background_image)
+        self.clear_overlay()  # Also clear the scan grid overlay
         self.draw_current_fov(self.x_mm, self.y_mm)
 
     def clear_overlay(self) -> None:
+        self._log.info("clear_overlay called")
+        self._registered_fovs.clear()  # Clear stored FOV positions
         self.scan_overlay.fill(0)
         self.scan_overlay_item.setImage(self.scan_overlay)
         self.focus_point_overlay.fill(0)
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
+
+    def _get_zoom_adjusted_thickness(self) -> int:
+        """Calculate line thickness based on current zoom level."""
+        if self.image_width == 0:
+            return self._base_line_thickness
+
+        # Get the visible range in pixels
+        view_range = self.view.viewRange()
+        visible_width = view_range[0][1] - view_range[0][0]
+
+        # Calculate zoom factor (how much of the image is visible)
+        # When zoomed out (full image visible), visible_width ~ image_width
+        # When zoomed in, visible_width < image_width
+        zoom_factor = self.image_width / max(visible_width, 1)
+
+        # Scale thickness: use higher base for visibility
+        # When zoomed out, use thin lines (1-2)
+        # When zoomed in, use thicker lines (up to 5)
+        thickness = max(1, int(2 * zoom_factor))
+
+        # Log at INFO temporarily to verify zoom is working
+        if hasattr(self, '_last_logged_thickness') and self._last_logged_thickness != thickness:
+            self._log.info(
+                f"Zoom changed: visible_width={visible_width:.0f}, image_width={self.image_width}, "
+                f"zoom_factor={zoom_factor:.2f}, thickness={thickness}"
+            )
+        self._last_logged_thickness = thickness
+
+        # Cap at reasonable max thickness
+        return min(thickness, 5)
+
+    def _redraw_scan_overlay(self) -> None:
+        """Redraw all registered FOVs with current zoom-adjusted thickness."""
+        # Clear overlay
+        self.scan_overlay.fill(0)
+
+        if self._registered_fovs:
+            thickness = self._get_zoom_adjusted_thickness()
+            color = (252, 174, 30, 128)  # Yellow RGBA
+
+            for x_mm, y_mm in self._registered_fovs:
+                top_left, bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+                cv2.rectangle(
+                    self.scan_overlay,
+                    top_left,
+                    bottom_right,
+                    color,
+                    thickness,
+                )
+
+        self.scan_overlay_item.setImage(self.scan_overlay)
+
+    def _on_view_range_changed(self, *args) -> None:
+        """Handle view range changes (zoom/pan) to update line thickness."""
+        if self._registered_fovs:
+            new_thickness = self._get_zoom_adjusted_thickness()
+            if not hasattr(self, '_current_thickness') or self._current_thickness != new_thickness:
+                self._log.info(f"Zoom: thickness changed from {getattr(self, '_current_thickness', 'N/A')} to {new_thickness}")
+                self._current_thickness = new_thickness
+                self._redraw_scan_overlay()
 
     def handle_mouse_click(self, evt: Any) -> None:
         if not evt.double():

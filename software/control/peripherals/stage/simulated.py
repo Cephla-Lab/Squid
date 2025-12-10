@@ -116,6 +116,10 @@ class SimulatedStage(AbstractStage):
         """Move theta axis to absolute position."""
         self._move_axis_to("theta", abs_rad, blocking)
 
+    def get_config(self) -> StageConfig:
+        """Return stage configuration."""
+        return self.config
+
     def _move_axis_to(self, axis: str, target: float, blocking: bool):
         """Internal method to move an axis with limit enforcement and delay simulation."""
         # Get current position and limits based on axis

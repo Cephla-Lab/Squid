@@ -32,6 +32,12 @@ from control.peripherals.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
 import squid.logging
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from squid.services import CameraService, StageService, PeripheralService, PiezoService
+    from squid.events import EventBus
+
 
 NoOpCallbacks = MultiPointControllerFunctions(
     signal_acquisition_start=lambda *a, **kw: None,
@@ -55,6 +61,12 @@ class MultiPointController:
         callbacks: MultiPointControllerFunctions,
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
+        # Service-based parameters
+        camera_service: Optional["CameraService"] = None,
+        stage_service: Optional["StageService"] = None,
+        peripheral_service: Optional["PeripheralService"] = None,
+        piezo_service: Optional["PiezoService"] = None,
+        event_bus: Optional["EventBus"] = None,
     ):
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -78,6 +90,13 @@ class MultiPointController:
         self.multiPointWorker: Optional[MultiPointWorker] = None
         self.fluidics: Optional[Any] = microscope.addons.fluidics
         self.thread: Optional[Thread] = None
+
+        # Store services and event bus
+        self._camera_service = camera_service
+        self._stage_service = stage_service
+        self._peripheral_service = peripheral_service
+        self._piezo_service = piezo_service
+        self._event_bus = event_bus
 
         self.NX: int = 1
         self.deltaX: float = control._def.Acquisition.DX
@@ -585,6 +604,12 @@ class MultiPointController:
             abort_requested_fn=lambda: self.abort_acqusition_requested,
             request_abort_fn=self.request_abort_aquisition,
             extra_job_classes=[],
+            # Pass services and event bus
+            camera_service=self._camera_service,
+            stage_service=self._stage_service,
+            peripheral_service=self._peripheral_service,
+            piezo_service=self._piezo_service,
+            event_bus=self._event_bus,
         )
 
         self.thread: Thread = Thread(
@@ -626,12 +651,13 @@ class MultiPointController:
             for x, y, z in self.focus_map_storage:
                 self.autofocusController.focus_map_coords.append((x, y, z))
             self.autofocusController.use_focus_map = self.already_using_fmap
-        self.callbacks.signal_current_configuration(
-            self.configuration_before_running_multipoint
-        )
-        self.liveController.set_microscope_mode(
-            self.configuration_before_running_multipoint
-        )
+        if self.configuration_before_running_multipoint is not None:
+            self.callbacks.signal_current_configuration(
+                self.configuration_before_running_multipoint
+            )
+            self.liveController.set_microscope_mode(
+                self.configuration_before_running_multipoint
+            )
 
         # Restore callbacks to pre-acquisition state
         self.camera.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)

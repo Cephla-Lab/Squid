@@ -1,5 +1,5 @@
 import time
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, TYPE_CHECKING
 
 import cv2
 from datetime import datetime
@@ -19,6 +19,10 @@ from control.utils_config import LaserAFConfig
 from squid.abc import AbstractCamera, AbstractStage
 import squid.logging
 
+if TYPE_CHECKING:
+    from squid.services import CameraService, StageService, PeripheralService, PiezoService
+    from squid.events import EventBus
+
 
 class LaserAutofocusController(QObject):
     image_to_display = Signal(np.ndarray)
@@ -35,9 +39,17 @@ class LaserAutofocusController(QObject):
         piezo: Optional[PiezoStage] = None,
         objectiveStore: Optional[ObjectiveStore] = None,
         laserAFSettingManager: Optional[LaserAFSettingManager] = None,
+        # Service-based parameters (optional for backwards compatibility)
+        camera_service: Optional["CameraService"] = None,
+        stage_service: Optional["StageService"] = None,
+        peripheral_service: Optional["PeripheralService"] = None,
+        piezo_service: Optional["PiezoService"] = None,
+        event_bus: Optional["EventBus"] = None,
     ):
         QObject.__init__(self)
         self._log = squid.logging.get_logger(__class__.__name__)
+
+        # Direct hardware references (for fallback)
         self.microcontroller: Microcontroller = microcontroller
         self.camera: AbstractCamera = camera
         self.liveController: LiveController = liveController
@@ -47,6 +59,14 @@ class LaserAutofocusController(QObject):
         self.laserAFSettingManager: Optional[LaserAFSettingManager] = (
             laserAFSettingManager
         )
+
+        # Service references
+        self._camera_service = camera_service
+        self._stage_service = stage_service
+        self._peripheral_service = peripheral_service
+        self._piezo_service = piezo_service
+        self._event_bus = event_bus
+
         self.characterization_mode: bool = control._def.LASER_AF_CHARACTERIZATION_MODE
 
         self.is_initialized: bool = False
@@ -66,6 +86,101 @@ class LaserAutofocusController(QObject):
         if self.laserAFSettingManager:
             self.load_cached_configuration()
 
+    # =========================================================================
+    # Service helper methods - use service if available, fallback to direct
+    # =========================================================================
+
+    def _set_camera_roi(self, x: int, y: int, width: int, height: int) -> None:
+        """Set camera region of interest."""
+        if self._camera_service:
+            self._camera_service.set_region_of_interest(x, y, width, height)
+        else:
+            self.camera.set_region_of_interest(x, y, width, height)
+
+    def _set_camera_exposure(self, exposure_ms: float) -> None:
+        """Set camera exposure time."""
+        if self._camera_service:
+            self._camera_service.set_exposure_time(exposure_ms)
+        else:
+            self.camera.set_exposure_time(exposure_ms)
+
+    def _get_camera_exposure(self) -> float:
+        """Get camera exposure time."""
+        if self._camera_service:
+            return self._camera_service.get_exposure_time()
+        else:
+            return self.camera.get_exposure_time()
+
+    def _set_camera_analog_gain(self, gain: float) -> None:
+        """Set camera analog gain."""
+        if self._camera_service:
+            self._camera_service.set_analog_gain(gain)
+        else:
+            self.camera.set_analog_gain(gain)
+
+    def _send_camera_trigger(self) -> None:
+        """Send camera trigger."""
+        if self._camera_service:
+            self._camera_service.send_trigger()
+        else:
+            self.camera.send_trigger()
+
+    def _read_camera_frame(self) -> Optional[np.ndarray]:
+        """Read frame from camera."""
+        if self._camera_service:
+            return self._camera_service.read_frame()
+        else:
+            return self.camera.read_frame()
+
+    def _enable_camera_callbacks(self, enabled: bool) -> None:
+        """Enable/disable camera callbacks."""
+        if self._camera_service:
+            self._camera_service.enable_callbacks(enabled)
+        else:
+            self.camera.enable_callbacks(enabled)
+
+    def _turn_on_af_laser(self, wait: bool = True) -> None:
+        """Turn on autofocus laser."""
+        if self._peripheral_service:
+            self._peripheral_service.turn_on_af_laser(wait_for_completion=wait)
+        else:
+            self.microcontroller.turn_on_AF_laser()
+            if wait:
+                self.microcontroller.wait_till_operation_is_completed()
+
+    def _turn_off_af_laser(self, wait: bool = True) -> None:
+        """Turn off autofocus laser."""
+        if self._peripheral_service:
+            self._peripheral_service.turn_off_af_laser(wait_for_completion=wait)
+        else:
+            self.microcontroller.turn_off_AF_laser()
+            if wait:
+                self.microcontroller.wait_till_operation_is_completed()
+
+    def _move_stage_z(self, distance_mm: float) -> None:
+        """Move stage Z by relative distance."""
+        if self._stage_service:
+            self._stage_service.move_z(distance_mm)
+        else:
+            self.stage.move_z(distance_mm)
+
+    def _move_piezo(self, position_um: float) -> None:
+        """Move piezo to absolute position."""
+        if self._piezo_service:
+            self._piezo_service.move_to(position_um)
+        elif self.piezo:
+            self.piezo.move_to(position_um)
+
+    def _get_piezo_position(self) -> float:
+        """Get current piezo position."""
+        if self._piezo_service:
+            return self._piezo_service.get_position()
+        elif self.piezo:
+            return self.piezo.position
+        return 0.0
+
+    # =========================================================================
+
     def initialize_manual(self, config: LaserAFConfig) -> None:
         """Initialize laser autofocus with manual parameters."""
         adjusted_config = config.model_copy(
@@ -84,7 +199,7 @@ class LaserAutofocusController(QObject):
         if self.laser_af_properties.has_reference:
             self.reference_crop = self.laser_af_properties.reference_image_cropped
 
-        self.camera.set_region_of_interest(
+        self._set_camera_roi(
             self.laser_af_properties.x_offset,
             self.laser_af_properties.y_offset,
             self.laser_af_properties.width,
@@ -104,7 +219,11 @@ class LaserAutofocusController(QObject):
             )
 
     def load_cached_configuration(self) -> None:
-        """Load configuration from the cache if available."""
+        """Load configuration from the cache if available.
+
+        Note: This only loads settings, it does NOT initialize the hardware.
+        The user must click Initialize to actually set up the laser AF.
+        """
         laser_af_settings: Dict[str, Any] = (
             self.laserAFSettingManager.get_laser_af_settings()
         )
@@ -117,14 +236,17 @@ class LaserAutofocusController(QObject):
             )
 
             # Update camera settings
-            self.camera.set_exposure_time(config.focus_camera_exposure_time_ms)
+            self._set_camera_exposure(config.focus_camera_exposure_time_ms)
             try:
-                self.camera.set_analog_gain(config.focus_camera_analog_gain)
+                self._set_camera_analog_gain(config.focus_camera_analog_gain)
             except NotImplementedError:
                 pass
 
-            # Initialize with loaded config
-            self.initialize_manual(config)
+            # Load the config settings but do NOT mark as initialized
+            # The user must click Initialize to actually set up the hardware
+            self.laser_af_properties = config
+            if config.has_reference:
+                self.reference_crop = config.reference_image_cropped
 
     def initialize_auto(self) -> bool:
         """Automatically initialize laser autofocus by finding the spot and calibrating.
@@ -137,22 +259,21 @@ class LaserAutofocusController(QObject):
         Returns:
             bool: True if initialization successful, False if any step fails
         """
-        self.camera.set_region_of_interest(0, 0, 3088, 2064)
+        self._set_camera_roi(0, 0, 3088, 2064)
 
         # update camera settings
-        self.camera.set_exposure_time(
+        self._set_camera_exposure(
             self.laser_af_properties.focus_camera_exposure_time_ms
         )
         try:
-            self.camera.set_analog_gain(
+            self._set_camera_analog_gain(
                 self.laser_af_properties.focus_camera_analog_gain
             )
         except NotImplementedError:
             pass
 
         # Find initial spot position
-        self.microcontroller.turn_on_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        self._turn_on_af_laser()
 
         result = self._get_laser_spot_centroid(
             remove_background=True,
@@ -163,13 +284,11 @@ class LaserAutofocusController(QObject):
         )
         if result is None:
             self._log.error("Failed to find laser spot during initialization")
-            self.microcontroller.turn_off_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            self._turn_off_af_laser()
             return False
         x, y = result
 
-        self.microcontroller.turn_off_AF_laser()
-        self.microcontroller.wait_till_operation_is_completed()
+        self._turn_off_af_laser()
 
         # Set up ROI around spot and clear reference
         config = self.laser_af_properties.model_copy(
@@ -206,8 +325,7 @@ class LaserAutofocusController(QObject):
         """
         # Calibrate pixel-to-um conversion
         try:
-            self.microcontroller.turn_on_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            self._turn_on_af_laser()
         except TimeoutError:
             self._log.exception(
                 "Faield to turn on AF laser before pixel to um calibration, cannot continue!"
@@ -223,8 +341,7 @@ class LaserAutofocusController(QObject):
         if result is None:
             self._log.error("Failed to find laser spot during calibration (position 1)")
             try:
-                self.microcontroller.turn_off_AF_laser()
-                self.microcontroller.wait_till_operation_is_completed()
+                self._turn_off_af_laser()
             except TimeoutError:
                 self._log.exception(
                     "Error turning off AF laser after spot calibration failure (position 1)"
@@ -241,8 +358,7 @@ class LaserAutofocusController(QObject):
         if result is None:
             self._log.error("Failed to find laser spot during calibration (position 2)")
             try:
-                self.microcontroller.turn_off_AF_laser()
-                self.microcontroller.wait_till_operation_is_completed()
+                self._turn_off_af_laser()
             except TimeoutError:
                 self._log.exception(
                     "Error turning off AF laser after spot calibration failure (position 2)"
@@ -252,8 +368,7 @@ class LaserAutofocusController(QObject):
         x1, y1 = result
 
         try:
-            self.microcontroller.turn_off_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            self._turn_off_af_laser()
         except TimeoutError:
             self._log.exception(
                 "Error turning off AF laser after spot calibration acquisition.  Continuing in unknown state"
@@ -321,8 +436,7 @@ class LaserAutofocusController(QObject):
 
         try:
             # turn on the laser
-            self.microcontroller.turn_on_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            self._turn_on_af_laser()
         except TimeoutError:
             self._log.exception(
                 "Turning on AF laser timed out, failed to measure displacement."
@@ -334,8 +448,7 @@ class LaserAutofocusController(QObject):
 
         # turn off the laser
         try:
-            self.microcontroller.turn_off_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            self._turn_off_af_laser()
         except TimeoutError:
             self._log.exception(
                 "Turning off AF laser timed out!  We got a displacement but laser may still be on."
@@ -389,25 +502,30 @@ class LaserAutofocusController(QObject):
         um_to_move = target_um - current_displacement_um
         self._move_z(um_to_move)
 
-        # Verify using cross-correlation that spot is in same location as reference
-        cc_result, correlation = self._verify_spot_alignment()
-        self.signal_cross_correlation.emit(correlation)
-        if not cc_result:
-            self._log.warning("Cross correlation check failed - spots not well aligned")
-            # move back to the current position
-            self._move_z(-um_to_move)
-            return False
-        else:
-            self._log.info("Cross correlation check passed - spots are well aligned")
-            return True
+        # Verify using cross-correlation only when returning to reference (target ~= 0)
+        # For other targets, the spot won't match the reference and that's expected
+        if abs(target_um) < 1.0:  # Only verify when target is near zero
+            cc_result, correlation = self._verify_spot_alignment()
+            self.signal_cross_correlation.emit(correlation)
+            if not cc_result:
+                self._log.warning("Cross correlation check failed - spots not well aligned")
+                # move back to the current position
+                self._move_z(-um_to_move)
+                return False
+            else:
+                self._log.info("Cross correlation check passed - spots are well aligned")
+
+        return True
 
     def _move_z(self, um_to_move: float) -> None:
-        if self.piezo is not None:
-            # TODO: check if um_to_move is in the range of the piezo
-            self.piezo.move_relative(um_to_move)
+        if self.piezo is not None or self._piezo_service is not None:
+            if self._piezo_service:
+                self._piezo_service.move_relative(um_to_move)
+            else:
+                self.piezo.move_relative(um_to_move)
             self.signal_piezo_position_update.emit()
         else:
-            self.stage.move_z(um_to_move / 1000)
+            self._move_stage_z(um_to_move / 1000)
 
     def set_reference(self) -> bool:
         """Set the current spot position as the reference position.
@@ -424,8 +542,7 @@ class LaserAutofocusController(QObject):
 
         # turn on the laser
         try:
-            self.microcontroller.turn_on_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            self._turn_on_af_laser()
         except TimeoutError:
             self._log.exception("Failed to turn on AF laser for reference setting!")
             return False
@@ -436,8 +553,7 @@ class LaserAutofocusController(QObject):
 
         # turn off the laser
         try:
-            self.microcontroller.turn_off_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            self._turn_off_af_laser()
         except TimeoutError:
             self._log.exception(
                 "Failed to turn off AF laser after setting reference, laser is in an unknown state!"
@@ -472,6 +588,10 @@ class LaserAutofocusController(QObject):
 
         self.signal_displacement_um.emit(0)
         self._log.info(f"Set reference position to ({x:.1f}, {y:.1f})")
+
+        # Tell simulated camera to use current Z as reference (for spot position simulation)
+        if hasattr(self.camera, 'set_reference_position'):
+            self.camera.set_reference_position()
 
         self.laser_af_properties = self.laser_af_properties.model_copy(
             update={"x_reference": x, "has_reference": True}
@@ -517,8 +637,7 @@ class LaserAutofocusController(QObject):
 
         # Get current spot image
         try:
-            self.microcontroller.turn_on_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            self._turn_on_af_laser()
         except TimeoutError:
             self._log.exception(
                 "Failed to turn on AF laser for verifying spot alignment."
@@ -534,8 +653,7 @@ class LaserAutofocusController(QObject):
         current_image: Optional[np.ndarray] = self.image
 
         try:
-            self.microcontroller.turn_off_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            self._turn_off_af_laser()
         except TimeoutError:
             self._log.exception(
                 "Failed to turn off AF laser after verifying spot alignment, laser in unknown state!"
@@ -588,8 +706,11 @@ class LaserAutofocusController(QObject):
 
     def get_new_frame(self) -> Optional[np.ndarray]:
         # IMPORTANT: This assumes that the autofocus laser is already on!
-        self.camera.send_trigger(self.camera.get_exposure_time())
-        return self.camera.read_frame()
+        if self._camera_service:
+            self._camera_service.send_trigger(illumination_time=self._get_camera_exposure())
+        else:
+            self.camera.send_trigger(self.camera.get_exposure_time())
+        return self._read_camera_frame()
 
     def _get_laser_spot_centroid(
         self,
@@ -605,7 +726,7 @@ class LaserAutofocusController(QObject):
             Optional[Tuple[float, float]]: (x,y) coordinates of spot centroid, or None if detection fails
         """
         # disable camera callback
-        self.camera.enable_callbacks(False)
+        self._enable_camera_callbacks(False)
 
         successful_detections: int = 0
         tmp_x: float = 0
@@ -690,6 +811,9 @@ class LaserAutofocusController(QObject):
                 )
                 continue
 
+        # Re-enable camera callbacks
+        self._enable_camera_callbacks(True)
+
         # optionally display the image
         if control._def.LASER_AF_DISPLAY_SPOT_IMAGE and image is not None:
             self.image_to_display.emit(image)
@@ -718,8 +842,7 @@ class LaserAutofocusController(QObject):
         """
         # turn on the laser
         try:
-            self.microcontroller.turn_on_AF_laser()
-            self.microcontroller.wait_till_operation_is_completed()
+            self._turn_on_af_laser()
         except TimeoutError:
             self._log.exception(
                 "Failed to turn on laser AF laser before get_image, cannot get image."
@@ -728,8 +851,8 @@ class LaserAutofocusController(QObject):
 
         try:
             # send trigger, grab image and display image
-            self.camera.send_trigger()
-            image = self.camera.read_frame()
+            self._send_camera_trigger()
+            image = self._read_camera_frame()
 
             if image is None:
                 self._log.error("Failed to read frame in get_image")
@@ -745,7 +868,6 @@ class LaserAutofocusController(QObject):
         finally:
             # turn off the laser
             try:
-                self.microcontroller.turn_off_AF_laser()
-                self.microcontroller.wait_till_operation_is_completed()
+                self._turn_off_af_laser()
             except TimeoutError:
                 self._log.exception("Failed to turn off AF laser after get_image!")

@@ -16,6 +16,7 @@ from squid.abc import AbstractCamera, AbstractStage
 if TYPE_CHECKING:
     from control.microscope import NL5
     from control.core.autofocus.auto_focus_controller import AutoFocusController
+    from squid.services import CameraService, StageService, PeripheralService
 
 
 class AutofocusWorker:
@@ -32,11 +33,17 @@ class AutofocusWorker:
         self._keep_running: threading.Event = keep_running
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
+        # Direct hardware references (for fallback)
         self.camera: AbstractCamera = self.autofocusController.camera
         self.microcontroller: Microcontroller = self.autofocusController.microcontroller
         self.stage: AbstractStage = self.autofocusController.stage
         self.liveController: LiveController = self.autofocusController.liveController
         self.nl5: Optional[NL5] = self.autofocusController.nl5
+
+        # Service references (from controller)
+        self._camera_service: Optional["CameraService"] = self.autofocusController._camera_service
+        self._stage_service: Optional["StageService"] = self.autofocusController._stage_service
+        self._peripheral_service: Optional["PeripheralService"] = self.autofocusController._peripheral_service
 
         self.N: int = self.autofocusController.N
         self.deltaZ: float = self.autofocusController.deltaZ
@@ -51,8 +58,52 @@ class AutofocusWorker:
             self._finished_fn()
 
     def wait_till_operation_is_completed(self) -> None:
-        while self.microcontroller.is_busy():
-            time.sleep(control._def.SLEEP_TIME_S)
+        if self._peripheral_service:
+            self._peripheral_service.wait_till_operation_is_completed()
+        else:
+            while self.microcontroller.is_busy():
+                time.sleep(control._def.SLEEP_TIME_S)
+
+    def _move_z(self, distance_mm: float) -> None:
+        """Move stage Z by relative distance, using service if available."""
+        if self._stage_service:
+            self._stage_service.move_z(distance_mm)
+        else:
+            self.stage.move_z(distance_mm)
+
+    def _send_trigger(self) -> None:
+        """Send camera trigger, using service if available."""
+        if self._camera_service:
+            self._camera_service.send_trigger()
+        else:
+            self.camera.send_trigger()
+
+    def _read_frame(self) -> Optional[np.ndarray]:
+        """Read frame from camera, using service if available."""
+        if self._camera_service:
+            return self._camera_service.read_frame()
+        else:
+            return self.camera.read_frame()
+
+    def _get_exposure_time(self) -> float:
+        """Get camera exposure time, using service if available."""
+        if self._camera_service:
+            return self._camera_service.get_exposure_time()
+        else:
+            return self.camera.get_exposure_time()
+
+    def _send_hardware_trigger(self, control_illumination: bool, illumination_on_time_us: float) -> None:
+        """Send hardware trigger, using service if available."""
+        if self._peripheral_service:
+            self._peripheral_service.send_hardware_trigger(
+                control_illumination=control_illumination,
+                illumination_on_time_us=illumination_on_time_us,
+            )
+        else:
+            self.microcontroller.send_hardware_trigger(
+                control_illumination=control_illumination,
+                illumination_on_time_us=illumination_on_time_us,
+            )
 
     def run_autofocus(self) -> None:
         # @@@ to add: increase gain, decrease exposure time
@@ -62,7 +113,7 @@ class AutofocusWorker:
 
         z_af_offset: float = self.deltaZ * round(self.N / 2)
 
-        self.stage.move_z(-z_af_offset)
+        self._move_z(-z_af_offset)
 
         steps_moved: int = 0
         image: Optional[np.ndarray] = None
@@ -71,14 +122,14 @@ class AutofocusWorker:
                 self._log.warning("Signal to abort autofocus received, aborting!")
                 # This aborts and then we report our best focus so far
                 break
-            self.stage.move_z(self.deltaZ)
+            self._move_z(self.deltaZ)
             steps_moved = steps_moved + 1
             # trigger acquisition (including turning on the illumination) and read frame
             if self.liveController.trigger_mode == control._def.TriggerMode.SOFTWARE:
                 self.liveController.turn_on_illumination()
                 self.wait_till_operation_is_completed()
-                self.camera.send_trigger()
-                image = self.camera.read_frame()
+                self._send_trigger()
+                image = self._read_frame()
             elif self.liveController.trigger_mode == control._def.TriggerMode.HARDWARE:
                 if (
                     "Fluorescence" in self.liveController.currentConfiguration.name
@@ -88,13 +139,13 @@ class AutofocusWorker:
                     self.nl5.start_acquisition()
                     # TODO(imo): This used to use the "reset_image_ready_flag=False" arg, but oinly the toupcam camera implementation had the
                     #  "reset_image_ready_flag" arg, so this is broken for all other cameras.
-                    image = self.camera.read_frame()
+                    image = self._read_frame()
                 else:
-                    self.microcontroller.send_hardware_trigger(
+                    self._send_hardware_trigger(
                         control_illumination=True,
-                        illumination_on_time_us=self.camera.get_exposure_time() * 1000,
+                        illumination_on_time_us=self._get_exposure_time() * 1000,
                     )
-                    image = self.camera.read_frame()
+                    image = self._read_frame()
             if image is None:
                 continue
             # tunr of the illumination if using software trigger
@@ -121,10 +172,10 @@ class AutofocusWorker:
                 break
 
         # maneuver for achiving uniform step size and repeatability when using open-loop control
-        self.stage.move_z(-steps_moved * self.deltaZ)
+        self._move_z(-steps_moved * self.deltaZ)
         # determine the in-focus position
         idx_in_focus = focus_measure_vs_z.index(max(focus_measure_vs_z))
-        self.stage.move_z((idx_in_focus + 1) * self.deltaZ)
+        self._move_z((idx_in_focus + 1) * self.deltaZ)
 
         # move to the calculated in-focus position
         if idx_in_focus == 0:

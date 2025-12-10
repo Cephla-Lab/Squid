@@ -101,7 +101,8 @@ class Acquisition:
     DZ = 1.5
     NX = 1
     NY = 1
-    USE_MULTIPROCESSING = True
+    # Multiprocessing save jobs can cause UI stalls on macOS; default off.
+    USE_MULTIPROCESSING = False
 
 
 class PosUpdate:
@@ -115,6 +116,12 @@ class MicrocontrollerDef:
 
 
 USE_SEPARATE_MCU_FOR_DAC = False
+# Reduce UI load during multipoint by skipping per-image display updates.
+# Set to True if you want live mosaic rendering during acquisition.
+MULTIPOINT_DISPLAY_IMAGES = False
+# If MULTIPOINT_DISPLAY_IMAGES is False, emit every Nth image to mosaic (0 = never).
+# Default to showing a periodic update so the mosaic is populated without swamping the UI.
+MULTIPOINT_DISPLAY_EVERY_NTH = 5
 
 
 class MCU_PINS:

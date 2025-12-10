@@ -26,8 +26,9 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from control._def import ENABLE_TRACKING
+from control._def import ENABLE_TRACKING, SpotDetectionMode
 from control.core.configuration import ContrastManager
+from control import utils
 from control.core.display.live_controller import LiveController
 import squid.logging
 
@@ -118,6 +119,14 @@ class ImageDisplayWindow(QMainWindow):
         self.normal_cursor: QCursor = QCursor(Qt.ArrowCursor)  # Normal cursor
         self.preview_line: Optional[Any] = None
         self.start_point_marker: Optional[Any] = None
+
+        # Spot tracking state (for laser autofocus camera)
+        self._spot_tracking_enabled: bool = False
+        self._spot_tracking_params: Optional[dict] = None
+        self._spot_tracking_mode: SpotDetectionMode = SpotDetectionMode.SINGLE
+        self._spot_tracking_filter_sigma: Optional[int] = None
+        self._last_spot_x: Optional[float] = None
+        self._last_spot_y: Optional[float] = None
 
         # Create main layout
         layout = QVBoxLayout()
@@ -709,6 +718,26 @@ class ImageDisplayWindow(QMainWindow):
                 cv2.rectangle(image, self.ptRect1, self.ptRect2, (255, 255, 255), 4)
                 self.draw_rectangle = False
 
+        # Apply spot tracking if enabled
+        if self._spot_tracking_enabled:
+            try:
+                result = utils.find_spot_location(
+                    image,
+                    mode=self._spot_tracking_mode,
+                    params=self._spot_tracking_params,
+                    filter_sigma=self._spot_tracking_filter_sigma,
+                    debug_plot=False,
+                )
+                if result is not None:
+                    self._last_spot_x, self._last_spot_y = result
+            except Exception:
+                # Spot detection failed, keep last known position
+                pass
+
+            # Draw marker if we have a valid spot position
+            if self._last_spot_x is not None and self._last_spot_y is not None:
+                image = self._draw_spot_marker(image, self._last_spot_x, self._last_spot_y)
+
         info = (
             np.iinfo(image.dtype)
             if np.issubdtype(image.dtype, np.integer)
@@ -717,7 +746,8 @@ class ImageDisplayWindow(QMainWindow):
         min_val, max_val = info.min, info.max
 
         if self.liveController is not None and self.contrastManager is not None:
-            channel_name = self.liveController.currentConfiguration.name
+            channel_cfg = getattr(self.liveController, "currentConfiguration", None)
+            channel_name = getattr(channel_cfg, "name", "Unknown")
             if (
                 self.contrastManager.acquisition_dtype is not None
                 and self.contrastManager.acquisition_dtype != np.dtype(image.dtype)
@@ -804,6 +834,72 @@ class ImageDisplayWindow(QMainWindow):
 
         self.display_image(marked_image)
 
+    def set_spot_tracking(
+        self,
+        enabled: bool,
+        mode: SpotDetectionMode = SpotDetectionMode.SINGLE,
+        params: Optional[dict] = None,
+        filter_sigma: Optional[int] = None,
+    ) -> None:
+        """Enable or disable continuous spot tracking on displayed images.
+
+        Args:
+            enabled: Whether to enable spot tracking
+            mode: Spot detection mode
+            params: Spot detection parameters (y_window, x_window, etc.)
+            filter_sigma: Gaussian filter sigma for preprocessing
+        """
+        self._spot_tracking_enabled = enabled
+        self._spot_tracking_mode = mode
+        self._spot_tracking_params = params
+        self._spot_tracking_filter_sigma = filter_sigma
+        if not enabled:
+            self._last_spot_x = None
+            self._last_spot_y = None
+
+    def _draw_spot_marker(self, image: np.ndarray, x: float, y: float) -> np.ndarray:
+        """Draw a crosshair marker on the image at the given coordinates.
+
+        Args:
+            image: Image to draw on (will be modified in place if BGR, otherwise converted)
+            x: x-coordinate of the spot
+            y: y-coordinate of the spot
+
+        Returns:
+            Image with marker drawn
+        """
+        crosshair_size = 10
+        crosshair_color = (0, 255, 0)  # Green in BGR
+        crosshair_thickness = 1
+        x_int = int(round(x))
+        y_int = int(round(y))
+
+        # Convert to BGR if grayscale
+        if len(image.shape) == 2:
+            marked_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        else:
+            marked_image = image.copy()
+
+        # Draw horizontal line
+        cv2.line(
+            marked_image,
+            (x_int - crosshair_size, y_int),
+            (x_int + crosshair_size, y_int),
+            crosshair_color,
+            crosshair_thickness,
+        )
+
+        # Draw vertical line
+        cv2.line(
+            marked_image,
+            (x_int, y_int - crosshair_size),
+            (x_int, y_int + crosshair_size),
+            crosshair_color,
+            crosshair_thickness,
+        )
+
+        return marked_image
+
     def update_contrast_limits(self) -> None:
         if (
             self.show_LUT
@@ -811,9 +907,9 @@ class ImageDisplayWindow(QMainWindow):
             and self.contrastManager.acquisition_dtype
         ):
             min_val, max_val = self.LUTWidget.region.getRegion()
-            self.contrastManager.update_limits(
-                self.liveController.currentConfiguration.name, min_val, max_val
-            )
+            cfg = getattr(self.liveController, "currentConfiguration", None)
+            channel_name = getattr(cfg, "name", "Unknown")
+            self.contrastManager.update_limits(channel_name, min_val, max_val)
 
     def update_ROI(self) -> None:
         self.roi_pos = self.ROI.pos()

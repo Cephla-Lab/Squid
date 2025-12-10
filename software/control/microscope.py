@@ -30,6 +30,7 @@ from squid.abc import (
     AbstractStage,
     AbstractFilterWheelController,
 )
+from squid.events import event_bus
 from control.peripherals.stage.stage_utils import get_stage
 import control.peripherals.lighting.celesta
 import control.peripherals.lighting.illumination_andor
@@ -160,6 +161,15 @@ class MicroscopeAddons:
             sci_microscopy_led_array.set_NA(
                 control._def.SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA
             )
+
+        # Connect focus camera to event bus for Z position tracking (simulation)
+        if camera_focus is not None:
+            if hasattr(camera_focus, 'set_event_bus'):
+                from squid.events import event_bus
+                camera_focus.set_event_bus(event_bus)
+            # Legacy: also set piezo reference as fallback
+            if piezo_stage is not None and hasattr(camera_focus, 'set_piezo'):
+                camera_focus.set_piezo(piezo_stage)
 
         return MicroscopeAddons(
             xlight,
@@ -301,6 +311,11 @@ class Microscope:
             hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
         )
 
+        # Connect main camera to event bus for stage position tracking (simulation)
+        if hasattr(camera, 'set_event_bus'):
+            from squid.events import event_bus
+            camera.set_event_bus(event_bus)
+
         if control._def.USE_LDI_SERIAL_CONTROL and not simulated:
             ldi = serial_peripherals.LDI()
 
@@ -416,11 +431,16 @@ class Microscope:
             self.live_controller_focus = LiveController(
                 microscope=self,
                 camera=self.addons.camera_focus,
+                event_bus=event_bus,
                 control_illumination=False,
                 for_displacement_measurement=True,
             )
 
-        self.live_controller = LiveController(microscope=self, camera=self.camera)
+        self.live_controller = LiveController(
+            microscope=self,
+            camera=self.camera,
+            event_bus=event_bus,
+        )
 
     def _prepare_for_use(self) -> None:
         self.low_level_drivers.prepare_for_use()

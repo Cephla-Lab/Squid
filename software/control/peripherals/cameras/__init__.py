@@ -6,9 +6,15 @@
 #   - hamamatsu.py: Hamamatsu cameras (uses dcam, dcamapi4)
 #   - ids.py: IDS cameras
 #   - photometrics.py: Photometrics cameras
+#   - simulated.py: Simulated cameras (SimulatedFocusCamera, SimulatedMainCamera)
 #   - tis.py: TIS cameras
 #   - toupcam.py: ToupCam cameras (uses toupcam_sdk, toupcam_exceptions)
 #   - tucsen.py: Tucsen cameras (uses tucam_sdk)
+#
+# Utilities:
+#   - camera_utils.py: get_camera() factory function and camera_registry
+#   - base.py: DefaultCamera base implementation
+#   - cell_renderer.py: Cell field renderers for SimulatedMainCamera
 #
 # SDK/support files:
 #   - dcam.py: DCAM wrapper for Hamamatsu
