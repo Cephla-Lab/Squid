@@ -16,9 +16,11 @@ from control.core.configuration import ContrastManager
 from control.core.navigation import ObjectiveStore
 
 from squid.services import CameraService
+import squid.logging
 
 
 class NapariMosaicDisplayWidget(QWidget):
+    _log = squid.logging.get_logger(__name__)
     signal_coordinates_clicked = Signal(float, float)  # x, y in mm
     signal_clear_viewer = Signal()
     signal_layers_initialized = Signal()
@@ -186,17 +188,33 @@ class NapariMosaicDisplayWidget(QWidget):
     def updateMosaic(
         self, image: np.ndarray, x_mm: float, y_mm: float, k: int, channel_name: str
     ) -> None:
+        # Store original center position for logging
+        center_x_mm, center_y_mm = x_mm, y_mm
+        original_shape = image.shape
+
         # calculate pixel size
-        pixel_size_um = (
-            self.objectiveStore.get_pixel_size_factor()
-            * self._camera_service.get_pixel_size_binned_um()
-        )
+        pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
+        binned_pixel_size_um = self._camera_service.get_pixel_size_binned_um()
+        pixel_size_um = pixel_size_factor * binned_pixel_size_um
         downsample_factor = max(
             1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um)
         )
         image_pixel_size_um = pixel_size_um * downsample_factor
         image_pixel_size_mm = image_pixel_size_um / 1000
         image_dtype = image.dtype
+
+        # Calculate tile size BEFORE downsampling (this should match acquisition FOV)
+        # Note: image_pixel_size_mm already includes downsample_factor, so we need
+        # to account for that when calculating tile size from original shape
+        original_tile_width_mm = original_shape[1] * pixel_size_um / 1000  # Without downsample
+        original_tile_height_mm = original_shape[0] * pixel_size_um / 1000
+
+        self._log.info(
+            f"updateMosaic: original_shape={original_shape}, center=({center_x_mm:.4f}, {center_y_mm:.4f})mm, "
+            f"pixel_size_factor={pixel_size_factor:.4f}, binned_px={binned_pixel_size_um:.2f}um, "
+            f"effective_px={pixel_size_um:.3f}um, downsample={downsample_factor}, "
+            f"original_tile_size={original_tile_width_mm:.4f}x{original_tile_height_mm:.4f}mm"
+        )
 
         # downsample image
         if downsample_factor != 1:
@@ -209,9 +227,24 @@ class NapariMosaicDisplayWidget(QWidget):
                 interpolation=cv2.INTER_AREA,
             )
 
-        # adjust image position
-        x_mm -= (image.shape[1] * image_pixel_size_mm) / 2
-        y_mm -= (image.shape[0] * image_pixel_size_mm) / 2
+        # Calculate tile size in mm for the downsampled image (used for extent calculations)
+        tile_width_mm = image.shape[1] * image_pixel_size_mm
+        tile_height_mm = image.shape[0] * image_pixel_size_mm
+
+        # Adjust image position (from center to top-left) using ORIGINAL dimensions.
+        # This is critical because:
+        # 1. The acquisition step size is based on original FOV dimensions
+        # 2. Downsampling uses integer division which truncates (e.g., 1500//7=214, not 214.29)
+        # 3. Using downsampled dimensions would place tiles at slightly wrong positions
+        # 4. The error accumulates across the mosaic, causing visible gaps/overlaps
+        x_mm -= original_tile_width_mm / 2
+        y_mm -= original_tile_height_mm / 2
+
+        self._log.info(
+            f"  -> after downsample: shape={image.shape}, downsampled_tile={tile_width_mm:.4f}x{tile_height_mm:.4f}mm, "
+            f"position_adj_used={original_tile_width_mm:.4f}x{original_tile_height_mm:.4f}mm, "
+            f"top_left=({x_mm:.4f}, {y_mm:.4f})mm"
+        )
 
         if not self.viewer.layers:
             # initialize first layer
