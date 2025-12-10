@@ -165,6 +165,8 @@ def create_laser_autofocus_widgets(gui: "HighContentScreeningGui") -> None:
         gui.laserAutofocusController, gui.liveController
     )
     gui.imageDisplayWindow_focus = core.ImageDisplayWindow()
+    # Connect image display window to settings widget for spot tracking
+    gui.laserAutofocusSettingWidget.set_image_display_window(gui.imageDisplayWindow_focus)
 
 
 def create_fluidics_widget(gui: "HighContentScreeningGui") -> None:

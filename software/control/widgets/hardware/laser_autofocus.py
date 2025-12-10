@@ -30,6 +30,7 @@ from squid.events import (
 if TYPE_CHECKING:
     from control.core.display import StreamHandler
     from control.core.autofocus import LaserAutofocusController
+    from control.core.display.image_display import ImageDisplayWindow
 
 
 class LaserAutofocusSettingWidget(QWidget):
@@ -61,6 +62,7 @@ class LaserAutofocusSettingWidget(QWidget):
         self.initialize_button: QPushButton
         self.characterization_checkbox: QCheckBox
         self.spot_mode_combo: QComboBox
+        self._image_display_window: Optional["ImageDisplayWindow"] = None
         self.liveController.set_trigger_fps(10)
         self.streamHandler.set_display_fps(10)
 
@@ -316,15 +318,47 @@ class LaserAutofocusSettingWidget(QWidget):
         # Store spinbox reference
         self.spinboxes[property_name] = spinbox
 
+    def set_image_display_window(self, window: "ImageDisplayWindow") -> None:
+        """Set the image display window for spot tracking overlay."""
+        self._image_display_window = window
+
+    def _get_spot_tracking_params(self) -> dict:
+        """Get current spot tracking parameters from spinboxes."""
+        return {
+            "y_window": int(self.spinboxes["y_window"].value()),
+            "x_window": int(self.spinboxes["x_window"].value()),
+            "min_peak_width": self.spinboxes["min_peak_width"].value(),
+            "min_peak_distance": self.spinboxes["min_peak_distance"].value(),
+            "min_peak_prominence": self.spinboxes["min_peak_prominence"].value(),
+            "spot_spacing": self.spinboxes["spot_spacing"].value(),
+        }
+
     def toggle_live(self, pressed: bool) -> None:
         if pressed:
             self.liveController.start_live()
             self.btn_live.setText("Stop Live")
             self.run_spot_detection_button.setEnabled(False)
+            # Enable spot tracking only if laser AF is initialized
+            if (
+                self._image_display_window is not None
+                and self.laserAutofocusController.is_initialized
+            ):
+                mode = self.spot_mode_combo.currentData()
+                params = self._get_spot_tracking_params()
+                sigma = self.spinboxes["filter_sigma"].value()
+                self._image_display_window.set_spot_tracking(
+                    enabled=True,
+                    mode=mode,
+                    params=params,
+                    filter_sigma=int(sigma) if sigma and sigma > 0 else None,
+                )
         else:
             self.liveController.stop_live()
             self.btn_live.setText("Start Live")
             self.run_spot_detection_button.setEnabled(True)
+            # Disable spot tracking on display window
+            if self._image_display_window is not None:
+                self._image_display_window.set_spot_tracking(enabled=False)
 
     def stop_live(self) -> None:
         """Used for stopping live when switching to other tabs"""
@@ -399,10 +433,34 @@ class LaserAutofocusSettingWidget(QWidget):
             "has_reference": False,
         }
         self.laserAutofocusController.set_laser_af_properties(updates)
-        self.laserAutofocusController.initialize_auto()
+        success = self.laserAutofocusController.initialize_auto()
         self.signal_apply_settings.emit()
-        self.update_threshold_button.setEnabled(True)
+        self.update_threshold_button.setEnabled(success)
         self.update_calibration_label()
+        if success:
+            # Enable spot tracking if live mode is running
+            if self._image_display_window is not None and self.liveController.is_live:
+                mode = self.spot_mode_combo.currentData()
+                params = self._get_spot_tracking_params()
+                sigma = self.spinboxes["filter_sigma"].value()
+                self._image_display_window.set_spot_tracking(
+                    enabled=True,
+                    mode=mode,
+                    params=params,
+                    filter_sigma=int(sigma) if sigma and sigma > 0 else None,
+                )
+        else:
+            # Show error to user - initialization failed
+            from qtpy.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "Laser AF Initialization Failed",
+                "Failed to initialize laser autofocus. Check the log for details.\n\n"
+                "Common issues:\n"
+                "- Laser spot not detected\n"
+                "- Spot too close to image edge\n"
+                "- Calibration failed"
+            )
 
     def update_threshold_settings(self) -> None:
         updates = {
@@ -595,13 +653,14 @@ class LaserAutofocusControlWidget(QFrame):
         )
 
     def update_init_state(self) -> None:
-        self.btn_set_reference.setEnabled(self.laserAutofocusController.is_initialized)
-        self.btn_measure_displacement.setEnabled(
-            self.laserAutofocusController.laser_af_properties.has_reference
-        )
-        self.btn_move_to_target.setEnabled(
-            self.laserAutofocusController.laser_af_properties.has_reference
-        )
+        is_init = self.laserAutofocusController.is_initialized
+        has_ref = self.laserAutofocusController.laser_af_properties.has_reference
+
+        # Set Reference requires initialization
+        self.btn_set_reference.setEnabled(is_init)
+        # Measure/Move require both initialization AND a reference
+        self.btn_measure_displacement.setEnabled(is_init and has_ref)
+        self.btn_move_to_target.setEnabled(is_init and has_ref)
 
     def move_to_target(self) -> None:
         was_live = self.liveController.is_live

@@ -1728,6 +1728,7 @@ class WellplateMultiPointWidget(QFrame):
 
     def update_coordinates(self):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
+            self._log.debug("update_coordinates: skipped (not current tab)")
             return
 
         # If XY is not checked, use current position instead of scan coordinates
@@ -1738,6 +1739,7 @@ class WellplateMultiPointWidget(QFrame):
         scan_size_mm = self.entry_scan_size.value()
         overlap_percent = self.entry_overlap.value()
         shape = self.combobox_shape.currentText()
+        self._log.info(f"update_coordinates: scan_size={scan_size_mm}mm, overlap={overlap_percent}%, shape={shape}")
 
         if self.combobox_xy_mode.currentText() == "Manual":
             self.scanCoordinates.set_manual_coordinates(self.shapes_mm, overlap_percent)

@@ -171,6 +171,12 @@ class HighContentScreeningGui(QMainWindow):
                 self.piezo,
                 self.objectiveStore,
                 self.laserAFSettingManager,
+                # Service-based parameters
+                camera_service=self._services.get("camera_focus"),
+                stage_service=self._services.get("stage"),
+                peripheral_service=self._services.get("peripheral"),
+                piezo_service=self._services.get("piezo"),
+                event_bus=self._services.get("event_bus"),
             )
 
         self.live_only_mode = live_only_mode or LIVE_ONLY_MODE
@@ -319,7 +325,16 @@ class HighContentScreeningGui(QMainWindow):
             accept_new_frame_fn=lambda: self.liveController.is_live
         )
         self.autofocusController = QtAutoFocusController(
-            self.camera, self.stage, self.liveController, self.microcontroller, self.nl5
+            self.camera,
+            self.stage,
+            self.liveController,
+            self.microcontroller,
+            self.nl5,
+            # Service-based parameters
+            camera_service=self._services.get("camera"),
+            stage_service=self._services.get("stage"),
+            peripheral_service=self._services.get("peripheral"),
+            event_bus=self._services.get("event_bus"),
         )
         if ENABLE_TRACKING:
             self.trackingController = core.TrackingController(
@@ -342,6 +357,7 @@ class HighContentScreeningGui(QMainWindow):
             )
 
         def scan_coordinate_callback(update: ScanCoordinatesUpdate) -> None:
+            self.log.info(f"scan_coordinate_callback: {update.__class__.__name__}")
             if isinstance(update, AddScanCoordinateRegion):
                 self.navigationViewer.register_fovs_to_image(update.fov_centers)
             elif isinstance(update, RemovedScanCoordinateRegion):
@@ -366,6 +382,12 @@ class HighContentScreeningGui(QMainWindow):
             scan_coordinates=self.scanCoordinates,
             laser_autofocus_controller=self.laserAutofocusController,
             fluidics=self.fluidics,
+            # Pass services and event bus for MultiPointWorker
+            camera_service=self._services.get("camera"),
+            stage_service=self._services.get("stage"),
+            peripheral_service=self._services.get("peripheral"),
+            piezo_service=self._services.get("piezo"),
+            event_bus=event_bus,
         )
 
     def setup_hardware(self) -> None:
@@ -404,17 +426,34 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.microcontroller.reset()
             raise e
+        camera_service = self._services.get("camera") if self._services else None
         if DEFAULT_TRIGGER_MODE == TriggerMode.HARDWARE:
             print("Setting acquisition mode to HARDWARE_TRIGGER")
-            self.camera.set_acquisition_mode(
-                squid.abc.CameraAcquisitionMode.HARDWARE_TRIGGER
-            )
+            if camera_service:
+                camera_service.set_acquisition_mode(
+                    squid.abc.CameraAcquisitionMode.HARDWARE_TRIGGER
+                )
+            else:
+                self.camera.set_acquisition_mode(
+                    squid.abc.CameraAcquisitionMode.HARDWARE_TRIGGER
+                )
         else:
-            self.camera.set_acquisition_mode(
-                squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER
+            if camera_service:
+                camera_service.set_acquisition_mode(
+                    squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER
+                )
+            else:
+                self.camera.set_acquisition_mode(
+                    squid.abc.CameraAcquisitionMode.SOFTWARE_TRIGGER
+                )
+        if camera_service:
+            camera_service.add_frame_callback(
+                self.streamHandler.get_frame_callback()
             )
-        self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
-        self.camera.enable_callbacks(enabled=True)
+            camera_service.enable_callbacks(enabled=True)
+        else:
+            self.camera.add_frame_callback(self.streamHandler.get_frame_callback())
+            self.camera.enable_callbacks(enabled=True)
 
         if self.camera_focus:
             self.camera_focus.set_acquisition_mode(

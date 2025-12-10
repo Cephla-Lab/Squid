@@ -1,5 +1,5 @@
 # Qt-based controller wrappers
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 import numpy as np
 from qtpy.QtCore import QObject, Signal
@@ -25,6 +25,10 @@ from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, AbstractStage
 import control.microscope
 import squid.abc
+
+if TYPE_CHECKING:
+    from squid.services import CameraService, StageService, PeripheralService, PiezoService
+    from squid.events import EventBus
 
 
 class MovementUpdater(QObject):
@@ -97,6 +101,11 @@ class QtAutoFocusController(AutoFocusController, QObject):
         liveController: LiveController,
         microcontroller: Microcontroller,
         nl5: Optional[control.microscope.NL5],
+        # Service-based parameters (optional for backwards compatibility)
+        camera_service: Optional["CameraService"] = None,
+        stage_service: Optional["StageService"] = None,
+        peripheral_service: Optional["PeripheralService"] = None,
+        event_bus: Optional["EventBus"] = None,
     ):
         QObject.__init__(self)
         AutoFocusController.__init__(
@@ -108,6 +117,10 @@ class QtAutoFocusController(AutoFocusController, QObject):
             lambda: self.autofocusFinished.emit(),
             lambda image: self.image_to_display.emit(image),
             nl5,
+            camera_service=camera_service,
+            stage_service=stage_service,
+            peripheral_service=peripheral_service,
+            event_bus=event_bus,
         )
 
 
@@ -137,6 +150,12 @@ class QtMultiPointController(MultiPointController, QObject):
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
         fluidics: Optional[Any] = None,
+        # Service-based parameters
+        camera_service: Optional["CameraService"] = None,
+        stage_service: Optional["StageService"] = None,
+        peripheral_service: Optional["PeripheralService"] = None,
+        piezo_service: Optional["PiezoService"] = None,
+        event_bus: Optional["EventBus"] = None,
     ):
         MultiPointController.__init__(
             self,
@@ -156,14 +175,25 @@ class QtMultiPointController(MultiPointController, QObject):
             ),
             scan_coordinates=scan_coordinates,
             laser_autofocus_controller=laser_autofocus_controller,
+            # Pass services and event bus to parent
+            camera_service=camera_service,
+            stage_service=stage_service,
+            peripheral_service=peripheral_service,
+            piezo_service=piezo_service,
+            event_bus=event_bus,
         )
         QObject.__init__(self)
 
         self._napari_inited_for_this_acquisition = False
+        self._mosaic_emit_count: int = 0
+        # Buffer of skipped frames (max emit_every_n-1) to flush at end.
+        self._pending_frames: list[tuple[np.ndarray, CaptureInfo]] = []
 
     def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
         # TODO mpc napari signals
         self._napari_inited_for_this_acquisition = False
+        self._mosaic_emit_count = 0
+        self._pending_frames.clear()
         if not self.run_acquisition_current_fov:
             self.signal_set_display_tabs.emit(self.selected_configurations, self.NZ)
         else:
@@ -171,23 +201,60 @@ class QtMultiPointController(MultiPointController, QObject):
         self.signal_acquisition_start.emit()
 
     def _signal_acquisition_finished_fn(self):
+        # If we throttled updates, flush any remaining frames so the mosaic shows
+        # the complete set for this acquisition.
+        if self._pending_frames:
+            for frame_array, info in self._pending_frames:
+                self._emit_frame(frame_array, info)
+            self._pending_frames.clear()
+
         self.acquisition_finished.emit()
-        finish_pos = self.stage.get_pos()
+        if self._stage_service:
+            finish_pos = self._stage_service.get_position()
+        else:
+            finish_pos = self.stage.get_pos()
         self.signal_register_current_fov.emit(finish_pos.x_mm, finish_pos.y_mm)
 
     def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
-        self.image_to_display.emit(frame.frame)
-        self.image_to_display_multi.emit(
-            frame.frame, info.configuration.illumination_source
-        )
+        # Avoid heavy UI updates during multipoint if disabled in config
+        self._mosaic_emit_count += 1
+        emit_every_n = control._def.MULTIPOINT_DISPLAY_EVERY_NTH or 0
+        # Always emit for single-FOV snaps to keep the Mosaic/Multichannel panels
+        # responsive, even when we throttle during large acquisitions.
+        should_emit = self.run_acquisition_current_fov or control._def.MULTIPOINT_DISPLAY_IMAGES
+        if not should_emit and emit_every_n > 0:
+            should_emit = self._mosaic_emit_count % emit_every_n == 0
+
+        if should_emit:
+            # Emit any buffered frames first so none are dropped.
+            if self._pending_frames:
+                for buffered_frame, buffered_info in self._pending_frames:
+                    self._emit_frame(buffered_frame, buffered_info)
+            self._emit_frame(frame.frame, info)
+            self._pending_frames.clear()
+        else:
+            # Only buffer when we know we'll eventually flush (emit_every_n > 0).
+            if emit_every_n > 0:
+                # Keep only the most recent emit_every_n-1 frames to cap memory.
+                max_buffer = max(emit_every_n - 1, 1)
+                self._pending_frames.append((frame.frame, info))
+                if len(self._pending_frames) > max_buffer:
+                    self._pending_frames.pop(0)
+
         self.signal_coordinates.emit(
             info.position.x_mm, info.position.y_mm, info.position.z_mm, info.region_id
+        )
+
+    def _emit_frame(self, frame: np.ndarray, info: CaptureInfo) -> None:
+        self.image_to_display.emit(frame)
+        self.image_to_display_multi.emit(
+            frame, info.configuration.illumination_source
         )
 
         if not self._napari_inited_for_this_acquisition:
             self._napari_inited_for_this_acquisition = True
             self.napari_layers_init.emit(
-                frame.frame.shape[0], frame.frame.shape[1], frame.frame.dtype
+                frame.shape[0], frame.shape[1], frame.dtype
             )
 
         objective_magnification = str(
@@ -195,7 +262,7 @@ class QtMultiPointController(MultiPointController, QObject):
         )
         napri_layer_name = objective_magnification + "x " + info.configuration.name
         self.napari_layers_update.emit(
-            frame.frame,
+            frame,
             info.position.x_mm,
             info.position.y_mm,
             info.z_index,

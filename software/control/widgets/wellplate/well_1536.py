@@ -1,4 +1,5 @@
 from control.widgets.wellplate._common import *
+from control._def import WELLPLATE_OFFSET_X_mm, WELLPLATE_OFFSET_Y_mm
 
 
 class Well1536SelectionWidget(QWidget):

@@ -228,15 +228,18 @@ class LiveControlWidget(QFrame):
         self.btn_live.clicked.connect(self.toggle_live)
 
     def toggle_live(self, pressed: bool) -> None:
+        self._log.info(f"toggle_live called with pressed={pressed}")
         if pressed:
             self.signal_live_configuration.emit(self.currentConfiguration)
             self.signal_start_live.emit()
             event_bus.publish(StartLiveCommand(configuration=self.currentConfiguration.name))
         else:
+            self._log.info("Publishing StopLiveCommand")
             event_bus.publish(StopLiveCommand())
 
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Handle live state changes from the event bus."""
+        self._log.info(f"_on_live_state_changed: is_live={event.is_live}")
         if event.is_live:
             self.btn_live.setChecked(True)
             self.btn_live.setText("Stop Live")

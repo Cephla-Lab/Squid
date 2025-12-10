@@ -17,6 +17,7 @@ from control._def import (
     XERYON_OBJECTIVE_SWITCHER_POS_1,
     XERYON_OBJECTIVE_SWITCHER_POS_2,
 )
+from squid.events import event_bus, ObjectiveChanged
 
 if TYPE_CHECKING:
     from control.core.navigation import ObjectiveStore
@@ -64,4 +65,16 @@ class ObjectivesWidget(QWidget):
                 and self.objective_changer.currentPosition() != 2
             ):
                 self.objective_changer.moveToPosition2()
+
+        # Publish ObjectiveChanged event for simulated camera FOV adjustment
+        objective_info = self.objectiveStore.get_current_objective_info()
+        magnification = objective_info.get("magnification", 1.0)
+        pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
+        event_bus.publish(ObjectiveChanged(
+            position=0,
+            objective_name=objective_name,
+            magnification=magnification,
+            pixel_size_um=pixel_size_factor,  # This is the lens factor, camera multiplies by sensor size
+        ))
+
         self.signal_objective_changed.emit()
