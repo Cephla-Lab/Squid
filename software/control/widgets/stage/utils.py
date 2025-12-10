@@ -5,11 +5,14 @@ from squid.events import (
     MoveStageToLoadingPositionCommand,
     MoveStageToScanningPositionCommand,
     ZeroStageCommand,
+    StartLiveCommand,
+    StopLiveCommand,
+    LiveStateChanged,
 )
 from control._def import Z_HOME_SAFETY_POINT
 
 
-class StageUtils(QDialog):
+class StageUtils(EventBusDialog):
     """Dialog containing microscope utility functions like homing, zeroing, and slide positioning."""
 
     signal_threaded_stage_move_started: Signal = Signal()
@@ -19,16 +22,16 @@ class StageUtils(QDialog):
     def __init__(
         self,
         stage_service: "StageService",
-        live_controller: Optional[LiveController] = None,
+        event_bus: "EventBus",
         is_wellplate: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(event_bus, parent=parent)
         self.log = squid.logging.get_logger(self.__class__.__name__)
-        self.live_controller: Optional[LiveController] = live_controller
         self.is_wellplate: bool = is_wellplate
         self.slide_position: Optional[str] = None
         self._was_live: bool = False
+        self._is_live: bool = False
 
         self._service: "StageService" = stage_service
 
@@ -44,6 +47,7 @@ class StageUtils(QDialog):
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
         self.setup_ui()
+        self._subscribe(LiveStateChanged, self._on_live_state_changed)
 
     def setup_ui(self) -> None:
         """Setup the UI components."""
@@ -129,9 +133,7 @@ class StageUtils(QDialog):
     def home_z(self) -> None:
         """Home Z axis with confirmation dialog."""
         self._show_confirmation_dialog(x=False, y=False, z=True, theta=False)
-        event_bus.publish(
-            MoveStageToCommand(z_mm=int(Z_HOME_SAFETY_POINT) / 1000.0)
-        )
+        self._publish(MoveStageToCommand(z_mm=int(Z_HOME_SAFETY_POINT) / 1000.0))
 
     def _show_confirmation_dialog(self, x: bool, y: bool, z: bool, theta: bool) -> None:
         """Display a confirmation dialog and home the specified axis if confirmed."""
@@ -144,30 +146,28 @@ class StageUtils(QDialog):
         msg.setDefaultButton(QMessageBox.Cancel)
         retval = msg.exec_()
         if QMessageBox.Ok == retval:
-            event_bus.publish(HomeStageCommand(x=x, y=y, z=z, theta=theta))
+            self._publish(HomeStageCommand(x=x, y=y, z=z, theta=theta))
 
     def zero_x(self) -> None:
         """Zero X axis position."""
-        event_bus.publish(ZeroStageCommand(x=True, y=False, z=False, theta=False))
+        self._publish(ZeroStageCommand(x=True, y=False, z=False, theta=False))
 
     def zero_y(self) -> None:
         """Zero Y axis position."""
-        event_bus.publish(ZeroStageCommand(x=False, y=True, z=False, theta=False))
+        self._publish(ZeroStageCommand(x=False, y=True, z=False, theta=False))
 
     def zero_z(self) -> None:
         """Zero Z axis position."""
-        event_bus.publish(ZeroStageCommand(x=False, y=False, z=True, theta=False))
+        self._publish(ZeroStageCommand(x=False, y=False, z=True, theta=False))
 
     def switch_position(self) -> None:
         """Switch between loading and scanning positions."""
-        self._was_live = (
-            self.live_controller.is_live if self.live_controller is not None else False
-        )
-        if self._was_live and self.live_controller is not None:
-            self.live_controller.stop_live()
+        self._was_live = self._is_live
+        if self._was_live:
+            self._publish(StopLiveCommand())
         self.signal_threaded_stage_move_started.emit()
         if self.slide_position != "loading":
-            event_bus.publish(
+            self._publish(
                 MoveStageToLoadingPositionCommand(
                     blocking=False,
                     callback=self._callback_loading_position_reached,
@@ -175,7 +175,7 @@ class StageUtils(QDialog):
                 )
             )
         else:
-            event_bus.publish(
+            self._publish(
                 MoveStageToScanningPositionCommand(
                     blocking=False,
                     callback=self._callback_scanning_position_reached,
@@ -192,8 +192,8 @@ class StageUtils(QDialog):
         self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
-        if self._was_live and self.live_controller is not None:
-            self.live_controller.start_live()
+        if self._was_live:
+            self._publish(StartLiveCommand())
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
@@ -206,8 +206,12 @@ class StageUtils(QDialog):
         self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
-        if self._was_live and self.live_controller is not None:
-            self.live_controller.start_live()
+        if self._was_live:
+            self._publish(StartLiveCommand())
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_scanning_position_reached.emit()
+
+    def _on_live_state_changed(self, event: LiveStateChanged) -> None:
+        """Track live state from bus."""
+        self._is_live = event.is_live

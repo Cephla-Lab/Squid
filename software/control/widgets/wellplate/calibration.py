@@ -1,44 +1,64 @@
 from control.widgets.wellplate._common import *
 from squid.events import (
-    MoveStageCommand,
-    event_bus,
+    MoveStageRelativeCommand,
     StartLiveCommand,
     StopLiveCommand,
     LiveStateChanged,
+    StagePositionChanged,
+    SaveWellplateCalibrationCommand,
 )
 
 if TYPE_CHECKING:
     from control.widgets.display.navigation import NavigationViewer
-    from control.core.display import StreamHandler, LiveController
+    from control.core.display import StreamHandler
     from control.widgets.wellplate.format import WellplateFormatWidget
     from control.widgets.wellplate.joystick import Joystick
+    from squid.events import EventBus
 
 
-class WellplateCalibration(QDialog):
+class WellplateCalibration(EventBusDialog):
+    """Wellplate calibration dialog using EventBus.
+
+    Publishes MoveStageCommand for stage movement.
+    Publishes StartLiveCommand/StopLiveCommand for live view.
+    Subscribes to LiveStateChanged and StagePositionChanged for state tracking.
+    Uses service only for read-only position queries.
+    """
+
     def __init__(
         self,
         wellplateFormatWidget: "WellplateFormatWidget",
-        stage: AbstractStage,
         navigationViewer: "NavigationViewer",
         streamHandler: "StreamHandler",
-        liveController: "LiveController",
-        stage_service: Optional["StageService"] = None,
+        stage_service: "StageService",
+        event_bus: "EventBus",
+        # Read-only config passed as params
+        pixel_size_factor: float = 1.0,
+        pixel_size_binned_um: float = 0.084665,
+        was_live: bool = False,
     ) -> None:
-        super().__init__()
+        super().__init__(event_bus)
         self.setWindowTitle("Well Plate Calibration")
         self.wellplateFormatWidget: "WellplateFormatWidget" = wellplateFormatWidget
-        self.stage: AbstractStage = stage
-        self._stage_service: Optional["StageService"] = stage_service
+        self._stage_service: "StageService" = stage_service
         self.navigationViewer: "NavigationViewer" = navigationViewer
         self.streamHandler: "StreamHandler" = streamHandler
-        self.liveController: "LiveController" = liveController
+
+        # Read-only config from params (no direct camera/controller access)
+        self._pixel_size_factor = pixel_size_factor
+        self._pixel_size_binned_um = pixel_size_binned_um
+
         self._is_live: bool = False
-        self.was_live: bool = self.liveController.is_live
+        self.was_live: bool = was_live
         self.corners: List[Optional[Tuple[float, float]]] = [None, None, None]
         self.show_virtual_joystick: bool = True  # FLAG
 
-        # Subscribe to live state changes
-        event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
+        # Subscribe to state events using base class helper
+        self._subscribe(LiveStateChanged, self._on_live_state_changed)
+        self._subscribe(StagePositionChanged, self._on_stage_position_changed)
+
+        # Cache current position for setCorner
+        self._current_position: Optional[Tuple[float, float]] = None
 
         # UI elements
         self.mode_group: QButtonGroup
@@ -187,7 +207,7 @@ class WellplateCalibration(QDialog):
             self.streamHandler.image_to_display.connect(self.live_viewer.display_image)  # type: ignore[attr-defined]
 
         if not self.was_live:
-            event_bus.publish(StartLiveCommand())
+            self._publish(StartLiveCommand())
 
         # when the dialog closes i want to stop live if live was stopped before. . . if it was on before, leave it on
         layout.addWidget(self.live_viewer)
@@ -195,6 +215,9 @@ class WellplateCalibration(QDialog):
         # Right column for joystick and sensitivity controls
         self.right_layout = QVBoxLayout()
         self.right_layout.addStretch(1)
+
+        # Import Joystick here to avoid circular imports
+        from control.widgets.wellplate.joystick import Joystick
 
         self.joystick = Joystick(self)
         self.joystick.joystickMoved.connect(self.moveStage)
@@ -230,9 +253,6 @@ class WellplateCalibration(QDialog):
         self.right_layout.addLayout(sensitivity_layout)
 
         layout.addLayout(self.right_layout)
-
-        if not self.was_live:
-            event_bus.publish(StartLiveCommand())
 
     def toggleVirtualJoystick(self, state: Union[bool, int]) -> None:
         if state:
@@ -302,11 +322,8 @@ class WellplateCalibration(QDialog):
                 self.viewerClicked
             )
 
-    def viewerClicked(self, x, y, width, height):
-        pixel_size_um = (
-            self.navigationViewer.objectiveStore.get_pixel_size_factor()
-            * self.liveController.microscope.camera.get_pixel_size_binned_um()
-        )
+    def viewerClicked(self, x: int, y: int, width: int, height: int) -> None:
+        pixel_size_um = self._pixel_size_factor * self._pixel_size_binned_um
 
         pixel_sign_x = 1
         pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
@@ -317,16 +334,22 @@ class WellplateCalibration(QDialog):
         self._move_stage_relative(delta_x, delta_y)
 
     def _move_stage_relative(self, dx: float, dy: float) -> None:
-        """Move stage by relative distance."""
-        if self._stage_service is not None:
-            event_bus.publish(MoveStageCommand(axis="x", distance_mm=dx))
-            event_bus.publish(MoveStageCommand(axis="y", distance_mm=dy))
+        """Move stage by relative distance via EventBus."""
+        self._publish(MoveStageRelativeCommand(x_mm=dx, y_mm=dy))
 
-    def setCorner(self, index):
+    def _on_stage_position_changed(self, event: StagePositionChanged) -> None:
+        """Cache current position from event."""
+        self._current_position = (event.x_mm, event.y_mm)
+
+    def setCorner(self, index: int) -> None:
         if self.corners[index] is None:
-            pos = self._stage_service.get_position()
-            x = pos.x_mm
-            y = pos.y_mm
+            # Get position - prefer cached event position, fall back to service
+            if self._current_position is not None:
+                x, y = self._current_position
+            else:
+                pos = self._stage_service.get_position()
+                x = pos.x_mm
+                y = pos.y_mm
 
             # Check if the new point is different from existing points
             if any(
@@ -352,12 +375,12 @@ class WellplateCalibration(QDialog):
             all(corner is not None for corner in self.corners)
         )
 
-    def populate_existing_formats(self):
+    def populate_existing_formats(self) -> None:
         self.existing_format_combo.clear()
         for format_ in WELLPLATE_FORMAT_SETTINGS:
             self.existing_format_combo.addItem(f"{format_} well plate", format_)
 
-    def toggle_input_mode(self):
+    def toggle_input_mode(self) -> None:
         if self.new_format_radio.isChecked():
             self.existing_format_combo.hide()
             for i in range(self.form_layout.rowCount()):
@@ -369,7 +392,7 @@ class WellplateCalibration(QDialog):
                 self.form_layout.itemAt(i, QFormLayout.FieldRole).widget().hide()
                 self.form_layout.itemAt(i, QFormLayout.LabelRole).widget().hide()
 
-    def calibrate(self):
+    def calibrate(self) -> None:
         try:
             if self.new_format_radio.isChecked():
                 if not self.nameInput.text() or not all(self.corners):
@@ -406,8 +429,16 @@ class WellplateCalibration(QDialog):
                     "cols": cols,
                 }
 
-                self.wellplateFormatWidget.add_custom_format(name, new_format)
-                self.wellplateFormatWidget.save_formats_to_csv()
+                self._publish(
+                    SaveWellplateCalibrationCommand(
+                        calibration=new_format,
+                        name=name,
+                        metadata={
+                            "plate_width_mm": plate_width_mm,
+                            "plate_height_mm": plate_height_mm,
+                        },
+                    )
+                )
                 self.create_wellplate_image(
                     name, new_format, plate_width_mm, plate_height_mm
                 )
@@ -415,6 +446,7 @@ class WellplateCalibration(QDialog):
                 success_message = (
                     f"New format '{name}' has been successfully created and calibrated."
                 )
+                selected_format = name
 
             else:
                 selected_format = self.existing_format_combo.currentData()
@@ -447,17 +479,21 @@ class WellplateCalibration(QDialog):
                     "well_size_mm": well_size_mm,
                 }
 
-                WELLPLATE_FORMAT_SETTINGS[selected_format].update(updated_settings)
-
-                self.wellplateFormatWidget.save_formats_to_csv()
+                self._publish(
+                    SaveWellplateCalibrationCommand(
+                        calibration={
+                            **WELLPLATE_FORMAT_SETTINGS[selected_format],
+                            **updated_settings,
+                        },
+                        name=selected_format,
+                    )
+                )
                 self.wellplateFormatWidget.setWellplateSettings(selected_format)
                 success_message = f"Format '{selected_format} well plate' has been successfully recalibrated."
 
             # Update the WellplateFormatWidget's combo box to reflect the newly calibrated format
             self.wellplateFormatWidget.populate_combo_box()
-            index = self.wellplateFormatWidget.comboBox.findData(
-                selected_format if self.calibrate_format_radio.isChecked() else name
-            )
+            index = self.wellplateFormatWidget.comboBox.findData(selected_format)
             if index >= 0:
                 self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
 
@@ -473,11 +509,11 @@ class WellplateCalibration(QDialog):
             )
 
     def create_wellplate_image(
-        self, name, format_data, plate_width_mm, plate_height_mm
-    ):
+        self, name: str, format_data: dict, plate_width_mm: float, plate_height_mm: float
+    ) -> str:
         scale = 1 / 0.084665
 
-        def mm_to_px(mm):
+        def mm_to_px(mm: float) -> int:
             return round(mm * scale)
 
         width = mm_to_px(plate_width_mm)
@@ -586,17 +622,17 @@ class WellplateCalibration(QDialog):
         return image_path
 
     @staticmethod
-    def calculate_circle(points):
+    def calculate_circle(points: List[Optional[Tuple[float, float]]]) -> Tuple[np.ndarray, float]:
         # Convert points to numpy array
-        points = np.array(points)
+        points_arr = np.array(points)
 
         # Calculate the center and radius of the circle
-        A = np.array([points[1] - points[0], points[2] - points[0]])
-        b = np.sum(A * (points[1:3] + points[0]) / 2, axis=1)
+        A = np.array([points_arr[1] - points_arr[0], points_arr[2] - points_arr[0]])
+        b = np.sum(A * (points_arr[1:3] + points_arr[0]) / 2, axis=1)
         center = np.linalg.solve(A, b)
 
         # Calculate the radius
-        radius = np.mean(np.linalg.norm(points - center, axis=1))
+        radius = np.mean(np.linalg.norm(points_arr - center, axis=1))
 
         return center, radius
 
@@ -607,21 +643,19 @@ class WellplateCalibration(QDialog):
     def _stop_live_if_needed(self) -> None:
         """Stop live view if it wasn't initially on."""
         if not self.was_live and self._is_live:
-            event_bus.publish(StopLiveCommand())
-        # Unsubscribe from events
-        event_bus.unsubscribe(LiveStateChanged, self._on_live_state_changed)
+            self._publish(StopLiveCommand())
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
         # Stop live view if it wasn't initially on
         self._stop_live_if_needed()
         super().closeEvent(event)
 
-    def accept(self):
+    def accept(self) -> None:
         # Stop live view if it wasn't initially on
         self._stop_live_if_needed()
         super().accept()
 
-    def reject(self):
+    def reject(self) -> None:
         # This method is called when the dialog is closed without accepting
         self._stop_live_if_needed()
         sample = self.navigationViewer.sample
@@ -653,12 +687,12 @@ class CalibrationLiveViewer(QWidget):
     signal_calibration_viewer_click = Signal(int, int, int, int)
     signal_mouse_moved = Signal(int, int)
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.initial_zoom_set = False
         self.initUI()
 
-    def initUI(self):
+    def initUI(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -695,12 +729,12 @@ class CalibrationLiveViewer(QWidget):
         # Set fixed size for the viewer
         self.setFixedSize(500, 500)
 
-    def setCrosshairPosition(self):
+    def setCrosshairPosition(self) -> None:
         center = self.viewbox.viewRect().center()
         self.crosshair_h.setPos(center.y())
         self.crosshair_v.setPos(center.x())
 
-    def display_image(self, image):
+    def display_image(self, image) -> None:
         # Step 1: Update the image
         self.img_item.setImage(image)
 
@@ -739,10 +773,7 @@ class CalibrationLiveViewer(QWidget):
         # Step 7: Ensure the crosshair is updated
         self.setCrosshairPosition()
 
-    # def mouseMoveEvent(self, event):
-    #     self.signal_mouse_moved.emit(event.x(), event.y())
-
-    def onMouseClicked(self, event):
+    def onMouseClicked(self, event) -> None:
         # Map the scene position to view position
         if event.double():  # double click to move
             pos = event.pos()
@@ -765,7 +796,7 @@ class CalibrationLiveViewer(QWidget):
         else:
             print("single click only detected")
 
-    def wheelEvent(self, event):
+    def wheelEvent(self, event) -> None:
         if event.angleDelta().y() > 0:
             scale_factor = 0.9
         else:
@@ -782,6 +813,6 @@ class CalibrationLiveViewer(QWidget):
 
         event.accept()
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.setCrosshairPosition()

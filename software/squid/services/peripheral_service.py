@@ -57,8 +57,11 @@ class PeripheralService(BaseService):
 
         Args:
             channel: DAC channel (0 or 1)
-            percentage: Output value as percentage (0-100)
+            percentage: Output value as percentage (0-100) or normalized (0-1)
         """
+        # Accept normalized values and convert to percentage for backward compatibility
+        if 0.0 <= percentage <= 1.0:
+            percentage = percentage * 100.0
         # Clamp to valid range
         percentage = max(0.0, min(100.0, percentage))
 

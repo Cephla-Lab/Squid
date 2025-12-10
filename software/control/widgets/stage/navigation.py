@@ -1,21 +1,30 @@
 from control.widgets.stage._common import *
-from squid.events import MoveStageCommand
+from squid.events import MoveStageRelativeCommand
 
 
-class NavigationWidget(QFrame):
+class NavigationWidget(EventBusFrame):
+    """Stage navigation controls using EventBus.
+
+    Publishes MoveStageCommand events for stage movement.
+    Subscribes to StagePositionChanged events for position display.
+    Uses service only for read-only config queries (step size calculations).
+    """
+
     def __init__(
         self,
         stage_service: "StageService",
+        event_bus: "EventBus",
         main: Optional[Any] = None,
         widget_configuration: str = "full",
         *args: Any,
         **kwargs: Any,
     ) -> None:
-        super().__init__(*args, **kwargs)
+        super().__init__(event_bus, *args, **kwargs)
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self.widget_configuration: str = widget_configuration
         self.slide_position: Optional[str] = None
 
+        # Service for read-only config queries (step size calculations)
         self._service: "StageService" = stage_service
 
         # UI components
@@ -34,23 +43,11 @@ class NavigationWidget(QFrame):
         self.checkbox_clickToMove: QCheckBox
         self.grid: QVBoxLayout
 
-        # Subscribe to position updates
-        event_bus.subscribe(StagePositionChanged, self._on_position_changed)
+        # Subscribe to position updates using base class helper
+        self._subscribe(StagePositionChanged, self._on_position_changed)
 
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-
-        self.position_update_timer: QTimer = QTimer()
-        self.position_update_timer.setInterval(100)
-        self.position_update_timer.timeout.connect(self._update_position)
-        self.position_update_timer.start()
-
-    def _update_position(self) -> None:
-        pos = self._service.get_position()
-        self.label_Xpos.setNum(pos.x_mm)
-        self.label_Ypos.setNum(pos.y_mm)
-        # NOTE: The z label is in um
-        self.label_Zpos.setNum(pos.z_mm * 1000)
 
     def _on_position_changed(self, event: StagePositionChanged) -> None:
         """Handle position changed event."""
@@ -177,33 +174,25 @@ class NavigationWidget(QFrame):
         self.btn_moveZ_backward.setEnabled(enabled)
 
     def move_x_forward(self) -> None:
-        event_bus.publish(
-            MoveStageCommand(axis="x", distance_mm=self.entry_dX.value())
-        )
+        self._publish(MoveStageRelativeCommand(x_mm=self.entry_dX.value()))
 
     def move_x_backward(self) -> None:
-        event_bus.publish(
-            MoveStageCommand(axis="x", distance_mm=-self.entry_dX.value())
-        )
+        self._publish(MoveStageRelativeCommand(x_mm=-self.entry_dX.value()))
 
     def move_y_forward(self) -> None:
-        event_bus.publish(
-            MoveStageCommand(axis="y", distance_mm=self.entry_dY.value())
-        )
+        self._publish(MoveStageRelativeCommand(y_mm=self.entry_dY.value()))
 
     def move_y_backward(self) -> None:
-        event_bus.publish(
-            MoveStageCommand(axis="y", distance_mm=-self.entry_dY.value())
-        )
+        self._publish(MoveStageRelativeCommand(y_mm=-self.entry_dY.value()))
 
     def move_z_forward(self) -> None:
-        event_bus.publish(
-            MoveStageCommand(axis="z", distance_mm=self.entry_dZ.value() / 1000)
+        self._publish(
+            MoveStageRelativeCommand(z_mm=self.entry_dZ.value() / 1000)
         )
 
     def move_z_backward(self) -> None:
-        event_bus.publish(
-            MoveStageCommand(axis="z", distance_mm=-(self.entry_dZ.value() / 1000))
+        self._publish(
+            MoveStageRelativeCommand(z_mm=-(self.entry_dZ.value() / 1000))
         )
 
     def set_deltaX(self, value: float) -> None:

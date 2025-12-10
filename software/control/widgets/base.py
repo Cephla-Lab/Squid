@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional, List, Any
+from typing import TYPE_CHECKING, Optional, List, Any, Callable
 from qtpy.QtCore import Qt, QAbstractTableModel, QModelIndex
 from qtpy.QtWidgets import (
     QMainWindow,
@@ -10,6 +10,8 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QMessageBox,
+    QFrame,
+    QDialog,
 )
 from qtpy.QtGui import QBrush, QColor, QCloseEvent
 
@@ -19,6 +21,132 @@ import control.utils as utils
 
 if TYPE_CHECKING:
     from control.core.acquisition import MultiPointController
+    from squid.events import EventBus, Event
+
+
+class EventBusWidget(QWidget):
+    """Base widget that communicates via EventBus only.
+
+    Widgets extending this class should:
+    1. Publish Command events when user interacts
+    2. Subscribe to State events to update UI
+    3. Never access hardware, services, or controllers directly for writes
+
+    Read-only service access (getting limits, available options) is acceptable
+    since it doesn't change state.
+
+    Example:
+        class MyWidget(EventBusWidget):
+            def __init__(self, event_bus: EventBus, parent=None):
+                super().__init__(event_bus, parent)
+                self._setup_ui()
+                self._subscribe(SomeStateEvent, self._on_state_changed)
+
+            def _on_button_clicked(self):
+                self._publish(SomeCommand(value=42))
+
+            def _on_state_changed(self, event: SomeStateEvent):
+                self.label.setText(str(event.value))
+    """
+
+    def __init__(self, event_bus: "EventBus", parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._bus = event_bus
+        self._subscriptions: List[tuple[type, Callable]] = []
+
+    def _subscribe(self, event_type: type, handler: Callable) -> None:
+        """Subscribe to an event and track for cleanup."""
+        self._bus.subscribe(event_type, handler)
+        self._subscriptions.append((event_type, handler))
+
+    def _publish(self, event: "Event") -> None:
+        """Publish an event."""
+        self._bus.publish(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Clean up subscriptions on close."""
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
+        for event_type, handler in self._subscriptions:
+            try:
+                self._bus.unsubscribe(event_type, handler)
+            except Exception:
+                pass  # Ignore cleanup errors
+        self._subscriptions.clear()
+
+
+class EventBusFrame(QFrame):
+    """Base QFrame that communicates via EventBus only.
+
+    Same as EventBusWidget but inherits from QFrame for widgets that need
+    frame styling (Panel, Raised, etc.).
+    """
+
+    def __init__(self, event_bus: "EventBus", parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._bus = event_bus
+        self._subscriptions: List[tuple[type, Callable]] = []
+
+    def _subscribe(self, event_type: type, handler: Callable) -> None:
+        """Subscribe to an event and track for cleanup."""
+        self._bus.subscribe(event_type, handler)
+        self._subscriptions.append((event_type, handler))
+
+    def _publish(self, event: "Event") -> None:
+        """Publish an event."""
+        self._bus.publish(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Clean up subscriptions on close."""
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
+        for event_type, handler in self._subscriptions:
+            try:
+                self._bus.unsubscribe(event_type, handler)
+            except Exception:
+                pass  # Ignore cleanup errors
+        self._subscriptions.clear()
+
+
+class EventBusDialog(QDialog):
+    """Base QDialog that communicates via EventBus only.
+
+    Same as EventBusWidget but inherits from QDialog for modal dialogs.
+    """
+
+    def __init__(self, event_bus: "EventBus", parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._bus = event_bus
+        self._subscriptions: List[tuple[type, Callable]] = []
+
+    def _subscribe(self, event_type: type, handler: Callable) -> None:
+        """Subscribe to an event and track for cleanup."""
+        self._bus.subscribe(event_type, handler)
+        self._subscriptions.append((event_type, handler))
+
+    def _publish(self, event: "Event") -> None:
+        """Publish an event."""
+        self._bus.publish(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Clean up subscriptions on close."""
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe from all events."""
+        for event_type, handler in self._subscriptions:
+            try:
+                self._bus.unsubscribe(event_type, handler)
+            except Exception:
+                pass  # Ignore cleanup errors
+        self._subscriptions.clear()
 
 
 def error_dialog(message: str, title: str = "Error") -> None:

@@ -12,6 +12,7 @@ from squid.events import (
     MoveStageToCommand,
     HomeStageCommand,
     ZeroStageCommand,
+    MoveStageRelativeCommand,
     MoveStageToLoadingPositionCommand,
     MoveStageToScanningPositionCommand,
     StagePositionChanged,
@@ -40,6 +41,7 @@ class StageService(BaseService):
         )
 
         self.subscribe(MoveStageCommand, self._on_move_command)
+        self.subscribe(MoveStageRelativeCommand, self._on_move_relative_command)
         self.subscribe(MoveStageToCommand, self._on_move_to_command)
         self.subscribe(HomeStageCommand, self._on_home_command)
         self.subscribe(ZeroStageCommand, self._on_zero_command)
@@ -57,6 +59,15 @@ class StageService(BaseService):
             self.move_y(event.distance_mm)
         elif event.axis == "z":
             self.move_z(event.distance_mm)
+
+    def _on_move_relative_command(self, event: MoveStageRelativeCommand):
+        """Handle relative move with per-axis values."""
+        if event.x_mm is not None:
+            self.move_x(event.x_mm)
+        if event.y_mm is not None:
+            self.move_y(event.y_mm)
+        if event.z_mm is not None:
+            self.move_z(event.z_mm)
 
     def _on_move_to_command(self, event: MoveStageToCommand):
         self.move_to(event.x_mm, event.y_mm, event.z_mm)

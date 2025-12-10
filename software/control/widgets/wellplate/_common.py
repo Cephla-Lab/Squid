@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from typing import TYPE_CHECKING, Any, Optional, Dict, List, Tuple, Union
 
+import numpy as np
+
 from qtpy.QtCore import Qt, Signal, QModelIndex, QVariant
-from qtpy.QtGui import QResizeEvent, QWheelEvent, QFont
+from qtpy.QtGui import QResizeEvent, QWheelEvent, QFont, QPen, QColor
 from qtpy.QtWidgets import (
     QFrame,
     QWidget,
@@ -49,7 +52,14 @@ except ImportError:
 import squid.logging
 from squid.abc import AbstractStage
 from squid.services import StageService
-from control._def import WELLPLATE_FORMAT, WELLPLATE_FORMAT_SETTINGS, SAMPLE_FORMATS_CSV_PATH
+from control._def import (
+    WELLPLATE_FORMAT,
+    WELLPLATE_FORMAT_SETTINGS,
+    SAMPLE_FORMATS_CSV_PATH,
+    INVERTED_OBJECTIVE,
+    CAMERA_CONFIG,
+)
+from control.widgets.base import EventBusDialog
 
 if TYPE_CHECKING:
-    pass
+    from squid.events import EventBus

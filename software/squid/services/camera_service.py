@@ -15,6 +15,17 @@ from squid.events import (
     ROIChanged,
     BinningChanged,
     PixelFormatChanged,
+    # New camera settings commands
+    SetROICommand,
+    SetBinningCommand,
+    SetPixelFormatCommand,
+    SetCameraTemperatureCommand,
+    SetBlackLevelCommand,
+    SetAutoWhiteBalanceCommand,
+    # New state events
+    CameraTemperatureChanged,
+    BlackLevelChanged,
+    AutoWhiteBalanceChanged,
 )
 
 from squid.abc import AbstractCamera, CameraGainRange, CameraAcquisitionMode
@@ -43,6 +54,12 @@ class CameraService(BaseService):
         # Subscribe to commands
         self.subscribe(SetExposureTimeCommand, self._on_set_exposure_command)
         self.subscribe(SetAnalogGainCommand, self._on_set_gain_command)
+        self.subscribe(SetROICommand, self._on_set_roi_command)
+        self.subscribe(SetBinningCommand, self._on_set_binning_command)
+        self.subscribe(SetPixelFormatCommand, self._on_set_pixel_format_command)
+        self.subscribe(SetCameraTemperatureCommand, self._on_set_temperature_command)
+        self.subscribe(SetBlackLevelCommand, self._on_set_black_level_command)
+        self.subscribe(SetAutoWhiteBalanceCommand, self._on_set_auto_wb_command)
 
     def _on_set_exposure_command(self, event: SetExposureTimeCommand):
         """Handle SetExposureTimeCommand event."""
@@ -51,6 +68,33 @@ class CameraService(BaseService):
     def _on_set_gain_command(self, event: SetAnalogGainCommand):
         """Handle SetAnalogGainCommand event."""
         self.set_analog_gain(event.gain)
+
+    def _on_set_roi_command(self, event: SetROICommand):
+        """Handle SetROICommand event."""
+        self.set_region_of_interest(
+            event.x_offset, event.y_offset, event.width, event.height
+        )
+
+    def _on_set_binning_command(self, event: SetBinningCommand):
+        """Handle SetBinningCommand event."""
+        self.set_binning(event.binning_x, event.binning_y)
+
+    def _on_set_pixel_format_command(self, event: SetPixelFormatCommand):
+        """Handle SetPixelFormatCommand event."""
+        pixel_format = CameraPixelFormat.from_string(event.pixel_format)
+        self.set_pixel_format(pixel_format)
+
+    def _on_set_temperature_command(self, event: SetCameraTemperatureCommand):
+        """Handle SetCameraTemperatureCommand event."""
+        self.set_temperature(event.temperature_celsius)
+
+    def _on_set_black_level_command(self, event: SetBlackLevelCommand):
+        """Handle SetBlackLevelCommand event."""
+        self.set_black_level(event.level)
+
+    def _on_set_auto_wb_command(self, event: SetAutoWhiteBalanceCommand):
+        """Handle SetAutoWhiteBalanceCommand event."""
+        self.set_auto_white_balance(event.enabled)
 
     def set_exposure_time(self, exposure_time_ms: float) -> None:
         """
@@ -181,6 +225,7 @@ class CameraService(BaseService):
         self._log.debug(f"Setting temperature: {temperature}°C")
         with self._lock:
             self._camera.set_temperature(temperature)
+        self.publish(CameraTemperatureChanged(set_temperature_celsius=temperature))
 
     def set_temperature_reading_callback(self, callback: Callable) -> None:
         """Set callback for temperature readings."""
@@ -205,16 +250,18 @@ class CameraService(BaseService):
         """Enable/disable auto white balance."""
         with self._lock:
             self._camera.set_auto_white_balance_gains(on=enabled)
+        self.publish(AutoWhiteBalanceChanged(enabled=enabled))
 
     # ============================================================
     # Task 1.6: Black level method
     # ============================================================
 
-    def set_black_level(self, level: float) -> None:
+    def set_black_level(self, level: int) -> None:
         """Set camera black level."""
         self._log.debug(f"Setting black level: {level}")
         with self._lock:
             self._camera.set_black_level(level)
+        self.publish(BlackLevelChanged(level=level))
 
     # ============================================================
     # Read-only camera properties

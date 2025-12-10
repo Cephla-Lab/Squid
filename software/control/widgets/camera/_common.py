@@ -31,7 +31,6 @@ from control._def import (
     TriggerMode,
 )
 from squid.abc import CameraPixelFormat
-from squid.services import CameraService
 from squid.events import (
     event_bus,
     ExposureTimeChanged,
@@ -47,11 +46,27 @@ from squid.events import (
     TriggerModeChanged,
     TriggerFPSChanged,
     MicroscopeModeChanged,
+    # New camera settings commands
+    SetROICommand,
+    SetBinningCommand,
+    SetPixelFormatCommand,
+    SetCameraTemperatureCommand,
+    SetBlackLevelCommand,
+    SetAutoWhiteBalanceCommand,
+    # State events
+    ROIChanged,
+    BinningChanged,
+    PixelFormatChanged,
+    CameraTemperatureChanged,
+    BlackLevelChanged,
+    AutoWhiteBalanceChanged,
 )
 from control.core.display import StreamHandler, LiveController, ImageSaver
 from control.core.navigation import ObjectiveStore
 from control.core.configuration import ChannelConfigurationManager
 from control.utils_config import ChannelMode
+from control.widgets.base import EventBusFrame
 
 if TYPE_CHECKING:
-    pass
+    from squid.events import EventBus
+    from squid.abc import CameraGainRange

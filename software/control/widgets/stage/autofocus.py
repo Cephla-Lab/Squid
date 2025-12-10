@@ -1,16 +1,19 @@
 from control.widgets.stage._common import *
+from squid.events import (
+    StartAutofocusCommand,
+    StopAutofocusCommand,
+    SetAutofocusParamsCommand,
+    AutofocusProgress,
+    AutofocusCompleted,
+)
 
 
-class AutoFocusWidget(QFrame):
+class AutoFocusWidget(EventBusFrame):
     signal_autoLevelSetting: Signal = Signal(bool)
 
-    def __init__(
-        self, autofocusController: AutoFocusController, *args: Any, **kwargs: Any
-    ) -> None:
-        super().__init__(*args, **kwargs)
-        self.autofocusController: AutoFocusController = autofocusController
+    def __init__(self, event_bus: "EventBus", *args: Any, **kwargs: Any) -> None:
+        super().__init__(event_bus, *args, **kwargs)
         self.log = squid.logging.get_logger(self.__class__.__name__)
-        self.stage: AbstractStage = self.autofocusController.stage
 
         # UI components
         self.entry_delta: QDoubleSpinBox
@@ -18,6 +21,10 @@ class AutoFocusWidget(QFrame):
         self.btn_autofocus: QPushButton
         self.btn_autolevel: QPushButton
         self.grid: QVBoxLayout
+
+        # Subscribe to autofocus state events
+        self._subscribe(AutofocusProgress, self._on_autofocus_progress)
+        self._subscribe(AutofocusCompleted, self._on_autofocus_completed)
 
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -32,7 +39,6 @@ class AutoFocusWidget(QFrame):
         self.entry_delta.setValue(1.524)
         self.entry_delta.setKeyboardTracking(False)
         self.entry_delta.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.autofocusController.set_deltaZ(1.524)
 
         self.entry_N = QSpinBox()
         self.entry_N.setMinimum(3)
@@ -43,7 +49,6 @@ class AutoFocusWidget(QFrame):
         self.entry_N.setValue(10)
         self.entry_N.setKeyboardTracking(False)
         self.entry_N.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.autofocusController.set_N(10)
 
         self.btn_autofocus = QPushButton("Autofocus")
         self.btn_autofocus.setDefault(False)
@@ -71,23 +76,35 @@ class AutoFocusWidget(QFrame):
         self.setLayout(self.grid)
 
         # connections
-        self.btn_autofocus.toggled.connect(
-            lambda: self.autofocusController.autofocus(False)
-        )
+        self.btn_autofocus.toggled.connect(self._on_autofocus_toggled)
         self.btn_autolevel.toggled.connect(self.signal_autoLevelSetting.emit)
-        self.entry_delta.valueChanged.connect(self.set_deltaZ)
-        self.entry_N.valueChanged.connect(self.autofocusController.set_N)
-        self.autofocusController.autofocusFinished.connect(self.autofocus_is_finished)
+        self.entry_delta.valueChanged.connect(self._publish_params)
+        self.entry_N.valueChanged.connect(self._publish_params)
 
-    def set_deltaZ(self, value: float) -> None:
-        mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(
-            1.0
+    def _publish_params(self) -> None:
+        """Publish autofocus parameters."""
+        self._publish(
+            SetAutofocusParamsCommand(
+                n_planes=int(self.entry_N.value()),
+                delta_z_um=float(self.entry_delta.value()),
+            )
         )
-        deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
-        self.log.debug(f"{deltaZ=}")
 
-        self.entry_delta.setValue(deltaZ)
-        self.autofocusController.set_deltaZ(deltaZ)
+    def _on_autofocus_toggled(self, enabled: bool) -> None:
+        """Start or stop autofocus."""
+        if enabled:
+            self._publish_params()
+            self._publish(StartAutofocusCommand())
+        else:
+            self._publish(StopAutofocusCommand())
 
-    def autofocus_is_finished(self) -> None:
+    def _on_autofocus_progress(self, event: AutofocusProgress) -> None:
+        """Handle progress updates (placeholder for future UI)."""
+        # No progress bar present; keep hook for future use.
+        self.log.debug(
+            f"Autofocus progress: step {event.current_step}/{event.total_steps}"
+        )
+
+    def _on_autofocus_completed(self, event: AutofocusCompleted) -> None:
+        """Re-enable controls after autofocus finishes."""
         self.btn_autofocus.setChecked(False)

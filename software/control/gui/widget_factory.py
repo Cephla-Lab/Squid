@@ -20,6 +20,7 @@ from control._def import (
     WELLPLATE_FORMAT,
 )
 import control.widgets as widgets
+from squid.events import event_bus
 
 
 def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
@@ -43,16 +44,74 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
 
     # Camera settings widget
     camera_service = gui._services.get("camera") if gui._services else None
+    exposure_limits = (0.1, 1000.0)
+    gain_range = None
+    pixel_format_names = ["MONO8"]
+    current_pixel_format = None
+    roi_info = (0, 0, 64, 64)
+    resolution = (64, 64)
+    binning_options = []
+    current_binning = None
+    if camera_service is not None:
+        cam = camera_service._camera if hasattr(camera_service, "_camera") else None
+        try:
+            exposure_limits = camera_service.get_exposure_limits()
+        except Exception:
+            pass
+        try:
+            gain_range = camera_service.get_gain_range()
+        except Exception:
+            gain_range = None
+        try:
+            pixel_formats_enum = camera_service.get_available_pixel_formats()
+            pixel_format_names = [pf.name for pf in pixel_formats_enum]
+        except Exception:
+            pass
+        try:
+            current_pixel = camera_service.get_pixel_format()
+            current_pixel_format = current_pixel.name if current_pixel is not None else None
+        except Exception:
+            current_pixel_format = None
+        try:
+            roi_info = camera_service.get_region_of_interest()
+        except Exception:
+            pass
+        try:
+            resolution = camera_service.get_resolution()
+        except Exception:
+            pass
+        try:
+            binning_options = camera_service.get_binning_options()
+            current_binning = camera_service.get_binning()
+        except Exception:
+            binning_options = []
+            current_binning = None
     if CAMERA_TYPE in ["Toupcam", "Tucsen", "Kinetix"]:
         gui.cameraSettingWidget = widgets.CameraSettingsWidget(
-            camera_service,
+            event_bus,
+            exposure_limits=exposure_limits,
+            gain_range=gain_range,
+            pixel_format_names=pixel_format_names,
+            current_pixel_format=current_pixel_format,
+            roi_info=roi_info,
+            resolution=resolution,
+            binning_options=binning_options,
+            current_binning=current_binning,
             include_gain_exposure_time=False,
             include_camera_temperature_setting=True,
             include_camera_auto_wb_setting=False,
         )
     else:
         gui.cameraSettingWidget = widgets.CameraSettingsWidget(
-            camera_service,
+            event_bus,
+            exposure_limits=exposure_limits,
+            gain_range=gain_range,
+            pixel_format_names=pixel_format_names,
+            current_pixel_format=current_pixel_format,
+            roi_info=roi_info,
+            resolution=resolution,
+            binning_options=binning_options,
+            current_binning=current_binning,
             include_gain_exposure_time=False,
             include_camera_temperature_setting=False,
             include_camera_auto_wb_setting=True,
@@ -60,11 +119,22 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
 
     # Profile and live control widgets
     gui.profileWidget = widgets.ProfileWidget(gui.configurationManager)
+
+    # Get camera limits from the camera (read-only, for widget initialization)
+    camera = gui.microscope.camera
+    try:
+        gain_range = camera.get_gain_range()
+    except NotImplementedError:
+        gain_range = None
+
     gui.liveControlWidget = widgets.LiveControlWidget(
+        event_bus,
         gui.streamHandler,
-        gui.liveController,
         gui.objectiveStore,
         gui.channelConfigurationManager,
+        exposure_limits=camera.get_exposure_limits(),
+        gain_range=gain_range,
+        initial_trigger_mode=camera.get_acquisition_mode().value,
         show_display_options=False,
         show_autolevel=True,
         autolevel=True,
@@ -73,20 +143,21 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
     # Navigation and stage widgets
     stage_service = gui._services.get("stage") if gui._services else None
     gui.navigationWidget = widgets.NavigationWidget(
-        stage_service, widget_configuration=f"{WELLPLATE_FORMAT} well plate"
+        stage_service,
+        event_bus,
+        widget_configuration=f"{WELLPLATE_FORMAT} well plate",
     )
     gui.stageUtils = widgets.StageUtils(
         stage_service,
-        live_controller=gui.liveController,
+        event_bus,
         is_wellplate=True,
     )
 
-    # DAC control widget
-    peripheral_service = gui._services.get("peripheral") if gui._services else None
-    gui.dacControlWidget = widgets.DACControWidget(peripheral_service)
+    # DAC control widget (uses EventBus, no service needed)
+    gui.dacControlWidget = widgets.DACControWidget(event_bus)
 
     # Autofocus widget
-    gui.autofocusWidget = widgets.AutoFocusWidget(gui.autofocusController)
+    gui.autofocusWidget = widgets.AutoFocusWidget(event_bus)
 
     # Piezo widget
     if gui.piezo:
@@ -116,12 +187,17 @@ def create_wellplate_widgets(gui: "HighContentScreeningGui") -> None:
     """Create wellplate-related widgets (format, selection, focus map)."""
     import control.core.core as core
 
+    # Get pixel size info from objectiveStore for calibration
+    pixel_size_factor = gui.objectiveStore.get_pixel_size_factor() if hasattr(gui.objectiveStore, 'get_pixel_size_factor') else 1.0
+    pixel_size_binned_um = gui.streamHandler.pixel_size_um if hasattr(gui.streamHandler, 'pixel_size_um') else 0.084665
+
     gui.wellplateFormatWidget = widgets.WellplateFormatWidget(
-        gui.stage,
-        gui.navigationViewer,
-        gui.streamHandler,
-        gui.liveController,
+        event_bus=event_bus,
+        navigationViewer=gui.navigationViewer,
+        streamHandler=gui.streamHandler,
         stage_service=gui._services.get("stage") if gui._services else None,
+        pixel_size_factor=pixel_size_factor,
+        pixel_size_binned_um=pixel_size_binned_um,
     )
     if WELLPLATE_FORMAT != "1536 well plate":
         gui.wellSelectionWidget = widgets.WellSelectionWidget(

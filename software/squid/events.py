@@ -21,7 +21,7 @@ Usage:
 """
 
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Type, TypeVar, Optional
+from typing import Any, Callable, Dict, List, Type, TypeVar, Optional
 from threading import Lock
 import squid.logging
 
@@ -199,7 +199,7 @@ class SetDACCommand(Event):
     """Command to set DAC output value."""
 
     channel: int
-    value: float  # 0-100 percentage
+    value: float  # 0.0-1.0 normalized (legacy: 0-100 percentage)
 
 
 @dataclass
@@ -243,6 +243,15 @@ class MoveStageCommand(Event):
 
     axis: str  # 'x', 'y', or 'z'
     distance_mm: float
+
+
+@dataclass
+class MoveStageRelativeCommand(Event):
+    """Command to move stage relative to current position."""
+
+    x_mm: Optional[float] = None
+    y_mm: Optional[float] = None
+    z_mm: Optional[float] = None
 
 
 @dataclass
@@ -694,3 +703,103 @@ class AutofocusCompleted(Event):
 
 
 # Note: FocusChanged already exists above (line ~170)
+
+
+# ============================================================================
+# Camera Settings Commands (for widget decoupling)
+# ============================================================================
+
+
+@dataclass
+class SetROICommand(Event):
+    """Command to set camera region of interest."""
+
+    x_offset: int
+    y_offset: int
+    width: int
+    height: int
+
+
+@dataclass
+class SetBinningCommand(Event):
+    """Command to set camera binning."""
+
+    binning_x: int
+    binning_y: int
+
+
+@dataclass
+class SetPixelFormatCommand(Event):
+    """Command to set camera pixel format."""
+
+    pixel_format: str  # Name of the pixel format (e.g., "MONO8", "MONO16")
+
+
+@dataclass
+class SetCameraTemperatureCommand(Event):
+    """Command to set camera temperature."""
+
+    temperature_celsius: float
+
+
+@dataclass
+class SetBlackLevelCommand(Event):
+    """Command to set camera black level."""
+
+    level: int
+
+
+@dataclass
+class SetAutoWhiteBalanceCommand(Event):
+    """Command to set auto white balance mode."""
+
+    enabled: bool
+
+
+# ============================================================================
+# Camera Settings State Events (some already exist above, adding missing ones)
+# ============================================================================
+
+
+@dataclass
+class CameraTemperatureChanged(Event):
+    """Notification that camera temperature changed."""
+
+    set_temperature_celsius: float
+    measured_temperature_celsius: Optional[float] = None
+
+
+@dataclass
+class BlackLevelChanged(Event):
+    """Notification that black level changed."""
+
+    level: int
+
+
+@dataclass
+class AutoWhiteBalanceChanged(Event):
+    """Notification that auto white balance mode changed."""
+
+    enabled: bool
+
+
+# ============================================================================
+# Wellplate Commands
+# ============================================================================
+
+
+@dataclass
+class SaveWellplateCalibrationCommand(Event):
+    """Command to save wellplate calibration."""
+
+    calibration: Any  # WellplateCalibration object
+    name: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+@dataclass
+class WellplateCalibrationSaved(Event):
+    """Notification that wellplate calibration was saved."""
+
+    success: bool
+    error: Optional[str] = None

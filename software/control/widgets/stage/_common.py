@@ -35,6 +35,7 @@ from squid.events import event_bus, StagePositionChanged
 from control.core.display import LiveController
 from control.core.autofocus import AutoFocusController
 from control.peripherals.piezo import PiezoStage
+from control.widgets.base import EventBusFrame, EventBusDialog
 
 if TYPE_CHECKING:
-    pass
+    from squid.events import EventBus

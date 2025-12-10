@@ -1,7 +1,14 @@
 from control.widgets.camera._common import *
 
 
-class LiveControlWidget(QFrame):
+class LiveControlWidget(EventBusFrame):
+    """Live view controls using EventBus.
+
+    Publishes command events for live control, trigger, and microscope mode.
+    Subscribes to state events to update UI.
+    Does NOT access hardware or controllers directly.
+    """
+
     signal_newExposureTime: Signal = Signal(float)
     signal_newAnalogGain: Signal = Signal(float)
     signal_autoLevelSetting: Signal = Signal(bool)
@@ -10,10 +17,14 @@ class LiveControlWidget(QFrame):
 
     def __init__(
         self,
+        event_bus: "EventBus",
         streamHandler: StreamHandler,
-        liveController: LiveController,
         objectiveStore: ObjectiveStore,
         channelConfigurationManager: ChannelConfigurationManager,
+        # Camera limits passed as params instead of direct camera access
+        exposure_limits: tuple[float, float] = (0.1, 10000.0),
+        gain_range: Optional["CameraGainRange"] = None,
+        initial_trigger_mode: str = TriggerMode.SOFTWARE,
         show_trigger_options: bool = True,
         show_display_options: bool = False,
         show_autolevel: bool = False,
@@ -22,16 +33,20 @@ class LiveControlWidget(QFrame):
         *args: Any,
         **kwargs: Any,
     ) -> None:
-        super().__init__(*args, **kwargs)
+        super().__init__(event_bus, *args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.liveController = liveController
-        self.camera = self.liveController.microscope.camera
         self.streamHandler = streamHandler
         self.objectiveStore = objectiveStore
         self.channelConfigurationManager = channelConfigurationManager
+
+        # Store camera limits (read-only configuration)
+        self._exposure_limits = exposure_limits
+        self._gain_range = gain_range
+        self._initial_trigger_mode = initial_trigger_mode
+
         self.fps_trigger = 10
         self.fps_display = 10
-        event_bus.publish(SetTriggerFPSCommand(fps=self.fps_trigger))
+        self._publish(SetTriggerFPSCommand(fps=self.fps_trigger))
         self.streamHandler.set_display_fps(self.fps_display)
 
         self.currentConfiguration = (
@@ -48,7 +63,7 @@ class LiveControlWidget(QFrame):
             stretch,
         )
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        event_bus.publish(
+        self._publish(
             SetMicroscopeModeCommand(
                 configuration_name=self.currentConfiguration.name,
                 objective=self.objectiveStore.current_objective,
@@ -58,11 +73,11 @@ class LiveControlWidget(QFrame):
 
         self.is_switching_mode = False  # flag used to prevent from settings being set by twice - from both mode change slot and value change slot; another way is to use blockSignals(True)
 
-        # Subscribe to state changes from the bus
-        event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
-        event_bus.subscribe(TriggerModeChanged, self._on_trigger_mode_changed)
-        event_bus.subscribe(TriggerFPSChanged, self._on_trigger_fps_changed)
-        event_bus.subscribe(MicroscopeModeChanged, self._on_microscope_mode_changed)
+        # Subscribe to state changes using base class helper
+        self._subscribe(LiveStateChanged, self._on_live_state_changed)
+        self._subscribe(TriggerModeChanged, self._on_trigger_mode_changed)
+        self._subscribe(TriggerFPSChanged, self._on_trigger_fps_changed)
+        self._subscribe(MicroscopeModeChanged, self._on_microscope_mode_changed)
 
     def add_components(
         self,
@@ -77,9 +92,7 @@ class LiveControlWidget(QFrame):
         self.dropdown_triggerManu.addItems(
             [TriggerMode.SOFTWARE, TriggerMode.HARDWARE, TriggerMode.CONTINUOUS]
         )
-        self.dropdown_triggerManu.setCurrentText(
-            self.camera.get_acquisition_mode().value
-        )
+        self.dropdown_triggerManu.setCurrentText(self._initial_trigger_mode)
         sizePolicy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.dropdown_triggerManu.setSizePolicy(sizePolicy)
 
@@ -111,20 +124,19 @@ class LiveControlWidget(QFrame):
         # line 3: exposure time and analog gain associated with the current mode
         self.entry_exposureTime = QDoubleSpinBox()
         self.entry_exposureTime.setKeyboardTracking(False)
-        self.entry_exposureTime.setMinimum(self.camera.get_exposure_limits()[0])
-        self.entry_exposureTime.setMaximum(self.camera.get_exposure_limits()[1])
+        self.entry_exposureTime.setMinimum(self._exposure_limits[0])
+        self.entry_exposureTime.setMaximum(self._exposure_limits[1])
         self.entry_exposureTime.setSingleStep(1)
         self.entry_exposureTime.setValue(self.currentConfiguration.exposure_time)
 
         self.entry_analogGain = QDoubleSpinBox()
         self.entry_analogGain.setKeyboardTracking(False)
-        try:
-            gain_range = self.camera.get_gain_range()
-            self.entry_analogGain.setMinimum(gain_range.min_gain)
-            self.entry_analogGain.setMaximum(gain_range.max_gain)
-            self.entry_analogGain.setSingleStep(gain_range.gain_step)
+        if self._gain_range is not None:
+            self.entry_analogGain.setMinimum(self._gain_range.min_gain)
+            self.entry_analogGain.setMaximum(self._gain_range.max_gain)
+            self.entry_analogGain.setSingleStep(self._gain_range.gain_step)
             self.entry_analogGain.setValue(self.currentConfiguration.analog_gain)
-        except NotImplementedError:
+        else:
             self._log.info(
                 "Camera does not support analog gain, disabling analog gain control."
             )
@@ -202,12 +214,12 @@ class LiveControlWidget(QFrame):
             self.grid.addStretch()
         self.setLayout(self.grid)
 
-        # connections
+        # connections - use _publish for events
         self.dropdown_triggerManu.currentTextChanged.connect(
-            lambda mode: event_bus.publish(SetTriggerModeCommand(mode=mode))
+            lambda mode: self._publish(SetTriggerModeCommand(mode=mode))
         )
         self.entry_triggerFPS.valueChanged.connect(
-            lambda fps: event_bus.publish(SetTriggerFPSCommand(fps=fps))
+            lambda fps: self._publish(SetTriggerFPSCommand(fps=fps))
         )
         self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
         self.dropdown_modeSelection.currentTextChanged.connect(
@@ -232,10 +244,10 @@ class LiveControlWidget(QFrame):
         if pressed:
             self.signal_live_configuration.emit(self.currentConfiguration)
             self.signal_start_live.emit()
-            event_bus.publish(StartLiveCommand(configuration=self.currentConfiguration.name))
+            self._publish(StartLiveCommand(configuration=self.currentConfiguration.name))
         else:
             self._log.info("Publishing StopLiveCommand")
-            event_bus.publish(StopLiveCommand())
+            self._publish(StopLiveCommand())
 
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Handle live state changes from the event bus."""
@@ -279,7 +291,7 @@ class LiveControlWidget(QFrame):
         )
         self.update_ui_for_mode(self.currentConfiguration)
         self.signal_live_configuration.emit(self.currentConfiguration)
-        event_bus.publish(
+        self._publish(
             SetMicroscopeModeCommand(
                 configuration_name=self.currentConfiguration.name,
                 objective=self.objectiveStore.current_objective,
@@ -307,19 +319,40 @@ class LiveControlWidget(QFrame):
         self.entry_illuminationIntensity.blockSignals(False)
 
     def update_camera_exposure_time(self, exposure_time: float) -> None:
+        """Update exposure time via event - updates configuration and publishes command."""
         if not self.is_switching_mode:
             self.currentConfiguration.exposure_time = exposure_time
-            self.liveController.set_microscope_mode(self.currentConfiguration)
+            # Publish the full microscope mode command to update all settings
+            self._publish(
+                SetMicroscopeModeCommand(
+                    configuration_name=self.currentConfiguration.name,
+                    objective=self.objectiveStore.current_objective,
+                )
+            )
 
     def update_camera_analog_gain(self, analog_gain: float) -> None:
+        """Update analog gain via event - updates configuration and publishes command."""
         if not self.is_switching_mode:
             self.currentConfiguration.analog_gain = analog_gain
-            self.liveController.set_microscope_mode(self.currentConfiguration)
+            # Publish the full microscope mode command to update all settings
+            self._publish(
+                SetMicroscopeModeCommand(
+                    configuration_name=self.currentConfiguration.name,
+                    objective=self.objectiveStore.current_objective,
+                )
+            )
 
     def update_illumination_intensity(self, intensity: float) -> None:
+        """Update illumination intensity via event - updates configuration and publishes command."""
         if not self.is_switching_mode:
             self.currentConfiguration.illumination_intensity = intensity
-            self.liveController.set_microscope_mode(self.currentConfiguration)
+            # Publish the full microscope mode command to update all settings
+            self._publish(
+                SetMicroscopeModeCommand(
+                    configuration_name=self.currentConfiguration.name,
+                    objective=self.objectiveStore.current_objective,
+                )
+            )
 
     def set_live_configuration(self, configuration: Optional["ChannelMode"]) -> None:
         if configuration is None:
@@ -328,7 +361,7 @@ class LiveControlWidget(QFrame):
 
     def set_trigger_mode(self, trigger_mode: str) -> None:
         self.dropdown_triggerManu.setCurrentText(trigger_mode)
-        event_bus.publish(SetTriggerModeCommand(mode=self.dropdown_triggerManu.currentText()))
+        self._publish(SetTriggerModeCommand(mode=self.dropdown_triggerManu.currentText()))
 
     def refresh_mode_list(self) -> None:
         """Refresh the mode dropdown when profile changes."""
@@ -351,19 +384,6 @@ class LiveControlWidget(QFrame):
         """Toggle autolevel on or off."""
         self.btn_autolevel.setChecked(enabled)
 
-    def update_camera_settings(self) -> None:
-        """Update UI to reflect current camera settings."""
-        self.entry_exposureTime.blockSignals(True)
-        self.entry_exposureTime.setValue(self.camera.get_exposure_time())
-        self.entry_exposureTime.blockSignals(False)
-
-        self.entry_analogGain.blockSignals(True)
-        try:
-            self.entry_analogGain.setValue(self.camera.get_analog_gain())
-        except NotImplementedError:
-            pass
-        self.entry_analogGain.blockSignals(False)
-
     def select_new_microscope_mode_by_name(self, mode_name: str) -> None:
         """Select a microscope mode by name in the dropdown.
 
@@ -374,3 +394,11 @@ class LiveControlWidget(QFrame):
             self.dropdown_modeSelection.setCurrentIndex(index)
         elif self.dropdown_modeSelection.count() > 0:
             self.dropdown_modeSelection.setCurrentIndex(0)
+
+    def update_camera_settings(self) -> None:
+        """Update UI to reflect current configuration settings.
+
+        This syncs the UI with the current microscope mode configuration.
+        Called at startup to ensure UI matches the initial state.
+        """
+        self.update_ui_for_mode(self.currentConfiguration)

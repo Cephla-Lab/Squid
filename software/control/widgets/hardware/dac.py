@@ -11,20 +11,26 @@ from qtpy.QtWidgets import (
     QSlider,
 )
 
-from squid.events import event_bus, DACValueChanged, SetDACCommand
+from control.widgets.base import EventBusFrame
+from squid.events import DACValueChanged, SetDACCommand
 
 if TYPE_CHECKING:
-    from squid.services import PeripheralService
+    from squid.events import EventBus
 
 
-class DACControWidget(QFrame):
-    def __init__(self, peripheral_service: "PeripheralService", *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class DACControWidget(EventBusFrame):
+    """DAC control widget using EventBus.
 
-        self._service = peripheral_service
+    Publishes SetDACCommand events for DAC output changes.
+    Subscribes to DACValueChanged events to update UI.
+    Does not require direct service access.
+    """
 
-        # Subscribe to state updates
-        event_bus.subscribe(DACValueChanged, self._on_dac_changed)
+    def __init__(self, event_bus: "EventBus", *args, **kwargs) -> None:
+        super().__init__(event_bus, *args, **kwargs)
+
+        # Subscribe to state updates using base class helper
+        self._subscribe(DACValueChanged, self._on_dac_changed)
 
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -58,7 +64,7 @@ class DACControWidget(QFrame):
         self.entry_DAC1.setValue(0)
         self.entry_DAC1.setKeyboardTracking(False)
 
-        # connections
+        # connections - use _publish for events
         self.entry_DAC0.valueChanged.connect(self.set_DAC0)
         self.entry_DAC0.valueChanged.connect(self.slider_DAC0.setValue)
         self.slider_DAC0.valueChanged.connect(self.entry_DAC0.setValue)
@@ -81,11 +87,11 @@ class DACControWidget(QFrame):
 
     def set_DAC0(self, value: float) -> None:
         """Set DAC0 output (0-100%)."""
-        event_bus.publish(SetDACCommand(channel=0, value=value))
+        self._publish(SetDACCommand(channel=0, value=value / 100.0))
 
     def set_DAC1(self, value: float) -> None:
         """Set DAC1 output (0-100%)."""
-        event_bus.publish(SetDACCommand(channel=1, value=value))
+        self._publish(SetDACCommand(channel=1, value=value / 100.0))
 
     def _on_dac_changed(self, event: DACValueChanged) -> None:
         """Handle DAC value changed event."""

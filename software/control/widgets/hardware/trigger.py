@@ -1,9 +1,8 @@
 # Camera trigger control widget
-from typing import Any, Optional
+from typing import Optional, TYPE_CHECKING
 
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
-    QFrame,
     QGridLayout,
     QLabel,
     QDoubleSpinBox,
@@ -12,29 +11,39 @@ from qtpy.QtWidgets import (
 )
 
 from control._def import TriggerMode
+from control.widgets.base import EventBusFrame
 from squid.events import (
-    event_bus,
-    StartCameraTriggerCommand,
-    StopCameraTriggerCommand,
-    SetCameraTriggerFrequencyCommand,
+    SetTriggerModeCommand,
+    SetTriggerFPSCommand,
+    TriggerModeChanged,
+    TriggerFPSChanged,
 )
-from squid.services import PeripheralService
+
+if TYPE_CHECKING:
+    from squid.events import EventBus
 
 
-class TriggerControlWidget(QFrame):
+class TriggerControlWidget(EventBusFrame):
+    """Camera trigger control widget using EventBus.
+
+    Publishes trigger command events.
+    Does not require direct service access.
+    """
+
     # for synchronized trigger
     signal_toggle_live: Signal = Signal(bool)
     signal_trigger_mode: Signal = Signal(str)
     signal_trigger_fps: Signal = Signal(float)
 
-    def __init__(self, peripheral_service: PeripheralService) -> None:
-        super().__init__()
+    def __init__(self, event_bus: "EventBus") -> None:
+        super().__init__(event_bus)
         self.fps_trigger: float = 10
         self.fps_display: float = 10
-        self.peripheral_service: PeripheralService = peripheral_service
         self.triggerMode: Optional[str] = TriggerMode.SOFTWARE
         self.add_components()
-        self.setFrameStyle(QFrame.Panel | QFrame.Raised)
+        self.setFrameStyle(self.Panel | self.Raised)
+        self._subscribe(TriggerModeChanged, self._on_trigger_mode_changed)
+        self._subscribe(TriggerFPSChanged, self._on_trigger_fps_changed)
 
     def add_components(self) -> None:
         # line 0: trigger mode
@@ -60,10 +69,8 @@ class TriggerControlWidget(QFrame):
         self.btn_live.clicked.connect(self.toggle_live)
         self.entry_triggerFPS.valueChanged.connect(self.update_trigger_fps)
 
-        # inititialization
-        event_bus.publish(
-            SetCameraTriggerFrequencyCommand(fps=float(self.entry_triggerFPS.value()))
-        )
+        # initialization
+        self._publish(SetTriggerFPSCommand(fps=float(self.entry_triggerFPS.value())))
 
         # layout
         grid_line0 = QGridLayout()
@@ -76,15 +83,26 @@ class TriggerControlWidget(QFrame):
 
     def toggle_live(self, pressed: bool) -> None:
         self.signal_toggle_live.emit(pressed)
-        if pressed:
-            event_bus.publish(StartCameraTriggerCommand())
-        else:
-            event_bus.publish(StopCameraTriggerCommand())
+        # Legacy start/stop trigger commands removed; rely on trigger mode/FPS events.
 
     def update_trigger_mode(self) -> None:
         self.signal_trigger_mode.emit(self.dropdown_triggerManu.currentText())
+        self._publish(SetTriggerModeCommand(mode=self.dropdown_triggerManu.currentText()))
 
     def update_trigger_fps(self, fps: float) -> None:
         self.fps_trigger = fps
         self.signal_trigger_fps.emit(fps)
-        event_bus.publish(SetCameraTriggerFrequencyCommand(fps=self.fps_trigger))
+        self._publish(SetCameraTriggerFrequencyCommand(fps=self.fps_trigger))
+        self._publish(SetTriggerFPSCommand(fps=self.fps_trigger))
+
+    def _on_trigger_mode_changed(self, event: TriggerModeChanged) -> None:
+        """Sync UI from trigger mode state changes."""
+        self.dropdown_triggerManu.blockSignals(True)
+        self.dropdown_triggerManu.setCurrentText(event.mode)
+        self.dropdown_triggerManu.blockSignals(False)
+
+    def _on_trigger_fps_changed(self, event: TriggerFPSChanged) -> None:
+        """Sync UI from trigger FPS state changes."""
+        self.entry_triggerFPS.blockSignals(True)
+        self.entry_triggerFPS.setValue(event.fps)
+        self.entry_triggerFPS.blockSignals(False)

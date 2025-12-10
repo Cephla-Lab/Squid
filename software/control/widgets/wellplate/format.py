@@ -1,34 +1,59 @@
 from control.widgets.wellplate._common import *
+from control.widgets.base import EventBusWidget
+from squid.events import LiveStateChanged, SaveWellplateCalibrationCommand
+import csv
 
 if TYPE_CHECKING:
     from control.widgets.display.navigation import NavigationViewer
-    from control.core.display import StreamHandler, LiveController
+    from control.core.display import StreamHandler
+    from squid.events import EventBus
 
 
-class WellplateFormatWidget(QWidget):
+class WellplateFormatWidget(EventBusWidget):
+    """Wellplate format selector widget using EventBus.
+
+    When "calibrate format..." is selected, opens WellplateCalibration dialog.
+    Subscribes to LiveStateChanged to track live state for calibration dialog.
+    Uses service layer for read-only stage queries.
+    """
+
     signalWellplateSettings: Signal = Signal(
         QVariant, float, float, int, int, float, float, int, int, int
     )
 
     def __init__(
         self,
-        stage: AbstractStage,
+        event_bus: "EventBus",
         navigationViewer: "NavigationViewer",
         streamHandler: "StreamHandler",
-        liveController: "LiveController",
-        stage_service: Optional["StageService"] = None,
+        stage_service: "StageService",
+        # Read-only config for calibration (passed to dialog)
+        pixel_size_factor: float = 1.0,
+        pixel_size_binned_um: float = 0.084665,
     ) -> None:
-        super().__init__()
-        self.stage: AbstractStage = stage
+        super().__init__(event_bus)
         self.navigationViewer: "NavigationViewer" = navigationViewer
         self.streamHandler: "StreamHandler" = streamHandler
-        self.liveController: "LiveController" = liveController
-        self.stage_service: Optional["StageService"] = stage_service
+        self.stage_service: "StageService" = stage_service
+        self._pixel_size_factor = pixel_size_factor
+        self._pixel_size_binned_um = pixel_size_binned_um
+        self._is_live: bool = False  # Track live state from events
         self.wellplate_format: str = WELLPLATE_FORMAT
         self.csv_path: str = SAMPLE_FORMATS_CSV_PATH  # 'sample_formats.csv'
         self.label: QLabel
         self.comboBox: QComboBox
+
+        # Subscribe to live state events
+        self._subscribe(LiveStateChanged, self._on_live_state_changed)
+        self._subscribe(
+            SaveWellplateCalibrationCommand, self._on_save_calibration  # type: ignore[arg-type]
+        )
+
         self.initUI()
+
+    def _on_live_state_changed(self, event: LiveStateChanged) -> None:
+        """Track live state for passing to calibration dialog."""
+        self._is_live = event.is_live
 
     def initUI(self) -> None:
         layout = QHBoxLayout(self)
@@ -42,6 +67,24 @@ class WellplateFormatWidget(QWidget):
         index = self.comboBox.findData(self.wellplate_format)
         if index >= 0:
             self.comboBox.setCurrentIndex(index)
+
+    def _on_save_calibration(self, event: SaveWellplateCalibrationCommand) -> None:
+        """Handle calibration save event."""
+        name = event.name
+        calibration = event.calibration
+        if not name or calibration is None:
+            return
+        try:
+            # Expect calibration to be a dict of settings
+            WELLPLATE_FORMAT_SETTINGS[name] = calibration  # type: ignore[index, assignment]
+            self.save_formats_to_csv()
+            self.populate_combo_box()
+            idx = self.comboBox.findData(name)
+            if idx >= 0:
+                self.comboBox.setCurrentIndex(idx)
+            self.setWellplateSettings(name)
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"Failed to save calibration for {name}: {exc}")
 
     def populate_combo_box(self) -> None:
         self.comboBox.clear()
@@ -59,12 +102,14 @@ class WellplateFormatWidget(QWidget):
         self.wellplate_format = self.comboBox.itemData(index)
         if self.wellplate_format == "custom":
             calibration_dialog = WellplateCalibration(  # type: ignore[name-defined]
-                self,
-                self.stage,
-                self.navigationViewer,
-                self.streamHandler,
-                self.liveController,
+                event_bus=self._bus,
+                wellplateFormatWidget=self,
+                navigationViewer=self.navigationViewer,
+                streamHandler=self.streamHandler,
                 stage_service=self.stage_service,
+                pixel_size_factor=self._pixel_size_factor,
+                pixel_size_binned_um=self._pixel_size_binned_um,
+                was_live=self._is_live,
             )
             result = calibration_dialog.exec_()
             if result == QDialog.Rejected:
