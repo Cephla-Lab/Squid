@@ -21,8 +21,9 @@ Usage:
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Type, TypeVar, Optional
+from typing import Any, Callable, Dict, List, Tuple, Type, TypeVar, Optional
 from threading import Lock
+import numpy as np
 import squid.logging
 
 _log = squid.logging.get_logger("squid.events")
@@ -394,6 +395,7 @@ class BinningChanged(Event):
 
     binning_x: int
     binning_y: int
+    pixel_size_binned_um: Optional[float] = None  # Pixel size after binning
 
 
 from typing import TYPE_CHECKING
@@ -448,6 +450,25 @@ class TriggerFPSChanged(Event):
 
 
 # ============================================================
+# Display/Live Commands
+# ============================================================
+
+
+@dataclass
+class UpdateIlluminationCommand(Event):
+    """Command to update illumination for current configuration."""
+
+    pass  # Uses current configuration from controller
+
+
+@dataclass
+class SetDisplayResolutionScalingCommand(Event):
+    """Command to set display resolution scaling."""
+
+    scaling: float  # 10-100 percentage
+
+
+# ============================================================
 # Microscope Mode Commands
 # ============================================================
 
@@ -470,6 +491,35 @@ class MicroscopeModeChanged(Event):
     """Notification that microscope mode changed."""
 
     configuration_name: str
+    exposure_time_ms: Optional[float] = None
+    analog_gain: Optional[float] = None
+    illumination_intensity: Optional[float] = None
+
+
+@dataclass
+class UpdateChannelConfigurationCommand(Event):
+    """Command to update a channel configuration setting.
+
+    Used by widgets to persist changes to channel configurations.
+    Only non-None fields will be updated.
+    """
+
+    objective_name: str
+    config_name: str
+    exposure_time_ms: Optional[float] = None
+    analog_gain: Optional[float] = None
+    illumination_intensity: Optional[float] = None
+
+
+@dataclass
+class ChannelConfigurationsChanged(Event):
+    """Notification that available channel configurations have changed.
+
+    Published when objective changes or configurations are reloaded.
+    """
+
+    objective_name: str
+    configuration_names: List[str]
 
 
 # ============================================================================
@@ -548,6 +598,27 @@ class FilterPositionChanged(Event):
 
 
 @dataclass
+class HomeFilterWheelCommand(Event):
+    """Command to home filter wheel."""
+
+    wheel_index: int = 0
+
+
+@dataclass
+class SetFilterAutoSwitchCommand(Event):
+    """Command to enable/disable automatic filter switching on channel change."""
+
+    enabled: bool
+
+
+@dataclass
+class FilterAutoSwitchChanged(Event):
+    """State event: auto-switch mode changed."""
+
+    enabled: bool
+
+
+@dataclass
 class ObjectiveChanged(Event):
     """Objective lens changed."""
 
@@ -588,16 +659,58 @@ class PiezoPositionChanged(Event):
 
 
 @dataclass
+class SetAcquisitionParametersCommand(Event):
+    """Command to set acquisition parameters."""
+
+    delta_z_um: Optional[float] = None
+    n_z: Optional[int] = None
+    n_x: Optional[int] = None
+    n_y: Optional[int] = None
+    delta_x_mm: Optional[float] = None
+    delta_y_mm: Optional[float] = None
+    delta_t_s: Optional[float] = None
+    n_t: Optional[int] = None
+    use_piezo: Optional[bool] = None
+    use_autofocus: Optional[bool] = None
+    use_reflection_af: Optional[bool] = None
+    gen_focus_map: Optional[bool] = None
+    use_manual_focus_map: Optional[bool] = None
+    z_range: Optional[Tuple[float, float]] = None
+    focus_map: Optional[Any] = None
+    use_fluidics: Optional[bool] = None
+
+
+@dataclass
+class SetAcquisitionPathCommand(Event):
+    """Command to set acquisition save path."""
+
+    base_path: str
+
+
+@dataclass
+class SetAcquisitionChannelsCommand(Event):
+    """Command to set channels for acquisition."""
+
+    channel_names: List[str]
+
+
+@dataclass
+class StartNewExperimentCommand(Event):
+    """Command to start a new experiment (create folder, save metadata)."""
+
+    experiment_id: str
+
+
+@dataclass
 class StartAcquisitionCommand(Event):
     """Start multi-point acquisition."""
 
-    # Note: Full config passed separately or via controller state
-    experiment_id: Optional[str] = None
+    acquire_current_fov: bool = False
 
 
 @dataclass
 class StopAcquisitionCommand(Event):
-    """Stop acquisition."""
+    """Stop/abort acquisition."""
 
     pass
 
@@ -635,6 +748,22 @@ class AcquisitionProgress(Event):
 
 
 @dataclass
+class AcquisitionStateChanged(Event):
+    """Notification that acquisition state changed."""
+
+    in_progress: bool
+    is_aborting: bool = False
+
+
+@dataclass
+class AcquisitionRegionProgress(Event):
+    """Progress update for regions during acquisition."""
+
+    current_region: int
+    total_regions: int
+
+
+@dataclass
 class AcquisitionPaused(Event):
     """Acquisition was paused."""
 
@@ -646,6 +775,18 @@ class AcquisitionResumed(Event):
     """Acquisition was resumed."""
 
     pass
+
+
+# ============================================================================
+# Fluidics Commands
+# ============================================================================
+
+
+@dataclass
+class SetFluidicsRoundsCommand(Event):
+    """Command to set fluidics rounds for acquisition."""
+
+    rounds: list  # List of round numbers
 
 
 # ============================================================================
@@ -703,6 +844,110 @@ class AutofocusCompleted(Event):
 
 
 # Note: FocusChanged already exists above (line ~170)
+
+
+# ============================================================================
+# Laser Autofocus Commands
+# ============================================================================
+
+
+@dataclass
+class SetLaserAFPropertiesCommand(Event):
+    """Command to set laser AF properties."""
+
+    properties: dict  # Property updates
+
+
+@dataclass
+class InitializeLaserAFCommand(Event):
+    """Command to initialize laser AF."""
+
+    pass
+
+
+@dataclass
+class SetLaserAFCharacterizationModeCommand(Event):
+    """Command to set characterization mode."""
+
+    enabled: bool
+
+
+@dataclass
+class UpdateLaserAFThresholdCommand(Event):
+    """Command to update threshold properties."""
+
+    updates: dict
+
+
+@dataclass
+class MoveToLaserAFTargetCommand(Event):
+    """Command to move to AF target."""
+
+    displacement_um: Optional[float] = None
+
+
+@dataclass
+class SetLaserAFReferenceCommand(Event):
+    """Command to set AF reference point."""
+
+    pass
+
+
+@dataclass
+class MeasureLaserAFDisplacementCommand(Event):
+    """Command to measure displacement."""
+
+    pass
+
+
+@dataclass
+class CaptureLaserAFFrameCommand(Event):
+    """Command to capture a single frame with AF laser illumination."""
+
+    pass
+
+
+# ============================================================================
+# Laser Autofocus State Events
+# ============================================================================
+
+
+@dataclass
+class LaserAFPropertiesChanged(Event):
+    """State: AF properties changed."""
+
+    properties: dict
+
+
+@dataclass
+class LaserAFInitialized(Event):
+    """State: AF initialization status changed."""
+
+    is_initialized: bool
+    success: bool
+
+
+@dataclass
+class LaserAFReferenceSet(Event):
+    """State: AF reference was set."""
+
+    success: bool
+
+
+@dataclass
+class LaserAFDisplacementMeasured(Event):
+    """State: Displacement measurement completed."""
+
+    displacement_um: Optional[float]
+    success: bool
+
+
+@dataclass
+class LaserAFFrameCaptured(Event):
+    """State: Frame captured with AF laser illumination."""
+
+    frame: Optional[np.ndarray]
+    success: bool
 
 
 # ============================================================================
@@ -803,3 +1048,207 @@ class WellplateCalibrationSaved(Event):
 
     success: bool
     error: Optional[str] = None
+
+
+# ============================================================================
+# Tracking Commands
+# ============================================================================
+
+
+@dataclass
+class SetTrackingParametersCommand(Event):
+    """Command to set tracking parameters."""
+
+    time_interval_s: Optional[float] = None
+    enable_stage_tracking: Optional[bool] = None
+    enable_autofocus: Optional[bool] = None
+    save_images: Optional[bool] = None
+    tracker_type: Optional[str] = None
+    pixel_size_um: Optional[float] = None
+    objective: Optional[str] = None
+    image_resizing_factor: Optional[float] = None
+
+
+@dataclass
+class SetTrackingPathCommand(Event):
+    """Command to set tracking save path."""
+
+    base_path: str
+
+
+@dataclass
+class SetTrackingChannelsCommand(Event):
+    """Command to set channels for tracking."""
+
+    channel_names: List[str]
+
+
+@dataclass
+class StartTrackingExperimentCommand(Event):
+    """Command to start a new tracking experiment."""
+
+    experiment_id: str
+
+
+@dataclass
+class StartTrackingCommand(Event):
+    """Command to start tracking."""
+
+    pass
+
+
+@dataclass
+class StopTrackingCommand(Event):
+    """Command to stop tracking."""
+
+    pass
+
+
+# ============================================================================
+# Tracking State Events
+# ============================================================================
+
+
+@dataclass
+class TrackingStateChanged(Event):
+    """Notification that tracking state changed."""
+
+    is_tracking: bool
+
+
+# ============================================================================
+# Plate Reader Commands
+# ============================================================================
+
+
+@dataclass
+class SetPlateReaderParametersCommand(Event):
+    """Command to set plate reader parameters."""
+
+    use_autofocus: Optional[bool] = None
+
+
+@dataclass
+class SetPlateReaderPathCommand(Event):
+    """Command to set plate reader save path."""
+
+    base_path: str
+
+
+@dataclass
+class SetPlateReaderChannelsCommand(Event):
+    """Command to set channels for plate reading."""
+
+    channel_names: List[str]
+
+
+@dataclass
+class SetPlateReaderColumnsCommand(Event):
+    """Command to set columns for plate reading."""
+
+    columns: List[int]
+
+
+@dataclass
+class StartPlateReaderExperimentCommand(Event):
+    """Command to start a new plate reader experiment."""
+
+    experiment_id: str
+
+
+@dataclass
+class StartPlateReaderCommand(Event):
+    """Command to start plate reader acquisition."""
+
+    pass
+
+
+@dataclass
+class StopPlateReaderCommand(Event):
+    """Command to stop plate reader acquisition."""
+
+    pass
+
+
+# ============================================================================
+# Plate Reader State Events
+# ============================================================================
+
+
+@dataclass
+class PlateReaderStateChanged(Event):
+    """Notification that plate reader state changed."""
+
+    is_running: bool
+
+
+@dataclass
+class PlateReaderAcquisitionFinished(Event):
+    """Notification that plate reader acquisition finished."""
+
+    pass
+
+
+# ============================================================================
+# Plate Reader Navigation Commands
+# ============================================================================
+
+
+@dataclass
+class PlateReaderHomeCommand(Event):
+    """Command to home plate reader."""
+
+    pass
+
+
+@dataclass
+class PlateReaderMoveToCommand(Event):
+    """Command to move plate reader to position."""
+
+    column: str
+    row: str
+
+
+@dataclass
+class PlateReaderHomingComplete(Event):
+    """Notification that plate reader homing is complete."""
+
+    pass
+
+
+@dataclass
+class PlateReaderLocationChanged(Event):
+    """Notification that plate reader location changed."""
+
+    location_str: str
+
+
+# ============================================================================
+# Displacement Measurement Commands
+# ============================================================================
+
+
+@dataclass
+class SetDisplacementMeasurementSettingsCommand(Event):
+    """Command to update displacement measurement settings."""
+
+    x_offset: float
+    y_offset: float
+    x_scaling: float
+    y_scaling: float
+    n_average: int
+    n: int
+
+
+@dataclass
+class SetWaveformDisplayNCommand(Event):
+    """Command to update waveform display N parameter."""
+
+    n: int
+
+
+@dataclass
+class DisplacementReadingsChanged(Event):
+    """Notification that displacement readings have changed."""
+
+    readings: List[float]

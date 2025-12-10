@@ -229,7 +229,20 @@ class CameraSettingsWidget(EventBusFrame):
 
             self.camera_layout.addLayout(blacklevel_line)
 
-        current_pixel_format = self._service.get_pixel_format()
+        # Determine current pixel format from provided initialization data
+        current_pixel_format = None
+        if isinstance(self._current_pixel_format, CameraPixelFormat):
+            current_pixel_format = self._current_pixel_format
+        elif isinstance(self._current_pixel_format, str):
+            try:
+                current_pixel_format = CameraPixelFormat.from_string(
+                    self._current_pixel_format
+                )
+            except Exception:
+                self._log.warning(
+                    "Unknown pixel format '%s'", self._current_pixel_format
+                )
+
         if (
             include_camera_auto_wb_setting
             and current_pixel_format is not None

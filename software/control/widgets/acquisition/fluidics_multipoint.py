@@ -1,14 +1,25 @@
 # Fluidics multi-point acquisition widget
 import math
 import time
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, List
 
 import pandas as pd
 
 import squid.logging
+from squid.events import (
+    EventBus,
+    SetFluidicsRoundsCommand,
+    SetAcquisitionParametersCommand,
+    SetAcquisitionPathCommand,
+    SetAcquisitionChannelsCommand,
+    StartNewExperimentCommand,
+    StartAcquisitionCommand,
+    StopAcquisitionCommand,
+    AcquisitionStateChanged,
+    AcquisitionProgress,
+    AcquisitionRegionProgress,
+)
 
-if TYPE_CHECKING:
-    from squid.services import StageService
 from qtpy.QtCore import Signal, QTimer
 from qtpy.QtWidgets import (
     QFrame,
@@ -32,7 +43,6 @@ from qtpy.QtWidgets import (
 from qtpy.QtGui import QIcon
 
 from control._def import *
-from squid.abc import AbstractStage
 
 
 class MultiPointWithFluidicsWidget(QFrame):
@@ -44,26 +54,24 @@ class MultiPointWithFluidicsWidget(QFrame):
 
     def __init__(
         self,
-        stage: AbstractStage,
         navigationViewer,
-        multipointController,
-        objectiveStore,
-        channelConfigurationManager,
         scanCoordinates,
+        event_bus: EventBus,
+        initial_channel_configs: List[str],
         napariMosaicWidget=None,
-        stage_service: Optional["StageService"] = None,
+        z_ustep_per_mm: Optional[float] = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.stage = stage
-        self._stage_service = stage_service
+        self._event_bus = event_bus
+        # Z-axis conversion factor (usteps per mm), passed at init to avoid stage config access
+        self._z_ustep_per_mm = z_ustep_per_mm
         self.navigationViewer = navigationViewer
-        self.multipointController = multipointController
-        self.objectiveStore = objectiveStore
-        self.channelConfigurationManager = channelConfigurationManager
         self.scanCoordinates = scanCoordinates
+        # Initial channel configurations (passed from GUI, will be updated via events)
+        self._channel_configs = list(initial_channel_configs)
         if napariMosaicWidget is None:
             self.performance_mode = True
         else:
@@ -76,8 +84,17 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.nRound = 0
         self.is_current_acquisition_widget = False
 
+        # Cached acquisition state from events
+        self._acquisition_in_progress = False
+        self._acquisition_is_aborting = False
+
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
+
+        # Subscribe to acquisition state events
+        self._event_bus.subscribe(AcquisitionStateChanged, self._on_acquisition_state_changed)
+        self._event_bus.subscribe(AcquisitionProgress, self._on_acquisition_progress)
+        self._event_bus.subscribe(AcquisitionRegionProgress, self._on_region_progress)
 
     def add_components(self):
         self.btn_setSavingDir = QPushButton("Browse")
@@ -86,7 +103,8 @@ class MultiPointWithFluidicsWidget(QFrame):
 
         self.lineEdit_savingDir = QLineEdit()
         self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
-        self.multipointController.set_base_path(DEFAULT_SAVING_PATH)
+        # Publish default path via event
+        self._event_bus.publish(SetAcquisitionPathCommand(base_path=DEFAULT_SAVING_PATH))
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
@@ -108,14 +126,9 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.entry_NZ.setSingleStep(1)
         self.entry_NZ.setValue(1)
 
-        # Channel configurations
+        # Channel configurations (populated from initial_channel_configs)
         self.list_configurations = QListWidget()
-        for (
-            microscope_configuration
-        ) in self.channelConfigurationManager.get_channel_configurations_for_objective(
-            self.objectiveStore.current_objective
-        ):
-            self.list_configurations.addItems([microscope_configuration.name])
+        self.list_configurations.addItems(self._channel_configs)
         self.list_configurations.setSelectionMode(QAbstractItemView.MultiSelection)
 
         # Reflection AF checkbox
@@ -123,9 +136,10 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.checkbox_withReflectionAutofocus.setChecked(
             MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
         )
-        self.multipointController.set_reflection_af_flag(
-            MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
-        )
+        # Initial reflection AF flag set via event
+        self._event_bus.publish(SetAcquisitionParametersCommand(
+            use_reflection_af=MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
+        ))
 
         # Piezo checkbox
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
@@ -234,23 +248,14 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.btn_load_coordinates.clicked.connect(self.on_load_coordinates_clicked)
         # self.btn_init_fluidics.clicked.connect(self.init_fluidics)
         self.entry_deltaZ.valueChanged.connect(self.set_deltaZ)
-        self.entry_NZ.valueChanged.connect(self.multipointController.set_NZ)
-        self.checkbox_withReflectionAutofocus.toggled.connect(
-            self.multipointController.set_reflection_af_flag
-        )
-        self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
+        self.entry_NZ.valueChanged.connect(self._on_nz_changed)
+        self.checkbox_withReflectionAutofocus.toggled.connect(self._on_reflection_af_toggled)
+        self.checkbox_usePiezo.toggled.connect(self._on_use_piezo_toggled)
         self.list_configurations.itemSelectionChanged.connect(
             self.emit_selected_channels
         )
-        self.multipointController.acquisition_finished.connect(
-            self.acquisition_is_finished
-        )
-        self.multipointController.signal_acquisition_progress.connect(
-            self.update_acquisition_progress
-        )
-        self.multipointController.signal_region_progress.connect(
-            self.update_region_progress
-        )
+        # Note: acquisition_finished, signal_acquisition_progress, signal_region_progress
+        # are now handled via EventBus subscriptions (see _on_acquisition_state_changed etc.)
         self.signal_acquisition_started.connect(self.display_progress_bar)
         self.eta_timer.timeout.connect(self.update_eta_display)
 
@@ -272,7 +277,7 @@ class MultiPointWithFluidicsWidget(QFrame):
                 )
                 return
 
-            if self.multipointController.acquisition_in_progress():
+            if self._acquisition_in_progress:
                 self._log.warning(
                     "Acquisition in progress or aborting, cannot start another yet."
                 )
@@ -290,23 +295,22 @@ class MultiPointWithFluidicsWidget(QFrame):
             self.is_current_acquisition_widget = True
             self.btn_startAcquisition.setText("Stop\n Acquisition ")
 
-            self.multipointController.set_deltaZ(self.entry_deltaZ.value())
-            self.multipointController.set_NZ(self.entry_NZ.value())
-            self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
-            self.multipointController.set_reflection_af_flag(
-                self.checkbox_withReflectionAutofocus.isChecked()
-            )
-            self.multipointController.set_use_fluidics(
-                True
-            )  # may be set to False from other widgets
-            self.multipointController.set_selected_configurations(
-                [item.text() for item in self.list_configurations.selectedItems()]
-            )
-            self.multipointController.set_Nt(len(rounds))
-            self.multipointController.fluidics.set_rounds(rounds)
-            self.multipointController.start_new_experiment(
-                self.lineEdit_experimentID.text()
-            )
+            # Publish acquisition parameters via events
+            self._event_bus.publish(SetAcquisitionParametersCommand(
+                delta_z_um=self.entry_deltaZ.value(),
+                n_z=self.entry_NZ.value(),
+                use_piezo=self.checkbox_usePiezo.isChecked(),
+                use_reflection_af=self.checkbox_withReflectionAutofocus.isChecked(),
+                use_fluidics=True,  # may be set to False from other widgets
+                n_t=len(rounds),
+            ))
+            self._event_bus.publish(SetAcquisitionChannelsCommand(
+                channel_names=[item.text() for item in self.list_configurations.selectedItems()]
+            ))
+            self._event_bus.publish(SetFluidicsRoundsCommand(rounds=rounds))
+            self._event_bus.publish(StartNewExperimentCommand(
+                experiment_id=self.lineEdit_experimentID.text()
+            ))
 
             # Emit signals
             self.signal_acquisition_started.emit(True)
@@ -314,16 +318,16 @@ class MultiPointWithFluidicsWidget(QFrame):
                 self.entry_NZ.value(), self.entry_deltaZ.value()
             )
 
-            # Start acquisition
-            self.multipointController.run_acquisition()
+            # Start acquisition via event
+            self._event_bus.publish(StartAcquisitionCommand())
         else:
-            self.multipointController.request_abort_aquisition()
+            self._event_bus.publish(StopAcquisitionCommand())
 
     def set_saving_dir(self):
         """Open dialog to set saving directory"""
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self.multipointController.set_base_path(save_dir_base)
+        self._event_bus.publish(SetAcquisitionPathCommand(base_path=save_dir_base))
         self.lineEdit_savingDir.setText(save_dir_base)
         self.base_path_is_set = True
 
@@ -345,13 +349,15 @@ class MultiPointWithFluidicsWidget(QFrame):
         """Set Z-stack step size, adjusting for piezo if needed"""
         if self.checkbox_usePiezo.isChecked():
             deltaZ = value
-        else:
-            mm_per_ustep = (
-                1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
-            )
+        elif self._z_ustep_per_mm is not None:
+            # Use cached Z-axis config to quantize to valid step sizes
+            mm_per_ustep = 1.0 / self._z_ustep_per_mm
             deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
+        else:
+            # No Z config available, use value as-is
+            deltaZ = value
         self.entry_deltaZ.setValue(deltaZ)
-        self.multipointController.set_deltaZ(deltaZ)
+        self._event_bus.publish(SetAcquisitionParametersCommand(delta_z_um=deltaZ))
 
     def emit_selected_channels(self):
         """Emit signal with list of selected channel names"""
@@ -581,3 +587,42 @@ class MultiPointWithFluidicsWidget(QFrame):
                 "Please enter valid round numbers (e.g., '1-3,5,7-10')",
             )
             return []
+
+    # =========================================================================
+    # EventBus Handlers
+    # =========================================================================
+
+    def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
+        """Handle acquisition state changes from EventBus."""
+        self._acquisition_in_progress = event.in_progress
+        self._acquisition_is_aborting = event.is_aborting
+
+        if not event.in_progress:
+            # Acquisition finished
+            self.acquisition_is_finished()
+
+    def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
+        """Handle acquisition progress updates from EventBus."""
+        self.update_acquisition_progress(
+            event.current_round, event.total_rounds, event.current_fov
+        )
+
+    def _on_region_progress(self, event: AcquisitionRegionProgress) -> None:
+        """Handle region progress updates from EventBus."""
+        self.update_region_progress(event.current_region, event.total_regions)
+
+    # =========================================================================
+    # UI Event Handlers (publish commands)
+    # =========================================================================
+
+    def _on_nz_changed(self, value: int) -> None:
+        """Handle NZ spinbox change - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(n_z=value))
+
+    def _on_reflection_af_toggled(self, checked: bool) -> None:
+        """Handle reflection AF checkbox toggle - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(use_reflection_af=checked))
+
+    def _on_use_piezo_toggled(self, checked: bool) -> None:
+        """Handle use piezo checkbox toggle - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(use_piezo=checked))

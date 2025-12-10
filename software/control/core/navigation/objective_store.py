@@ -1,6 +1,7 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import control._def
+from squid.events import EventBus, ObjectiveChanged
 
 
 class ObjectiveStore:
@@ -8,10 +9,12 @@ class ObjectiveStore:
         self,
         objectives_dict: Dict[str, Dict[str, Any]] = control._def.OBJECTIVES,
         default_objective: str = control._def.DEFAULT_OBJECTIVE,
+        event_bus: Optional[EventBus] = None,
     ) -> None:
         self.objectives_dict: Dict[str, Dict[str, Any]] = objectives_dict
         self.default_objective: str = default_objective
         self.current_objective: str = default_objective
+        self._event_bus = event_bus
         objective = self.objectives_dict[self.current_objective]
         self.pixel_size_factor: float = ObjectiveStore.calculate_pixel_size_factor(
             objective, control._def.TUBE_LENS_MM
@@ -37,6 +40,16 @@ class ObjectiveStore:
             self.pixel_size_factor = ObjectiveStore.calculate_pixel_size_factor(
                 objective, control._def.TUBE_LENS_MM
             )
+            # Publish event for widgets to react
+            if self._event_bus is not None:
+                self._event_bus.publish(
+                    ObjectiveChanged(
+                        position=0,  # Position not tracked here
+                        objective_name=objective_name,
+                        magnification=objective.get("magnification"),
+                        pixel_size_um=self.pixel_size_factor,
+                    )
+                )
         else:
             raise ValueError(f"Objective {objective_name} not found in the store.")
 

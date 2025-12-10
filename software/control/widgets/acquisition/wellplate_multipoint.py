@@ -3,12 +3,32 @@ import os
 import math
 import time
 import yaml
-from typing import Optional, TYPE_CHECKING, Any
+from typing import Optional, List, TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
 import squid.logging
+from squid.events import (
+    EventBus,
+    StagePositionChanged,
+    MoveStageCommand,
+    ObjectiveChanged,
+    ChannelConfigurationsChanged,
+    LiveStateChanged,
+    StartLiveCommand,
+    StopLiveCommand,
+    SetLaserAFReferenceCommand,
+    SetAcquisitionParametersCommand,
+    SetAcquisitionPathCommand,
+    SetAcquisitionChannelsCommand,
+    StartNewExperimentCommand,
+    StartAcquisitionCommand,
+    StopAcquisitionCommand,
+    AcquisitionStateChanged,
+    AcquisitionProgress,
+    AcquisitionRegionProgress,
+)
 
 if TYPE_CHECKING:
     from squid.services import StageService
@@ -39,7 +59,6 @@ from qtpy.QtGui import QIcon
 from control._def import *
 from control.widgets.base import error_dialog, check_space_available_with_error_dialog
 from control.widgets.wellplate import WellSelectionWidget
-from squid.abc import AbstractStage
 
 
 class WellplateMultiPointWidget(QFrame):
@@ -53,32 +72,47 @@ class WellplateMultiPointWidget(QFrame):
 
     def __init__(
         self,
-        stage: AbstractStage,
         navigationViewer,
-        multipointController,
-        liveController,
-        objectiveStore,
-        channelConfigurationManager,
         scanCoordinates,
+        event_bus: EventBus,
+        initial_channel_configs: List[str],
+        initial_objective: str,
+        objective_pixel_size_factors: dict[str, float],
         focusMapWidget=None,
         napariMosaicWidget=None,
         tab_widget: Optional[QTabWidget] = None,
         well_selection_widget: Optional[WellSelectionWidget] = None,
-        stage_service: Optional["StageService"] = None,
+        z_ustep_per_mm: Optional[float] = None,
+        initial_z_mm: float = 0.0,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.stage = stage
-        self._stage_service = stage_service
+        self._event_bus = event_bus
+        self._z_ustep_per_mm = z_ustep_per_mm
+        # Cache current position (updated via StagePositionChanged events)
+        self._cached_x_mm = 0.0
+        self._cached_y_mm = 0.0
+        self._cached_z_mm = initial_z_mm
+        # Cache objective and pixel size state from events
+        self._objective_pixel_size_factors = dict(objective_pixel_size_factors)
+        self._objective_names = list(objective_pixel_size_factors.keys())
+        self._current_objective = initial_objective
+        self._pixel_size_factor = self._objective_pixel_size_factors.get(
+            initial_objective, 1.0
+        )
+        # Cache live state (updated via LiveStateChanged events)
+        self._is_live = False
         self.navigationViewer = navigationViewer
-        self.multipointController = multipointController
-        self.liveController = liveController
-        self.objectiveStore = objectiveStore
-        self.channelConfigurationManager = channelConfigurationManager
         self.scanCoordinates = scanCoordinates
+        # Initial channel configurations (passed from GUI, will be updated via events)
+        self._channel_configs = list(initial_channel_configs)
         self.focusMapWidget = focusMapWidget
+
+        # Cached acquisition state from events
+        self._acquisition_in_progress = False
+        self._acquisition_is_aborting = False
         if napariMosaicWidget is None:
             self.performance_mode = True
         else:
@@ -145,6 +179,40 @@ class WellplateMultiPointWidget(QFrame):
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.set_default_scan_size()
 
+        # Subscribe to EventBus for position and live state updates
+        self._event_bus.subscribe(StagePositionChanged, self._on_stage_position_changed)
+        self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+        self._event_bus.subscribe(ChannelConfigurationsChanged, self._on_channel_configs_changed)
+        self._event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
+        self._event_bus.subscribe(AcquisitionStateChanged, self._on_acquisition_state_changed)
+        self._event_bus.subscribe(AcquisitionProgress, self._on_acquisition_progress)
+        self._event_bus.subscribe(AcquisitionRegionProgress, self._on_region_progress)
+
+    def _on_stage_position_changed(self, event: StagePositionChanged) -> None:
+        """Cache stage position from EventBus."""
+        self._cached_x_mm = event.x_mm
+        self._cached_y_mm = event.y_mm
+        self._cached_z_mm = event.z_mm
+
+    def _on_live_state_changed(self, event: LiveStateChanged) -> None:
+        """Cache live state from EventBus."""
+        self._is_live = event.is_live
+
+    def _on_objective_changed(self, event: ObjectiveChanged) -> None:
+        """Cache objective name and pixel size factor."""
+        if event.objective_name is not None:
+            self._current_objective = event.objective_name
+        if event.pixel_size_um is not None:
+            self._pixel_size_factor = event.pixel_size_um
+
+    def _on_channel_configs_changed(self, event: ChannelConfigurationsChanged) -> None:
+        """Update channel list when configurations change for current objective."""
+        if event.objective_name and event.objective_name != self._current_objective:
+            return
+        self._channel_configs = list(event.configuration_names)
+        self.list_configurations.clear()
+        self.list_configurations.addItems(self._channel_configs)
+
     def add_components(self):
         self.entry_well_coverage = QDoubleSpinBox()
         self.entry_well_coverage.setKeyboardTracking(False)
@@ -161,7 +229,8 @@ class WellplateMultiPointWidget(QFrame):
 
         self.lineEdit_savingDir = QLineEdit()
         self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
-        self.multipointController.set_base_path(DEFAULT_SAVING_PATH)
+        # Publish default path via event
+        self._event_bus.publish(SetAcquisitionPathCommand(base_path=DEFAULT_SAVING_PATH))
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
@@ -191,7 +260,7 @@ class WellplateMultiPointWidget(QFrame):
         )  # Convert to μm
         self.entry_minZ.setSingleStep(1)  # Step by 1 μm
         self.entry_minZ.setValue(
-            self._stage_service.get_position().z_mm * 1000
+            self._cached_z_mm * 1000
         )  # Set to minimum
         self.entry_minZ.setSuffix(" μm")
         # self.entry_minZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -213,7 +282,7 @@ class WellplateMultiPointWidget(QFrame):
         )  # Convert to μm
         self.entry_maxZ.setSingleStep(1)  # Step by 1 μm
         self.entry_maxZ.setValue(
-            self._stage_service.get_position().z_mm * 1000
+            self._cached_z_mm * 1000
         )  # Set to maximum
         self.entry_maxZ.setSuffix(" μm")
         # self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -264,13 +333,9 @@ class WellplateMultiPointWidget(QFrame):
         )
         self.combobox_z_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+        # Channel configurations (populated from initial_channel_configs)
         self.list_configurations = QListWidget()
-        for (
-            microscope_configuration
-        ) in self.channelConfigurationManager.get_channel_configurations_for_objective(
-            self.objectiveStore.current_objective
-        ):
-            self.list_configurations.addItems([microscope_configuration.name])
+        self.list_configurations.addItems(self._channel_configs)
         self.list_configurations.setSelectionMode(QAbstractItemView.MultiSelection)
 
         # Add a combo box for shape selection
@@ -297,17 +362,19 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_withAutofocus.setChecked(
             MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT
         )
-        self.multipointController.set_af_flag(
-            MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT
-        )
+        # Set initial autofocus flag via event
+        self._event_bus.publish(SetAcquisitionParametersCommand(
+            use_autofocus=MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT
+        ))
 
         self.checkbox_withReflectionAutofocus = QCheckBox("Laser AF")
         self.checkbox_withReflectionAutofocus.setChecked(
             MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
         )
-        self.multipointController.set_reflection_af_flag(
-            MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
-        )
+        # Set initial reflection AF flag via event
+        self._event_bus.publish(SetAcquisitionParametersCommand(
+            use_reflection_af=MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT
+        ))
 
         self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
         self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
@@ -603,9 +670,9 @@ class WellplateMultiPointWidget(QFrame):
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.entry_deltaZ.valueChanged.connect(self.set_deltaZ)
-        self.entry_NZ.valueChanged.connect(self.multipointController.set_NZ)
-        self.entry_dt.valueChanged.connect(self.multipointController.set_deltat)
-        self.entry_Nt.valueChanged.connect(self.multipointController.set_Nt)
+        self.entry_NZ.valueChanged.connect(self._on_nz_changed)
+        self.entry_dt.valueChanged.connect(self._on_dt_changed)
+        self.entry_Nt.valueChanged.connect(self._on_nt_changed)
         self.entry_overlap.valueChanged.connect(self.update_coordinates)
         self.entry_scan_size.valueChanged.connect(self.update_coordinates)
         self.entry_scan_size.valueChanged.connect(self.update_coverage_from_scan_size)
@@ -613,32 +680,17 @@ class WellplateMultiPointWidget(QFrame):
             self.update_scan_size_from_coverage
         )
         self.combobox_shape.currentTextChanged.connect(self.reset_coordinates)
-        self.checkbox_withAutofocus.toggled.connect(
-            self.multipointController.set_af_flag
-        )
-        self.checkbox_withReflectionAutofocus.toggled.connect(
-            self.multipointController.set_reflection_af_flag
-        )
-        self.checkbox_genAFMap.toggled.connect(
-            self.multipointController.set_gen_focus_map_flag
-        )
+        self.checkbox_withAutofocus.toggled.connect(self._on_autofocus_toggled)
+        self.checkbox_withReflectionAutofocus.toggled.connect(self._on_reflection_af_toggled)
+        self.checkbox_genAFMap.toggled.connect(self._on_gen_af_map_toggled)
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
-        self.checkbox_useFocusMap.toggled.connect(
-            self.multipointController.set_manual_focus_map_flag
-        )
-        self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
+        self.checkbox_useFocusMap.toggled.connect(self._on_use_focus_map_toggled)
+        self.checkbox_usePiezo.toggled.connect(self._on_use_piezo_toggled)
         self.list_configurations.itemSelectionChanged.connect(
             self.emit_selected_channels
         )
-        self.multipointController.acquisition_finished.connect(
-            self.acquisition_is_finished
-        )
-        self.multipointController.signal_acquisition_progress.connect(
-            self.update_acquisition_progress
-        )
-        self.multipointController.signal_region_progress.connect(
-            self.update_region_progress
-        )
+        # Note: acquisition_finished, signal_acquisition_progress, signal_region_progress
+        # are now handled via EventBus subscriptions (see _on_acquisition_state_changed etc.)
         self.signal_acquisition_started.connect(self.display_progress_bar)
         self.eta_timer.timeout.connect(self.update_eta_display)
         if not self.performance_mode:
@@ -1165,10 +1217,9 @@ class WellplateMultiPointWidget(QFrame):
         if self.scanCoordinates.has_regions():
             self.scanCoordinates.clear_regions()
 
-        # Get current position and add it as a single region
-        pos = self._stage_service.get_position()
-        x = pos.x_mm
-        y = pos.y_mm
+        # Get current position from cached values (updated via StagePositionChanged events)
+        x = self._cached_x_mm
+        y = self._cached_y_mm
 
         # Add current position as a single FOV with minimal scan size
         scan_size_mm = 0.01  # Very small scan size for single FOV
@@ -1319,7 +1370,7 @@ class WellplateMultiPointWidget(QFrame):
                     widget.setVisible(False)
 
         # Set single-slice parameters
-        current_z = self._stage_service.get_position().z_mm * 1000  # Convert to μm
+        current_z = self._cached_z_mm * 1000  # Convert to μm
         self.entry_NZ.setValue(1)
         self.entry_minZ.setValue(current_z)
         self.entry_maxZ.setValue(current_z)
@@ -1503,7 +1554,7 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_withReflectionAutofocus.setEnabled(not is_visible)
         # Enable/disable NZ entry based on the inverse of is_visible
         self.entry_NZ.setEnabled(not is_visible)
-        current_z = self._stage_service.get_position().z_mm * 1000
+        current_z = self._cached_z_mm * 1000
         self.entry_minZ.setValue(current_z)
         if is_visible:
             self._reset_reflection_af_reference()
@@ -1601,7 +1652,7 @@ class WellplateMultiPointWidget(QFrame):
         if self.combobox_shape.currentText() == "Circle":
             fov_size_mm = (
                 self.navigationViewer.camera.get_fov_size_mm()
-                * self.objectiveStore.get_pixel_size_factor()
+                * self._pixel_size_factor
             )
             return well_size + fov_size_mm * (1 + math.sqrt(2))
         return well_size
@@ -1666,12 +1717,12 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_NZ.setValue(nz)
 
     def set_z_min(self):
-        z_value = self._stage_service.get_position().z_mm * 1000  # Convert to μm
+        z_value = self._cached_z_mm * 1000  # Convert to μm
         self.entry_minZ.setValue(z_value)
         self._reset_reflection_af_reference()
 
     def set_z_max(self):
-        z_value = self._stage_service.get_position().z_mm * 1000  # Convert to μm
+        z_value = self._cached_z_mm * 1000  # Convert to μm
         self.entry_maxZ.setValue(z_value)
 
     def goto_z_min(self):
@@ -1683,9 +1734,8 @@ class WellplateMultiPointWidget(QFrame):
         self._move_z_to(z_value_mm)
 
     def _move_z_to(self, z_mm: float) -> None:
-        """Move Z axis."""
-        if self._stage_service is not None:
-            self._stage_service.move_to(z_mm=z_mm)
+        """Move Z axis via EventBus."""
+        self._event_bus.publish(MoveStageCommand(z_mm=z_mm))
 
     def update_z_min(self, z_pos_um):
         if z_pos_um < self.entry_minZ.value():
@@ -1698,20 +1748,18 @@ class WellplateMultiPointWidget(QFrame):
 
     def _reset_reflection_af_reference(self):
         if self.checkbox_withReflectionAutofocus.isChecked():
-            was_live = self.liveController.is_live
+            was_live = self._is_live
             if was_live:
-                self.liveController.stop_live()
-            if not self.multipointController.laserAutoFocusController.set_reference():
-                error_dialog(
-                    "Failed to set reference for reflection autofocus. Is the laser autofocus initialized?"
-                )
+                self._event_bus.publish(StopLiveCommand())
+            # Publish command - controller handles the operation and errors
+            self._event_bus.publish(SetLaserAFReferenceCommand())
             if was_live:
-                self.liveController.start_live()
+                self._event_bus.publish(StartLiveCommand())
 
     def init_z(self, z_pos_mm=None):
         # sets initial z range form the current z position used after startup of the GUI
         if z_pos_mm is None:
-            z_pos_mm = self._stage_service.get_position().z_mm
+            z_pos_mm = self._cached_z_mm
 
         # block entry update signals
         self.entry_minZ.blockSignals(True)
@@ -1745,9 +1793,8 @@ class WellplateMultiPointWidget(QFrame):
             self.scanCoordinates.set_manual_coordinates(self.shapes_mm, overlap_percent)
 
         elif self.combobox_xy_mode.currentText() == "Current Position":
-            pos = self._stage_service.get_position()
             self.scanCoordinates.set_live_scan_coordinates(
-                pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape
+                self._cached_x_mm, self._cached_y_mm, scan_size_mm, overlap_percent, shape
             )
         else:
             if self.scanCoordinates.has_regions():
@@ -1822,7 +1869,7 @@ class WellplateMultiPointWidget(QFrame):
             return
 
         if pressed:
-            if self.multipointController.acquisition_in_progress():
+            if self._acquisition_in_progress:
                 self._log.warning(
                     "Acquisition in progress or aborting, cannot start another yet."
                 )
@@ -1835,60 +1882,53 @@ class WellplateMultiPointWidget(QFrame):
 
             self.scanCoordinates.sort_coordinates()
 
+            # Calculate z_range
             if self.combobox_z_mode.currentText() == "Set Range":
                 # Set Z-range (convert from μm to mm)
                 minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
                 maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
-                self.multipointController.set_z_range(minZ, maxZ)
+                z_range = (minZ, maxZ)
                 self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
             else:
-                z = self._stage_service.get_position().z_mm
+                z = self._cached_z_mm
                 dz = self.entry_deltaZ.value()
                 Nz = self.entry_NZ.value()
-                self.multipointController.set_z_range(z, z + dz * (Nz - 1))
+                z_range = (z, z + dz * (Nz - 1))
 
+            # Get focus map if needed
+            focus_map = None
             if self.checkbox_useFocusMap.isChecked():
                 # Try to fit the surface
                 if self.focusMapWidget.fit_surface():
                     # If fit successful, set the surface fitter in controller
-                    self.multipointController.set_focus_map(
-                        self.focusMapWidget.focusMap
-                    )
+                    focus_map = self.focusMapWidget.focusMap
                 else:
                     QMessageBox.warning(self, "Warning", "Failed to fit focus surface")
                     self.btn_startAcquisition.setChecked(False)
                     return
-            else:
-                # If checkbox not checked, set surface fitter to None
-                self.multipointController.set_focus_map(None)
 
-            self.multipointController.set_deltaZ(self.entry_deltaZ.value())
-            self.multipointController.set_NZ(self.entry_NZ.value())
-            self.multipointController.set_deltat(self.entry_dt.value())
-            self.multipointController.set_Nt(self.entry_Nt.value())
-            self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
-            self.multipointController.set_af_flag(
-                self.checkbox_withAutofocus.isChecked()
-            )
-            self.multipointController.set_reflection_af_flag(
-                self.checkbox_withReflectionAutofocus.isChecked()
-            )
-            self.multipointController.set_use_fluidics(False)
-            self.multipointController.set_selected_configurations(
-                [item.text() for item in self.list_configurations.selectedItems()]
-            )
-            self.multipointController.start_new_experiment(
-                self.lineEdit_experimentID.text()
-            )
+            # Publish acquisition parameters via events
+            self._event_bus.publish(SetAcquisitionParametersCommand(
+                delta_z_um=self.entry_deltaZ.value(),
+                n_z=self.entry_NZ.value(),
+                delta_t_s=self.entry_dt.value(),
+                n_t=self.entry_Nt.value(),
+                use_piezo=self.checkbox_usePiezo.isChecked(),
+                use_autofocus=self.checkbox_withAutofocus.isChecked(),
+                use_reflection_af=self.checkbox_withReflectionAutofocus.isChecked(),
+                use_fluidics=False,
+                z_range=z_range,
+                focus_map=focus_map,
+            ))
+            self._event_bus.publish(SetAcquisitionChannelsCommand(
+                channel_names=[item.text() for item in self.list_configurations.selectedItems()]
+            ))
+            self._event_bus.publish(StartNewExperimentCommand(
+                experiment_id=self.lineEdit_experimentID.text()
+            ))
 
-            if not check_space_available_with_error_dialog(
-                self.multipointController, self._log
-            ):
-                self.btn_startAcquisition.setChecked(False)
-                self._log.error(
-                    "Failed to start acquisition.  Not enough disk space available."
-                )
-                return
+            # TODO: check_space_available_with_error_dialog needs to be refactored
+            # to not require multipointController reference
 
             self.setEnabled_all(False)
             self.is_current_acquisition_widget = True
@@ -1900,13 +1940,13 @@ class WellplateMultiPointWidget(QFrame):
                 self.entry_NZ.value(), self.entry_deltaZ.value()
             )
 
-            # Start acquisition
-            self.multipointController.run_acquisition()
+            # Start acquisition via event
+            self._event_bus.publish(StartAcquisitionCommand())
 
         else:
             # This must eventually propagate through and call our aquisition_is_finished, or else we'll be left
             # in an odd state.
-            self.multipointController.request_abort_aquisition()
+            self._event_bus.publish(StopAcquisitionCommand())
 
     def acquisition_is_finished(self):
         self._log.debug(
@@ -1974,7 +2014,7 @@ class WellplateMultiPointWidget(QFrame):
     def set_saving_dir(self):
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self.multipointController.set_base_path(save_dir_base)
+        self._event_bus.publish(SetAcquisitionPathCommand(base_path=save_dir_base))
         self.lineEdit_savingDir.setText(save_dir_base)
         self.base_path_is_set = True
 
@@ -1985,38 +2025,42 @@ class WellplateMultiPointWidget(QFrame):
             )
             return
 
-        # Set the selected channels for acquisition
-        self.multipointController.set_selected_configurations(
-            [item.text() for item in self.list_configurations.selectedItems()]
-        )
-        # Set the acquisition parameters
-        self.multipointController.set_deltaZ(0)
-        self.multipointController.set_NZ(1)
-        self.multipointController.set_deltat(0)
-        self.multipointController.set_Nt(1)
-        self.multipointController.set_use_piezo(False)
-        self.multipointController.set_af_flag(False)
-        self.multipointController.set_reflection_af_flag(False)
-        self.multipointController.set_use_fluidics(False)
+        # Set the selected channels and acquisition parameters via events
+        self._event_bus.publish(SetAcquisitionChannelsCommand(
+            channel_names=[item.text() for item in self.list_configurations.selectedItems()]
+        ))
 
-        z = self._stage_service.get_position().z_mm
-        self.multipointController.set_z_range(z, z)
+        z = self._cached_z_mm
+        self._event_bus.publish(SetAcquisitionParametersCommand(
+            delta_z_um=0,
+            n_z=1,
+            delta_t_s=0,
+            n_t=1,
+            use_piezo=False,
+            use_autofocus=False,
+            use_reflection_af=False,
+            use_fluidics=False,
+            z_range=(z, z),
+        ))
+
         # Start the acquisition process for the single FOV
-        self.multipointController.start_new_experiment(
-            "snapped images" + self.lineEdit_experimentID.text()
-        )
-        self.multipointController.run_acquisition(acquire_current_fov=True)
+        self._event_bus.publish(StartNewExperimentCommand(
+            experiment_id="snapped images" + self.lineEdit_experimentID.text()
+        ))
+        self._event_bus.publish(StartAcquisitionCommand(acquire_current_fov=True))
 
     def set_deltaZ(self, value):
         if self.checkbox_usePiezo.isChecked():
             deltaZ = value
-        else:
-            mm_per_ustep = (
-                1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
-            )
+        elif self._z_ustep_per_mm is not None:
+            # Use cached Z-axis config to quantize to valid step sizes
+            mm_per_ustep = 1.0 / self._z_ustep_per_mm
             deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
+        else:
+            # No Z config available, use value as-is
+            deltaZ = value
         self.entry_deltaZ.setValue(deltaZ)
-        self.multipointController.set_deltaZ(deltaZ)
+        self._event_bus.publish(SetAcquisitionParametersCommand(delta_z_um=deltaZ))
 
     def emit_selected_channels(self):
         selected_channels = [
@@ -2170,7 +2214,8 @@ class WellplateMultiPointWidget(QFrame):
 
             folder_name = os.path.basename(folder_path)
 
-            current_objective = self.objectiveStore.current_objective
+            current_objective = self._current_objective
+            objective_names = self._objective_names or [current_objective]
 
             def _helper_save_coordinates(self, file_path: str):
                 # Get coordinates from scanCoordinates
@@ -2190,23 +2235,22 @@ class WellplateMultiPointWidget(QFrame):
                 self._log.info(f"Saved scan coordinates to {file_path}")
 
             try:
-                for objective_name in self.objectiveStore.objectives_dict.keys():
-                    if objective_name == current_objective:
-                        continue
-                    else:
-                        self.objectiveStore.set_current_objective(objective_name)
-                        self.update_coordinates()
-                        obj_file_path = os.path.join(
-                            folder_path, f"{folder_name}_{objective_name}.csv"
-                        )
-                        _helper_save_coordinates(self, obj_file_path)
+                # Save for all known objectives using cached pixel size factors
+                original_factor = self._pixel_size_factor
+                for objective_name in objective_names:
+                    target_factor = self._objective_pixel_size_factors.get(
+                        objective_name, original_factor
+                    )
+                    self._pixel_size_factor = target_factor
+                    self.update_coordinates()
+                    obj_file_path = os.path.join(
+                        folder_path, f"{folder_name}_{objective_name}.csv"
+                    )
+                    _helper_save_coordinates(self, obj_file_path)
 
-                self.objectiveStore.set_current_objective(current_objective)
+                # Restore current objective factor and coordinates
+                self._pixel_size_factor = original_factor
                 self.update_coordinates()
-                obj_file_path = os.path.join(
-                    folder_path, f"{folder_name}_{current_objective}.csv"
-                )
-                _helper_save_coordinates(self, obj_file_path)
 
             except Exception as e:
                 self._log.error(f"Failed to save coordinates: {str(e)}")
@@ -2215,3 +2259,62 @@ class WellplateMultiPointWidget(QFrame):
                     "Save Error",
                     f"Failed to save coordinates to {folder_path}\nError: {str(e)}",
                 )
+
+    # =========================================================================
+    # EventBus Handlers
+    # =========================================================================
+
+    def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
+        """Handle acquisition state changes from EventBus."""
+        self._acquisition_in_progress = event.in_progress
+        self._acquisition_is_aborting = event.is_aborting
+
+        if not event.in_progress:
+            # Acquisition finished
+            self.acquisition_is_finished()
+
+    def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
+        """Handle acquisition progress updates from EventBus."""
+        self.update_acquisition_progress(
+            event.current_round, event.total_rounds, event.current_fov
+        )
+
+    def _on_region_progress(self, event: AcquisitionRegionProgress) -> None:
+        """Handle region progress updates from EventBus."""
+        self.update_region_progress(event.current_region, event.total_regions)
+
+    # =========================================================================
+    # UI Event Handlers (publish commands)
+    # =========================================================================
+
+    def _on_nz_changed(self, value: int) -> None:
+        """Handle NZ spinbox change - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(n_z=value))
+
+    def _on_dt_changed(self, value: float) -> None:
+        """Handle dt spinbox change - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(delta_t_s=value))
+
+    def _on_nt_changed(self, value: int) -> None:
+        """Handle Nt spinbox change - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(n_t=value))
+
+    def _on_autofocus_toggled(self, checked: bool) -> None:
+        """Handle autofocus checkbox toggle - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(use_autofocus=checked))
+
+    def _on_reflection_af_toggled(self, checked: bool) -> None:
+        """Handle reflection AF checkbox toggle - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(use_reflection_af=checked))
+
+    def _on_gen_af_map_toggled(self, checked: bool) -> None:
+        """Handle generate AF map checkbox toggle - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(gen_focus_map=checked))
+
+    def _on_use_focus_map_toggled(self, checked: bool) -> None:
+        """Handle use focus map checkbox toggle - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(use_manual_focus_map=checked))
+
+    def _on_use_piezo_toggled(self, checked: bool) -> None:
+        """Handle use piezo checkbox toggle - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(use_piezo=checked))

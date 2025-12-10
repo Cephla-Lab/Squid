@@ -1,4 +1,10 @@
 from control.widgets.tracking._common import *
+from squid.events import (
+    EventBus,
+    SetDisplacementMeasurementSettingsCommand,
+    SetWaveformDisplayNCommand,
+    DisplacementReadingsChanged,
+)
 
 
 class DisplacementMeasurementWidget(QFrame):
@@ -14,17 +20,18 @@ class DisplacementMeasurementWidget(QFrame):
 
     def __init__(
         self,
-        displacementMeasurementController: Any,
-        waveformDisplay: Any,
+        event_bus: EventBus,
         main: Optional[Any] = None,
         *args: Any,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
-        self.displacementMeasurementController = displacementMeasurementController
-        self.waveformDisplay = waveformDisplay
+        self._event_bus = event_bus
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
+
+        # Subscribe to displacement readings events
+        self._event_bus.subscribe(DisplacementReadingsChanged, self._on_readings_changed)
 
     def add_components(self) -> None:
         self.entry_x_offset = QDoubleSpinBox()
@@ -108,28 +115,36 @@ class DisplacementMeasurementWidget(QFrame):
         self.setLayout(self.grid)
 
         # connections
-        self.entry_x_offset.valueChanged.connect(self.update_settings)
-        self.entry_y_offset.valueChanged.connect(self.update_settings)
-        self.entry_x_scaling.valueChanged.connect(self.update_settings)
-        self.entry_y_scaling.valueChanged.connect(self.update_settings)
-        self.entry_N_average.valueChanged.connect(self.update_settings)
-        self.entry_N.valueChanged.connect(self.update_settings)
-        self.entry_N.valueChanged.connect(self.update_waveformDisplay_N)
+        self.entry_x_offset.valueChanged.connect(self._on_settings_changed)
+        self.entry_y_offset.valueChanged.connect(self._on_settings_changed)
+        self.entry_x_scaling.valueChanged.connect(self._on_settings_changed)
+        self.entry_y_scaling.valueChanged.connect(self._on_settings_changed)
+        self.entry_N_average.valueChanged.connect(self._on_settings_changed)
+        self.entry_N.valueChanged.connect(self._on_settings_changed)
+        self.entry_N.valueChanged.connect(self._on_n_changed)
 
-    def update_settings(self, new_value: float) -> None:
+    def _on_settings_changed(self, new_value: float) -> None:
+        """Publish settings change via event."""
         print("update settings")
-        self.displacementMeasurementController.update_settings(
-            self.entry_x_offset.value(),
-            self.entry_y_offset.value(),
-            self.entry_x_scaling.value(),
-            self.entry_y_scaling.value(),
-            self.entry_N_average.value(),
-            self.entry_N.value(),
-        )
+        self._event_bus.publish(SetDisplacementMeasurementSettingsCommand(
+            x_offset=self.entry_x_offset.value(),
+            y_offset=self.entry_y_offset.value(),
+            x_scaling=self.entry_x_scaling.value(),
+            y_scaling=self.entry_y_scaling.value(),
+            n_average=self.entry_N_average.value(),
+            n=self.entry_N.value(),
+        ))
 
-    def update_waveformDisplay_N(self, N: int) -> None:
-        self.waveformDisplay.update_N(N)
+    def _on_n_changed(self, n: int) -> None:
+        """Publish N value change for waveform display."""
+        self._event_bus.publish(SetWaveformDisplayNCommand(n=n))
 
+    def _on_readings_changed(self, event: DisplacementReadingsChanged) -> None:
+        """Handle displacement readings changed event."""
+        self.reading_x.setText("{:.2f}".format(event.readings[0]))
+        self.reading_y.setText("{:.2f}".format(event.readings[1]))
+
+    # Keep legacy method for backwards compatibility during transition
     def display_readings(self, readings: List[float]) -> None:
         self.reading_x.setText("{:.2f}".format(readings[0]))
         self.reading_y.setText("{:.2f}".format(readings[1]))

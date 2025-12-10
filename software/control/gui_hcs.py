@@ -102,10 +102,12 @@ class HighContentScreeningGui(QMainWindow):
             raise ValueError(
                 "HighContentScreeningGui requires a ServiceRegistry. "
                 "Pass ApplicationContext.services."
-            )
+        )
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self._services = services  # Store for passing to widgets
+        # Use the registry's bus if it exposes one, otherwise fall back to the global instance
+        self._event_bus = getattr(services, "_event_bus", None) or event_bus
         self._stage_service = self._services.get("stage")
         if self._stage_service is None:
             raise ValueError("Stage service is required for stage operations.")
@@ -176,7 +178,7 @@ class HighContentScreeningGui(QMainWindow):
                 stage_service=self._services.get("stage"),
                 peripheral_service=self._services.get("peripheral"),
                 piezo_service=self._services.get("piezo"),
-                event_bus=self._services.get("event_bus"),
+                event_bus=self._event_bus,
             )
 
         self.live_only_mode = live_only_mode or LIVE_ONLY_MODE
@@ -334,7 +336,7 @@ class HighContentScreeningGui(QMainWindow):
             camera_service=self._services.get("camera"),
             stage_service=self._services.get("stage"),
             peripheral_service=self._services.get("peripheral"),
-            event_bus=self._services.get("event_bus"),
+            event_bus=self._event_bus,
         )
         if ENABLE_TRACKING:
             self.trackingController = core.TrackingController(
@@ -387,7 +389,7 @@ class HighContentScreeningGui(QMainWindow):
             stage_service=self._services.get("stage"),
             peripheral_service=self._services.get("peripheral"),
             piezo_service=self._services.get("piezo"),
-            event_bus=event_bus,
+            event_bus=self._event_bus,
         )
 
     def setup_hardware(self) -> None:
@@ -517,14 +519,28 @@ class HighContentScreeningGui(QMainWindow):
 
     def setupImageDisplayTabs(self) -> None:
         if USE_NAPARI_FOR_LIVE_VIEW:
+            # Get exposure limits from camera service for widget initialization
+            camera_service = self._services.get("camera") if self._services else None
+            exposure_limits = camera_service.get_exposure_limits() if camera_service else (0.1, 1000.0)
+            # Seed initial state for the event-driven widget
+            initial_config = self.liveController.currentConfiguration
+            objective_name = getattr(self.objectiveStore, "current_objective", None)
+            channel_configs = (
+                self.channelConfigurationManager.get_configurations(objective_name)
+                if objective_name
+                else []
+            )
+            if initial_config is None and channel_configs:
+                initial_config = channel_configs[0]
+            initial_channel_names = [mode.name for mode in channel_configs]
+
             self.napariLiveWidget = widgets.NapariLiveWidget(
                 self.streamHandler,
-                self.liveController,
-                self.stage,
-                self.objectiveStore,
-                self.channelConfigurationManager,
                 self.contrastManager,
-                camera_service=self._services.get("camera"),
+                exposure_limits=exposure_limits,
+                initial_configuration=initial_config,
+                initial_objective=objective_name,
+                initial_channel_configs=initial_channel_names,
                 wellSelectionWidget=self.wellSelectionWidget,
             )
             self.imageDisplayTabs.addTab(self.napariLiveWidget, "Live View")
@@ -545,10 +561,19 @@ class HighContentScreeningGui(QMainWindow):
 
         if not self.live_only_mode:
             if USE_NAPARI_FOR_MULTIPOINT:
+                # Get initial values for pixel size calculation
+                camera_service = self._services.get("camera")
+                initial_pixel_size_binned = (
+                    camera_service.get_pixel_size_binned_um()
+                    if camera_service
+                    else 1.0
+                )
+                initial_pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
                 self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
-                    self.objectiveStore,
-                    self._services.get("camera"),
-                    self.contrastManager,
+                    event_bus=event_bus,
+                    contrastManager=self.contrastManager,
+                    initial_pixel_size_factor=initial_pixel_size_factor,
+                    initial_pixel_size_binned_um=initial_pixel_size_binned,
                 )
                 self.imageDisplayTabs.addTab(
                     self.napariMultiChannelWidget, "Multichannel Acquisition"
@@ -560,10 +585,19 @@ class HighContentScreeningGui(QMainWindow):
                 )
 
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
+                # Get initial values for pixel size calculation (same as multichannel)
+                mosaic_camera_service = self._services.get("camera")
+                mosaic_pixel_size_binned = (
+                    mosaic_camera_service.get_pixel_size_binned_um()
+                    if mosaic_camera_service
+                    else 1.0
+                )
+                mosaic_pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
-                    self.objectiveStore,
-                    self._services.get("camera"),
-                    self.contrastManager,
+                    event_bus=event_bus,
+                    contrastManager=self.contrastManager,
+                    initial_pixel_size_factor=mosaic_pixel_size_factor,
+                    initial_pixel_size_binned_um=mosaic_pixel_size_binned,
                 )
                 self.imageDisplayTabs.addTab(
                     self.napariMosaicDisplayWidget, "Mosaic View"

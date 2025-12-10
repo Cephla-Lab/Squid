@@ -6,19 +6,15 @@ from typing import Optional, Dict, Any, Tuple, Callable, List
 try:
     import torch
     from control.DaSiamRPN.code.net import SiamRPNvot
-
-    print(1)
-
-    print(2)
     from control.DaSiamRPN.code.utils import cxy_wh_2_rect
-
-    print(3)
     from control.DaSiamRPN.code.run_SiamRPN import SiamRPN_init, SiamRPN_track
-
-    print(4)
 except Exception as e:
-    print(e)
-    # print('Warning: DaSiamRPN is not available!')
+    # Make DaSiamRPN optional: if missing, leave neural tracker unavailable
+    SiamRPNvot = None
+    SiamRPN_init = None
+    SiamRPN_track = None
+    cxy_wh_2_rect = None
+    print(f"DaSiamRPN unavailable: {e}")
 from control._def import Tracking
 import cv2
 
@@ -53,23 +49,25 @@ class Tracker_Image(object):
         # Neural Net based trackers
         self.NEURALNETTRACKERS: Dict[str, List] = {"daSiamRPN": []}
         try:
-            # load net
-            self.net = SiamRPNvot()
-            self.net.load_state_dict(
-                torch.load(
-                    join(
-                        realpath(dirname(__file__)),
-                        "DaSiamRPN",
-                        "code",
-                        "SiamRPNOTB.model",
+            # load net if available
+            if SiamRPNvot and torch:
+                self.net = SiamRPNvot()
+                self.net.load_state_dict(
+                    torch.load(
+                        join(
+                            realpath(dirname(__file__)),
+                            "DaSiamRPN",
+                            "code",
+                            "SiamRPNOTB.model",
+                        )
                     )
                 )
-            )
-            self.net.eval().cuda()
-            print("Finished loading net ...")
+                self.net.eval().cuda()
+                print("Finished loading net ...")
+            else:
+                raise ImportError("DaSiamRPN dependencies not available")
         except Exception as e:
-            print(e)
-            print("No neural net model found ...")
+            print(f"DaSiamRPN disabled: {e}")
             print("reverting to default OpenCV tracker")
 
         # Image Tracker type

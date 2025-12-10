@@ -18,10 +18,25 @@ from control.peripherals.piezo import PiezoStage
 from control.utils_config import LaserAFConfig
 from squid.abc import AbstractCamera, AbstractStage
 import squid.logging
+from squid.events import (
+    EventBus,
+    SetLaserAFPropertiesCommand,
+    InitializeLaserAFCommand,
+    SetLaserAFCharacterizationModeCommand,
+    UpdateLaserAFThresholdCommand,
+    MoveToLaserAFTargetCommand,
+    SetLaserAFReferenceCommand,
+    MeasureLaserAFDisplacementCommand,
+    CaptureLaserAFFrameCommand,
+    LaserAFPropertiesChanged,
+    LaserAFInitialized,
+    LaserAFReferenceSet,
+    LaserAFDisplacementMeasured,
+    LaserAFFrameCaptured,
+)
 
 if TYPE_CHECKING:
     from squid.services import CameraService, StageService, PeripheralService, PiezoService
-    from squid.events import EventBus
 
 
 class LaserAutofocusController(QObject):
@@ -68,6 +83,17 @@ class LaserAutofocusController(QObject):
         self._event_bus = event_bus
 
         self.characterization_mode: bool = control._def.LASER_AF_CHARACTERIZATION_MODE
+
+        # Subscribe to EventBus commands
+        if self._event_bus:
+            self._event_bus.subscribe(SetLaserAFPropertiesCommand, self._on_set_properties)
+            self._event_bus.subscribe(InitializeLaserAFCommand, self._on_initialize)
+            self._event_bus.subscribe(SetLaserAFCharacterizationModeCommand, self._on_set_characterization_mode)
+            self._event_bus.subscribe(UpdateLaserAFThresholdCommand, self._on_update_threshold)
+            self._event_bus.subscribe(MoveToLaserAFTargetCommand, self._on_move_to_target)
+            self._event_bus.subscribe(SetLaserAFReferenceCommand, self._on_set_reference)
+            self._event_bus.subscribe(MeasureLaserAFDisplacementCommand, self._on_measure_displacement)
+            self._event_bus.subscribe(CaptureLaserAFFrameCommand, self._on_capture_frame)
 
         self.is_initialized: bool = False
 
@@ -871,3 +897,57 @@ class LaserAutofocusController(QObject):
                 self._turn_off_af_laser()
             except TimeoutError:
                 self._log.exception("Failed to turn off AF laser after get_image!")
+
+    # =========================================================================
+    # EventBus Command Handlers
+    # =========================================================================
+
+    def _on_set_properties(self, cmd: SetLaserAFPropertiesCommand) -> None:
+        """Handle SetLaserAFPropertiesCommand from EventBus."""
+        self.set_laser_af_properties(cmd.properties)
+        if self._event_bus:
+            self._event_bus.publish(LaserAFPropertiesChanged(properties=cmd.properties))
+
+    def _on_initialize(self, cmd: InitializeLaserAFCommand) -> None:
+        """Handle InitializeLaserAFCommand from EventBus."""
+        success = self.initialize_auto()
+        if self._event_bus:
+            self._event_bus.publish(LaserAFInitialized(is_initialized=self.is_initialized, success=success))
+
+    def _on_set_characterization_mode(self, cmd: SetLaserAFCharacterizationModeCommand) -> None:
+        """Handle SetLaserAFCharacterizationModeCommand from EventBus."""
+        self.characterization_mode = cmd.enabled
+
+    def _on_update_threshold(self, cmd: UpdateLaserAFThresholdCommand) -> None:
+        """Handle UpdateLaserAFThresholdCommand from EventBus."""
+        self.update_threshold_properties(cmd.updates)
+
+    def _on_move_to_target(self, cmd: MoveToLaserAFTargetCommand) -> None:
+        """Handle MoveToLaserAFTargetCommand from EventBus."""
+        if cmd.displacement_um is not None:
+            self.move_to_target(cmd.displacement_um)
+
+    def _on_set_reference(self, cmd: SetLaserAFReferenceCommand) -> None:
+        """Handle SetLaserAFReferenceCommand from EventBus."""
+        success = self.set_reference()
+        if self._event_bus:
+            self._event_bus.publish(LaserAFReferenceSet(success=success))
+
+    def _on_measure_displacement(self, cmd: MeasureLaserAFDisplacementCommand) -> None:
+        """Handle MeasureLaserAFDisplacementCommand from EventBus."""
+        displacement = self.measure_displacement()
+        success = not math.isnan(displacement)
+        if self._event_bus:
+            self._event_bus.publish(LaserAFDisplacementMeasured(
+                displacement_um=displacement if success else None,
+                success=success
+            ))
+
+    def _on_capture_frame(self, cmd: CaptureLaserAFFrameCommand) -> None:
+        """Handle CaptureLaserAFFrameCommand from EventBus."""
+        frame = self.get_image()
+        if self._event_bus:
+            self._event_bus.publish(LaserAFFrameCaptured(
+                frame=frame,
+                success=frame is not None
+            ))

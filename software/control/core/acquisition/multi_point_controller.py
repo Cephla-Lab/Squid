@@ -34,6 +34,19 @@ import squid.logging
 
 from typing import TYPE_CHECKING
 
+from squid.events import (
+    SetFluidicsRoundsCommand,
+    SetAcquisitionParametersCommand,
+    SetAcquisitionPathCommand,
+    SetAcquisitionChannelsCommand,
+    StartNewExperimentCommand,
+    StartAcquisitionCommand,
+    StopAcquisitionCommand,
+    AcquisitionStateChanged,
+    AcquisitionProgress,
+    AcquisitionRegionProgress,
+)
+
 if TYPE_CHECKING:
     from squid.services import CameraService, StageService, PeripheralService, PiezoService
     from squid.events import EventBus
@@ -97,6 +110,16 @@ class MultiPointController:
         self._peripheral_service = peripheral_service
         self._piezo_service = piezo_service
         self._event_bus = event_bus
+
+        # Subscribe to EventBus commands
+        if self._event_bus:
+            self._event_bus.subscribe(SetFluidicsRoundsCommand, self._on_set_fluidics_rounds)
+            self._event_bus.subscribe(SetAcquisitionParametersCommand, self._on_set_acquisition_parameters)
+            self._event_bus.subscribe(SetAcquisitionPathCommand, self._on_set_acquisition_path)
+            self._event_bus.subscribe(SetAcquisitionChannelsCommand, self._on_set_acquisition_channels)
+            self._event_bus.subscribe(StartNewExperimentCommand, self._on_start_new_experiment)
+            self._event_bus.subscribe(StartAcquisitionCommand, self._on_start_acquisition)
+            self._event_bus.subscribe(StopAcquisitionCommand, self._on_stop_acquisition)
 
         self.NX: int = 1
         self.deltaX: float = control._def.Acquisition.DX
@@ -411,8 +434,12 @@ class MultiPointController:
     def run_acquisition(self, acquire_current_fov: bool = False) -> None:
         if not self.validate_acquisition_settings():
             # emit acquisition finished signal to re-enable the UI
+            self._publish_acquisition_state(in_progress=False)
             self.callbacks.signal_acquisition_finished()
             return
+
+        # Publish acquisition started state
+        self._publish_acquisition_state(in_progress=True)
 
         self._log.info("start multipoint")
         self._start_position = self.stage.get_pos()
@@ -444,25 +471,31 @@ class MultiPointController:
         )
 
         # Save coordinates to CSV in top level folder
-        coordinates_df: pd.DataFrame = pd.DataFrame(
-            columns=["region", "x (mm)", "y (mm)", "z (mm)"]
-        )
-        for (
-            region_id,
-            coords_list,
-        ) in scan_position_information.scan_region_fov_coords_mm.items():
-            for coord in coords_list:
-                row = {"region": region_id, "x (mm)": coord[0], "y (mm)": coord[1]}
-                # Add z coordinate if available
-                if len(coord) > 2:
-                    row["z (mm)"] = coord[2]
-                coordinates_df = pd.concat(
-                    [coordinates_df, pd.DataFrame([row])], ignore_index=True
-                )
-        coordinates_df.to_csv(
-            os.path.join(self.base_path, self.experiment_ID, "coordinates.csv"),
-            index=False,
-        )
+        try:
+            coordinates_df: pd.DataFrame = pd.DataFrame(
+                columns=["region", "x (mm)", "y (mm)", "z (mm)"]
+            )
+            for (
+                region_id,
+                coords_list,
+            ) in scan_position_information.scan_region_fov_coords_mm.items():
+                for coord in coords_list:
+                    row = {"region": region_id, "x (mm)": coord[0], "y (mm)": coord[1]}
+                    # Add z coordinate if available
+                    if len(coord) > 2:
+                        row["z (mm)"] = coord[2]
+                    coordinates_df = pd.concat(
+                        [coordinates_df, pd.DataFrame([row])], ignore_index=True
+                    )
+            coordinates_df.to_csv(
+                os.path.join(self.base_path, self.experiment_ID, "coordinates.csv"),
+                index=False,
+            )
+        except Exception:
+            self._log.exception("Failed to prepare coordinates for acquisition, aborting start.")
+            self._publish_acquisition_state(in_progress=False, is_aborting=False)
+            self.callbacks.signal_acquisition_finished()
+            return
 
         self._log.info(
             f"num fovs: {sum(len(coords) for coords in scan_position_information.scan_region_fov_coords_mm)}"
@@ -515,6 +548,8 @@ class MultiPointController:
             self._log.info("Generating autofocus plane for multipoint grid")
             bounds = self.scanCoordinates.get_scan_bounds()
             if not bounds:
+                self._publish_acquisition_state(in_progress=False, is_aborting=False)
+                self.callbacks.signal_acquisition_finished()
                 return
             x_min, x_max = bounds["x"]
             y_min, y_max = bounds["y"]
@@ -578,9 +613,12 @@ class MultiPointController:
                 self._log.exception(
                     "Invalid coordinates for autofocus plane, aborting."
                 )
+                self._publish_acquisition_state(in_progress=False, is_aborting=False)
+                self.callbacks.signal_acquisition_finished()
                 return
 
         def finish_fn() -> None:
+            # Restore controller state, publish AcquisitionStateChanged, then emit UI callbacks
             self._on_acquisition_completed()
             self.callbacks.signal_acquisition_finished()
 
@@ -693,10 +731,15 @@ class MultiPointController:
         ending_pos: squid.abc.Pos = self.stage.get_pos()
         self.callbacks.signal_current_fov(ending_pos.x_mm, ending_pos.y_mm)
 
+        # Publish acquisition finished state
+        self._publish_acquisition_state(in_progress=False)
+
         self.callbacks.signal_acquisition_finished()
 
     def request_abort_aquisition(self) -> None:
         self.abort_acqusition_requested = True
+        # Publish aborting state
+        self._publish_acquisition_state(in_progress=True, is_aborting=True)
 
     def validate_acquisition_settings(self) -> bool:
         """Validate settings before starting acquisition"""
@@ -709,3 +752,75 @@ class MultiPointController:
             )
             return False
         return True
+
+    # =========================================================================
+    # EventBus Command Handlers
+    # =========================================================================
+
+    def _on_set_fluidics_rounds(self, cmd: SetFluidicsRoundsCommand) -> None:
+        """Handle SetFluidicsRoundsCommand from EventBus."""
+        if self.fluidics is not None:
+            self.fluidics.set_rounds(cmd.rounds)
+
+    def _on_set_acquisition_parameters(self, cmd: SetAcquisitionParametersCommand) -> None:
+        """Handle SetAcquisitionParametersCommand from EventBus."""
+        if cmd.delta_z_um is not None:
+            self.set_deltaZ(cmd.delta_z_um)
+        if cmd.n_z is not None:
+            self.set_NZ(cmd.n_z)
+        if cmd.n_x is not None:
+            self.set_NX(cmd.n_x)
+        if cmd.n_y is not None:
+            self.set_NY(cmd.n_y)
+        if cmd.delta_x_mm is not None:
+            self.set_deltaX(cmd.delta_x_mm)
+        if cmd.delta_y_mm is not None:
+            self.set_deltaY(cmd.delta_y_mm)
+        if cmd.delta_t_s is not None:
+            self.set_deltat(cmd.delta_t_s)
+        if cmd.n_t is not None:
+            self.set_Nt(cmd.n_t)
+        if cmd.use_piezo is not None:
+            self.set_use_piezo(cmd.use_piezo)
+        if cmd.use_autofocus is not None:
+            self.set_af_flag(cmd.use_autofocus)
+        if cmd.use_reflection_af is not None:
+            self.set_reflection_af_flag(cmd.use_reflection_af)
+        if cmd.gen_focus_map is not None:
+            self.set_gen_focus_map_flag(cmd.gen_focus_map)
+        if cmd.use_manual_focus_map is not None:
+            self.set_manual_focus_map_flag(cmd.use_manual_focus_map)
+        if cmd.z_range is not None:
+            self.set_z_range(cmd.z_range[0], cmd.z_range[1])
+        if cmd.focus_map is not None:
+            self.set_focus_map(cmd.focus_map)
+        if cmd.use_fluidics is not None:
+            self.set_use_fluidics(cmd.use_fluidics)
+
+    def _on_set_acquisition_path(self, cmd: SetAcquisitionPathCommand) -> None:
+        """Handle SetAcquisitionPathCommand from EventBus."""
+        self.set_base_path(cmd.base_path)
+
+    def _on_set_acquisition_channels(self, cmd: SetAcquisitionChannelsCommand) -> None:
+        """Handle SetAcquisitionChannelsCommand from EventBus."""
+        self.set_selected_configurations(cmd.channel_names)
+
+    def _on_start_new_experiment(self, cmd: StartNewExperimentCommand) -> None:
+        """Handle StartNewExperimentCommand from EventBus."""
+        self.start_new_experiment(cmd.experiment_id)
+
+    def _on_start_acquisition(self, cmd: StartAcquisitionCommand) -> None:
+        """Handle StartAcquisitionCommand from EventBus."""
+        self.run_acquisition(acquire_current_fov=cmd.acquire_current_fov)
+
+    def _on_stop_acquisition(self, cmd: StopAcquisitionCommand) -> None:
+        """Handle StopAcquisitionCommand from EventBus."""
+        self.request_abort_aquisition()
+
+    def _publish_acquisition_state(self, in_progress: bool, is_aborting: bool = False) -> None:
+        """Publish acquisition state changed event."""
+        if self._event_bus:
+            self._event_bus.publish(AcquisitionStateChanged(
+                in_progress=in_progress,
+                is_aborting=is_aborting
+            ))

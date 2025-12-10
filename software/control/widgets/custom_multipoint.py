@@ -9,13 +9,13 @@ import squid.logging
 
 
 class TemplateMultiPointWidget(FlexibleMultiPointWidget):
-    def __init__(self, multipointController, stage, main=None, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         # Initialize templates dict
         self.templates = {}
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
-        # Call parent constructor
-        super().__init__(multipointController, stage, main, *args, **kwargs)
+        # Call parent constructor (passes all args through)
+        super().__init__(*args, **kwargs)
         self.region_id = 0
 
     def add_components(self) -> None:
@@ -139,9 +139,10 @@ class TemplateMultiPointWidget(FlexibleMultiPointWidget):
 
         template_df = self.templates[template_name]
 
-        # Get current stage position to use as reference
-        pos = self._stage_service.get_position()
-        ref_x, ref_y, ref_z = pos.x_mm, pos.y_mm, pos.z_mm
+        # Get current stage position from cached values (updated via EventBus)
+        ref_x = self._cached_x_mm
+        ref_y = self._cached_y_mm
+        ref_z = self._cached_z_mm
 
         # Check required columns
         if not all(

@@ -14,7 +14,6 @@ class WellplateFormatWidget(EventBusWidget):
 
     When "calibrate format..." is selected, opens WellplateCalibration dialog.
     Subscribes to LiveStateChanged to track live state for calibration dialog.
-    Uses service layer for read-only stage queries.
     """
 
     signalWellplateSettings: Signal = Signal(
@@ -26,7 +25,6 @@ class WellplateFormatWidget(EventBusWidget):
         event_bus: "EventBus",
         navigationViewer: "NavigationViewer",
         streamHandler: "StreamHandler",
-        stage_service: "StageService",
         # Read-only config for calibration (passed to dialog)
         pixel_size_factor: float = 1.0,
         pixel_size_binned_um: float = 0.084665,
@@ -34,7 +32,6 @@ class WellplateFormatWidget(EventBusWidget):
         super().__init__(event_bus)
         self.navigationViewer: "NavigationViewer" = navigationViewer
         self.streamHandler: "StreamHandler" = streamHandler
-        self.stage_service: "StageService" = stage_service
         self._pixel_size_factor = pixel_size_factor
         self._pixel_size_binned_um = pixel_size_binned_um
         self._is_live: bool = False  # Track live state from events
@@ -106,7 +103,6 @@ class WellplateFormatWidget(EventBusWidget):
                 wellplateFormatWidget=self,
                 navigationViewer=self.navigationViewer,
                 streamHandler=self.streamHandler,
-                stage_service=self.stage_service,
                 pixel_size_factor=self._pixel_size_factor,
                 pixel_size_binned_um=self._pixel_size_binned_um,
                 was_live=self._is_live,

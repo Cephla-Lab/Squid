@@ -18,9 +18,12 @@ from control._def import (
     SUPPORT_LASER_AUTOFOCUS,
     RUN_FLUIDICS,
     WELLPLATE_FORMAT,
+    TUBE_LENS_MM,
+    DEFAULT_OBJECTIVE,
 )
 import control.widgets as widgets
 from squid.events import event_bus
+from control.utils_config import ChannelMode
 
 
 def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
@@ -120,6 +123,32 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
     # Profile and live control widgets
     gui.profileWidget = widgets.ProfileWidget(gui.configurationManager)
 
+    # Seed initial state for live control widget
+    objective_name = getattr(gui.objectiveStore, "current_objective", None) or DEFAULT_OBJECTIVE
+    channel_configs = gui.channelConfigurationManager.get_configurations(objective_name)
+    initial_configuration = gui.liveController.currentConfiguration
+    if initial_configuration is None and channel_configs:
+        initial_configuration = channel_configs[0]
+    initial_channel_names = [mode.name for mode in channel_configs]
+    # Ensure the initial configuration name appears in the dropdown options
+    if initial_configuration and initial_configuration.name not in initial_channel_names:
+        initial_channel_names.append(initial_configuration.name)
+    # Last resort fallback to a minimal configuration to avoid crashes if configs are missing
+    if initial_configuration is None:
+        initial_configuration = ChannelMode(
+            id="default",
+            name="Default",
+            exposure_time=10.0,
+            analog_gain=0.0,
+            illumination_source=0,
+            illumination_intensity=0.0,
+            camera_sn="",
+            z_offset=0.0,
+            emission_filter_position=1,
+        )
+        if not initial_channel_names:
+            initial_channel_names = [initial_configuration.name]
+
     # Get camera limits from the camera (read-only, for widget initialization)
     camera = gui.microscope.camera
     try:
@@ -130,8 +159,9 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
     gui.liveControlWidget = widgets.LiveControlWidget(
         event_bus,
         gui.streamHandler,
-        gui.objectiveStore,
-        gui.channelConfigurationManager,
+        initial_configuration=initial_configuration,
+        initial_objective=objective_name,
+        initial_channel_configs=initial_channel_names,
         exposure_limits=camera.get_exposure_limits(),
         gain_range=gain_range,
         initial_trigger_mode=camera.get_acquisition_mode().value,
@@ -148,7 +178,6 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
         widget_configuration=f"{WELLPLATE_FORMAT} well plate",
     )
     gui.stageUtils = widgets.StageUtils(
-        stage_service,
         event_bus,
         is_wellplate=True,
     )
@@ -173,8 +202,28 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
 
     # Filter controller widget
     if gui.emission_filter_wheel:
+        # Get filter wheel config for number of positions
+        try:
+            wheel_info = gui.emission_filter_wheel.get_filter_wheel_info(1)
+            num_positions = wheel_info.number_of_slots
+        except Exception:
+            num_positions = 7  # Default fallback
+        initial_position = 1
+        filter_wheel_service = gui._services.get("filter_wheel") if gui._services else None
+        if filter_wheel_service is not None:
+            try:
+                initial_position = filter_wheel_service.get_position(1)
+            except Exception:
+                pass
+        initial_auto_switch = getattr(
+            gui.liveController, "enable_channel_auto_filter_switching", True
+        )
         gui.filterControllerWidget = widgets.FilterControllerWidget(
-            gui.emission_filter_wheel, gui.liveController
+            event_bus=event_bus,
+            wheel_index=1,
+            num_positions=num_positions,
+            initial_position=initial_position,
+            initial_auto_switch=initial_auto_switch,
         )
 
     # Recording widget
@@ -195,7 +244,6 @@ def create_wellplate_widgets(gui: "HighContentScreeningGui") -> None:
         event_bus=event_bus,
         navigationViewer=gui.navigationViewer,
         streamHandler=gui.streamHandler,
-        stage_service=gui._services.get("stage") if gui._services else None,
         pixel_size_factor=pixel_size_factor,
         pixel_size_binned_um=pixel_size_binned_um,
     )
@@ -207,11 +255,10 @@ def create_wellplate_widgets(gui: "HighContentScreeningGui") -> None:
         gui.wellSelectionWidget = widgets.Well1536SelectionWidget()
     gui.scanCoordinates.add_well_selector(gui.wellSelectionWidget)
     gui.focusMapWidget = widgets.FocusMapWidget(
-        gui.stage,
         gui.navigationViewer,
         gui.scanCoordinates,
         core.FocusMap(),
-        stage_service=gui._services.get("stage") if gui._services else None,
+        event_bus,
     )
 
 
@@ -222,23 +269,38 @@ def create_laser_autofocus_widgets(gui: "HighContentScreeningGui") -> None:
     if not SUPPORT_LASER_AUTOFOCUS:
         return
 
-    # Focus camera doesn't have a service - skip camera settings widget
-    # TODO: Create a focus camera service if camera settings are needed
+    # Focus camera uses its own service for exposure/gain limits
     gui.cameraSettingWidget_focus_camera = None
+    focus_camera_service = gui._services.get("camera_focus") if gui._services else None
+    focus_camera_exposure_limits = (
+        focus_camera_service.get_exposure_limits()
+        if focus_camera_service is not None
+        else (0.1, 1000.0)
+    )
+
+    # Extract initial properties from controller for widget initialization
+    laser_af_props = gui.laserAutofocusController.laser_af_properties
+    initial_properties = laser_af_props.model_dump() if hasattr(laser_af_props, 'model_dump') else vars(laser_af_props)
+
     gui.laserAutofocusSettingWidget = widgets.LaserAutofocusSettingWidget(
-        gui.streamHandler_focus_camera,
-        gui.liveController_focus_camera,
-        gui.laserAutofocusController,
+        streamHandler=gui.streamHandler_focus_camera,
+        event_bus=event_bus,
+        initial_properties=initial_properties,
+        initial_is_initialized=gui.laserAutofocusController.is_initialized,
+        initial_characterization_mode=gui.laserAutofocusController.characterization_mode,
+        exposure_limits=focus_camera_exposure_limits,
         stretch=False,
     )
     gui.waveformDisplay = widgets.WaveformDisplay(
         N=1000, include_x=True, include_y=False
     )
     gui.displacementMeasurementWidget = widgets.DisplacementMeasurementWidget(
-        gui.displacementMeasurementController, gui.waveformDisplay
+        event_bus=event_bus,
     )
     gui.laserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(
-        gui.laserAutofocusController, gui.liveController
+        event_bus=event_bus,
+        initial_is_initialized=gui.laserAutofocusController.is_initialized,
+        initial_has_reference=laser_af_props.has_reference,
     )
     gui.imageDisplayWindow_focus = core.ImageDisplayWindow()
     # Connect image display window to settings widget for spot tracking
@@ -260,49 +322,67 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
     )
     from control.widgets.custom_multipoint import TemplateMultiPointWidget
 
+    # Seed initial state for acquisition widgets
+    channel_manager = gui.channelConfigurationManager
+    objective_name = getattr(gui.objectiveStore, "current_objective", None)
+    objective_dict = getattr(gui.objectiveStore, "objectives_dict", {}) or {}
+    objective_names = list(objective_dict.keys())
+    objective_pixel_size_factors = {
+        name: gui.objectiveStore.calculate_pixel_size_factor(obj, TUBE_LENS_MM)
+        for name, obj in objective_dict.items()
+    } if objective_dict else {}
+    initial_pixel_size_factor = objective_pixel_size_factors.get(objective_name, 1.0)
+    channel_configs = (
+        channel_manager.get_configurations(objective_name) if objective_name else []
+    )
+    initial_channel_names = [mode.name for mode in channel_configs]
+
+    stage_service = gui._services.get("stage") if gui._services else None
+    initial_stage_pos = stage_service.get_position() if stage_service else None
+    initial_z_mm = getattr(initial_stage_pos, "z_mm", 0.0) if initial_stage_pos else 0.0
+    # Stage conversion is optional; pass through if available
+    z_ustep_per_mm = getattr(stage_service, "z_ustep_per_mm", None)
+
     gui.flexibleMultiPointWidget = widgets.FlexibleMultiPointWidget(
-        gui.stage,
         gui.navigationViewer,
-        gui.multipointController,
-        gui.objectiveStore,
-        gui.channelConfigurationManager,
         gui.scanCoordinates,
         gui.focusMapWidget,
-        stage_service=gui._services.get("stage") if gui._services else None,
+        event_bus,
+        initial_channel_configs=initial_channel_names,
+        z_ustep_per_mm=z_ustep_per_mm,
+        initial_z_mm=initial_z_mm,
     )
     gui.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(
-        gui.stage,
         gui.navigationViewer,
-        gui.multipointController,
-        gui.liveController,
-        gui.objectiveStore,
-        gui.channelConfigurationManager,
         gui.scanCoordinates,
-        gui.focusMapWidget,
-        gui.napariMosaicDisplayWidget,
+        event_bus,
+        initial_channel_configs=initial_channel_names,
+        initial_objective=objective_name,
+        objective_pixel_size_factors=objective_pixel_size_factors,
+        focusMapWidget=gui.focusMapWidget,
+        napariMosaicWidget=gui.napariMosaicDisplayWidget,
         tab_widget=gui.recordTabWidget,
         well_selection_widget=gui.wellSelectionWidget,
-        stage_service=gui._services.get("stage") if gui._services else None,
+        z_ustep_per_mm=z_ustep_per_mm,
+        initial_z_mm=initial_z_mm,
     )
     if USE_TEMPLATE_MULTIPOINT:
         gui.templateMultiPointWidget = TemplateMultiPointWidget(
-            gui.stage,
             gui.navigationViewer,
             gui.multipointController,
             gui.objectiveStore,
             gui.channelConfigurationManager,
             gui.scanCoordinates,
             gui.focusMapWidget,
+            event_bus,
         )
     gui.multiPointWithFluidicsWidget = widgets.MultiPointWithFluidicsWidget(
-        gui.stage,
         gui.navigationViewer,
-        gui.multipointController,
-        gui.objectiveStore,
-        gui.channelConfigurationManager,
         gui.scanCoordinates,
-        gui.napariMosaicDisplayWidget,
-        stage_service=gui._services.get("stage") if gui._services else None,
+        event_bus,
+        initial_channel_configs=initial_channel_names,
+        napariMosaicWidget=gui.napariMosaicDisplayWidget,
+        z_ustep_per_mm=z_ustep_per_mm,
     )
     gui.sampleSettingsWidget = widgets.SampleSettingsWidget(
         gui.objectivesWidget, gui.wellplateFormatWidget
@@ -310,9 +390,11 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
 
     if ENABLE_TRACKING:
         gui.trackingControlWidget = widgets.TrackingControllerWidget(
-            gui.trackingController,
-            gui.objectiveStore,
-            gui.channelConfigurationManager,
+            event_bus=event_bus,
+            initial_channel_configs=initial_channel_names,
             peripheral_service=gui._services.get("peripheral") if gui._services else None,
+            objectivesWidget=gui.objectivesWidget,
+            initial_objective=objective_name,
+            initial_pixel_size_um=initial_pixel_size_factor,
             show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
         )

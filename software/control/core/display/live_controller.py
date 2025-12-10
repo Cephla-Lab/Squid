@@ -16,9 +16,13 @@ from squid.events import (
     StopLiveCommand,
     SetTriggerModeCommand,
     SetTriggerFPSCommand,
+    SetFilterAutoSwitchCommand,
+    UpdateIlluminationCommand,
+    SetDisplayResolutionScalingCommand,
     LiveStateChanged,
     TriggerModeChanged,
     TriggerFPSChanged,
+    FilterAutoSwitchChanged,
 )
 
 from control._def import *
@@ -59,6 +63,7 @@ class LiveController:
         self.microscope: "Microscope" = microscope
         self.camera: AbstractCamera = camera
         self._bus: Optional[EventBus] = event_bus
+        self._bus_subscribed: bool = False
         self._camera_service = camera_service
         self._illumination_service = illumination_service
         self._peripheral_service = peripheral_service
@@ -96,21 +101,35 @@ class LiveController:
         )
 
         # Subscribe to commands if event bus provided
-        if self._bus:
-            self._bus.subscribe(StartLiveCommand, self._on_start_live_command)
-            self._bus.subscribe(StopLiveCommand, self._on_stop_live_command)
-            self._bus.subscribe(SetTriggerModeCommand, self._on_set_trigger_mode_command)
-            self._bus.subscribe(SetTriggerFPSCommand, self._on_set_trigger_fps_command)
+        self._subscribe_to_bus(self._bus)
+
+    def _subscribe_to_bus(self, bus: Optional[EventBus]) -> None:
+        """Subscribe to command events once for the provided bus."""
+        if bus is None or self._bus_subscribed:
+            return
+        bus.subscribe(StartLiveCommand, self._on_start_live_command)
+        bus.subscribe(StopLiveCommand, self._on_stop_live_command)
+        bus.subscribe(SetTriggerModeCommand, self._on_set_trigger_mode_command)
+        bus.subscribe(SetTriggerFPSCommand, self._on_set_trigger_fps_command)
+        bus.subscribe(SetFilterAutoSwitchCommand, self._on_set_filter_auto_switch)
+        bus.subscribe(UpdateIlluminationCommand, self._on_update_illumination)
+        bus.subscribe(
+            SetDisplayResolutionScalingCommand,
+            self._on_set_display_resolution_scaling,
+        )
+        self._bus_subscribed = True
 
     def attach_event_bus(self, bus: EventBus) -> None:
-        """Attach EventBus and subscribe to commands if not already attached."""
-        if self._bus is bus:
+        """
+        Attach an EventBus after construction (for ApplicationContext wiring).
+
+        Idempotent: if already attached to the same bus, this is a no-op.
+        """
+        if self._bus is bus and self._bus_subscribed:
             return
         self._bus = bus
-        self._bus.subscribe(StartLiveCommand, self._on_start_live_command)
-        self._bus.subscribe(StopLiveCommand, self._on_stop_live_command)
-        self._bus.subscribe(SetTriggerModeCommand, self._on_set_trigger_mode_command)
-        self._bus.subscribe(SetTriggerFPSCommand, self._on_set_trigger_fps_command)
+        self._bus_subscribed = False
+        self._subscribe_to_bus(bus)
 
     # illumination control
     def _extract_wavelength(self) -> Optional[int]:
@@ -849,3 +868,20 @@ class LiveController:
         # Publish outside lock
         if self._bus:
             self._bus.publish(TriggerFPSChanged(fps=cmd.fps))
+
+    def _on_set_filter_auto_switch(self, cmd: SetFilterAutoSwitchCommand) -> None:
+        """Handle SetFilterAutoSwitchCommand from EventBus."""
+        with self._lock:
+            self.enable_channel_auto_filter_switching = cmd.enabled
+
+        # Publish state change outside lock
+        if self._bus:
+            self._bus.publish(FilterAutoSwitchChanged(enabled=cmd.enabled))
+
+    def _on_update_illumination(self, cmd: UpdateIlluminationCommand) -> None:
+        """Handle UpdateIlluminationCommand from EventBus."""
+        self.update_illumination()
+
+    def _on_set_display_resolution_scaling(self, cmd: SetDisplayResolutionScalingCommand) -> None:
+        """Handle SetDisplayResolutionScalingCommand from EventBus."""
+        self.set_display_resolution_scaling(cmd.scaling)

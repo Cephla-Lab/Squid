@@ -94,6 +94,9 @@ class ApplicationContext:
 
         # Build components
         self._build_microscope()
+        # Inject event_bus into ObjectiveStore for event publishing
+        if self._microscope and self._microscope.objective_store:
+            self._microscope.objective_store._event_bus = event_bus
         # Build services before controllers so controllers can receive them
         self._build_services()
         self._build_controllers()

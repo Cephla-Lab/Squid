@@ -183,7 +183,14 @@ class CameraService(BaseService):
         self._log.debug(f"Setting binning: {binning_x}x{binning_y}")
         with self._lock:
             self._camera.set_binning(binning_x, binning_y)
-        self.publish(BinningChanged(binning_x=binning_x, binning_y=binning_y))
+            pixel_size_binned = self._camera.get_pixel_size_binned_um()
+        self.publish(
+            BinningChanged(
+                binning_x=binning_x,
+                binning_y=binning_y,
+                pixel_size_binned_um=pixel_size_binned,
+            )
+        )
 
     def get_binning(self) -> Tuple[int, int]:
         """Get current binning as (x, y)."""

@@ -19,8 +19,9 @@ class LiveControlWidget(EventBusFrame):
         self,
         event_bus: "EventBus",
         streamHandler: StreamHandler,
-        objectiveStore: ObjectiveStore,
-        channelConfigurationManager: ChannelConfigurationManager,
+        initial_configuration: "ChannelMode",
+        initial_objective: str,
+        initial_channel_configs: List[str],
         # Camera limits passed as params instead of direct camera access
         exposure_limits: tuple[float, float] = (0.1, 10000.0),
         gain_range: Optional["CameraGainRange"] = None,
@@ -36,8 +37,10 @@ class LiveControlWidget(EventBusFrame):
         super().__init__(event_bus, *args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.streamHandler = streamHandler
-        self.objectiveStore = objectiveStore
-        self.channelConfigurationManager = channelConfigurationManager
+
+        # Cached state from events
+        self._current_objective = initial_objective
+        self._channel_config_names = list(initial_channel_configs)
 
         # Store camera limits (read-only configuration)
         self._exposure_limits = exposure_limits
@@ -49,11 +52,7 @@ class LiveControlWidget(EventBusFrame):
         self._publish(SetTriggerFPSCommand(fps=self.fps_trigger))
         self.streamHandler.set_display_fps(self.fps_display)
 
-        self.currentConfiguration = (
-            self.channelConfigurationManager.get_channel_configurations_for_objective(
-                self.objectiveStore.current_objective
-            )[0]
-        )
+        self.currentConfiguration = initial_configuration
 
         self.add_components(
             show_trigger_options,
@@ -66,7 +65,7 @@ class LiveControlWidget(EventBusFrame):
         self._publish(
             SetMicroscopeModeCommand(
                 configuration_name=self.currentConfiguration.name,
-                objective=self.objectiveStore.current_objective,
+                objective=self._current_objective,
             )
         )
         self.update_ui_for_mode(self.currentConfiguration)
@@ -78,6 +77,8 @@ class LiveControlWidget(EventBusFrame):
         self._subscribe(TriggerModeChanged, self._on_trigger_mode_changed)
         self._subscribe(TriggerFPSChanged, self._on_trigger_fps_changed)
         self._subscribe(MicroscopeModeChanged, self._on_microscope_mode_changed)
+        self._subscribe(ObjectiveChanged, self._on_objective_changed)
+        self._subscribe(ChannelConfigurationsChanged, self._on_channel_configs_changed)
 
     def add_components(
         self,
@@ -113,12 +114,8 @@ class LiveControlWidget(EventBusFrame):
 
         # line 2: choose microscope mode / channel
         self.dropdown_modeSelection = QComboBox()
-        for (
-            mode
-        ) in self.channelConfigurationManager.get_channel_configurations_for_objective(
-            self.objectiveStore.current_objective
-        ):
-            self.dropdown_modeSelection.addItem(mode.name)
+        for config_name in self._channel_config_names:
+            self.dropdown_modeSelection.addItem(config_name)
         self.dropdown_modeSelection.setCurrentText(self.currentConfiguration.name)
 
         # line 3: exposure time and analog gain associated with the current mode
@@ -277,26 +274,60 @@ class LiveControlWidget(EventBusFrame):
         self.dropdown_modeSelection.setCurrentText(event.configuration_name)
         self.dropdown_modeSelection.blockSignals(False)
 
+        # Update currentConfiguration with values from the event
+        self.currentConfiguration.name = event.configuration_name
+        if event.exposure_time_ms is not None:
+            self.currentConfiguration.exposure_time = event.exposure_time_ms
+            self.entry_exposureTime.blockSignals(True)
+            self.entry_exposureTime.setValue(event.exposure_time_ms)
+            self.entry_exposureTime.blockSignals(False)
+        if event.analog_gain is not None:
+            self.currentConfiguration.analog_gain = event.analog_gain
+            self.entry_analogGain.blockSignals(True)
+            self.entry_analogGain.setValue(event.analog_gain)
+            self.entry_analogGain.blockSignals(False)
+        if event.illumination_intensity is not None:
+            self.currentConfiguration.illumination_intensity = event.illumination_intensity
+            self.slider_illuminationIntensity.blockSignals(True)
+            self.slider_illuminationIntensity.setValue(int(event.illumination_intensity))
+            self.slider_illuminationIntensity.blockSignals(False)
+            self.entry_illuminationIntensity.blockSignals(True)
+            self.entry_illuminationIntensity.setValue(event.illumination_intensity)
+            self.entry_illuminationIntensity.blockSignals(False)
+
+    def _on_objective_changed(self, event: ObjectiveChanged) -> None:
+        """Handle objective change event."""
+        if event.objective_name:
+            self._current_objective = event.objective_name
+
+    def _on_channel_configs_changed(self, event: ChannelConfigurationsChanged) -> None:
+        """Handle channel configurations changed event."""
+        if event.objective_name == self._current_objective:
+            self._channel_config_names = list(event.configuration_names)
+            self.refresh_mode_list()
+
     def update_configuration(self, conf_name: str) -> None:
         self.is_switching_mode = True
-        # identify the mode selected (note that mode id is 1 indexed)
-        self.currentConfiguration = (
-            self.channelConfigurationManager.get_channel_configuration_by_name(
-                self.objectiveStore.current_objective, conf_name
-            )
-        )
 
-        self._log.info(
-            f"Mode changed to {self.currentConfiguration.name} ({self.currentConfiguration.illumination_source})"
-        )
-        self.update_ui_for_mode(self.currentConfiguration)
+        if conf_name not in self._channel_config_names:
+            self._log.error(
+                f"Configuration '{conf_name}' not found in available configs"
+            )
+            self.is_switching_mode = False
+            return
+
+        # Update local config name - details will come from MicroscopeModeChanged event
+        self.currentConfiguration.name = conf_name
+
+        self._log.info(f"Mode changed to {conf_name}")
         self.signal_live_configuration.emit(self.currentConfiguration)
         self._publish(
             SetMicroscopeModeCommand(
-                configuration_name=self.currentConfiguration.name,
-                objective=self.objectiveStore.current_objective,
+                configuration_name=conf_name,
+                objective=self._current_objective,
             )
         )
+        # UI will be updated via _on_microscope_mode_changed event handler
         self.is_switching_mode = False
 
     def update_ui_for_mode(self, configuration: "ChannelMode") -> None:
@@ -322,11 +353,17 @@ class LiveControlWidget(EventBusFrame):
         """Update exposure time via event - updates configuration and publishes command."""
         if not self.is_switching_mode:
             self.currentConfiguration.exposure_time = exposure_time
-            # Publish the full microscope mode command to update all settings
+            # Publish config update command to persist
+            self._publish(UpdateChannelConfigurationCommand(
+                objective_name=self._current_objective,
+                config_name=self.currentConfiguration.name,
+                exposure_time_ms=exposure_time,
+            ))
+            # Also publish microscope mode command to apply settings
             self._publish(
                 SetMicroscopeModeCommand(
                     configuration_name=self.currentConfiguration.name,
-                    objective=self.objectiveStore.current_objective,
+                    objective=self._current_objective,
                 )
             )
 
@@ -334,11 +371,17 @@ class LiveControlWidget(EventBusFrame):
         """Update analog gain via event - updates configuration and publishes command."""
         if not self.is_switching_mode:
             self.currentConfiguration.analog_gain = analog_gain
-            # Publish the full microscope mode command to update all settings
+            # Publish config update command to persist
+            self._publish(UpdateChannelConfigurationCommand(
+                objective_name=self._current_objective,
+                config_name=self.currentConfiguration.name,
+                analog_gain=analog_gain,
+            ))
+            # Also publish microscope mode command to apply settings
             self._publish(
                 SetMicroscopeModeCommand(
                     configuration_name=self.currentConfiguration.name,
-                    objective=self.objectiveStore.current_objective,
+                    objective=self._current_objective,
                 )
             )
 
@@ -346,11 +389,17 @@ class LiveControlWidget(EventBusFrame):
         """Update illumination intensity via event - updates configuration and publishes command."""
         if not self.is_switching_mode:
             self.currentConfiguration.illumination_intensity = intensity
-            # Publish the full microscope mode command to update all settings
+            # Publish config update command to persist
+            self._publish(UpdateChannelConfigurationCommand(
+                objective_name=self._current_objective,
+                config_name=self.currentConfiguration.name,
+                illumination_intensity=intensity,
+            ))
+            # Also publish microscope mode command to apply settings
             self._publish(
                 SetMicroscopeModeCommand(
                     configuration_name=self.currentConfiguration.name,
-                    objective=self.objectiveStore.current_objective,
+                    objective=self._current_objective,
                 )
             )
 
@@ -364,21 +413,23 @@ class LiveControlWidget(EventBusFrame):
         self._publish(SetTriggerModeCommand(mode=self.dropdown_triggerManu.currentText()))
 
     def refresh_mode_list(self) -> None:
-        """Refresh the mode dropdown when profile changes."""
+        """Refresh the mode dropdown when profile changes.
+
+        Note: This is now primarily handled via ChannelConfigurationsChanged events.
+        This method is kept for backwards compatibility during transition.
+        """
         current_text = self.dropdown_modeSelection.currentText()
+        self.dropdown_modeSelection.blockSignals(True)
         self.dropdown_modeSelection.clear()
-        for (
-            mode
-        ) in self.channelConfigurationManager.get_channel_configurations_for_objective(
-            self.objectiveStore.current_objective
-        ):
-            self.dropdown_modeSelection.addItem(mode.name)
+        for config_name in self._channel_config_names:
+            self.dropdown_modeSelection.addItem(config_name)
         # Try to restore the previous selection if it still exists
         index = self.dropdown_modeSelection.findText(current_text)
         if index >= 0:
             self.dropdown_modeSelection.setCurrentIndex(index)
         elif self.dropdown_modeSelection.count() > 0:
             self.dropdown_modeSelection.setCurrentIndex(0)
+        self.dropdown_modeSelection.blockSignals(False)
 
     def toggle_autolevel(self, enabled: bool) -> None:
         """Toggle autolevel on or off."""

@@ -1,16 +1,25 @@
 from control.widgets.tracking._common import *
-from qtpy.QtWidgets import QListWidget, QAbstractItemView
+from qtpy.QtWidgets import QListWidget, QAbstractItemView, QMessageBox
 from qtpy.QtGui import QIcon
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from control.core.acquisition.platereader import PlateReadingController
-    from control.core.configuration import ChannelConfigurationManager
+from typing import TYPE_CHECKING, List
+from squid.events import (
+    EventBus,
+    SetPlateReaderParametersCommand,
+    SetPlateReaderPathCommand,
+    SetPlateReaderChannelsCommand,
+    SetPlateReaderColumnsCommand,
+    StartPlateReaderExperimentCommand,
+    StartPlateReaderCommand,
+    StopPlateReaderCommand,
+    PlateReaderAcquisitionFinished,
+    PlateReaderHomeCommand,
+    PlateReaderMoveToCommand,
+    PlateReaderHomingComplete,
+    PlateReaderLocationChanged,
+)
 
 
 class PlateReaderAcquisitionWidget(QFrame):
-    plateReadingController: "PlateReadingController"
-    configurationManager: "ChannelConfigurationManager"
     base_path_is_set: bool
     btn_setSavingDir: QPushButton
     lineEdit_savingDir: QLineEdit
@@ -24,19 +33,22 @@ class PlateReaderAcquisitionWidget(QFrame):
 
     def __init__(
         self,
-        plateReadingController: "PlateReadingController",
-        configurationManager: Optional["ChannelConfigurationManager"] = None,
+        event_bus: EventBus,
+        initial_channel_configs: List[str],
         show_configurations: bool = True,
         main: Optional[QWidget] = None,
         *args: Any,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
-        self.plateReadingController = plateReadingController
-        self.configurationManager = configurationManager
+        self._event_bus = event_bus
+        self._channel_configs = list(initial_channel_configs)
         self.base_path_is_set = False
         self.add_components(show_configurations)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
+
+        # Subscribe to acquisition state events
+        self._event_bus.subscribe(PlateReaderAcquisitionFinished, self._on_acquisition_finished)
 
     def add_components(self, show_configurations: bool) -> None:
         self.btn_setSavingDir = QPushButton("Browse")
@@ -46,7 +58,8 @@ class PlateReaderAcquisitionWidget(QFrame):
         self.lineEdit_savingDir.setReadOnly(True)
         self.lineEdit_savingDir.setText("Choose a base saving directory")
         self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
-        self.plateReadingController.set_base_path(DEFAULT_SAVING_PATH)
+        # Publish default path via event
+        self._event_bus.publish(SetPlateReaderPathCommand(base_path=DEFAULT_SAVING_PATH))
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
@@ -59,13 +72,13 @@ class PlateReaderAcquisitionWidget(QFrame):
         )  # ref: https://doc.qt.io/qt-5/qabstractitemview.html#SelectionMode-enum
 
         self.list_configurations = QListWidget()
-        for microscope_configuration in self.configurationManager.configurations:
-            self.list_configurations.addItems([microscope_configuration.name])
+        self.list_configurations.addItems(self._channel_configs)
         self.list_configurations.setSelectionMode(
             QAbstractItemView.MultiSelection
         )  # ref: https://doc.qt.io/qt-5/qabstractitemview.html#SelectionMode-enum
 
         self.checkbox_withAutofocus = QCheckBox("With AF")
+        self.checkbox_withReflectionAutofocus = QCheckBox("With Reflection AF")
         self.btn_startAcquisition = QPushButton("Start Acquisition")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
@@ -114,19 +127,14 @@ class PlateReaderAcquisitionWidget(QFrame):
         # self.timer = QTimer()
 
         # connections
-        self.checkbox_withAutofocus.stateChanged.connect(
-            self.plateReadingController.set_af_flag
-        )
+        self.checkbox_withAutofocus.stateChanged.connect(self._on_autofocus_changed)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
-        self.plateReadingController.acquisitionFinished.connect(
-            self.acquisition_is_finished
-        )
 
     def set_saving_dir(self) -> None:
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self.plateReadingController.set_base_path(save_dir_base)
+        self._event_bus.publish(SetPlateReaderPathCommand(base_path=save_dir_base))
         self.lineEdit_savingDir.setText(save_dir_base)
         self.base_path_is_set = True
 
@@ -141,25 +149,31 @@ class PlateReaderAcquisitionWidget(QFrame):
             # @@@ to do: add a widgetManger to enable and disable widget
             # @@@ to do: emit signal to widgetManager to disable other widgets
             self.setEnabled_all(False)
-            self.plateReadingController.start_new_experiment(
-                self.lineEdit_experimentID.text()
-            )
-            self.plateReadingController.set_selected_configurations(
-                (item.text() for item in self.list_configurations.selectedItems())
-            )
-            self.plateReadingController.set_selected_columns(
-                list(
+            self._event_bus.publish(StartPlateReaderExperimentCommand(
+                experiment_id=self.lineEdit_experimentID.text()
+            ))
+            self._event_bus.publish(SetPlateReaderChannelsCommand(
+                channel_names=list(item.text() for item in self.list_configurations.selectedItems())
+            ))
+            self._event_bus.publish(SetPlateReaderColumnsCommand(
+                columns=list(
                     map(
                         int, [item.text() for item in self.list_columns.selectedItems()]
                     )
                 )
-            )
-            self.plateReadingController.run_acquisition()
+            ))
+            self._event_bus.publish(StartPlateReaderCommand())
         else:
-            self.plateReadingController.stop_acquisition()  # to implement
-            pass
+            self._event_bus.publish(StopPlateReaderCommand())
 
-    def acquisition_is_finished(self) -> None:
+    def _on_autofocus_changed(self, state: int) -> None:
+        """Handle autofocus checkbox change."""
+        self._event_bus.publish(SetPlateReaderParametersCommand(
+            use_autofocus=state == Qt.Checked
+        ))
+
+    def _on_acquisition_finished(self, event: PlateReaderAcquisitionFinished) -> None:
+        """Handle acquisition finished event from controller."""
         self.btn_startAcquisition.setChecked(False)
         self.setEnabled_all(True)
 
@@ -181,9 +195,6 @@ class PlateReaderAcquisitionWidget(QFrame):
 
 
 class PlateReaderNavigationWidget(QFrame):
-    plateReaderNavigationController: (
-        Any  # TODO: Create proper type for PlateReaderNavigationController
-    )
     dropdown_column: QComboBox
     dropdown_row: QComboBox
     btn_moveto: QPushButton
@@ -193,14 +204,18 @@ class PlateReaderNavigationWidget(QFrame):
 
     def __init__(
         self,
-        plateReaderNavigationController: Any,  # TODO: Create proper type for PlateReaderNavigationController
+        event_bus: EventBus,
         *args: Any,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self._event_bus = event_bus
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        self.plateReaderNavigationController = plateReaderNavigationController
+
+        # Subscribe to events
+        self._event_bus.subscribe(PlateReaderHomingComplete, self._on_homing_complete)
+        self._event_bus.subscribe(PlateReaderLocationChanged, self._on_location_changed)
 
     def add_components(self) -> None:
         self.dropdown_column = QComboBox()
@@ -253,13 +268,29 @@ class PlateReaderNavigationWidget(QFrame):
         msg.setDefaultButton(QMessageBox.Cancel)
         retval = msg.exec_()
         if QMessageBox.Ok == retval:
-            self.plateReaderNavigationController.home()
+            self._event_bus.publish(PlateReaderHomeCommand())
 
     def move(self) -> None:  # type: ignore[override]
-        self.plateReaderNavigationController.moveto(
-            self.dropdown_column.currentText(), self.dropdown_row.currentText()
-        )
+        self._event_bus.publish(PlateReaderMoveToCommand(
+            column=self.dropdown_column.currentText(),
+            row=self.dropdown_row.currentText()
+        ))
 
+    def _on_homing_complete(self, event: PlateReaderHomingComplete) -> None:
+        """Handle homing complete event."""
+        self.dropdown_column.setEnabled(True)
+        self.dropdown_row.setEnabled(True)
+        self.btn_moveto.setEnabled(True)
+
+    def _on_location_changed(self, event: PlateReaderLocationChanged) -> None:
+        """Handle location changed event."""
+        self.label_current_location.setText(event.location_str)
+        row = event.location_str[0]
+        column = event.location_str[1:]
+        self.dropdown_row.setCurrentText(row)
+        self.dropdown_column.setCurrentText(column)
+
+    # Keep legacy slot for backwards compatibility during transition
     def slot_homing_complete(self) -> None:
         self.dropdown_column.setEnabled(True)
         self.dropdown_row.setEnabled(True)

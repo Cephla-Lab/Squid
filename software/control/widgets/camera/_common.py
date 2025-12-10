@@ -60,6 +60,10 @@ from squid.events import (
     CameraTemperatureChanged,
     BlackLevelChanged,
     AutoWhiteBalanceChanged,
+    # Objective and channel config events
+    ObjectiveChanged,
+    ChannelConfigurationsChanged,
+    UpdateChannelConfigurationCommand,
 )
 from control.core.display import StreamHandler, LiveController, ImageSaver
 from control.core.navigation import ObjectiveStore

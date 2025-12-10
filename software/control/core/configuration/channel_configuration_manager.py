@@ -1,12 +1,19 @@
 from enum import Enum
 from pathlib import Path
-from typing import Any, List, Dict, Optional
+from typing import Any, List, Dict, Optional, TYPE_CHECKING
 import logging
 
 from control.utils_config import ChannelConfig, ChannelMode
 import control.utils_config as utils_config
 import control._def
 import squid.logging
+from squid.events import (
+    UpdateChannelConfigurationCommand,
+    ChannelConfigurationsChanged,
+)
+
+if TYPE_CHECKING:
+    from squid.events import EventBus
 
 
 class ConfigType(Enum):
@@ -20,9 +27,11 @@ class ChannelConfigurationManager:
     config_root: Optional[Path]
     all_configs: Dict[ConfigType, Dict[str, ChannelConfig]]
     active_config_type: ConfigType
+    _event_bus: Optional["EventBus"]
 
-    def __init__(self) -> None:
+    def __init__(self, event_bus: Optional["EventBus"] = None) -> None:
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._event_bus = event_bus
         self.config_root = None
         self.all_configs: Dict[ConfigType, Dict[str, ChannelConfig]] = {
             ConfigType.CHANNEL: {},
@@ -34,6 +43,13 @@ class ChannelConfigurationManager:
             if not control._def.ENABLE_SPINNING_DISK_CONFOCAL
             else ConfigType.CONFOCAL
         )
+
+        # Subscribe to events if event_bus is provided
+        if self._event_bus:
+            self._event_bus.subscribe(
+                UpdateChannelConfigurationCommand,
+                self._on_update_configuration_command
+            )
 
     def set_profile_path(self, profile_path: Path) -> None:
         """Set the root path for configurations"""
@@ -62,6 +78,9 @@ class ChannelConfigurationManager:
         else:
             # Load only channel configurations
             self._load_xml_config(objective, ConfigType.CHANNEL)
+
+        # Publish event with available configuration names
+        self._publish_configurations_changed(objective)
 
     def _save_xml_config(self, objective: str, config_type: ConfigType) -> None:
         """Save XML configuration for a specific config type"""
@@ -162,3 +181,40 @@ class ChannelConfigurationManager:
         self.active_config_type = (
             ConfigType.CONFOCAL if confocal else ConfigType.WIDEFIELD
         )
+
+    def _publish_configurations_changed(self, objective: str) -> None:
+        """Publish ChannelConfigurationsChanged event."""
+        if not self._event_bus:
+            return
+        configs = self.get_configurations(objective)
+        config_names = [mode.name for mode in configs]
+        self._event_bus.publish(ChannelConfigurationsChanged(
+            objective_name=objective,
+            configuration_names=config_names,
+        ))
+
+    def _on_update_configuration_command(
+        self, cmd: UpdateChannelConfigurationCommand
+    ) -> None:
+        """Handle UpdateChannelConfigurationCommand event."""
+        # Find the configuration by name
+        mode = self.get_channel_configuration_by_name(cmd.objective_name, cmd.config_name)
+        if not mode:
+            self._log.error(
+                f"Configuration '{cmd.config_name}' not found for objective '{cmd.objective_name}'"
+            )
+            return
+
+        # Update the fields that are provided
+        if cmd.exposure_time_ms is not None:
+            self.update_configuration(
+                cmd.objective_name, mode.id, "ExposureTime", cmd.exposure_time_ms
+            )
+        if cmd.analog_gain is not None:
+            self.update_configuration(
+                cmd.objective_name, mode.id, "AnalogGain", cmd.analog_gain
+            )
+        if cmd.illumination_intensity is not None:
+            self.update_configuration(
+                cmd.objective_name, mode.id, "IlluminationIntensity", cmd.illumination_intensity
+            )

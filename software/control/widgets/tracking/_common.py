@@ -24,7 +24,15 @@ from qtpy.QtWidgets import (
 )
 
 import squid.logging
-from control._def import DEFAULT_SAVING_PATH
+from control._def import (
+    DEFAULT_SAVING_PATH,
+    TUBE_LENS_MM,
+    CAMERA_PIXEL_SIZE_UM,
+    CAMERA_SENSOR,
+    TRACKERS,
+    DEFAULT_TRACKER,
+    PLATE_READER,
+)
 from control.core.navigation import ObjectiveStore
 from control.core.configuration import ChannelConfigurationManager
 from control.core.tracking import TrackingController

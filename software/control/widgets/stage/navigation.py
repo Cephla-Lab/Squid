@@ -7,13 +7,15 @@ class NavigationWidget(EventBusFrame):
 
     Publishes MoveStageCommand events for stage movement.
     Subscribes to StagePositionChanged events for position display.
-    Uses service only for read-only config queries (step size calculations).
+    Step size config passed at construction (read-only).
     """
 
     def __init__(
         self,
-        stage_service: "StageService",
         event_bus: "EventBus",
+        x_mm_per_ustep: float = 0.00003125,
+        y_mm_per_ustep: float = 0.00003125,
+        z_mm_per_ustep: float = 0.00000625,
         main: Optional[Any] = None,
         widget_configuration: str = "full",
         *args: Any,
@@ -24,8 +26,10 @@ class NavigationWidget(EventBusFrame):
         self.widget_configuration: str = widget_configuration
         self.slide_position: Optional[str] = None
 
-        # Service for read-only config queries (step size calculations)
-        self._service: "StageService" = stage_service
+        # Step size configuration (read-only, passed at construction)
+        self._x_mm_per_ustep = x_mm_per_ustep
+        self._y_mm_per_ustep = y_mm_per_ustep
+        self._z_mm_per_ustep = z_mm_per_ustep
 
         # UI components
         self.label_Xpos: QLabel
@@ -196,16 +200,13 @@ class NavigationWidget(EventBusFrame):
         )
 
     def set_deltaX(self, value: float) -> None:
-        mm_per_ustep = self._service.get_x_mm_per_ustep()
-        deltaX = round(value / mm_per_ustep) * mm_per_ustep
+        deltaX = round(value / self._x_mm_per_ustep) * self._x_mm_per_ustep
         self.entry_dX.setValue(deltaX)
 
     def set_deltaY(self, value: float) -> None:
-        mm_per_ustep = self._service.get_y_mm_per_ustep()
-        deltaY = round(value / mm_per_ustep) * mm_per_ustep
+        deltaY = round(value / self._y_mm_per_ustep) * self._y_mm_per_ustep
         self.entry_dY.setValue(deltaY)
 
     def set_deltaZ(self, value: float) -> None:
-        mm_per_ustep = self._service.get_z_mm_per_ustep()
-        deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
+        deltaZ = round(value / 1000 / self._z_mm_per_ustep) * self._z_mm_per_ustep * 1000
         self.entry_dZ.setValue(deltaZ)

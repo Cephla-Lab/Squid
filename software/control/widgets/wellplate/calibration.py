@@ -22,7 +22,6 @@ class WellplateCalibration(EventBusDialog):
     Publishes MoveStageCommand for stage movement.
     Publishes StartLiveCommand/StopLiveCommand for live view.
     Subscribes to LiveStateChanged and StagePositionChanged for state tracking.
-    Uses service only for read-only position queries.
     """
 
     def __init__(
@@ -30,7 +29,6 @@ class WellplateCalibration(EventBusDialog):
         wellplateFormatWidget: "WellplateFormatWidget",
         navigationViewer: "NavigationViewer",
         streamHandler: "StreamHandler",
-        stage_service: "StageService",
         event_bus: "EventBus",
         # Read-only config passed as params
         pixel_size_factor: float = 1.0,
@@ -40,7 +38,6 @@ class WellplateCalibration(EventBusDialog):
         super().__init__(event_bus)
         self.setWindowTitle("Well Plate Calibration")
         self.wellplateFormatWidget: "WellplateFormatWidget" = wellplateFormatWidget
-        self._stage_service: "StageService" = stage_service
         self.navigationViewer: "NavigationViewer" = navigationViewer
         self.streamHandler: "StreamHandler" = streamHandler
 
@@ -343,13 +340,15 @@ class WellplateCalibration(EventBusDialog):
 
     def setCorner(self, index: int) -> None:
         if self.corners[index] is None:
-            # Get position - prefer cached event position, fall back to service
-            if self._current_position is not None:
-                x, y = self._current_position
-            else:
-                pos = self._stage_service.get_position()
-                x = pos.x_mm
-                y = pos.y_mm
+            # Get position from cached event position
+            if self._current_position is None:
+                QMessageBox.warning(
+                    self,
+                    "Position Unknown",
+                    "Stage position not available. Please wait for the stage to report its position.",
+                )
+                return
+            x, y = self._current_position
 
             # Check if the new point is different from existing points
             if any(

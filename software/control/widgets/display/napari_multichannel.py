@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import DTypeLike
-from typing import Optional, Set, Tuple
+from typing import Optional, Set, Tuple, TYPE_CHECKING
 
 import napari
 from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
@@ -13,14 +13,20 @@ from qtpy.QtWidgets import QWidget, QVBoxLayout
 
 from control._def import CHANNEL_COLORS_MAP, USE_NAPARI_FOR_LIVE_VIEW
 
-from squid.services import CameraService
-from control.core.navigation import ObjectiveStore
 from control.core.configuration import ContrastManager
+from squid.events import EventBus, BinningChanged, ObjectiveChanged
+
+if TYPE_CHECKING:
+    pass
 
 
 class NapariMultiChannelWidget(QWidget):
-    objectiveStore: ObjectiveStore
-    _camera_service: CameraService
+    """Multi-channel Z-stack viewer using napari.
+
+    Subscribes to BinningChanged and ObjectiveChanged events to update pixel size.
+    No direct service or controller access - pure event-driven architecture.
+    """
+
     contrastManager: ContrastManager
     image_width: int
     image_height: int
@@ -40,22 +46,27 @@ class NapariMultiChannelWidget(QWidget):
 
     def __init__(
         self,
-        objectiveStore: ObjectiveStore,
-        camera_service: CameraService,
+        event_bus: EventBus,
         contrastManager: ContrastManager,
+        initial_pixel_size_factor: float = 1.0,
+        initial_pixel_size_binned_um: float = 1.0,
         grid_enabled: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
+        self._event_bus = event_bus
+
+        # Cached values from events (initialized with provided initial values)
+        self._pixel_size_factor = initial_pixel_size_factor
+        self._pixel_size_binned_um = initial_pixel_size_binned_um
+
         # Initialize placeholders for the acquisition parameters
-        self.objectiveStore = objectiveStore
-        self._camera_service = camera_service
         self.contrastManager = contrastManager
         self.image_width = 0
         self.image_height = 0
         self.dtype = np.dtype(np.uint8)
         self.channels = set()
-        self.pixel_size_um = 1.0
+        self.pixel_size_um = self._pixel_size_factor * self._pixel_size_binned_um
         self.dz_um = 1.0
         self.Nz = 1
         self.layers_initialized = False
@@ -64,8 +75,22 @@ class NapariMultiChannelWidget(QWidget):
         self.update_layer_count = 0
         self.grid_enabled = grid_enabled
 
+        # Subscribe to events for dynamic values
+        self._event_bus.subscribe(BinningChanged, self._on_binning_changed)
+        self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+
         # Initialize a napari Viewer without showing its standalone window.
         self.initNapariViewer()
+
+    def _on_binning_changed(self, event: BinningChanged) -> None:
+        """Update cached pixel size when binning changes."""
+        if event.pixel_size_binned_um is not None:
+            self._pixel_size_binned_um = event.pixel_size_binned_um
+
+    def _on_objective_changed(self, event: ObjectiveChanged) -> None:
+        """Update cached pixel size factor when objective changes."""
+        if event.pixel_size_um is not None:
+            self._pixel_size_factor = event.pixel_size_um
 
     def initNapariViewer(self) -> None:
         self.viewer = napari.Viewer(show=False)
@@ -84,10 +109,8 @@ class NapariMultiChannelWidget(QWidget):
             self.viewer.window._qt_viewer.layerButtons.hide()
 
     def initLayersShape(self, Nz: int, dz: float) -> None:
-        pixel_size_um = (
-            self.objectiveStore.get_pixel_size_factor()
-            * self._camera_service.get_pixel_size_binned_um()
-        )
+        # Use cached values from events
+        pixel_size_um = self._pixel_size_factor * self._pixel_size_binned_um
         if self.Nz != Nz or self.dz_um != dz or self.pixel_size_um != pixel_size_um:
             self.acquisition_initialized = False
             self.Nz = Nz

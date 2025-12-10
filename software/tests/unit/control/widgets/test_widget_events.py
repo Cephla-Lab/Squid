@@ -345,9 +345,6 @@ class TestWellplateFormatWidgetEvents:
     class DummyStream:
         pass
 
-    class DummyStageService:
-        pass
-
     def test_save_calibration_event_updates_settings(self, qapp):
         from control.widgets.wellplate.format import WellplateFormatWidget, WELLPLATE_FORMAT_SETTINGS
 
@@ -356,7 +353,6 @@ class TestWellplateFormatWidgetEvents:
             event_bus=bus,
             navigationViewer=self.DummyNav(),
             streamHandler=self.DummyStream(),
-            stage_service=self.DummyStageService(),
         )
         calibration = {"a1_x_mm": 1.0, "a1_y_mm": 2.0, "well_size_mm": 3.0, "well_spacing_mm": 9.0, "number_of_skip": 0, "rows": 2, "cols": 2, "a1_x_pixel": 0, "a1_y_pixel": 0}
         widget._on_save_calibration(
@@ -415,7 +411,6 @@ class TestNoDirectHardwareAttributes:
             wellplateFormatWidget=DummyLiveDeps(),
             navigationViewer=DummyLiveDeps(),
             streamHandler=DummyLiveDeps(),
-            stage_service=DummyStageService(),
         )
 
         assert not hasattr(nav, "stage")

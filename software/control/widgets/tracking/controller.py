@@ -4,12 +4,20 @@ from qtpy.QtWidgets import QListWidget, QAbstractItemView
 from qtpy.QtGui import QIcon
 from qtpy.QtCore import QMetaObject
 from control.widgets.hardware.objectives import ObjectivesWidget
+from squid.events import (
+    EventBus,
+    ObjectiveChanged,
+    SetTrackingParametersCommand,
+    SetTrackingPathCommand,
+    SetTrackingChannelsCommand,
+    StartTrackingExperimentCommand,
+    StartTrackingCommand,
+    StopTrackingCommand,
+    TrackingStateChanged,
+)
 
 
 class TrackingControllerWidget(QFrame):
-    trackingController: TrackingController
-    objectiveStore: ObjectiveStore
-    channelConfigurationManager: ChannelConfigurationManager
     base_path_is_set: bool
     btn_setSavingDir: QPushButton
     lineEdit_savingDir: QLineEdit
@@ -27,24 +35,34 @@ class TrackingControllerWidget(QFrame):
 
     def __init__(
         self,
-        trackingController: TrackingController,
-        objectiveStore: ObjectiveStore,
-        channelConfigurationManager: ChannelConfigurationManager,
+        event_bus: EventBus,
+        initial_channel_configs: List[str],
         peripheral_service: PeripheralService,
+        objectivesWidget: ObjectivesWidget,
+        initial_objective: str,
+        initial_pixel_size_um: float,
         show_configurations: bool = True,
         *args: Any,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
-        self.trackingController = trackingController
-        self.objectiveStore = objectiveStore
-        self.channelConfigurationManager = channelConfigurationManager
+        self._event_bus = event_bus
+        self._channel_configs = list(initial_channel_configs)
         self.peripheral_service = peripheral_service
+        self.objectivesWidget = objectivesWidget
+        self._current_objective = initial_objective
+        self._pixel_size_um = initial_pixel_size_um
         self.base_path_is_set = False
+        self._is_tracking = False
+
         if self.peripheral_service is None:
             raise ValueError("PeripheralService is required for tracking controller.")
         self.add_components(show_configurations)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
+
+        # Subscribe to tracking state events
+        self._event_bus.subscribe(TrackingStateChanged, self._on_tracking_state_changed)
+        self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
 
         self.peripheral_service.add_joystick_button_listener(
             lambda button_pressed: self.handle_button_pressed(button_pressed)
@@ -58,15 +76,13 @@ class TrackingControllerWidget(QFrame):
         self.lineEdit_savingDir.setReadOnly(True)
         self.lineEdit_savingDir.setText("Choose a base saving directory")
         self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
-        self.trackingController.set_base_path(DEFAULT_SAVING_PATH)
+        # Publish default path via event
+        self._event_bus.publish(SetTrackingPathCommand(base_path=DEFAULT_SAVING_PATH))
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
 
-        # self.dropdown_objective = QComboBox()
-        # self.dropdown_objective.addItems(list(OBJECTIVES.keys()))
-        # self.dropdown_objective.setCurrentText(DEFAULT_OBJECTIVE)
-        self.objectivesWidget = ObjectivesWidget(self.objectiveStore)
+        # ObjectivesWidget passed in from parent
 
         self.dropdown_tracker = QComboBox()
         self.dropdown_tracker.addItems(TRACKERS)
@@ -79,13 +95,9 @@ class TrackingControllerWidget(QFrame):
         self.entry_tracking_interval.setSingleStep(0.5)
         self.entry_tracking_interval.setValue(0)
 
+        # Channel configurations (populated from initial_channel_configs)
         self.list_configurations = QListWidget()
-        for (
-            microscope_configuration
-        ) in self.channelConfigurationManager.get_channel_configurations_for_objective(
-            self.objectiveStore.current_objective
-        ):
-            self.list_configurations.addItems([microscope_configuration.name])
+        self.list_configurations.addItems(self._channel_configs)
         self.list_configurations.setSelectionMode(
             QAbstractItemView.MultiSelection
         )  # ref: https://doc.qt.io/qt-5/qabstractitemview.html#SelectionMode-enum
@@ -150,16 +162,16 @@ class TrackingControllerWidget(QFrame):
 
         # connections - buttons, checkboxes, entries
         self.checkbox_enable_stage_tracking.stateChanged.connect(
-            self.trackingController.toggle_stage_tracking
+            self._on_enable_stage_tracking_changed
         )
         self.checkbox_withAutofocus.stateChanged.connect(
-            self.trackingController.toggel_enable_af
+            self._on_autofocus_changed
         )
         self.checkbox_saveImages.stateChanged.connect(
-            self.trackingController.toggel_save_images
+            self._on_save_images_changed
         )
         self.entry_tracking_interval.valueChanged.connect(
-            self.trackingController.set_tracking_time_interval
+            self._on_tracking_interval_changed
         )
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_track.clicked.connect(self.toggle_acquisition)
@@ -169,16 +181,13 @@ class TrackingControllerWidget(QFrame):
         self.objectivesWidget.dropdown.currentIndexChanged.connect(
             self.update_pixel_size
         )
-        # controller to widget
-        self.trackingController.signal_tracking_stopped.connect(
-            self.slot_tracking_stopped
-        )
+        # Note: tracking state is now handled via TrackingStateChanged event subscription
 
         # run initialization functions
         self.update_pixel_size()
-        self.trackingController.update_image_resizing_factor(
-            1
-        )  # to add: image resizing slider
+        self._event_bus.publish(SetTrackingParametersCommand(
+            image_resizing_factor=1
+        ))  # to add: image resizing slider
 
     # TODO(imo): This needs testing!
     def handle_button_pressed(self, button_state: bool) -> None:
@@ -199,25 +208,20 @@ class TrackingControllerWidget(QFrame):
                 msg.exec_()
                 return
             self.setEnabled_all(False)
-            self.trackingController.start_new_experiment(
-                self.lineEdit_experimentID.text()
-            )
-            self.trackingController.set_selected_configurations(
-                list(item.text() for item in self.list_configurations.selectedItems())
-            )
-            self.trackingController.start_tracking()
+            self._event_bus.publish(StartTrackingExperimentCommand(
+                experiment_id=self.lineEdit_experimentID.text()
+            ))
+            self._event_bus.publish(SetTrackingChannelsCommand(
+                channel_names=list(item.text() for item in self.list_configurations.selectedItems())
+            ))
+            self._event_bus.publish(StartTrackingCommand())
         else:
-            self.trackingController.stop_tracking()
-
-    def slot_tracking_stopped(self) -> None:
-        self.btn_track.setChecked(False)
-        self.setEnabled_all(True)
-        print("tracking stopped")
+            self._event_bus.publish(StopTrackingCommand())
 
     def set_saving_dir(self) -> None:
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self.trackingController.set_base_path(save_dir_base)
+        self._event_bus.publish(SetTrackingPathCommand(base_path=save_dir_base))
         self.lineEdit_savingDir.setText(save_dir_base)
         self.base_path_is_set = True
 
@@ -232,15 +236,15 @@ class TrackingControllerWidget(QFrame):
             # @@@ to do: add a widgetManger to enable and disable widget
             # @@@ to do: emit signal to widgetManager to disable other widgets
             self.setEnabled_all(False)
-            self.trackingController.start_new_experiment(
-                self.lineEdit_experimentID.text()
-            )
-            self.trackingController.set_selected_configurations(
-                list(item.text() for item in self.list_configurations.selectedItems())
-            )
-            self.trackingController.start_tracking()
+            self._event_bus.publish(StartTrackingExperimentCommand(
+                experiment_id=self.lineEdit_experimentID.text()
+            ))
+            self._event_bus.publish(SetTrackingChannelsCommand(
+                channel_names=list(item.text() for item in self.list_configurations.selectedItems())
+            ))
+            self._event_bus.publish(StartTrackingCommand())
         else:
-            self.trackingController.stop_tracking()
+            self._event_bus.publish(StopTrackingCommand())
 
     def setEnabled_all(self, enabled: bool) -> None:
         self.btn_setSavingDir.setEnabled(enabled)
@@ -251,21 +255,59 @@ class TrackingControllerWidget(QFrame):
         self.list_configurations.setEnabled(enabled)
 
     def update_tracker(self, index: int) -> None:
-        self.trackingController.update_tracker_selection(
-            self.dropdown_tracker.currentText()
-        )
+        """Publish tracker type change via event."""
+        self._event_bus.publish(SetTrackingParametersCommand(
+            tracker_type=self.dropdown_tracker.currentText()
+        ))
 
     def update_pixel_size(self) -> None:
-        objective = self.objectiveStore.current_objective
-        self.trackingController.objective = objective
-        objective_info = self.objectiveStore.objectives_dict[objective]
-        magnification = objective_info["magnification"]
-        objective_tube_lens_mm = objective_info["tube_lens_f_mm"]
-        tube_lens_mm = TUBE_LENS_MM
-        # TODO: these pixel size code needs to be updated.
-        pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
-        pixel_size_xy = pixel_size_um / (
-            magnification / (objective_tube_lens_mm / tube_lens_mm)
-        )
-        self.trackingController.update_pixel_size(pixel_size_xy)
+        """Calculate and publish pixel size based on current objective."""
+        pixel_size_xy = self._pixel_size_um
+        objective = self._current_objective
+        # Publish via event instead of direct controller call
+        self._event_bus.publish(SetTrackingParametersCommand(
+            pixel_size_um=pixel_size_xy,
+            objective=objective
+        ))
         print(f"pixel size is {pixel_size_xy:.2f} μm")
+
+    # Event handlers for checkbox/spinbox changes
+    def _on_enable_stage_tracking_changed(self, state: int) -> None:
+        """Handle stage tracking checkbox change."""
+        self._event_bus.publish(SetTrackingParametersCommand(
+            enable_stage_tracking=state == Qt.Checked
+        ))
+
+    def _on_autofocus_changed(self, state: int) -> None:
+        """Handle autofocus checkbox change."""
+        self._event_bus.publish(SetTrackingParametersCommand(
+            enable_autofocus=state == Qt.Checked
+        ))
+
+    def _on_save_images_changed(self, state: int) -> None:
+        """Handle save images checkbox change."""
+        self._event_bus.publish(SetTrackingParametersCommand(
+            save_images=state == Qt.Checked
+        ))
+
+    def _on_tracking_interval_changed(self, value: float) -> None:
+        """Handle tracking interval spinbox change."""
+        self._event_bus.publish(SetTrackingParametersCommand(
+            time_interval_s=value
+        ))
+
+    def _on_tracking_state_changed(self, event: TrackingStateChanged) -> None:
+        """Handle tracking state change from controller."""
+        self._is_tracking = event.is_tracking
+        if not event.is_tracking:
+            # Tracking stopped - update UI
+            self.btn_track.setChecked(False)
+            self.setEnabled_all(True)
+            print("tracking stopped")
+
+    def _on_objective_changed(self, event: ObjectiveChanged) -> None:
+        """Cache objective and pixel size from events."""
+        if event.objective_name is not None:
+            self._current_objective = event.objective_name
+        if event.pixel_size_um is not None:
+            self._pixel_size_um = event.pixel_size_um

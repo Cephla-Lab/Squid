@@ -25,10 +25,9 @@ from qtpy.QtWidgets import (
 )
 
 from control._def import SOFTWARE_POS_LIMIT
+from squid.events import EventBus, StagePositionChanged, MoveStageToCommand
 
 if TYPE_CHECKING:
-    from squid.services import StageService
-    from squid.abc import AbstractStage
     from control.core.navigation import NavigationViewer, ScanCoordinates, FocusMap
 
 
@@ -36,8 +35,10 @@ class FocusMapWidget(QFrame):
     """Widget for managing focus map points and surface fitting"""
 
     _allow_updating_focus_points_on_signal: bool
-    stage: AbstractStage
-    _stage_service: Optional[StageService]
+    _event_bus: EventBus
+    _cached_x_mm: float
+    _cached_y_mm: float
+    _cached_z_mm: float
     navigationViewer: NavigationViewer
     scanCoordinates: ScanCoordinates
     focusMap: FocusMap
@@ -64,19 +65,23 @@ class FocusMapWidget(QFrame):
 
     def __init__(
         self,
-        stage: AbstractStage,
-        navigationViewer: NavigationViewer,
-        scanCoordinates: ScanCoordinates,
-        focusMap: FocusMap,
-        stage_service: Optional[StageService] = None,
+        navigationViewer: "NavigationViewer",
+        scanCoordinates: "ScanCoordinates",
+        focusMap: "FocusMap",
+        event_bus: EventBus,
+        initial_z_mm: float = 0.0,
     ) -> None:
         super().__init__()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self._allow_updating_focus_points_on_signal = True
 
-        # Store controllers
-        self.stage = stage
-        self._stage_service = stage_service
+        # Store event bus and cached position
+        self._event_bus = event_bus
+        self._cached_x_mm = 0.0
+        self._cached_y_mm = 0.0
+        self._cached_z_mm = initial_z_mm
+
+        # Store references
         self.navigationViewer = navigationViewer
         self.scanCoordinates = scanCoordinates
         self.focusMap = focusMap
@@ -89,6 +94,15 @@ class FocusMapWidget(QFrame):
         self.make_connections()
         self.setEnabled(False)
         self.add_margin = True  # margin for focus grid makes it smaller, but will avoid points at the borders
+
+        # Subscribe to stage position events
+        self._event_bus.subscribe(StagePositionChanged, self._on_stage_position_changed)
+
+    def _on_stage_position_changed(self, event: StagePositionChanged) -> None:
+        """Cache stage position from EventBus."""
+        self._cached_x_mm = event.x_mm
+        self._cached_y_mm = event.y_mm
+        self._cached_z_mm = event.z_mm
 
     def setup_ui(self) -> None:
         """Create and arrange UI components"""
@@ -279,9 +293,7 @@ class FocusMapWidget(QFrame):
             self.focus_points.clear()
             self.navigationViewer.clear_focus_points()
             self.status_label.setText(" ")
-            if self._stage_service is None:
-                return
-            current_z = self._stage_service.get_position().z_mm
+            current_z = self._cached_z_mm
 
             # Use FocusMap to generate coordinates
             coordinates = self.focusMap.generate_grid_coordinates(
@@ -313,9 +325,10 @@ class FocusMapWidget(QFrame):
             )
             return
 
-        if self._stage_service is None:
-            return
-        pos = self._stage_service.get_position()
+        # Use cached position from events
+        x_mm = self._cached_x_mm
+        y_mm = self._cached_y_mm
+        z_mm = self._cached_z_mm
         region_id = None
 
         # If by_region checkbox is checked, ask for region ID
@@ -345,8 +358,8 @@ class FocusMapWidget(QFrame):
             closest_region = None
             min_distance = float("inf")
             for rid, center in self.scanCoordinates.region_centers.items():
-                dx = center[0] - pos.x_mm
-                dy = center[1] - pos.y_mm
+                dx = center[0] - x_mm
+                dy = center[1] - y_mm
                 distance = dx * dx + dy * dy
                 if distance < min_distance:
                     min_distance = distance
@@ -354,9 +367,9 @@ class FocusMapWidget(QFrame):
             region_id = closest_region
 
         if region_id is not None:
-            self.focus_points.append((region_id, pos.x_mm, pos.y_mm, pos.z_mm))
+            self.focus_points.append((region_id, x_mm, y_mm, z_mm))
             self.update_point_list()
-            self.navigationViewer.register_focus_point(pos.x_mm, pos.y_mm)
+            self.navigationViewer.register_focus_point(x_mm, y_mm)
         else:
             QMessageBox.warning(
                 self,
@@ -387,14 +400,13 @@ class FocusMapWidget(QFrame):
                 self._move_stage_to(x, y, z)
 
     def _move_stage_to(self, x: float, y: float, z: float) -> None:
-        """Move stage to position."""
-        if self._stage_service is not None:
-            self._stage_service.move_to(x_mm=x, y_mm=y, z_mm=z)
+        """Move stage to position via EventBus."""
+        self._event_bus.publish(MoveStageToCommand(x_mm=x, y_mm=y, z_mm=z))
 
     def update_current_z(self) -> None:
         index = self.point_combo.currentIndex()
-        if 0 <= index < len(self.focus_points) and self._stage_service is not None:
-            new_z = self._stage_service.get_position().z_mm
+        if 0 <= index < len(self.focus_points):
+            new_z = self._cached_z_mm
             region_id, x, y, _ = self.focus_points[index]
             self.focus_points[index] = (region_id, x, y, new_z)
             self.update_point_list()

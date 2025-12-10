@@ -109,8 +109,18 @@ class MicroscopeModeController:
             # Update state inside lock
             self._state = replace(self._state, current_mode=mode)
 
+            # Extract config details for the event
+            exposure = getattr(config, "exposure_time", None) or getattr(config, "exposure_ms", None)
+            gain = getattr(config, "analog_gain", None)
+            intensity = getattr(config, "illumination_intensity", None) or getattr(config, "intensity", None)
+
         # Publish outside lock
-        self._bus.publish(MicroscopeModeChanged(configuration_name=mode))
+        self._bus.publish(MicroscopeModeChanged(
+            configuration_name=mode,
+            exposure_time_ms=exposure,
+            analog_gain=gain,
+            illumination_intensity=intensity,
+        ))
 
     def apply_mode_for_acquisition(self, mode: str) -> None:
         """Apply mode settings for acquisition (direct calls for speed).

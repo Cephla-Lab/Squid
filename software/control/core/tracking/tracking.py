@@ -16,11 +16,21 @@ import control.core.tracking.tracking_dasiamrpn as tracking
 import control.utils as utils
 import squid.logging
 from squid.abc import AbstractCamera, AbstractStage
+from squid.events import (
+    SetTrackingParametersCommand,
+    SetTrackingPathCommand,
+    SetTrackingChannelsCommand,
+    StartTrackingExperimentCommand,
+    StartTrackingCommand,
+    StopTrackingCommand,
+    TrackingStateChanged,
+)
 
 if TYPE_CHECKING:
     from control.core.display import ImageDisplayWindow
     from control.core.display import LiveController
     from control.microcontroller import Microcontroller
+    from squid.events import EventBus
 
 
 class TrackingController(QObject):
@@ -39,9 +49,11 @@ class TrackingController(QObject):
         liveController: "LiveController",
         autofocusController: Any,
         imageDisplayWindow: "ImageDisplayWindow",
+        event_bus: Optional["EventBus"] = None,
     ) -> None:
         QObject.__init__(self)
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._event_bus = event_bus
         self.camera: AbstractCamera = camera
         self.microcontroller: "Microcontroller" = microcontroller
         self.stage: AbstractStage = stage
@@ -78,9 +90,20 @@ class TrackingController(QObject):
         self.image_resizing_factor: float = 1.0
         self.pixel_size_um_scaled: float = 1.0
 
+        # Subscribe to EventBus commands
+        if self._event_bus:
+            self._event_bus.subscribe(SetTrackingParametersCommand, self._on_set_tracking_parameters)
+            self._event_bus.subscribe(SetTrackingPathCommand, self._on_set_tracking_path)
+            self._event_bus.subscribe(SetTrackingChannelsCommand, self._on_set_tracking_channels)
+            self._event_bus.subscribe(StartTrackingExperimentCommand, self._on_start_tracking_experiment)
+            self._event_bus.subscribe(StartTrackingCommand, self._on_start_tracking)
+            self._event_bus.subscribe(StopTrackingCommand, self._on_stop_tracking)
+
     def start_tracking(self) -> None:
         # save pre-tracking configuration
         self._log.info("start tracking")
+        # Publish tracking started state
+        self._publish_tracking_state(is_tracking=True)
         self.configuration_before_running_tracking = (
             self.liveController.currentConfiguration
         )
@@ -158,6 +181,8 @@ class TrackingController(QObject):
 
         # emit the acquisition finished signal to enable the UI
         self.signal_tracking_stopped.emit()
+        # Publish tracking stopped state
+        self._publish_tracking_state(is_tracking=False)
         QApplication.processEvents()
 
     def start_new_experiment(
@@ -241,6 +266,54 @@ class TrackingController(QObject):
             + str(self.image_resizing_factor)
         )
         self.pixel_size_um_scaled = self.pixel_size_um / self.image_resizing_factor
+
+    # =========================================================================
+    # EventBus Handlers
+    # =========================================================================
+
+    def _on_set_tracking_parameters(self, cmd: SetTrackingParametersCommand) -> None:
+        """Handle SetTrackingParametersCommand from EventBus."""
+        if cmd.time_interval_s is not None:
+            self.set_tracking_time_interval(cmd.time_interval_s)
+        if cmd.enable_stage_tracking is not None:
+            self.flag_stage_tracking_enabled = cmd.enable_stage_tracking
+        if cmd.enable_autofocus is not None:
+            self.flag_AF_enabled = cmd.enable_autofocus
+        if cmd.save_images is not None:
+            self.flag_save_image = cmd.save_images
+        if cmd.tracker_type is not None:
+            self.update_tracker_selection(cmd.tracker_type)
+        if cmd.pixel_size_um is not None:
+            self.update_pixel_size(cmd.pixel_size_um)
+        if cmd.objective is not None:
+            self.objective = cmd.objective
+        if cmd.image_resizing_factor is not None:
+            self.update_image_resizing_factor(cmd.image_resizing_factor)
+
+    def _on_set_tracking_path(self, cmd: SetTrackingPathCommand) -> None:
+        """Handle SetTrackingPathCommand from EventBus."""
+        self.set_base_path(cmd.base_path)
+
+    def _on_set_tracking_channels(self, cmd: SetTrackingChannelsCommand) -> None:
+        """Handle SetTrackingChannelsCommand from EventBus."""
+        self.set_selected_configurations(cmd.channel_names)
+
+    def _on_start_tracking_experiment(self, cmd: StartTrackingExperimentCommand) -> None:
+        """Handle StartTrackingExperimentCommand from EventBus."""
+        self.start_new_experiment(cmd.experiment_id)
+
+    def _on_start_tracking(self, cmd: StartTrackingCommand) -> None:
+        """Handle StartTrackingCommand from EventBus."""
+        self.start_tracking()
+
+    def _on_stop_tracking(self, cmd: StopTrackingCommand) -> None:
+        """Handle StopTrackingCommand from EventBus."""
+        self.stop_tracking()
+
+    def _publish_tracking_state(self, is_tracking: bool) -> None:
+        """Publish tracking state changed event."""
+        if self._event_bus:
+            self._event_bus.publish(TrackingStateChanged(is_tracking=is_tracking))
 
 
 class TrackingWorker(QObject):

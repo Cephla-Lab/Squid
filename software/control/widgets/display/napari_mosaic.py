@@ -13,13 +13,18 @@ from qtpy.QtWidgets import QWidget, QVBoxLayout, QPushButton
 
 from control._def import CHANNEL_COLORS_MAP, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM
 from control.core.configuration import ContrastManager
-from control.core.navigation import ObjectiveStore
 
-from squid.services import CameraService
+from squid.events import EventBus, BinningChanged, ObjectiveChanged
 import squid.logging
 
 
 class NapariMosaicDisplayWidget(QWidget):
+    """Mosaic display widget using napari.
+
+    Subscribes to BinningChanged and ObjectiveChanged events to update pixel size.
+    No direct service or controller access - pure event-driven architecture.
+    """
+
     _log = squid.logging.get_logger(__name__)
     signal_coordinates_clicked = Signal(float, float)  # x, y in mm
     signal_clear_viewer = Signal()
@@ -28,14 +33,19 @@ class NapariMosaicDisplayWidget(QWidget):
 
     def __init__(
         self,
-        objectiveStore: ObjectiveStore,
-        camera_service: CameraService,
+        event_bus: EventBus,
         contrastManager: ContrastManager,
+        initial_pixel_size_factor: float = 1.0,
+        initial_pixel_size_binned_um: float = 1.0,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
-        self.objectiveStore = objectiveStore
-        self._camera_service = camera_service
+        self._event_bus = event_bus
+
+        # Cached values from events (initialized with provided initial values)
+        self._pixel_size_factor = initial_pixel_size_factor
+        self._pixel_size_binned_um = initial_pixel_size_binned_um
+
         self.contrastManager = contrastManager
         self.viewer = napari.Viewer(show=False)
         _layout = QVBoxLayout()
@@ -59,6 +69,20 @@ class NapariMosaicDisplayWidget(QWidget):
         self.viewer_extents: list[float] = []  # [min_y, max_y, min_x, max_x]
         self.top_left_coordinate = None  # [y, x] in mm
         self.mosaic_dtype = None
+
+        # Subscribe to events for dynamic values
+        self._event_bus.subscribe(BinningChanged, self._on_binning_changed)
+        self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+
+    def _on_binning_changed(self, event: BinningChanged) -> None:
+        """Update cached pixel size when binning changes."""
+        if event.pixel_size_binned_um is not None:
+            self._pixel_size_binned_um = event.pixel_size_binned_um
+
+    def _on_objective_changed(self, event: ObjectiveChanged) -> None:
+        """Update cached pixel size factor when objective changes."""
+        if event.pixel_size_um is not None:
+            self._pixel_size_factor = event.pixel_size_um
 
     def customizeViewer(self) -> None:
         self.viewer.bind_key("D", self.toggle_draw_mode)
@@ -192,9 +216,9 @@ class NapariMosaicDisplayWidget(QWidget):
         center_x_mm, center_y_mm = x_mm, y_mm
         original_shape = image.shape
 
-        # calculate pixel size
-        pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
-        binned_pixel_size_um = self._camera_service.get_pixel_size_binned_um()
+        # calculate pixel size using cached values from events
+        pixel_size_factor = self._pixel_size_factor
+        binned_pixel_size_um = self._pixel_size_binned_um
         pixel_size_um = pixel_size_factor * binned_pixel_size_um
         downsample_factor = max(
             1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um)

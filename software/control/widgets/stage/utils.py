@@ -21,7 +21,6 @@ class StageUtils(EventBusDialog):
 
     def __init__(
         self,
-        stage_service: "StageService",
         event_bus: "EventBus",
         is_wellplate: bool = False,
         parent: Optional[QWidget] = None,
@@ -32,8 +31,6 @@ class StageUtils(EventBusDialog):
         self.slide_position: Optional[str] = None
         self._was_live: bool = False
         self._is_live: bool = False
-
-        self._service: "StageService" = stage_service
 
         # UI components
         self.btn_home_X: QPushButton
