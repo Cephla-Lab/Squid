@@ -1,6 +1,6 @@
 # Configuration editor widgets
 import squid.logging
-from typing import Any, Dict, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TYPE_CHECKING
 from configparser import ConfigParser
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
@@ -21,9 +21,11 @@ from qtpy.QtWidgets import (
 )
 
 from control.widgets.base import CollapsibleGroupBox
+from squid.events import ProfileChanged
 
 if TYPE_CHECKING:
     from control.core.configuration import ConfigurationManager
+    from squid.ui_event_bus import UIEventBus
 
 
 class ConfigEditor(QDialog):
@@ -196,10 +198,16 @@ class ProfileWidget(QFrame):
     btn_newProfile: QPushButton
 
     def __init__(
-        self, configurationManager: "ConfigurationManager", *args: Any, **kwargs: Any
+        self,
+        configurationManager: "ConfigurationManager",
+        event_bus: Optional["UIEventBus"] = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.configurationManager = configurationManager
+        self._event_bus = event_bus
+        self._subscriptions: List[Tuple[Type, Callable]] = []
 
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.setup_ui()
@@ -232,6 +240,8 @@ class ProfileWidget(QFrame):
         # Load the profile
         self.configurationManager.load_profile(profile_name)
         self.signal_profile_changed.emit()
+        if self._event_bus is not None:
+            self._event_bus.publish(ProfileChanged(profile_name=profile_name))
 
     def create_new_profile(self) -> None:
         """Create a new profile with current configurations."""

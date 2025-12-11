@@ -8,7 +8,8 @@ from control.core.configuration import ChannelConfigurationManager
 from control.core.configuration import ConfigurationManager
 from control.core.navigation import NavigationViewer
 from control.core.autofocus import LaserAFSettingManager
-from control.gui_hcs import QtMultiPointController
+from control.core.acquisition import MultiPointController
+from control.gui.qt_controllers import MultiPointSignalBridge
 from control.microscope import Microscope
 from tests.tools import get_repo_root
 import tests.control.test_stubs as ts
@@ -45,15 +46,22 @@ def get_test_navigation_viewer(
     return NavigationViewer(objective_store, camera_pixel_size)
 
 
-def get_test_qt_multi_point_controller(
+def get_test_multi_point_controller(
     microscope: Microscope,
-) -> QtMultiPointController:
+) -> MultiPointController:
+    """Create a MultiPointController with signal bridge for testing.
+
+    This replaces get_test_qt_multi_point_controller since QtMultiPointController
+    has been removed. The signal bridge provides the same Qt signal functionality.
+    """
     live_controller = ts.get_test_live_controller(
         microscope=microscope,
         starting_objective=microscope.objective_store.default_objective,
     )
 
-    multi_point_controller = QtMultiPointController(
+    signal_bridge = MultiPointSignalBridge(microscope.objective_store)
+
+    multi_point_controller = MultiPointController(
         microscope=microscope,
         live_controller=live_controller,
         autofocus_controller=ts.get_test_autofocus_controller(
@@ -63,14 +71,20 @@ def get_test_qt_multi_point_controller(
             microscope.low_level_drivers.microcontroller,
         ),
         channel_configuration_manager=microscope.channel_configuration_manager,
+        callbacks=signal_bridge.get_callbacks(),
         scan_coordinates=ts.get_test_scan_coordinates(
             microscope.objective_store, microscope.stage, microscope.camera
         ),
         objective_store=microscope.objective_store,
         laser_autofocus_controller=ts.get_test_laser_autofocus_controller(microscope),
     )
+    signal_bridge.set_controller(multi_point_controller)
 
     multi_point_controller.set_base_path("/tmp/")
-    multi_point_controller.start_new_experiment("unit test experiment (qt)")
+    multi_point_controller.start_new_experiment("unit test experiment")
 
     return multi_point_controller
+
+
+# Backwards compatibility alias
+get_test_qt_multi_point_controller = get_test_multi_point_controller

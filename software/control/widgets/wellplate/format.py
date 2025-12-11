@@ -1,6 +1,6 @@
 from control.widgets.wellplate._common import *
 from control.widgets.base import EventBusWidget
-from squid.events import LiveStateChanged, SaveWellplateCalibrationCommand
+from squid.events import LiveStateChanged, SaveWellplateCalibrationCommand, WellplateFormatChanged
 import csv
 
 if TYPE_CHECKING:
@@ -122,6 +122,15 @@ class WellplateFormatWidget(EventBusWidget):
             self.signalWellplateSettings.emit(
                 QVariant("glass slide"), 0, 0, 0, 0, 0, 0, 0, 1, 1
             )
+            self._publish(WellplateFormatChanged(
+                format_name="glass slide",
+                rows=1,
+                cols=1,
+                well_spacing_mm=0.0,
+                well_size_mm=0.0,
+                a1_x_mm=0.0,
+                a1_y_mm=0.0,
+            ))
             return
         else:
             print(f"Wellplate format {wellplate_format} not recognized")
@@ -139,6 +148,15 @@ class WellplateFormatWidget(EventBusWidget):
             settings["rows"],
             settings["cols"],
         )
+        self._publish(WellplateFormatChanged(
+            format_name=wellplate_format,
+            rows=settings["rows"],
+            cols=settings["cols"],
+            well_spacing_mm=settings["well_spacing_mm"],
+            well_size_mm=settings["well_size_mm"],
+            a1_x_mm=settings["a1_x_mm"],
+            a1_y_mm=settings["a1_y_mm"],
+        ))
 
     def getWellplateSettings(
         self, wellplate_format: str

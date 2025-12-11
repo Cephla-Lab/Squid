@@ -94,9 +94,7 @@ class SimulatedWithTimeouts(SimulatedCamera):
 def test_read_frame_on_timeout():
     sim_cam = SimulatedWithTimeouts(
         timeout_ids=[3, 5, 8],
-        camera_config=squid.config.get_camera_config(),
-        hw_trigger_fn=None,
-        hw_set_strobe_delay_ms_fn=None,
+        config=squid.config.get_camera_config(),
     )
 
     def do_frame():

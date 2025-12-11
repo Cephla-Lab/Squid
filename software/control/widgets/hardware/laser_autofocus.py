@@ -39,6 +39,8 @@ from squid.events import (
     LaserAFFrameCaptured,
     LaserAFPropertiesChanged,
     LaserAFDisplacementMeasured,
+    ProfileChanged,
+    ObjectiveChanged,
 )
 
 if TYPE_CHECKING:
@@ -123,6 +125,8 @@ class LaserAutofocusSettingWidget(QWidget):
         self._event_bus.subscribe(LaserAFInitialized, self._on_laser_af_initialized)
         self._event_bus.subscribe(LaserAFFrameCaptured, self._on_frame_captured)
         self._event_bus.subscribe(LaserAFPropertiesChanged, self._on_properties_changed)
+        self._event_bus.subscribe(ProfileChanged, self._on_profile_or_objective_changed)
+        self._event_bus.subscribe(ObjectiveChanged, self._on_profile_or_objective_changed)
 
     def _on_properties_changed(self, event: LaserAFPropertiesChanged) -> None:
         """Handle laser AF properties change from EventBus."""
@@ -191,6 +195,10 @@ class LaserAutofocusSettingWidget(QWidget):
             return
 
         self._process_spot_detection(event.frame, params)
+
+    def _on_profile_or_objective_changed(self, event) -> None:
+        """Handle profile or objective changes - refresh widget values."""
+        self.update_values()
 
     def init_ui(self) -> None:
         layout = QVBoxLayout()
@@ -701,6 +709,8 @@ class LaserAutofocusControlWidget(QFrame):
         self._event_bus.subscribe(LaserAFReferenceSet, self._on_reference_set)
         self._event_bus.subscribe(LaserAFInitialized, self._on_initialized)
         self._event_bus.subscribe(LaserAFDisplacementMeasured, self._on_displacement_measured)
+        self._event_bus.subscribe(ProfileChanged, self._on_profile_or_objective_changed)
+        self._event_bus.subscribe(ObjectiveChanged, self._on_profile_or_objective_changed)
 
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Track live state for stop/start around operations."""
@@ -722,6 +732,10 @@ class LaserAutofocusControlWidget(QFrame):
         """Handle displacement measurement event - replaces Qt signal connection."""
         if event.success and event.displacement_um is not None:
             self.label_displacement.setNum(event.displacement_um)
+
+    def _on_profile_or_objective_changed(self, event) -> None:
+        """Handle profile or objective changes - refresh init state."""
+        self.update_init_state()
 
     def add_components(self) -> None:
         self.btn_set_reference = QPushButton(" Set Reference ")

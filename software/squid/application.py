@@ -14,7 +14,7 @@ Usage:
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import squid.logging
 
@@ -28,6 +28,10 @@ from control.gui_hcs import HighContentScreeningGui
 from squid.services import ServiceRegistry
 from squid.controllers import MicroscopeModeController, PeripheralsController
 from squid.events import event_bus
+
+if TYPE_CHECKING:
+    from squid.qt_event_dispatcher import QtEventDispatcher
+    from squid.ui_event_bus import UIEventBus
 
 
 @dataclass
@@ -86,6 +90,10 @@ class ApplicationContext:
         self._controllers: Optional[Controllers] = None
         self._services: Optional["ServiceRegistry"] = None
         self._gui: Optional["HighContentScreeningGui"] = None
+
+        # Qt/UI event handling - created lazily via create_ui_event_bus()
+        self._qt_dispatcher: Optional["QtEventDispatcher"] = None
+        self._ui_event_bus: Optional["UIEventBus"] = None
 
         self._log.info(
             f"Creating ApplicationContext (simulation={simulation}, "
@@ -315,6 +323,7 @@ class ApplicationContext:
             ObjectiveChangerService,
             SpinningDiskService,
             NL5Service,
+            MovementService,
         )
         from squid.events import event_bus
 
@@ -397,6 +406,17 @@ class ApplicationContext:
                 NL5Service(nl5, event_bus),
             )
 
+        # Movement service for stage/piezo position polling
+        # This replaces MovementUpdater from qt_controllers.py
+        piezo = getattr(self._microscope.addons, "piezo_stage", None)
+        movement_service = MovementService(
+            self._microscope.stage,
+            piezo,
+            event_bus,
+        )
+        self._services.register("movement", movement_service)
+        movement_service.start()  # Start polling immediately
+
         self._log.info("Services built successfully")
 
     @property
@@ -424,6 +444,34 @@ class ApplicationContext:
     def is_simulation(self) -> bool:
         """Check if running in simulation mode."""
         return self._simulation
+
+    def create_ui_event_bus(self) -> "UIEventBus":
+        """Create UIEventBus for widget subscriptions.
+
+        Must be called from Qt main thread after QApplication is created.
+        Returns the UIEventBus that widgets should use for subscriptions.
+
+        This ensures widget event handlers run on the Qt main thread,
+        preventing GUI crashes from worker-thread events.
+        """
+        if self._ui_event_bus is None:
+            from squid.qt_event_dispatcher import QtEventDispatcher
+            from squid.ui_event_bus import UIEventBus
+
+            self._qt_dispatcher = QtEventDispatcher()
+            self._ui_event_bus = UIEventBus(event_bus, self._qt_dispatcher)
+            self._log.info("Created UIEventBus for thread-safe widget updates")
+
+            # Wire to services so they can expose it
+            if self._services is not None:
+                self._services.ui_event_bus = self._ui_event_bus
+
+        return self._ui_event_bus
+
+    @property
+    def ui_event_bus(self) -> Optional["UIEventBus"]:
+        """Get the UIEventBus, or None if not yet created."""
+        return self._ui_event_bus
 
     def create_gui(self) -> "HighContentScreeningGui":
         """

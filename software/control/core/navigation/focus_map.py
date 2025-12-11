@@ -23,6 +23,12 @@ from control.core.navigation.objective_store import ObjectiveStore
 from control.core.navigation.scan_coordinates import FovCenter, ScanCoordinates
 import squid.abc
 import squid.logging
+from squid.abc import Pos
+from squid.events import StageMovementStopped
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from squid.ui_event_bus import UIEventBus
 
 
 class FocusMap:
@@ -398,11 +404,19 @@ class NavigationViewer(QFrame):
         camera: squid.abc.AbstractCamera,
         sample: str = "glass slide",
         invertX: bool = False,
+        event_bus: Optional["UIEventBus"] = None,
         *args: Any,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._event_bus = event_bus
+        self._subscriptions: List[tuple] = []
+
+        # Subscribe to stage movement events via UIEventBus (thread-safe)
+        if self._event_bus is not None:
+            self._subscribe(StageMovementStopped, self._on_stage_movement_stopped)
+
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.sample: str = sample
         self.objectiveStore: ObjectiveStore = objectivestore
@@ -492,6 +506,38 @@ class NavigationViewer(QFrame):
         y = self.graphics_widget.height() - button_height - margin
         self.btn_clear_coordinates.move(x, y)
         self.btn_clear_coordinates.raise_()
+
+    # -------------------------------------------------------------------------
+    # EventBus subscription methods
+    # -------------------------------------------------------------------------
+
+    def _subscribe(self, event_type: type, handler: Callable) -> None:
+        """Subscribe to an event type with automatic cleanup tracking."""
+        if self._event_bus is not None:
+            self._event_bus.subscribe(event_type, handler)
+            self._subscriptions.append((event_type, handler))
+
+    def _cleanup_subscriptions(self) -> None:
+        """Unsubscribe all tracked subscriptions."""
+        if self._event_bus is not None:
+            for event_type, handler in self._subscriptions:
+                self._event_bus.unsubscribe(event_type, handler)
+        self._subscriptions.clear()
+
+    def _on_stage_movement_stopped(self, event: StageMovementStopped) -> None:
+        """Handle stage movement stopped event - update FOV display."""
+        pos = Pos(
+            x_mm=event.x_mm,
+            y_mm=event.y_mm,
+            z_mm=event.z_mm,
+            theta_rad=getattr(event, "theta_rad", None),
+        )
+        self.draw_fov_current_location(pos)
+
+    def closeEvent(self, event: Any) -> None:
+        """Clean up subscriptions when widget is closed."""
+        self._cleanup_subscriptions()
+        super().closeEvent(event)
 
     def resizeEvent(self, event: Any) -> None:
         """Reposition button when widget is resized"""

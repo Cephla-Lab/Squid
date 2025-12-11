@@ -18,6 +18,8 @@ from squid.events import (
     AcquisitionStateChanged,
     AcquisitionProgress,
     AcquisitionRegionProgress,
+    LoadingPositionReached,
+    ScanningPositionReached,
 )
 
 from qtpy.QtCore import Signal, QTimer
@@ -95,6 +97,8 @@ class MultiPointWithFluidicsWidget(QFrame):
         self._event_bus.subscribe(AcquisitionStateChanged, self._on_acquisition_state_changed)
         self._event_bus.subscribe(AcquisitionProgress, self._on_acquisition_progress)
         self._event_bus.subscribe(AcquisitionRegionProgress, self._on_region_progress)
+        self._event_bus.subscribe(LoadingPositionReached, self._on_loading_position_reached)
+        self._event_bus.subscribe(ScanningPositionReached, self._on_scanning_position_reached)
 
     def add_components(self):
         self.btn_setSavingDir = QPushButton("Browse")
@@ -396,6 +400,14 @@ class MultiPointWithFluidicsWidget(QFrame):
 
     def enable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(True)
+
+    def _on_loading_position_reached(self, event: LoadingPositionReached) -> None:
+        """Handle loading position reached - disable acquisition button."""
+        self.disable_the_start_aquisition_button()
+
+    def _on_scanning_position_reached(self, event: ScanningPositionReached) -> None:
+        """Handle scanning position reached - enable acquisition button."""
+        self.enable_the_start_aquisition_button()
 
     def update_region_progress(self, current_fov, num_fovs):
         self.progress_bar.setMaximum(num_fovs)

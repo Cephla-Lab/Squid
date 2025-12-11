@@ -22,7 +22,6 @@ from control._def import (
     DEFAULT_OBJECTIVE,
 )
 import control.widgets as widgets
-from squid.events import event_bus
 from control.utils_config import ChannelMode
 
 
@@ -91,7 +90,7 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
             current_binning = None
     if CAMERA_TYPE in ["Toupcam", "Tucsen", "Kinetix"]:
         gui.cameraSettingWidget = widgets.CameraSettingsWidget(
-            event_bus,
+            gui._ui_event_bus,
             exposure_limits=exposure_limits,
             gain_range=gain_range,
             pixel_format_names=pixel_format_names,
@@ -106,7 +105,7 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
         )
     else:
         gui.cameraSettingWidget = widgets.CameraSettingsWidget(
-            event_bus,
+            gui._ui_event_bus,
             exposure_limits=exposure_limits,
             gain_range=gain_range,
             pixel_format_names=pixel_format_names,
@@ -121,7 +120,9 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
         )
 
     # Profile and live control widgets
-    gui.profileWidget = widgets.ProfileWidget(gui.configurationManager)
+    gui.profileWidget = widgets.ProfileWidget(
+        gui.configurationManager, event_bus=gui._ui_event_bus
+    )
 
     # Seed initial state for live control widget
     objective_name = getattr(gui.objectiveStore, "current_objective", None) or DEFAULT_OBJECTIVE
@@ -157,7 +158,7 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
         gain_range = None
 
     gui.liveControlWidget = widgets.LiveControlWidget(
-        event_bus,
+        gui._ui_event_bus,
         gui.streamHandler,
         initial_configuration=initial_configuration,
         initial_objective=objective_name,
@@ -171,26 +172,24 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
     )
 
     # Navigation and stage widgets
-    stage_service = gui._services.get("stage") if gui._services else None
     gui.navigationWidget = widgets.NavigationWidget(
-        stage_service,
-        event_bus,
+        gui._ui_event_bus,
         widget_configuration=f"{WELLPLATE_FORMAT} well plate",
     )
     gui.stageUtils = widgets.StageUtils(
-        event_bus,
+        gui._ui_event_bus,
         is_wellplate=True,
     )
 
-    # DAC control widget (uses EventBus, no service needed)
-    gui.dacControlWidget = widgets.DACControWidget(event_bus)
+    # DAC control widget (uses UIEventBus for thread-safe updates)
+    gui.dacControlWidget = widgets.DACControWidget(gui._ui_event_bus)
 
     # Autofocus widget
-    gui.autofocusWidget = widgets.AutoFocusWidget(event_bus)
+    gui.autofocusWidget = widgets.AutoFocusWidget(gui._ui_event_bus)
 
     # Piezo widget
     if gui.piezo:
-        gui.piezoWidget = widgets.PiezoWidget(gui.piezo)
+        gui.piezoWidget = widgets.PiezoWidget(gui.piezo, event_bus=gui._ui_event_bus)
 
     # Objectives widget
     if USE_XERYON:
@@ -219,7 +218,7 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
             gui.liveController, "enable_channel_auto_filter_switching", True
         )
         gui.filterControllerWidget = widgets.FilterControllerWidget(
-            event_bus=event_bus,
+            event_bus=gui._ui_event_bus,
             wheel_index=1,
             num_positions=num_positions,
             initial_position=initial_position,
@@ -241,7 +240,7 @@ def create_wellplate_widgets(gui: "HighContentScreeningGui") -> None:
     pixel_size_binned_um = gui.streamHandler.pixel_size_um if hasattr(gui.streamHandler, 'pixel_size_um') else 0.084665
 
     gui.wellplateFormatWidget = widgets.WellplateFormatWidget(
-        event_bus=event_bus,
+        event_bus=gui._ui_event_bus,
         navigationViewer=gui.navigationViewer,
         streamHandler=gui.streamHandler,
         pixel_size_factor=pixel_size_factor,
@@ -258,7 +257,7 @@ def create_wellplate_widgets(gui: "HighContentScreeningGui") -> None:
         gui.navigationViewer,
         gui.scanCoordinates,
         core.FocusMap(),
-        event_bus,
+        gui._ui_event_bus,
     )
 
 
@@ -284,7 +283,7 @@ def create_laser_autofocus_widgets(gui: "HighContentScreeningGui") -> None:
 
     gui.laserAutofocusSettingWidget = widgets.LaserAutofocusSettingWidget(
         streamHandler=gui.streamHandler_focus_camera,
-        event_bus=event_bus,
+        event_bus=gui._ui_event_bus,
         initial_properties=initial_properties,
         initial_is_initialized=gui.laserAutofocusController.is_initialized,
         initial_characterization_mode=gui.laserAutofocusController.characterization_mode,
@@ -295,10 +294,10 @@ def create_laser_autofocus_widgets(gui: "HighContentScreeningGui") -> None:
         N=1000, include_x=True, include_y=False
     )
     gui.displacementMeasurementWidget = widgets.DisplacementMeasurementWidget(
-        event_bus=event_bus,
+        event_bus=gui._ui_event_bus,
     )
     gui.laserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(
-        event_bus=event_bus,
+        event_bus=gui._ui_event_bus,
         initial_is_initialized=gui.laserAutofocusController.is_initialized,
         initial_has_reference=laser_af_props.has_reference,
     )
@@ -347,7 +346,7 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
         gui.navigationViewer,
         gui.scanCoordinates,
         gui.focusMapWidget,
-        event_bus,
+        gui._ui_event_bus,
         initial_channel_configs=initial_channel_names,
         z_ustep_per_mm=z_ustep_per_mm,
         initial_z_mm=initial_z_mm,
@@ -355,7 +354,7 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
     gui.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(
         gui.navigationViewer,
         gui.scanCoordinates,
-        event_bus,
+        gui._ui_event_bus,
         initial_channel_configs=initial_channel_names,
         initial_objective=objective_name,
         objective_pixel_size_factors=objective_pixel_size_factors,
@@ -374,12 +373,12 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
             gui.channelConfigurationManager,
             gui.scanCoordinates,
             gui.focusMapWidget,
-            event_bus,
+            gui._ui_event_bus,
         )
     gui.multiPointWithFluidicsWidget = widgets.MultiPointWithFluidicsWidget(
         gui.navigationViewer,
         gui.scanCoordinates,
-        event_bus,
+        gui._ui_event_bus,
         initial_channel_configs=initial_channel_names,
         napariMosaicWidget=gui.napariMosaicDisplayWidget,
         z_ustep_per_mm=z_ustep_per_mm,
@@ -390,7 +389,7 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
 
     if ENABLE_TRACKING:
         gui.trackingControlWidget = widgets.TrackingControllerWidget(
-            event_bus=event_bus,
+            event_bus=gui._ui_event_bus,
             initial_channel_configs=initial_channel_names,
             peripheral_service=gui._services.get("peripheral") if gui._services else None,
             objectivesWidget=gui.objectivesWidget,

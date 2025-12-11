@@ -28,9 +28,9 @@ class AutoFocusController:
         stage: AbstractStage,
         liveController: LiveController,
         microcontroller: Microcontroller,
-        finished_fn: Callable[[], None],
-        image_to_display_fn: Callable[[np.ndarray], None],
-        nl5: Optional[NL5],
+        finished_fn: Optional[Callable[[], None]] = None,
+        image_to_display_fn: Optional[Callable[[np.ndarray], None]] = None,
+        nl5: Optional["NL5"] = None,
         # Service-based parameters (optional for backwards compatibility)
         camera_service: Optional["CameraService"] = None,
         stage_service: Optional["StageService"] = None,
@@ -49,7 +49,7 @@ class AutoFocusController:
         self.liveController: LiveController = liveController
         self._finished_fn = finished_fn
         self._image_to_display_fn = image_to_display_fn
-        self.nl5: Optional[NL5] = nl5
+        self.nl5: Optional["NL5"] = nl5
 
         # Service references
         self._camera_service = camera_service
@@ -63,10 +63,25 @@ class AutoFocusController:
         self.crop_width: int = control._def.AF.CROP_WIDTH
         self.crop_height: int = control._def.AF.CROP_HEIGHT
         self.autofocus_in_progress: bool = False
+        self._autofocus_abort_requested: bool = False
         self.focus_map_coords: List[Tuple[float, float, float]] = []
         self.use_focus_map: bool = False
         self.was_live_before_autofocus: bool = False
         self.callback_was_enabled_before_autofocus: bool = False
+
+        # Subscribe to EventBus commands for thread-safe UI control
+        if self._event_bus is not None:
+            from squid.events import (
+                StartAutofocusCommand,
+                StopAutofocusCommand,
+                SetAutofocusParamsCommand,
+            )
+
+            self._event_bus.subscribe(StartAutofocusCommand, self._on_start_command)
+            self._event_bus.subscribe(StopAutofocusCommand, self._on_stop_command)
+            self._event_bus.subscribe(
+                SetAutofocusParamsCommand, self._on_set_params_command
+            )
 
     def set_N(self, N: int) -> None:
         self.N = N
@@ -102,7 +117,7 @@ class AutoFocusController:
             else:
                 self.stage.move_z_to(target_z)
             self.autofocus_in_progress = False
-            self._finished_fn()
+            self._emit_finished()
             return
         # stop live
         if self.liveController.is_live:
@@ -135,11 +150,11 @@ class AutoFocusController:
                 self._focus_thread.join(1.0)
             except RuntimeError as e:
                 self._log.exception("Critical error joining previous autofocus thread.")
-                self._finished_fn()
+                self._emit_finished_failed("Critical error joining previous autofocus thread")
                 raise e
             if self._focus_thread.is_alive():
                 self._log.error("Previous focus thread failed to join!")
-                self._finished_fn()
+                self._emit_finished_failed("Previous focus thread failed to join")
                 raise RuntimeError("Previous focus thread failed to join")
 
         self._keep_running.set()
@@ -151,6 +166,20 @@ class AutoFocusController:
         )
         self._focus_thread = Thread(target=self._autofocus_worker.run, daemon=True)
         self._focus_thread.start()
+
+    def stop_autofocus(self) -> None:
+        """Request autofocus stop and emit failure event when aborted."""
+        if not self.autofocus_in_progress:
+            return
+
+        self._autofocus_abort_requested = True
+        self._keep_running.clear()
+
+        if self._focus_thread and self._focus_thread.is_alive():
+            try:
+                self._focus_thread.join(timeout=1.0)
+            except Exception as exc:  # pragma: no cover - defensive
+                self._log.debug(f"Error joining autofocus thread: {exc}")
 
     def _on_autofocus_completed(self) -> None:
         # re-enable callback
@@ -164,17 +193,85 @@ class AutoFocusController:
         if self.was_live_before_autofocus:
             self.liveController.start_live()
 
-        # emit the autofocus finished signal to enable the UI
-        self._finished_fn()
-        self._log.info("autofocus finished")
+        if self._autofocus_abort_requested:
+            # Emit failure on abort so UI re-enables and clears state
+            self._emit_finished_failed("Autofocus aborted")
+            self._log.info("autofocus aborted")
+        else:
+            # emit the autofocus finished signal to enable the UI
+            self._emit_finished()
+            self._log.info("autofocus finished")
 
         # update the state
         self.autofocus_in_progress = False
+        self._autofocus_abort_requested = False
+
+    def _emit_finished(self) -> None:
+        """Emit autofocus finished via callback or EventBus."""
+        if self._finished_fn is not None:
+            self._finished_fn()
+        elif self._event_bus is not None:
+            from squid.events import AutofocusCompleted
+            # Get final Z position
+            if self._stage_service:
+                pos = self._stage_service.get_position()
+                z_pos = pos.z_mm
+            else:
+                pos = self.stage.get_pos()
+                z_pos = pos.z_mm
+            self._event_bus.publish(AutofocusCompleted(
+                success=True,
+                z_position=z_pos,
+                score=None,  # Score tracking would need to be added to worker
+            ))
+
+    def _emit_image(self, image: np.ndarray) -> None:
+        """Emit image for display via callback or StreamHandler.
+
+        Note: Images go through StreamHandler, not EventBus, to avoid
+        overwhelming the event system with high-frequency frame data.
+        """
+        if self._image_to_display_fn is not None:
+            self._image_to_display_fn(image)
+
+    def _emit_finished_failed(self, error: str) -> None:
+        """Emit autofocus failed via callback or EventBus."""
+        if self._finished_fn is not None:
+            self._finished_fn()  # Legacy callback doesn't distinguish success/failure
+        elif self._event_bus is not None:
+            from squid.events import AutofocusCompleted
+            self._event_bus.publish(AutofocusCompleted(
+                success=False,
+                z_position=None,
+                score=None,
+                error=error,
+            ))
 
     def wait_till_autofocus_has_completed(self) -> None:
         while self.autofocus_in_progress:
             time.sleep(0.005)
         self._log.info("autofocus wait has completed, exit wait")
+
+    # ============================================================
+    # EventBus command handlers
+    # ============================================================
+    def _on_start_command(self, _cmd) -> None:
+        """Handle StartAutofocusCommand."""
+        if self.autofocus_in_progress:
+            self._log.info("Autofocus already in progress; ignoring start command")
+            return
+        self.autofocus()
+
+    def _on_stop_command(self, _cmd) -> None:
+        """Handle StopAutofocusCommand."""
+        self.stop_autofocus()
+
+    def _on_set_params_command(self, cmd) -> None:
+        """Handle SetAutofocusParamsCommand."""
+        if cmd.n_planes is not None:
+            self.set_N(int(cmd.n_planes))
+        if cmd.delta_z_um is not None:
+            self.set_deltaZ(cmd.delta_z_um)
 
     def set_focus_map_use(self, enable: bool) -> None:
         if not enable:

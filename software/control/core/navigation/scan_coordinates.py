@@ -255,12 +255,15 @@ class ScanCoordinates:
         step_y_mm = fov_height_mm * (1 - overlap_percent / 100)
 
         # Log FOV info for debugging
+        overlap_x_mm = fov_width_mm - step_x_mm
+        overlap_y_mm = fov_height_mm - step_y_mm
         self._log.info(
             f"add_region: scan_size={scan_size_mm:.3f}mm, overlap={overlap_percent}%, "
             f"pixel_size_factor={pixel_size_factor:.4f}, "
             f"raw_camera_FOV={raw_fov_width}x{raw_fov_height}mm, "
             f"effective_FOV={fov_width_mm:.3f}x{fov_height_mm:.3f}mm, "
-            f"step={step_x_mm:.3f}x{step_y_mm:.3f}mm"
+            f"step={step_x_mm:.3f}x{step_y_mm:.3f}mm, "
+            f"actual_overlap={overlap_x_mm:.3f}x{overlap_y_mm:.3f}mm ({100*overlap_x_mm/fov_width_mm:.1f}%x{100*overlap_y_mm/fov_height_mm:.1f}%)"
         )
 
         scan_coordinates = []
@@ -369,6 +372,16 @@ class ScanCoordinates:
                 fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)
             )
         )
+        # Log positions summary for overlap verification
+        if len(scan_coordinates) > 0:
+            x_positions = sorted(set(c[0] for c in scan_coordinates))
+            y_positions = sorted(set(c[1] for c in scan_coordinates))
+            if len(x_positions) > 1:
+                x_spacing = x_positions[1] - x_positions[0]
+                self._log.info(f"  X positions: {[f'{x:.3f}' for x in x_positions[:4]]}{'...' if len(x_positions)>4 else ''} (spacing={x_spacing:.3f}mm)")
+            if len(y_positions) > 1:
+                y_spacing = y_positions[1] - y_positions[0]
+                self._log.info(f"  Y positions: {[f'{y:.3f}' for y in y_positions[:4]]}{'...' if len(y_positions)>4 else ''} (spacing={y_spacing:.3f}mm)")
         self._log.info(f"Added Region: {well_id} with {len(scan_coordinates)} FOV positions")
 
     def remove_region(self, well_id: str) -> None:

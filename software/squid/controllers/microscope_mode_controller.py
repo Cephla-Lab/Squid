@@ -15,6 +15,7 @@ from squid.events import (
     SetExposureTimeCommand,
     SetAnalogGainCommand,
     MicroscopeModeChanged,
+    UpdateChannelConfigurationCommand,
 )
 
 if TYPE_CHECKING:
@@ -62,11 +63,32 @@ class MicroscopeModeController:
         )
 
         self._bus.subscribe(SetMicroscopeModeCommand, self._on_set_mode)
+        self._bus.subscribe(UpdateChannelConfigurationCommand, self._on_update_config)
 
     @property
     def state(self) -> MicroscopeModeState:
         """Get current state."""
         return self._state
+
+    def _on_update_config(self, cmd: UpdateChannelConfigurationCommand) -> None:
+        """Handle UpdateChannelConfigurationCommand - update internal config cache."""
+        with self._lock:
+            config_name = cmd.config_name
+            if config_name not in self._channel_configs:
+                return
+
+            config = self._channel_configs[config_name]
+
+            # Update the config object with new values
+            if cmd.exposure_time_ms is not None and hasattr(config, "exposure_time"):
+                config.exposure_time = cmd.exposure_time_ms
+            if cmd.analog_gain is not None and hasattr(config, "analog_gain"):
+                config.analog_gain = cmd.analog_gain
+            if cmd.illumination_intensity is not None:
+                if hasattr(config, "illumination_intensity"):
+                    config.illumination_intensity = cmd.illumination_intensity
+                elif hasattr(config, "intensity"):
+                    config.intensity = cmd.illumination_intensity
 
     def _on_set_mode(self, cmd: SetMicroscopeModeCommand) -> None:
         """Handle SetMicroscopeModeCommand."""

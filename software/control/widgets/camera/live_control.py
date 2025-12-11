@@ -79,6 +79,7 @@ class LiveControlWidget(EventBusFrame):
         self._subscribe(MicroscopeModeChanged, self._on_microscope_mode_changed)
         self._subscribe(ObjectiveChanged, self._on_objective_changed)
         self._subscribe(ChannelConfigurationsChanged, self._on_channel_configs_changed)
+        self._subscribe(ProfileChanged, self._on_profile_changed)
 
     def add_components(
         self,
@@ -305,6 +306,11 @@ class LiveControlWidget(EventBusFrame):
         if event.objective_name == self._current_objective:
             self._channel_config_names = list(event.configuration_names)
             self.refresh_mode_list()
+
+    def _on_profile_changed(self, event: ProfileChanged) -> None:
+        """Handle profile changed event - refresh mode list and reselect current mode."""
+        self.refresh_mode_list()
+        self.select_new_microscope_mode_by_name(self.currentConfiguration.name)
 
     def update_configuration(self, conf_name: str) -> None:
         self.is_switching_mode = True

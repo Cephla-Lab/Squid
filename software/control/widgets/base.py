@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional, List, Any, Callable
+from typing import TYPE_CHECKING, Optional, List, Any, Callable, Union
 from qtpy.QtCore import Qt, QAbstractTableModel, QModelIndex
 from qtpy.QtWidgets import (
     QMainWindow,
@@ -22,6 +22,7 @@ import control.utils as utils
 if TYPE_CHECKING:
     from control.core.acquisition import MultiPointController
     from squid.events import EventBus, Event
+    from squid.ui_event_bus import UIEventBus
 
 
 class EventBusWidget(QWidget):
@@ -34,6 +35,10 @@ class EventBusWidget(QWidget):
 
     Read-only service access (getting limits, available options) is acceptable
     since it doesn't change state.
+
+    Accepts either EventBus or UIEventBus. If UIEventBus is provided,
+    handlers are guaranteed to run on the Qt main thread, preventing
+    crashes from worker-thread events.
 
     Example:
         class MyWidget(EventBusWidget):
@@ -49,7 +54,11 @@ class EventBusWidget(QWidget):
                 self.label.setText(str(event.value))
     """
 
-    def __init__(self, event_bus: "EventBus", parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        event_bus: Union["EventBus", "UIEventBus"],
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
         self._bus = event_bus
         self._subscriptions: List[tuple[type, Callable]] = []
@@ -83,9 +92,16 @@ class EventBusFrame(QFrame):
 
     Same as EventBusWidget but inherits from QFrame for widgets that need
     frame styling (Panel, Raised, etc.).
+
+    Accepts either EventBus or UIEventBus. If UIEventBus is provided,
+    handlers are guaranteed to run on the Qt main thread.
     """
 
-    def __init__(self, event_bus: "EventBus", parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        event_bus: Union["EventBus", "UIEventBus"],
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
         self._bus = event_bus
         self._subscriptions: List[tuple[type, Callable]] = []
@@ -118,9 +134,16 @@ class EventBusDialog(QDialog):
     """Base QDialog that communicates via EventBus only.
 
     Same as EventBusWidget but inherits from QDialog for modal dialogs.
+
+    Accepts either EventBus or UIEventBus. If UIEventBus is provided,
+    handlers are guaranteed to run on the Qt main thread.
     """
 
-    def __init__(self, event_bus: "EventBus", parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        event_bus: Union["EventBus", "UIEventBus"],
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
         self._bus = event_bus
         self._subscriptions: List[tuple[type, Callable]] = []

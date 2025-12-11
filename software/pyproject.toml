@@ -90,7 +90,20 @@ markers = [
     "qt: Tests requiring Qt/PyQt5",
     "manual: Tests for manual/visual verification",
 ]
-addopts = ["-v", "--tb=short", "-ra"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "-ra",
+    # Disable heavy third-party pytest plugins that interfere with sandboxed runs
+    "-p",
+    "no:napari",
+    "-p",
+    "no:napari",
+    "-p",
+    "no:napari-plugin-engine",
+    "-p",
+    "no:npe2",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",

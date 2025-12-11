@@ -20,6 +20,8 @@ from squid.events import (
     AcquisitionStateChanged,
     AcquisitionProgress,
     AcquisitionRegionProgress,
+    LoadingPositionReached,
+    ScanningPositionReached,
 )
 
 from qtpy.QtCore import Signal, Qt, QTimer
@@ -106,6 +108,8 @@ class FlexibleMultiPointWidget(QFrame):
         self._event_bus.subscribe(AcquisitionStateChanged, self._on_acquisition_state_changed)
         self._event_bus.subscribe(AcquisitionProgress, self._on_acquisition_progress)
         self._event_bus.subscribe(AcquisitionRegionProgress, self._on_region_progress)
+        self._event_bus.subscribe(LoadingPositionReached, self._on_loading_position_reached)
+        self._event_bus.subscribe(ScanningPositionReached, self._on_scanning_position_reached)
 
     def _on_stage_position_changed(self, event: StagePositionChanged) -> None:
         """Cache stage position from EventBus."""
@@ -1486,6 +1490,14 @@ class FlexibleMultiPointWidget(QFrame):
     def _on_region_progress(self, event: AcquisitionRegionProgress) -> None:
         """Handle region progress updates from EventBus."""
         self.update_region_progress(event.current_region, event.total_regions)
+
+    def _on_loading_position_reached(self, event: LoadingPositionReached) -> None:
+        """Handle loading position reached - disable acquisition button."""
+        self.disable_the_start_aquisition_button()
+
+    def _on_scanning_position_reached(self, event: ScanningPositionReached) -> None:
+        """Handle scanning position reached - enable acquisition button."""
+        self.enable_the_start_aquisition_button()
 
     # =========================================================================
     # UI Event Handlers (publish commands)

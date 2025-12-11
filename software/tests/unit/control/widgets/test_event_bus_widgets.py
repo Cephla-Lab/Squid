@@ -261,7 +261,11 @@ class TestWidgetInheritance:
         assert issubclass(WellplateFormatWidget, EventBusWidget)
 
     def test_constructor_requires_event_bus(self):
-        """Widget constructors should require event_bus positional argument."""
+        """Widget constructors should fail without valid event_bus.
+
+        Widgets either raise TypeError (missing required arg) or AttributeError
+        (None passed but used during __init__).
+        """
         from control.widgets.stage.navigation import NavigationWidget
         from control.widgets.camera.live_control import LiveControlWidget
         from control.widgets.camera.settings import CameraSettingsWidget
@@ -270,17 +274,20 @@ class TestWidgetInheritance:
         from control.widgets.stage.autofocus import AutoFocusWidget
         from control.widgets.wellplate.format import WellplateFormatWidget
 
-        with pytest.raises(TypeError):
+        # Widgets that subscribe in __init__ raise AttributeError with None bus
+        with pytest.raises((TypeError, AttributeError)):
             NavigationWidget(None)  # type: ignore[arg-type]
-        with pytest.raises(TypeError):
+        with pytest.raises((TypeError, AttributeError)):
             LiveControlWidget(None, None, None)  # type: ignore[arg-type]
-        with pytest.raises(TypeError):
+        with pytest.raises((TypeError, AttributeError)):
             CameraSettingsWidget(None, None)  # type: ignore[arg-type]
+        with pytest.raises((TypeError, AttributeError)):
+            WellplateFormatWidget(None, None, None)  # type: ignore[arg-type]
+
+        # Widgets without required args raise TypeError
         with pytest.raises(TypeError):
             TriggerControlWidget()  # type: ignore[call-arg]
         with pytest.raises(TypeError):
             DACControWidget()  # type: ignore[call-arg]
         with pytest.raises(TypeError):
             AutoFocusWidget()  # type: ignore[call-arg]
-        with pytest.raises(TypeError):
-            WellplateFormatWidget(None, None, None)  # type: ignore[arg-type]

@@ -1,7 +1,7 @@
 # squid/services/__init__.py
 """Service layer for hardware orchestration."""
 
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 
 from squid.services.base import BaseService
 from squid.services.peripheral_service import PeripheralService
@@ -14,7 +14,11 @@ from squid.services.fluidics_service import FluidicsService
 from squid.services.objective_changer_service import ObjectiveChangerService
 from squid.services.spinning_disk_service import SpinningDiskService
 from squid.services.nl5_service import NL5Service
+from squid.services.movement_service import MovementService
 from squid.events import EventBus
+
+if TYPE_CHECKING:
+    from squid.ui_event_bus import UIEventBus
 
 
 class ServiceRegistry:
@@ -30,16 +34,22 @@ class ServiceRegistry:
 
         # Access services
         registry.camera.set_exposure_time(100)
+
+        # For widgets, use ui_event_bus for thread-safe subscriptions
+        if registry.ui_event_bus:
+            registry.ui_event_bus.subscribe(SomeEvent, handler)
     """
 
-    def __init__(self, event_bus: EventBus):
+    def __init__(self, event_bus: EventBus, ui_event_bus: Optional["UIEventBus"] = None):
         """
         Initialize registry.
 
         Args:
             event_bus: EventBus for service communication
+            ui_event_bus: Optional UIEventBus for thread-safe widget subscriptions
         """
         self._event_bus = event_bus
+        self._ui_event_bus = ui_event_bus
         self._services: Dict[str, BaseService] = {}
 
     def register(self, name: str, service: BaseService):
@@ -64,6 +74,16 @@ class ServiceRegistry:
         """
         return self._services.get(name)
 
+    @property
+    def ui_event_bus(self) -> Optional["UIEventBus"]:
+        """Get the UIEventBus for thread-safe widget subscriptions."""
+        return self._ui_event_bus
+
+    @ui_event_bus.setter
+    def ui_event_bus(self, value: Optional["UIEventBus"]) -> None:
+        """Set the UIEventBus (called by ApplicationContext after creation)."""
+        self._ui_event_bus = value
+
     def shutdown(self):
         """Shutdown all services."""
         for service in self._services.values():
@@ -84,4 +104,5 @@ __all__ = [
     "ObjectiveChangerService",
     "SpinningDiskService",
     "NL5Service",
+    "MovementService",
 ]

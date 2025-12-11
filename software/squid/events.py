@@ -169,6 +169,20 @@ class StageMovedTo(Event):
 
 
 @dataclass
+class StageMovementStopped(Event):
+    """Emitted when stage stops moving (debounced).
+
+    This is distinct from StagePositionChanged which emits continuously.
+    StageMovementStopped only emits once per move, after the stage settles.
+    Used by NavigationViewer to update FOV position after moves complete.
+    """
+
+    x_mm: float
+    y_mm: float
+    z_mm: float
+
+
+@dataclass
 class FocusChanged(Event):
     """Emitted when focus changes."""
 
@@ -654,6 +668,131 @@ class PiezoPositionChanged(Event):
 
 
 # ============================================================================
+# Profile and Configuration Events
+# ============================================================================
+
+
+@dataclass
+class ProfileChanged(Event):
+    """Emitted when user changes the active microscope profile.
+
+    The profile defines available microscope modes and their configurations.
+    Widgets should refresh their mode lists when this event is received.
+    """
+
+    profile_name: str
+
+
+@dataclass
+class WellplateFormatChanged(Event):
+    """Emitted when wellplate format changes.
+
+    Contains all wellplate configuration settings needed by widgets
+    to update their displays and coordinate systems.
+    """
+
+    format_name: str
+    rows: int
+    cols: int
+    well_spacing_mm: float
+    well_size_mm: float
+    a1_x_mm: float
+    a1_y_mm: float
+
+
+@dataclass
+class ConfocalModeChanged(Event):
+    """Emitted when confocal/widefield mode is toggled."""
+
+    is_confocal: bool
+
+
+# ============================================================================
+# Stage Position Events
+# ============================================================================
+
+
+@dataclass
+class ThreadedStageMoveBegan(Event):
+    """Emitted when a threaded stage move operation begins.
+
+    Used by widgets to know when the stage is moving asynchronously.
+    """
+
+    pass
+
+
+@dataclass
+class LoadingPositionReached(Event):
+    """Emitted when stage reaches loading position.
+
+    Used to disable acquisition start buttons while stage is at loading position.
+    """
+
+    pass
+
+
+@dataclass
+class ScanningPositionReached(Event):
+    """Emitted when stage reaches scanning position.
+
+    Used to enable acquisition start buttons when stage is ready for scanning.
+    """
+
+    pass
+
+
+# ============================================================================
+# Display Commands
+# ============================================================================
+
+
+@dataclass
+class AutoLevelCommand(Event):
+    """Command to set auto-level display mode."""
+
+    enabled: bool
+
+
+# ============================================================================
+# Well Selection Events
+# ============================================================================
+
+
+@dataclass
+class WellSelectedCommand(Event):
+    """Command to move to selected well position."""
+
+    x_mm: float
+    y_mm: float
+    well_id: Optional[str] = None
+
+
+# ============================================================================
+# Fluidics Events
+# ============================================================================
+
+
+@dataclass
+class FluidicsInitialized(Event):
+    """Emitted when fluidics system initialization is completed."""
+
+    pass
+
+
+# ============================================================================
+# Laser Autofocus Events
+# ============================================================================
+
+
+@dataclass
+class LaserAFCrossCorrelationResult(Event):
+    """Cross-correlation result from laser autofocus."""
+
+    result: Any  # correlation data
+
+
+# ============================================================================
 # Acquisition Commands
 # ============================================================================
 
@@ -705,6 +844,7 @@ class StartNewExperimentCommand(Event):
 class StartAcquisitionCommand(Event):
     """Start multi-point acquisition."""
 
+    experiment_id: Optional[str] = None
     acquire_current_fov: bool = False
 
 
@@ -775,6 +915,30 @@ class AcquisitionResumed(Event):
     """Acquisition was resumed."""
 
     pass
+
+
+@dataclass
+class CurrentFOVRegistered(Event):
+    """Emitted when a new FOV is acquired during multipoint acquisition.
+
+    Used by NavigationViewer to draw the scan grid and track progress.
+    """
+
+    x_mm: float
+    y_mm: float
+
+
+@dataclass
+class AcquisitionCoordinates(Event):
+    """Emitted during acquisition with current position and region info.
+
+    Used for tracking acquisition progress with spatial context.
+    """
+
+    x_mm: float
+    y_mm: float
+    z_mm: float
+    region_id: int
 
 
 # ============================================================================

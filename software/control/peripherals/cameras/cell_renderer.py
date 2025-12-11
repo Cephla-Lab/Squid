@@ -35,6 +35,7 @@ class CellFieldRenderer(Protocol):
         stage_z_um: float,
         pixel_size_um: float,
         max_val: int,
+        brightness_scale: float = 1.0,
     ) -> np.ndarray:
         """Render cells into the frame based on stage position.
 
@@ -45,6 +46,7 @@ class CellFieldRenderer(Protocol):
             stage_z_um: Stage Z position in micrometers
             pixel_size_um: Size of each pixel in micrometers
             max_val: Maximum pixel value for the frame dtype
+            brightness_scale: Scale factor for brightness (from exposure/gain)
 
         Returns:
             Frame with cells rendered
@@ -208,6 +210,7 @@ class SimpleCellFieldRenderer:
         stage_z_um: float,
         pixel_size_um: float,
         max_val: int,
+        brightness_scale: float = 1.0,
     ) -> np.ndarray:
         """Render cells into the frame based on stage position.
 
@@ -218,6 +221,7 @@ class SimpleCellFieldRenderer:
             stage_z_um: Stage Z position in micrometers
             pixel_size_um: Size of each pixel in micrometers
             max_val: Maximum pixel value for the frame dtype
+            brightness_scale: Scale factor for brightness (from exposure/gain)
 
         Returns:
             Frame with cells rendered
@@ -238,9 +242,8 @@ class SimpleCellFieldRenderer:
         # Get cells in visible region
         cells = self._get_cells_in_region(x_min_um, x_max_um, y_min_um, y_max_um)
 
-        # Limit number of cells to prevent hanging (safety valve)
-        # Use deterministic sampling based on stage position for consistency
-        MAX_CELLS_PER_FRAME = 100
+        # Limit number of cells for performance
+        MAX_CELLS_PER_FRAME = 40
         if len(cells) > MAX_CELLS_PER_FRAME:
             # Use deterministic seed so same position shows same cells
             sample_seed = int(abs(stage_x_um * 1000 + stage_y_um * 7)) % (2**31)
@@ -288,13 +291,17 @@ class SimpleCellFieldRenderer:
                 (y_local - pixel_y) ** 2
             ) / (2 * sigma_pixels ** 2))
 
-            # Scale intensity
-            scaled_intensity = max_val * cell_intensity * intensity_scale * 0.7
+            # Scale intensity - cap peak to avoid saturation artifacts
+            # brightness_scale affects how bright cells appear (exposure/gain)
+            raw_intensity = cell_intensity * intensity_scale * 0.6 * brightness_scale
+            # Cap at 0.7 so peak never saturates (Gaussian peak = 1.0)
+            capped_intensity = min(raw_intensity, 0.7)
+            scaled_intensity = max_val * capped_intensity
 
-            # Add to frame patch
+            # Add to frame patch (simple additive)
             frame[y_min_px:y_max_px, x_min_px:x_max_px] += (gaussian * scaled_intensity).astype(dtype)
 
-        # Clip to valid range
+        # Clip to valid range (handles overlapping cells)
         frame = np.clip(frame, 0, max_val).astype(dtype)
 
         return frame

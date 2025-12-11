@@ -72,11 +72,10 @@ if RUN_FLUIDICS:
 # Import the custom widget
 from control.widgets.custom_multipoint import TemplateMultiPointWidget
 
-# Import Qt controller wrappers
+# Import Qt signal bridges (Qt wrapper controllers have been removed)
 from control.gui.qt_controllers import (
-    MovementUpdater,
-    QtAutoFocusController,
-    QtMultiPointController,
+    ImageSignalBridge,
+    MultiPointSignalBridge,
 )
 
 # Import helper modules for widget creation, layout, and signal connections
@@ -108,6 +107,21 @@ class HighContentScreeningGui(QMainWindow):
         self._services = services  # Store for passing to widgets
         # Use the registry's bus if it exposes one, otherwise fall back to the global instance
         self._event_bus = getattr(services, "_event_bus", None) or event_bus
+
+        # Create UIEventBus for thread-safe widget subscriptions
+        # Must be done in main thread after QApplication exists
+        self._ui_event_bus = services.ui_event_bus
+        if self._ui_event_bus is None:
+            # Fallback: create from global event_bus
+            from squid.qt_event_dispatcher import QtEventDispatcher
+            from squid.ui_event_bus import UIEventBus
+            self._qt_dispatcher = QtEventDispatcher()
+            self._ui_event_bus = UIEventBus(event_bus, self._qt_dispatcher)
+            self.log.info("Created UIEventBus for thread-safe widget updates (fallback)")
+        else:
+            self._qt_dispatcher = None  # Owned by ApplicationContext
+            self.log.info("Using UIEventBus from ServiceRegistry")
+
         self._stage_service = self._services.get("stage")
         if self._stage_service is None:
             raise ValueError("Stage service is required for stage operations.")
@@ -189,8 +203,9 @@ class HighContentScreeningGui(QMainWindow):
         self.well_selector_visible = (
             False  # Add this line to track well selector visibility
         )
+        self._live_scan_grid_handler = None
 
-        self.multipointController: QtMultiPointController = None
+        self.multipointController: "MultiPointController" = None
         self.streamHandler: core.QtStreamHandler = None
         self.autofocusController: AutoFocusController = None
         self.imageSaver: core.ImageSaver = core.ImageSaver()
@@ -200,8 +215,6 @@ class HighContentScreeningGui(QMainWindow):
         self.scanCoordinates: Optional[ScanCoordinates] = None
         self.load_objects(is_simulation=is_simulation)
         self.setup_hardware()
-
-        self.setup_movement_updater()
 
         # Pre-declare and give types to all our widgets so type hinting tools work.  You should
         # add to this as you add widgets.
@@ -326,12 +339,17 @@ class HighContentScreeningGui(QMainWindow):
         self.streamHandler = core.QtStreamHandler(
             accept_new_frame_fn=lambda: self.liveController.is_live
         )
-        self.autofocusController = QtAutoFocusController(
+        # Create image signal bridge for autofocus display
+        # This bridges non-Qt AutoFocusController to Qt widget signals
+        self._autofocus_image_bridge = ImageSignalBridge()
+        self.autofocusController = AutoFocusController(
             self.camera,
             self.stage,
             self.liveController,
             self.microcontroller,
-            self.nl5,
+            finished_fn=None,  # Use EventBus instead
+            image_to_display_fn=self._autofocus_image_bridge.emit_image,
+            nl5=self.nl5,
             # Service-based parameters
             camera_service=self._services.get("camera"),
             stage_service=self._services.get("stage"),
@@ -351,11 +369,13 @@ class HighContentScreeningGui(QMainWindow):
             )
         if WELLPLATE_FORMAT == "glass slide" and IS_HCS:
             self.navigationViewer = core.NavigationViewer(
-                self.objectiveStore, self.camera, sample="4 glass slide"
+                self.objectiveStore, self.camera, sample="4 glass slide",
+                event_bus=self._ui_event_bus,
             )
         else:
             self.navigationViewer = core.NavigationViewer(
-                self.objectiveStore, self.camera, sample=WELLPLATE_FORMAT
+                self.objectiveStore, self.camera, sample=WELLPLATE_FORMAT,
+                event_bus=self._ui_event_bus,
             )
 
         def scan_coordinate_callback(update: ScanCoordinatesUpdate) -> None:
@@ -375,15 +395,19 @@ class HighContentScreeningGui(QMainWindow):
             camera=self.camera,
             update_callback=scan_coordinate_callback,
         )
-        self.multipointController = QtMultiPointController(
+        # Create signal bridge for multipoint display
+        # This bridges non-Qt MultiPointController to Qt widget signals
+        from control.core.acquisition import MultiPointController
+        self._multipoint_signal_bridge = MultiPointSignalBridge(self.objectiveStore)
+        self.multipointController = MultiPointController(
             self.microscope,
             self.liveController,
             self.autofocusController,
             self.objectiveStore,
             self.channelConfigurationManager,
+            callbacks=self._multipoint_signal_bridge.get_callbacks(),
             scan_coordinates=self.scanCoordinates,
             laser_autofocus_controller=self.laserAutofocusController,
-            fluidics=self.fluidics,
             # Pass services and event bus for MultiPointWorker
             camera_service=self._services.get("camera"),
             stage_service=self._services.get("stage"),
@@ -392,6 +416,8 @@ class HighContentScreeningGui(QMainWindow):
             nl5_service=self._services.get("nl5"),
             event_bus=self._event_bus,
         )
+        # Connect bridge to controller for state queries
+        self._multipoint_signal_bridge.set_controller(self.multipointController)
 
     def setup_hardware(self) -> None:
         # Setup hardware components
@@ -758,16 +784,6 @@ class HighContentScreeningGui(QMainWindow):
         signal_connector.connect_plot_signals(self)
         signal_connector.connect_well_selector_button(self)
 
-    def setup_movement_updater(self):
-        # We provide a few signals about the system's physical movement to other parts of the UI.  Ideally, they other
-        # parts would register their interest (instead of us needing to know that they want to hear about the movements
-        # here), but as an intermediate pumping it all from one location is better than nothing.
-        self.movement_updater = MovementUpdater(stage=self.stage, piezo=self.piezo)
-        self.movement_update_timer = QTimer()
-        self.movement_update_timer.setInterval(100)
-        self.movement_update_timer.timeout.connect(self.movement_updater.do_update)
-        self.movement_update_timer.start()
-
     def makeNapariConnections(self) -> None:
         """Initialize all Napari connections in one place"""
         self.napari_connections = {
@@ -780,11 +796,11 @@ class HighContentScreeningGui(QMainWindow):
         if USE_NAPARI_FOR_LIVE_VIEW and not self.live_only_mode:
             self.napari_connections["napariLiveWidget"] = [
                 (
-                    self.multipointController.signal_current_configuration,
+                    self._multipoint_signal_bridge.signal_current_configuration,
                     self.napariLiveWidget.update_ui_for_mode,
                 ),
                 (
-                    self.autofocusController.image_to_display,
+                    self._autofocus_image_bridge.image_to_display,
                     lambda image: self.napariLiveWidget.updateLiveLayer(
                         image, from_autofocus=True
                     ),
@@ -796,7 +812,7 @@ class HighContentScreeningGui(QMainWindow):
                     ),
                 ),
                 (
-                    self.multipointController.image_to_display,
+                    self._multipoint_signal_bridge.image_to_display,
                     lambda image: self.napariLiveWidget.updateLiveLayer(
                         image, from_autofocus=False
                     ),
@@ -834,10 +850,10 @@ class HighContentScreeningGui(QMainWindow):
             self.imageDisplay.image_to_display.connect(
                 self.imageDisplayWindow.display_image
             )
-            self.autofocusController.image_to_display.connect(
+            self._autofocus_image_bridge.image_to_display.connect(
                 self.imageDisplayWindow.display_image
             )
-            self.multipointController.image_to_display.connect(
+            self._multipoint_signal_bridge.image_to_display.connect(
                 self.imageDisplayWindow.display_image
             )
             self.liveControlWidget.signal_autoLevelSetting.connect(
@@ -852,11 +868,11 @@ class HighContentScreeningGui(QMainWindow):
             if USE_NAPARI_FOR_MULTIPOINT:
                 self.napari_connections["napariMultiChannelWidget"] = [
                     (
-                        self.multipointController.napari_layers_init,
+                        self._multipoint_signal_bridge.napari_layers_init,
                         self.napariMultiChannelWidget.initLayers,
                     ),
                     (
-                        self.multipointController.napari_layers_update,
+                        self._multipoint_signal_bridge.napari_layers_update,
                         self.napariMultiChannelWidget.updateLayers,
                     ),
                 ]
@@ -902,7 +918,7 @@ class HighContentScreeningGui(QMainWindow):
                         ]
                     )
             else:
-                self.multipointController.image_to_display_multi.connect(
+                self._multipoint_signal_bridge.image_to_display_multi.connect(
                     self.imageArrayDisplayWindow.display_image
                 )
 
@@ -910,7 +926,7 @@ class HighContentScreeningGui(QMainWindow):
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napari_connections["napariMosaicDisplayWidget"] = [
                     (
-                        self.multipointController.napari_layers_update,
+                        self._multipoint_signal_bridge.napari_layers_update,
                         self.napariMosaicDisplayWidget.updateMosaic,
                     ),
                     (
@@ -1144,20 +1160,37 @@ class HighContentScreeningGui(QMainWindow):
             self.wellplateMultiPointWidget.set_default_scan_size()
 
     def toggle_live_scan_grid(self, on: bool) -> None:
-        if on:
-            self.movement_updater.position_after_move.connect(
-                self.wellplateMultiPointWidget.update_live_coordinates
-            )
-            self.is_live_scan_grid_on = True
-        else:
-            try:
-                self.movement_updater.position_after_move.disconnect(
-                    self.wellplateMultiPointWidget.update_live_coordinates
+        """Toggle live scan grid updates using EventBus movement events."""
+        if not self._ui_event_bus or not self.wellplateMultiPointWidget:
+            return
+
+        if on and self._live_scan_grid_handler is None:
+            def _on_stage_stop(event) -> None:
+                from squid.abc import Pos
+
+                pos = Pos(
+                    x_mm=event.x_mm,
+                    y_mm=event.y_mm,
+                    z_mm=event.z_mm,
+                    theta_rad=getattr(event, "theta_rad", None),
                 )
-            except TypeError:
-                # Signal was not connected, ignore
-                pass
-            self.is_live_scan_grid_on = False
+                self.wellplateMultiPointWidget.update_live_coordinates(pos)
+
+            self._live_scan_grid_handler = _on_stage_stop
+            from squid.events import StageMovementStopped
+
+            self._ui_event_bus.subscribe(StageMovementStopped, _on_stage_stop)
+            self.is_live_scan_grid_on = True
+        elif not on and self._live_scan_grid_handler is not None:
+            from squid.events import StageMovementStopped
+
+            try:
+                self._ui_event_bus.unsubscribe(
+                    StageMovementStopped, self._live_scan_grid_handler
+                )
+            finally:
+                self._live_scan_grid_handler = None
+                self.is_live_scan_grid_on = False
 
     def replaceWellSelectionWidget(
         self, new_widget: widgets.WellSelectionWidget
@@ -1322,7 +1355,6 @@ class HighContentScreeningGui(QMainWindow):
             self.log.error(
                 f"Couldn't cache position while closing.  Ignoring and continuing. Error is: {e}"
             )
-        self.movement_update_timer.stop()
 
         filter_service = self._services.get("filter_wheel") if self._services else None
         if filter_service:

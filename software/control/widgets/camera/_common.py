@@ -64,6 +64,7 @@ from squid.events import (
     ObjectiveChanged,
     ChannelConfigurationsChanged,
     UpdateChannelConfigurationCommand,
+    ProfileChanged,
 )
 from control.core.display import StreamHandler, LiveController, ImageSaver
 from control.core.navigation import ObjectiveStore

@@ -8,6 +8,9 @@ from squid.events import (
     StartLiveCommand,
     StopLiveCommand,
     LiveStateChanged,
+    LoadingPositionReached,
+    ScanningPositionReached,
+    ThreadedStageMoveBegan,
 )
 from control._def import Z_HOME_SAFETY_POINT
 
@@ -16,8 +19,8 @@ class StageUtils(EventBusDialog):
     """Dialog containing microscope utility functions like homing, zeroing, and slide positioning."""
 
     signal_threaded_stage_move_started: Signal = Signal()
-    signal_loading_position_reached: Signal = Signal()
-    signal_scanning_position_reached: Signal = Signal()
+    signal_loading_position_reached: Signal = Signal(bool, object)
+    signal_scanning_position_reached: Signal = Signal(bool, object)
 
     def __init__(
         self,
@@ -45,6 +48,13 @@ class StageUtils(EventBusDialog):
         self.setModal(False)  # Allow interaction with main window while dialog is open
         self.setup_ui()
         self._subscribe(LiveStateChanged, self._on_live_state_changed)
+        # Ensure callbacks from worker threads marshal back to the Qt thread
+        self.signal_loading_position_reached.connect(
+            self._handle_loading_position_reached
+        )
+        self.signal_scanning_position_reached.connect(
+            self._handle_scanning_position_reached
+        )
 
     def setup_ui(self) -> None:
         """Setup the UI components."""
@@ -163,6 +173,7 @@ class StageUtils(EventBusDialog):
         if self._was_live:
             self._publish(StopLiveCommand())
         self.signal_threaded_stage_move_started.emit()
+        self._publish(ThreadedStageMoveBegan())
         if self.slide_position != "loading":
             self._publish(
                 MoveStageToLoadingPositionCommand(
@@ -184,7 +195,13 @@ class StageUtils(EventBusDialog):
     def _callback_loading_position_reached(
         self, success: bool, error_message: Optional[str]
     ) -> None:
-        """Handle slide loading position reached signal."""
+        """Receive callback from worker thread and forward to main thread handler."""
+        self.signal_loading_position_reached.emit(success, error_message)
+
+    def _handle_loading_position_reached(
+        self, success: bool, error_message: Optional[str]
+    ) -> None:
+        """Handle slide loading position reached signal (Qt thread)."""
         self.slide_position = "loading"
         self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
         self.btn_load_slide.setText("Move to Scanning Position")
@@ -193,12 +210,18 @@ class StageUtils(EventBusDialog):
             self._publish(StartLiveCommand())
         if not success:
             QMessageBox.warning(self, "Error", error_message)
-        self.signal_loading_position_reached.emit()
+        self._publish(LoadingPositionReached())
 
     def _callback_scanning_position_reached(
         self, success: bool, error_message: Optional[str]
     ) -> None:
-        """Handle slide scanning position reached signal."""
+        """Receive callback from worker thread and forward to main thread handler."""
+        self.signal_scanning_position_reached.emit(success, error_message)
+
+    def _handle_scanning_position_reached(
+        self, success: bool, error_message: Optional[str]
+    ) -> None:
+        """Handle slide scanning position reached signal (Qt thread)."""
         self.slide_position = "scanning"
         self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
         self.btn_load_slide.setText("Move to Loading Position")
@@ -207,7 +230,7 @@ class StageUtils(EventBusDialog):
             self._publish(StartLiveCommand())
         if not success:
             QMessageBox.warning(self, "Error", error_message)
-        self.signal_scanning_position_reached.emit()
+        self._publish(ScanningPositionReached())
 
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Track live state from bus."""

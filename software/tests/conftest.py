@@ -239,14 +239,38 @@ def event_bus() -> Generator[EventBus, None, None]:
     bus.clear()
 
 
-# Lightweight qtbot stub for environments without pytest-qt autoloaded.
+# QtBot fixture: prefer real pytest-qt implementation, fall back to stub.
 @pytest.fixture
-def qtbot():
-    class _QtBot:
-        def add_widget(self, widget):
-            return widget
+def qtbot(request):
+    try:
+        from pytestqt.qtbot import QtBot
 
-    return _QtBot()
+        # Ensure QApplication exists via pytest-qt's qapp fixture
+        try:
+            request.getfixturevalue("qapp")
+        except Exception:
+            pass
+        return QtBot(request)
+    except Exception:
+        import time
+        import pytest
+
+        class _QtBot:
+            def add_widget(self, widget):
+                return widget
+
+            def wait(self, ms: int):
+                time.sleep(ms / 1000.0)
+
+            def waitUntil(self, predicate, timeout: int = 1000, interval: int = 10):
+                deadline = time.time() + timeout / 1000.0
+                while time.time() < deadline:
+                    if predicate():
+                        return
+                    time.sleep(interval / 1000.0)
+                pytest.fail("waitUntil timed out")
+
+        return _QtBot()
 
 
 # ============================================================================

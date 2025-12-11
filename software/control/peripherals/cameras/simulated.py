@@ -36,6 +36,8 @@ class SimulatedCameraBase(AbstractCamera):
     """
 
     PIXEL_SIZE_UM = 3.76
+    # Sensor dimensions - kept moderate to ensure fast frame creation for tests
+    # Configs with larger crop dimensions will be clamped to these bounds
     FULL_SENSOR_WIDTH = 3088
     FULL_SENSOR_HEIGHT = 2064
 
@@ -104,7 +106,13 @@ class SimulatedCameraBase(AbstractCamera):
         self.set_black_level(0)
         self._acquisition_mode = None
         self.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
-        self._roi = (0, 0, self.FULL_SENSOR_WIDTH, self.FULL_SENSOR_HEIGHT)
+        # Use crop dimensions from config if provided, otherwise use full sensor
+        # Clamp to sensor bounds to avoid unexpectedly large frames
+        roi_w = self._config.crop_width if self._config.crop_width else self.FULL_SENSOR_WIDTH
+        roi_h = self._config.crop_height if self._config.crop_height else self.FULL_SENSOR_HEIGHT
+        roi_w = min(roi_w, self.FULL_SENSOR_WIDTH)
+        roi_h = min(roi_h, self.FULL_SENSOR_HEIGHT)
+        self._roi = (0, 0, roi_w, roi_h)
         self._temperature_setpoint = None
         self._continue_streaming = False
         self._streaming_thread: Optional[threading.Thread] = None
@@ -588,6 +596,12 @@ class SimulatedMainCamera(SimulatedCameraBase):
         # Cell field renderer (lazy initialization to avoid import issues)
         self._cell_renderer = None
 
+        # Vignetting simulation (0.0 = none, 1.0 = strong)
+        # Makes tile boundaries visible in mosaics by darkening edges
+        self._vignette_strength = 0.8  # Default: strong vignetting for visible tile boundaries
+        self._vignette_mask = None  # Cached vignette mask
+        self._vignette_logged = False  # Log once when first applied
+
     def _get_cell_renderer(self):
         """Get or create the cell renderer (lazy initialization)."""
         if self._cell_renderer is None:
@@ -635,34 +649,103 @@ class SimulatedMainCamera(SimulatedCameraBase):
             f"effective_pixel_size={pixel_size:.3f}um"
         )
 
+    def set_vignette_strength(self, strength: float) -> None:
+        """Set the vignetting strength for tile boundary visualization.
+
+        Args:
+            strength: 0.0 = no vignetting, 1.0 = strong vignetting (edges at ~30% brightness)
+        """
+        self._vignette_strength = max(0.0, min(1.0, strength))
+        self._vignette_mask = None  # Clear cache to regenerate
+        self._log.info(f"Vignette strength set to {self._vignette_strength:.2f}")
+
+    def _apply_vignetting(self, frame: np.ndarray, max_val: int, dtype) -> np.ndarray:
+        """Apply vignetting effect with visible border to show tile boundaries.
+
+        Creates a dark border around the frame edges to make tile boundaries
+        clearly visible in mosaics, even with autolevel enabled.
+        """
+        height, width = frame.shape
+
+        # Check if we need to regenerate the vignette mask
+        if self._vignette_mask is None or self._vignette_mask.shape != (height, width):
+            # Create a mask that's 1.0 in center and drops sharply at edges
+            # This creates a visible "frame" effect rather than gradual vignetting
+
+            # Calculate distance from nearest edge (normalized 0-1)
+            y_dist = np.minimum(np.arange(height), np.arange(height-1, -1, -1))[:, np.newaxis]
+            x_dist = np.minimum(np.arange(width), np.arange(width-1, -1, -1))[np.newaxis, :]
+
+            # Normalize to 0-1 (0 at edge, 1 at center)
+            y_norm = y_dist / (height / 2)
+            x_norm = x_dist / (width / 2)
+
+            # Use minimum distance to any edge
+            edge_dist = np.minimum(y_norm, x_norm)
+
+            # Create sharp falloff near edges
+            # Border width is ~10% of image on each side
+            border_width = 0.15 * self._vignette_strength
+
+            # Sharp transition: full brightness in center, dark at edges
+            # Using sigmoid-like function for smooth but visible transition
+            transition = np.clip((edge_dist - border_width * 0.5) / (border_width * 0.5), 0, 1)
+
+            # Min brightness at edge (darker = more visible borders)
+            min_brightness = 0.2  # Edges at 20% brightness
+            self._vignette_mask = min_brightness + (1.0 - min_brightness) * transition
+
+            if not self._vignette_logged:
+                self._log.info(
+                    f"Vignette mask created: shape={self._vignette_mask.shape}, "
+                    f"strength={self._vignette_strength:.2f}, "
+                    f"center={self._vignette_mask[height//2, width//2]:.3f}, "
+                    f"corner={self._vignette_mask[0, 0]:.3f}, "
+                    f"edge={self._vignette_mask[height//2, 0]:.3f}"
+                )
+                self._vignette_logged = True
+
+        # Apply vignette mask
+        vignetted = frame.astype(np.float32) * self._vignette_mask
+        return np.clip(vignetted, 0, max_val).astype(dtype)
+
     def _create_frame(self, width: int, height: int, max_val: int, dtype) -> np.ndarray:
         """Create a microscope image with simulated cells."""
         # Calculate effective pixel size at sample plane
-        # IMPORTANT: Even though _create_frame receives full ROI dimensions (pre-binning),
-        # we need to use the BINNED pixel size for world coordinate calculations.
-        # This is because the image content must match what the acquisition system expects:
-        # - The acquisition calculates FOV using binned pixel size × pixel_size_factor
-        # - So the simulated image must cover the same physical area
-        # After this frame is created, _next_frame() will apply binning which shrinks
-        # the pixel count but each binned pixel covers the same physical area.
-        binning_x, binning_y = self.get_binning()
-        pixel_size_um = self.PIXEL_SIZE_UM * binning_x * self._pixel_size_factor
+        # Use UNBINNED pixel size since _create_frame works with pre-binning dimensions.
+        # The physical FOV = width * pixel_size_um must match what acquisition expects.
+        # After binning in _next_frame(), pixel count shrinks but physical area stays same.
+        pixel_size_um = self.PIXEL_SIZE_UM * self._pixel_size_factor
+
+        # Calculate brightness scale based on exposure and gain
+        # Reference: 100ms exposure, 0 gain = 1.0 scale
+        exposure_scale = self._exposure_time_ms / 100.0
+        # Gain is in dB-like units: each 20 units doubles brightness
+        gain_scale = 2.0 ** (self._analog_gain / 20.0)
+        brightness_scale = exposure_scale * gain_scale
+        # Clamp to reasonable range
+        brightness_scale = max(0.1, min(brightness_scale, 10.0))
 
         # Log first few frames at INFO level, then DEBUG
         if self._frame_id < 5:
+            fov_width_um = width * pixel_size_um
+            fov_height_um = height * pixel_size_um
             self._log.info(
-                f"Creating frame: {width}x{height}, stage=({self._stage_x_um:.1f}, "
-                f"{self._stage_y_um:.1f}, {self._stage_z_um:.1f}) um, "
-                f"pixel_size={pixel_size_um:.3f}um (unbinned), frame_id={self._frame_id}"
+                f"Creating frame: {width}x{height}px, FOV={fov_width_um/1000:.2f}x{fov_height_um/1000:.2f}mm, "
+                f"stage=({self._stage_x_um:.1f}, {self._stage_y_um:.1f}, {self._stage_z_um:.1f})um, "
+                f"pixel_size={pixel_size_um:.3f}um"
             )
         else:
             self._log.debug(
-                f"Creating frame: stage=({self._stage_x_um:.1f}, {self._stage_y_um:.1f}) um"
+                f"Creating frame: stage=({self._stage_x_um:.1f}, {self._stage_y_um:.1f})um"
             )
 
         # Create background with noise (changes each frame like real camera)
-        background_val = int(max_val * 0.08)
-        noise_range = int(max_val * 0.03)
+        # Scale background with brightness, but cap to avoid washing out image
+        base_background = 0.05 * min(brightness_scale, 2.0)
+        base_noise = 0.02 * min(brightness_scale, 2.0)
+        background_val = int(max_val * base_background)
+        noise_range = int(max_val * base_noise)
         frame = np.random.randint(
             max(0, background_val - noise_range),
             min(max_val, background_val + noise_range + 1),
@@ -680,6 +763,7 @@ class SimulatedMainCamera(SimulatedCameraBase):
                 stage_z_um=self._stage_z_um,
                 pixel_size_um=pixel_size_um,
                 max_val=max_val,
+                brightness_scale=brightness_scale,
             )
         except Exception as e:
             self._log.error(f"Error rendering cells: {e}", exc_info=True)
@@ -693,5 +777,13 @@ class SimulatedMainCamera(SimulatedCameraBase):
                 spot = np.exp(-((x - spot_x) ** 2 + (y - spot_y) ** 2) / (2 * sigma ** 2))
                 frame = frame + (spot * intensity).astype(dtype)
             frame = np.clip(frame, 0, max_val).astype(dtype)
+
+        # Apply vignetting (radial falloff from center)
+        # This makes tile boundaries visible when tiles overlap
+        if self._vignette_strength > 0:
+            # Log first application to confirm code is running
+            if not getattr(self, '_vignette_logged', False):
+                self._log.info(f"Applying vignetting with strength={self._vignette_strength}")
+            frame = self._apply_vignetting(frame, max_val, dtype)
 
         return frame
