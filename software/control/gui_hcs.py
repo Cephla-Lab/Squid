@@ -562,6 +562,7 @@ class HighContentScreeningGui(QMainWindow):
             initial_channel_names = [mode.name for mode in channel_configs]
 
             self.napariLiveWidget = widgets.NapariLiveWidget(
+                self._ui_event_bus,
                 self.streamHandler,
                 self.contrastManager,
                 exposure_limits=exposure_limits,
@@ -597,7 +598,7 @@ class HighContentScreeningGui(QMainWindow):
                 )
                 initial_pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
                 self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
-                    event_bus=event_bus,
+                    event_bus=self._ui_event_bus,
                     contrastManager=self.contrastManager,
                     initial_pixel_size_factor=initial_pixel_size_factor,
                     initial_pixel_size_binned_um=initial_pixel_size_binned,
@@ -621,7 +622,7 @@ class HighContentScreeningGui(QMainWindow):
                 )
                 mosaic_pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
-                    event_bus=event_bus,
+                    event_bus=self._ui_event_bus,
                     contrastManager=self.contrastManager,
                     initial_pixel_size_factor=mosaic_pixel_size_factor,
                     initial_pixel_size_binned_um=mosaic_pixel_size_binned,
@@ -925,6 +926,10 @@ class HighContentScreeningGui(QMainWindow):
             # Setup mosaic display widget connections
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napari_connections["napariMosaicDisplayWidget"] = [
+                    (
+                        self._multipoint_signal_bridge.signal_acquisition_start,
+                        self.napariMosaicDisplayWidget._reset_mosaic_state,
+                    ),
                     (
                         self._multipoint_signal_bridge.napari_layers_update,
                         self.napariMosaicDisplayWidget.updateMosaic,

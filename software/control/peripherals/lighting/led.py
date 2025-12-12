@@ -130,10 +130,15 @@ class IlluminationController:
         if channel is None:
             channel = self.current_channel
 
+        # Check if channel is mapped
+        if channel not in self.channel_mappings_TTL:
+            return
+
         if self.shutter_control_mode == ShutterControlMode.Software:
-            self.light_source.set_shutter_state(
-                self.channel_mappings_software[channel], on=True
-            )
+            if channel in self.channel_mappings_software:
+                self.light_source.set_shutter_state(
+                    self.channel_mappings_software[channel], on=True
+                )
         elif self.shutter_control_mode == ShutterControlMode.TTL:
             # self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], self.intensity_settings[channel])
             self.microcontroller.turn_on_illumination()
@@ -144,10 +149,15 @@ class IlluminationController:
         if channel is None:
             channel = self.current_channel
 
+        # Check if channel is mapped
+        if channel not in self.channel_mappings_TTL:
+            return
+
         if self.shutter_control_mode == ShutterControlMode.Software:
-            self.light_source.set_shutter_state(
-                self.channel_mappings_software[channel], on=False
-            )
+            if channel in self.channel_mappings_software:
+                self.light_source.set_shutter_state(
+                    self.channel_mappings_software[channel], on=False
+                )
         elif self.shutter_control_mode == ShutterControlMode.TTL:
             self.microcontroller.turn_off_illumination()
 
@@ -205,6 +215,13 @@ class IlluminationController:
         return np.clip(dac_percent, 0, 100)
 
     def set_intensity(self, channel, intensity):
+        # Check if channel is mapped before attempting to set intensity
+        if channel not in self.channel_mappings_TTL:
+            # Channel not configured - log warning and return silently
+            # This can happen when illumination_source is an index (0, 1, 2)
+            # rather than a wavelength (405, 488, etc.)
+            return
+
         # initialize intensity setting for this channel if it doesn't exist
         if channel not in self.intensity_settings:
             self.intensity_settings[channel] = -1

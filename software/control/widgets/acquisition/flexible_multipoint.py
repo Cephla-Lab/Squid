@@ -863,7 +863,7 @@ class FlexibleMultiPointWidget(QFrame):
         ]
         self.signal_acquisition_channels.emit(selected_channels)
 
-    def toggle_acquisition(self, pressed):
+    def toggle_acquisition(self, pressed: bool) -> None:
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
         if not self.base_path_is_set:
             self.btn_startAcquisition.setChecked(False)
@@ -1436,7 +1436,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.setEnabled_all(True)
         self.is_current_acquisition_widget = False
 
-    def setEnabled_all(self, enabled, exclude_btn_startAcquisition=True):
+    def setEnabled_all(self, enabled: bool, exclude_btn_startAcquisition: bool = True):
         self.btn_setSavingDir.setEnabled(enabled)
         self.lineEdit_savingDir.setEnabled(enabled)
         self.lineEdit_experimentID.setEnabled(enabled)

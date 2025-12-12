@@ -194,10 +194,12 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
     # Objectives widget
     if USE_XERYON:
         gui.objectivesWidget = widgets.ObjectivesWidget(
-            gui.objectiveStore, gui.objective_changer
+            gui.objectiveStore, gui.objective_changer, gui._ui_event_bus
         )
     else:
-        gui.objectivesWidget = widgets.ObjectivesWidget(gui.objectiveStore)
+        gui.objectivesWidget = widgets.ObjectivesWidget(
+            gui.objectiveStore, event_bus=gui._ui_event_bus
+        )
 
     # Filter controller widget
     if gui.emission_filter_wheel:

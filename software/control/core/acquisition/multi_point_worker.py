@@ -451,6 +451,12 @@ class MultiPointWorker:
             # sure to always wait for final images here before removing our callback.
             self._wait_for_outstanding_callback_images()
             self._log.debug(self._timing.get_report())
+
+            # Stop camera streaming before removing callback to ensure clean state.
+            # Without this, the camera continues streaming after acquisition, causing
+            # issues on subsequent acquisitions (e.g., GUI freeze).
+            self._camera_stop_streaming()
+
             if this_image_callback_id:
                 self._camera_remove_frame_callback(this_image_callback_id)
 

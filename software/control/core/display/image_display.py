@@ -1,7 +1,7 @@
 # set QT_API environment variable
 import os
 import time
-from queue import Queue
+from queue import Queue, Full
 from threading import Lock, Thread
 from typing import Optional, Tuple, Any, List
 
@@ -38,7 +38,7 @@ class ImageDisplay(QObject):
 
     def __init__(self) -> None:
         QObject.__init__(self)
-        self.queue: Queue = Queue(10)  # max 10 items in the queue
+        self.queue: Queue = Queue(1)  # single-slot buffer; drop oldest when full
         self.image_lock: Lock = Lock()
         self.stop_signal_received: bool = False
         self.thread: Thread = Thread(target=self.process_queue, daemon=True)
@@ -64,10 +64,17 @@ class ImageDisplay(QObject):
     def enqueue(self, image: np.ndarray) -> None:
         try:
             self.queue.put_nowait([image, None, None])
-            # when using self.queue.put(str_) instead of try + nowait, program can be slowed down despite multithreading because of the block and the GIL
-            pass
-        except Exception:
-            print("imageDisplay queue is full, image discarded")
+        except Full:
+            # Drop the stale frame and replace with the newest to keep UI responsive.
+            try:
+                _ = self.queue.get_nowait()
+                self.queue.task_done()
+            except Exception:
+                pass
+            try:
+                self.queue.put_nowait([image, None, None])
+            except Exception:
+                pass
 
     def emit_directly(self, image: np.ndarray) -> None:
         self.image_to_display.emit(image)

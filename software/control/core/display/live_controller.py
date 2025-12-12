@@ -395,18 +395,18 @@ class LiveController:
         with self._lock:
             if self.is_live:
                 self.is_live = False
-                if self.trigger_mode == TriggerMode.SOFTWARE:
-                    self._stop_triggerred_acquisition()
-                if self.trigger_mode == TriggerMode.CONTINUOUS:
-                    if self._camera_service:
-                        self._camera_service.stop_streaming()
-                    else:
-                        self.camera.stop_streaming()
+                # Stop timer-based triggering for SOFTWARE and HARDWARE modes
                 if (self.trigger_mode == TriggerMode.SOFTWARE) or (
                     self.trigger_mode == TriggerMode.HARDWARE
                     and self.use_internal_timer_for_hardware_trigger
                 ):
                     self._stop_triggerred_acquisition()
+                # Stop streaming for ALL trigger modes, not just CONTINUOUS.
+                # start_live() always starts streaming, so stop_live() should always stop it.
+                if self._camera_service:
+                    self._camera_service.stop_streaming()
+                else:
+                    self.camera.stop_streaming()
                 if self.control_illumination:
                     self.turn_off_illumination()
                 if self.for_displacement_measurement:

@@ -34,7 +34,6 @@ from control._def import (
 from control.utils_config import ChannelMode as ChannelConfiguration
 
 from squid.events import (
-    event_bus,
     StartLiveCommand,
     StopLiveCommand,
     LiveStateChanged,
@@ -50,7 +49,7 @@ from squid.events import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from squid.ui_event_bus import UIEventBus
 
 
 class NapariLiveWidget(QWidget):
@@ -61,6 +60,7 @@ class NapariLiveWidget(QWidget):
 
     def __init__(
         self,
+        event_bus: "UIEventBus",
         streamHandler: StreamHandler,
         contrastManager: ContrastManager,
         exposure_limits: tuple[float, float],
@@ -76,6 +76,7 @@ class NapariLiveWidget(QWidget):
     ):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._event_bus = event_bus
         self.streamHandler = streamHandler
         self.wellSelectionWidget = wellSelectionWidget
         self._exposure_limits = exposure_limits
@@ -107,11 +108,11 @@ class NapariLiveWidget(QWidget):
         self.update_ui_for_mode(self.live_configuration)
 
         # Subscribe to state changes from the bus
-        event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
-        event_bus.subscribe(TriggerFPSChanged, self._on_trigger_fps_changed)
-        event_bus.subscribe(MicroscopeModeChanged, self._on_microscope_mode_changed)
-        event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
-        event_bus.subscribe(ChannelConfigurationsChanged, self._on_channel_configs_changed)
+        self._event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
+        self._event_bus.subscribe(TriggerFPSChanged, self._on_trigger_fps_changed)
+        self._event_bus.subscribe(MicroscopeModeChanged, self._on_microscope_mode_changed)
+        self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+        self._event_bus.subscribe(ChannelConfigurationsChanged, self._on_channel_configs_changed)
 
     def initNapariViewer(self) -> None:
         self.viewer = napari.Viewer(show=False)
@@ -261,7 +262,7 @@ class NapariLiveWidget(QWidget):
         self.entry_triggerFPS.setRange(0.02, 1000)
         self.entry_triggerFPS.setValue(self.fps_trigger)
         self.entry_triggerFPS.valueChanged.connect(
-            lambda fps: event_bus.publish(SetTriggerFPSCommand(fps=fps))
+            lambda fps: self._event_bus.publish(SetTriggerFPSCommand(fps=fps))
         )
 
         # Display FPS
@@ -431,9 +432,9 @@ class NapariLiveWidget(QWidget):
 
     def toggle_live(self, pressed: bool) -> None:
         if pressed:
-            event_bus.publish(StartLiveCommand(configuration=self.live_configuration.name))
+            self._event_bus.publish(StartLiveCommand(configuration=self.live_configuration.name))
         else:
-            event_bus.publish(StopLiveCommand())
+            self._event_bus.publish(StopLiveCommand())
 
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Handle live state changes from the event bus."""
@@ -531,7 +532,7 @@ class NapariLiveWidget(QWidget):
 
         # Publish command - MicroscopeModeController will handle the actual mode change
         # and publish MicroscopeModeChanged with the config details
-        event_bus.publish(
+        self._event_bus.publish(
             SetMicroscopeModeCommand(
                 configuration_name=config_name,
                 objective=self._current_objective,
@@ -551,7 +552,7 @@ class NapariLiveWidget(QWidget):
 
     def update_config_exposure_time(self, new_value: float) -> None:
         self.live_configuration.exposure_time = new_value
-        event_bus.publish(UpdateChannelConfigurationCommand(
+        self._event_bus.publish(UpdateChannelConfigurationCommand(
             objective_name=self._current_objective,
             config_name=self.live_configuration.name,
             exposure_time_ms=new_value,
@@ -560,7 +561,7 @@ class NapariLiveWidget(QWidget):
 
     def update_config_analog_gain(self, new_value: float) -> None:
         self.live_configuration.analog_gain = new_value
-        event_bus.publish(UpdateChannelConfigurationCommand(
+        self._event_bus.publish(UpdateChannelConfigurationCommand(
             objective_name=self._current_objective,
             config_name=self.live_configuration.name,
             analog_gain=new_value,
@@ -569,16 +570,16 @@ class NapariLiveWidget(QWidget):
 
     def update_config_illumination_intensity(self, new_value: float) -> None:
         self.live_configuration.illumination_intensity = new_value
-        event_bus.publish(UpdateChannelConfigurationCommand(
+        self._event_bus.publish(UpdateChannelConfigurationCommand(
             objective_name=self._current_objective,
             config_name=self.live_configuration.name,
             illumination_intensity=new_value,
         ))
-        event_bus.publish(UpdateIlluminationCommand())
+        self._event_bus.publish(UpdateIlluminationCommand())
 
     def update_resolution_scaling(self, value: float) -> None:
         self.streamHandler.set_display_resolution_scaling(value)
-        event_bus.publish(SetDisplayResolutionScalingCommand(scaling=value))
+        self._event_bus.publish(SetDisplayResolutionScalingCommand(scaling=value))
 
     def on_trigger_mode_changed(self, index: int) -> None:
         # Get the actual value using user data

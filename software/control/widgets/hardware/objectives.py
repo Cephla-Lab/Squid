@@ -17,11 +17,12 @@ from control._def import (
     XERYON_OBJECTIVE_SWITCHER_POS_1,
     XERYON_OBJECTIVE_SWITCHER_POS_2,
 )
-from squid.events import event_bus, ObjectiveChanged
+from squid.events import ObjectiveChanged
 
 if TYPE_CHECKING:
     from control.core.navigation import ObjectiveStore
     from control.peripherals.objective_changer import ObjectiveChanger2PosController
+    from squid.ui_event_bus import UIEventBus
 
 
 class ObjectivesWidget(QWidget):
@@ -31,8 +32,12 @@ class ObjectivesWidget(QWidget):
         self,
         objective_store: ObjectiveStore,
         objective_changer: Optional[ObjectiveChanger2PosController] = None,
+        event_bus: "UIEventBus" = None,
     ) -> None:
         super(ObjectivesWidget, self).__init__()
+        if event_bus is None:
+            raise ValueError("ObjectivesWidget requires a UIEventBus instance")
+        self._event_bus = event_bus
         self.objectiveStore: ObjectiveStore = objective_store
         self.objective_changer: Optional[ObjectiveChanger2PosController] = (
             objective_changer
@@ -70,7 +75,7 @@ class ObjectivesWidget(QWidget):
         objective_info = self.objectiveStore.get_current_objective_info()
         magnification = objective_info.get("magnification", 1.0)
         pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
-        event_bus.publish(ObjectiveChanged(
+        self._event_bus.publish(ObjectiveChanged(
             position=0,
             objective_name=objective_name,
             magnification=magnification,

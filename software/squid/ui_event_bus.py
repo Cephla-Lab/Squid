@@ -63,11 +63,15 @@ class UIEventBus:
         with self._lock:
             # Create wrapper that marshals to main thread
             def wrapper(event: Event, _handler=handler) -> None:
-                if self._dispatcher.is_main_thread():
+                is_main = self._dispatcher.is_main_thread()
+                thread_name = threading.current_thread().name
+                if is_main:
                     # Already on main thread, call directly (optimization)
+                    _log.info(f"UIEventBus: {type(event).__name__} on main thread ({thread_name}), calling directly")
                     _handler(event)
                 else:
                     # Marshal to main thread via Qt signal
+                    _log.info(f"UIEventBus: {type(event).__name__} from {thread_name}, dispatching to main thread")
                     self._dispatcher.dispatch.emit(_handler, event)
 
             self._wrapper_map[(event_type, handler)] = wrapper

@@ -20,6 +20,8 @@ from control.core.acquisition.multi_point_utils import (
     MultiPointControllerFunctions,
     ScanPositionInformation,
     AcquisitionParameters,
+    RegionProgressUpdate,
+    OverallProgressUpdate,
 )
 from control.core.navigation import ScanCoordinates
 from control.core.autofocus import LaserAutofocusController
@@ -446,14 +448,29 @@ class MultiPointController:
         return size_per_image * self.get_acquisition_image_count() + non_image_file_size
 
     def run_acquisition(self, acquire_current_fov: bool = False) -> None:
+        import time as _time
+        self._log.info("run_acquisition: ENTER")
+        _t0 = _time.perf_counter()
+
+        # Check if previous acquisition thread is still running
+        if self.acquisition_in_progress():
+            self._log.warning("Cannot start acquisition - previous acquisition still in progress")
+            return
+
+        self._log.info(f"run_acquisition: passed acquisition_in_progress check ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
+
         if not self.validate_acquisition_settings():
             # emit acquisition finished signal to re-enable the UI
             self._publish_acquisition_state(in_progress=False)
             self.callbacks.signal_acquisition_finished()
             return
 
+        self._log.info(f"run_acquisition: passed validate_acquisition_settings ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
+
         # Publish acquisition started state
+        self._log.info("run_acquisition: about to publish in_progress=True")
         self._publish_acquisition_state(in_progress=True)
+        self._log.info(f"run_acquisition: published in_progress=True ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
 
         self._log.info("start multipoint")
         self._start_position = self._stage_service.get_position()
@@ -635,12 +652,56 @@ class MultiPointController:
                 return
 
         def finish_fn() -> None:
-            # Restore controller state, publish AcquisitionStateChanged, then emit UI callbacks
-            self._on_acquisition_completed()
-            self.callbacks.signal_acquisition_finished()
+            """Finalize acquisition and always emit finished callbacks."""
+            try:
+                self._on_acquisition_completed()
+            finally:
+                # Always notify listeners that acquisition finished, even if cleanup fails
+                try:
+                    self.callbacks.signal_acquisition_finished()
+                except Exception:
+                    self._log.exception("Failed to emit acquisition_finished callback")
+
+        def region_progress_fn(progress: RegionProgressUpdate) -> None:
+            # Call original callback
+            self.callbacks.signal_region_progress(progress)
+            # Also publish to EventBus for widgets that subscribe via UIEventBus
+            if self._event_bus:
+                self._log.debug(f"Publishing AcquisitionRegionProgress: {progress.current_fov}/{progress.region_fovs}")
+                self._event_bus.publish(AcquisitionRegionProgress(
+                    current_region=progress.current_fov,
+                    total_regions=progress.region_fovs,
+                ))
+
+        def overall_progress_fn(progress: OverallProgressUpdate) -> None:
+            # Call original callback
+            self.callbacks.signal_overall_progress(progress)
+            # Also publish to EventBus for widgets that subscribe via UIEventBus
+            if self._event_bus:
+                total_regions = progress.total_regions or 1
+                total_timepoints = progress.total_timepoints or 1
+                current_region = max(progress.current_region, 1)
+                current_timepoint = max(progress.current_timepoint, 1)
+                region_fraction = (current_region - 1) / total_regions
+                timepoint_fraction = (current_timepoint - 1) / total_timepoints
+                progress_percent = min(
+                    100.0,
+                    max(0.0, (region_fraction + timepoint_fraction / total_regions) * 100.0),
+                )
+                self._event_bus.publish(AcquisitionProgress(
+                    current_fov=current_region,
+                    total_fovs=total_regions,
+                    current_round=current_timepoint,
+                    total_rounds=total_timepoints,
+                    current_channel="",
+                    progress_percent=progress_percent,
+                ))
 
         updated_callbacks: MultiPointControllerFunctions = dataclasses.replace(
-            self.callbacks, signal_acquisition_finished=finish_fn
+            self.callbacks,
+            signal_acquisition_finished=finish_fn,
+            signal_region_progress=region_progress_fn,
+            signal_overall_progress=overall_progress_fn,
         )
 
         acquisition_params: AcquisitionParameters = self.build_params(
@@ -677,7 +738,9 @@ class MultiPointController:
         self.thread: Thread = Thread(
             target=self.multiPointWorker.run, name="Acquisition thread", daemon=True
         )
+        self._log.info(f"run_acquisition: starting worker thread ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
         self.thread.start()
+        self._log.info(f"run_acquisition: worker thread started, returning ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
 
     def build_params(
         self, scan_position_information: ScanPositionInformation
@@ -706,63 +769,73 @@ class MultiPointController:
         )
 
     def _on_acquisition_completed(self) -> None:
-        self._log.debug("MultiPointController._on_acquisition_completed called")
-        # restore the previous selected mode
-        if self.gen_focus_map:
-            self.autofocusController.clear_focus_map()
-            for x, y, z in self.focus_map_storage:
-                self.autofocusController.focus_map_coords.append((x, y, z))
-            self.autofocusController.use_focus_map = self.already_using_fmap
-        if self.configuration_before_running_multipoint is not None:
-            self.callbacks.signal_current_configuration(
-                self.configuration_before_running_multipoint
-            )
-            self.liveController.set_microscope_mode(
-                self.configuration_before_running_multipoint
-            )
+        """Cleanup after acquisition and publish finished state."""
+        import threading
+        thread_name = threading.current_thread().name
+        self._log.info(f"MultiPointController._on_acquisition_completed called from thread {thread_name}")
+        try:
+            # Defensive: ensure camera streaming is stopped before any state restoration.
+            # The worker should have stopped streaming, but this handles edge cases.
+            if self._camera_service:
+                self._camera_service.stop_streaming()
 
-        # Restore callbacks to pre-acquisition state
-        self._camera_service.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
+            # restore the previous selected mode
+            if self.gen_focus_map:
+                self.autofocusController.clear_focus_map()
+                for x, y, z in self.focus_map_storage:
+                    self.autofocusController.focus_map_coords.append((x, y, z))
+                self.autofocusController.use_focus_map = self.already_using_fmap
+            if self.configuration_before_running_multipoint is not None:
+                self.callbacks.signal_current_configuration(
+                    self.configuration_before_running_multipoint
+                )
+                self.liveController.set_microscope_mode(
+                    self.configuration_before_running_multipoint
+                )
 
-        # emit the acquisition finished signal to enable the UI
-        self._log.info(
-            f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}"
-        )
-        utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
+            # Restore callbacks to pre-acquisition state
+            self._camera_service.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
 
-        if self.run_acquisition_current_fov:
-            self.run_acquisition_current_fov = False
-
-        # Move stage back to start position BEFORE re-enabling live mode
-        # This prevents live frames from being captured at intermediate positions
-        if self._start_position:
-            x_mm: float = self._start_position.x_mm
-            y_mm: float = self._start_position.y_mm
-            z_mm: float = self._start_position.z_mm
+            # emit the acquisition finished signal to enable the UI
             self._log.info(
-                f"Moving back to start position: (x,y,z) [mm] = ({x_mm}, {y_mm}, {z_mm})"
+                f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}"
             )
-            self._stage_service.move_x_to(x_mm)
-            self._stage_service.move_y_to(y_mm)
-            self._stage_service.move_z_to(z_mm)
-            self._start_position = None
+            utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
 
-        # Note: We don't emit signal_current_fov here because:
-        # 1. The stage has returned to start position, not an acquired FOV
-        # 2. The scan grid will be redrawn by reset_coordinates() called from acquisition_is_finished()
-        # 3. Emitting here would add an extra blue rectangle at the start position
+            if self.run_acquisition_current_fov:
+                self.run_acquisition_current_fov = False
 
-        # re-enable live AFTER stage has returned to start position
-        if (
-            self.liveController_was_live_before_multipoint
-            and control._def.RESUME_LIVE_AFTER_ACQUISITION
-        ):
-            self.liveController.start_live()
+            # Move stage back to start position BEFORE re-enabling live mode
+            # This prevents live frames from being captured at intermediate positions
+            if self._start_position:
+                x_mm: float = self._start_position.x_mm
+                y_mm: float = self._start_position.y_mm
+                z_mm: float = self._start_position.z_mm
+                self._log.info(
+                    f"Moving back to start position: (x,y,z) [mm] = ({x_mm}, {y_mm}, {z_mm})"
+                )
+                self._stage_service.move_x_to(x_mm)
+                self._stage_service.move_y_to(y_mm)
+                self._stage_service.move_z_to(z_mm)
+                self._start_position = None
 
-        # Publish acquisition finished state
-        self._publish_acquisition_state(in_progress=False)
+            # Note: We don't emit signal_current_fov here because:
+            # 1. The stage has returned to start position, not an acquired FOV
+            # 2. The scan grid will be redrawn by reset_coordinates() called from acquisition_is_finished()
+            # 3. Emitting here would add an extra blue rectangle at the start position
 
-        self.callbacks.signal_acquisition_finished()
+            # re-enable live AFTER stage has returned to start position
+            if (
+                self.liveController_was_live_before_multipoint
+                and control._def.RESUME_LIVE_AFTER_ACQUISITION
+            ):
+                self.liveController.start_live()
+        except Exception:
+            # Never let cleanup errors block UI re-enabling
+            self._log.exception("Error during acquisition cleanup")
+        finally:
+            # Publish acquisition finished state even if cleanup fails
+            self._publish_acquisition_state(in_progress=False)
 
     def request_abort_aquisition(self) -> None:
         self.abort_acqusition_requested = True
@@ -847,8 +920,12 @@ class MultiPointController:
 
     def _publish_acquisition_state(self, in_progress: bool, is_aborting: bool = False) -> None:
         """Publish acquisition state changed event."""
+        import threading
+        thread_name = threading.current_thread().name
+        self._log.info(f"_publish_acquisition_state(in_progress={in_progress}, is_aborting={is_aborting}) from thread {thread_name}")
         if self._event_bus:
             self._event_bus.publish(AcquisitionStateChanged(
                 in_progress=in_progress,
                 is_aborting=is_aborting
             ))
+            self._log.info(f"Published AcquisitionStateChanged(in_progress={in_progress})")

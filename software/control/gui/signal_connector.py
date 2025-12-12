@@ -17,6 +17,7 @@ from control._def import (
     RUN_FLUIDICS,
     USE_NAPARI_FOR_LIVE_VIEW,
     USE_NAPARI_FOR_LIVE_CONTROL,
+    USE_NAPARI_FOR_MOSAIC_DISPLAY,
     SUPPORT_LASER_AUTOFOCUS,
     ENABLE_SPINNING_DISK_CONFOCAL,
 )
@@ -195,6 +196,7 @@ def connect_display_signals(gui: "HighContentScreeningGui") -> None:
         gui.imageDisplayWindow.image_click_coordinates.connect(
             gui.move_from_click_image
         )
+
 
 
 def connect_laser_autofocus_signals(gui: "HighContentScreeningGui") -> None:

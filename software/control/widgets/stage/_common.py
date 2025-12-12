@@ -31,7 +31,7 @@ from control._def import (
 )
 from squid.abc import AbstractStage
 from squid.services import StageService
-from squid.events import event_bus, StagePositionChanged
+from squid.events import StagePositionChanged
 from control.core.display import LiveController
 from control.core.autofocus import AutoFocusController
 from control.peripherals.piezo import PiezoStage

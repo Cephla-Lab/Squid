@@ -1512,7 +1512,7 @@ class WellplateMultiPointWidget(QFrame):
         # Set the progress label text, ensuring it's not empty
         progress_text = "  ".join(progress_parts)
         self.progress_label.setText(progress_text if progress_text else "Progress")
-        self.progress_bar.setValue(0)
+        #self.progress_bar.setValue(0)
 
     def update_eta_display(self):
         if self.eta_seconds > 0:
@@ -1949,7 +1949,9 @@ class WellplateMultiPointWidget(QFrame):
             )
 
             # Start acquisition via event
+            self._log.info("toggle_acquisition: about to publish StartAcquisitionCommand")
             self._event_bus.publish(StartAcquisitionCommand())
+            self._log.info("toggle_acquisition: published StartAcquisitionCommand, returning")
 
         else:
             # This must eventually propagate through and call our aquisition_is_finished, or else we'll be left
@@ -2282,11 +2284,15 @@ class WellplateMultiPointWidget(QFrame):
 
     def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
         """Handle acquisition state changes from EventBus."""
+        import threading
+        thread_name = threading.current_thread().name
+        self._log.info(f"_on_acquisition_state_changed(in_progress={event.in_progress}) on thread {thread_name}")
         self._acquisition_in_progress = event.in_progress
         self._acquisition_is_aborting = event.is_aborting
 
         if not event.in_progress:
             # Acquisition finished
+            self._log.info("Calling acquisition_is_finished()")
             self.acquisition_is_finished()
 
     def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:

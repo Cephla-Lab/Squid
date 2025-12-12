@@ -212,6 +212,9 @@ class NapariMosaicDisplayWidget(QWidget):
     def updateMosaic(
         self, image: np.ndarray, x_mm: float, y_mm: float, k: int, channel_name: str
     ) -> None:
+        import time
+        t_start = time.perf_counter()
+
         # Store original center position for logging
         center_x_mm, center_y_mm = x_mm, y_mm
         original_shape = image.shape
@@ -342,7 +345,9 @@ class NapariMosaicDisplayWidget(QWidget):
         self.top_left_coordinate = [self.viewer_extents[0], self.viewer_extents[2]]
 
         # update layer
+        t_layer_start = time.perf_counter()
         self.updateLayer(layer, image, x_mm, y_mm, k, prev_top_left)
+        t_layer_end = time.perf_counter()
 
         # update contrast limits
         min_val, max_val = self.contrastManager.get_limits(channel_name)
@@ -353,7 +358,22 @@ class NapariMosaicDisplayWidget(QWidget):
             max_val, self.contrastManager.acquisition_dtype, self.mosaic_dtype
         )
         layer.contrast_limits = (scaled_min, scaled_max)
+        t_refresh_start = time.perf_counter()
         layer.refresh()
+        t_refresh_end = time.perf_counter()
+
+        t_total = t_refresh_end - t_start
+        if t_total > 0.1:  # Log if > 100ms
+            self._log.warning(
+                f"updateMosaic SLOW: total={t_total*1000:.1f}ms, "
+                f"updateLayer={(t_layer_end - t_layer_start)*1000:.1f}ms, "
+                f"refresh={(t_refresh_end - t_refresh_start)*1000:.1f}ms, "
+                f"layer.data.shape={layer.data.shape}"
+            )
+        else:
+            self._log.debug(
+                f"updateMosaic: total={t_total*1000:.1f}ms"
+            )
 
     def updateLayer(
         self,
@@ -453,7 +473,7 @@ class NapariMosaicDisplayWidget(QWidget):
             layer.data[y_pos:y_end, x_pos:x_end] = image[
                 : y_end - y_pos, : x_end - x_pos
             ]
-        layer.refresh()
+        # Note: Don't refresh here - caller (updateMosaic) will refresh after setting contrast
 
     def convertImageDtype(
         self, image: np.ndarray, target_dtype: np.dtype
@@ -562,5 +582,29 @@ class NapariMosaicDisplayWidget(QWidget):
 
         self.signal_clear_viewer.emit()
 
+
     def activate(self) -> None:
         self.viewer.window.activate()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _reset_mosaic_state(self) -> None:
+        """Clear layers and cached state before a new acquisition."""
+        try:
+            self.viewer.layers.clear()
+        except Exception:
+            pass  # Best-effort; keep going to reset state
+        self.layers_initialized = False
+        self.shape_layer = None
+        self.shapes_mm = []
+        self.is_drawing_shape = False
+        self.channels = set()
+        self.viewer_extents = []
+        self.top_left_coordinate = None
+        self.mosaic_dtype = None
+        # Reset pixel size to a default; will be updated on first tile
+        self.viewer_pixel_size_mm = (
+            self._pixel_size_factor * self._pixel_size_binned_um / 1000.0
+        )
