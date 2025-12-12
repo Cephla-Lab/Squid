@@ -30,8 +30,8 @@ class TestStageService:
 
     def test_move_x_calls_stage(self):
         """move_x should call stage.move_x."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(1.0, 2.0, 3.0)
@@ -44,8 +44,8 @@ class TestStageService:
 
     def test_move_y_calls_stage(self):
         """move_y should call stage.move_y."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(1.0, 2.0, 3.0)
@@ -58,8 +58,8 @@ class TestStageService:
 
     def test_move_z_calls_stage(self):
         """move_z should call stage.move_z."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(1.0, 2.0, 3.0)
@@ -72,8 +72,8 @@ class TestStageService:
 
     def test_move_publishes_position(self):
         """move_x should publish StagePositionChanged."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus, StagePositionChanged
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus, StagePositionChanged
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(10.0, 20.0, 30.0)
@@ -85,6 +85,7 @@ class TestStageService:
         bus.subscribe(StagePositionChanged, lambda e: received.append(e))
 
         service.move_x(1.0)
+        bus.drain()
 
         assert len(received) == 1
         assert received[0].x_mm == 10.0
@@ -94,8 +95,8 @@ class TestStageService:
 
     def test_move_publishes_theta_when_available(self):
         """move_x should publish theta when present on Pos."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus, StagePositionChanged
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus, StagePositionChanged
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPosWithTheta(10.0, 20.0, 30.0, 1.23)
@@ -107,14 +108,15 @@ class TestStageService:
         bus.subscribe(StagePositionChanged, lambda e: received.append(e))
 
         service.move_x(1.0)
+        bus.drain()
 
         assert len(received) == 1
         assert received[0].theta_rad == 1.23
 
     def test_handles_move_command(self):
         """Should respond to MoveStageCommand events."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus, MoveStageCommand
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus, MoveStageCommand
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -123,13 +125,14 @@ class TestStageService:
         StageService(mock_stage, bus)
 
         bus.publish(MoveStageCommand(axis="x", distance_mm=5.0))
+        bus.drain()
 
         mock_stage.move_x.assert_called_once_with(5.0, True)
 
     def test_handles_home_command(self):
         """Should respond to HomeStageCommand events."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus, HomeStageCommand
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus, HomeStageCommand
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -138,13 +141,14 @@ class TestStageService:
         StageService(mock_stage, bus)
 
         bus.publish(HomeStageCommand(x=True, y=False, z=True, theta=True))
+        bus.drain()
 
         mock_stage.home.assert_called_once_with(True, False, True, True)
 
     def test_handles_zero_command(self):
         """Should respond to ZeroStageCommand events."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus, ZeroStageCommand
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus, ZeroStageCommand
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -153,13 +157,14 @@ class TestStageService:
         StageService(mock_stage, bus)
 
         bus.publish(ZeroStageCommand(x=True, y=True, z=False, theta=True))
+        bus.drain()
 
         mock_stage.zero.assert_called_once_with(True, True, False, True)
 
     def test_handles_move_to_loading_position_command(self):
         """Should respond to MoveStageToLoadingPositionCommand events."""
-        from squid.services.stage_service import StageService
-        from squid.events import (
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import (
             EventBus,
             MoveStageToLoadingPositionCommand,
         )
@@ -176,6 +181,7 @@ class TestStageService:
                 blocking=False, callback=None, is_wellplate=False
             )
         )
+        bus.drain()
 
         service.move_to_loading_position.assert_called_once_with(
             blocking=False, callback=None, is_wellplate=False
@@ -183,8 +189,8 @@ class TestStageService:
 
     def test_handles_move_to_scanning_position_command(self):
         """Should respond to MoveStageToScanningPositionCommand events."""
-        from squid.services.stage_service import StageService
-        from squid.events import (
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import (
             EventBus,
             MoveStageToScanningPositionCommand,
         )
@@ -201,6 +207,7 @@ class TestStageService:
                 blocking=False, callback=None, is_wellplate=True
             )
         )
+        bus.drain()
 
         service.move_to_scanning_position.assert_called_once_with(
             blocking=False, callback=None, is_wellplate=True
@@ -208,8 +215,8 @@ class TestStageService:
 
     def test_move_to_calls_stage(self):
         """move_to should call stage.move_x_to/move_y_to/move_z_to."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -224,8 +231,8 @@ class TestStageService:
 
     def test_home_calls_stage(self):
         """home should call stage.home with all 4 axis params."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -239,8 +246,8 @@ class TestStageService:
 
     def test_home_with_theta(self):
         """home should support theta axis."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -253,8 +260,8 @@ class TestStageService:
 
     def test_zero_calls_stage(self):
         """zero should call stage.zero with all 4 axis params."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -268,8 +275,8 @@ class TestStageService:
 
     def test_zero_with_theta(self):
         """zero should support theta axis."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -282,8 +289,8 @@ class TestStageService:
 
     def test_get_position(self):
         """get_position should return stage position."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(1.0, 2.0, 3.0)
@@ -302,8 +309,8 @@ class TestStageService:
 
     def test_move_theta(self):
         """move_theta should call stage.move_theta."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(1.0, 2.0, 3.0)
@@ -316,8 +323,8 @@ class TestStageService:
 
     def test_move_theta_to(self):
         """move_theta_to should call stage.move_theta_to."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(1.0, 2.0, 3.0)
@@ -334,8 +341,8 @@ class TestStageService:
 
     def test_get_config(self):
         """get_config should return stage configuration."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_config = Mock()
@@ -355,8 +362,8 @@ class TestStageService:
 
     def test_wait_for_idle(self):
         """wait_for_idle should call stage.wait_for_idle."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -369,8 +376,8 @@ class TestStageService:
 
     def test_set_limits(self):
         """set_limits should call stage.set_limits."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -397,8 +404,8 @@ class TestStageService:
 
     def test_get_x_mm_per_ustep(self):
         """get_x_mm_per_ustep should return mm per microstep."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -413,8 +420,8 @@ class TestStageService:
 
     def test_get_y_mm_per_ustep(self):
         """get_y_mm_per_ustep should return mm per microstep."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -429,8 +436,8 @@ class TestStageService:
 
     def test_get_z_mm_per_ustep(self):
         """get_z_mm_per_ustep should return mm per microstep."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -445,9 +452,9 @@ class TestStageService:
 
     def test_move_to_safety_position(self):
         """move_to_safety_position should move Z to safety point."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
-        import control._def as _def
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
+        import _def as _def
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 1.2)
@@ -461,8 +468,8 @@ class TestStageService:
 
     def test_move_to_loading_position_blocking(self):
         """move_to_loading_position should move to loading position."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_config = Mock()
@@ -484,8 +491,8 @@ class TestStageService:
 
     def test_move_to_loading_position_not_wellplate(self):
         """move_to_loading_position should work for non-wellplate."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 5.0)
@@ -501,8 +508,8 @@ class TestStageService:
 
     def test_move_to_loading_position_callback_error(self):
         """move_to_loading_position should raise if blocking=True with callback."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
@@ -515,8 +522,8 @@ class TestStageService:
 
     def test_move_to_scanning_position_blocking(self):
         """move_to_scanning_position should move to scanning position."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 5.0)
@@ -531,8 +538,8 @@ class TestStageService:
 
     def test_move_to_scanning_position_callback_error(self):
         """move_to_scanning_position should raise if blocking=True with callback."""
-        from squid.services.stage_service import StageService
-        from squid.events import EventBus
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)

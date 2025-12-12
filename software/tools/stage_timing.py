@@ -1,14 +1,14 @@
 import logging
 
-from control.microscope import Microscope
-import squid.abc
-import squid.logging
+from squid.mcs.microscope import Microscope
+import squid.core.abc
+import squid.core.logging
 import time
 
-log = squid.logging.get_logger("stage timing")
+log = squid.core.logging.get_logger("stage timing")
 
 
-def get_move_fn(scope: Microscope, stage: squid.abc.AbstractStage, axis: str, relative):
+def get_move_fn(scope: Microscope, stage: squid.core.abc.AbstractStage, axis: str, relative):
     axis_lower = axis.lower()
     if axis_lower == "z":
         return stage.move_z if relative else scope.move_z_to

@@ -1,5 +1,5 @@
-import control.peripherals.filter_wheel.utils
-from squid.config import (
+import mcs.drivers.filter_wheels.utils
+from squid.core.config import (
     FilterWheelConfig,
     FilterWheelControllerVariant,
     SquidFilterWheelConfig,

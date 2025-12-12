@@ -7,7 +7,7 @@ from typing import Any, List, Tuple
 import pytest
 from qtpy.QtWidgets import QApplication
 
-from squid.events import (
+from squid.core.events import (
     MoveStageRelativeCommand,
     SetExposureTimeCommand,
     SetAnalogGainCommand,
@@ -21,6 +21,10 @@ from squid.events import (
     SetDACCommand,
     StagePositionChanged,
     SaveWellplateCalibrationCommand,
+    TriggerModeChanged,
+    TriggerFPSChanged,
+    AutofocusProgress,
+    AutofocusCompleted,
 )
 
 
@@ -69,11 +73,10 @@ class TestNavigationWidgetEvents:
             return 0.001
 
     def test_move_x_forward_publishes_relative_event(self, qapp):
-        from control.widgets.stage.navigation import NavigationWidget
+        from squid.ui.widgets.stage.navigation import NavigationWidget
 
         bus = FakeBus()
-        stage_service = self.FakeStageService()
-        widget = NavigationWidget(stage_service=stage_service, event_bus=bus)
+        widget = NavigationWidget(event_bus=bus)
         bus.published.clear()
 
         widget.entry_dX.setValue(1.0)
@@ -83,11 +86,10 @@ class TestNavigationWidgetEvents:
         assert bus.published[-1].x_mm == 1.0
 
     def test_navigation_subscribes_to_position(self, qapp):
-        from control.widgets.stage.navigation import NavigationWidget
+        from squid.ui.widgets.stage.navigation import NavigationWidget
 
         bus = FakeBus()
-        stage_service = self.FakeStageService()
-        NavigationWidget(stage_service=stage_service, event_bus=bus)
+        NavigationWidget(event_bus=bus)
         assert any(sub[0] is StagePositionChanged for sub in bus.subscriptions)
 
 
@@ -102,38 +104,23 @@ class TestLiveControlWidgetEvents:
         analog_gain: float
         illumination_intensity: float
 
-    class FakeChannelConfigurationManager:
-        def __init__(self, mode):
-            self._mode = mode
-
-        def get_channel_configurations_for_objective(self, obj):
-            return [self._mode]
-
-        def get_channel_configuration_by_name(self, obj, name):
-            return self._mode
-
     class FakeStreamHandler:
         def set_display_fps(self, fps: float) -> None:
             self.fps = fps
 
-    class FakeObjectiveStore:
-        def __init__(self):
-            self.current_objective = "obj"
-
     def test_toggle_live_publishes_commands(self, qapp):
-        from control.widgets.camera.live_control import LiveControlWidget
+        from squid.ui.widgets.camera.live_control import LiveControlWidget
 
         bus = FakeBus()
         mode = self.FakeChannelMode("mode1", 10.0, 1.0, 50.0)
-        channel_manager = self.FakeChannelConfigurationManager(mode)
         stream_handler = self.FakeStreamHandler()
-        objective_store = self.FakeObjectiveStore()
 
         widget = LiveControlWidget(
             event_bus=bus,
             streamHandler=stream_handler,
-            objectiveStore=objective_store,
-            channelConfigurationManager=channel_manager,
+            initial_configuration=mode,
+            initial_objective="20x",
+            initial_channel_configs=["mode1"],
         )
         bus.published.clear()
 
@@ -145,19 +132,18 @@ class TestLiveControlWidgetEvents:
         assert any(isinstance(evt, StopLiveCommand) for evt in bus.published)
 
     def test_live_control_subscribes(self, qapp):
-        from control.widgets.camera.live_control import LiveControlWidget
+        from squid.ui.widgets.camera.live_control import LiveControlWidget
 
         bus = FakeBus()
         mode = self.FakeChannelMode("mode1", 10.0, 1.0, 50.0)
-        channel_manager = self.FakeChannelConfigurationManager(mode)
         stream_handler = self.FakeStreamHandler()
-        objective_store = self.FakeObjectiveStore()
 
         LiveControlWidget(
             event_bus=bus,
             streamHandler=stream_handler,
-            objectiveStore=objective_store,
-            channelConfigurationManager=channel_manager,
+            initial_configuration=mode,
+            initial_objective="20x",
+            initial_channel_configs=["mode1"],
         )
         subscribed_types = {sub[0] for sub in bus.subscriptions}
         assert TriggerModeChanged in subscribed_types
@@ -197,8 +183,14 @@ class TestCameraSettingsWidgetEvents:
         def get_resolution(self):
             return (128, 128)
 
+        def get_binning_options(self):
+            return [(1, 1), (2, 2)]
+
+        def get_binning(self):
+            return (1, 1)
+
     def test_exposure_change_publishes_command(self, qapp):
-        from control.widgets.camera.settings import CameraSettingsWidget
+        from squid.ui.widgets.camera.settings import CameraSettingsWidget
 
         bus = FakeBus()
         widget = CameraSettingsWidget(
@@ -222,7 +214,7 @@ class TestCameraSettingsWidgetEvents:
         assert bus.published[-1].exposure_time_ms == 25.0
 
     def test_gain_change_publishes_command(self, qapp):
-        from control.widgets.camera.settings import CameraSettingsWidget
+        from squid.ui.widgets.camera.settings import CameraSettingsWidget
 
         bus = FakeBus()
         widget = CameraSettingsWidget(
@@ -251,7 +243,7 @@ class TestAutoFocusWidgetEvents:
     """AutoFocusWidget publishes autofocus commands."""
 
     def test_autofocus_start_stop(self, qapp):
-        from control.widgets.stage.autofocus import AutoFocusWidget
+        from squid.ui.widgets.stage.autofocus import AutoFocusWidget
 
         bus = FakeBus()
         widget = AutoFocusWidget(event_bus=bus)
@@ -266,7 +258,7 @@ class TestAutoFocusWidgetEvents:
         assert any(isinstance(evt, StopAutofocusCommand) for evt in bus.published)
 
     def test_autofocus_subscribes(self, qapp):
-        from control.widgets.stage.autofocus import AutoFocusWidget
+        from squid.ui.widgets.stage.autofocus import AutoFocusWidget
 
         bus = FakeBus()
         AutoFocusWidget(event_bus=bus)
@@ -280,7 +272,7 @@ class TestTriggerControlWidgetEvents:
     """TriggerControlWidget publishes trigger commands."""
 
     def test_trigger_mode_and_fps_publish_events(self, qapp):
-        from control.widgets.hardware.trigger import TriggerControlWidget
+        from squid.ui.widgets.hardware.trigger import TriggerControlWidget
 
         bus = FakeBus()
         widget = TriggerControlWidget(event_bus=bus)
@@ -295,7 +287,7 @@ class TestTriggerControlWidgetEvents:
         assert any(isinstance(evt, SetTriggerFPSCommand) for evt in bus.published)
 
     def test_toggle_live_publishes_start_stop(self, qapp):
-        from control.widgets.hardware.trigger import TriggerControlWidget
+        from squid.ui.widgets.hardware.trigger import TriggerControlWidget
 
         bus = FakeBus()
         widget = TriggerControlWidget(event_bus=bus)
@@ -309,7 +301,7 @@ class TestTriggerControlWidgetEvents:
         assert not bus.published
 
     def test_trigger_subscribes_to_state(self, qapp):
-        from control.widgets.hardware.trigger import TriggerControlWidget
+        from squid.ui.widgets.hardware.trigger import TriggerControlWidget
 
         bus = FakeBus()
         TriggerControlWidget(event_bus=bus)
@@ -323,7 +315,7 @@ class TestDACWidgetEvents:
     """DACControWidget publishes DAC commands."""
 
     def test_dac_slider_publishes_normalized_value(self, qapp):
-        from control.widgets.hardware.dac import DACControWidget
+        from squid.ui.widgets.hardware.dac import DACControWidget
 
         bus = FakeBus()
         widget = DACControWidget(event_bus=bus)
@@ -346,7 +338,7 @@ class TestWellplateFormatWidgetEvents:
         pass
 
     def test_save_calibration_event_updates_settings(self, qapp):
-        from control.widgets.wellplate.format import WellplateFormatWidget, WELLPLATE_FORMAT_SETTINGS
+        from squid.ui.widgets.wellplate.format import WellplateFormatWidget, WELLPLATE_FORMAT_SETTINGS
 
         bus = FakeBus()
         widget = WellplateFormatWidget(
@@ -366,29 +358,37 @@ class TestNoDirectHardwareAttributes:
     """Widgets should not expose direct hardware/controller attributes."""
 
     def test_widgets_do_not_expose_controllers(self, qapp):
-        from control.widgets.stage.navigation import NavigationWidget
-        from control.widgets.camera.live_control import LiveControlWidget
-        from control.widgets.camera.settings import CameraSettingsWidget
-        from control.widgets.stage.autofocus import AutoFocusWidget
-        from control.widgets.hardware.trigger import TriggerControlWidget
-        from control.widgets.wellplate.calibration import WellplateCalibration
+        from dataclasses import dataclass
+        from squid.ui.widgets.stage.navigation import NavigationWidget
+        from squid.ui.widgets.camera.live_control import LiveControlWidget
+        from squid.ui.widgets.camera.settings import CameraSettingsWidget
+        from squid.ui.widgets.stage.autofocus import AutoFocusWidget
+        from squid.ui.widgets.hardware.trigger import TriggerControlWidget
+        from squid.ui.widgets.wellplate.calibration import WellplateCalibration
 
         bus = FakeBus()
 
-        class DummyStageService:
-            def get_x_mm_per_ustep(self): return 0.001
-            def get_y_mm_per_ustep(self): return 0.001
-            def get_z_mm_per_ustep(self): return 0.001
+        @dataclass
+        class FakeChannelMode:
+            name: str
+            exposure_time: float
+            analog_gain: float
+            illumination_intensity: float
 
-        class DummyLiveDeps:
+        class DummyStreamHandler:
+            def set_display_fps(self, fps: float) -> None:
+                pass
+
+        class DummyDeps:
             pass
 
-        nav = NavigationWidget(stage_service=DummyStageService(), event_bus=bus)
+        nav = NavigationWidget(event_bus=bus)
         live = LiveControlWidget(
             event_bus=bus,
-            streamHandler=DummyLiveDeps(),
-            objectiveStore=DummyLiveDeps(),
-            channelConfigurationManager=DummyLiveDeps(),
+            streamHandler=DummyStreamHandler(),
+            initial_configuration=FakeChannelMode("mode1", 10.0, 1.0, 50.0),
+            initial_objective="20x",
+            initial_channel_configs=["mode1"],
         )
         cam = CameraSettingsWidget(
             event_bus=bus,
@@ -408,9 +408,9 @@ class TestNoDirectHardwareAttributes:
         trig = TriggerControlWidget(event_bus=bus)
         well = WellplateCalibration(
             event_bus=bus,
-            wellplateFormatWidget=DummyLiveDeps(),
-            navigationViewer=DummyLiveDeps(),
-            streamHandler=DummyLiveDeps(),
+            wellplateFormatWidget=DummyDeps(),
+            navigationViewer=DummyDeps(),
+            streamHandler=DummyDeps(),
         )
 
         assert not hasattr(nav, "stage")

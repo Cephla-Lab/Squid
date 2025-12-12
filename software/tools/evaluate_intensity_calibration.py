@@ -12,13 +12,13 @@ sys.path.append(software_dir)
 os.chdir(software_dir)
 
 from PM16 import PM16
-from control.peripherals.lighting.led import (
+from mcs.drivers.lighting.led import (
     IlluminationController,
     IntensityControlMode,
     ShutterControlMode,
 )
-import control.microcontroller as microcontroller
-from control._def import *
+import mcs.microcontroller as microcontroller
+from _def import *
 
 
 def measure_power(pm: PM16, num_measurements: int = 5, delay: float = 0.1) -> float:

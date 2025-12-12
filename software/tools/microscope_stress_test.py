@@ -3,21 +3,24 @@ import threading
 import time
 from dataclasses import dataclass
 
-from control.core.autofocus import AutoFocusController
-from control.core.acquisition import CaptureInfo
-from control.core.acquisition import MultiPointController
-from control.core.acquisition.multi_point_utils import (
-    MultiPointControllerFunctions,
-    AcquisitionParameters,
-    RegionProgressUpdate,
-    OverallProgressUpdate,
+from mcs.controllers.autofocus import AutoFocusController
+from ops.acquisition import CaptureInfo
+from ops.acquisition import MultiPointController
+from ops.acquisition.multi_point_utils import AcquisitionParameters
+from ops.navigation import ScanCoordinates
+from storage.stream_handler import StreamHandlerFunctions
+from core.utils.config_utils import ChannelMode
+from core.abc import CameraFrame
+from core.events import (
+    event_bus,
+    AcquisitionStarted,
+    AcquisitionFinished,
+    AcquisitionWorkerFinished,
+    AcquisitionProgress,
+    AcquisitionRegionProgress,
 )
-from control.core.navigation import ScanCoordinates
-from control.core.display import StreamHandlerFunctions
-from control.utils_config import ChannelMode
-from squid.abc import CameraFrame
-import control.microscope
-import squid.logging
+import mcs.microscope
+import core.logging
 
 log = squid.logging.get_logger("Microscope stress test")
 
@@ -46,6 +49,13 @@ class MpcTestTracker:
         self._update_lock = threading.Lock()
         self._last_update_time = time.time()
 
+        event_bus.start()
+        event_bus.subscribe(AcquisitionStarted, self._on_started)
+        event_bus.subscribe(AcquisitionFinished, self._on_finished)
+        event_bus.subscribe(AcquisitionWorkerFinished, self._on_finished)
+        event_bus.subscribe(AcquisitionProgress, self._on_progress)
+        event_bus.subscribe(AcquisitionRegionProgress, self._on_region_progress)
+
     @property
     def counts(self):
         with self._update_lock:
@@ -68,51 +78,25 @@ class MpcTestTracker:
         with self._update_lock:
             self._last_update_time = time.time()
 
-    def start_fn(self, params: AcquisitionParameters):
+    def _on_started(self, _evt):
         self._update()
         with self._update_lock:
             self._start_count += 1
 
-    def finish_fn(self):
+    def _on_finished(self, _evt):
         self._update()
         with self._update_lock:
             self._finish_count += 1
 
-    def config_fn(self, mode: ChannelMode):
-        self._update()
-        with self._update_lock:
-            self._config_count += 1
-
-    def new_image_fn(self, frame: CameraFrame, info: CaptureInfo):
-        self._update()
-        with self._update_lock:
-            self._image_count += 1
-
-    def fov_fn(self, x_mm: float, y_mm: float):
-        self._update()
-        with self._update_lock:
-            self._fov_count += 1
-
-    def region_progress(self, progress: RegionProgressUpdate):
-        self._update()
-        with self._update_lock:
-            self._region_count += 1
-
-    def overall_progress(self, progress: OverallProgressUpdate):
+    def _on_progress(self, _evt):
         self._update()
         with self._update_lock:
             self._overall_progress_count += 1
 
-    def get_callbacks(self) -> MultiPointControllerFunctions:
-        return MultiPointControllerFunctions(
-            signal_acquisition_start=self.start_fn,
-            signal_acquisition_finished=self.finish_fn,
-            signal_new_image=self.new_image_fn,
-            signal_current_configuration=self.config_fn,
-            signal_current_fov=self.fov_fn,
-            signal_overall_progress=self.overall_progress,
-            signal_region_progress=self.region_progress,
-        )
+    def _on_region_progress(self, _evt):
+        self._update()
+        with self._update_lock:
+            self._region_count += 1
 
 
 def main(args):
@@ -229,7 +213,6 @@ def main(args):
         autofocus_controller=af_controller,
         objective_store=scope.objective_store,
         channel_configuration_manager=scope.channel_configuration_manager,
-        callbacks=mpc_tracker.get_callbacks(),
         scan_coordinates=simple_scan_coordinates,
         laser_autofocus_controller=None,
     )
@@ -265,12 +248,6 @@ def main(args):
 
     if counts.starts != 1:
         log.error("Saw more than 1 start!")
-
-    if counts.fovs * len(config_names_to_acquire) != counts.images:
-        log.error("fov*config != images")
-
-    if counts.regions != counts.images:
-        log.error("region update does not match image count")
 
     scope.close()
 

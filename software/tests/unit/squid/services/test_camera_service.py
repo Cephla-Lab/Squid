@@ -9,8 +9,8 @@ class TestCameraService:
 
     def test_set_exposure_time_calls_camera(self):
         """set_exposure_time should call camera.set_exposure_time."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         mock_camera.get_exposure_limits.return_value = (0.1, 1000.0)
@@ -23,8 +23,8 @@ class TestCameraService:
 
     def test_set_exposure_clamps_to_limits(self):
         """set_exposure_time should clamp to camera limits."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         mock_camera.get_exposure_limits.return_value = (1.0, 500.0)
@@ -42,8 +42,8 @@ class TestCameraService:
 
     def test_set_exposure_publishes_event(self):
         """set_exposure_time should publish ExposureTimeChanged."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus, ExposureTimeChanged
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus, ExposureTimeChanged
 
         mock_camera = Mock()
         mock_camera.get_exposure_limits.return_value = (0.1, 1000.0)
@@ -55,14 +55,15 @@ class TestCameraService:
         bus.subscribe(ExposureTimeChanged, lambda e: received.append(e))
 
         service.set_exposure_time(100.0)
+        bus.drain()
 
         assert len(received) == 1
         assert received[0].exposure_time_ms == 100.0
 
     def test_handles_set_exposure_command(self):
         """Should respond to SetExposureTimeCommand events."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus, SetExposureTimeCommand
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus, SetExposureTimeCommand
 
         mock_camera = Mock()
         mock_camera.get_exposure_limits.return_value = (0.1, 1000.0)
@@ -71,13 +72,14 @@ class TestCameraService:
         CameraService(mock_camera, bus)
 
         bus.publish(SetExposureTimeCommand(exposure_time_ms=200.0))
+        bus.drain()
 
         mock_camera.set_exposure_time.assert_called_once_with(200.0)
 
     def test_handles_set_analog_gain_command(self):
         """Should respond to SetAnalogGainCommand events."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus, SetAnalogGainCommand
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus, SetAnalogGainCommand
 
         mock_camera = Mock()
         mock_gain_range = Mock()
@@ -89,13 +91,14 @@ class TestCameraService:
         CameraService(mock_camera, bus)
 
         bus.publish(SetAnalogGainCommand(gain=5.0))
+        bus.drain()
 
         mock_camera.set_analog_gain.assert_called_once_with(5.0)
 
     def test_get_exposure_time(self):
         """get_exposure_time should return camera value."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         mock_camera.get_exposure_time.return_value = 50.0
@@ -107,8 +110,8 @@ class TestCameraService:
 
     def test_set_analog_gain(self):
         """set_analog_gain should call camera and publish event."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus, AnalogGainChanged
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus, AnalogGainChanged
 
         mock_camera = Mock()
         mock_gain_range = Mock()
@@ -123,6 +126,7 @@ class TestCameraService:
         bus.subscribe(AnalogGainChanged, lambda e: received.append(e))
 
         service.set_analog_gain(12.0)
+        bus.drain()
 
         mock_camera.set_analog_gain.assert_called_once_with(12.0)
         assert len(received) == 1
@@ -134,8 +138,8 @@ class TestCameraService:
 
     def test_set_region_of_interest(self):
         """set_region_of_interest should call camera and publish event."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus, ROIChanged
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus, ROIChanged
 
         mock_camera = Mock()
         mock_camera.get_resolution.return_value = (2048, 2048)
@@ -146,6 +150,7 @@ class TestCameraService:
         bus.subscribe(ROIChanged, lambda e: received.append(e))
 
         service.set_region_of_interest(100, 100, 800, 600)
+        bus.drain()
 
         mock_camera.set_region_of_interest.assert_called_once_with(100, 100, 800, 600)
         assert len(received) == 1
@@ -156,8 +161,8 @@ class TestCameraService:
 
     def test_get_region_of_interest(self):
         """get_region_of_interest should return camera value."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         mock_camera.get_region_of_interest.return_value = (0, 0, 1024, 768)
@@ -170,8 +175,8 @@ class TestCameraService:
 
     def test_get_resolution(self):
         """get_resolution should return camera value."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         mock_camera.get_resolution.return_value = (2048, 2048)
@@ -188,8 +193,8 @@ class TestCameraService:
 
     def test_set_binning(self):
         """set_binning should call camera and publish event."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus, BinningChanged
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus, BinningChanged
 
         mock_camera = Mock()
         bus = EventBus()
@@ -199,6 +204,7 @@ class TestCameraService:
         bus.subscribe(BinningChanged, lambda e: received.append(e))
 
         service.set_binning(2, 2)
+        bus.drain()
 
         mock_camera.set_binning.assert_called_once_with(2, 2)
         assert len(received) == 1
@@ -207,8 +213,8 @@ class TestCameraService:
 
     def test_get_binning(self):
         """get_binning should return camera value."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         mock_camera.get_binning.return_value = (2, 2)
@@ -221,8 +227,8 @@ class TestCameraService:
 
     def test_get_binning_options(self):
         """get_binning_options should return camera value."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         mock_camera.get_binning_options.return_value = [(1, 1), (2, 2), (4, 4)]
@@ -239,9 +245,9 @@ class TestCameraService:
 
     def test_set_pixel_format(self):
         """set_pixel_format should call camera and publish event."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus, PixelFormatChanged
-        from squid.config import CameraPixelFormat
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus, PixelFormatChanged
+        from squid.core.config import CameraPixelFormat
 
         mock_camera = Mock()
         bus = EventBus()
@@ -251,6 +257,7 @@ class TestCameraService:
         bus.subscribe(PixelFormatChanged, lambda e: received.append(e))
 
         service.set_pixel_format(CameraPixelFormat.MONO16)
+        bus.drain()
 
         mock_camera.set_pixel_format.assert_called_once_with(CameraPixelFormat.MONO16)
         assert len(received) == 1
@@ -258,9 +265,9 @@ class TestCameraService:
 
     def test_get_pixel_format(self):
         """get_pixel_format should return camera value."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
-        from squid.config import CameraPixelFormat
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
+        from squid.core.config import CameraPixelFormat
 
         mock_camera = Mock()
         mock_camera.get_pixel_format.return_value = CameraPixelFormat.MONO8
@@ -273,9 +280,9 @@ class TestCameraService:
 
     def test_get_available_pixel_formats(self):
         """get_available_pixel_formats should return camera value."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
-        from squid.config import CameraPixelFormat
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
+        from squid.core.config import CameraPixelFormat
 
         mock_camera = Mock()
         mock_camera.get_available_pixel_formats.return_value = [
@@ -295,8 +302,8 @@ class TestCameraService:
 
     def test_set_temperature(self):
         """set_temperature should call camera."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         bus = EventBus()
@@ -308,8 +315,8 @@ class TestCameraService:
 
     def test_set_temperature_reading_callback(self):
         """set_temperature_reading_callback should call camera."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         bus = EventBus()
@@ -326,8 +333,8 @@ class TestCameraService:
 
     def test_set_white_balance_gains(self):
         """set_white_balance_gains should call camera."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         bus = EventBus()
@@ -339,8 +346,8 @@ class TestCameraService:
 
     def test_get_white_balance_gains(self):
         """get_white_balance_gains should return camera value."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         mock_camera.get_white_balance_gains.return_value = (1.2, 1.0, 1.5)
@@ -353,8 +360,8 @@ class TestCameraService:
 
     def test_set_auto_white_balance(self):
         """set_auto_white_balance should call camera."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         bus = EventBus()
@@ -370,8 +377,8 @@ class TestCameraService:
 
     def test_set_black_level(self):
         """set_black_level should call camera."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         bus = EventBus()
@@ -387,8 +394,8 @@ class TestCameraService:
 
     def test_get_gain_range(self):
         """get_gain_range should return camera value."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         mock_gain_range = Mock()
@@ -405,9 +412,9 @@ class TestCameraService:
 
     def test_get_acquisition_mode(self):
         """get_acquisition_mode should return camera value."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
-        from squid.abc import CameraAcquisitionMode
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
+        from squid.core.abc import CameraAcquisitionMode
 
         mock_camera = Mock()
         mock_camera.get_acquisition_mode.return_value = (
@@ -422,8 +429,8 @@ class TestCameraService:
 
     def test_get_pixel_size_binned_um(self):
         """get_pixel_size_binned_um should return camera value."""
-        from squid.services.camera_service import CameraService
-        from squid.events import EventBus
+        from squid.mcs.services.camera_service import CameraService
+        from squid.core.events import EventBus
 
         mock_camera = Mock()
         mock_camera.get_pixel_size_binned_um.return_value = 6.5

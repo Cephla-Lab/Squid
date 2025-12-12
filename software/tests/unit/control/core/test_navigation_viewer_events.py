@@ -2,9 +2,9 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock
 
-from squid.abc import Pos
-from squid.events import StageMovementStopped
-from control.core.navigation.focus_map import NavigationViewer
+from squid.core.abc import Pos
+from squid.core.events import StageMovementStopped
+from squid.ops.navigation.focus_map import NavigationViewer
 
 
 class _DummyObjectiveStore:
@@ -24,7 +24,7 @@ def test_navigation_viewer_stage_stop_event_updates_fov(qtbot, monkeypatch):
     """StageMovementStopped should redraw using event coordinates."""
     # Avoid file I/O for background images
     monkeypatch.setattr(
-        "control.core.navigation.focus_map.cv2.imread",
+        "squid.ops.navigation.focus_map.cv2.imread",
         lambda _path: np.zeros((4, 4, 3), dtype=np.uint8),
     )
 

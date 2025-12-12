@@ -2,14 +2,14 @@
 
 import pytest
 
-import control._def as _def
-from squid.events import (
+import _def as _def
+from squid.core.events import (
     EventBus,
     MoveStageCommand,
     HomeStageCommand,
     StagePositionChanged,
 )
-from squid.services import StageService
+from squid.mcs.services import StageService
 
 
 @pytest.mark.integration

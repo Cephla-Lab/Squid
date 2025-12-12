@@ -43,6 +43,8 @@ class TestApplicationContext:
         assert context.controllers is not None
         assert context.controllers.live is not None
         assert context.controllers.stream_handler is not None
+        assert context.controllers.autofocus is not None
+        assert context.controllers.multipoint is not None
         context.shutdown()
 
     def test_shutdown_doesnt_crash(self):
@@ -74,6 +76,8 @@ class TestExternalControllerCreation:
         assert context.controllers is not None
         assert context.controllers.live is not None
         assert context.controllers.stream_handler is not None
+        assert context.controllers.autofocus is not None
+        assert context.controllers.multipoint is not None
 
         # Controllers should be assigned to microscope
         assert context.microscope.live_controller is context.controllers.live
@@ -100,6 +104,10 @@ class TestExternalControllerCreation:
         assert ctx_external.controllers.live is not None
         assert ctx_internal.controllers.stream_handler is not None
         assert ctx_external.controllers.stream_handler is not None
+        assert ctx_internal.controllers.autofocus is not None
+        assert ctx_external.controllers.autofocus is not None
+        assert ctx_internal.controllers.multipoint is not None
+        assert ctx_external.controllers.multipoint is not None
 
         # Both microscopes should have controllers assigned
         assert ctx_internal.microscope.live_controller is not None

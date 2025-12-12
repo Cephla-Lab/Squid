@@ -1,11 +1,11 @@
 import pytest
 
-import squid.config
-from squid.config import AxisConfig
+import squid.core.config
+from squid.core.config import AxisConfig
 
 
 def test_axis_config():
-    stage_config = squid.config.get_stage_config()
+    stage_config = squid.core.config.get_stage_config()
     # micro step conversion round tripping
     trials = (1.0, 0.001, 2.2, 3.123456)
 

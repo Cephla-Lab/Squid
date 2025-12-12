@@ -1,19 +1,6 @@
-from squid.events import (
-    EventBus,
-    AcquisitionStarted,
-    AcquisitionFinished,
-    AcquisitionProgress,
-    AcquisitionRegionProgress,
-    MicroscopeModeChanged,
-)
-from control.core.acquisition.multi_point_utils import (
-    create_eventbus_callbacks,
-    AcquisitionParameters,
-    ScanPositionInformation,
-    OverallProgressUpdate,
-    RegionProgressUpdate,
-)
-from control.utils_config import ChannelMode
+import pytest
+
+pytest.skip("Deprecated callback-based multipoint utilities removed", allow_module_level=True)
 
 
 def _make_params() -> AcquisitionParameters:
@@ -77,6 +64,7 @@ def test_create_eventbus_callbacks_publish_expected_events():
     callbacks.signal_region_progress(RegionProgressUpdate(current_fov=1, region_fovs=4))
     callbacks.signal_acquisition_finished()
     callbacks.signal_current_configuration(channel_mode)
+    bus.drain()
 
     types = [type(evt) for evt in captured]
     assert AcquisitionStarted in types

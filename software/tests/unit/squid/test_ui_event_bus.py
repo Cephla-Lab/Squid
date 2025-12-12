@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 from qtpy.QtCore import QThread
 
-from squid.events import Event, EventBus
-from squid.qt_event_dispatcher import QtEventDispatcher
-from squid.ui_event_bus import UIEventBus
+from squid.core.events import Event, EventBus
+from squid.ui.qt_event_dispatcher import QtEventDispatcher
+from squid.ui.ui_event_bus import UIEventBus
 
 
 @dataclass
@@ -18,7 +18,10 @@ class _TestEvent(Event):
 
 @pytest.fixture
 def core_bus():
-    return EventBus()
+    bus = EventBus()
+    bus.start()  # Start the dispatch thread
+    yield bus
+    bus.stop()
 
 
 @pytest.fixture
@@ -69,8 +72,13 @@ def test_publish_from_worker_thread(ui_bus, core_bus, qtbot):
     assert handler_threads[0] is main_thread  # Handler ran on main thread
 
 
-def test_core_bus_handler_runs_in_publisher_thread(core_bus, qtbot):
-    """Verify core bus handlers run in publisher thread (contrast to UIEventBus)."""
+def test_core_bus_handler_runs_in_dispatch_thread(core_bus, qtbot):
+    """Verify core bus handlers run on EventBus dispatch thread (not publisher thread).
+
+    With queued dispatch, all handlers run on the dedicated EventBus-Dispatch thread,
+    regardless of which thread published the event. This is a key difference from
+    UIEventBus which ensures handlers run on the Qt main thread.
+    """
     handler = MagicMock()
     handler_threads = []
 
@@ -92,8 +100,13 @@ def test_core_bus_handler_runs_in_publisher_thread(core_bus, qtbot):
     t.start()
     t.join()
 
+    # Wait for event to be dispatched
+    qtbot.wait(100)
+
     handler.assert_called_once()
-    assert handler_threads[0] is worker_thread_ref[0]  # Handler ran in worker thread!
+    # Handler runs on the EventBus dispatch thread, not the worker thread
+    assert handler_threads[0].name == "EventBus-Dispatch"
+    assert handler_threads[0] is not worker_thread_ref[0]
     assert handler_threads[0] is not main_thread
 
 

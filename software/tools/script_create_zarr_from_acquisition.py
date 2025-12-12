@@ -12,7 +12,7 @@ from glob import glob
 
 from ome_zarr.writer import write_image
 from ome_zarr.io import parse_url
-import control.utils
+import core.utils.hardware_utils
 
 lazy_imread = delayed(imread)
 

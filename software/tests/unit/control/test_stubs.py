@@ -1,19 +1,15 @@
-from control._def import OBJECTIVES, DEFAULT_OBJECTIVE
-from control.core.autofocus import AutoFocusController
-from control.core.display import LiveController
-from control.core.acquisition.multi_point_controller import (
-    NoOpCallbacks,
-    MultiPointController,
-)
-from control.core.acquisition.multi_point_utils import MultiPointControllerFunctions
-from control.core.navigation import ObjectiveStore
-from control.core.navigation import ScanCoordinates
-from control.microcontroller import Microcontroller
-from control.microscope import Microscope
+from _def import OBJECTIVES, DEFAULT_OBJECTIVE
+from squid.mcs.controllers.autofocus import AutoFocusController
+from squid.mcs.controllers.live_controller import LiveController
+from squid.ops.acquisition.multi_point_controller import MultiPointController
+from squid.ops.navigation import ObjectiveStore
+from squid.ops.navigation import ScanCoordinates
+from squid.mcs.microcontroller import Microcontroller
+from squid.mcs.microscope import Microscope
 import numpy as np
-from squid.abc import AbstractStage, AbstractCamera
-from squid.events import event_bus
-from squid.services import (
+from squid.core.abc import AbstractStage, AbstractCamera
+from squid.core.events import event_bus
+from squid.mcs.services import (
     ServiceRegistry,
     CameraService,
     StageService,
@@ -140,7 +136,6 @@ def get_test_laser_autofocus_controller(microscope: Microscope):
 
 def get_test_multi_point_controller(
     microscope: Microscope,
-    callbacks: MultiPointControllerFunctions = NoOpCallbacks,
 ) -> MultiPointController:
     services = _build_test_services(microscope)
     live_controller = get_test_live_controller(
@@ -165,7 +160,6 @@ def get_test_multi_point_controller(
             stage=microscope.stage,
             camera=microscope.camera,
         ),
-        callbacks=callbacks,
         objective_store=microscope.objective_store,
         laser_autofocus_controller=get_test_laser_autofocus_controller(microscope),
         camera_service=services.get("camera"),

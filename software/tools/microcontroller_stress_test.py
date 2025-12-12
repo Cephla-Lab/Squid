@@ -3,10 +3,10 @@ import time
 from itertools import cycle
 import threading
 
-import control.microcontroller
-import squid.logging
-import control.peripherals.stage.cephla
-import squid.config
+import mcs.microcontroller
+import core.logging
+import mcs.drivers.stages.cephla
+import core.config
 
 log = squid.logging.get_logger("mst")
 

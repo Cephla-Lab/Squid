@@ -1,4 +1,5 @@
-import control.utils
+import squid.core.utils.hardware_utils
+from squid.core.utils.hardware_utils import get_squid_repo_state_description, TimingManager
 import tests.tools
 import pathlib
 import tempfile
@@ -8,12 +9,12 @@ import time
 
 def test_squid_repo_info():
     # At least make sure we get something and that it calls without issue.
-    assert control.utils.get_squid_repo_state_description()
+    assert get_squid_repo_state_description()
 
 
 import numpy as np
 import pytest
-from control.utils import (
+from squid.core.utils.hardware_utils import (
     find_spot_location,
     SpotDetectionMode,
     get_available_disk_space,
@@ -149,8 +150,8 @@ def test_get_available_disk_space():
 
 
 def test_timing_manager():
-    tma = control.utils.TimingManager("a")
-    tmb = control.utils.TimingManager("b")
+    tma = TimingManager("a")
+    tmb = TimingManager("b")
 
     ta1 = tma.get_timer("a 1")
     ta1.start()

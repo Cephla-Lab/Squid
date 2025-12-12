@@ -2,8 +2,8 @@ import cv2
 import matplotlib.pyplot as plt
 
 from tests.tools import get_repo_root
-from control.utils import find_spot_location, SpotDetectionMode
-from control._def import LASER_AF_FILTER_SIGMA
+from squid.core.utils.hardware_utils import find_spot_location, SpotDetectionMode
+from _def import LASER_AF_FILTER_SIGMA
 
 
 def check_image_from_disk(image_path: str):

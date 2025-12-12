@@ -5,8 +5,8 @@ crop_width_unbinned/binning_factor x crop_height_unbinned/binning_factor
 instead of using hardcoded values.
 """
 
-import control.peripherals.cameras.camera_utils
-from squid.config import CameraConfig, CameraVariant
+import mcs.drivers.cameras.camera_utils
+from squid.core.config import CameraConfig, CameraVariant
 
 
 def test_simulated_camera_with_crop_dimensions():

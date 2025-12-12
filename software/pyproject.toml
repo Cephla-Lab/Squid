@@ -58,9 +58,12 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["control*", "squid*"]
-exclude = ["tests*", "drivers*"]
+where = ["src"]
+include = ["squid*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.ini", "*.json"]
 
 [tool.black]
 line-length = 120
@@ -68,13 +71,6 @@ target-version = ["py39", "py310", "py311", "py312"]
 extend-exclude = '''
 (
 ^/drivers and libraries/
-| ^/control/gxipy/
-| ^/control/RCM_API.py
-| ^/control/TUCam.py
-| ^/control/dcam.py
-| ^/control/dcamapi4.py
-| ^/control/toupcam.py
-| ^/control/toupcam_exceptions.py
 | ^/fluidics_v2/
 )'''
 

@@ -1,11 +1,11 @@
-from squid.events import (
+from squid.core.events import (
     EventBus,
     StagePositionChanged,
     StageMovementStopped,
     PiezoPositionChanged,
 )
-from squid.services.movement_service import MovementService
-from squid.abc import Pos, StageStage
+from squid.mcs.services.movement_service import MovementService
+from squid.core.abc import Pos, StageStage
 
 
 class FakeStage:
@@ -34,6 +34,7 @@ def test_initial_poll_emits_position():
     service = MovementService(stage, None, bus, poll_interval_ms=10)
 
     service._poll_once()
+    bus.drain()
 
     assert len(captured) == 1
     assert captured[0].x_mm == 1.0
@@ -51,6 +52,7 @@ def test_piezo_initial_poll_emits_position():
     service = MovementService(stage, piezo, bus, poll_interval_ms=10)
 
     service._poll_once()
+    bus.drain()
 
     assert captured and captured[0].position_um == 5.0
 
@@ -67,18 +69,23 @@ def test_movement_stopped_emits_once():
 
     # Seed initial position
     service._poll_once()
+    bus.drain()
     positions.clear()
 
     # Movement detected
     stage._pos = Pos(x_mm=0.5, y_mm=0.0, z_mm=0.0, theta_rad=None)
     service._poll_once()
+    bus.drain()
 
     # Movement stops
     service._poll_once()
+    bus.drain()
 
     # Additional steady-state poll should not emit another stopped event
     service._poll_once()
+    bus.drain()
 
     assert len(stopped) == 1
     assert stopped[0].x_mm == 0.5
-    assert len(positions) >= 3  # emitted for move + subsequent polls
+    # Only emits when position actually changes, not every poll
+    assert len(positions) == 1  # emitted for move only (initial was cleared)

@@ -1,14 +1,17 @@
 from unittest.mock import MagicMock
 
-from squid.events import (
+from squid.core.events import (
     EventBus,
     StartAutofocusCommand,
     StopAutofocusCommand,
     SetAutofocusParamsCommand,
     AutofocusCompleted,
 )
-from squid.abc import Pos
-from control.core.autofocus.auto_focus_controller import AutoFocusController
+from squid.core.abc import Pos
+from squid.mcs.controllers.autofocus.auto_focus_controller import (
+    AutoFocusController,
+    AutofocusControllerState,
+)
 
 
 class FakeStage:
@@ -34,6 +37,7 @@ def test_autofocus_controller_starts_on_command(monkeypatch):
     controller.autofocus = MagicMock()
 
     bus.publish(StartAutofocusCommand())
+    bus.drain()
 
     controller.autofocus.assert_called_once()
 
@@ -49,6 +53,7 @@ def test_autofocus_controller_updates_params_from_command():
     )
 
     bus.publish(SetAutofocusParamsCommand(n_planes=7, delta_z_um=200.0))
+    bus.drain()
 
     assert controller.N == 7
     assert controller.deltaZ == 0.2
@@ -67,12 +72,15 @@ def test_autofocus_controller_emits_failure_on_abort():
         event_bus=bus,
     )
 
-    controller.autofocus_in_progress = True
+    # Force state to RUNNING to simulate autofocus in progress
+    controller._force_state(AutofocusControllerState.RUNNING, reason="test setup")
     controller._keep_running.set()
 
     bus.publish(StopAutofocusCommand())
+    bus.drain()
     # Simulate worker finishing after abort
     controller._on_autofocus_completed()
+    bus.drain()
 
     assert completed, "Expected AutofocusCompleted on abort"
     assert completed[-1].success is False

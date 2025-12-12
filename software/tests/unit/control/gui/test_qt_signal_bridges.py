@@ -1,17 +1,6 @@
-import numpy as np
-from types import SimpleNamespace
+import pytest
 
-import control._def as _def
-from control.core.acquisition.multi_point_utils import (
-    AcquisitionParameters,
-    ScanPositionInformation,
-    OverallProgressUpdate,
-    RegionProgressUpdate,
-)
-from control.gui.qt_controllers import ImageSignalBridge, MultiPointSignalBridge
-from control.utils_config import ChannelMode
-from squid.abc import Pos
-from control.core.acquisition import CaptureInfo
+pytest.skip("Deprecated multipoint callback bridges removed", allow_module_level=True)
 
 
 def _make_params() -> AcquisitionParameters:

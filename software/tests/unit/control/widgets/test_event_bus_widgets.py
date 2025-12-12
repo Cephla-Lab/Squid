@@ -16,7 +16,7 @@ import pytest
 from unittest.mock import MagicMock
 from dataclasses import dataclass
 
-from squid.events import (
+from squid.core.events import (
     EventBus,
     Event,
     MoveStageCommand,
@@ -43,6 +43,7 @@ class TestEventBusSubscriptionManagement:
         received = []
         bus.subscribe(DummyEvent, received.append)
         bus.publish(DummyEvent(value=42))
+        bus.drain()
         assert len(received) == 1
         assert received[0].value == 42
 
@@ -54,6 +55,7 @@ class TestEventBusSubscriptionManagement:
         bus.subscribe(DummyEvent, handler)
         bus.unsubscribe(DummyEvent, handler)
         bus.publish(DummyEvent(value=42))
+        bus.drain()
         assert len(received) == 0
 
     def test_bus_clear(self):
@@ -63,6 +65,7 @@ class TestEventBusSubscriptionManagement:
         bus.subscribe(DummyEvent, received.append)
         bus.clear()
         bus.publish(DummyEvent(value=42))
+        bus.drain()
         assert len(received) == 0
 
 
@@ -84,7 +87,7 @@ class TestEventBusWidgetBase:
 
     def test_subscribe_tracks_subscription(self):
         """Test that _subscribe adds to subscription list."""
-        from control.widgets.base import EventBusWidget
+        from squid.ui.widgets.base import EventBusWidget
 
         bus = EventBus()
         widget = EventBusWidget(bus)
@@ -97,7 +100,7 @@ class TestEventBusWidgetBase:
 
     def test_publish_sends_to_bus(self):
         """Test that _publish sends events to the bus."""
-        from control.widgets.base import EventBusWidget
+        from squid.ui.widgets.base import EventBusWidget
 
         bus = EventBus()
         widget = EventBusWidget(bus)
@@ -106,13 +109,14 @@ class TestEventBusWidgetBase:
         bus.subscribe(DummyEvent, received.append)
 
         widget._publish(DummyEvent(value=42))
+        bus.drain()
 
         assert len(received) == 1
         assert received[0].value == 42
 
     def test_cleanup_unsubscribes_all(self):
         """Test that _cleanup_subscriptions removes all subscriptions."""
-        from control.widgets.base import EventBusWidget
+        from squid.ui.widgets.base import EventBusWidget
 
         bus = EventBus()
         widget = EventBusWidget(bus)
@@ -130,7 +134,7 @@ class TestEventBusWidgetBase:
 
     def test_close_event_calls_cleanup(self):
         """Test that closeEvent triggers subscription cleanup."""
-        from control.widgets.base import EventBusWidget
+        from squid.ui.widgets.base import EventBusWidget
         from qtpy.QtGui import QCloseEvent
 
         bus = EventBus()
@@ -160,7 +164,7 @@ class TestEventBusFrame:
 
     def test_frame_inherits_base_behavior(self):
         """Test EventBusFrame has same behavior as EventBusWidget."""
-        from control.widgets.base import EventBusFrame
+        from squid.ui.widgets.base import EventBusFrame
 
         bus = EventBus()
         frame = EventBusFrame(bus)
@@ -170,6 +174,7 @@ class TestEventBusFrame:
 
         # Publish and verify handler called
         bus.publish(DummyEvent(value=10))
+        bus.drain()
         handler.assert_called_once()
 
 
@@ -187,7 +192,7 @@ class TestEventBusDialog:
 
     def test_dialog_inherits_base_behavior(self):
         """Test EventBusDialog has same behavior as EventBusWidget."""
-        from control.widgets.base import EventBusDialog
+        from squid.ui.widgets.base import EventBusDialog
 
         bus = EventBus()
         dialog = EventBusDialog(bus)
@@ -197,11 +202,12 @@ class TestEventBusDialog:
 
         # Publish and verify handler called
         bus.publish(DummyEvent(value=20))
+        bus.drain()
         handler.assert_called_once()
 
     def test_requires_event_bus_argument(self):
         """Constructing without bus should raise TypeError."""
-        from control.widgets.base import EventBusDialog
+        from squid.ui.widgets.base import EventBusDialog
 
         with pytest.raises(TypeError):
             EventBusDialog()  # type: ignore[call-arg]
@@ -213,50 +219,50 @@ class TestWidgetInheritance:
 
     def test_dac_widget_inherits_event_bus_frame(self):
         """Verify DACControWidget inherits from EventBusFrame."""
-        from control.widgets.hardware.dac import DACControWidget
-        from control.widgets.base import EventBusFrame
+        from squid.ui.widgets.hardware.dac import DACControWidget
+        from squid.ui.widgets.base import EventBusFrame
 
         assert issubclass(DACControWidget, EventBusFrame)
 
     def test_trigger_widget_inherits_event_bus_frame(self):
         """Verify TriggerControlWidget inherits from EventBusFrame."""
-        from control.widgets.hardware.trigger import TriggerControlWidget
-        from control.widgets.base import EventBusFrame
+        from squid.ui.widgets.hardware.trigger import TriggerControlWidget
+        from squid.ui.widgets.base import EventBusFrame
 
         assert issubclass(TriggerControlWidget, EventBusFrame)
 
     def test_navigation_widget_inherits_event_bus_frame(self):
         """Verify NavigationWidget inherits from EventBusFrame."""
-        from control.widgets.stage.navigation import NavigationWidget
-        from control.widgets.base import EventBusFrame
+        from squid.ui.widgets.stage.navigation import NavigationWidget
+        from squid.ui.widgets.base import EventBusFrame
 
         assert issubclass(NavigationWidget, EventBusFrame)
 
     def test_live_control_widget_inherits_event_bus_frame(self):
         """Verify LiveControlWidget inherits from EventBusFrame."""
-        from control.widgets.camera.live_control import LiveControlWidget
-        from control.widgets.base import EventBusFrame
+        from squid.ui.widgets.camera.live_control import LiveControlWidget
+        from squid.ui.widgets.base import EventBusFrame
 
         assert issubclass(LiveControlWidget, EventBusFrame)
 
     def test_camera_settings_widget_inherits_event_bus_frame(self):
         """Verify CameraSettingsWidget inherits from EventBusFrame."""
-        from control.widgets.camera.settings import CameraSettingsWidget
-        from control.widgets.base import EventBusFrame
+        from squid.ui.widgets.camera.settings import CameraSettingsWidget
+        from squid.ui.widgets.base import EventBusFrame
 
         assert issubclass(CameraSettingsWidget, EventBusFrame)
 
     def test_wellplate_calibration_inherits_event_bus_dialog(self):
         """Verify WellplateCalibration inherits from EventBusDialog."""
-        from control.widgets.wellplate.calibration import WellplateCalibration
-        from control.widgets.base import EventBusDialog
+        from squid.ui.widgets.wellplate.calibration import WellplateCalibration
+        from squid.ui.widgets.base import EventBusDialog
 
         assert issubclass(WellplateCalibration, EventBusDialog)
 
     def test_wellplate_format_widget_inherits_event_bus_widget(self):
         """Verify WellplateFormatWidget inherits from EventBusWidget."""
-        from control.widgets.wellplate.format import WellplateFormatWidget
-        from control.widgets.base import EventBusWidget
+        from squid.ui.widgets.wellplate.format import WellplateFormatWidget
+        from squid.ui.widgets.base import EventBusWidget
 
         assert issubclass(WellplateFormatWidget, EventBusWidget)
 
@@ -266,13 +272,13 @@ class TestWidgetInheritance:
         Widgets either raise TypeError (missing required arg) or AttributeError
         (None passed but used during __init__).
         """
-        from control.widgets.stage.navigation import NavigationWidget
-        from control.widgets.camera.live_control import LiveControlWidget
-        from control.widgets.camera.settings import CameraSettingsWidget
-        from control.widgets.hardware.trigger import TriggerControlWidget
-        from control.widgets.hardware.dac import DACControWidget
-        from control.widgets.stage.autofocus import AutoFocusWidget
-        from control.widgets.wellplate.format import WellplateFormatWidget
+        from squid.ui.widgets.stage.navigation import NavigationWidget
+        from squid.ui.widgets.camera.live_control import LiveControlWidget
+        from squid.ui.widgets.camera.settings import CameraSettingsWidget
+        from squid.ui.widgets.hardware.trigger import TriggerControlWidget
+        from squid.ui.widgets.hardware.dac import DACControWidget
+        from squid.ui.widgets.stage.autofocus import AutoFocusWidget
+        from squid.ui.widgets.wellplate.format import WellplateFormatWidget
 
         # Widgets that subscribe in __init__ raise AttributeError with None bus
         with pytest.raises((TypeError, AttributeError)):

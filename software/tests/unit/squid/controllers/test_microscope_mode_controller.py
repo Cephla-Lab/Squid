@@ -3,8 +3,8 @@
 from unittest.mock import MagicMock
 import pytest
 
-from squid.events import EventBus, SetMicroscopeModeCommand, MicroscopeModeChanged
-from squid.controllers.microscope_mode_controller import MicroscopeModeController
+from squid.core.events import EventBus, SetMicroscopeModeCommand, MicroscopeModeChanged
+from squid.mcs.controllers.microscope_mode_controller import MicroscopeModeController
 
 
 class MockConfig:
@@ -76,6 +76,7 @@ class TestMicroscopeModeController:
         event_bus.subscribe(MicroscopeModeChanged, events_received.append)
 
         event_bus.publish(SetMicroscopeModeCommand(configuration_name="BF", objective="20x"))
+        event_bus.drain()
 
         assert controller.state.current_mode == "BF"
         assert len(events_received) == 1
@@ -87,6 +88,7 @@ class TestMicroscopeModeController:
         event_bus.subscribe(MicroscopeModeChanged, events_received.append)
 
         event_bus.publish(SetMicroscopeModeCommand(configuration_name="UNKNOWN", objective="20x"))
+        event_bus.drain()
 
         assert controller.state.current_mode is None
         assert len(events_received) == 0
@@ -138,4 +140,5 @@ class TestMicroscopeModeController:
         )
 
         event_bus.publish(SetMicroscopeModeCommand(configuration_name="BF", objective="20x"))
+        event_bus.drain()
         assert controller.state.current_mode == "BF"

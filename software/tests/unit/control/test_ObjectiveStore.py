@@ -1,5 +1,5 @@
 import tests.control.test_stubs as ts
-import control._def
+import _def
 
 
 def test_objective_store():
@@ -17,8 +17,8 @@ def test_objective_store():
         "tube_lens_f_mm": 180,
     }
     assert objective_store.calculate_pixel_size_factor(
-        objective1, control._def.TUBE_LENS_MM
-    ) == float(18 / control._def.TUBE_LENS_MM)
+        objective1, _def.TUBE_LENS_MM
+    ) == float(18 / _def.TUBE_LENS_MM)
     assert objective_store.calculate_pixel_size_factor(
-        objective2, control._def.TUBE_LENS_MM
-    ) == float(3 / control._def.TUBE_LENS_MM)
+        objective2, _def.TUBE_LENS_MM
+    ) == float(3 / _def.TUBE_LENS_MM)

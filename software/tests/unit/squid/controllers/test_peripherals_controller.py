@@ -1,9 +1,9 @@
 """Tests for PeripheralsController."""
 
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import MagicMock
 import pytest
 
-from squid.events import (
+from squid.core.events import (
     EventBus,
     SetObjectiveCommand,
     SetSpinningDiskPositionCommand,
@@ -17,7 +17,7 @@ from squid.events import (
     PiezoPositionChanged,
     PixelSizeChanged,
 )
-from squid.controllers.peripherals_controller import PeripheralsController
+from squid.mcs.controllers.peripherals_controller import PeripheralsController
 
 
 class MockObjectiveInfo:
@@ -39,28 +39,29 @@ class TestPeripheralsController:
         return EventBus()
 
     @pytest.fixture
-    def mock_objective_changer(self):
-        changer = MagicMock()
-        type(changer).current_position = PropertyMock(return_value=0)
-        changer.get_objective_info.return_value = MockObjectiveInfo(0, "20x", 0.325)
-        return changer
+    def mock_objective_service(self):
+        service = MagicMock()
+        service.get_current_position.return_value = 0
+        service.get_objective_info.return_value = MockObjectiveInfo(0, "20x", 0.325)
+        return service
 
     @pytest.fixture
-    def mock_spinning_disk(self):
-        disk = MagicMock()
-        type(disk).is_disk_in = PropertyMock(return_value=False)
-        type(disk).is_spinning = PropertyMock(return_value=False)
-        type(disk).disk_motor_speed = PropertyMock(return_value=0)
-        type(disk).current_dichroic = PropertyMock(return_value=0)
-        type(disk).current_emission_filter = PropertyMock(return_value=0)
-        return disk
+    def mock_spinning_disk_service(self):
+        service = MagicMock()
+        service.is_available.return_value = True
+        service.is_disk_in.return_value = False
+        service.is_spinning.return_value = False
+        service.motor_speed.return_value = 0
+        service.current_dichroic.return_value = 0
+        service.current_emission_filter.return_value = 0
+        return service
 
     @pytest.fixture
-    def mock_piezo(self):
-        piezo = MagicMock()
-        type(piezo).position_um = PropertyMock(return_value=50.0)
-        type(piezo).range_um = PropertyMock(return_value=(0.0, 100.0))
-        return piezo
+    def mock_piezo_service(self):
+        service = MagicMock()
+        service.get_position.return_value = 50.0
+        service.get_range.return_value = (0.0, 100.0)
+        return service
 
     @pytest.fixture
     def mock_objective_store(self):
@@ -72,16 +73,16 @@ class TestPeripheralsController:
     def test_initial_state_with_all_hardware(
         self,
         event_bus,
-        mock_objective_changer,
-        mock_spinning_disk,
-        mock_piezo,
+        mock_objective_service,
+        mock_spinning_disk_service,
+        mock_piezo_service,
         mock_objective_store,
     ):
         """Initial state should read from hardware."""
         controller = PeripheralsController(
-            objective_changer=mock_objective_changer,
-            spinning_disk=mock_spinning_disk,
-            piezo=mock_piezo,
+            objective_service=mock_objective_service,
+            spinning_disk_service=mock_spinning_disk_service,
+            piezo_service=mock_piezo_service,
             objective_store=mock_objective_store,
             event_bus=event_bus,
         )
@@ -95,9 +96,9 @@ class TestPeripheralsController:
     def test_initial_state_without_hardware(self, event_bus):
         """Initial state should handle missing hardware gracefully."""
         controller = PeripheralsController(
-            objective_changer=None,
-            spinning_disk=None,
-            piezo=None,
+            objective_service=None,
+            spinning_disk_service=None,
+            piezo_service=None,
             objective_store=None,
             event_bus=event_bus,
         )
@@ -109,22 +110,20 @@ class TestPeripheralsController:
     # --- Objective Tests ---
 
     def test_handles_set_objective_command(
-        self, event_bus, mock_objective_changer, mock_objective_store
+        self, event_bus, mock_objective_service, mock_objective_store
     ):
         """Controller should handle SetObjectiveCommand."""
         # Update mock for position 1
         def get_info_side_effect(pos):
             return MockObjectiveInfo(pos, f"{pos}0x", 0.5 if pos == 1 else 0.325)
 
-        mock_objective_changer.get_objective_info.side_effect = get_info_side_effect
-        type(mock_objective_changer).current_position = PropertyMock(
-            side_effect=[0, 1]  # Initial read, then after set
-        )
+        mock_objective_service.get_objective_info.side_effect = get_info_side_effect
+        mock_objective_service.get_current_position.side_effect = [0, 1]  # Initial read, then after set
 
         controller = PeripheralsController(
-            objective_changer=mock_objective_changer,
-            spinning_disk=None,
-            piezo=None,
+            objective_service=mock_objective_service,
+            spinning_disk_service=None,
+            piezo_service=None,
             objective_store=mock_objective_store,
             event_bus=event_bus,
         )
@@ -133,21 +132,22 @@ class TestPeripheralsController:
         event_bus.subscribe(ObjectiveChanged, events_received.append)
 
         event_bus.publish(SetObjectiveCommand(position=1))
+        event_bus.drain()
 
-        mock_objective_changer.set_position.assert_called_with(1)
+        mock_objective_service.set_position.assert_called_with(1)
         assert len(events_received) == 1
         assert events_received[0].position == 1
 
     def test_set_objective_publishes_pixel_size_changed(
-        self, event_bus, mock_objective_changer, mock_objective_store
+        self, event_bus, mock_objective_service, mock_objective_store
     ):
         """Setting objective should publish PixelSizeChanged."""
-        type(mock_objective_changer).current_position = PropertyMock(return_value=0)
+        mock_objective_service.get_current_position.return_value = 0
 
         controller = PeripheralsController(
-            objective_changer=mock_objective_changer,
-            spinning_disk=None,
-            piezo=None,
+            objective_service=mock_objective_service,
+            spinning_disk_service=None,
+            piezo_service=None,
             objective_store=mock_objective_store,
             event_bus=event_bus,
         )
@@ -156,18 +156,19 @@ class TestPeripheralsController:
         event_bus.subscribe(PixelSizeChanged, pixel_events.append)
 
         event_bus.publish(SetObjectiveCommand(position=1))
+        event_bus.drain()
 
         assert len(pixel_events) == 1
         assert pixel_events[0].pixel_size_um == 0.325
 
     # --- Spinning Disk Tests ---
 
-    def test_handles_set_disk_position_command(self, event_bus, mock_spinning_disk):
+    def test_handles_set_disk_position_command(self, event_bus, mock_spinning_disk_service):
         """Controller should handle SetSpinningDiskPositionCommand."""
         controller = PeripheralsController(
-            objective_changer=None,
-            spinning_disk=mock_spinning_disk,
-            piezo=None,
+            objective_service=None,
+            spinning_disk_service=mock_spinning_disk_service,
+            piezo_service=None,
             objective_store=None,
             event_bus=event_bus,
         )
@@ -176,60 +177,64 @@ class TestPeripheralsController:
         event_bus.subscribe(SpinningDiskStateChanged, events_received.append)
 
         event_bus.publish(SetSpinningDiskPositionCommand(in_beam=True))
+        event_bus.drain()
 
-        mock_spinning_disk.set_disk_position.assert_called_with(True)
+        mock_spinning_disk_service.set_disk_position.assert_called_with(True)
         assert len(events_received) == 1
 
-    def test_handles_set_spinning_command(self, event_bus, mock_spinning_disk):
+    def test_handles_set_spinning_command(self, event_bus, mock_spinning_disk_service):
         """Controller should handle SetSpinningDiskSpinningCommand."""
         controller = PeripheralsController(
-            objective_changer=None,
-            spinning_disk=mock_spinning_disk,
-            piezo=None,
+            objective_service=None,
+            spinning_disk_service=mock_spinning_disk_service,
+            piezo_service=None,
             objective_store=None,
             event_bus=event_bus,
         )
 
         event_bus.publish(SetSpinningDiskSpinningCommand(spinning=True))
+        event_bus.drain()
 
-        mock_spinning_disk.set_spinning.assert_called_with(True)
+        mock_spinning_disk_service.set_spinning.assert_called_with(True)
 
-    def test_handles_set_dichroic_command(self, event_bus, mock_spinning_disk):
+    def test_handles_set_dichroic_command(self, event_bus, mock_spinning_disk_service):
         """Controller should handle SetDiskDichroicCommand."""
         controller = PeripheralsController(
-            objective_changer=None,
-            spinning_disk=mock_spinning_disk,
-            piezo=None,
+            objective_service=None,
+            spinning_disk_service=mock_spinning_disk_service,
+            piezo_service=None,
             objective_store=None,
             event_bus=event_bus,
         )
 
         event_bus.publish(SetDiskDichroicCommand(position=2))
+        event_bus.drain()
 
-        mock_spinning_disk.set_dichroic.assert_called_with(2)
+        mock_spinning_disk_service.set_dichroic.assert_called_with(2)
 
-    def test_handles_set_emission_filter_command(self, event_bus, mock_spinning_disk):
+    def test_handles_set_emission_filter_command(self, event_bus, mock_spinning_disk_service):
         """Controller should handle SetDiskEmissionFilterCommand."""
         controller = PeripheralsController(
-            objective_changer=None,
-            spinning_disk=mock_spinning_disk,
-            piezo=None,
+            objective_service=None,
+            spinning_disk_service=mock_spinning_disk_service,
+            piezo_service=None,
             objective_store=None,
             event_bus=event_bus,
         )
 
         event_bus.publish(SetDiskEmissionFilterCommand(position=3))
+        event_bus.drain()
 
-        mock_spinning_disk.set_emission_filter.assert_called_with(3)
+        mock_spinning_disk_service.set_emission_filter.assert_called_with(3)
 
     # --- Piezo Tests ---
 
-    def test_handles_set_piezo_command(self, event_bus, mock_piezo):
+    def test_handles_set_piezo_command(self, event_bus, mock_piezo_service):
         """Controller should handle SetPiezoPositionCommand."""
         controller = PeripheralsController(
-            objective_changer=None,
-            spinning_disk=None,
-            piezo=mock_piezo,
+            objective_service=None,
+            spinning_disk_service=None,
+            piezo_service=mock_piezo_service,
             objective_store=None,
             event_bus=event_bus,
         )
@@ -238,31 +243,33 @@ class TestPeripheralsController:
         event_bus.subscribe(PiezoPositionChanged, events_received.append)
 
         event_bus.publish(SetPiezoPositionCommand(position_um=75.0))
+        event_bus.drain()
 
-        mock_piezo.move_to.assert_called_with(75.0)
+        mock_piezo_service.move_to.assert_called_with(75.0)
         assert len(events_received) == 1
 
-    def test_piezo_position_clamped_to_range(self, event_bus, mock_piezo):
+    def test_piezo_position_clamped_to_range(self, event_bus, mock_piezo_service):
         """Piezo position should be clamped to valid range."""
         controller = PeripheralsController(
-            objective_changer=None,
-            spinning_disk=None,
-            piezo=mock_piezo,
+            objective_service=None,
+            spinning_disk_service=None,
+            piezo_service=mock_piezo_service,
             objective_store=None,
             event_bus=event_bus,
         )
 
         # Request position beyond max (100.0)
         event_bus.publish(SetPiezoPositionCommand(position_um=150.0))
+        event_bus.drain()
 
-        mock_piezo.move_to.assert_called_with(100.0)
+        mock_piezo_service.move_to.assert_called_with(100.0)
 
-    def test_handles_move_piezo_relative_command(self, event_bus, mock_piezo):
+    def test_handles_move_piezo_relative_command(self, event_bus, mock_piezo_service):
         """Controller should handle MovePiezoRelativeCommand."""
         controller = PeripheralsController(
-            objective_changer=None,
-            spinning_disk=None,
-            piezo=mock_piezo,
+            objective_service=None,
+            spinning_disk_service=None,
+            piezo_service=mock_piezo_service,
             objective_store=None,
             event_bus=event_bus,
         )
@@ -271,8 +278,9 @@ class TestPeripheralsController:
         event_bus.subscribe(PiezoPositionChanged, events_received.append)
 
         event_bus.publish(MovePiezoRelativeCommand(delta_um=10.0))
+        event_bus.drain()
 
-        mock_piezo.move_relative.assert_called_with(10.0)
+        mock_piezo_service.move_relative.assert_called_with(10.0)
         assert len(events_received) == 1
 
     # --- Convenience Method Tests ---
@@ -280,15 +288,15 @@ class TestPeripheralsController:
     def test_has_hardware_methods(
         self,
         event_bus,
-        mock_objective_changer,
-        mock_spinning_disk,
-        mock_piezo,
+        mock_objective_service,
+        mock_spinning_disk_service,
+        mock_piezo_service,
     ):
         """Convenience methods should report hardware availability."""
         controller = PeripheralsController(
-            objective_changer=mock_objective_changer,
-            spinning_disk=mock_spinning_disk,
-            piezo=mock_piezo,
+            objective_service=mock_objective_service,
+            spinning_disk_service=mock_spinning_disk_service,
+            piezo_service=mock_piezo_service,
             objective_store=None,
             event_bus=event_bus,
         )
@@ -300,9 +308,9 @@ class TestPeripheralsController:
     def test_has_hardware_methods_without_hardware(self, event_bus):
         """Convenience methods should report missing hardware."""
         controller = PeripheralsController(
-            objective_changer=None,
-            spinning_disk=None,
-            piezo=None,
+            objective_service=None,
+            spinning_disk_service=None,
+            piezo_service=None,
             objective_store=None,
             event_bus=event_bus,
         )

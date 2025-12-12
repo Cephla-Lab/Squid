@@ -8,7 +8,7 @@ so `tests.control.gui_test_stubs` continues to work.
 from tests.integration.control.gui_test_stubs import *  # noqa: F401,F403
 
 # Provide a minimal alias for the legacy control.lighting import used in tests.
-import control.peripherals.lighting as lighting  # type: ignore
+import mcs.drivers.lighting as lighting  # type: ignore
 import types as _types
 
 # Insert into control namespace if missing for test compatibility

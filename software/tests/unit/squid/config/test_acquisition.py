@@ -1,7 +1,7 @@
 """Tests for acquisition configuration models."""
 
 import pytest
-from squid.config.acquisition import (
+from squid.core.config.acquisition import (
     GridScanConfig,
     TimelapseConfig,
     ChannelConfig,

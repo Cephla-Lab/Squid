@@ -3,7 +3,7 @@ import pytest
 import threading
 from unittest.mock import MagicMock
 from qtpy.QtCore import QThread
-from squid.qt_event_dispatcher import QtEventDispatcher
+from squid.ui.qt_event_dispatcher import QtEventDispatcher
 
 
 @pytest.fixture
@@ -46,7 +46,7 @@ def test_dispatch_from_worker_thread(dispatcher, qtbot):
     qtbot.wait(100)  # Allow signal processing
 
     handler.assert_called_once()
-    assert handler_thread is dispatcher._main_thread
+    assert handler_thread is dispatcher._qt_main_thread
 
 
 def test_handler_exception_does_not_crash(dispatcher, qtbot, caplog):

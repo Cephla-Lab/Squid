@@ -3,17 +3,16 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from squid.events import EventBus, AcquisitionFinished
-import control._def as _def
+from squid.core.events import EventBus, AcquisitionFinished
+import _def as _def
 
 # Avoid spawning JobRunner processes in tests
 _def.Acquisition.USE_MULTIPROCESSING = False
 
-from control.core.acquisition.multi_point_worker import MultiPointWorker
-from control.core.acquisition.multi_point_utils import (
+from squid.ops.acquisition.multi_point_worker import MultiPointWorker
+from squid.ops.acquisition.multi_point_utils import (
     AcquisitionParameters,
     ScanPositionInformation,
-    MultiPointControllerFunctions,
 )
 
 
@@ -25,7 +24,7 @@ def _make_params() -> AcquisitionParameters:
         scan_region_fov_coords_mm={},
     )
     return AcquisitionParameters(
-        experiment_ID=None,
+        experiment_ID="test-exp-001",
         base_path=None,
         selected_configurations=[],
         acquisition_start_time=0.0,
@@ -45,19 +44,6 @@ def _make_params() -> AcquisitionParameters:
         z_stacking_config="FROM BOTTOM",
         z_range=(0.0, 0.0),
         use_fluidics=False,
-    )
-
-
-def _make_callbacks() -> MultiPointControllerFunctions:
-    """No-op callbacks."""
-    return MultiPointControllerFunctions(
-        signal_acquisition_start=lambda *_, **__: None,
-        signal_acquisition_finished=lambda *_, **__: None,
-        signal_new_image=lambda *_, **__: None,
-        signal_current_configuration=lambda *_, **__: None,
-        signal_current_fov=lambda *_, **__: None,
-        signal_overall_progress=lambda *_, **__: None,
-        signal_region_progress=lambda *_, **__: None,
     )
 
 
@@ -95,7 +81,6 @@ def _make_worker(
         objective_store=mic.objective_store,
         channel_configuration_mananger=mic.channel_configuration_manager,
         acquisition_parameters=_make_params(),
-        callbacks=_make_callbacks(),
         abort_requested_fn=lambda: False,
         request_abort_fn=lambda: None,
         camera_service=camera_service,
@@ -123,8 +108,8 @@ def test_camera_helpers_use_service_not_hardware():
 
     cam_service.add_frame_callback.assert_called_once()
     cam_service.start_streaming.assert_called_once()
-    worker.camera.add_frame_callback.assert_not_called()
-    worker.camera.start_streaming.assert_not_called()
+    worker.microscope.camera.add_frame_callback.assert_not_called()
+    worker.microscope.camera.start_streaming.assert_not_called()
     assert cb_id == "svc_cb"
 
 
@@ -138,7 +123,7 @@ def test_stage_helpers_wait_and_use_service():
     worker._stage_move_x_to(1.0)
     stage_service.move_x_to.assert_called_once_with(1.0)
     stage_service.wait_for_idle.assert_called()
-    worker.stage.move_x_to.assert_not_called()
+    worker.microscope.stage.move_x_to.assert_not_called()
 
 
 def test_abort_sets_finished_event_success_false():
@@ -162,6 +147,7 @@ def test_abort_sets_finished_event_success_false():
     # Force an immediate abort
     worker.abort_requested_fn = lambda: True
     worker.run()
+    bus.drain()
 
     assert events, "AcquisitionFinished should be published"
     assert events[-1].success is False

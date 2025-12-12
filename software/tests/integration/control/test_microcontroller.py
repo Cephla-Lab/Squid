@@ -1,9 +1,9 @@
 import time
 
 import pytest
-import control._def
-import control.microcontroller
-from control.microcontroller import Microcontroller
+import _def
+import mcs.microcontroller
+from squid.mcs.microcontroller import Microcontroller
 
 
 def get_test_micro() -> control.microcontroller.Microcontroller:

@@ -3,16 +3,16 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-import control._def
+import _def
 
 # Skip this GUI integration in headless/offscreen environments to avoid Qt aborts.
 if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
     pytest.skip("Skipping GUI integration in offscreen/headless mode", allow_module_level=True)
 
-import control.gui_hcs
+import ui.main_window
 from PyQt5.QtWidgets import QMessageBox
 
-import control.microscope
+import mcs.microscope
 from squid.application import ApplicationContext
 
 

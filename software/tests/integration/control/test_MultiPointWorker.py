@@ -1,7 +1,7 @@
 import tests.control.gui_test_stubs as gts
 import pytest
 
-import control.microscope
+import mcs.microscope
 
 
 # Make sure we can create a multi point controller and worker with out default config

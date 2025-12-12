@@ -1,7 +1,7 @@
 """Tests for safe_callback utility."""
 
 import pytest
-from squid.utils.safe_callback import safe_callback
+from squid.core.utils.safe_callback import safe_callback
 
 
 class TestSafeCallback:

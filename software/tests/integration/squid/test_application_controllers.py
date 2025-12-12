@@ -2,7 +2,7 @@
 
 import pytest
 
-from squid.events import (
+from squid.core.events import (
     EventBus,
     StartLiveCommand,
     StopLiveCommand,
@@ -46,7 +46,7 @@ class TestLiveControllerEventBus:
 
     @pytest.fixture
     def live_controller(self, mock_microscope, mock_camera, event_bus):
-        from control.core.display import LiveController
+        from squid.mcs.controllers.live_controller import LiveController
 
         return LiveController(
             microscope=mock_microscope,
@@ -70,6 +70,7 @@ class TestLiveControllerEventBus:
         event_bus.subscribe(LiveStateChanged, events_received.append)
 
         event_bus.publish(StartLiveCommand(configuration="BF"))
+        event_bus.drain()
 
         assert live_controller.state.is_live is True
         assert len(events_received) == 1
@@ -79,13 +80,16 @@ class TestLiveControllerEventBus:
         """StopLiveCommand should update state and publish event."""
         # Start first
         event_bus.publish(StartLiveCommand())
+        event_bus.drain()
 
         events_received = []
         event_bus.subscribe(LiveStateChanged, events_received.append)
 
         event_bus.publish(StopLiveCommand())
+        event_bus.drain()
 
         assert live_controller.state.is_live is False
+        # Only the stop event should be captured after subscription
         assert len(events_received) == 1
         assert events_received[0].is_live is False
 
@@ -95,6 +99,7 @@ class TestLiveControllerEventBus:
         event_bus.subscribe(TriggerModeChanged, events_received.append)
 
         event_bus.publish(SetTriggerModeCommand(mode="Hardware"))
+        event_bus.drain()
 
         assert live_controller.state.trigger_mode == "Hardware"
         assert len(events_received) == 1
@@ -114,8 +119,13 @@ class TestControllersDataclass:
         field_names = [f.name for f in fields(Controllers)]
         assert "live" in field_names
         assert "stream_handler" in field_names
+        assert "stream_handler_focus" in field_names
         assert "microscope_mode" in field_names
         assert "peripherals" in field_names
+        assert "autofocus" in field_names
+        assert "laser_autofocus" in field_names
+        assert "multipoint" in field_names
+        assert "scan_coordinates" in field_names
 
 
 class TestNewControllerImports:
@@ -123,19 +133,19 @@ class TestNewControllerImports:
 
     def test_import_microscope_mode_controller(self):
         """MicroscopeModeController should be importable."""
-        from squid.controllers import MicroscopeModeController
+        from squid.mcs.controllers import MicroscopeModeController
 
         assert MicroscopeModeController is not None
 
     def test_import_peripherals_controller(self):
         """PeripheralsController should be importable."""
-        from squid.controllers import PeripheralsController
+        from squid.mcs.controllers import PeripheralsController
 
         assert PeripheralsController is not None
 
     def test_controllers_module_exports(self):
-        """Controllers module should export all controllers."""
-        from squid import controllers
+        """Controllers should be available from squid.mcs.controllers."""
+        import squid.mcs.controllers as controllers
 
         assert hasattr(controllers, "MicroscopeModeController")
         assert hasattr(controllers, "PeripheralsController")

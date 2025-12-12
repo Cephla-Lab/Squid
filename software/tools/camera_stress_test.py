@@ -2,11 +2,11 @@ import logging
 import threading
 import time
 
-import control.microcontroller
-import control.peripherals.cameras.camera_utils
-import squid.config
-import squid.logging
-from squid.abc import CameraFrame, CameraAcquisitionMode
+import mcs.microcontroller
+import mcs.drivers.cameras.camera_utils
+import core.config
+import core.logging
+from core.abc import CameraFrame, CameraAcquisitionMode
 
 log = squid.logging.get_logger("camera stress test")
 

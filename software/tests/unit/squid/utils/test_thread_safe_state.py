@@ -2,7 +2,7 @@
 
 import threading
 import time
-from squid.utils.thread_safe_state import ThreadSafeValue, ThreadSafeFlag
+from squid.core.utils.thread_safe_state import ThreadSafeValue, ThreadSafeFlag
 
 
 class TestThreadSafeValue:

@@ -1,20 +1,20 @@
 from typing import Optional, Sequence
 
-import control.peripherals.cameras.camera_utils
-import squid.config
-from squid.abc import AbstractCamera, CameraFrame
-from control.peripherals.cameras.camera_utils import SimulatedCamera
-from squid.config import CameraConfig
+import mcs.drivers.cameras.camera_utils
+import squid.core.config
+from squid.core.abc import AbstractCamera, CameraFrame
+from squid.mcs.drivers.cameras.camera_utils import SimulatedCamera
+from squid.core.config import CameraConfig
 
 
 def test_create_simulated_camera():
     control.peripherals.cameras.camera_utils.get_camera(
-        squid.config.get_camera_config(), simulated=True
+        squid.core.config.get_camera_config(), simulated=True
     )
 
 
 def test_simulated_camera():
-    sim_cam_config: CameraConfig = squid.config.get_camera_config().model_copy(
+    sim_cam_config: CameraConfig = squid.core.config.get_camera_config().model_copy(
         update={"rotate_image_angle": None, "flip": None}
     )
     sim_cam = control.peripherals.cameras.camera_utils.get_camera(
@@ -94,7 +94,7 @@ class SimulatedWithTimeouts(SimulatedCamera):
 def test_read_frame_on_timeout():
     sim_cam = SimulatedWithTimeouts(
         timeout_ids=[3, 5, 8],
-        config=squid.config.get_camera_config(),
+        config=squid.core.config.get_camera_config(),
     )
 
     def do_frame():

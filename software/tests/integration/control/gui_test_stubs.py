@@ -1,16 +1,15 @@
 import pathlib
 
-import control.microscope
-import control.core.navigation.objective_store
-import control.microcontroller
+import mcs.microscope
+import ops.navigation.objective_store
+import mcs.microcontroller
 
-from control.core.configuration import ChannelConfigurationManager
-from control.core.configuration import ConfigurationManager
-from control.core.navigation import NavigationViewer
-from control.core.autofocus import LaserAFSettingManager
-from control.core.acquisition import MultiPointController
-from control.gui.qt_controllers import MultiPointSignalBridge
-from control.microscope import Microscope
+from squid.ops.configuration import ChannelConfigurationManager
+from squid.ops.configuration import ConfigurationManager
+from squid.ops.navigation import NavigationViewer
+from squid.mcs.controllers.autofocus import LaserAFSettingManager
+from squid.ops.acquisition import MultiPointController
+from squid.mcs.microscope import Microscope
 from tests.tools import get_repo_root
 import tests.control.test_stubs as ts
 
@@ -59,8 +58,6 @@ def get_test_multi_point_controller(
         starting_objective=microscope.objective_store.default_objective,
     )
 
-    signal_bridge = MultiPointSignalBridge(microscope.objective_store)
-
     multi_point_controller = MultiPointController(
         microscope=microscope,
         live_controller=live_controller,
@@ -71,14 +68,12 @@ def get_test_multi_point_controller(
             microscope.low_level_drivers.microcontroller,
         ),
         channel_configuration_manager=microscope.channel_configuration_manager,
-        callbacks=signal_bridge.get_callbacks(),
         scan_coordinates=ts.get_test_scan_coordinates(
             microscope.objective_store, microscope.stage, microscope.camera
         ),
         objective_store=microscope.objective_store,
         laser_autofocus_controller=ts.get_test_laser_autofocus_controller(microscope),
     )
-    signal_bridge.set_controller(multi_point_controller)
 
     multi_point_controller.set_base_path("/tmp/")
     multi_point_controller.start_new_experiment("unit test experiment")

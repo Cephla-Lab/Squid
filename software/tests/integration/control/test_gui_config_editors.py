@@ -4,7 +4,7 @@ import tempfile
 from configparser import ConfigParser
 
 import pytest
-from control.widgets.config import ConfigEditor
+from squid.ui.widgets.config import ConfigEditor
 
 
 @pytest.mark.skipif(

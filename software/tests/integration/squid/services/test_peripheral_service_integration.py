@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from squid.events import (
+from squid.core.events import (
     EventBus,
     SetDACCommand,
     DACValueChanged,
@@ -12,7 +12,7 @@ from squid.events import (
     StopCameraTriggerCommand,
     SetCameraTriggerFrequencyCommand,
 )
-from squid.services import PeripheralService
+from squid.mcs.services import PeripheralService
 
 
 @pytest.mark.integration

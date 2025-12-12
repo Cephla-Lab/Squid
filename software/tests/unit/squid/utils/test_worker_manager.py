@@ -2,7 +2,7 @@
 
 import pytest
 import time
-from squid.utils.worker_manager import WorkerManager, WorkerResult
+from squid.core.utils.worker_manager import WorkerManager, WorkerResult
 
 
 class TestWorkerManager:

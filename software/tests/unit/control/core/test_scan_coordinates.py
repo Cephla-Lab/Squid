@@ -1,11 +1,11 @@
-from control.core.navigation.scan_coordinates import (
+from squid.ops.navigation.scan_coordinates import (
     ScanCoordinates,
     ScanCoordinatesUpdate,
     AddScanCoordinateRegion,
     RemovedScanCoordinateRegion,
     ClearedScanCoordinates,
 )
-from control.microscope import Microscope
+from squid.mcs.microscope import Microscope
 
 
 def test_scan_coordinates_basic_operation():
@@ -35,9 +35,10 @@ def test_scan_coordinates_basic_operation():
         scope.objective_store, scope.stage, scope.camera, update_callback=test_callback
     )
 
-    single_fov_center = (6.0, 7.0, 3.0)
-    flexible_center = (8.0, 9.0, 0.5)
-    well_center = (6.5, 8.5, scope.stage.get_pos().z_mm)
+    # Use coordinates within simulated stage limits (typically 10-110mm range)
+    single_fov_center = (50.0, 50.0, 3.0)
+    flexible_center = (60.0, 60.0, 0.5)
+    well_center = (70.0, 70.0, scope.stage.get_pos().z_mm)
     scan_coordinates.add_single_fov_region("single_fov", *single_fov_center)
     scan_coordinates.add_flexible_region("flexible_region", *flexible_center, 2, 2, 10)
     scan_coordinates.add_region(

@@ -22,9 +22,14 @@ import sys
 import importlib.util
 import pathlib
 
+# Add src/ to Python path for imports
+_repo_root = pathlib.Path(__file__).resolve().parent.parent
+_src_dir = _repo_root / "src"
+if str(_src_dir) not in sys.path:
+    sys.path.insert(0, str(_src_dir))
+
 # Force use of lightweight stub modules for napari/pyqtgraph to avoid heavy
 # dependencies and cache writes during tests.
-_repo_root = pathlib.Path(__file__).resolve().parent.parent
 for _mod_name in ["napari", "pyqtgraph"]:
     _stub_init = _repo_root / _mod_name / "__init__.py"
     if _stub_init.exists():
@@ -36,8 +41,8 @@ for _mod_name in ["napari", "pyqtgraph"]:
             _spec.loader.exec_module(_module)
             sys.modules[_mod_name] = _module
 
-import squid.config
-from squid.events import EventBus
+import squid.core.config
+from squid.core.events import EventBus
 
 
 # ============================================================================
@@ -46,9 +51,9 @@ from squid.events import EventBus
 
 
 @pytest.fixture
-def camera_config() -> squid.config.CameraConfig:
+def camera_config() -> squid.core.config.CameraConfig:
     """Provide default camera configuration."""
-    return squid.config.get_camera_config()
+    return squid.core.config.get_camera_config()
 
 
 @pytest.fixture
@@ -59,7 +64,7 @@ def simulated_camera(camera_config) -> Generator:
     Uses control/peripherals/cameras/camera_utils.py SimulatedCamera class.
     The camera is created via the registry with simulated=True.
     """
-    from control.peripherals.cameras.camera_utils import get_camera
+    from squid.mcs.drivers.cameras.camera_utils import get_camera
 
     camera = get_camera(camera_config, simulated=True)
     yield camera
@@ -91,7 +96,7 @@ def simulated_filter_wheel() -> Generator:
     Uses control/peripherals/filter_wheel/utils.py SimulatedFilterWheelController.
     Configured with 1 wheel, 8 slots, no simulated delays for fast testing.
     """
-    from control.peripherals.filter_wheel.utils import SimulatedFilterWheelController
+    from squid.mcs.drivers.filter_wheels.utils import SimulatedFilterWheelController
 
     controller = SimulatedFilterWheelController(
         number_of_wheels=1,
@@ -110,7 +115,7 @@ def simulated_filter_wheel_multi() -> Generator:
 
     Configured with 2 wheels, 8 slots each, no simulated delays.
     """
-    from control.peripherals.filter_wheel.utils import SimulatedFilterWheelController
+    from squid.mcs.drivers.filter_wheels.utils import SimulatedFilterWheelController
 
     controller = SimulatedFilterWheelController(
         number_of_wheels=2,
@@ -135,7 +140,7 @@ def sim_serial() -> Generator:
     Uses control/peripherals/stage/serial.py SimSerial class.
     Simulates the Cephla microcontroller serial protocol.
     """
-    from control.peripherals.stage.serial import SimSerial
+    from squid.mcs.drivers.stages.serial import SimSerial
 
     serial = SimSerial()
     yield serial
@@ -150,8 +155,8 @@ def simulated_microcontroller() -> Generator:
     This is the main low-level hardware abstraction used for stage control,
     illumination, and other microcontroller-driven peripherals.
     """
-    from control.peripherals.stage.serial import get_microcontroller_serial_device
-    from control.microcontroller import Microcontroller
+    from squid.mcs.drivers.stages.serial import get_microcontroller_serial_device
+    from squid.mcs.microcontroller import Microcontroller
 
     serial_device = get_microcontroller_serial_device(simulated=True)
     micro = Microcontroller(serial_device=serial_device)
@@ -165,9 +170,9 @@ def simulated_microcontroller() -> Generator:
 
 
 @pytest.fixture
-def stage_config() -> squid.config.StageConfig:
+def stage_config() -> squid.core.config.StageConfig:
     """Provide default stage configuration."""
-    return squid.config.get_stage_config()
+    return squid.core.config.get_stage_config()
 
 
 @pytest.fixture
@@ -178,7 +183,7 @@ def simulated_stage(stage_config) -> Generator:
     Uses the new SimulatedStage class that directly implements AbstractStage
     without requiring a microcontroller. Faster and simpler for most tests.
     """
-    from control.peripherals.stage.simulated import SimulatedStage
+    from squid.mcs.drivers.stages.simulated import SimulatedStage
 
     stage = SimulatedStage(stage_config, simulate_delays=False)
     yield stage
@@ -193,7 +198,7 @@ def simulated_cephla_stage(simulated_microcontroller, stage_config) -> Generator
     Returns a CephlaStage that operates on the simulated serial.
     Use this when you need to test CephlaStage-specific behavior.
     """
-    from control.peripherals.stage.cephla import CephlaStage
+    from squid.mcs.drivers.stages.cephla import CephlaStage
 
     stage = CephlaStage(simulated_microcontroller, stage_config)
     yield stage
@@ -219,7 +224,7 @@ def simulated_microscope() -> Generator:
 
     This is the highest-level fixture for integration tests.
     """
-    import control.microscope
+    import mcs.microscope
 
     scope = control.microscope.Microscope.build_from_global_config(simulated=True)
     yield scope
@@ -302,8 +307,8 @@ def simulated_piezo_stage(simulated_microcontroller) -> Generator:
     """
     Provide a PiezoStage with simulated microcontroller.
     """
-    from control.peripherals.piezo import PiezoStage
-    import control._def
+    from squid.mcs.drivers.peripherals.piezo import PiezoStage
+    import _def
 
     config = {
         "OBJECTIVE_PIEZO_HOME_UM": control._def.OBJECTIVE_PIEZO_HOME_UM,

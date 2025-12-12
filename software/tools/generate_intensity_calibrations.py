@@ -12,13 +12,13 @@ sys.path.append(software_dir)
 os.chdir(software_dir)
 
 from PM16 import PM16
-from control.peripherals.lighting.led import (
+from mcs.drivers.lighting.led import (
     IlluminationController,
     IntensityControlMode,
     ShutterControlMode,
 )
-import control.microcontroller as microcontroller
-from control._def import *
+import mcs.microcontroller as microcontroller
+from _def import *
 
 
 def plot_calibration(data: pd.DataFrame, wavelength: int, output_dir: Path):

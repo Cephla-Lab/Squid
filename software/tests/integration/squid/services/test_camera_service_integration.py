@@ -2,7 +2,7 @@
 
 import pytest
 
-from squid.events import (
+from squid.core.events import (
     EventBus,
     ExposureTimeChanged,
     SetExposureTimeCommand,
@@ -10,8 +10,8 @@ from squid.events import (
     ROIChanged,
     PixelFormatChanged,
 )
-from squid.services import CameraService
-from squid.config import CameraPixelFormat
+from squid.mcs.services import CameraService
+from squid.core.config import CameraPixelFormat
 
 
 @pytest.mark.integration

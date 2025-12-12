@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from squid.events import (
+from squid.core.events import (
     EventBus,
     StartLiveCommand,
     StopLiveCommand,
@@ -13,12 +13,13 @@ from squid.events import (
     TriggerFPSChanged,
     LiveStateChanged,
 )
-from control.core.display.live_controller import (
+from squid.mcs.controllers.live_controller import (
     LiveController,
     TriggerMode,
-    LiveState,
+    LiveStateData,
+    LiveControllerState,
 )
-from squid.abc import CameraAcquisitionMode
+from squid.core.abc import CameraAcquisitionMode
 
 
 class DummyMicroscope:
@@ -59,14 +60,16 @@ def test_start_stop_live_uses_camera_service():
     bus.subscribe(LiveStateChanged, events.append)
 
     bus.publish(StartLiveCommand(configuration="BF"))
+    bus.drain()
     cam_svc.start_streaming.assert_called_once()
     assert controller.is_live is True
-    assert controller.state.is_live is True
-    assert controller.state.current_channel == "BF"
+    assert controller.observable_state.is_live is True
+    assert controller.observable_state.current_channel == "BF"
     assert events[-1].is_live is True
 
     events.clear()
     bus.publish(StopLiveCommand())
+    bus.drain()
     cam_svc.stop_streaming.assert_called_once()
     assert controller.is_live is False
     assert any(evt.is_live is False for evt in events)
@@ -80,6 +83,7 @@ def test_trigger_mode_change_uses_service():
     bus.subscribe(TriggerModeChanged, events.append)
 
     bus.publish(SetTriggerModeCommand(mode="Hardware"))
+    bus.drain()
     cam_svc.set_acquisition_mode.assert_called_with(
         CameraAcquisitionMode.HARDWARE_TRIGGER
     )
@@ -94,5 +98,6 @@ def test_trigger_fps_update():
     bus.subscribe(TriggerFPSChanged, events.append)
 
     bus.publish(SetTriggerFPSCommand(fps=5.0))
-    assert controller.state.trigger_fps == 5.0
+    bus.drain()
+    assert controller.observable_state.trigger_fps == 5.0
     assert events[-1].fps == 5.0

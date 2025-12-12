@@ -1,5 +1,5 @@
 # version:1.0.1808.9101
-import control.gxipy as gx
+import mcs.drivers.gxipy as gx
 
 
 def main():

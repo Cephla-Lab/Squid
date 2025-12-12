@@ -1,21 +1,19 @@
 """Integration-style thread-safety checks for UIEventBus."""
 import threading
+import time
 
 from qtpy.QtCore import QThread
 
-from squid.events import (
+from squid.core.events import (
     EventBus,
     StagePositionChanged,
     AcquisitionProgress,
 )
-from squid.qt_event_dispatcher import QtEventDispatcher
-from squid.ui_event_bus import UIEventBus
-from squid.services.movement_service import MovementService
-from control.core.acquisition.multi_point_utils import (
-    create_eventbus_callbacks,
-    OverallProgressUpdate,
-)
-from squid.abc import Pos, StageStage
+from squid.ui.qt_event_dispatcher import QtEventDispatcher
+from squid.ui.ui_event_bus import UIEventBus
+from squid.mcs.services.movement_service import MovementService
+from squid.core.events import AcquisitionProgress
+from squid.core.abc import Pos, StageStage
 
 
 def test_ui_event_bus_runs_handler_on_main_thread_from_worker(qtbot):
@@ -82,12 +80,10 @@ def test_movement_service_events_reach_ui_on_main_thread(qtbot):
     assert handler_threads and handler_threads[0] is QThread.currentThread()
 
 
-def test_multipoint_callbacks_dispatch_progress_on_main_thread(qtbot):
+def test_multipoint_progress_dispatch_on_main_thread(qtbot):
     core_bus = EventBus()
     dispatcher = QtEventDispatcher()
     ui_bus = UIEventBus(core_bus, dispatcher)
-
-    callbacks = create_eventbus_callbacks(core_bus)
 
     handler_threads = []
     handler_hit = threading.Event()
@@ -99,12 +95,15 @@ def test_multipoint_callbacks_dispatch_progress_on_main_thread(qtbot):
     ui_bus.subscribe(AcquisitionProgress, on_progress)
 
     def worker():
-        callbacks.signal_overall_progress(
-            OverallProgressUpdate(
-                current_region=1,
-                total_regions=2,
-                current_timepoint=1,
-                total_timepoints=2,
+        core_bus.publish(
+            AcquisitionProgress(
+                current_fov=1,
+                total_fovs=2,
+                current_round=1,
+                total_rounds=2,
+                current_channel="",
+                progress_percent=10.0,
+                experiment_id="integration-exp",
             )
         )
 

@@ -1,9 +1,16 @@
 import threading
 
-import control._def
-import control.microscope
-from control.core.acquisition import MultiPointController
-from control.core.acquisition.multi_point_utils import MultiPointControllerFunctions
+import _def
+import mcs.microscope
+from squid.ops.acquisition import MultiPointController
+from squid.core.events import (
+    event_bus,
+    AcquisitionStarted,
+    AcquisitionFinished,
+    AcquisitionProgress,
+    AcquisitionRegionProgress,
+    AcquisitionWorkerFinished,
+)
 
 import tests.control.test_stubs as ts
 
@@ -129,36 +136,26 @@ class TestAcquisitionTracker:
     def __init__(self):
         self.started_event = threading.Event()
         self.finished_event = threading.Event()
-        self.image_count = 0
-        self.config_change_count = 0
-        self.current_fovs_count = 0
         self.overall_progress_seen = False
         self.region_progress_seen = False
+        # Subscribe to event bus
+        event_bus.start()
+        event_bus.subscribe(AcquisitionStarted, self._on_started)
+        event_bus.subscribe(AcquisitionFinished, self._on_finished)
+        event_bus.subscribe(AcquisitionWorkerFinished, self._on_finished)
+        event_bus.subscribe(AcquisitionProgress, self._on_progress)
+        event_bus.subscribe(AcquisitionRegionProgress, self._on_region_progress)
 
-    def get_callbacks(self) -> MultiPointControllerFunctions:
-        return MultiPointControllerFunctions(
-            signal_acquisition_start=lambda params: self.started_event.set(),
-            signal_acquisition_finished=lambda: self.finished_event.set(),
-            signal_new_image=self.receive_image,
-            signal_current_configuration=self.receive_config,
-            signal_current_fov=self.receive_current_fov,
-            signal_overall_progress=self.receive_overall_progress,
-            signal_region_progress=self.receive_region_progress,
-        )
+    def _on_started(self, _evt):
+        self.started_event.set()
 
-    def receive_image(self, frame, info):
-        self.image_count += 1
+    def _on_finished(self, _evt):
+        self.finished_event.set()
 
-    def receive_config(self, config):
-        self.config_change_count += 1
-
-    def receive_current_fov(self, x_mm, y_mm):
-        self.current_fovs_count += 1
-
-    def receive_overall_progress(self, progress):
+    def _on_progress(self, _evt):
         self.overall_progress_seen = True
 
-    def receive_region_progress(self, progress):
+    def _on_region_progress(self, _evt):
         self.region_progress_seen = True
 
 
@@ -196,9 +193,7 @@ def test_multi_point_controller_basic_acquisition():
     control._def.MERGE_CHANNELS = False
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
-    mpc = ts.get_test_multi_point_controller(
-        microscope=scope, callbacks=tt.get_callbacks()
-    )
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
 
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
@@ -223,9 +218,7 @@ def test_multi_point_with_laser_af():
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
 
-    mpc = ts.get_test_multi_point_controller(
-        microscope=scope, callbacks=tt.get_callbacks()
-    )
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
 
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
@@ -257,9 +250,7 @@ def test_multi_point_with_contrast_af():
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
 
-    mpc = ts.get_test_multi_point_controller(
-        microscope=scope, callbacks=tt.get_callbacks()
-    )
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
 
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
