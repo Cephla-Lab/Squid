@@ -474,11 +474,9 @@ class LaserAutofocusSettingWidget(QWidget):
         self.exposure_spinbox = QDoubleSpinBox()
         self.exposure_spinbox.setKeyboardTracking(False)
         self.exposure_spinbox.setSingleStep(0.1)
-        # This widget controls the *focus camera*, so use the focus camera's exposure limits (not the main camera).
         try:
             exposure_min_ms, exposure_max_ms = self.laserAutofocusController.camera.get_exposure_limits()
         except Exception:
-            # Fallback to a conservative range in milliseconds.
             exposure_min_ms, exposure_max_ms = 0.01, 10000.0
         self.exposure_spinbox.setRange(exposure_min_ms, exposure_max_ms)
         self.exposure_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_exposure_time_ms)
