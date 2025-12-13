@@ -9,15 +9,15 @@ Usage:
 
     # Define event types as dataclasses
     @dataclass
-    class ImageCaptured(Event):
-        frame: CameraFrame
-        info: CaptureInfo
+    class StageMoved(Event):
+        x_mm: float
+        y_mm: float
 
     # Subscribe to events
-    event_bus.subscribe(ImageCaptured, lambda e: display(e.frame))
+    event_bus.subscribe(StageMoved, lambda e: print(e.x_mm, e.y_mm))
 
     # Publish events
-    event_bus.publish(ImageCaptured(frame=frame, info=info))
+    event_bus.publish(StageMoved(x_mm=1.0, y_mm=2.0))
 """
 
 import queue
@@ -59,13 +59,13 @@ class EventBus:
         bus.start()  # Start the dispatch thread
 
         # Subscribe
-        bus.subscribe(ImageCaptured, self.on_image)
+        bus.subscribe(StageMoved, self.on_stage_moved)
 
         # Publish (O(1), non-blocking)
-        bus.publish(ImageCaptured(frame=frame, info=info))
+        bus.publish(StageMoved(x_mm=1.0, y_mm=2.0))
 
         # Unsubscribe
-        bus.unsubscribe(ImageCaptured, self.on_image)
+        bus.unsubscribe(StageMoved, self.on_stage_moved)
 
         # Shutdown
         bus.stop()
@@ -409,7 +409,6 @@ class MoveStageToLoadingPositionCommand(Event):
     """Command to move stage to loading position."""
 
     blocking: bool = True
-    callback: Optional[Callable[[bool, Optional[str]], None]] = None
     is_wellplate: bool = True
 
 
@@ -418,7 +417,6 @@ class MoveStageToScanningPositionCommand(Event):
     """Command to move stage to scanning position."""
 
     blocking: bool = True
-    callback: Optional[Callable[[bool, Optional[str]], None]] = None
     is_wellplate: bool = True
 
 
@@ -435,6 +433,7 @@ class SetIlluminationCommand(Event):
 class StartLiveCommand(Event):
     """Command to start live view."""
 
+    camera: str = "main"
     configuration: Optional[str] = None
 
 
@@ -442,7 +441,7 @@ class StartLiveCommand(Event):
 class StopLiveCommand(Event):
     """Command to stop live view."""
 
-    pass
+    camera: str = "main"
 
 
 # ============================================================
@@ -488,6 +487,7 @@ class LiveStateChanged(Event):
     """Notification that live view state changed."""
 
     is_live: bool
+    camera: str = "main"
     configuration: Optional[str] = None
 
 
@@ -541,6 +541,7 @@ class SetTriggerModeCommand(Event):
     """Command to set camera trigger mode."""
 
     mode: str  # "Software", "Hardware", "Continuous"
+    camera: str = "main"
 
 
 @dataclass
@@ -548,6 +549,7 @@ class SetTriggerFPSCommand(Event):
     """Command to set trigger frequency."""
 
     fps: float
+    camera: str = "main"
 
 
 # ============================================================
@@ -560,6 +562,7 @@ class TriggerModeChanged(Event):
     """Notification that trigger mode changed."""
 
     mode: str
+    camera: str = "main"
 
 
 @dataclass
@@ -567,6 +570,7 @@ class TriggerFPSChanged(Event):
     """Notification that trigger FPS changed."""
 
     fps: float
+    camera: str = "main"
 
 
 # ============================================================
@@ -804,12 +808,23 @@ class WellplateFormatChanged(Event):
     well_size_mm: float
     a1_x_mm: float
     a1_y_mm: float
+    a1_x_pixel: int
+    a1_y_pixel: int
+    number_of_skip: int
 
 
 @dataclass
 class ConfocalModeChanged(Event):
     """Emitted when confocal/widefield mode is toggled."""
 
+    is_confocal: bool
+
+
+@dataclass
+class SetConfocalModeCommand(Event):
+    """Command to set confocal vs widefield configuration mode for an objective."""
+
+    objective_name: str
     is_confocal: bool
 
 
@@ -846,6 +861,22 @@ class ScanningPositionReached(Event):
     """
 
     pass
+
+
+@dataclass
+class StageMoveToLoadingPositionFinished(Event):
+    """Emitted when a move-to-loading operation completes."""
+
+    success: bool
+    error_message: Optional[str] = None
+
+
+@dataclass
+class StageMoveToScanningPositionFinished(Event):
+    """Emitted when a move-to-scanning operation completes."""
+
+    success: bool
+    error_message: Optional[str] = None
 
 
 # ============================================================================
@@ -1161,6 +1192,18 @@ class AutofocusStateChanged(Event):
     is_running: bool  # Convenience field for UI
 
 
+@dataclass
+class AutofocusWorkerFinished(Event):
+    """Emitted by the autofocus worker thread when it exits.
+
+    Controller cleanup must be performed by the controller on the EventBus thread.
+    """
+
+    success: bool
+    aborted: bool
+    error: Optional[str] = None
+
+
 # Note: FocusChanged already exists above (line ~170)
 
 
@@ -1264,8 +1307,24 @@ class LaserAFDisplacementMeasured(Event):
 class LaserAFFrameCaptured(Event):
     """State: Frame captured with AF laser illumination."""
 
-    frame: Optional[np.ndarray]
     success: bool
+
+
+@dataclass
+class LaserAFCrossCorrelationMeasured(Event):
+    """State: Cross-correlation value from spot alignment verification."""
+
+    correlation: float
+
+
+@dataclass
+class LaserAFSpotCentroidMeasured(Event):
+    """State: Laser spot centroid measured."""
+
+    success: bool
+    x_px: Optional[float] = None
+    y_px: Optional[float] = None
+    error: Optional[str] = None
 
 
 # ============================================================================
@@ -1379,7 +1438,6 @@ class SetTrackingParametersCommand(Event):
 
     time_interval_s: Optional[float] = None
     enable_stage_tracking: Optional[bool] = None
-    enable_autofocus: Optional[bool] = None
     save_images: Optional[bool] = None
     tracker_type: Optional[str] = None
     pixel_size_um: Optional[float] = None
@@ -1412,7 +1470,7 @@ class StartTrackingExperimentCommand(Event):
 class StartTrackingCommand(Event):
     """Command to start tracking."""
 
-    pass
+    roi_bbox: Tuple[int, int, int, int]
 
 
 @dataclass
@@ -1432,6 +1490,15 @@ class TrackingStateChanged(Event):
     """Notification that tracking state changed."""
 
     is_tracking: bool
+
+
+@dataclass
+class TrackingWorkerFinished(Event):
+    """Worker finished notification for tracking workflow."""
+
+    success: bool
+    aborted: bool = False
+    error: Optional[str] = None
 
 
 # ============================================================================
@@ -1573,7 +1640,7 @@ class DisplacementReadingsChanged(Event):
 
 
 # ============================================================================
-# Resource Coordinator Events
+# Global Mode Events
 # ============================================================================
 
 
@@ -1581,41 +1648,12 @@ class DisplacementReadingsChanged(Event):
 class GlobalModeChanged(Event):
     """Notification that global operating mode changed.
 
-    The global mode is derived from active resource leases and indicates
-    what the system is currently doing (IDLE, LIVE, ACQUIRING, etc.).
+    The global mode is owned by the backend control plane and indicates what
+    the system is currently doing (IDLE, LIVE, ACQUIRING, etc.).
     """
 
     old_mode: str  # GlobalMode enum name
     new_mode: str  # GlobalMode enum name
-
-
-@dataclass
-class LeaseAcquired(Event):
-    """Notification that a resource lease was acquired."""
-
-    lease_id: str
-    owner: str
-    resources: List[str]  # List of Resource enum names
-
-
-@dataclass
-class LeaseReleased(Event):
-    """Notification that a resource lease was released."""
-
-    lease_id: str
-    owner: str
-
-
-@dataclass
-class LeaseRevoked(Event):
-    """Notification that a resource lease was revoked.
-
-    Leases can be revoked due to timeout/expiration, force_release_all,
-    or error conditions.
-    """
-
-    lease_id: str
-    owner: str
     reason: str
 
 
@@ -1689,6 +1727,23 @@ class ScanCoordinatesUpdated(Event):
     region_ids: Tuple[str, ...]  # Immutable tuple of region identifiers
 
 
+@dataclass
+class FocusPointOverlaySet(Event):
+    """Command/state event: replace the focus point overlay points.
+
+    Used to avoid direct widget-to-widget calls between FocusMapWidget and NavigationViewer.
+    """
+
+    points: Tuple[Tuple[float, float], ...]  # (x_mm, y_mm) pairs
+
+
+@dataclass
+class FocusPointOverlayVisibilityChanged(Event):
+    """Command/state event: show/hide focus point overlay."""
+
+    enabled: bool
+
+
 # ============================================================================
 # Phase 8: UI Decoupling Commands and Events
 # ============================================================================
@@ -1710,38 +1765,166 @@ class ImageCoordinateClickedCommand(Event):
 
 
 @dataclass
-class WellplateConfigurationCommand(Event):
-    """Command to update wellplate configuration.
+class ClearScanCoordinatesCommand(Event):
+    """Command to clear all scan coordinate regions."""
 
-    Replaces direct calls to onWellplateChanged. The WellplateConfigurationController
-    subscribes to this and handles scan coordinate clearing, widget updates, etc.
+
+@dataclass
+class SortScanCoordinatesCommand(Event):
+    """Command to sort scan coordinate regions/FOVs using ScanCoordinates rules."""
+
+
+@dataclass
+class SetLiveScanCoordinatesCommand(Event):
+    """Command to define a live scan grid around a center position."""
+
+    x_mm: float
+    y_mm: float
+    scan_size_mm: float
+    overlap_percent: float
+    shape: str
+
+
+@dataclass
+class AddTemplateRegionCommand(Event):
+    """Command to add a scan coordinate region from template offsets.
+
+    Template regions are defined by (x,y) offsets relative to a center position.
     """
+
+    region_id: str
+    center_x_mm: float
+    center_y_mm: float
+    center_z_mm: float
+    x_offsets_mm: Tuple[float, ...]
+    y_offsets_mm: Tuple[float, ...]
+
+
+@dataclass
+class SelectedWellsChanged(Event):
+    """UI state event: selected well cells changed."""
 
     format_name: str
+    selected_cells: Tuple[Tuple[int, int], ...]
 
 
 @dataclass
-class AcquisitionUIToggleCommand(Event):
-    """Command to toggle acquisition-related UI state.
+class ActiveAcquisitionTabChanged(Event):
+    """UI state event: active acquisition tab changed."""
 
-    Published by acquisition widgets when starting/stopping acquisition.
-    The main window or a UI coordinator subscribes and manages:
-    - Live scan grid state
-    - Tab enabled/disabled state
-    - Autolevel toggle
-    - Well selector visibility
-    - Progress bar visibility
-    """
-
-    acquisition_started: bool
-    experiment_id: Optional[str] = None
+    active_tab: str  # e.g. "wellplate", "flexible", "fluidics", "other"
 
 
 @dataclass
-class LiveScanGridCommand(Event):
-    """Command to toggle the live scan grid overlay."""
+class ManualShapeDrawingEnabledChanged(Event):
+    """UI state event: enable/disable manual ROI drawing in mosaic view."""
 
     enabled: bool
+
+
+@dataclass
+class ManualShapesChanged(Event):
+    """UI state event: manual ROI shapes (in mm) changed in mosaic view."""
+
+    shapes_mm: Optional[Tuple[Tuple[Tuple[float, float], ...], ...]]
+
+
+@dataclass
+class MosaicLayersInitialized(Event):
+    """UI state event: mosaic viewer layers initialized."""
+
+    pass
+
+
+@dataclass
+class SetWellSelectionScanCoordinatesCommand(Event):
+    """Command to compute scan coordinates from the current well selection."""
+
+    scan_size_mm: float
+    overlap_percent: float
+    shape: str
+
+
+@dataclass
+class SetManualScanCoordinatesCommand(Event):
+    """Command to compute scan coordinates from manual ROI shapes."""
+
+    manual_shapes_mm: Optional[Tuple[Tuple[Tuple[float, float], ...], ...]]
+    overlap_percent: float
+
+
+@dataclass
+class LoadScanCoordinatesCommand(Event):
+    """Command to replace scan coordinates with explicit region/FOV coordinates."""
+
+    region_fov_coordinates: Dict[str, Tuple[Tuple[float, ...], ...]]
+    region_centers: Optional[Dict[str, Tuple[float, ...]]] = None
+
+
+@dataclass
+class RequestScanCoordinatesSnapshotCommand(Event):
+    """Command to request a one-time snapshot of current scan coordinates."""
+
+    request_id: str
+
+
+@dataclass
+class ScanCoordinatesSnapshot(Event):
+    """Snapshot of current scan coordinates."""
+
+    request_id: str
+    region_fov_coordinates: Dict[str, Tuple[Tuple[float, ...], ...]]
+    region_centers: Dict[str, Tuple[float, ...]]
+
+
+@dataclass
+class AddFlexibleRegionCommand(Event):
+    """Command to add a flexible grid region defined by NX/NY and overlap."""
+
+    region_id: str
+    center_x_mm: float
+    center_y_mm: float
+    center_z_mm: float
+    n_x: int
+    n_y: int
+    overlap_percent: float
+
+
+@dataclass
+class AddFlexibleRegionWithStepSizeCommand(Event):
+    """Command to add a flexible grid region defined by NX/NY and step size."""
+
+    region_id: str
+    center_x_mm: float
+    center_y_mm: float
+    center_z_mm: float
+    n_x: int
+    n_y: int
+    delta_x_mm: float
+    delta_y_mm: float
+
+
+@dataclass
+class RemoveScanCoordinateRegionCommand(Event):
+    """Command to remove a scan coordinate region by id."""
+
+    region_id: str
+
+
+@dataclass
+class RenameScanCoordinateRegionCommand(Event):
+    """Command to rename a scan coordinate region."""
+
+    old_region_id: str
+    new_region_id: str
+
+
+@dataclass
+class UpdateScanCoordinateRegionZCommand(Event):
+    """Command to update z-level for an entire scan coordinate region."""
+
+    region_id: str
+    z_mm: float
 
 
 @dataclass
@@ -1749,11 +1932,3 @@ class ClickToMoveEnabledChanged(Event):
     """State event: click-to-move feature enabled/disabled."""
 
     enabled: bool
-
-
-@dataclass
-class WellSelectorVisibilityCommand(Event):
-    """Command to show/hide the well selector widget."""
-
-    visible: bool
-    remember_state: bool = True

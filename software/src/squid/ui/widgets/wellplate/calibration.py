@@ -9,7 +9,6 @@ from squid.core.events import (
 )
 
 if TYPE_CHECKING:
-    from squid.ui.widgets.display.navigation import NavigationViewer
     from squid.storage.stream_handler import StreamHandler
     from squid.ui.widgets.wellplate.format import WellplateFormatWidget
     from squid.ui.widgets.tracking.joystick import Joystick
@@ -26,19 +25,19 @@ class WellplateCalibration(EventBusDialog):
     def __init__(
         self,
         wellplateFormatWidget: "WellplateFormatWidget",
-        navigationViewer: "NavigationViewer",
         streamHandler: "StreamHandler",
         event_bus: "UIEventBus",
         # Read-only config passed as params
         pixel_size_factor: float = 1.0,
         pixel_size_binned_um: float = 0.084665,
         was_live: bool = False,
+        previous_format: str = "glass slide",
     ) -> None:
         super().__init__(event_bus)
         self.setWindowTitle("Well Plate Calibration")
         self.wellplateFormatWidget: "WellplateFormatWidget" = wellplateFormatWidget
-        self.navigationViewer: "NavigationViewer" = navigationViewer
         self.streamHandler: "StreamHandler" = streamHandler
+        self._previous_format: str = previous_format
 
         # Read-only config from params (no direct camera/controller access)
         self._pixel_size_factor = pixel_size_factor
@@ -636,6 +635,8 @@ class WellplateCalibration(EventBusDialog):
 
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Track live state from the event bus."""
+        if getattr(event, "camera", "main") != "main":
+            return
         self._is_live = event.is_live
 
     def _stop_live_if_needed(self) -> None:
@@ -656,27 +657,15 @@ class WellplateCalibration(EventBusDialog):
     def reject(self) -> None:
         # This method is called when the dialog is closed without accepting
         self._stop_live_if_needed()
-        sample = self.navigationViewer.sample
-
-        # Convert sample string to format int
-        if "glass slide" in sample:
-            sample_format = "glass slide"
-        else:
-            try:
-                sample_format = int(sample.split()[0])
-            except (ValueError, IndexError):
-                print(
-                    f"Unable to parse sample format from '{sample}'. Defaulting to 0."
-                )
-                sample_format = "glass slide"
-
-        # Set dropdown to the current sample format
-        index = self.wellplateFormatWidget.comboBox.findData(sample_format)
+        # Restore the selection that was active when calibration opened.
+        index = self.wellplateFormatWidget.comboBox.findData(self._previous_format)
         if index >= 0:
+            self.wellplateFormatWidget.comboBox.blockSignals(True)
             self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
+            self.wellplateFormatWidget.comboBox.blockSignals(False)
 
         # Update wellplate settings
-        self.wellplateFormatWidget.setWellplateSettings(sample_format)
+        self.wellplateFormatWidget.setWellplateSettings(self._previous_format)
 
         super().reject()
 

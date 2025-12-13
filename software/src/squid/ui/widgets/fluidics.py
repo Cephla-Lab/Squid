@@ -1,7 +1,7 @@
 # Fluidics control widgets
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import squid.core.logging
 
@@ -25,15 +25,19 @@ from qtpy.QtWidgets import (
 
 from _def import *
 from squid.ui.widgets.base import PandasTableModel
+from squid.core.events import EventBus, FluidicsInitialized
 
 
 class FluidicsWidget(QWidget):
     log_message_signal = Signal(str)
     fluidics_initialized_signal = Signal()
 
-    def __init__(self, fluidics: Fluidics, parent=None) -> None:
+    def __init__(
+        self, fluidics: Fluidics, event_bus: Optional[EventBus] = None, parent=None
+    ) -> None:
         super().__init__(parent)
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
+        self._event_bus = event_bus
 
         # Initialize data structures
         self.fluidics = fluidics
@@ -198,6 +202,8 @@ class FluidicsWidget(QWidget):
         self.enable_controls(True)
         self.btn_emergency_stop.setEnabled(True)
         self.fluidics_initialized_signal.emit()
+        if self._event_bus is not None:
+            self._event_bus.publish(FluidicsInitialized())
 
     def set_sequence_callbacks(self) -> None:
         callbacks = {

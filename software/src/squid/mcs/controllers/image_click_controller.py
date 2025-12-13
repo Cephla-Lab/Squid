@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Optional
 import squid.core.logging
 from squid.core.events import (
     ImageCoordinateClickedCommand,
-    MoveStageCommand,
     ClickToMoveEnabledChanged,
 )
 
@@ -19,6 +18,7 @@ if TYPE_CHECKING:
     from squid.core.events import EventBus
     from squid.ops.navigation import ObjectiveStore
     from squid.mcs.services import CameraService
+    from squid.mcs.services import StageService
 
 _log = squid.core.logging.get_logger(__name__)
 
@@ -30,32 +30,32 @@ class ImageClickController:
     to stage movement commands based on objective magnification and camera binning.
 
     Subscribes to: ImageCoordinateClickedCommand
-    Publishes: MoveStageCommand (x and y)
+    Moves stage via StageService (x and y)
     """
 
     def __init__(
         self,
         objective_store: "ObjectiveStore",
         camera_service: "CameraService",
+        stage_service: Optional["StageService"],
         event_bus: "EventBus",
         inverted_objective: bool = False,
-        subscribe_to_bus: bool = True,
     ) -> None:
         """Initialize the ImageClickController.
 
         Args:
             objective_store: Store for objective information and pixel size factor.
             camera_service: Camera service for getting binned pixel size.
+            stage_service: Stage service used to perform the move synchronously.
             event_bus: Event bus for publishing/subscribing.
             inverted_objective: Whether the objective is inverted (affects Y sign).
-            subscribe_to_bus: Whether to subscribe to EventBus commands.
         """
         self._objective_store = objective_store
         self._camera_service = camera_service
+        self._stage_service = stage_service
         self._bus = event_bus
         self._inverted_objective = inverted_objective
         self._lock = threading.RLock()
-        self._bus_enabled = subscribe_to_bus
 
         self._click_to_move_enabled = True  # Default enabled
 
@@ -63,21 +63,8 @@ class ImageClickController:
 
     def _subscribe_to_bus(self) -> None:
         """Subscribe to relevant events."""
-        if self._bus is None or not self._bus_enabled:
-            return
         self._bus.subscribe(ImageCoordinateClickedCommand, self._on_image_clicked)
         self._bus.subscribe(ClickToMoveEnabledChanged, self._on_click_to_move_changed)
-
-    def detach_event_bus_commands(self) -> None:
-        """Unsubscribe command handlers so routing can go through BackendActor."""
-        if self._bus is None:
-            return
-        self._bus_enabled = False
-        try:
-            self._bus.unsubscribe(ImageCoordinateClickedCommand, self._on_image_clicked)
-            self._bus.unsubscribe(ClickToMoveEnabledChanged, self._on_click_to_move_changed)
-        except Exception:
-            pass
 
     def set_click_to_move_enabled(self, enabled: bool) -> None:
         """Set whether click-to-move is enabled.
@@ -95,13 +82,24 @@ class ImageClickController:
     def _on_image_clicked(self, cmd: ImageCoordinateClickedCommand) -> None:
         """Handle ImageCoordinateClickedCommand.
 
-        Converts pixel coordinates to stage movement and publishes MoveStageCommand.
+        Converts pixel coordinates to stage movement and moves via StageService.
+
+        Important: we perform the move before returning so that any subsequent queued
+        commands (e.g. StartAcquisitionCommand(acquire_current_fov=True)) observe the
+        updated stage position.
         """
         with self._lock:
             if not self._click_to_move_enabled:
                 _log.debug(
                     f"Click to move disabled, ignoring click at x={cmd.x_pixel}, y={cmd.y_pixel}"
                 )
+                return
+            if self._stage_service is None:
+                _log.warning("No StageService available; ignoring image click move")
+                return
+            blocked_fn = getattr(self._stage_service, "_blocked_for_ui_hardware_commands", None)
+            if callable(blocked_fn) and blocked_fn():
+                _log.info("Ignoring image click move due to global mode gate")
                 return
 
             # Calculate pixel size in um
@@ -123,7 +121,11 @@ class ImageClickController:
                 f"(pixel_size={pixel_size_um:.3f}um, factor={pixel_size_factor:.3f})"
             )
 
-        # Publish movement commands (outside lock to avoid deadlocks)
-        if self._bus:
-            self._bus.publish(MoveStageCommand(axis="x", distance_mm=delta_x_mm))
-            self._bus.publish(MoveStageCommand(axis="y", distance_mm=delta_y_mm))
+        # Perform movement outside our lock (StageService has its own lock).
+        # StageService moves are blocking by default; this avoids the "one click behind"
+        # behavior when an acquisition starts immediately after click-to-move.
+        try:
+            self._stage_service.move_x(delta_x_mm)
+            self._stage_service.move_y(delta_y_mm)
+        except Exception:
+            _log.exception("Failed to move stage from image click")

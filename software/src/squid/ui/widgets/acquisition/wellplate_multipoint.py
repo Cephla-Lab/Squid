@@ -3,6 +3,7 @@ import os
 import math
 import time
 import yaml
+from uuid import uuid4
 from typing import Optional, List, TYPE_CHECKING, Any
 
 import numpy as np
@@ -29,14 +30,28 @@ from squid.core.events import (
     AcquisitionProgress,
     AcquisitionRegionProgress,
     LoadingPositionReached,
+    StageMovementStopped,
     ScanningPositionReached,
     ScanCoordinatesUpdated,
-    AcquisitionUIToggleCommand,
+    WellplateFormatChanged,
+    SelectedWellsChanged,
+    ActiveAcquisitionTabChanged,
+    ManualShapeDrawingEnabledChanged,
+    ManualShapesChanged,
+    MosaicLayersInitialized,
+    ClearScanCoordinatesCommand,
+    SortScanCoordinatesCommand,
+    SetLiveScanCoordinatesCommand,
+    SetWellSelectionScanCoordinatesCommand,
+    SetManualScanCoordinatesCommand,
+    LoadScanCoordinatesCommand,
+    RequestScanCoordinatesSnapshotCommand,
+    ScanCoordinatesSnapshot,
 )
 
 if TYPE_CHECKING:
     from squid.mcs.services import StageService
-from qtpy.QtCore import Signal, Qt, QTimer
+from qtpy.QtCore import Qt, QTimer, QEventLoop
 from qtpy.QtWidgets import (
     QFrame,
     QVBoxLayout,
@@ -52,7 +67,6 @@ from qtpy.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QSizePolicy,
-    QTabWidget,
     QAbstractItemView,
     QWidget,
     QListWidget,
@@ -66,25 +80,14 @@ from squid.ui.widgets.wellplate import WellSelectionWidget
 
 
 class WellplateMultiPointWidget(QFrame):
-    signal_acquisition_started = Signal(bool)
-    signal_acquisition_channels = Signal(list)
-    signal_acquisition_shape = Signal(int, float)  # acquisition Nz, dz
-    signal_manual_shape_mode = Signal(
-        bool
-    )  # enable manual shape layer on mosaic display
-    signal_toggle_live_scan_grid = Signal(bool)  # enable/disable live scan grid
-
     def __init__(
         self,
-        navigationViewer,
-        scanCoordinates,
         event_bus: EventBus,
         initial_channel_configs: List[str],
         initial_objective: str,
         objective_pixel_size_factors: dict[str, float],
+        camera_fov_size_mm: float,
         focusMapWidget=None,
-        napariMosaicWidget=None,
-        tab_widget: Optional[QTabWidget] = None,
         well_selection_widget: Optional[WellSelectionWidget] = None,
         z_ustep_per_mm: Optional[float] = None,
         initial_z_mm: float = 0.0,
@@ -108,8 +111,9 @@ class WellplateMultiPointWidget(QFrame):
         )
         # Cache live state (updated via LiveStateChanged events)
         self._is_live = False
-        self.navigationViewer = navigationViewer
-        self.scanCoordinates = scanCoordinates
+        self._wellplate_format = WELLPLATE_FORMAT
+        self._well_size_mm: float = 0.0
+        self._camera_fov_size_mm = float(camera_fov_size_mm)
         # Initial channel configurations (passed from GUI, will be updated via events)
         self._channel_configs = list(initial_channel_configs)
         self.focusMapWidget = focusMapWidget
@@ -117,12 +121,7 @@ class WellplateMultiPointWidget(QFrame):
         # Cached acquisition state from events
         self._acquisition_in_progress = False
         self._acquisition_is_aborting = False
-        if napariMosaicWidget is None:
-            self.performance_mode = True
-        else:
-            self.napariMosaicWidget = napariMosaicWidget
-            self.performance_mode = False
-        self.tab_widget: Optional[QTabWidget] = tab_widget
+        self._active_experiment_id: Optional[str] = None
         self.well_selection_widget: Optional[WellSelectionWidget] = (
             well_selection_widget
         )
@@ -133,6 +132,7 @@ class WellplateMultiPointWidget(QFrame):
         self.manual_shape = None
         self.eta_seconds = 0
         self.is_current_acquisition_widget = False
+        self._is_active_tab = False
 
         self.shapes_mm = None
 
@@ -194,6 +194,87 @@ class WellplateMultiPointWidget(QFrame):
         self._event_bus.subscribe(LoadingPositionReached, self._on_loading_position_reached)
         self._event_bus.subscribe(ScanningPositionReached, self._on_scanning_position_reached)
         self._event_bus.subscribe(ScanCoordinatesUpdated, self._on_scan_coordinates_updated)
+        self._event_bus.subscribe(WellplateFormatChanged, self._on_wellplate_format_changed)
+        self._event_bus.subscribe(SelectedWellsChanged, self._on_selected_wells_changed)
+        self._event_bus.subscribe(StageMovementStopped, self._on_stage_movement_stopped)
+        self._event_bus.subscribe(ActiveAcquisitionTabChanged, self._on_active_tab_changed)
+        self._event_bus.subscribe(ManualShapesChanged, self._on_manual_shapes_changed)
+        self._event_bus.subscribe(MosaicLayersInitialized, lambda _e: self.enable_manual_ROI())
+
+    def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
+        self._wellplate_format = event.format_name
+        self._well_size_mm = float(event.well_size_mm)
+        self.set_default_scan_size()
+
+    def _on_selected_wells_changed(self, _event: SelectedWellsChanged) -> None:
+        if self.combobox_xy_mode.currentText() != "Select Wells":
+            return
+        if not self.checkbox_xy.isChecked():
+            return
+        if not self._is_active_tab:
+            return
+
+        scan_size_mm = self.entry_scan_size.value()
+        overlap_percent = self.entry_overlap.value()
+        shape = self.combobox_shape.currentText()
+        self._event_bus.publish(
+            SetWellSelectionScanCoordinatesCommand(
+                scan_size_mm=scan_size_mm,
+                overlap_percent=overlap_percent,
+                shape=shape,
+            )
+        )
+
+    def _on_stage_movement_stopped(self, event: StageMovementStopped) -> None:
+        if self.combobox_xy_mode.currentText() != "Current Position":
+            return
+        from squid.core.abc import Pos
+
+        self.update_live_coordinates(
+            Pos(
+                x_mm=event.x_mm,
+                y_mm=event.y_mm,
+                z_mm=event.z_mm,
+                theta_rad=getattr(event, "theta_rad", None),
+            )
+        )
+
+    def _on_active_tab_changed(self, event: ActiveAcquisitionTabChanged) -> None:
+        was_active = self._is_active_tab
+        self._is_active_tab = event.active_tab == "wellplate"
+
+        if not self._is_active_tab:
+            if was_active:
+                self._event_bus.publish(ManualShapeDrawingEnabledChanged(enabled=False))
+            return
+
+        self.emit_selected_channels()
+
+        xy_mode = self.combobox_xy_mode.currentText()
+        manual_enabled = self.checkbox_xy.isChecked() and xy_mode == "Manual"
+        self._event_bus.publish(
+            ManualShapeDrawingEnabledChanged(enabled=manual_enabled)
+        )
+        if self.checkbox_xy.isChecked() and xy_mode == "Load Coordinates":
+            return
+        if manual_enabled and self.shapes_mm:
+            self.update_manual_shape(self.shapes_mm)
+        else:
+            self.update_coordinates(force=True)
+
+    def _on_manual_shapes_changed(self, event: ManualShapesChanged) -> None:
+        if event.shapes_mm is None:
+            self.shapes_mm = None
+        else:
+            self.shapes_mm = [np.array(shape, dtype=float) for shape in event.shapes_mm]
+
+        if not self._is_active_tab:
+            return
+        if not self.checkbox_xy.isChecked():
+            return
+        if self.combobox_xy_mode.currentText() != "Manual":
+            return
+        self.update_manual_shape(self.shapes_mm or [])
 
     def _on_scan_coordinates_updated(self, event: ScanCoordinatesUpdated) -> None:
         """Handle updates to scan coordinates (regions added/removed/cleared)."""
@@ -210,6 +291,8 @@ class WellplateMultiPointWidget(QFrame):
 
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Cache live state from EventBus."""
+        if getattr(event, "camera", "main") != "main":
+            return
         self._is_live = event.is_live
 
     def _on_objective_changed(self, event: ObjectiveChanged) -> None:
@@ -218,6 +301,10 @@ class WellplateMultiPointWidget(QFrame):
             self._current_objective = event.objective_name
         if event.pixel_size_um is not None:
             self._pixel_size_factor = event.pixel_size_um
+        if self._acquisition_in_progress:
+            return
+        if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() != "Load Coordinates":
+            self.update_coordinates(force=True)
 
     def _on_channel_configs_changed(self, event: ChannelConfigurationsChanged) -> None:
         """Update channel list when configurations change for current objective."""
@@ -705,12 +792,7 @@ class WellplateMultiPointWidget(QFrame):
         )
         # Note: acquisition_finished, signal_acquisition_progress, signal_region_progress
         # are now handled via EventBus subscriptions (see _on_acquisition_state_changed etc.)
-        self.signal_acquisition_started.connect(self.display_progress_bar)
         self.eta_timer.timeout.connect(self.update_eta_display)
-        if not self.performance_mode:
-            self.napariMosaicWidget.signal_layers_initialized.connect(
-                self.enable_manual_ROI
-            )
 
         # Connect save/clear coordinates button
         self.btn_save_scan_coordinates.clicked.connect(
@@ -760,14 +842,6 @@ class WellplateMultiPointWidget(QFrame):
     def enable_manual_ROI(self):
         _manual_index = self.combobox_xy_mode.findText("Manual")
         self.combobox_xy_mode.model().item(_manual_index).setEnabled(True)
-
-    def initialize_live_scan_grid_state(self):
-        """Initialize live scan grid state - call this after all external connections are made"""
-        enable_live_scan_grid = (
-            self.checkbox_xy.isChecked()
-            and self.combobox_xy_mode.currentText() == "Current Position"
-        )
-        self.signal_toggle_live_scan_grid.emit(enable_live_scan_grid)
 
     def save_multipoint_widget_config_to_cache(self):
         """Save current acquisition settings to cache"""
@@ -1083,12 +1157,8 @@ class WellplateMultiPointWidget(QFrame):
 
         if checked:
             self.update_coordinates()  # to-do: what does this do? is it needed?
-            if self.combobox_xy_mode.currentText() == "Current Position":
-                self.signal_toggle_live_scan_grid.emit(True)
         else:
-            self.signal_toggle_live_scan_grid.emit(
-                False
-            )  # disable live scan grid regardless of XY mode
+            self._event_bus.publish(ClearScanCoordinatesCommand())
 
         self._log.debug(f"XY acquisition {'enabled' if checked else 'disabled'}")
 
@@ -1128,23 +1198,25 @@ class WellplateMultiPointWidget(QFrame):
                 hasattr(self, "_previous_xy_mode")
                 and self._previous_xy_mode == "Load Coordinates"
             ):
-                self.scanCoordinates.clear_regions()
+                self._event_bus.publish(ClearScanCoordinatesCommand())
 
         # Store the current mode as previous for next time
         self._previous_xy_mode = mode
 
         if mode == "Manual":
-            self.signal_manual_shape_mode.emit(True)
+            self._event_bus.publish(
+                ManualShapeDrawingEnabledChanged(
+                    enabled=self._is_active_tab and self.checkbox_xy.isChecked()
+                )
+            )
         elif mode == "Load Coordinates":
             # Don't update coordinates or emit signals for Load Coordinates mode
-            pass
+            self._event_bus.publish(ManualShapeDrawingEnabledChanged(enabled=False))
         else:
+            self._event_bus.publish(ManualShapeDrawingEnabledChanged(enabled=False))
             self.update_coordinates()  # to-do: what does this do? is it needed?
 
-        if mode == "Current Position":
-            self.signal_toggle_live_scan_grid.emit(True)  # enable live scan grid
-        else:
-            self.signal_toggle_live_scan_grid.emit(False)  # disable live scan grid
+        # Live scan grid updates are driven by StageMovementStopped subscriptions.
 
     def update_scan_control_ui(self):
         """Update scan control UI based on XY checkbox and mode selection"""
@@ -1209,7 +1281,7 @@ class WellplateMultiPointWidget(QFrame):
                 self.entry_well_coverage.blockSignals(False)
 
                 # Enable coverage unless it's glass slide mode
-                if "glass slide" not in self.navigationViewer.sample:
+                if self._wellplate_format != "glass slide":
                     self.entry_well_coverage.setEnabled(True)
                 else:
                     self.entry_well_coverage.setEnabled(False)
@@ -1224,24 +1296,27 @@ class WellplateMultiPointWidget(QFrame):
 
     def set_coordinates_to_current_position(self):
         """Set scan coordinates to current stage position (single FOV)"""
-        if self.tab_widget and self.tab_widget.currentWidget() != self:
+        if not self._is_active_tab:
             return
-
-        # Clear existing regions
-        if self.scanCoordinates.has_regions():
-            self.scanCoordinates.clear_regions()
 
         # Get current position from cached values (updated via StagePositionChanged events)
         x = self._cached_x_mm
         y = self._cached_y_mm
 
-        # Add current position as a single FOV with minimal scan size
+        # Clear existing regions and add current position as a single FOV with minimal scan size.
+        self._event_bus.publish(ClearScanCoordinatesCommand())
         scan_size_mm = 0.01  # Very small scan size for single FOV
         overlap_percent = 0  # No overlap needed for single FOV
         shape = "Square"  # Default shape
 
-        self.scanCoordinates.add_region(
-            "current", x, y, scan_size_mm, overlap_percent, shape
+        self._event_bus.publish(
+            SetLiveScanCoordinatesCommand(
+                x_mm=x,
+                y_mm=y,
+                scan_size_mm=scan_size_mm,
+                overlap_percent=overlap_percent,
+                shape=shape,
+            )
         )
 
     def on_z_toggled(self, checked):
@@ -1602,14 +1677,13 @@ class WellplateMultiPointWidget(QFrame):
             self.checkbox_xy.isChecked()
             and self.combobox_xy_mode.currentText() == "Select Wells"
         ):
-            self._log.debug(f"Sample Format: {self.navigationViewer.sample}")
             self.combobox_shape.blockSignals(True)
             self.entry_well_coverage.blockSignals(True)
             self.entry_scan_size.blockSignals(True)
 
             self.set_default_shape()
 
-            if "glass slide" in self.navigationViewer.sample:
+            if self._wellplate_format == "glass slide":
                 self.entry_scan_size.setValue(
                     0.1
                 )  # init to 0.1mm when switching to 'glass slide' (for imaging a single FOV by default)
@@ -1621,7 +1695,7 @@ class WellplateMultiPointWidget(QFrame):
                 self.entry_well_coverage.setValue(100)
                 self.update_scan_size_from_coverage()
 
-            self.update_coordinates()
+            self.update_coordinates(force=True)
 
             self.combobox_shape.blockSignals(False)
             self.entry_well_coverage.blockSignals(False)
@@ -1632,7 +1706,7 @@ class WellplateMultiPointWidget(QFrame):
             self.stored_xy_params["Select Wells"]["coverage"] = coverage
 
             # Calculate scan size from well size and coverage
-            if "glass slide" not in self.navigationViewer.sample:
+            if self._wellplate_format != "glass slide":
                 effective_well_size = self.get_effective_well_size()
                 scan_size = round((coverage / 100) * effective_well_size, 3)
                 self.stored_xy_params["Select Wells"]["scan_size"] = scan_size
@@ -1642,7 +1716,7 @@ class WellplateMultiPointWidget(QFrame):
 
             self.stored_xy_params["Select Wells"]["scan_shape"] = (
                 "Square"
-                if self.scanCoordinates.format in ["384 well plate", "1536 well plate"]
+                if self._wellplate_format in ["384 well plate", "1536 well plate"]
                 else "Circle"
             )
 
@@ -1654,20 +1728,17 @@ class WellplateMultiPointWidget(QFrame):
             self.entry_scan_size.setValue(0.1)
 
     def set_default_shape(self):
-        if self.scanCoordinates.format in ["384 well plate", "1536 well plate"]:
+        if self._wellplate_format in ["384 well plate", "1536 well plate"]:
             self.combobox_shape.setCurrentText("Square")
-        # elif self.scanCoordinates.format in ["4 slide"]:
+        # Note: "4 slide" special casing would be keyed off WellplateFormatChanged.
         #     self.combobox_shape.setCurrentText("Rectangle")
-        elif self.scanCoordinates.format != 0:
+        elif self._wellplate_format != 0:
             self.combobox_shape.setCurrentText("Circle")
 
     def get_effective_well_size(self):
-        well_size = self.scanCoordinates.well_size_mm
+        well_size = self._well_size_mm
         if self.combobox_shape.currentText() == "Circle":
-            fov_size_mm = (
-                self.navigationViewer.camera.get_fov_size_mm()
-                * self._pixel_size_factor
-            )
+            fov_size_mm = self._camera_fov_size_mm * self._pixel_size_factor
             return well_size + fov_size_mm * (1 + math.sqrt(2))
         return well_size
 
@@ -1677,30 +1748,18 @@ class WellplateMultiPointWidget(QFrame):
         self.update_coordinates()
 
     def update_manual_shape(self, shapes_data_mm):
-        if self.tab_widget and self.tab_widget.currentWidget() != self:
-            return
-
         if shapes_data_mm and len(shapes_data_mm) > 0:
             self.shapes_mm = shapes_data_mm
             self._log.debug(f"Manual ROIs updated with {len(self.shapes_mm)} shapes")
         else:
             self.shapes_mm = None
             self._log.debug("No valid shapes found, cleared manual ROIs")
-        self.update_coordinates()
-
-    def convert_pixel_to_mm(self, pixel_coords):
-        # Convert pixel coordinates to millimeter coordinates
-        mm_coords = pixel_coords * self.napariMosaicWidget.viewer_pixel_size_mm
-        mm_coords += np.array(
-            [
-                self.napariMosaicWidget.top_left_coordinate[1],
-                self.napariMosaicWidget.top_left_coordinate[0],
-            ]
-        )
-        return mm_coords
+        if not self._is_active_tab:
+            return
+        self.update_coordinates(force=True)
 
     def update_coverage_from_scan_size(self):
-        if "glass slide" not in self.navigationViewer.sample:
+        if self._wellplate_format != "glass slide":
             effective_well_size = self.get_effective_well_size()
             scan_size = self.entry_scan_size.value()
             coverage = round((scan_size / effective_well_size) * 100, 2)
@@ -1715,6 +1774,36 @@ class WellplateMultiPointWidget(QFrame):
         scan_size = round((coverage / 100) * effective_well_size, 3)
         self.entry_scan_size.setValue(scan_size)
         self._log.debug(f"Scan size: {scan_size}")
+
+    def _request_scan_coordinates_snapshot(
+        self, timeout_ms: int = 2000
+    ) -> Optional[ScanCoordinatesSnapshot]:
+        request_id = uuid4().hex
+        loop = QEventLoop()
+        timer = QTimer()
+        timer.setSingleShot(True)
+        result: dict[str, Any] = {}
+
+        def _on_snapshot(event: ScanCoordinatesSnapshot) -> None:
+            if event.request_id != request_id:
+                return
+            result["snapshot"] = event
+            loop.quit()
+
+        self._event_bus.subscribe(ScanCoordinatesSnapshot, _on_snapshot)
+        try:
+            self._event_bus.publish(
+                RequestScanCoordinatesSnapshotCommand(request_id=request_id)
+            )
+            timer.timeout.connect(loop.quit)
+            timer.start(timeout_ms)
+            loop.exec_()
+        finally:
+            try:
+                self._event_bus.unsubscribe(ScanCoordinatesSnapshot, _on_snapshot)
+            except Exception:
+                pass
+        return result.get("snapshot")
 
     def update_dz(self):
         z_min = self.entry_minZ.value()
@@ -1788,14 +1877,16 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_minZ.blockSignals(False)
         self.entry_maxZ.blockSignals(False)
 
-    def update_coordinates(self):
-        if self.tab_widget and self.tab_widget.currentWidget() != self:
+    def update_coordinates(self, force: bool = False):
+        if not force and not self._is_active_tab:
             self._log.debug("update_coordinates: skipped (not current tab)")
             return
 
         # If XY is not checked, use current position instead of scan coordinates
         if not self.checkbox_xy.isChecked():
             self.set_coordinates_to_current_position()
+            return
+        if self.combobox_xy_mode.currentText() == "Load Coordinates":
             return
 
         scan_size_mm = self.entry_scan_size.value()
@@ -1804,43 +1895,37 @@ class WellplateMultiPointWidget(QFrame):
         self._log.info(f"update_coordinates: scan_size={scan_size_mm}mm, overlap={overlap_percent}%, shape={shape}")
 
         if self.combobox_xy_mode.currentText() == "Manual":
-            self.scanCoordinates.set_manual_coordinates(self.shapes_mm, overlap_percent)
+            manual_shapes_mm = None
+            if self.shapes_mm is not None:
+                manual_shapes_mm = tuple(tuple(tuple(map(float, xy)) for xy in shape_coords) for shape_coords in self.shapes_mm)
+            self._event_bus.publish(
+                SetManualScanCoordinatesCommand(
+                    manual_shapes_mm=manual_shapes_mm,
+                    overlap_percent=overlap_percent,
+                )
+            )
 
         elif self.combobox_xy_mode.currentText() == "Current Position":
-            self.scanCoordinates.set_live_scan_coordinates(
-                self._cached_x_mm, self._cached_y_mm, scan_size_mm, overlap_percent, shape
+            self._event_bus.publish(
+                SetLiveScanCoordinatesCommand(
+                    x_mm=self._cached_x_mm,
+                    y_mm=self._cached_y_mm,
+                    scan_size_mm=scan_size_mm,
+                    overlap_percent=overlap_percent,
+                    shape=shape,
+                )
             )
         else:
-            if self.scanCoordinates.has_regions():
-                self.scanCoordinates.clear_regions()
-            self.scanCoordinates.set_well_coordinates(
-                scan_size_mm, overlap_percent, shape
+            self._event_bus.publish(
+                SetWellSelectionScanCoordinatesCommand(
+                    scan_size_mm=scan_size_mm,
+                    overlap_percent=overlap_percent,
+                    shape=shape,
+                )
             )
-
-    def update_well_coordinates(self, selected):
-        if self.tab_widget and self.tab_widget.currentWidget() != self:
-            return
-
-        # If XY is not checked, use current position instead
-        if not self.checkbox_xy.isChecked():
-            self.set_coordinates_to_current_position()  # to-do: is it needed?
-            return
-
-        if self.combobox_xy_mode.currentText() != "Select Wells":
-            return
-
-        if selected:
-            scan_size_mm = self.entry_scan_size.value()
-            overlap_percent = self.entry_overlap.value()
-            shape = self.combobox_shape.currentText()
-            self.scanCoordinates.set_well_coordinates(
-                scan_size_mm, overlap_percent, shape
-            )
-        elif self.scanCoordinates.has_regions():
-            self.scanCoordinates.clear_regions()
 
     def update_live_coordinates(self, pos: squid.core.abc.Pos):
-        if self.tab_widget and self.tab_widget.currentWidget() != self:
+        if not self._is_active_tab:
             return
         # Don't update scan coordinates during acquisition - prevents the grid from
         # jumping when stage returns to start position after acquisition
@@ -1858,13 +1943,19 @@ class WellplateMultiPointWidget(QFrame):
         y_mm = pos.y_mm
         # Check if x_mm or y_mm has changed
         position_changed = (x_mm != self._last_x_mm) or (y_mm != self._last_y_mm)
-        if not position_changed or time.time() - self._last_update_time < 0.5:
+        if not position_changed:
             return
         scan_size_mm = self.entry_scan_size.value()
         overlap_percent = self.entry_overlap.value()
         shape = self.combobox_shape.currentText()
-        self.scanCoordinates.set_live_scan_coordinates(
-            x_mm, y_mm, scan_size_mm, overlap_percent, shape
+        self._event_bus.publish(
+            SetLiveScanCoordinatesCommand(
+                x_mm=x_mm,
+                y_mm=y_mm,
+                scan_size_mm=scan_size_mm,
+                overlap_percent=overlap_percent,
+                shape=shape,
+            )
         )
         self._last_update_time = time.time()
         self._last_x_mm = x_mm
@@ -1898,7 +1989,7 @@ class WellplateMultiPointWidget(QFrame):
             if not self.checkbox_xy.isChecked():
                 self.set_coordinates_to_current_position()
 
-            self.scanCoordinates.sort_coordinates()
+            self._event_bus.publish(SortScanCoordinatesCommand())
 
             # Calculate z_range
             if self.combobox_z_mode.currentText() == "Set Range":
@@ -1944,6 +2035,8 @@ class WellplateMultiPointWidget(QFrame):
             self._event_bus.publish(StartNewExperimentCommand(
                 experiment_id=self.lineEdit_experimentID.text()
             ))
+            requested_id = self.lineEdit_experimentID.text().strip()
+            self._active_experiment_id = requested_id or None
 
             # TODO: check_space_available_with_error_dialog needs to be refactored
             # to not require multipointController reference
@@ -1951,13 +2044,6 @@ class WellplateMultiPointWidget(QFrame):
             self.setEnabled_all(False)
             self.is_current_acquisition_widget = True
             self.btn_startAcquisition.setText("Stop\n Acquisition ")
-
-            # Emit signals (Qt signal for backwards compatibility, EventBus for Phase 8)
-            self.signal_acquisition_started.emit(True)
-            self._event_bus.publish(AcquisitionUIToggleCommand(acquisition_started=True))
-            self.signal_acquisition_shape.emit(
-                self.entry_NZ.value(), self.entry_deltaZ.value()
-            )
 
             # Start acquisition via event
             self._log.info("toggle_acquisition: about to publish StartAcquisitionCommand")
@@ -1976,9 +2062,8 @@ class WellplateMultiPointWidget(QFrame):
         if not self.is_current_acquisition_widget:
             return  # Skip if this wasn't the widget that started acquisition
 
-        self.signal_acquisition_started.emit(False)
-        self._event_bus.publish(AcquisitionUIToggleCommand(acquisition_started=False))
         self.is_current_acquisition_widget = False
+        self._active_experiment_id = None
         self.btn_startAcquisition.setChecked(False)
         self.btn_startAcquisition.setText("Start\n Acquisition ")
         if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
@@ -2000,7 +2085,7 @@ class WellplateMultiPointWidget(QFrame):
             ):
                 widget.setEnabled(enabled)
 
-            if self.scanCoordinates.format == "glass slide":
+            if self._wellplate_format == "glass slide":
                 self.entry_well_coverage.setEnabled(False)
 
         # Restore scan controls visibility based on XY checkbox state
@@ -2074,9 +2159,9 @@ class WellplateMultiPointWidget(QFrame):
         ))
 
         # Start the acquisition process for the single FOV
-        self._event_bus.publish(StartNewExperimentCommand(
-            experiment_id="snapped images" + self.lineEdit_experimentID.text()
-        ))
+        experiment_id = "snapped images" + self.lineEdit_experimentID.text()
+        self._active_experiment_id = experiment_id.strip() or None
+        self._event_bus.publish(StartNewExperimentCommand(experiment_id=experiment_id))
         self._event_bus.publish(StartAcquisitionCommand(acquire_current_fov=True))
 
     def set_deltaZ(self, value):
@@ -2096,7 +2181,9 @@ class WellplateMultiPointWidget(QFrame):
         selected_channels = [
             item.text() for item in self.list_configurations.selectedItems()
         ]
-        self.signal_acquisition_channels.emit(selected_channels)
+        self._event_bus.publish(
+            SetAcquisitionChannelsCommand(channel_names=list(selected_channels))
+        )
 
     def toggle_coordinate_controls(self, has_coordinates: bool):
         """Toggle button text and control states based on whether coordinates are loaded"""
@@ -2121,7 +2208,7 @@ class WellplateMultiPointWidget(QFrame):
         """Handle save/clear coordinates button click"""
         if self.has_loaded_coordinates:
             # Clear coordinates
-            self.scanCoordinates.clear_regions()
+            self._event_bus.publish(ClearScanCoordinatesCommand())
             self.toggle_coordinate_controls(has_coordinates=False)
             # Update display/coordinates as needed
             self.update_coordinates()
@@ -2149,23 +2236,27 @@ class WellplateMultiPointWidget(QFrame):
 
         df = self.cached_loaded_coordinates_df
 
-        # Clear existing coordinates
-        self.scanCoordinates.clear_regions()
-
-        # Load coordinates into scanCoordinates from cached dataframe
+        region_fov_coordinates = {}
+        region_centers = {}
         for region_id in df["region"].unique():
             region_points = df[df["region"] == region_id]
-            coords = list(zip(region_points["x (mm)"], region_points["y (mm)"]))
-            self.scanCoordinates.region_fov_coordinates[region_id] = coords
+            coords = tuple(
+                (float(x), float(y))
+                for x, y in zip(region_points["x (mm)"], region_points["y (mm)"])
+            )
+            region_fov_coordinates[str(region_id)] = coords
 
             # Calculate and store region center (average of points)
             center_x = region_points["x (mm)"].mean()
             center_y = region_points["y (mm)"].mean()
-            self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
+            region_centers[str(region_id)] = (float(center_x), float(center_y))
 
-            # Register FOVs with navigation viewer
-            for x, y in coords:
-                self.navigationViewer.register_fov_to_image(x, y)
+        self._event_bus.publish(
+            LoadScanCoordinatesCommand(
+                region_fov_coordinates=region_fov_coordinates,
+                region_centers=region_centers,
+            )
+        )
 
         # Update text area to show loaded file path
         if self.cached_loaded_file_path:
@@ -2194,22 +2285,27 @@ class WellplateMultiPointWidget(QFrame):
             self.cached_loaded_coordinates_df = df.copy()
             self.cached_loaded_file_path = file_path
 
-            # Clear existing coordinates
-            self.scanCoordinates.clear_regions()
-
-            # Load coordinates into scanCoordinates
+            region_fov_coordinates = {}
+            region_centers = {}
             for region_id in df["region"].unique():
                 region_points = df[df["region"] == region_id]
-                coords = list(zip(region_points["x (mm)"], region_points["y (mm)"]))
-                self.scanCoordinates.region_fov_coordinates[region_id] = coords
+                coords = tuple(
+                    (float(x), float(y))
+                    for x, y in zip(region_points["x (mm)"], region_points["y (mm)"])
+                )
+                region_fov_coordinates[str(region_id)] = coords
 
                 # Calculate and store region center (average of points)
                 center_x = region_points["x (mm)"].mean()
                 center_y = region_points["y (mm)"].mean()
-                self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
+                region_centers[str(region_id)] = (float(center_x), float(center_y))
 
-                # Register FOVs with navigation viewer
-                self.navigationViewer.register_fovs_to_image(coords)
+            self._event_bus.publish(
+                LoadScanCoordinatesCommand(
+                    region_fov_coordinates=region_fov_coordinates,
+                    region_centers=region_centers,
+                )
+            )
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
 
@@ -2248,14 +2344,13 @@ class WellplateMultiPointWidget(QFrame):
             objective_names = self._objective_names or [current_objective]
 
             def _helper_save_coordinates(self, file_path: str):
-                # Get coordinates from scanCoordinates
+                snapshot = self._request_scan_coordinates_snapshot()
+                if snapshot is None:
+                    raise RuntimeError("Timed out waiting for scan coordinate snapshot")
                 coordinates = []
-                for (
-                    region_id,
-                    fov_coords,
-                ) in self.scanCoordinates.region_fov_coordinates.items():
-                    for x, y in fov_coords:
-                        coordinates.append([region_id, x, y])
+                for region_id, fov_coords in snapshot.region_fov_coordinates.items():
+                    for coord in fov_coords:
+                        coordinates.append([region_id, coord[0], coord[1]])
 
                 # Save to CSV with headers
 
@@ -2272,7 +2367,7 @@ class WellplateMultiPointWidget(QFrame):
                         objective_name, original_factor
                     )
                     self._pixel_size_factor = target_factor
-                    self.update_coordinates()
+                    self.update_coordinates(force=True)
                     obj_file_path = os.path.join(
                         folder_path, f"{folder_name}_{objective_name}.csv"
                     )
@@ -2280,7 +2375,7 @@ class WellplateMultiPointWidget(QFrame):
 
                 # Restore current objective factor and coordinates
                 self._pixel_size_factor = original_factor
-                self.update_coordinates()
+                self.update_coordinates(force=True)
 
             except Exception as e:
                 self._log.error(f"Failed to save coordinates: {str(e)}")
@@ -2299,8 +2394,13 @@ class WellplateMultiPointWidget(QFrame):
         import threading
         thread_name = threading.current_thread().name
         self._log.info(f"_on_acquisition_state_changed(in_progress={event.in_progress}) on thread {thread_name}")
+        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+            return
         self._acquisition_in_progress = event.in_progress
         self._acquisition_is_aborting = event.is_aborting
+
+        if self.is_current_acquisition_widget:
+            self.display_progress_bar(event.in_progress)
 
         if not event.in_progress:
             # Acquisition finished
@@ -2309,12 +2409,41 @@ class WellplateMultiPointWidget(QFrame):
 
     def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
         """Handle acquisition progress updates from EventBus."""
-        self.update_acquisition_progress(
-            event.current_round, event.total_rounds, event.current_fov
-        )
+        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+            return
+        if not self.is_current_acquisition_widget:
+            return
+
+        total = max(1, int(event.total_fovs))
+        current = max(0, min(int(event.current_fov), total))
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+
+        parts = []
+        if event.total_rounds > 1:
+            parts.append(f"Region {event.current_round}/{event.total_rounds}")
+        parts.append(f"Image {event.current_fov}/{event.total_fovs}")
+        if event.current_channel:
+            parts.append(str(event.current_channel))
+        self.progress_label.setText("  ".join(parts))
+
+        if event.eta_seconds is None or event.eta_seconds <= 0:
+            self.eta_label.setText("--:--")
+            return
+
+        eta = int(event.eta_seconds)
+        hours, remainder = divmod(eta, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours > 0:
+            eta_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        else:
+            eta_str = f"{minutes:02d}:{seconds:02d}"
+        self.eta_label.setText(eta_str)
 
     def _on_region_progress(self, event: AcquisitionRegionProgress) -> None:
         """Handle region progress updates from EventBus."""
+        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+            return
         self.update_region_progress(event.current_region, event.total_regions)
 
     # =========================================================================

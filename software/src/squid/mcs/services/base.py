@@ -2,10 +2,11 @@
 """Base class for all services."""
 
 from abc import ABC
-from typing import List, Tuple, Type, Callable, TypeVar
+from typing import List, Optional, Tuple, Type, Callable, TypeVar
 
 import squid.core.logging
 from squid.core.events import EventBus, Event
+from squid.core.mode_gate import GlobalModeGate
 
 E = TypeVar("E", bound=Event)
 
@@ -29,7 +30,7 @@ class BaseService(ABC):
                 self.publish(ExposureTimeChanged(event.exposure_time_ms))
     """
 
-    def __init__(self, event_bus: EventBus):
+    def __init__(self, event_bus: EventBus, mode_gate: Optional[GlobalModeGate] = None):
         """
         Initialize service with event bus.
 
@@ -37,8 +38,12 @@ class BaseService(ABC):
             event_bus: EventBus for pub/sub communication
         """
         self._event_bus = event_bus
+        self._mode_gate = mode_gate
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self._subscriptions: List[Tuple[Type[Event], Callable]] = []
+
+    def _blocked_for_ui_hardware_commands(self) -> bool:
+        return bool(self._mode_gate and self._mode_gate.blocked_for_ui_hardware_commands())
 
     def subscribe(self, event_type: Type[E], handler: Callable[[E], None]) -> None:
         """

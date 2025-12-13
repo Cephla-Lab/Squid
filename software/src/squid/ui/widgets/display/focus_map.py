@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+from uuid import uuid4
 from typing import Optional, TYPE_CHECKING, List, Tuple, Dict
 
 from qtpy.QtGui import QResizeEvent
@@ -25,22 +26,29 @@ from qtpy.QtWidgets import (
 )
 
 from _def import SOFTWARE_POS_LIMIT
-from squid.core.events import EventBus, StagePositionChanged, MoveStageToCommand, ScanCoordinatesUpdated
+from squid.core.events import (
+    StagePositionChanged,
+    MoveStageToCommand,
+    ScanCoordinatesUpdated,
+    RequestScanCoordinatesSnapshotCommand,
+    ScanCoordinatesSnapshot,
+    FocusPointOverlaySet,
+    FocusPointOverlayVisibilityChanged,
+)
 
 if TYPE_CHECKING:
-    from squid.ops.navigation import NavigationViewer, ScanCoordinates, FocusMap
+    from squid.ops.navigation import FocusMap
+    from squid.ui.ui_event_bus import UIEventBus
 
 
 class FocusMapWidget(QFrame):
     """Widget for managing focus map points and surface fitting"""
 
     _allow_updating_focus_points_on_signal: bool
-    _event_bus: EventBus
+    _event_bus: "UIEventBus"
     _cached_x_mm: float
     _cached_y_mm: float
     _cached_z_mm: float
-    navigationViewer: NavigationViewer
-    scanCoordinates: ScanCoordinates
     focusMap: FocusMap
     focus_points: List[Tuple[str, float, float, float]]
     enabled: bool
@@ -65,10 +73,8 @@ class FocusMapWidget(QFrame):
 
     def __init__(
         self,
-        navigationViewer: "NavigationViewer",
-        scanCoordinates: "ScanCoordinates",
         focusMap: "FocusMap",
-        event_bus: EventBus,
+        event_bus: "UIEventBus",
         initial_z_mm: float = 0.0,
     ) -> None:
         super().__init__()
@@ -81,10 +87,13 @@ class FocusMapWidget(QFrame):
         self._cached_y_mm = 0.0
         self._cached_z_mm = initial_z_mm
 
-        # Store references
-        self.navigationViewer = navigationViewer
-        self.scanCoordinates = scanCoordinates
         self.focusMap = focusMap
+
+        # Cached scan state (populated via ScanCoordinatesSnapshot)
+        self._scan_region_centers: Dict[str, Tuple[float, float, float]] = {}
+        self._scan_region_fov_coordinates: Dict[str, Tuple[Tuple[float, ...], ...]] = {}
+        self._scan_snapshot_request_id: Optional[str] = None
+        self._refresh_on_snapshot: bool = False
 
         # Store focus points in widget
         self.focus_points = []  # list of (region_id, x, y, z) tuples
@@ -98,17 +107,36 @@ class FocusMapWidget(QFrame):
         # Subscribe to stage position events
         self._event_bus.subscribe(StagePositionChanged, self._on_stage_position_changed)
         self._event_bus.subscribe(ScanCoordinatesUpdated, self._on_scan_coordinates_updated)
+        self._event_bus.subscribe(ScanCoordinatesSnapshot, self._on_scan_coordinates_snapshot)
+        self._request_scan_snapshot()
 
     def _on_scan_coordinates_updated(self, event: ScanCoordinatesUpdated) -> None:
-        """Handle updates to scan coordinates - refresh focus points view.
+        """Handle scan coordinate changes by refreshing cached snapshot."""
+        self._refresh_on_snapshot = True
+        self._request_scan_snapshot()
 
-        Note: This handler is called from the EventBus dispatch thread,
-        so we just log here. UI updates should be triggered through
-        direct method calls from Qt signal handlers.
-        """
-        # Don't call Qt methods from background thread - just log
-        # The UI will be updated via the callback mechanism
-        pass
+    def _request_scan_snapshot(self) -> None:
+        request_id = str(uuid4())
+        self._scan_snapshot_request_id = request_id
+        self._event_bus.publish(RequestScanCoordinatesSnapshotCommand(request_id=request_id))
+
+    def _on_scan_coordinates_snapshot(self, event: ScanCoordinatesSnapshot) -> None:
+        if self._scan_snapshot_request_id is None:
+            return
+        if event.request_id != self._scan_snapshot_request_id:
+            return
+        self._scan_snapshot_request_id = None
+        self._scan_region_centers = {
+            str(k): (float(v[0]), float(v[1]), float(v[2]))
+            for k, v in event.region_centers.items()
+        }
+        self._scan_region_fov_coordinates = {
+            str(k): tuple(tuple(map(float, coords)) for coords in v)
+            for k, v in event.region_fov_coordinates.items()
+        }
+        if self._refresh_on_snapshot:
+            self._refresh_on_snapshot = False
+            self.on_regions_updated()
 
     def _on_stage_position_changed(self, event: StagePositionChanged) -> None:
         """Cache stage position from EventBus."""
@@ -294,22 +322,34 @@ class FocusMapWidget(QFrame):
 
     def update_focus_point_display(self) -> None:
         """Update all focus points on navigation viewer"""
-        self.navigationViewer.clear_focus_points()
-        for _, x, y, _ in self.focus_points:
-            self.navigationViewer.register_focus_point(x, y)
+        points = tuple((float(x), float(y)) for _rid, x, y, _z in self.focus_points)
+        self._event_bus.publish(FocusPointOverlaySet(points=points))
 
     def generate_grid(self, rows: int = 4, cols: int = 4) -> None:
         """Generate focus point grid that spans scan bounds"""
         if self.enabled:
             self.point_combo.blockSignals(True)
             self.focus_points.clear()
-            self.navigationViewer.clear_focus_points()
+            self._event_bus.publish(FocusPointOverlaySet(points=tuple()))
             self.status_label.setText(" ")
             current_z = self._cached_z_mm
 
+            region_coords = {
+                rid: [tuple(coords) for coords in fovs]
+                for rid, fovs in self._scan_region_fov_coordinates.items()
+            }
+            if not region_coords:
+                QMessageBox.warning(
+                    self,
+                    "No Regions Defined",
+                    "Please define scan regions before generating focus points.",
+                )
+                self.point_combo.blockSignals(False)
+                return
+
             # Use FocusMap to generate coordinates
             coordinates = self.focusMap.generate_grid_coordinates(
-                self.scanCoordinates, rows=rows, cols=cols, add_margin=self.add_margin
+                region_coords, rows=rows, cols=cols, add_margin=self.add_margin
             )
 
             # Add points with current z coordinate
@@ -318,9 +358,9 @@ class FocusMapWidget(QFrame):
                     self.focus_points.append(
                         (region_id, coords[0], coords[1], current_z)
                     )
-                    self.navigationViewer.register_focus_point(coords[0], coords[1])
 
             self.update_point_list()
+            self.update_focus_point_display()
             self.point_combo.blockSignals(False)
 
     def regenerate_grid(self) -> None:
@@ -329,7 +369,7 @@ class FocusMapWidget(QFrame):
 
     def add_current_point(self) -> None:
         # Check if any scan regions exist
-        if not self.scanCoordinates.has_regions():
+        if not self._scan_region_centers:
             QMessageBox.warning(
                 self,
                 "No Regions Defined",
@@ -345,7 +385,7 @@ class FocusMapWidget(QFrame):
 
         # If by_region checkbox is checked, ask for region ID
         if self.by_region_checkbox.isChecked():
-            region_ids = list(self.scanCoordinates.region_centers.keys())
+            region_ids = list(self._scan_region_centers.keys())
             if not region_ids:
                 QMessageBox.warning(
                     self,
@@ -369,7 +409,7 @@ class FocusMapWidget(QFrame):
             # Find the closest region to current position
             closest_region = None
             min_distance = float("inf")
-            for rid, center in self.scanCoordinates.region_centers.items():
+            for rid, center in self._scan_region_centers.items():
                 dx = center[0] - x_mm
                 dy = center[1] - y_mm
                 distance = dx * dx + dy * dy
@@ -381,7 +421,7 @@ class FocusMapWidget(QFrame):
         if region_id is not None:
             self.focus_points.append((region_id, x_mm, y_mm, z_mm))
             self.update_point_list()
-            self.navigationViewer.register_focus_point(x_mm, y_mm)
+            self.update_focus_point_display()
         else:
             QMessageBox.warning(
                 self,
@@ -440,7 +480,7 @@ class FocusMapWidget(QFrame):
 
             # Validate settings
             if by_region:
-                scan_regions = set(self.scanCoordinates.region_centers.keys())
+                scan_regions = set(self._scan_region_centers.keys())
                 focus_regions = set(
                     region_id for region_id, _, _, _ in self.focus_points
                 )
@@ -566,7 +606,7 @@ class FocusMapWidget(QFrame):
 
             # If by_region is checked, validate regions
             if self.by_region_checkbox.isChecked():
-                scan_regions = set(self.scanCoordinates.region_centers.keys())
+                scan_regions = set(self._scan_region_centers.keys())
                 focus_regions = set(region_id for region_id, _, _, _ in imported_points)
 
                 if not focus_regions == scan_regions:
@@ -601,7 +641,7 @@ class FocusMapWidget(QFrame):
     def on_regions_updated(self) -> None:
         if not self._allow_updating_focus_points_on_signal:
             return
-        if self.scanCoordinates.has_regions():
+        if self._scan_region_centers:
             self.generate_grid(self.rows_spin.value(), self.cols_spin.value())
 
     def disable_updating_focus_points_on_signal(self) -> None:
@@ -613,7 +653,7 @@ class FocusMapWidget(QFrame):
     def setEnabled(self, enabled: bool) -> None:
         self.enabled = enabled
         super().setEnabled(enabled)
-        self.navigationViewer.focus_point_overlay_item.setVisible(enabled)
+        self._event_bus.publish(FocusPointOverlayVisibilityChanged(enabled=enabled))
         self.on_regions_updated()
 
     def resizeEvent(self, event: Optional[QResizeEvent]) -> None:

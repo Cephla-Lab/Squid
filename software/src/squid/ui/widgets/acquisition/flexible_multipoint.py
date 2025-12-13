@@ -10,6 +10,7 @@ from squid.core.events import (
     EventBus,
     StagePositionChanged,
     MoveStageCommand,
+    ObjectiveChanged,
     SetLaserAFReferenceCommand,
     SetAcquisitionParametersCommand,
     SetAcquisitionPathCommand,
@@ -23,10 +24,16 @@ from squid.core.events import (
     LoadingPositionReached,
     ScanningPositionReached,
     ScanCoordinatesUpdated,
-    AcquisitionUIToggleCommand,
+    ActiveAcquisitionTabChanged,
+    ClearScanCoordinatesCommand,
+    AddFlexibleRegionCommand,
+    AddFlexibleRegionWithStepSizeCommand,
+    RemoveScanCoordinateRegionCommand,
+    RenameScanCoordinateRegionCommand,
+    UpdateScanCoordinateRegionZCommand,
 )
 
-from qtpy.QtCore import Signal, Qt, QTimer
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QFrame,
     QVBoxLayout,
@@ -57,14 +64,8 @@ from squid.ui.widgets.base import error_dialog, check_space_available_with_error
 
 
 class FlexibleMultiPointWidget(QFrame):
-    signal_acquisition_started = Signal(bool)  # true = started, false = finished
-    signal_acquisition_channels = Signal(list)  # list channels
-    signal_acquisition_shape = Signal(int, float)  # Nz, dz
-
     def __init__(
         self,
-        navigationViewer,
-        scanCoordinates,
         focusMapWidget,
         event_bus: EventBus,
         initial_channel_configs: List[str],
@@ -84,8 +85,6 @@ class FlexibleMultiPointWidget(QFrame):
         self._cached_x_mm = 0.0
         self._cached_y_mm = 0.0
         self._cached_z_mm = initial_z_mm
-        self.navigationViewer = navigationViewer
-        self.scanCoordinates = scanCoordinates
         self.focusMapWidget = focusMapWidget
         # Initial channel configurations (passed from GUI, will be updated via events)
         self._channel_configs = list(initial_channel_configs)
@@ -97,6 +96,7 @@ class FlexibleMultiPointWidget(QFrame):
         # Cached acquisition state from events
         self._acquisition_in_progress = False
         self._acquisition_is_aborting = False
+        self._active_experiment_id: Optional[str] = None
 
         self.add_components()
         self.setup_layout()
@@ -104,15 +104,28 @@ class FlexibleMultiPointWidget(QFrame):
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.is_current_acquisition_widget = False
         self.acquisition_in_place = False
+        self._is_active_tab = False
 
         # Subscribe to EventBus for position updates and acquisition state
         self._event_bus.subscribe(StagePositionChanged, self._on_stage_position_changed)
+        self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
         self._event_bus.subscribe(AcquisitionStateChanged, self._on_acquisition_state_changed)
         self._event_bus.subscribe(AcquisitionProgress, self._on_acquisition_progress)
         self._event_bus.subscribe(AcquisitionRegionProgress, self._on_region_progress)
         self._event_bus.subscribe(LoadingPositionReached, self._on_loading_position_reached)
         self._event_bus.subscribe(ScanningPositionReached, self._on_scanning_position_reached)
         self._event_bus.subscribe(ScanCoordinatesUpdated, self._on_scan_coordinates_updated)
+        self._event_bus.subscribe(ActiveAcquisitionTabChanged, self._on_active_tab_changed)
+
+    def _on_active_tab_changed(self, event: ActiveAcquisitionTabChanged) -> None:
+        self._is_active_tab = event.active_tab == "flexible"
+        if not self._is_active_tab:
+            return
+        self.emit_selected_channels()
+        try:
+            self.update_fov_positions()
+        except Exception:
+            self._log.exception("Failed to update flexible regions on tab activation")
 
     def _on_scan_coordinates_updated(self, event: ScanCoordinatesUpdated) -> None:
         """Handle updates to scan coordinates (regions added/removed/cleared)."""
@@ -124,6 +137,13 @@ class FlexibleMultiPointWidget(QFrame):
         self._cached_x_mm = event.x_mm
         self._cached_y_mm = event.y_mm
         self._cached_z_mm = event.z_mm
+
+    def _on_objective_changed(self, _event: ObjectiveChanged) -> None:
+        # Recompute FOV grid spacing for stored locations when objective changes.
+        try:
+            self.update_fov_positions()
+        except Exception:
+            self._log.exception("Failed to update flexible multipoint FOV positions on objective change")
 
     def add_components(self):
         self.btn_setSavingDir = QPushButton("Browse")
@@ -580,7 +600,6 @@ class FlexibleMultiPointWidget(QFrame):
         )
         # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
-        self.signal_acquisition_started.connect(self.display_progress_bar)
         self.eta_timer.timeout.connect(self.update_eta_display)
 
         self.btn_add.clicked.connect(self.add_location)
@@ -709,13 +728,9 @@ class FlexibleMultiPointWidget(QFrame):
         z_mm = self._cached_z_mm
         index = self.dropdown_location_list.currentIndex()
         self.location_list[index, 2] = z_mm
-        self.scanCoordinates.region_centers[self.location_ids[index]][2] = z_mm
-        self.scanCoordinates.region_fov_coordinates[self.location_ids[index]] = [
-            (coord[0], coord[1], z_mm)
-            for coord in self.scanCoordinates.region_fov_coordinates[
-                self.location_ids[index]
-            ]
-        ]
+        self._event_bus.publish(
+            UpdateScanCoordinateRegionZCommand(region_id=str(self.location_ids[index]), z_mm=z_mm)
+        )
         location_str = f"x:{round(self.location_list[index, 0], 3)} mm  y:{round(self.location_list[index, 1], 3)} mm  z:{round(z_mm * 1000.0, 3)} μm"
         self.dropdown_location_list.setItemText(index, location_str)
 
@@ -818,31 +833,34 @@ class FlexibleMultiPointWidget(QFrame):
         if not self.isVisible():
             return
 
-        if self.scanCoordinates.has_regions():
-            self.scanCoordinates.clear_regions()
+        self._event_bus.publish(ClearScanCoordinatesCommand())
 
         for i, (x, y, z) in enumerate(self.location_list):
             region_id = self.location_ids[i]
             if self.use_overlap:
-                self.scanCoordinates.add_flexible_region(
-                    region_id,
-                    x,
-                    y,
-                    z,
-                    self.entry_NX.value(),
-                    self.entry_NY.value(),
-                    overlap_percent=self.entry_overlap.value(),
+                self._event_bus.publish(
+                    AddFlexibleRegionCommand(
+                        region_id=str(region_id),
+                        center_x_mm=float(x),
+                        center_y_mm=float(y),
+                        center_z_mm=float(z),
+                        n_x=int(self.entry_NX.value()),
+                        n_y=int(self.entry_NY.value()),
+                        overlap_percent=float(self.entry_overlap.value()),
+                    )
                 )
             else:
-                self.scanCoordinates.add_flexible_region_with_step_size(
-                    region_id,
-                    x,
-                    y,
-                    z,
-                    self.entry_NX.value(),
-                    self.entry_NY.value(),
-                    self.entry_deltaX.value(),
-                    self.entry_deltaY.value(),
+                self._event_bus.publish(
+                    AddFlexibleRegionWithStepSizeCommand(
+                        region_id=str(region_id),
+                        center_x_mm=float(x),
+                        center_y_mm=float(y),
+                        center_z_mm=float(z),
+                        n_x=int(self.entry_NX.value()),
+                        n_y=int(self.entry_NY.value()),
+                        delta_x_mm=float(self.entry_deltaX.value()),
+                        delta_y_mm=float(self.entry_deltaY.value()),
+                    )
                 )
 
     def set_deltaZ(self, value):
@@ -869,7 +887,9 @@ class FlexibleMultiPointWidget(QFrame):
         selected_channels = [
             item.text() for item in self.list_configurations.selectedItems()
         ]
-        self.signal_acquisition_channels.emit(selected_channels)
+        self._event_bus.publish(
+            SetAcquisitionChannelsCommand(channel_names=list(selected_channels))
+        )
 
     def toggle_acquisition(self, pressed: bool) -> None:
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
@@ -934,6 +954,8 @@ class FlexibleMultiPointWidget(QFrame):
             self._event_bus.publish(StartNewExperimentCommand(
                 experiment_id=self.lineEdit_experimentID.text()
             ))
+            requested_id = self.lineEdit_experimentID.text().strip()
+            self._active_experiment_id = requested_id or None
 
             # TODO: check_space_available_with_error_dialog needs to be refactored
             # to not require multipointController reference
@@ -945,13 +967,6 @@ class FlexibleMultiPointWidget(QFrame):
             )
             self.btn_startAcquisition.setText("Stop\n Acquisition ")
             self.setEnabled_all(False)
-
-            # emit signals (Qt signal for backwards compatibility, EventBus for Phase 8)
-            self.signal_acquisition_started.emit(True)
-            self._event_bus.publish(AcquisitionUIToggleCommand(acquisition_started=True))
-            self.signal_acquisition_shape.emit(
-                self.entry_NZ.value(), self.entry_deltaZ.value()
-            )
 
             # Start coordinate-based acquisition via event
             self._event_bus.publish(StartAcquisitionCommand())
@@ -1043,25 +1058,29 @@ class FlexibleMultiPointWidget(QFrame):
 
             # Store actual values in region coordinates
             if self.use_overlap:
-                self.scanCoordinates.add_flexible_region(
-                    region_id,
-                    x,
-                    y,
-                    z,
-                    self.entry_NX.value(),
-                    self.entry_NY.value(),
-                    overlap_percent=self.entry_overlap.value(),
+                self._event_bus.publish(
+                    AddFlexibleRegionCommand(
+                        region_id=str(region_id),
+                        center_x_mm=float(x),
+                        center_y_mm=float(y),
+                        center_z_mm=float(z),
+                        n_x=int(self.entry_NX.value()),
+                        n_y=int(self.entry_NY.value()),
+                        overlap_percent=float(self.entry_overlap.value()),
+                    )
                 )
             else:
-                self.scanCoordinates.add_flexible_region_with_step_size(
-                    region_id,
-                    x,
-                    y,
-                    z,
-                    self.entry_NX.value(),
-                    self.entry_NY.value(),
-                    self.entry_deltaX.value(),
-                    self.entry_deltaY.value(),
+                self._event_bus.publish(
+                    AddFlexibleRegionWithStepSizeCommand(
+                        region_id=str(region_id),
+                        center_x_mm=float(x),
+                        center_y_mm=float(y),
+                        center_z_mm=float(z),
+                        n_x=int(self.entry_NX.value()),
+                        n_y=int(self.entry_NY.value()),
+                        delta_x_mm=float(self.entry_deltaX.value()),
+                        delta_y_mm=float(self.entry_deltaY.value()),
+                    )
                 )
 
             # Set the current index to the newly added location
@@ -1094,42 +1113,11 @@ class FlexibleMultiPointWidget(QFrame):
             self.dropdown_location_list.removeItem(index)
             self.table_location_list.removeRow(index)
 
-            # Remove scanCoordinates dictionaries and remove region overlay
-            self.scanCoordinates.region_centers.pop(region_id, None)
-            self.navigationViewer.deregister_fovs_from_image(
-                self.scanCoordinates.region_fov_coordinates.pop(region_id, [])
-            )
+            self._event_bus.publish(RemoveScanCoordinateRegionCommand(region_id=str(region_id)))
 
-            """
-            # Reindex remaining regions and update UI
-            for i in range(index, len(self.location_ids)):
-                old_id = self.location_ids[i]
-                new_id = f"R{i}"
-                self.location_ids[i] = new_id
-
-                # Update dictionaries
-                self.scanCoordinates.region_centers[new_id] = self.scanCoordinates.region_centers.pop(old_id, None)
-                self.scanCoordinates.region_fov_coordinates[new_id] = self.scanCoordinates.region_fov_coordinates.pop(
-                    old_id, []
-                )
-
-                # Update UI with new ID and coordinates
-                x, y, z = self.location_list[i]
-                location_str = f"x:{round(x, 3)} mm  y:{round(y, 3)} mm  z:{round(z * 1000, 1)} μm"
-                self.dropdown_location_list.setItemText(i, location_str)
-                self.table_location_list.setItem(i, 3, QTableWidgetItem(new_id))
-            """
-
-            # Clear overlay if no locations remain
-            if len(self.location_list) == 0:
-                self.navigationViewer.clear_overlay()
+            # Note: region reindexing must be done via RenameScanCoordinateRegionCommand.
 
             print(f"Remaining location IDs: {self.location_ids}")
-            for (
-                region_id,
-                fov_coords,
-            ) in self.scanCoordinates.region_fov_coordinates.items():
-                self.navigationViewer.register_fovs_to_image(fov_coords)
 
             # Re-enable signals
             self.table_location_list.blockSignals(False)
@@ -1165,10 +1153,9 @@ class FlexibleMultiPointWidget(QFrame):
     def clear(self):
         self.location_list = np.empty((0, 3), dtype=float)
         self.location_ids = np.empty((0,), dtype="<U20")
-        self.scanCoordinates.clear_regions()
+        self._event_bus.publish(ClearScanCoordinatesCommand())
         self.dropdown_location_list.clear()
         self.table_location_list.setRowCount(0)
-        self.navigationViewer.clear_overlay()
 
         self._log.info("Cleared all locations and overlays.")
 
@@ -1200,12 +1187,6 @@ class FlexibleMultiPointWidget(QFrame):
         # Get region ID
         region_id = self.location_ids[row]
 
-        # Clear all FOVs for this region
-        if region_id in self.scanCoordinates.region_fov_coordinates.keys():
-            self.navigationViewer.deregister_fovs_from_image(
-                self.scanCoordinates.region_fov_coordinates[region_id]
-            )
-
         # Handle the changed value
         val_edit = self.table_location_list.item(row, column).text()
 
@@ -1215,43 +1196,43 @@ class FlexibleMultiPointWidget(QFrame):
 
             # Update region coordinates and FOVs for new position
             if self.use_overlap:
-                self.scanCoordinates.add_flexible_region(
-                    region_id,
-                    x,
-                    y,
-                    z,
-                    self.entry_NX.value(),
-                    self.entry_NY.value(),
-                    overlap_percent=self.entry_overlap.value(),
+                self._event_bus.publish(RemoveScanCoordinateRegionCommand(region_id=str(region_id)))
+                self._event_bus.publish(
+                    AddFlexibleRegionCommand(
+                        region_id=str(region_id),
+                        center_x_mm=float(x),
+                        center_y_mm=float(y),
+                        center_z_mm=float(z),
+                        n_x=int(self.entry_NX.value()),
+                        n_y=int(self.entry_NY.value()),
+                        overlap_percent=float(self.entry_overlap.value()),
+                    )
                 )
             else:
-                self.scanCoordinates.add_flexible_region_with_step_size(
-                    region_id,
-                    x,
-                    y,
-                    z,
-                    self.entry_NX.value(),
-                    self.entry_NY.value(),
-                    self.entry_deltaX.value(),
-                    self.entry_deltaY.value(),
+                self._event_bus.publish(RemoveScanCoordinateRegionCommand(region_id=str(region_id)))
+                self._event_bus.publish(
+                    AddFlexibleRegionWithStepSizeCommand(
+                        region_id=str(region_id),
+                        center_x_mm=float(x),
+                        center_y_mm=float(y),
+                        center_z_mm=float(z),
+                        n_x=int(self.entry_NX.value()),
+                        n_y=int(self.entry_NY.value()),
+                        delta_x_mm=float(self.entry_deltaX.value()),
+                        delta_y_mm=float(self.entry_deltaY.value()),
+                    )
                 )
 
         elif column == 2:  # Z coordinate changed
             z = float(val_edit) / 1000
             self.location_list[row, 2] = z
-            self.scanCoordinates.region_centers[region_id][2] = z
+            self._event_bus.publish(UpdateScanCoordinateRegionZCommand(region_id=str(region_id), z_mm=float(z)))
         else:  # ID changed
             new_id = val_edit
             self.location_ids[row] = new_id
-            # Update dictionary keys
-            if region_id in self.scanCoordinates.region_centers:
-                self.scanCoordinates.region_centers[new_id] = (
-                    self.scanCoordinates.region_centers.pop(region_id)
-                )
-            if region_id in self.scanCoordinates.region_fov_coordinates:
-                self.scanCoordinates.region_fov_coordinates[new_id] = (
-                    self.scanCoordinates.region_fov_coordinates.pop(region_id)
-                )
+            self._event_bus.publish(
+                RenameScanCoordinateRegionCommand(old_region_id=str(region_id), new_region_id=str(new_id))
+            )
 
         # Update UI
         location_str = f"x:{round(self.location_list[row, 0], 3)} mm  y:{round(self.location_list[row, 1], 3)} mm  z:{round(1000 * self.location_list[row, 2], 3)} μm"
@@ -1367,25 +1348,29 @@ class FlexibleMultiPointWidget(QFrame):
                         QTableWidgetItem(region_id),
                     )
                     if self.use_overlap:
-                        self.scanCoordinates.add_flexible_region(
-                            region_id,
-                            x,
-                            y,
-                            z,
-                            self.entry_NX.value(),
-                            self.entry_NY.value(),
-                            overlap_percent=self.entry_overlap.value(),
+                        self._event_bus.publish(
+                            AddFlexibleRegionCommand(
+                                region_id=str(region_id),
+                                center_x_mm=float(x),
+                                center_y_mm=float(y),
+                                center_z_mm=float(z),
+                                n_x=int(self.entry_NX.value()),
+                                n_y=int(self.entry_NY.value()),
+                                overlap_percent=float(self.entry_overlap.value()),
+                            )
                         )
                     else:
-                        self.scanCoordinates.add_flexible_region_with_step_size(
-                            region_id,
-                            x,
-                            y,
-                            z,
-                            self.entry_NX.value(),
-                            self.entry_NY.value(),
-                            self.entry_deltaX.value(),
-                            self.entry_deltaY.value(),
+                        self._event_bus.publish(
+                            AddFlexibleRegionWithStepSizeCommand(
+                                region_id=str(region_id),
+                                center_x_mm=float(x),
+                                center_y_mm=float(y),
+                                center_z_mm=float(z),
+                                n_x=int(self.entry_NX.value()),
+                                n_y=int(self.entry_NY.value()),
+                                delta_x_mm=float(self.entry_deltaX.value()),
+                                delta_y_mm=float(self.entry_deltaY.value()),
+                            )
                         )
                 else:
                     self._log.warning("Duplicate values not added based on x and y.")
@@ -1419,9 +1404,9 @@ class FlexibleMultiPointWidget(QFrame):
         ))
 
         # Start the acquisition process for the single FOV
-        self._event_bus.publish(StartNewExperimentCommand(
-            experiment_id="snapped images" + self.lineEdit_experimentID.text()
-        ))
+        experiment_id = "snapped images" + self.lineEdit_experimentID.text()
+        self._active_experiment_id = experiment_id.strip() or None
+        self._event_bus.publish(StartNewExperimentCommand(experiment_id=experiment_id))
         self._event_bus.publish(StartAcquisitionCommand(acquire_current_fov=True))
 
     def acquisition_is_finished(self):
@@ -1439,12 +1424,11 @@ class FlexibleMultiPointWidget(QFrame):
             self.clear_only_location_list()
             self.acquisition_in_place = False
 
-        self.signal_acquisition_started.emit(False)
-        self._event_bus.publish(AcquisitionUIToggleCommand(acquisition_started=False))
         self.btn_startAcquisition.setChecked(False)
         self.btn_startAcquisition.setText("Start\n Acquisition ")
         self.setEnabled_all(True)
         self.is_current_acquisition_widget = False
+        self._active_experiment_id = None
 
     def setEnabled_all(self, enabled: bool, exclude_btn_startAcquisition: bool = True):
         self.btn_setSavingDir.setEnabled(enabled)
@@ -1484,8 +1468,13 @@ class FlexibleMultiPointWidget(QFrame):
 
     def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
         """Handle acquisition state changes from EventBus."""
+        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+            return
         self._acquisition_in_progress = event.in_progress
         self._acquisition_is_aborting = event.is_aborting
+
+        if self.is_current_acquisition_widget:
+            self.display_progress_bar(event.in_progress)
 
         if not event.in_progress:
             # Acquisition finished
@@ -1493,12 +1482,41 @@ class FlexibleMultiPointWidget(QFrame):
 
     def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
         """Handle acquisition progress updates from EventBus."""
-        self.update_acquisition_progress(
-            event.current_round, event.total_rounds, event.current_fov
-        )
+        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+            return
+        if not self.is_current_acquisition_widget:
+            return
+
+        total = max(1, int(event.total_fovs))
+        current = max(0, min(int(event.current_fov), total))
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+
+        parts = []
+        if event.total_rounds > 1:
+            parts.append(f"Region {event.current_round}/{event.total_rounds}")
+        parts.append(f"Image {event.current_fov}/{event.total_fovs}")
+        if event.current_channel:
+            parts.append(str(event.current_channel))
+        self.progress_label.setText("  ".join(parts))
+
+        if event.eta_seconds is None or event.eta_seconds <= 0:
+            self.eta_label.setText("--:--")
+            return
+
+        eta = int(event.eta_seconds)
+        hours, remainder = divmod(eta, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours > 0:
+            eta_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        else:
+            eta_str = f"{minutes:02d}:{seconds:02d}"
+        self.eta_label.setText(eta_str)
 
     def _on_region_progress(self, event: AcquisitionRegionProgress) -> None:
         """Handle region progress updates from EventBus."""
+        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+            return
         self.update_region_progress(event.current_region, event.total_regions)
 
     def _on_loading_position_reached(self, event: LoadingPositionReached) -> None:

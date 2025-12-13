@@ -20,10 +20,12 @@ from squid.core.events import (
     AcquisitionRegionProgress,
     LoadingPositionReached,
     ScanningPositionReached,
-    AcquisitionUIToggleCommand,
+    LoadScanCoordinatesCommand,
+    ActiveAcquisitionTabChanged,
+    FluidicsInitialized,
 )
 
-from qtpy.QtCore import Signal, QTimer
+from qtpy.QtCore import QTimer
 from qtpy.QtWidgets import (
     QFrame,
     QVBoxLayout,
@@ -51,17 +53,10 @@ from _def import *
 class MultiPointWithFluidicsWidget(QFrame):
     """A simplified version of WellplateMultiPointWidget for use with fluidics"""
 
-    signal_acquisition_started = Signal(bool)
-    signal_acquisition_channels = Signal(list)
-    signal_acquisition_shape = Signal(int, float)  # acquisition Nz, dz
-
     def __init__(
         self,
-        navigationViewer,
-        scanCoordinates,
         event_bus: EventBus,
         initial_channel_configs: List[str],
-        napariMosaicWidget=None,
         z_ustep_per_mm: Optional[float] = None,
         *args,
         **kwargs,
@@ -71,25 +66,20 @@ class MultiPointWithFluidicsWidget(QFrame):
         self._event_bus = event_bus
         # Z-axis conversion factor (usteps per mm), passed at init to avoid stage config access
         self._z_ustep_per_mm = z_ustep_per_mm
-        self.navigationViewer = navigationViewer
-        self.scanCoordinates = scanCoordinates
         # Initial channel configurations (passed from GUI, will be updated via events)
         self._channel_configs = list(initial_channel_configs)
-        if napariMosaicWidget is None:
-            self.performance_mode = True
-        else:
-            self.napariMosaicWidget = napariMosaicWidget
-            self.performance_mode = False
 
         self.base_path_is_set = False
         self.acquisition_start_time = None
         self.eta_seconds = 0
         self.nRound = 0
         self.is_current_acquisition_widget = False
+        self._is_active_tab = False
 
         # Cached acquisition state from events
         self._acquisition_in_progress = False
         self._acquisition_is_aborting = False
+        self._active_experiment_id: Optional[str] = None
 
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -100,6 +90,13 @@ class MultiPointWithFluidicsWidget(QFrame):
         self._event_bus.subscribe(AcquisitionRegionProgress, self._on_region_progress)
         self._event_bus.subscribe(LoadingPositionReached, self._on_loading_position_reached)
         self._event_bus.subscribe(ScanningPositionReached, self._on_scanning_position_reached)
+        self._event_bus.subscribe(FluidicsInitialized, lambda _e: self.init_fluidics())
+        self._event_bus.subscribe(ActiveAcquisitionTabChanged, self._on_active_tab_changed)
+
+    def _on_active_tab_changed(self, event: ActiveAcquisitionTabChanged) -> None:
+        self._is_active_tab = event.active_tab == "fluidics"
+        if self._is_active_tab:
+            self.emit_selected_channels()
 
     def add_components(self):
         self.btn_setSavingDir = QPushButton("Browse")
@@ -261,7 +258,6 @@ class MultiPointWithFluidicsWidget(QFrame):
         )
         # Note: acquisition_finished, signal_acquisition_progress, signal_region_progress
         # are now handled via EventBus subscriptions (see _on_acquisition_state_changed etc.)
-        self.signal_acquisition_started.connect(self.display_progress_bar)
         self.eta_timer.timeout.connect(self.update_eta_display)
 
     # The following methods are copied from WellplateMultiPointWidget with minimal modifications
@@ -316,13 +312,8 @@ class MultiPointWithFluidicsWidget(QFrame):
             self._event_bus.publish(StartNewExperimentCommand(
                 experiment_id=self.lineEdit_experimentID.text()
             ))
-
-            # Emit signals (Qt signal for backwards compatibility, EventBus for Phase 8)
-            self.signal_acquisition_started.emit(True)
-            self._event_bus.publish(AcquisitionUIToggleCommand(acquisition_started=True))
-            self.signal_acquisition_shape.emit(
-                self.entry_NZ.value(), self.entry_deltaZ.value()
-            )
+            requested_id = self.lineEdit_experimentID.text().strip()
+            self._active_experiment_id = requested_id or None
 
             # Start acquisition via event
             self._event_bus.publish(StartAcquisitionCommand())
@@ -370,7 +361,9 @@ class MultiPointWithFluidicsWidget(QFrame):
         selected_channels = [
             item.text() for item in self.list_configurations.selectedItems()
         ]
-        self.signal_acquisition_channels.emit(selected_channels)
+        self._event_bus.publish(
+            SetAcquisitionChannelsCommand(channel_names=list(selected_channels))
+        )
 
     def acquisition_is_finished(self):
         """Handle acquisition completion"""
@@ -380,9 +373,8 @@ class MultiPointWithFluidicsWidget(QFrame):
         if not self.is_current_acquisition_widget:
             return  # Skip if this wasn't the widget that started acquisition
 
-        self.signal_acquisition_started.emit(False)
-        self._event_bus.publish(AcquisitionUIToggleCommand(acquisition_started=False))
         self.is_current_acquisition_widget = False
+        self._active_experiment_id = None
         self.btn_startAcquisition.setChecked(False)
         self.btn_startAcquisition.setText("Start\n Acquisition ")
         self.setEnabled_all(True)
@@ -518,22 +510,27 @@ class MultiPointWithFluidicsWidget(QFrame):
                     "CSV file must contain 'region', 'x (mm)', and 'y (mm)' columns"
                 )
 
-            # Clear existing coordinates
-            self.scanCoordinates.clear_regions()
-
-            # Load coordinates into scanCoordinates
+            region_fov_coordinates = {}
+            region_centers = {}
             for region_id in df["region"].unique():
                 region_points = df[df["region"] == region_id]
-                coords = list(zip(region_points["x (mm)"], region_points["y (mm)"]))
-                self.scanCoordinates.region_fov_coordinates[region_id] = coords
+                coords = tuple(
+                    (float(x), float(y))
+                    for x, y in zip(region_points["x (mm)"], region_points["y (mm)"])
+                )
+                region_fov_coordinates[str(region_id)] = coords
 
                 # Calculate and store region center (average of points)
                 center_x = region_points["x (mm)"].mean()
                 center_y = region_points["y (mm)"].mean()
-                self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
+                region_centers[str(region_id)] = (float(center_x), float(center_y))
 
-                # Register FOVs with navigation viewer
-                self.navigationViewer.register_fovs_to_image(coords)
+            self._event_bus.publish(
+                LoadScanCoordinatesCommand(
+                    region_fov_coordinates=region_fov_coordinates,
+                    region_centers=region_centers,
+                )
+            )
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
 
@@ -609,8 +606,13 @@ class MultiPointWithFluidicsWidget(QFrame):
 
     def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
         """Handle acquisition state changes from EventBus."""
+        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+            return
         self._acquisition_in_progress = event.in_progress
         self._acquisition_is_aborting = event.is_aborting
+
+        if self.is_current_acquisition_widget:
+            self.display_progress_bar(event.in_progress)
 
         if not event.in_progress:
             # Acquisition finished
@@ -618,12 +620,41 @@ class MultiPointWithFluidicsWidget(QFrame):
 
     def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
         """Handle acquisition progress updates from EventBus."""
-        self.update_acquisition_progress(
-            event.current_round, event.total_rounds, event.current_fov
-        )
+        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+            return
+        if not self.is_current_acquisition_widget:
+            return
+
+        total = max(1, int(event.total_fovs))
+        current = max(0, min(int(event.current_fov), total))
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+
+        parts = []
+        if event.total_rounds > 1:
+            parts.append(f"Round {event.current_round}/{event.total_rounds}")
+        parts.append(f"Image {event.current_fov}/{event.total_fovs}")
+        if event.current_channel:
+            parts.append(str(event.current_channel))
+        self.progress_label.setText("  ".join(parts))
+
+        if event.eta_seconds is None or event.eta_seconds <= 0:
+            self.eta_label.setText("--:--")
+            return
+
+        eta = int(event.eta_seconds)
+        hours, remainder = divmod(eta, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours > 0:
+            eta_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        else:
+            eta_str = f"{minutes:02d}:{seconds:02d}"
+        self.eta_label.setText(eta_str)
 
     def _on_region_progress(self, event: AcquisitionRegionProgress) -> None:
         """Handle region progress updates from EventBus."""
+        if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
+            return
         self.update_region_progress(event.current_region, event.total_regions)
 
     # =========================================================================

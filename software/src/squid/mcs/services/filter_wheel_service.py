@@ -20,8 +20,9 @@ class FilterWheelService(BaseService):
         self,
         filter_wheel: Optional[AbstractFilterWheelController],
         event_bus: EventBus,
+        mode_gate=None,
     ) -> None:
-        super().__init__(event_bus)
+        super().__init__(event_bus, mode_gate=mode_gate)
         self._wheel = filter_wheel
         self._lock = threading.RLock()
 
@@ -47,6 +48,9 @@ class FilterWheelService(BaseService):
 
     def _on_set_position(self, cmd: SetFilterPositionCommand) -> None:
         """Handle SetFilterPositionCommand from EventBus."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(cmd).__name__)
+            return
         if self._wheel is None:
             return
         with self._lock:
@@ -58,6 +62,9 @@ class FilterWheelService(BaseService):
 
     def _on_home(self, cmd: HomeFilterWheelCommand) -> None:
         """Handle HomeFilterWheelCommand from EventBus."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(cmd).__name__)
+            return
         if self._wheel is None:
             return
         with self._lock:

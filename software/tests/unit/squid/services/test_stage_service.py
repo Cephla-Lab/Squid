@@ -4,6 +4,7 @@
 import pytest
 from unittest.mock import Mock
 from dataclasses import dataclass
+import threading
 
 
 @dataclass
@@ -129,6 +130,31 @@ class TestStageService:
 
         mock_stage.move_x.assert_called_once_with(5.0, True)
 
+    def test_rejects_move_commands_during_acquiring_mode(self):
+        """EventBus stage moves should be blocked during acquisition/aborting."""
+        from squid.mcs.services.stage_service import StageService
+        from squid.core.events import EventBus, MoveStageCommand
+        from squid.core.mode_gate import GlobalMode, GlobalModeGate
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        bus = EventBus()
+        gate = GlobalModeGate(bus)
+
+        StageService(mock_stage, bus, mode_gate=gate)
+
+        gate.set_mode(GlobalMode.ACQUIRING, reason="acq")
+        bus.drain()
+        bus.publish(MoveStageCommand(axis="x", distance_mm=5.0))
+        bus.drain()
+        mock_stage.move_x.assert_not_called()
+
+        gate.set_mode(GlobalMode.IDLE, reason="idle")
+        bus.drain()
+        bus.publish(MoveStageCommand(axis="x", distance_mm=5.0))
+        bus.drain()
+        mock_stage.move_x.assert_called_once_with(5.0, True)
+
     def test_handles_home_command(self):
         """Should respond to HomeStageCommand events."""
         from squid.mcs.services.stage_service import StageService
@@ -167,25 +193,33 @@ class TestStageService:
         from squid.core.events import (
             EventBus,
             MoveStageToLoadingPositionCommand,
+            LoadingPositionReached,
+            StageMoveToLoadingPositionFinished,
         )
+        import _def
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
         bus = EventBus()
 
-        service = StageService(mock_stage, bus)
-        service.move_to_loading_position = Mock()
+        StageService(mock_stage, bus)
 
-        bus.publish(
-            MoveStageToLoadingPositionCommand(
-                blocking=False, callback=None, is_wellplate=False
-            )
-        )
+        finished = threading.Event()
+        finished_events = []
+        reached_events = []
+
+        bus.subscribe(StageMoveToLoadingPositionFinished, lambda e: (finished_events.append(e), finished.set()))
+        bus.subscribe(LoadingPositionReached, lambda e: reached_events.append(e))
+
+        bus.publish(MoveStageToLoadingPositionCommand(blocking=False, is_wellplate=False))
+        assert finished.wait(timeout=1.0)
         bus.drain()
 
-        service.move_to_loading_position.assert_called_once_with(
-            blocking=False, callback=None, is_wellplate=False
-        )
+        assert len(finished_events) == 1
+        assert finished_events[0].success is True
+        assert len(reached_events) == 1
+        mock_stage.move_y_to.assert_called_with(_def.SLIDE_POSITION.LOADING_Y_MM)
+        mock_stage.move_x_to.assert_called_with(_def.SLIDE_POSITION.LOADING_X_MM)
 
     def test_handles_move_to_scanning_position_command(self):
         """Should respond to MoveStageToScanningPositionCommand events."""
@@ -193,25 +227,36 @@ class TestStageService:
         from squid.core.events import (
             EventBus,
             MoveStageToScanningPositionCommand,
+            ScanningPositionReached,
+            StageMoveToScanningPositionFinished,
         )
+        import _def
 
         mock_stage = Mock()
         mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
         bus = EventBus()
 
-        service = StageService(mock_stage, bus)
-        service.move_to_scanning_position = Mock()
+        StageService(mock_stage, bus)
 
-        bus.publish(
-            MoveStageToScanningPositionCommand(
-                blocking=False, callback=None, is_wellplate=True
-            )
+        finished = threading.Event()
+        finished_events = []
+        reached_events = []
+
+        bus.subscribe(
+            StageMoveToScanningPositionFinished,
+            lambda e: (finished_events.append(e), finished.set()),
         )
+        bus.subscribe(ScanningPositionReached, lambda e: reached_events.append(e))
+
+        bus.publish(MoveStageToScanningPositionCommand(blocking=False, is_wellplate=False))
+        assert finished.wait(timeout=1.0)
         bus.drain()
 
-        service.move_to_scanning_position.assert_called_once_with(
-            blocking=False, callback=None, is_wellplate=True
-        )
+        assert len(finished_events) == 1
+        assert finished_events[0].success is True
+        assert len(reached_events) == 1
+        mock_stage.move_y_to.assert_called_with(_def.SLIDE_POSITION.SCANNING_Y_MM)
+        mock_stage.move_x_to.assert_called_with(_def.SLIDE_POSITION.SCANNING_X_MM)
 
     def test_move_to_calls_stage(self):
         """move_to should call stage.move_x_to/move_y_to/move_z_to."""
@@ -465,87 +510,3 @@ class TestStageService:
 
         expected_z = int(_def.Z_HOME_SAFETY_POINT) / 1000.0
         mock_stage.move_z_to.assert_called_once_with(expected_z)
-
-    def test_move_to_loading_position_blocking(self):
-        """move_to_loading_position should move to loading position."""
-        from squid.mcs.services.stage_service import StageService
-        from squid.core.events import EventBus
-
-        mock_stage = Mock()
-        mock_config = Mock()
-        mock_config.X_AXIS.MAX_POSITION = 100.0
-        mock_config.X_AXIS.MIN_POSITION = -100.0
-        mock_config.Y_AXIS.MAX_POSITION = 100.0
-        mock_config.Y_AXIS.MIN_POSITION = -100.0
-        mock_stage.get_config.return_value = mock_config
-        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 5.0)
-        bus = EventBus()
-
-        service = StageService(mock_stage, bus)
-        result = service.move_to_loading_position(blocking=True, is_wellplate=True)
-
-        assert result is None
-        # Verify move to loading position was called
-        mock_stage.move_x_to.assert_called()
-        mock_stage.move_y_to.assert_called()
-
-    def test_move_to_loading_position_not_wellplate(self):
-        """move_to_loading_position should work for non-wellplate."""
-        from squid.mcs.services.stage_service import StageService
-        from squid.core.events import EventBus
-
-        mock_stage = Mock()
-        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 5.0)
-        bus = EventBus()
-
-        service = StageService(mock_stage, bus)
-        result = service.move_to_loading_position(blocking=True, is_wellplate=False)
-
-        assert result is None
-        # Should only call move_x_to and move_y_to once each (no retraction sequence)
-        assert mock_stage.move_y_to.call_count == 1
-        assert mock_stage.move_x_to.call_count == 1
-
-    def test_move_to_loading_position_callback_error(self):
-        """move_to_loading_position should raise if blocking=True with callback."""
-        from squid.mcs.services.stage_service import StageService
-        from squid.core.events import EventBus
-
-        mock_stage = Mock()
-        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
-        bus = EventBus()
-
-        service = StageService(mock_stage, bus)
-
-        with pytest.raises(ValueError, match="Callback not supported"):
-            service.move_to_loading_position(blocking=True, callback=lambda *a: None)
-
-    def test_move_to_scanning_position_blocking(self):
-        """move_to_scanning_position should move to scanning position."""
-        from squid.mcs.services.stage_service import StageService
-        from squid.core.events import EventBus
-
-        mock_stage = Mock()
-        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 5.0)
-        bus = EventBus()
-
-        service = StageService(mock_stage, bus)
-        result = service.move_to_scanning_position(blocking=True, is_wellplate=True)
-
-        assert result is None
-        mock_stage.move_x_to.assert_called()
-        mock_stage.move_y_to.assert_called()
-
-    def test_move_to_scanning_position_callback_error(self):
-        """move_to_scanning_position should raise if blocking=True with callback."""
-        from squid.mcs.services.stage_service import StageService
-        from squid.core.events import EventBus
-
-        mock_stage = Mock()
-        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
-        bus = EventBus()
-
-        service = StageService(mock_stage, bus)
-
-        with pytest.raises(ValueError, match="Callback not supported"):
-            service.move_to_scanning_position(blocking=True, callback=lambda *a: None)

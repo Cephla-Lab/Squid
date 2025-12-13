@@ -25,16 +25,17 @@ from squid.ops.acquisition import MultiPointController
 from squid.ops.configuration import ChannelConfigurationManager
 from squid.ops.navigation import ObjectiveStore
 from squid.ops.navigation.scan_coordinates import ScanCoordinates
+from squid.ops.navigation.navigation_state_service import NavigationViewerStateService
 from squid.mcs.services import ServiceRegistry
 from squid.mcs.controllers import MicroscopeModeController, PeripheralsController, ImageClickController
 from squid.core.events import event_bus
-from squid.core.actor import BackendActor, BackendCommandRouter
-from squid.core.coordinator import ResourceCoordinator, GlobalMode, Resource
+from squid.core.mode_gate import GlobalModeGate
 from squid.mcs.controllers.autofocus import AutoFocusController, LaserAutofocusController
 
 if TYPE_CHECKING:
     from squid.ui.qt_event_dispatcher import QtEventDispatcher
     from squid.ui.ui_event_bus import UIEventBus
+    from squid.mcs.controllers.tracking_controller import TrackingControllerCore
 
 
 @dataclass
@@ -59,6 +60,7 @@ class Controllers:
     objective_store: Optional["ObjectiveStore"] = None
     scan_coordinates: Optional["ScanCoordinates"] = None
     image_click: Optional["ImageClickController"] = None
+    tracking: Optional["TrackingControllerCore"] = None
 
 
 class ApplicationContext:
@@ -81,20 +83,16 @@ class ApplicationContext:
     """
 
     def __init__(
-        self, simulation: bool = False, external_controller_creation: bool = False
+        self, simulation: bool = False
     ):
         """
         Initialize the application context.
 
         Args:
             simulation: If True, use simulated hardware
-            external_controller_creation: If True, create controllers in ApplicationContext
-                instead of letting Microscope create them internally. This enables
-                better dependency injection and testability.
         """
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self._simulation = simulation
-        self._external_controller_creation = external_controller_creation
         self._microscope: Optional["Microscope"] = None
         self._controllers: Optional[Controllers] = None
         self._services: Optional["ServiceRegistry"] = None
@@ -104,20 +102,18 @@ class ApplicationContext:
         self._qt_dispatcher: Optional["QtEventDispatcher"] = None
         self._ui_event_bus: Optional["UIEventBus"] = None
 
-        # Backend actor for command processing
-        self._backend_actor: Optional[BackendActor] = None
-        self._command_router: Optional[BackendCommandRouter] = None
-
-        # Resource coordinator for managing shared resources
-        self._coordinator: Optional[ResourceCoordinator] = None
+        self._mode_gate: Optional[GlobalModeGate] = None
+        self._navigation_state_service: Optional[NavigationViewerStateService] = None
+        self._camera_frame_callback_id: Optional[str] = None
+        self._camera_focus_frame_callback_id: Optional[str] = None
 
         self._log.info(
-            f"Creating ApplicationContext (simulation={simulation}, "
-            f"external_controller_creation={external_controller_creation})"
+            f"Creating ApplicationContext (simulation={simulation})"
         )
 
         # Ensure the core EventBus dispatch thread is running early
         event_bus.start()
+        self._mode_gate = GlobalModeGate(event_bus)
 
         # Build components
         self._build_microscope()
@@ -127,14 +123,120 @@ class ApplicationContext:
         # Build services before controllers so controllers can receive them
         self._build_services()
         self._build_controllers()
-        # Build the resource coordinator for managing shared resources
-        self._build_coordinator()
-        # Build and start the backend actor for command processing
-        self._build_backend_actor()
+        self._initialize_hardware()
         # Subscribe to objective changes to refresh channel configs
         from squid.core.events import ObjectiveChanged
 
         event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+
+    def _initialize_hardware(self) -> None:
+        """Backend-owned one-time hardware initialization.
+
+        Keeps main_window free of hardware setup and callback wiring.
+        """
+        if self._microscope is None or self._services is None or self._controllers is None:
+            return
+
+        try:
+            import _def as _config
+        except Exception:
+            _config = None
+
+        # Stage limits + home
+        stage_service = self._services.get("stage")
+        if stage_service is not None:
+            try:
+                stage_config = stage_service.get_config()
+                x_config = stage_config.X_AXIS
+                y_config = stage_config.Y_AXIS
+                z_config = stage_config.Z_AXIS
+                stage_service.set_limits(
+                    x_pos_mm=x_config.MAX_POSITION,
+                    x_neg_mm=x_config.MIN_POSITION,
+                    y_pos_mm=y_config.MAX_POSITION,
+                    y_neg_mm=y_config.MIN_POSITION,
+                    z_pos_mm=z_config.MAX_POSITION,
+                    z_neg_mm=z_config.MIN_POSITION,
+                )
+            except Exception:
+                self._log.exception("Failed to set stage limits")
+
+            try:
+                stage_service.home(x=True, y=True, z=True, theta=False)
+            except Exception:
+                self._log.exception("Failed to home stage")
+
+            # Restore cached position (previously done in main_window)
+            try:
+                if _config is not None and all(
+                    [
+                        getattr(_config, "HOMING_ENABLED_X", False),
+                        getattr(_config, "HOMING_ENABLED_Y", False),
+                        getattr(_config, "HOMING_ENABLED_Z", False),
+                    ]
+                ):
+                    import squid.mcs.drivers.stages.stage_utils as stage_utils
+
+                    cached_pos = stage_utils.get_cached_position()
+                    safety_z = float(getattr(_config, "Z_HOME_SAFETY_POINT", 0)) / 1000.0
+                    if cached_pos is not None:
+                        stage_service.move_to(
+                            x_mm=float(cached_pos.x_mm),
+                            y_mm=float(cached_pos.y_mm),
+                            blocking=True,
+                        )
+                        target_z = float(cached_pos.z_mm) if safety_z < float(cached_pos.z_mm) else safety_z
+                        stage_service.move_to(z_mm=target_z, blocking=True)
+                    else:
+                        stage_service.move_to(z_mm=safety_z, blocking=True)
+            except Exception:
+                self._log.exception("Failed to restore cached stage position")
+
+        # Camera callback wiring (live display path)
+        camera_service = self._services.get("camera")
+        if camera_service is not None and self._camera_frame_callback_id is None:
+            try:
+                if _config is not None and getattr(_config, "DEFAULT_TRIGGER_MODE", None) is not None:
+                    from squid.core.abc import CameraAcquisitionMode
+                    from _def import TriggerMode
+
+                    if getattr(_config, "DEFAULT_TRIGGER_MODE") == TriggerMode.HARDWARE:
+                        camera_service.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+                    else:
+                        camera_service.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+                self._camera_frame_callback_id = camera_service.add_frame_callback(
+                    self._controllers.stream_handler.on_new_frame
+                )
+                camera_service.enable_callbacks(enabled=True)
+            except Exception:
+                self._log.exception("Failed to initialize camera callbacks")
+
+        # Focus camera callback wiring (laser autofocus)
+        focus_camera_service = self._services.get("camera_focus")
+        if (
+            focus_camera_service is not None
+            and self._controllers.stream_handler_focus is not None
+            and self._camera_focus_frame_callback_id is None
+        ):
+            try:
+                from squid.core.abc import CameraAcquisitionMode
+
+                focus_camera_service.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+                self._camera_focus_frame_callback_id = focus_camera_service.add_frame_callback(
+                    self._controllers.stream_handler_focus.on_new_frame
+                )
+                focus_camera_service.enable_callbacks(enabled=True)
+                focus_camera_service.start_streaming()
+            except Exception:
+                self._log.exception("Failed to initialize focus camera callbacks")
+
+        # Objective changer home (best-effort)
+        objective_service = self._services.get("objective_changer")
+        if objective_service is not None:
+            try:
+                objective_service.home()
+            except Exception:
+                self._log.debug("Objective changer home not supported", exc_info=True)
 
     def _build_microscope(self) -> None:
         """Build the microscope from configuration."""
@@ -143,7 +245,7 @@ class ApplicationContext:
         self._log.info("Building microscope...")
         self._microscope = Microscope.build_from_global_config(
             simulated=self._simulation,
-            skip_controller_creation=self._external_controller_creation,
+            skip_controller_creation=True,
         )
         self._log.info("Microscope built successfully")
 
@@ -151,94 +253,59 @@ class ApplicationContext:
         """
         Build controllers container.
 
-        If external_controller_creation is True, creates controllers here with
-        explicit dependency injection. Otherwise, wraps controllers that
-        Microscope created internally.
+        Controllers are created here with explicit dependency injection.
         """
         self._log.info("Building controllers...")
 
         assert self._microscope is not None, (
             "Microscope must be built before controllers"
         )
-        microscope_mode_controller: Optional[MicroscopeModeController] = None
-        peripherals_controller: Optional[PeripheralsController] = None
-
-        if self._external_controller_creation:
-            self._create_controllers_externally()
-            self._log.info("Controllers built successfully")
-            return
-        else:
-            # Wrap controllers that Microscope created internally
-            assert self._microscope.live_controller is not None, (
-                "LiveController not created by Microscope"
-            )
-            assert self._microscope.stream_handler is not None, (
-                "StreamHandler not created by Microscope"
-            )
-            # Ensure LiveController is bus-enabled
-            self._microscope.live_controller.attach_event_bus(event_bus)
-
-            # Create new controllers that manage mode and peripherals
-            microscope_mode_controller = self._create_microscope_mode_controller()
-            peripherals_controller = self._create_peripherals_controller()
-            # Inject services into LiveController for service-based operations
-            if self._services:
-                self._microscope.live_controller._camera_service = self._services.get("camera")
-                self._microscope.live_controller._illumination_service = self._services.get("illumination")  # type: ignore[attr-defined]
-                self._microscope.live_controller._peripheral_service = self._services.get("peripheral")  # type: ignore[attr-defined]
-                self._microscope.live_controller._filter_wheel_service = self._services.get("filter_wheel")  # type: ignore[attr-defined]
-                self._microscope.live_controller._nl5_service = self._services.get("nl5")  # type: ignore[attr-defined]
-        # Refresh channel configs now that controller exists
-        self._refresh_channel_configs(microscope_mode_controller)
-
-        self._controllers = Controllers(
-            live=self._microscope.live_controller,
-            stream_handler=self._microscope.stream_handler,
-            stream_handler_focus=getattr(self._microscope, "stream_handler_focus", None),
-            live_focus=getattr(self._microscope, "live_controller_focus", None),
-            microscope_mode=microscope_mode_controller,
-            peripherals=peripherals_controller,
-            channel_config_manager=self._microscope.channel_configuration_manager,
-            objective_store=self._microscope.objective_store,
-        )
-        # Build higher-level controllers that should be UI-agnostic
-        self._controllers.autofocus = self._build_autofocus_controller()
-        self._controllers.laser_autofocus = self._build_laser_autofocus_controller()
-        self._controllers.scan_coordinates = self._build_scan_coordinates()
-        self._controllers.multipoint = self._build_multipoint_controller(
-            autofocus=self._controllers.autofocus,
-            laser_autofocus=self._controllers.laser_autofocus,
-            scan_coordinates=self._controllers.scan_coordinates,
-        )
-        # Phase 8: ImageClickController for click-to-move
-        self._controllers.image_click = self._build_image_click_controller()
-
+        self._create_controllers_externally()
         self._log.info("Controllers built successfully")
 
     def _create_controllers_externally(self) -> None:
         """Create controllers with explicit dependency injection."""
         from squid.mcs.controllers.live_controller import LiveController
-        from squid.storage.stream_handler import StreamHandler, NoOpStreamHandlerFunctions
+        from squid.storage.stream_handler import (
+            StreamHandler,
+            StreamHandlerFunctions,
+        )
 
         assert self._microscope is not None, (
             "Microscope must be built before creating controllers"
         )
-
-        # Create StreamHandler
-        stream_handler = StreamHandler(handler_functions=NoOpStreamHandlerFunctions)
+        assert self._services is not None, (
+            "Services must be built before creating controllers"
+        )
 
         # Create LiveController with EventBus for event-driven communication
+        camera_service = self._services.get("camera")
+        if camera_service is None:
+            raise RuntimeError("CameraService not available")
+        illumination_service = self._services.get("illumination")
         live_controller = LiveController(
-            microscope=self._microscope,
-            camera=self._microscope.camera,
+            camera_service=camera_service,
             event_bus=event_bus,
-            camera_service=self._services.get("camera") if self._services else None,
-            illumination_service=self._services.get("illumination") if self._services else None,
-            peripheral_service=self._services.get("peripheral") if self._services else None,
-            filter_wheel_service=self._services.get("filter_wheel") if self._services else None,
-            nl5_service=self._services.get("nl5") if self._services else None,
-            subscribe_to_bus=False,
+            illumination_service=illumination_service,
+            peripheral_service=self._services.get("peripheral"),
+            filter_wheel_service=self._services.get("filter_wheel"),
+            nl5_service=self._services.get("nl5"),
+            mode_gate=self.mode_gate,
+            control_illumination=illumination_service is not None,
+            camera="main",
         )
+
+        # Create StreamHandler with backend hooks preserved across Qt wiring.
+        stream_handler = StreamHandler(
+            handler_functions=StreamHandlerFunctions(
+                image_to_display=lambda _img: None,
+                packet_image_to_write=lambda _img, _fid, _ts: None,
+                signal_new_frame_received=live_controller.on_new_frame,
+                accept_new_frame=lambda: bool(getattr(live_controller, "is_live", False)),
+            )
+        )
+        stream_handler_focus: Optional[StreamHandler] = None
+        live_controller_focus: Optional[LiveController] = None
 
         # Assign controllers to Microscope (it expects these to exist)
         self._microscope.stream_handler = stream_handler
@@ -246,16 +313,24 @@ class ApplicationContext:
 
         # Handle focus camera if present
         if self._microscope.addons.camera_focus:
-            stream_handler_focus = StreamHandler(
-                handler_functions=NoOpStreamHandlerFunctions
-            )
+            focus_camera_service = self._services.get("camera_focus")
+            if focus_camera_service is None:
+                raise RuntimeError("Focus CameraService not available")
             live_controller_focus = LiveController(
-                microscope=self._microscope,
-                camera=self._microscope.addons.camera_focus,
+                camera_service=focus_camera_service,
                 event_bus=event_bus,
                 control_illumination=False,
                 for_displacement_measurement=True,
-                subscribe_to_bus=False,
+                mode_gate=self.mode_gate,
+                camera="focus",
+            )
+            stream_handler_focus = StreamHandler(
+                handler_functions=StreamHandlerFunctions(
+                    image_to_display=lambda _img: None,
+                    packet_image_to_write=lambda _img, _fid, _ts: None,
+                    signal_new_frame_received=live_controller_focus.on_new_frame,
+                    accept_new_frame=lambda: True,
+                )
             )
             self._microscope.stream_handler_focus = stream_handler_focus
             self._microscope.live_controller_focus = live_controller_focus
@@ -286,6 +361,49 @@ class ApplicationContext:
         )
         # Phase 8: ImageClickController for click-to-move
         self._controllers.image_click = self._build_image_click_controller()
+        self._controllers.tracking = self._build_tracking_controller()
+
+        # Backend navigation state publisher (UI can subscribe via UIEventBus).
+        try:
+            camera_service = self._services.get("camera") if self._services else None
+            if camera_service is not None:
+                self._navigation_state_service = NavigationViewerStateService(
+                    objective_store=self._microscope.objective_store,
+                    camera_service=camera_service,
+                    event_bus=event_bus,
+                )
+        except Exception:
+            self._log.exception("Failed to initialize NavigationViewerStateService")
+
+    def _build_tracking_controller(self) -> Optional["TrackingControllerCore"]:
+        """Create TrackingControllerCore (backend-only, services-only)."""
+        try:
+            import _def as _config  # Local import to avoid circularity at module import time
+        except Exception:
+            _config = None
+
+        if self._microscope is None or self._services is None or _config is None:
+            return None
+        if not getattr(_config, "ENABLE_TRACKING", False):
+            return None
+
+        from squid.mcs.controllers.tracking_controller import TrackingControllerCore
+
+        camera_service = self._services.get("camera")
+        stage_service = self._services.get("stage")
+        if camera_service is None or stage_service is None:
+            raise RuntimeError("Required services missing for TrackingControllerCore")
+
+        return TrackingControllerCore(
+            event_bus=event_bus,
+            camera_service=camera_service,
+            stage_service=stage_service,
+            live_controller=self._microscope.live_controller,
+            peripheral_service=self._services.get("peripheral"),
+            channel_config_manager=self._microscope.channel_configuration_manager,
+            objective_store=self._microscope.objective_store,
+            mode_gate=self.mode_gate,
+        )
 
     def _create_microscope_mode_controller(self) -> MicroscopeModeController:
         """Create MicroscopeModeController with dependencies."""
@@ -308,7 +426,6 @@ class ApplicationContext:
             filter_wheel_service=filter_wheel_service,
             channel_configs=channel_configs,
             event_bus=event_bus,
-            subscribe_to_bus=False,
         )
 
     def _refresh_channel_configs(
@@ -336,7 +453,6 @@ class ApplicationContext:
             piezo_service=piezo_service,
             objective_store=self._microscope.objective_store,
             event_bus=event_bus,
-            subscribe_to_bus=False,
         )
 
     def _build_scan_coordinates(self) -> Optional[ScanCoordinates]:
@@ -347,33 +463,32 @@ class ApplicationContext:
             objectiveStore=self._microscope.objective_store,
             stage=self._microscope.stage,
             camera=self._microscope.camera,
-            update_callback=None,
-            # Event bus not passed - UI wires it via main_window
+            event_bus=event_bus,
         )
 
     def _build_autofocus_controller(self) -> Optional[AutoFocusController]:
         """Create AutoFocusController without Qt dependencies."""
-        if self._microscope is None:
+        if self._microscope is None or self._services is None:
             return None
-        try:
-            controller = AutoFocusController(
-                self._microscope.camera,
-                self._microscope.stage,
-                self._microscope.live_controller,
-                self._microscope.low_level_drivers.microcontroller,
-                finished_fn=None,
-                image_to_display_fn=None,
-                nl5=self._microscope.addons.nl5,
-                camera_service=self._services.get("camera") if self._services else None,
-                stage_service=self._services.get("stage") if self._services else None,
-                peripheral_service=self._services.get("peripheral") if self._services else None,
-                event_bus=event_bus,
-                subscribe_to_bus=False,
-            )
-            return controller
-        except Exception as exc:  # pragma: no cover - defensive
-            self._log.error(f"Failed to build AutoFocusController: {exc}")
-            return None
+        live_controller = self._microscope.live_controller
+        if live_controller is None:
+            raise RuntimeError("LiveController must be created before AutoFocusController")
+        camera_service = self._services.get("camera")
+        stage_service = self._services.get("stage")
+        peripheral_service = self._services.get("peripheral")
+        if camera_service is None or stage_service is None or peripheral_service is None:
+            raise RuntimeError("Required services missing for AutoFocusController")
+        return AutoFocusController(
+            liveController=live_controller,
+            camera_service=camera_service,
+            stage_service=stage_service,
+            peripheral_service=peripheral_service,
+            nl5_service=self._services.get("nl5"),
+            illumination_service=self._services.get("illumination"),
+            stream_handler=getattr(self._microscope, "stream_handler", None),
+            event_bus=event_bus,
+            mode_gate=self.mode_gate,
+        )
 
     def _build_laser_autofocus_controller(self) -> Optional[LaserAutofocusController]:
         """Create LaserAutofocusController core without Qt dependencies."""
@@ -386,27 +501,23 @@ class ApplicationContext:
             return None
         if not getattr(_config, "SUPPORT_LASER_AUTOFOCUS", False):
             return None
-        focus_camera = getattr(self._microscope.addons, "camera_focus", None)
-        if focus_camera is None:
+        if self._services is None:
             return None
-
-        focus_live = getattr(self._microscope, "live_controller_focus", None)
-        controller = LaserAutofocusController(
-            self._microscope.low_level_drivers.microcontroller,
-            focus_camera,
-            focus_live or self._microscope.live_controller,
-            self._microscope.stage,
-            getattr(self._microscope.addons, "piezo_stage", None),
-            self._microscope.objective_store,
-            getattr(self._microscope, "laser_af_settings_manager", None),
-            camera_service=self._services.get("camera_focus") if self._services else None,
-            stage_service=self._services.get("stage") if self._services else None,
-            peripheral_service=self._services.get("peripheral") if self._services else None,
-            piezo_service=self._services.get("piezo") if self._services else None,
+        camera_focus_service = self._services.get("camera_focus")
+        stage_service = self._services.get("stage")
+        peripheral_service = self._services.get("peripheral")
+        if camera_focus_service is None or stage_service is None or peripheral_service is None:
+            raise RuntimeError("Required services missing for LaserAutofocusController")
+        return LaserAutofocusController(
+            camera_service=camera_focus_service,
+            stage_service=stage_service,
+            peripheral_service=peripheral_service,
+            piezo_service=self._services.get("piezo"),
+            objectiveStore=self._microscope.objective_store,
+            laserAFSettingManager=getattr(self._microscope, "laser_af_settings_manager", None),
             event_bus=event_bus,
-            subscribe_to_bus=False,
+            stream_handler=getattr(self._microscope, "stream_handler_focus", None),
         )
-        return controller
 
     def _build_multipoint_controller(
         self,
@@ -415,29 +526,37 @@ class ApplicationContext:
         scan_coordinates: Optional[ScanCoordinates],
     ) -> Optional[MultiPointController]:
         """Create MultiPointController using services and EventBus callbacks."""
-        if self._microscope is None:
+        if self._microscope is None or self._services is None:
             return None
-        autofocus_controller = autofocus or getattr(self._microscope, "autofocus_controller", None)
-        if autofocus_controller is None:
+        if autofocus is None:
             raise RuntimeError("MultiPointController requires an AutoFocusController")
         if scan_coordinates is None:
             scan_coordinates = self._build_scan_coordinates()
+        if self._microscope.live_controller is None:
+            raise RuntimeError("LiveController must be created before MultiPointController")
+        camera_service = self._services.get("camera")
+        stage_service = self._services.get("stage")
+        peripheral_service = self._services.get("peripheral")
+        if camera_service is None or stage_service is None or peripheral_service is None:
+            raise RuntimeError("Required services missing for MultiPointController")
         return MultiPointController(
-            self._microscope,
             self._microscope.live_controller,
-            autofocus_controller,
+            autofocus,
             self._microscope.objective_store,
             self._microscope.channel_configuration_manager,
             scan_coordinates=scan_coordinates,
             laser_autofocus_controller=laser_autofocus,
-            camera_service=self._services.get("camera") if self._services else None,
-            stage_service=self._services.get("stage") if self._services else None,
-            peripheral_service=self._services.get("peripheral") if self._services else None,
-            piezo_service=self._services.get("piezo") if self._services else None,
-            fluidics_service=self._services.get("fluidics") if self._services else None,
-            nl5_service=self._services.get("nl5") if self._services else None,
+            camera_service=camera_service,
+            stage_service=stage_service,
+            peripheral_service=peripheral_service,
+            piezo_service=self._services.get("piezo"),
+            fluidics_service=self._services.get("fluidics"),
+            nl5_service=self._services.get("nl5"),
+            illumination_service=self._services.get("illumination"),
+            filter_wheel_service=self._services.get("filter_wheel"),
             event_bus=event_bus,
-            subscribe_to_bus=False,
+            mode_gate=self.mode_gate,
+            stream_handler=getattr(self._microscope, "stream_handler", None),
         )
 
     def _get_channel_configs_for_current_objective(self) -> dict:
@@ -467,6 +586,10 @@ class ApplicationContext:
         if camera_service is None:
             self._log.warning("No camera service available for ImageClickController")
             return None
+        stage_service = self._services.get("stage")
+        if stage_service is None:
+            self._log.warning("No stage service available for ImageClickController")
+            return None
 
         # Check for INVERTED_OBJECTIVE config
         try:
@@ -478,9 +601,9 @@ class ApplicationContext:
         return ImageClickController(
             objective_store=self._microscope.objective_store,
             camera_service=camera_service,
+            stage_service=stage_service,
             event_bus=event_bus,
             inverted_objective=inverted,
-            subscribe_to_bus=False,  # Will be routed via BackendActor
         )
 
     # Event handlers
@@ -488,284 +611,6 @@ class ApplicationContext:
         """Refresh channel configs when objective changes."""
         if self._controllers and self._controllers.microscope_mode:
             self._refresh_channel_configs(self._controllers.microscope_mode)
-
-    def _build_coordinator(self) -> None:
-        """Build the ResourceCoordinator for managing shared resources.
-
-        The coordinator:
-        1. Manages leases on shared resources (camera, stage, illumination)
-        2. Tracks global mode based on active leases
-        3. Publishes events when mode or leases change
-        """
-        from squid.core.events import (
-            GlobalModeChanged,
-            LeaseAcquired,
-            LeaseReleased,
-            LeaseRevoked,
-        )
-
-        self._log.info("Building resource coordinator...")
-
-        self._coordinator = ResourceCoordinator(
-            watchdog_interval_s=1.0,
-            default_lease_timeout_s=None,  # No automatic timeout by default
-        )
-
-        # Wire coordinator callbacks to EventBus events
-        def on_mode_change(old_mode: GlobalMode, new_mode: GlobalMode) -> None:
-            event_bus.publish(GlobalModeChanged(
-                old_mode=old_mode.name,
-                new_mode=new_mode.name,
-            ))
-
-        def on_lease_acquired(lease) -> None:
-            event_bus.publish(LeaseAcquired(
-                lease_id=lease.lease_id,
-                owner=lease.owner,
-                resources=[r.name for r in lease.resources],
-            ))
-
-        def on_lease_released(lease) -> None:
-            event_bus.publish(LeaseReleased(
-                lease_id=lease.lease_id,
-                owner=lease.owner,
-            ))
-
-        def on_lease_revoked(lease, reason: str) -> None:
-            event_bus.publish(LeaseRevoked(
-                lease_id=lease.lease_id,
-                owner=lease.owner,
-                reason=reason,
-            ))
-
-        self._coordinator.on_mode_change(on_mode_change)
-        self._coordinator.on_lease_acquired(on_lease_acquired)
-        self._coordinator.on_lease_released(on_lease_released)
-        self._coordinator.on_lease_revoked(on_lease_revoked)
-
-        # Start the coordinator (watchdog thread)
-        self._coordinator.start()
-
-        # Inject coordinator into controllers that support resource leasing
-        if self._controllers:
-            if getattr(self._controllers, "live", None) is not None:
-                setattr(self._controllers.live, "_coordinator", self._coordinator)
-            if getattr(self._controllers, "autofocus", None) is not None:
-                setattr(self._controllers.autofocus, "_coordinator", self._coordinator)
-            if getattr(self._controllers, "multipoint", None) is not None:
-                setattr(self._controllers.multipoint, "_coordinator", self._coordinator)
-
-        self._log.info("Resource coordinator started")
-
-    def _build_backend_actor(self) -> None:
-        """Build the backend actor and command router.
-
-        The BackendActor processes commands on a dedicated thread,
-        ensuring all controller logic runs in a predictable context.
-        The BackendCommandRouter subscribes to command events and
-        routes them to the actor's priority queue.
-        """
-        from squid.core.events import (
-            # Live commands
-            StartLiveCommand,
-            StopLiveCommand,
-            SetTriggerModeCommand,
-            SetTriggerFPSCommand,
-            SetFilterAutoSwitchCommand,
-            UpdateIlluminationCommand,
-            SetDisplayResolutionScalingCommand,
-            # Mode commands
-            SetMicroscopeModeCommand,
-            UpdateChannelConfigurationCommand,
-            # Peripheral commands
-            SetObjectiveCommand,
-            SetSpinningDiskPositionCommand,
-            SetSpinningDiskSpinningCommand,
-            SetDiskDichroicCommand,
-            SetDiskEmissionFilterCommand,
-            SetPiezoPositionCommand,
-            MovePiezoRelativeCommand,
-            # Autofocus commands
-            StartAutofocusCommand,
-            StopAutofocusCommand,
-            SetAutofocusParamsCommand,
-            # Acquisition commands
-            StartAcquisitionCommand,
-            StopAcquisitionCommand,
-            PauseAcquisitionCommand,
-            ResumeAcquisitionCommand,
-            SetFluidicsRoundsCommand,
-            SetAcquisitionParametersCommand,
-            SetAcquisitionPathCommand,
-            SetAcquisitionChannelsCommand,
-            StartNewExperimentCommand,
-            # Laser autofocus commands
-            SetLaserAFPropertiesCommand,
-            InitializeLaserAFCommand,
-            SetLaserAFCharacterizationModeCommand,
-            UpdateLaserAFThresholdCommand,
-            MoveToLaserAFTargetCommand,
-            SetLaserAFReferenceCommand,
-            MeasureLaserAFDisplacementCommand,
-            CaptureLaserAFFrameCommand,
-        )
-
-        self._log.info("Building backend actor...")
-
-        self._backend_actor = BackendActor()
-        self._command_router = BackendCommandRouter(event_bus, self._backend_actor)
-
-        # Register command types that have backend handlers wired
-        command_types = []
-
-        # LiveController command handling via backend actor
-        if self._controllers and self._controllers.live:
-            live = self._controllers.live
-            # Ensure we don't double-handle via direct EventBus subscriptions
-            if hasattr(live, "detach_event_bus_commands"):
-                live.detach_event_bus_commands()
-            self._backend_actor.register_handler(StartLiveCommand, live._on_start_live_command)
-            self._backend_actor.register_handler(StopLiveCommand, live._on_stop_live_command)
-            self._backend_actor.register_handler(SetTriggerModeCommand, live._on_set_trigger_mode_command)
-            self._backend_actor.register_handler(SetTriggerFPSCommand, live._on_set_trigger_fps_command)
-            self._backend_actor.register_handler(SetFilterAutoSwitchCommand, live._on_set_filter_auto_switch)
-            self._backend_actor.register_handler(UpdateIlluminationCommand, live._on_update_illumination)
-            self._backend_actor.register_handler(
-                SetDisplayResolutionScalingCommand, live._on_set_display_resolution_scaling
-            )
-            command_types.extend(
-                [
-                    StartLiveCommand,
-                    StopLiveCommand,
-                    SetTriggerModeCommand,
-                    SetTriggerFPSCommand,
-                    SetFilterAutoSwitchCommand,
-                    UpdateIlluminationCommand,
-                    SetDisplayResolutionScalingCommand,
-                ]
-            )
-
-        # MicroscopeModeController
-        if self._controllers and self._controllers.microscope_mode:
-            mode_controller = self._controllers.microscope_mode
-            if hasattr(mode_controller, "detach_event_bus_commands"):
-                mode_controller.detach_event_bus_commands()
-            self._backend_actor.register_handler(SetMicroscopeModeCommand, mode_controller._on_set_mode)
-            self._backend_actor.register_handler(UpdateChannelConfigurationCommand, mode_controller._on_update_config)
-            command_types.extend([SetMicroscopeModeCommand, UpdateChannelConfigurationCommand])
-
-        # PeripheralsController
-        if self._controllers and self._controllers.peripherals:
-            peripherals = self._controllers.peripherals
-            if hasattr(peripherals, "detach_event_bus_commands"):
-                peripherals.detach_event_bus_commands()
-            self._backend_actor.register_handler(SetObjectiveCommand, peripherals._on_set_objective)
-            self._backend_actor.register_handler(SetSpinningDiskPositionCommand, peripherals._on_set_disk_position)
-            self._backend_actor.register_handler(SetSpinningDiskSpinningCommand, peripherals._on_set_spinning)
-            self._backend_actor.register_handler(SetDiskDichroicCommand, peripherals._on_set_dichroic)
-            self._backend_actor.register_handler(SetDiskEmissionFilterCommand, peripherals._on_set_emission)
-            self._backend_actor.register_handler(SetPiezoPositionCommand, peripherals._on_set_piezo)
-            self._backend_actor.register_handler(MovePiezoRelativeCommand, peripherals._on_move_piezo_relative)
-            command_types.extend(
-                [
-                    SetObjectiveCommand,
-                    SetSpinningDiskPositionCommand,
-                    SetSpinningDiskSpinningCommand,
-                    SetDiskDichroicCommand,
-                    SetDiskEmissionFilterCommand,
-                    SetPiezoPositionCommand,
-                    MovePiezoRelativeCommand,
-                ]
-            )
-
-        # AutoFocusController
-        if self._controllers and self._controllers.autofocus:
-            autofocus = self._controllers.autofocus
-            if hasattr(autofocus, "detach_event_bus_commands"):
-                autofocus.detach_event_bus_commands()
-            self._backend_actor.register_handler(StartAutofocusCommand, autofocus._on_start_command)
-            self._backend_actor.register_handler(StopAutofocusCommand, autofocus._on_stop_command)
-            self._backend_actor.register_handler(SetAutofocusParamsCommand, autofocus._on_set_params_command)
-            command_types.extend(
-                [
-                    StartAutofocusCommand,
-                    StopAutofocusCommand,
-                    SetAutofocusParamsCommand,
-                ]
-            )
-
-        # LaserAutofocusController (core)
-        if self._controllers and self._controllers.laser_autofocus:
-            laser_af = self._controllers.laser_autofocus
-            if hasattr(laser_af, "detach_event_bus_commands"):
-                laser_af.detach_event_bus_commands()
-            self._backend_actor.register_handler(SetLaserAFPropertiesCommand, laser_af._on_set_properties)
-            self._backend_actor.register_handler(InitializeLaserAFCommand, laser_af._on_initialize)
-            self._backend_actor.register_handler(SetLaserAFCharacterizationModeCommand, laser_af._on_set_characterization_mode)
-            self._backend_actor.register_handler(UpdateLaserAFThresholdCommand, laser_af._on_update_threshold)
-            self._backend_actor.register_handler(MoveToLaserAFTargetCommand, laser_af._on_move_to_target)
-            self._backend_actor.register_handler(SetLaserAFReferenceCommand, laser_af._on_set_reference)
-            self._backend_actor.register_handler(MeasureLaserAFDisplacementCommand, laser_af._on_measure_displacement)
-            self._backend_actor.register_handler(CaptureLaserAFFrameCommand, laser_af._on_capture_frame)
-            command_types.extend(
-                [
-                    SetLaserAFPropertiesCommand,
-                    InitializeLaserAFCommand,
-                    SetLaserAFCharacterizationModeCommand,
-                    UpdateLaserAFThresholdCommand,
-                    MoveToLaserAFTargetCommand,
-                    SetLaserAFReferenceCommand,
-                    MeasureLaserAFDisplacementCommand,
-                    CaptureLaserAFFrameCommand,
-                ]
-            )
-
-        # MultiPointController
-        if self._controllers and self._controllers.multipoint:
-            multipoint = self._controllers.multipoint
-            if hasattr(multipoint, "detach_event_bus_commands"):
-                multipoint.detach_event_bus_commands()
-            self._backend_actor.register_handler(SetFluidicsRoundsCommand, multipoint._on_set_fluidics_rounds)
-            self._backend_actor.register_handler(SetAcquisitionParametersCommand, multipoint._on_set_acquisition_parameters)
-            self._backend_actor.register_handler(SetAcquisitionPathCommand, multipoint._on_set_acquisition_path)
-            self._backend_actor.register_handler(SetAcquisitionChannelsCommand, multipoint._on_set_acquisition_channels)
-            self._backend_actor.register_handler(StartNewExperimentCommand, multipoint._on_start_new_experiment)
-            self._backend_actor.register_handler(StartAcquisitionCommand, multipoint._on_start_acquisition)
-            self._backend_actor.register_handler(StopAcquisitionCommand, multipoint._on_stop_acquisition)
-            command_types.extend(
-                [
-                    SetFluidicsRoundsCommand,
-                    SetAcquisitionParametersCommand,
-                    SetAcquisitionPathCommand,
-                    SetAcquisitionChannelsCommand,
-                    StartNewExperimentCommand,
-                    StartAcquisitionCommand,
-                    StopAcquisitionCommand,
-                ]
-            )
-
-        # ImageClickController (Phase 8)
-        if self._controllers and self._controllers.image_click:
-            from squid.core.events import ImageCoordinateClickedCommand, ClickToMoveEnabledChanged
-            image_click = self._controllers.image_click
-            if hasattr(image_click, "detach_event_bus_commands"):
-                image_click.detach_event_bus_commands()
-            self._backend_actor.register_handler(
-                ImageCoordinateClickedCommand, image_click._on_image_clicked
-            )
-            self._backend_actor.register_handler(
-                ClickToMoveEnabledChanged, image_click._on_click_to_move_changed
-            )
-            command_types.extend([ImageCoordinateClickedCommand, ClickToMoveEnabledChanged])
-
-        # Register command types to route through the backend actor
-        if command_types:
-            self._command_router.register_commands(command_types)
-
-        # Start the backend actor
-        self._backend_actor.start()
-
-        self._log.info("Backend actor started")
 
     def _build_services(self) -> None:
         """Build service layer."""
@@ -792,24 +637,24 @@ class ApplicationContext:
         self._services = ServiceRegistry(event_bus)
 
         self._services.register(
-            "camera", CameraService(self._microscope.camera, event_bus)
+            "camera", CameraService(self._microscope.camera, event_bus, mode_gate=self.mode_gate)
         )
 
         # Focus camera service for laser autofocus
         if self._microscope.addons.camera_focus:
             self._services.register(
                 "camera_focus",
-                CameraService(self._microscope.addons.camera_focus, event_bus),
+                CameraService(self._microscope.addons.camera_focus, event_bus, mode_gate=self.mode_gate),
             )
 
         self._services.register(
-            "stage", StageService(self._microscope.stage, event_bus)
+            "stage", StageService(self._microscope.stage, event_bus, mode_gate=self.mode_gate)
         )
 
         self._services.register(
             "peripheral",
             PeripheralService(
-                self._microscope.low_level_drivers.microcontroller, event_bus
+                self._microscope.low_level_drivers.microcontroller, event_bus, mode_gate=self.mode_gate
             ),
         )
 
@@ -819,20 +664,21 @@ class ApplicationContext:
                 IlluminationService(
                     self._microscope.illumination_controller,
                     event_bus,
+                    mode_gate=self.mode_gate,
                 ),
             )
 
         filter_wheel = getattr(self._microscope.addons, "emission_filter_wheel", None)
         self._services.register(
             "filter_wheel",
-            FilterWheelService(filter_wheel, event_bus),
+            FilterWheelService(filter_wheel, event_bus, mode_gate=self.mode_gate),
         )
 
         # Piezo service (integral to Z-stack acquisition and focus locking)
         piezo = getattr(self._microscope.addons, "piezo_stage", None)
         self._services.register(
             "piezo",
-            PiezoService(piezo, event_bus),
+            PiezoService(piezo, event_bus, mode_gate=self.mode_gate),
         )
 
         # Fluidics service (for MERFISH and other fluidics-based protocols)
@@ -904,12 +750,11 @@ class ApplicationContext:
         return self._simulation
 
     @property
-    def coordinator(self) -> Optional[ResourceCoordinator]:
-        """Get the resource coordinator.
-
-        Returns None if not yet built.
-        """
-        return self._coordinator
+    def mode_gate(self) -> GlobalModeGate:
+        """Get the global mode gate."""
+        if self._mode_gate is None:
+            raise RuntimeError("Mode gate not initialized")
+        return self._mode_gate
 
     def create_ui_event_bus(self) -> "UIEventBus":
         """Create UIEventBus for widget subscriptions.
@@ -968,28 +813,30 @@ class ApplicationContext:
         """Clean shutdown of all components."""
         self._log.info("Shutting down application...")
 
-        if self._gui:
-            self._gui.close()
-            self._gui = None
+        if self._gui is not None:
+            try:
+                setattr(self._gui, "_skip_close_confirmation", True)
+            except Exception:
+                pass
+            try:
+                self._gui.close()
+            except Exception:
+                self._log.exception("Failed to close GUI during shutdown")
+            finally:
+                self._gui = None
 
         # Shutdown controllers
         if self._controllers:
             if self._controllers.live:
                 self._controllers.live.stop_live()
+            if getattr(self._controllers, "live_focus", None):
+                try:
+                    self._controllers.live_focus.stop_live()  # type: ignore[union-attr]
+                except Exception:
+                    self._log.exception("Failed to stop focus LiveController during shutdown")
             # StreamHandler doesn't have a stop method currently
 
-        # Stop the backend actor before services/microscope
-        if self._backend_actor:
-            self._backend_actor.stop()
-            self._backend_actor = None
-        if self._command_router:
-            self._command_router.unregister_all()
-            self._command_router = None
-
-        # Stop the resource coordinator
-        if self._coordinator:
-            self._coordinator.stop()
-            self._coordinator = None
+        self._shutdown_hardware()
 
         # Shutdown services
         if self._services:
@@ -1005,5 +852,99 @@ class ApplicationContext:
 
         # Stop the global EventBus dispatch thread
         event_bus.stop()
+        # Clear subscribers to avoid leaking old controller/service handlers across tests/runs.
+        event_bus.clear()
 
         self._log.info("Application shutdown complete")
+
+    def _shutdown_hardware(self) -> None:
+        """Best-effort hardware reset that must not raise.
+
+        The goal is to keep UI code free of hardware orchestration, and
+        centralize shutdown behavior here.
+        """
+        if self._services is None:
+            return
+        if self._microscope is None:
+            return
+
+        try:
+            import _def as _def  # Local import to avoid circulars at import time
+        except Exception:
+            _def = None  # type: ignore[assignment]
+
+        stage_service = self._services.get("stage")
+        if stage_service is not None:
+            try:
+                import squid.mcs.drivers.stages.stage_utils as stage_utils
+
+                stage_utils.cache_position(
+                    pos=stage_service.get_position(),
+                    stage_config=stage_service.get_config(),
+                )
+            except Exception:
+                self._log.exception("Failed to cache stage position during shutdown")
+
+            if _def is not None:
+                try:
+                    stage_service.move_to(z_mm=float(_def.OBJECTIVE_RETRACTED_POS_MM), blocking=True)
+                except Exception:
+                    self._log.exception("Failed to retract Z during shutdown")
+
+        filter_service = self._services.get("filter_wheel")
+        if filter_service is not None:
+            try:
+                filter_service.set_filter_wheel_position({1: 1})
+            except Exception:
+                self._log.exception("Failed to reset emission filter wheel during shutdown")
+
+        camera_service = self._services.get("camera")
+        if camera_service is not None:
+            try:
+                camera_service.stop_streaming()
+            except Exception:
+                self._log.exception("Failed to stop camera streaming during shutdown")
+
+        focus_camera_service = self._services.get("camera_focus")
+        if focus_camera_service is not None:
+            try:
+                focus_camera_service.stop_streaming()
+            except Exception:
+                self._log.exception("Failed to stop focus camera streaming during shutdown")
+
+        if _def is not None and getattr(_def, "USE_XERYON", False):
+            objective_service = self._services.get("objective_changer")
+            if objective_service is not None:
+                try:
+                    objective_service.set_position(0)
+                except Exception:
+                    self._log.exception("Failed to reset objective changer during shutdown")
+
+        try:
+            self._microscope.low_level_drivers.microcontroller.turn_off_all_pid()
+        except Exception:
+            self._log.exception("Failed to turn off microcontroller PID during shutdown")
+
+        if _def is not None and getattr(_def, "ENABLE_CELLX", False):
+            try:
+                cellx = getattr(self._microscope.addons, "cellx", None)
+                if cellx is not None:
+                    for channel in [1, 2, 3, 4]:
+                        try:
+                            cellx.turn_off(channel)
+                        except Exception:
+                            pass
+                    try:
+                        cellx.close()
+                    except Exception:
+                        pass
+            except Exception:
+                self._log.exception("Failed to shut down CellX during shutdown")
+
+        if _def is not None and getattr(_def, "RUN_FLUIDICS", False):
+            try:
+                fluidics = getattr(self._microscope.addons, "fluidics", None)
+                if fluidics is not None:
+                    fluidics.close()
+            except Exception:
+                self._log.exception("Failed to shut down fluidics during shutdown")

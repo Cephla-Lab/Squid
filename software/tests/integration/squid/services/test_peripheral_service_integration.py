@@ -28,6 +28,7 @@ def test_dac_command_calls_micro_and_publishes_event(simulated_microcontroller):
     simulated_microcontroller.analog_write_onboard_DAC = spy
 
     bus.publish(SetDACCommand(channel=0, value=50.0))
+    bus.drain()
 
     spy.assert_called_once_with(0, 32768)
     assert dac_events and dac_events[0].value == pytest.approx(50.0)
@@ -49,6 +50,7 @@ def test_trigger_commands_reach_microcontroller(simulated_microcontroller):
     bus.publish(StartCameraTriggerCommand())
     bus.publish(SetCameraTriggerFrequencyCommand(fps=12.5))
     bus.publish(StopCameraTriggerCommand())
+    bus.drain()
 
     start_spy.assert_called_once_with()
     stop_spy.assert_called_once_with()

@@ -12,7 +12,7 @@ import numpy as np
 os.environ["QT_API"] = "pyqt5"
 import pyqtgraph as pg
 import scipy.ndimage
-from qtpy.QtCore import QObject, Qt, QTimer, Signal
+from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtGui import QCursor
 from qtpy.QtWidgets import (
     QDesktopWidget,
@@ -29,8 +29,8 @@ from qtpy.QtWidgets import (
 from _def import ENABLE_TRACKING, SpotDetectionMode
 from squid.ops.configuration import ContrastManager
 import squid.core.utils.hardware_utils as utils
-from squid.mcs.controllers.live_controller import LiveController
 import squid.core.logging
+from squid.core.events import AutoLevelCommand, LiveStateChanged, MicroscopeModeChanged
 
 
 class ImageDisplay(QObject):
@@ -90,16 +90,17 @@ class ImageDisplayWindow(QMainWindow):
 
     def __init__(
         self,
-        liveController: Optional[LiveController] = None,
         contrastManager: Optional[ContrastManager] = None,
+        event_bus: Optional["EventBus"] = None,
         window_title: str = "",
         show_LUT: bool = False,
         autoLevels: bool = False,
     ) -> None:
         super().__init__()
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
-        self.liveController: Optional[LiveController] = liveController
         self.contrastManager: Optional[ContrastManager] = contrastManager
+        self._event_bus: Optional["EventBus"] = event_bus
+        self._current_configuration_name: str = "Unknown"
         self.setWindowTitle(window_title)
         self.setWindowFlags(self.windowFlags() | Qt.CustomizeWindowHint)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint)
@@ -108,6 +109,17 @@ class ImageDisplayWindow(QMainWindow):
         self.autoLevels: bool = autoLevels
 
         self.first_image: bool = True
+        if self._event_bus is not None:
+            try:
+                self._event_bus.subscribe(
+                    AutoLevelCommand, lambda e: self.set_autolevel(e.enabled)
+                )
+                self._event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
+                self._event_bus.subscribe(
+                    MicroscopeModeChanged, self._on_microscope_mode_changed
+                )
+            except Exception:
+                pass
 
         # Store last valid cursor position
         self.last_valid_x: int = 0
@@ -185,8 +197,9 @@ class ImageDisplayWindow(QMainWindow):
         # Initialize labels with default text
         self.cursor_position_label.setText("Position: (0, 0)")
         self.pixel_value_label.setText("Value: N/A")
-        self.stage_position_label.setText("Stage: X: 0.00 mm, Y: 0.00 mm, Z: 0.00 mm")
+        self.stage_position_label.setText("Stage: N/A")
         self.piezo_position_label.setText("Piezo: N/A")
+        self.piezo_position_label.setVisible(False)
 
         # interpret image data as row-major instead of col-major
         pg.setConfigOptions(imageAxisOrder="row-major")
@@ -301,47 +314,27 @@ class ImageDisplayWindow(QMainWindow):
                 self.handle_mouse_move
             )
 
-        # Set up timer for updating stage and piezo positions
-        self.update_timer: QTimer = QTimer()
-        self.update_timer.timeout.connect(self.update_stage_piezo_positions)
-        self.update_timer.start(100)  # Update every 100ms
+        if self._event_bus is not None:
+            from squid.core.events import StagePositionChanged, PiezoPositionChanged
 
-    def update_stage_piezo_positions(self) -> None:
+            self._event_bus.subscribe(StagePositionChanged, self._on_stage_position_changed)
+            self._event_bus.subscribe(PiezoPositionChanged, self._on_piezo_position_changed)
+
+    def _on_stage_position_changed(self, event: Any) -> None:
         try:
-            if self.liveController and self.liveController.microscope:
-                stage = self.liveController.microscope.stage
-                if stage:
-                    pos = stage.get_pos()
-                    self.stage_position_label.setText(
-                        f"Stage: X={pos.x_mm:.2f} mm, Y={pos.y_mm:.2f} mm, Z={pos.z_mm:.3f} mm"
-                    )
-                else:
-                    self.stage_position_label.setText("Stage: N/A")
-
-                piezo = self.liveController.microscope.addons.piezo_stage
-                if piezo:
-                    try:
-                        piezo_pos = piezo.position
-                        self.piezo_position_label.setText(f"Piezo: {piezo_pos:.1f} µm")
-                        self.piezo_position_label.setVisible(True)
-                    except Exception as e:
-                        self._log.error(f"Error getting piezo position: {str(e)}")
-                        self.piezo_position_label.setText("Piezo: Error")
-                        self.piezo_position_label.setVisible(True)
-                else:
-                    self.piezo_position_label.setVisible(False)
-            else:
-                self.stage_position_label.setText("Stage: N/A")
-                self.piezo_position_label.setVisible(False)
-        except Exception as e:
-            self._log.error(f"Error updating stage/piezo positions: {str(e)}")
+            self.stage_position_label.setText(
+                f"Stage: X={event.x_mm:.2f} mm, Y={event.y_mm:.2f} mm, Z={event.z_mm:.3f} mm"
+            )
+        except Exception:
             self.stage_position_label.setText("Stage: Error")
-            self.piezo_position_label.setVisible(False)
 
-    def closeEvent(self, event: Any) -> None:
-        # Stop the timer when the window is closed
-        self.update_timer.stop()
-        super().closeEvent(event)
+    def _on_piezo_position_changed(self, event: Any) -> None:
+        try:
+            self.piezo_position_label.setText(f"Piezo: {event.position_um:.1f} µm")
+            self.piezo_position_label.setVisible(True)
+        except Exception:
+            self.piezo_position_label.setText("Piezo: Error")
+            self.piezo_position_label.setVisible(True)
 
     def toggle_line_profiler(self) -> None:
         """Toggle the visibility of the line profiler widget."""
@@ -752,9 +745,8 @@ class ImageDisplayWindow(QMainWindow):
         )
         min_val, max_val = info.min, info.max
 
-        if self.liveController is not None and self.contrastManager is not None:
-            channel_cfg = getattr(self.liveController, "currentConfiguration", None)
-            channel_name = getattr(channel_cfg, "name", "Unknown")
+        if self.contrastManager is not None:
+            channel_name = self._current_configuration_name or "Unknown"
             if (
                 self.contrastManager.acquisition_dtype is not None
                 and self.contrastManager.acquisition_dtype != np.dtype(image.dtype)
@@ -914,9 +906,18 @@ class ImageDisplayWindow(QMainWindow):
             and self.contrastManager.acquisition_dtype
         ):
             min_val, max_val = self.LUTWidget.region.getRegion()
-            cfg = getattr(self.liveController, "currentConfiguration", None)
-            channel_name = getattr(cfg, "name", "Unknown")
+            channel_name = self._current_configuration_name or "Unknown"
             self.contrastManager.update_limits(channel_name, min_val, max_val)
+
+    def _on_live_state_changed(self, event: LiveStateChanged) -> None:
+        if getattr(event, "camera", "main") != "main":
+            return
+        if event.configuration:
+            self._current_configuration_name = event.configuration
+
+    def _on_microscope_mode_changed(self, event: MicroscopeModeChanged) -> None:
+        if event.configuration_name:
+            self._current_configuration_name = event.configuration_name
 
     def update_ROI(self) -> None:
         self.roi_pos = self.ROI.pos()

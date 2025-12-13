@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from enum import Enum, auto
 from threading import Thread
-from typing import Optional, Tuple, Any, List, Set, Callable
+from typing import Optional, Tuple, Any, List, Set
 
 import numpy as np
 import pandas as pd
@@ -24,14 +24,10 @@ from squid.ops.acquisition.multi_point_utils import (
 from squid.ops.navigation import ScanCoordinates
 from squid.mcs.controllers.autofocus import LaserAutofocusController
 from squid.mcs.controllers.live_controller import LiveController
-from squid.mcs.microscope import Microscope
 from squid.ops.acquisition.multi_point_worker import MultiPointWorker
 from squid.ops.navigation import ObjectiveStore
-from squid.mcs.microcontroller import Microcontroller
-from squid.mcs.drivers.peripherals.piezo import PiezoStage
-from squid.core.abc import CameraFrame, AbstractCamera, AbstractStage
 from squid.core.state_machine import StateMachine, InvalidStateTransition
-from squid.core.coordinator import ResourceCoordinator, Resource, GlobalMode, ResourceLease
+from squid.core.mode_gate import GlobalMode, GlobalModeGate
 import squid.core.logging
 
 from typing import TYPE_CHECKING
@@ -59,6 +55,8 @@ if TYPE_CHECKING:
         PiezoService,
         FluidicsService,
         NL5Service,
+        IlluminationService,
+        FilterWheelService,
     )
     from squid.core.events import EventBus
 
@@ -74,41 +72,27 @@ class AcquisitionControllerState(Enum):
     FAILED = auto()  # Error occurred
 
 
-# Resources required by MultiPointController during acquisition
-ACQUISITION_REQUIRED_RESOURCES: Set[Resource] = {
-    Resource.CAMERA_CONTROL,
-    Resource.STAGE_CONTROL,
-    Resource.ILLUMINATION_CONTROL,
-    Resource.FOCUS_AUTHORITY,
-}
-
-
 class MultiPointController(StateMachine[AcquisitionControllerState]):
     def __init__(
         self,
-        microscope: Microscope,
         live_controller: LiveController,
         autofocus_controller: AutoFocusController,
         objective_store: ObjectiveStore,
         channel_configuration_manager: ChannelConfigurationManager,
+        camera_service: "CameraService",
+        stage_service: "StageService",
+        peripheral_service: "PeripheralService",
+        event_bus: "EventBus",
+        *,
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
-        # Service-based parameters
-        camera_service: Optional["CameraService"] = None,
-        stage_service: Optional["StageService"] = None,
-        peripheral_service: Optional["PeripheralService"] = None,
         piezo_service: Optional["PiezoService"] = None,
         fluidics_service: Optional["FluidicsService"] = None,
         nl5_service: Optional["NL5Service"] = None,
-        event_bus: Optional["EventBus"] = None,
-        coordinator: Optional[ResourceCoordinator] = None,
-        subscribe_to_bus: bool = True,
-        # Display callbacks (data plane - Qt signal bridge for mosaic display)
-        on_new_image_fn: Optional[Callable] = None,
-        on_acquisition_start_fn: Optional[Callable] = None,
-        on_acquisition_finish_fn: Optional[Callable] = None,
-        on_current_configuration_fn: Optional[Callable] = None,
-        on_current_fov_fn: Optional[Callable] = None,
+        illumination_service: Optional["IlluminationService"] = None,
+        filter_wheel_service: Optional["FilterWheelService"] = None,
+        mode_gate: Optional[GlobalModeGate] = None,
+        stream_handler: Optional[object] = None,
     ):
         # Initialize state machine with transitions
         # IDLE -> PREPARING: start acquisition
@@ -145,13 +129,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             name="MultiPointController",
         )
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
-        self.microscope: Microscope = microscope
-        self.camera: AbstractCamera = microscope.camera
-        self.stage: AbstractStage = microscope.stage
-        self.piezo: Optional[PiezoStage] = microscope.addons.piezo_stage
-        self.microcontroller: Microcontroller = (
-            microscope.low_level_drivers.microcontroller
-        )
         self.liveController: LiveController = live_controller
         self.autofocusController: AutoFocusController = autofocus_controller
         self.laserAutoFocusController: LaserAutofocusController = (
@@ -162,7 +139,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             channel_configuration_manager
         )
         self.multiPointWorker: Optional[MultiPointWorker] = None
-        self.fluidics: Optional[Any] = microscope.addons.fluidics
         self.thread: Optional[Thread] = None
 
         # Store services and event bus
@@ -172,19 +148,15 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self._piezo_service = piezo_service
         self._fluidics_service = fluidics_service
         self._nl5_service = nl5_service
-        self._coordinator = coordinator
-        self._resource_lease: Optional[ResourceLease] = None
-        self._bus_enabled = subscribe_to_bus
+        self._illumination_service = illumination_service
+        self._filter_wheel_service = filter_wheel_service
+        self._mode_gate = mode_gate
+        self._stream_handler = stream_handler
 
-        # Display callbacks (data plane - Qt signal bridge for mosaic display)
-        self._on_new_image_fn = on_new_image_fn
-        self._on_acquisition_start_fn = on_acquisition_start_fn
-        self._on_acquisition_finish_fn = on_acquisition_finish_fn
-        self._on_current_configuration_fn = on_current_configuration_fn
-        self._on_current_fov_fn = on_current_fov_fn
-
-        if self._stage_service is None or self._camera_service is None:
-            raise ValueError("MultiPointController requires StageService and CameraService")
+        if self._stage_service is None or self._camera_service is None or self._peripheral_service is None:
+            raise ValueError(
+                "MultiPointController requires StageService, CameraService, and PeripheralService"
+            )
 
         self.NX: int = 1
         self.deltaX: float = _def.Acquisition.DX
@@ -224,7 +196,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self._subscribe_to_bus()
 
     def _subscribe_to_bus(self) -> None:
-        if self._event_bus is None or not self._bus_enabled:
+        if self._event_bus is None:
             return
         # Command handlers
         self._event_bus.subscribe(SetFluidicsRoundsCommand, self._on_set_fluidics_rounds)
@@ -245,54 +217,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         # The AcquisitionStateChanged event is already published via _publish_acquisition_state
         # This method provides additional state machine state info if needed
         pass  # State publishing handled by _publish_acquisition_state for compatibility
-
-    def _acquire_resources(self) -> bool:
-        """Acquire required resources from coordinator.
-
-        Returns:
-            True if resources acquired (or no coordinator), False if unavailable
-        """
-        if self._coordinator is None:
-            return True  # No coordinator, proceed without resource tracking
-
-        lease = self._coordinator.acquire(
-            resources=ACQUISITION_REQUIRED_RESOURCES,
-            owner="MultiPointController",
-            mode=GlobalMode.ACQUIRING,
-        )
-        if lease is None:
-            self._log.warning("Could not acquire resources for acquisition")
-            return False
-
-        self._resource_lease = lease
-        self._log.debug(f"Acquired resource lease: {lease.lease_id[:8]}")
-        return True
-
-    def _release_resources(self) -> None:
-        """Release held resources back to coordinator."""
-        if self._coordinator is None or self._resource_lease is None:
-            return
-
-        self._coordinator.release(self._resource_lease)
-        self._log.debug(f"Released resource lease: {self._resource_lease.lease_id[:8]}")
-        self._resource_lease = None
-
-    def detach_event_bus_commands(self) -> None:
-        """Unsubscribe EventBus command handlers for actor routing (worker events stay subscribed)."""
-        if self._event_bus is None:
-            return
-        self._bus_enabled = False
-        try:
-            # Command handlers
-            self._event_bus.unsubscribe(SetFluidicsRoundsCommand, self._on_set_fluidics_rounds)
-            self._event_bus.unsubscribe(SetAcquisitionParametersCommand, self._on_set_acquisition_parameters)
-            self._event_bus.unsubscribe(SetAcquisitionPathCommand, self._on_set_acquisition_path)
-            self._event_bus.unsubscribe(SetAcquisitionChannelsCommand, self._on_set_acquisition_channels)
-            self._event_bus.unsubscribe(StartNewExperimentCommand, self._on_start_new_experiment)
-            self._event_bus.unsubscribe(StartAcquisitionCommand, self._on_start_acquisition)
-            self._event_bus.unsubscribe(StopAcquisitionCommand, self._on_stop_acquisition)
-        except Exception:
-            pass
 
     def _require_experiment_id(self) -> str:
         """Ensure an experiment ID exists before publishing acquisition events."""
@@ -328,7 +252,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         )
 
     def set_use_piezo(self, checked: bool) -> None:
-        if checked and self.piezo is None:
+        if checked and (self._piezo_service is None or not self._piezo_service.is_available):
             raise ValueError("Cannot enable piezo - no piezo stage configured")
         self.use_piezo = checked
         # TODO(imo): Why do we only allow runtime updates of use_piezo (not all the other params?)
@@ -601,10 +525,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self._log.info("run_acquisition: ENTER")
         _t0 = _time.perf_counter()
 
-        resources_acquired = False
-        published_started = False
-        transitioned_preparing = False
-
         # Check if in IDLE state
         if not self._is_in_state(AcquisitionControllerState.IDLE):
             self._log.warning(f"Cannot start acquisition - state is {self.state.name}")
@@ -613,15 +533,9 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         try:
             # Transition to PREPARING
             self._transition_to(AcquisitionControllerState.PREPARING)
-            transitioned_preparing = True
 
-            # Acquire resources
-            if not self._acquire_resources():
-                self._log.warning("Could not acquire resources, aborting acquisition")
-                self._transition_to(AcquisitionControllerState.FAILED)
-                self._transition_to(AcquisitionControllerState.IDLE)
-                return
-            resources_acquired = True
+            if self._mode_gate:
+                self._mode_gate.set_mode(GlobalMode.ACQUIRING, reason="acquisition start")
 
             # Ensure we have an experiment ID before publishing any acquisition events
             self._require_experiment_id()
@@ -629,9 +543,9 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self._log.info(f"run_acquisition: passed state check ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
 
             if not self.validate_acquisition_settings():
-                # emit acquisition finished signal to re-enable the UI
                 self._publish_acquisition_state(in_progress=False, allow_missing_experiment_id=True)
-                self._release_resources()
+                if self._mode_gate:
+                    self._mode_gate.set_mode(GlobalMode.IDLE, reason="acquisition start failed")
                 self._transition_to(AcquisitionControllerState.FAILED)
                 self._transition_to(AcquisitionControllerState.IDLE)
                 return
@@ -641,7 +555,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # Publish acquisition started state
             self._log.info("run_acquisition: about to publish in_progress=True")
             self._publish_acquisition_state(in_progress=True)
-            published_started = True
             self._log.info(f"run_acquisition: published in_progress=True ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
 
             self._log.info("start multipoint")
@@ -662,6 +575,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                     objectiveStore=self.scanCoordinates.objectiveStore,
                     stage=self.scanCoordinates.stage,
                     camera=self.scanCoordinates.camera,
+                    event_bus=self._event_bus,
                 )
                 acquisition_scan_coordinates.clear_regions()
                 acquisition_scan_coordinates.add_single_fov_region(
@@ -710,8 +624,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # Debug: show FOV counts per region
             for region_id, coords in scan_position_information.scan_region_fov_coords_mm.items():
                 self._log.info(f"  region '{region_id}': {len(coords)} FOVs")
-
-            self.abort_acqusition_requested: bool = False
 
             self.configuration_before_running_multipoint: Any = (
                 self.liveController.currentConfiguration
@@ -765,7 +677,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                             )
                         except RuntimeError:
                             pass
-                    self._release_resources()
+                    if self._mode_gate:
+                        self._mode_gate.set_mode(GlobalMode.IDLE, reason="acquisition start failed")
                     self._transition_to(AcquisitionControllerState.FAILED)
                     self._transition_to(AcquisitionControllerState.IDLE)
                     return
@@ -834,30 +747,27 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 scan_position_information=scan_position_information
             )
             self.multiPointWorker = MultiPointWorker(
-                scope=self.microscope,
-                live_controller=self.liveController,
                 auto_focus_controller=self.autofocusController,
                 laser_auto_focus_controller=self.laserAutoFocusController,
                 objective_store=self.objectiveStore,
                 channel_configuration_mananger=self.channelConfigurationManager,
                 acquisition_parameters=acquisition_params,
-                abort_requested_fn=lambda: self.abort_acqusition_requested,
-                request_abort_fn=self.request_abort_aquisition,
                 extra_job_classes=[],
                 # Pass services and event bus
                 camera_service=self._camera_service,
                 stage_service=self._stage_service,
                 peripheral_service=self._peripheral_service,
+                trigger_mode=getattr(self.liveController, "trigger_mode", _def.TriggerMode.SOFTWARE),
+                illumination_service=self._illumination_service,
+                filter_wheel_service=self._filter_wheel_service,
+                enable_channel_auto_filter_switching=getattr(
+                    self.liveController, "enable_channel_auto_filter_switching", True
+                ),
                 piezo_service=self._piezo_service,
                 fluidics_service=self._fluidics_service,
                 nl5_service=self._nl5_service,
                 event_bus=self._event_bus,
-                # Pass display callbacks for mosaic/live view updates
-                on_new_image_fn=self._on_new_image_fn,
-                on_acquisition_start_fn=self._on_acquisition_start_fn,
-                on_acquisition_finish_fn=self._on_acquisition_finish_fn,
-                on_current_configuration_fn=self._on_current_configuration_fn,
-                on_current_fov_fn=self._on_current_fov_fn,
+                stream_handler=self._stream_handler,
             )
             # Allow tests/simulation to override long frame wait timeouts.
             if hasattr(self, "frame_wait_timeout_override_s"):
@@ -877,14 +787,16 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self._log.exception("Failed to start acquisition")
             # Always try to notify listeners that we're no longer running
             self._publish_acquisition_state(in_progress=False, allow_missing_experiment_id=True)
-            if resources_acquired:
-                self._release_resources()
+            if self._mode_gate:
+                self._mode_gate.set_mode(GlobalMode.IDLE, reason="acquisition start failed")
 
-            if transitioned_preparing and self._is_in_state(AcquisitionControllerState.PREPARING):
+            if self._is_in_state(AcquisitionControllerState.PREPARING, AcquisitionControllerState.RUNNING):
                 try:
                     self._transition_to(AcquisitionControllerState.FAILED)
                 except InvalidStateTransition:
-                    self._force_state(AcquisitionControllerState.FAILED, reason="cleanup after failed start")
+                    self._force_state(
+                        AcquisitionControllerState.FAILED, reason="cleanup after failed start"
+                    )
 
             if self._is_in_state(AcquisitionControllerState.FAILED):
                 try:
@@ -945,7 +857,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # Restore callbacks to pre-acquisition state
             self._camera_service.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
 
-            # emit the acquisition finished signal to enable the UI
             self._log.info(
                 f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}"
             )
@@ -968,12 +879,9 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 self._stage_service.move_z_to(z_mm)
                 self._start_position = None
 
-            # Note: We don't emit signal_current_fov here because:
-            # 1. The stage has returned to start position, not an acquired FOV
-            # 2. The scan grid will be redrawn by reset_coordinates() called from acquisition_is_finished()
-            # 3. Emitting here would add an extra blue rectangle at the start position
-
             # re-enable live AFTER stage has returned to start position
+            if self._mode_gate and self._mode_gate.get_mode() in (GlobalMode.ACQUIRING, GlobalMode.ABORTING):
+                self._mode_gate.set_mode(GlobalMode.IDLE, reason="acquisition complete")
             if (
                 self.liveController_was_live_before_multipoint
                 and _def.RESUME_LIVE_AFTER_ACQUISITION
@@ -989,13 +897,15 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # Transition to COMPLETED or FAILED based on worker result
             # Only transition if we're in a state that can transition
             if self._is_in_state(AcquisitionControllerState.RUNNING, AcquisitionControllerState.ABORTING):
-                if success and not self.abort_acqusition_requested:
+                if self._is_in_state(AcquisitionControllerState.ABORTING):
+                    self._transition_to(AcquisitionControllerState.COMPLETED)
+                elif success:
                     self._transition_to(AcquisitionControllerState.COMPLETED)
                 else:
                     self._transition_to(AcquisitionControllerState.FAILED)
 
-                # Release resources and reset to IDLE
-                self._release_resources()
+                if self._mode_gate and self._mode_gate.get_mode() in (GlobalMode.ACQUIRING, GlobalMode.ABORTING):
+                    self._mode_gate.set_mode(GlobalMode.IDLE, reason="acquisition complete")
                 self._transition_to(AcquisitionControllerState.IDLE)
 
     def request_abort_aquisition(self) -> None:
@@ -1004,7 +914,13 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self._log.warning(f"Cannot abort - state is {self.state.name}")
             return
 
-        self.abort_acqusition_requested = True
+        if self.multiPointWorker is not None:
+            try:
+                self.multiPointWorker.request_abort()
+            except Exception:  # pragma: no cover - defensive
+                self._log.exception("Failed to signal worker abort")
+        if self._mode_gate:
+            self._mode_gate.set_mode(GlobalMode.ABORTING, reason="acquisition abort requested")
         # Transition to ABORTING state
         self._transition_to(AcquisitionControllerState.ABORTING)
         # Publish aborting state
@@ -1028,8 +944,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
     def _on_set_fluidics_rounds(self, cmd: SetFluidicsRoundsCommand) -> None:
         """Handle SetFluidicsRoundsCommand from EventBus."""
-        if self.fluidics is not None:
-            self.fluidics.set_rounds(cmd.rounds)
+        if self._fluidics_service is not None:
+            self._fluidics_service.set_rounds(cmd.rounds)
 
     def _on_set_acquisition_parameters(self, cmd: SetAcquisitionParametersCommand) -> None:
         """Handle SetAcquisitionParametersCommand from EventBus."""

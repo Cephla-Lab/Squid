@@ -24,7 +24,7 @@ class PeripheralService(BaseService):
     Widgets should use this service instead of calling microcontroller directly.
     """
 
-    def __init__(self, microcontroller, event_bus: EventBus):
+    def __init__(self, microcontroller, event_bus: EventBus, mode_gate=None):
         """
         Initialize peripheral service.
 
@@ -32,7 +32,7 @@ class PeripheralService(BaseService):
             microcontroller: Microcontroller instance
             event_bus: EventBus for communication
         """
-        super().__init__(event_bus)
+        super().__init__(event_bus, mode_gate=mode_gate)
         self._microcontroller = microcontroller
         self._lock = threading.RLock()
 
@@ -49,6 +49,9 @@ class PeripheralService(BaseService):
 
     def _on_set_dac_command(self, event: SetDACCommand):
         """Handle SetDACCommand event."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         self.set_dac(event.channel, event.value)
 
     def set_dac(self, channel: int, percentage: float) -> None:
@@ -77,11 +80,17 @@ class PeripheralService(BaseService):
 
     def _on_start_trigger_command(self, event: StartCameraTriggerCommand) -> None:
         """Handle start trigger command."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         with self._lock:
             self._microcontroller.start_camera_trigger()
 
     def _on_stop_trigger_command(self, event: StopCameraTriggerCommand) -> None:
         """Handle stop trigger command."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         with self._lock:
             self._microcontroller.stop_camera_trigger()
 
@@ -89,11 +98,17 @@ class PeripheralService(BaseService):
         self, event: SetCameraTriggerFrequencyCommand
     ) -> None:
         """Handle trigger frequency command."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         with self._lock:
             self._microcontroller.set_camera_trigger_frequency(event.fps)
 
     def _on_turn_on_af_laser_command(self, event: TurnOnAFLaserCommand) -> None:
         """Handle AF laser on command."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         with self._lock:
             self._microcontroller.turn_on_AF_laser()
             if event.wait_for_completion:
@@ -101,6 +116,9 @@ class PeripheralService(BaseService):
 
     def _on_turn_off_af_laser_command(self, event: TurnOffAFLaserCommand) -> None:
         """Handle AF laser off command."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         with self._lock:
             self._microcontroller.turn_off_AF_laser()
             if event.wait_for_completion:

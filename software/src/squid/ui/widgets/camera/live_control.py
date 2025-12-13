@@ -9,12 +9,6 @@ class LiveControlWidget(EventBusFrame):
     Does NOT access hardware or controllers directly.
     """
 
-    signal_newExposureTime: Signal = Signal(float)
-    signal_newAnalogGain: Signal = Signal(float)
-    signal_autoLevelSetting: Signal = Signal(bool)
-    signal_live_configuration: Signal = Signal(object)
-    signal_start_live: Signal = Signal()
-
     def __init__(
         self,
         event_bus: "UIEventBus",
@@ -77,9 +71,13 @@ class LiveControlWidget(EventBusFrame):
         self._subscribe(TriggerModeChanged, self._on_trigger_mode_changed)
         self._subscribe(TriggerFPSChanged, self._on_trigger_fps_changed)
         self._subscribe(MicroscopeModeChanged, self._on_microscope_mode_changed)
+        self._subscribe(AutoLevelCommand, self._on_autolevel_command)
         self._subscribe(ObjectiveChanged, self._on_objective_changed)
         self._subscribe(ChannelConfigurationsChanged, self._on_channel_configs_changed)
         self._subscribe(ProfileChanged, self._on_profile_changed)
+
+    def _on_autolevel_command(self, event: AutoLevelCommand) -> None:
+        self.toggle_autolevel(event.enabled)
 
     def add_components(
         self,
@@ -234,14 +232,14 @@ class LiveControlWidget(EventBusFrame):
         self.entry_illuminationIntensity.valueChanged.connect(
             lambda x: self.slider_illuminationIntensity.setValue(int(x))
         )
-        self.btn_autolevel.toggled.connect(self.signal_autoLevelSetting.emit)
+        self.btn_autolevel.toggled.connect(
+            lambda enabled: self._publish(AutoLevelCommand(enabled=enabled))
+        )
         self.btn_live.clicked.connect(self.toggle_live)
 
     def toggle_live(self, pressed: bool) -> None:
         self._log.info(f"toggle_live called with pressed={pressed}")
         if pressed:
-            self.signal_live_configuration.emit(self.currentConfiguration)
-            self.signal_start_live.emit()
             self._publish(StartLiveCommand(configuration=self.currentConfiguration.name))
         else:
             self._log.info("Publishing StopLiveCommand")
@@ -249,6 +247,8 @@ class LiveControlWidget(EventBusFrame):
 
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Handle live state changes from the event bus."""
+        if getattr(event, "camera", "main") != "main":
+            return
         self._log.info(f"_on_live_state_changed: is_live={event.is_live}")
         if event.is_live:
             self.btn_live.setChecked(True)
@@ -259,12 +259,16 @@ class LiveControlWidget(EventBusFrame):
 
     def _on_trigger_mode_changed(self, event: TriggerModeChanged) -> None:
         """Handle trigger mode change from service."""
+        if getattr(event, "camera", "main") != "main":
+            return
         self.dropdown_triggerManu.blockSignals(True)
         self.dropdown_triggerManu.setCurrentText(event.mode)
         self.dropdown_triggerManu.blockSignals(False)
 
     def _on_trigger_fps_changed(self, event: TriggerFPSChanged) -> None:
         """Handle trigger FPS change from service."""
+        if getattr(event, "camera", "main") != "main":
+            return
         self.entry_triggerFPS.blockSignals(True)
         self.entry_triggerFPS.setValue(event.fps)
         self.entry_triggerFPS.blockSignals(False)
@@ -300,6 +304,13 @@ class LiveControlWidget(EventBusFrame):
         """Handle objective change event."""
         if event.objective_name:
             self._current_objective = event.objective_name
+            # Re-apply current configuration for the new objective.
+            self._publish(
+                SetMicroscopeModeCommand(
+                    configuration_name=self.currentConfiguration.name,
+                    objective=self._current_objective,
+                )
+            )
 
     def _on_channel_configs_changed(self, event: ChannelConfigurationsChanged) -> None:
         """Handle channel configurations changed event."""
@@ -326,7 +337,6 @@ class LiveControlWidget(EventBusFrame):
         self.currentConfiguration.name = conf_name
 
         self._log.info(f"Mode changed to {conf_name}")
-        self.signal_live_configuration.emit(self.currentConfiguration)
         self._publish(
             SetMicroscopeModeCommand(
                 configuration_name=conf_name,

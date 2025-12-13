@@ -98,12 +98,16 @@ class TriggerControlWidget(EventBusFrame):
 
     def _on_trigger_mode_changed(self, event: TriggerModeChanged) -> None:
         """Sync UI from trigger mode state changes."""
+        if getattr(event, "camera", "main") != "main":
+            return
         self.dropdown_triggerManu.blockSignals(True)
         self.dropdown_triggerManu.setCurrentText(event.mode)
         self.dropdown_triggerManu.blockSignals(False)
 
     def _on_trigger_fps_changed(self, event: TriggerFPSChanged) -> None:
         """Sync UI from trigger FPS state changes."""
+        if getattr(event, "camera", "main") != "main":
+            return
         self.entry_triggerFPS.blockSignals(True)
         self.entry_triggerFPS.setValue(event.fps)
         self.entry_triggerFPS.blockSignals(False)

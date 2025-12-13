@@ -1,19 +1,12 @@
 from dataclasses import dataclass
-import os
 import time
-from datetime import datetime
-from queue import Queue
-from threading import Thread, Lock
-from typing import Callable
+from typing import Callable, Optional
 
 import cv2
-import imageio as iio
 import numpy as np
-from qtpy.QtCore import QObject, Signal
 
 import squid.core.utils.hardware_utils as utils
 import _def
-from _def import Acquisition
 from squid.core.abc import CameraFrame
 
 
@@ -23,6 +16,7 @@ class StreamHandlerFunctions:
     packet_image_to_write: Callable[[np.ndarray, int, float], None]
     signal_new_frame_received: Callable[[], None]
     accept_new_frame: Callable[[], bool]
+    capture: Callable[[np.ndarray, object], None] = lambda _image, _info: None
 
 
 NoOpStreamHandlerFunctions = StreamHandlerFunctions(
@@ -30,6 +24,7 @@ NoOpStreamHandlerFunctions = StreamHandlerFunctions(
     packet_image_to_write=lambda a, i, f: None,
     signal_new_frame_received=lambda: None,
     accept_new_frame=lambda: True,
+    capture=lambda _image, _info: None,
 )
 
 
@@ -76,10 +71,34 @@ class StreamHandler:
         self.display_resolution_scaling = display_resolution_scaling / 100
         print(self.display_resolution_scaling)
 
-    def set_functions(self, functions: StreamHandlerFunctions) -> None:
+    def set_functions(self, functions: Optional[StreamHandlerFunctions], *, merge: bool = False) -> None:
         if not functions:
             functions = NoOpStreamHandlerFunctions
-        self._fns = functions
+        if not merge or self._fns is NoOpStreamHandlerFunctions:
+            self._fns = functions
+            return
+
+        previous = self._fns
+
+        def _chain_call(a: Callable, b: Callable) -> Callable:
+            def _chained(*args, **kwargs):
+                a(*args, **kwargs)
+                b(*args, **kwargs)
+
+            return _chained
+
+        def _chain_accept(a: Callable[[], bool], b: Callable[[], bool]) -> Callable[[], bool]:
+            return lambda: bool(a()) and bool(b())
+
+        self._fns = StreamHandlerFunctions(
+            image_to_display=_chain_call(previous.image_to_display, functions.image_to_display),
+            packet_image_to_write=_chain_call(previous.packet_image_to_write, functions.packet_image_to_write),
+            signal_new_frame_received=_chain_call(
+                previous.signal_new_frame_received, functions.signal_new_frame_received
+            ),
+            accept_new_frame=_chain_accept(previous.accept_new_frame, functions.accept_new_frame),
+            capture=_chain_call(previous.capture, functions.capture),
+        )
 
     def on_new_frame(self, frame: CameraFrame) -> None:
         if not self._fns.accept_new_frame():
@@ -126,218 +145,56 @@ class StreamHandler:
 
         self.handler_busy = False
 
-
-class QtStreamHandler(QObject):
-    image_to_display = Signal(np.ndarray)
-    packet_image_to_write = Signal(np.ndarray, int, float)
-    signal_new_frame_received = Signal()
-
-    def __init__(
+    def on_new_image(
         self,
-        display_resolution_scaling: float = 1,
-        accept_new_frame_fn: Callable[[], bool] = lambda: True,
+        image: np.ndarray,
+        frame_id: int = 0,
+        timestamp: Optional[float] = None,
+        *,
+        is_color: Optional[bool] = None,
+        respect_accept_new_frame: bool = False,
+        capture_info: Optional[object] = None,
     ) -> None:
-        super().__init__()
+        """Push an image into the StreamHandler without a CameraFrame wrapper.
 
-        functions = StreamHandlerFunctions(
-            image_to_display=self.image_to_display.emit,
-            packet_image_to_write=self.packet_image_to_write.emit,
-            signal_new_frame_received=self.signal_new_frame_received.emit,
-            accept_new_frame=accept_new_frame_fn,
-        )
-        self._handler = StreamHandler(
-            handler_functions=functions,
-            display_resolution_scaling=display_resolution_scaling,
-        )
+        Used for frames produced by worker threads (e.g., acquisition/autofocus)
+        where camera callback delivery is disabled/stopped.
+        """
+        if respect_accept_new_frame and not self._fns.accept_new_frame():
+            return
 
-    def get_frame_callback(self) -> Callable[[CameraFrame], None]:
-        return self._handler.on_new_frame
+        if timestamp is None:
+            timestamp = time.time()
 
-    def start_recording(self) -> None:
-        self._handler.start_recording()
+        self.handler_busy = True
+        self._fns.signal_new_frame_received()
 
-    def stop_recording(self) -> None:
-        self._handler.stop_recording()
+        image = np.squeeze(image)
 
-    def set_display_fps(self, fps: float) -> None:
-        self._handler.set_display_fps(fps)
-
-    def set_save_fps(self, fps: float) -> None:
-        self._handler.set_save_fps(fps)
-
-    def set_display_resolution_scaling(self, display_resolution_scaling: float) -> None:
-        self._handler.set_display_resolution_scaling(display_resolution_scaling)
-
-
-class ImageSaver(QObject):
-    stop_recording = Signal()
-
-    def __init__(self, image_format: str = Acquisition.IMAGE_FORMAT) -> None:
-        QObject.__init__(self)
-        self.base_path: str = "./"
-        self.experiment_ID: str = ""
-        self.image_format: str = image_format
-        self.max_num_image_per_folder: int = 1000
-        self.queue: Queue = Queue(10)  # max 10 items in the queue
-        self.image_lock: Lock = Lock()
-        self.stop_signal_received: bool = False
-        self.thread: Thread = Thread(target=self.process_queue, daemon=True)
-        self.thread.start()
-        self.counter: int = 0
-        self.recording_start_time: float = 0
-        self.recording_time_limit: float = -1
-
-    def process_queue(self) -> None:
-        while True:
-            # stop the thread if stop signal is received
-            if self.stop_signal_received:
-                return
-            # process the queue
+        if capture_info is not None:
             try:
-                [image, frame_ID, timestamp] = self.queue.get(timeout=0.1)
-                self.image_lock.acquire(True)
-                folder_ID = int(self.counter / self.max_num_image_per_folder)
-                file_ID = int(self.counter % self.max_num_image_per_folder)
-                # create a new folder
-                if file_ID == 0:
-                    utils.ensure_directory_exists(
-                        os.path.join(self.base_path, self.experiment_ID, str(folder_ID))
-                    )
-
-                if image.dtype == np.uint16:
-                    # need to use tiff when saving 16 bit images
-                    saving_path = os.path.join(
-                        self.base_path,
-                        self.experiment_ID,
-                        str(folder_ID),
-                        str(file_ID) + "_" + str(frame_ID) + ".tiff",
-                    )
-                    iio.imwrite(saving_path, image)
-                else:
-                    saving_path = os.path.join(
-                        self.base_path,
-                        self.experiment_ID,
-                        str(folder_ID),
-                        str(file_ID) + "_" + str(frame_ID) + "." + self.image_format,
-                    )
-                    cv2.imwrite(saving_path, image)
-
-                self.counter = self.counter + 1
-                self.queue.task_done()
-                self.image_lock.release()
+                self._fns.capture(image, capture_info)
             except Exception:
+                # Never let UI fanout failures break the worker/data-plane path.
                 pass
 
-    def enqueue(self, image: np.ndarray, frame_ID: int, timestamp: float) -> None:
-        try:
-            self.queue.put_nowait([image, frame_ID, timestamp])
-            if (self.recording_time_limit > 0) and (
-                time.time() - self.recording_start_time >= self.recording_time_limit
-            ):
-                self.stop_recording.emit()
-            # when using self.queue.put(str_), program can be slowed down despite multithreading because of the block and the GIL
-        except Exception:
-            print("imageSaver queue is full, image discarded")
-
-    def set_base_path(self, path: str) -> None:
-        self.base_path = path
-
-    def set_recording_time_limit(self, time_limit: float) -> None:
-        self.recording_time_limit = time_limit
-
-    def start_new_experiment(
-        self, experiment_ID: str, add_timestamp: bool = True
-    ) -> None:
-        if add_timestamp:
-            # generate unique experiment ID
-            self.experiment_ID = (
-                experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+        time_now = time.time()
+        if time_now - self.timestamp_last_display >= 1 / self.fps_display:
+            self._fns.image_to_display(
+                utils.crop_image(
+                    image,
+                    round(image.shape[1] * self.display_resolution_scaling),
+                    round(image.shape[0] * self.display_resolution_scaling),
+                )
             )
-        else:
-            self.experiment_ID = experiment_ID
-        self.recording_start_time = time.time()
-        # create a new folder
-        try:
-            utils.ensure_directory_exists(
-                os.path.join(self.base_path, self.experiment_ID)
-            )
-            # to do: save configuration
-        except Exception:
-            pass
-        # reset the counter
-        self.counter = 0
+            self.timestamp_last_display = time_now
 
-    def close(self) -> None:
-        self.queue.join()
-        self.stop_signal_received = True
-        self.thread.join()
+        if self.save_image_flag and time_now - self.timestamp_last_save >= 1 / self.fps_save:
+            if is_color is None:
+                is_color = len(image.shape) > 2
+            if is_color:
+                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            self._fns.packet_image_to_write(image, frame_id, float(timestamp))
+            self.timestamp_last_save = time_now
 
-
-class ImageSaver_Tracking(QObject):
-    def __init__(self, base_path: str, image_format: str = "bmp") -> None:
-        QObject.__init__(self)
-        self.base_path: str = base_path
-        self.image_format: str = image_format
-        self.max_num_image_per_folder: int = 1000
-        self.queue: Queue = Queue(100)  # max 100 items in the queue
-        self.image_lock: Lock = Lock()
-        self.stop_signal_received: bool = False
-        self.thread: Thread = Thread(target=self.process_queue, daemon=True)
-        self.thread.start()
-
-    def process_queue(self) -> None:
-        while True:
-            # stop the thread if stop signal is received
-            if self.stop_signal_received:
-                return
-            # process the queue
-            try:
-                [image, frame_counter, postfix] = self.queue.get(timeout=0.1)
-                self.image_lock.acquire(True)
-                folder_ID = int(frame_counter / self.max_num_image_per_folder)
-                file_ID = int(frame_counter % self.max_num_image_per_folder)
-                # create a new folder
-                if file_ID == 0:
-                    utils.ensure_directory_exists(
-                        os.path.join(self.base_path, str(folder_ID))
-                    )
-                if image.dtype == np.uint16:
-                    saving_path = os.path.join(
-                        self.base_path,
-                        str(folder_ID),
-                        str(file_ID)
-                        + "_"
-                        + str(frame_counter)
-                        + "_"
-                        + postfix
-                        + ".tiff",
-                    )
-                    iio.imwrite(saving_path, image)
-                else:
-                    saving_path = os.path.join(
-                        self.base_path,
-                        str(folder_ID),
-                        str(file_ID)
-                        + "_"
-                        + str(frame_counter)
-                        + "_"
-                        + postfix
-                        + "."
-                        + self.image_format,
-                    )
-                    cv2.imwrite(saving_path, image)
-                self.queue.task_done()
-                self.image_lock.release()
-            except Exception:
-                pass
-
-    def enqueue(self, image: np.ndarray, frame_counter: int, postfix: str) -> None:
-        try:
-            self.queue.put_nowait([image, frame_counter, postfix])
-        except Exception:
-            print("imageSaver queue is full, image discarded")
-
-    def close(self) -> None:
-        self.queue.join()
-        self.stop_signal_received = True
-        self.thread.join()
+        self.handler_busy = False

@@ -42,19 +42,19 @@ Tests/docs:
 ## Implementation checklist
 
 ### 2.1 Remove infra + wiring
-- [ ] Delete `src/squid/core/actor/` package entirely.
-- [ ] Remove imports of `squid.core.actor.*` everywhere.
+- [x] Delete `src/squid/core/actor/` package entirely.
+- [x] Remove imports of `squid.core.actor.*` everywhere.
   - Grep: `rg "squid.core.actor" src/squid -S`
-- [ ] Delete `ApplicationContext._backend_actor` and `_command_router` fields.
-- [ ] Delete `_build_backend_actor()` and its invocation in `ApplicationContext.__init__`.
-- [ ] Remove actor stop/unregister in `ApplicationContext.shutdown`.
+- [x] Delete `ApplicationContext._backend_actor` and `_command_router` fields.
+- [x] Delete `_build_backend_actor()` and its invocation in `ApplicationContext.__init__`.
+- [x] Remove actor stop/unregister in `ApplicationContext.shutdown`.
 
 ### 2.2 Re-enable direct EventBus command subscriptions
-- [ ] In `ApplicationContext`, stop calling `detach_event_bus_commands()` on controllers.
-- [ ] Ensure controllers are built with:
+- [x] In `ApplicationContext`, stop calling `detach_event_bus_commands()` on controllers.
+- [x] Ensure controllers are built with:
   - `event_bus=event_bus`
   - `subscribe_to_bus=True` (or defaulted true).
-- [ ] Verify each controller subscribes to its commands in `_subscribe_to_bus`.
+- [x] Verify each controller subscribes to its commands in `_subscribe_to_bus`.
 
 Controllers currently actor-routed:
 - LiveController: `StartLiveCommand`, `StopLiveCommand`, etc.
@@ -75,19 +75,19 @@ These patterns exist solely to support “detach EventBus subscriptions and rout
 
 After BackendActor removal, delete these toggles and make controllers always subscribe when given a bus.
 
-- [ ] Delete `subscribe_to_bus` params across controllers.
-- [ ] Delete `detach_event_bus_commands` across controllers.
-- [ ] Delete `attach_event_bus` if no longer needed (keep only if genuinely required for DI/test wiring).
+- [x] Delete `subscribe_to_bus` params across controllers.
+- [x] Delete `detach_event_bus_commands` across controllers.
+- [x] Delete `attach_event_bus` if no longer needed (keep only if genuinely required for DI/test wiring).
 
 ### 2.3 Remove priority routing assumptions
-- [ ] Search for places relying on “Stop commands go first” due to BackendActor priority.
-- [ ] For now: accept FIFO ordering (still deterministic).
+- [x] Search for places relying on “Stop commands go first” due to BackendActor priority.
+- [x] For now: accept FIFO ordering (still deterministic).
 - [ ] Optional follow-up (Step 08): add priority to EventBus if needed.
 
 ### 2.4 Tests + cleanup
-- [ ] Remove unit tests that are only about BackendActor/router.
-- [ ] Replace any integration tests expecting backend actor thread with “EventBus dispatch thread” expectations.
-- [ ] Update docs to remove mentions of BackendActor/Router.
+- [x] Remove unit tests that are only about BackendActor/router.
+- [x] Replace any integration tests expecting backend actor thread with “EventBus dispatch thread” expectations.
+- [x] Update docs to remove mentions of BackendActor/Router.
 
 ## Verification
 
@@ -102,3 +102,7 @@ Run locally (no network):
 - No `src/squid/core/actor/` left.
 - No references to BackendActor/Router in code or docs.
 - Controllers/services handle all commands on EventBus dispatch thread.
+
+## Audit reference
+
+- `docs/implementation/actor_simplification/ACTOR_HARD_AUDIT.md`

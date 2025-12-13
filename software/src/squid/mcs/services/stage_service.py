@@ -2,7 +2,7 @@
 """Service for stage operations."""
 
 import threading
-from typing import Optional, Callable, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 from threading import Thread
 
 from squid.mcs.services.base import BaseService
@@ -16,9 +16,14 @@ from squid.core.events import (
     MoveStageToLoadingPositionCommand,
     MoveStageToScanningPositionCommand,
     StagePositionChanged,
+    StageMovementStopped,
+    ThreadedStageMoveBegan,
+    LoadingPositionReached,
+    ScanningPositionReached,
+    StageMoveToLoadingPositionFinished,
+    StageMoveToScanningPositionFinished,
 )
 import _def as _def
-import squid.core.utils.hardware_utils
 
 if TYPE_CHECKING:
     from squid.core.abc import AbstractStage, Pos
@@ -32,8 +37,8 @@ class StageService(BaseService):
     Widgets should use this service instead of calling stage directly.
     """
 
-    def __init__(self, stage: "AbstractStage", event_bus: EventBus):
-        super().__init__(event_bus)
+    def __init__(self, stage: "AbstractStage", event_bus: EventBus, mode_gate=None):
+        super().__init__(event_bus, mode_gate=mode_gate)
         self._stage = stage
         self._lock = threading.RLock()
         self._scanning_position_z_mm: Optional[float] = (
@@ -53,6 +58,11 @@ class StageService(BaseService):
         )
 
     def _on_move_command(self, event: MoveStageCommand):
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info(
+                "Ignoring %s due to global mode gate", type(event).__name__
+            )
+            return
         if event.axis == "x":
             self.move_x(event.distance_mm)
         elif event.axis == "y":
@@ -62,6 +72,11 @@ class StageService(BaseService):
 
     def _on_move_relative_command(self, event: MoveStageRelativeCommand):
         """Handle relative move with per-axis values."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info(
+                "Ignoring %s due to global mode gate", type(event).__name__
+            )
+            return
         if event.x_mm is not None:
             self.move_x(event.x_mm)
         if event.y_mm is not None:
@@ -70,45 +85,78 @@ class StageService(BaseService):
             self.move_z(event.z_mm)
 
     def _on_move_to_command(self, event: MoveStageToCommand):
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info(
+                "Ignoring %s due to global mode gate", type(event).__name__
+            )
+            return
         self.move_to(event.x_mm, event.y_mm, event.z_mm)
 
     def _on_home_command(self, event: HomeStageCommand):
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info(
+                "Ignoring %s due to global mode gate", type(event).__name__
+            )
+            return
         self.home(event.x, event.y, event.z, event.theta)
 
     def _on_zero_command(self, event: ZeroStageCommand):
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info(
+                "Ignoring %s due to global mode gate", type(event).__name__
+            )
+            return
         self.zero(event.x, event.y, event.z, event.theta)
 
     def _on_move_to_loading_command(self, event: MoveStageToLoadingPositionCommand):
-        self.move_to_loading_position(
-            blocking=event.blocking,
-            callback=event.callback,
-            is_wellplate=event.is_wellplate,
-        )
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info(
+                "Ignoring %s due to global mode gate", type(event).__name__
+            )
+            self.publish(
+                StageMoveToLoadingPositionFinished(
+                    success=False, error_message="Blocked by global mode gate"
+                )
+            )
+            return
+        self._start_threaded_special_move(kind="loading", is_wellplate=event.is_wellplate)
 
     def _on_move_to_scanning_command(self, event: MoveStageToScanningPositionCommand):
-        self.move_to_scanning_position(
-            blocking=event.blocking,
-            callback=event.callback,
-            is_wellplate=event.is_wellplate,
-        )
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info(
+                "Ignoring %s due to global mode gate", type(event).__name__
+            )
+            self.publish(
+                StageMoveToScanningPositionFinished(
+                    success=False, error_message="Blocked by global mode gate"
+                )
+            )
+            return
+        self._start_threaded_special_move(kind="scanning", is_wellplate=event.is_wellplate)
 
     def move_x(self, distance_mm: float, blocking: bool = True):
         """Move X axis by relative distance."""
         with self._lock:
             self._stage.move_x(distance_mm, blocking)
         self._publish_position()
+        if blocking:
+            self._publish_movement_stopped()
 
     def move_y(self, distance_mm: float, blocking: bool = True):
         """Move Y axis by relative distance."""
         with self._lock:
             self._stage.move_y(distance_mm, blocking)
         self._publish_position()
+        if blocking:
+            self._publish_movement_stopped()
 
     def move_z(self, distance_mm: float, blocking: bool = True):
         """Move Z axis by relative distance."""
         with self._lock:
             self._stage.move_z(distance_mm, blocking)
         self._publish_position()
+        if blocking:
+            self._publish_movement_stopped()
 
     def move_to(
         self,
@@ -126,6 +174,8 @@ class StageService(BaseService):
             if z_mm is not None:
                 self._stage.move_z_to(z_mm, blocking)
         self._publish_position()
+        if blocking:
+            self._publish_movement_stopped()
 
     def get_position(self) -> "Pos":
         """Get current position."""
@@ -139,6 +189,7 @@ class StageService(BaseService):
         with self._lock:
             self._stage.home(x, y, z, theta)
         self._publish_position()
+        self._publish_movement_stopped()
 
     def zero(
         self, x: bool = False, y: bool = False, z: bool = False, theta: bool = False
@@ -147,6 +198,7 @@ class StageService(BaseService):
         with self._lock:
             self._stage.zero(x, y, z, theta)
         self._publish_position()
+        self._publish_movement_stopped()
 
     def _publish_position(self):
         """Publish current position."""
@@ -162,6 +214,18 @@ class StageService(BaseService):
             )
         )
 
+    def _publish_movement_stopped(self) -> None:
+        """Publish a single movement-stopped event after a blocking move."""
+        with self._lock:
+            pos = self._stage.get_pos()
+        self.publish(
+            StageMovementStopped(
+                x_mm=pos.x_mm,
+                y_mm=pos.y_mm,
+                z_mm=pos.z_mm,
+            )
+        )
+
     # ============================================================
     # Task 2.1: Theta axis methods
     # ============================================================
@@ -171,12 +235,16 @@ class StageService(BaseService):
         with self._lock:
             self._stage.move_theta(distance_rad, blocking)  # type: ignore[attr-defined]
         self._publish_position()
+        if blocking:
+            self._publish_movement_stopped()
 
     def move_theta_to(self, abs_rad: float, blocking: bool = True) -> None:
         """Move theta to absolute position."""
         with self._lock:
             self._stage.move_theta_to(abs_rad, blocking)  # type: ignore[attr-defined]
         self._publish_position()
+        if blocking:
+            self._publish_movement_stopped()
 
     # ============================================================
     # Task 2.2: get_config method
@@ -239,77 +307,84 @@ class StageService(BaseService):
 
     def _move_to_loading_position_impl(self, is_wellplate: bool):
         """Internal: move to loading position."""
-        if is_wellplate:
-            a_large_limit_mm = 125
-            self._stage.set_limits(
-                x_pos_mm=a_large_limit_mm,
-                x_neg_mm=-a_large_limit_mm,
-                y_pos_mm=a_large_limit_mm,
-                y_neg_mm=-a_large_limit_mm,
-            )
-            self._scanning_position_z_mm = self._stage.get_pos().z_mm
-            self._stage.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
-            self._stage.wait_for_idle(_def.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
-            self._stage.move_y_to(15)
-            self._stage.move_x_to(35)
-            self._stage.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
-            self._stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
-            config = self._stage.get_config()
-            self._stage.set_limits(
-                x_pos_mm=config.X_AXIS.MAX_POSITION,
-                x_neg_mm=config.X_AXIS.MIN_POSITION,
-                y_pos_mm=config.Y_AXIS.MAX_POSITION,
-                y_neg_mm=config.Y_AXIS.MIN_POSITION,
-            )
-        else:
-            self._stage.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
-            self._stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
+        with self._lock:
+            if is_wellplate:
+                a_large_limit_mm = 125
+                self._stage.set_limits(
+                    x_pos_mm=a_large_limit_mm,
+                    x_neg_mm=-a_large_limit_mm,
+                    y_pos_mm=a_large_limit_mm,
+                    y_neg_mm=-a_large_limit_mm,
+                )
+                self._scanning_position_z_mm = self._stage.get_pos().z_mm
+                self._stage.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
+                self._stage.wait_for_idle(_def.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+                self._stage.move_y_to(15)
+                self._stage.move_x_to(35)
+                self._stage.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
+                self._stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
+                config = self._stage.get_config()
+                self._stage.set_limits(
+                    x_pos_mm=config.X_AXIS.MAX_POSITION,
+                    x_neg_mm=config.X_AXIS.MIN_POSITION,
+                    y_pos_mm=config.Y_AXIS.MAX_POSITION,
+                    y_neg_mm=config.Y_AXIS.MIN_POSITION,
+                )
+            else:
+                self._stage.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
+                self._stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
         self._publish_position()
+        self._publish_movement_stopped()
 
     def _move_to_scanning_position_impl(self, is_wellplate: bool):
         """Internal: move to scanning position."""
-        if is_wellplate:
-            self._stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
-            self._stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
-            if self._scanning_position_z_mm is not None:
-                self._stage.move_z_to(self._scanning_position_z_mm)
-            self._scanning_position_z_mm = None
-        else:
-            self._stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
-            self._stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
+        with self._lock:
+            if is_wellplate:
+                self._stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
+                self._stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
+                if self._scanning_position_z_mm is not None:
+                    self._stage.move_z_to(self._scanning_position_z_mm)
+                self._scanning_position_z_mm = None
+            else:
+                self._stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
+                self._stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
         self._publish_position()
+        self._publish_movement_stopped()
 
-    def move_to_loading_position(
-        self,
-        blocking: bool = True,
-        callback: Optional[Callable] = None,
-        is_wellplate: bool = True,
-    ) -> Optional[Thread]:
-        """Move stage to loading position."""
-        if blocking and callback:
-            raise ValueError("Callback not supported when blocking is True")
-        if blocking:
-            self._move_to_loading_position_impl(is_wellplate)
-            return None
-        return squid.core.utils.hardware_utils.threaded_operation_helper(
-            self._move_to_loading_position_impl, callback, is_wellplate=is_wellplate
-        )
+    def _start_threaded_special_move(self, kind: str, is_wellplate: bool) -> Thread:
+        self.publish(ThreadedStageMoveBegan())
 
-    def move_to_scanning_position(
-        self,
-        blocking: bool = True,
-        callback: Optional[Callable] = None,
-        is_wellplate: bool = True,
-    ) -> Optional[Thread]:
-        """Move stage to scanning position."""
-        if blocking and callback:
-            raise ValueError("Callback not supported when blocking is True")
-        if blocking:
-            self._move_to_scanning_position_impl(is_wellplate)
-            return None
-        return squid.core.utils.hardware_utils.threaded_operation_helper(
-            self._move_to_scanning_position_impl, callback, is_wellplate=is_wellplate
-        )
+        def _run() -> None:
+            try:
+                if kind == "loading":
+                    self._move_to_loading_position_impl(is_wellplate)
+                    self.publish(StageMoveToLoadingPositionFinished(success=True))
+                    self.publish(LoadingPositionReached())
+                elif kind == "scanning":
+                    self._move_to_scanning_position_impl(is_wellplate)
+                    self.publish(StageMoveToScanningPositionFinished(success=True))
+                    self.publish(ScanningPositionReached())
+                else:
+                    raise ValueError(f"Unknown special move kind: {kind!r}")
+            except Exception as exc:
+                message = str(exc) or exc.__class__.__name__
+                self._log.exception("Special stage move failed (%s)", kind)
+                if kind == "loading":
+                    self.publish(
+                        StageMoveToLoadingPositionFinished(
+                            success=False, error_message=message
+                        )
+                    )
+                elif kind == "scanning":
+                    self.publish(
+                        StageMoveToScanningPositionFinished(
+                            success=False, error_message=message
+                        )
+                    )
+
+        thread = Thread(target=_run, daemon=True)
+        thread.start()
+        return thread
 
     # ============================================================
     # Blocking move methods (for acquisition)
@@ -320,15 +395,21 @@ class StageService(BaseService):
         with self._lock:
             self._stage.move_x_to(x_mm, blocking)
         self._publish_position()
+        if blocking:
+            self._publish_movement_stopped()
 
     def move_y_to(self, y_mm: float, blocking: bool = True) -> None:
         """Move Y axis to absolute position."""
         with self._lock:
             self._stage.move_y_to(y_mm, blocking)
         self._publish_position()
+        if blocking:
+            self._publish_movement_stopped()
 
     def move_z_to(self, z_mm: float, blocking: bool = True) -> None:
         """Move Z axis to absolute position."""
         with self._lock:
             self._stage.move_z_to(z_mm, blocking)
         self._publish_position()
+        if blocking:
+            self._publish_movement_stopped()

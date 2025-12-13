@@ -4,6 +4,28 @@
 
 This document describes how to implement a Service Layer that separates GUI widgets from hardware control. Follow these tasks in order. Each task is self-contained with tests.
 
+## Final Target Architecture (Authoritative)
+
+This document is subordinate to the actor-model convergence plan:
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_00_MASTER_PLAN.md`
+
+Frozen invariants (acceptance criteria):
+- **I1**: Only one backend control thread exists: the core queued `EventBus` dispatch thread.
+- **I2**: UI thread never runs controller/service logic.
+- **I3**: No control-plane callbacks exist anywhere; control-plane communication is EventBus-only.
+- **I4**: Frames/images never go through EventBus; StreamHandler-only data plane.
+- **I5**: Long operations never block the control thread; use workers and report via events.
+- **I6**: Unsafe commands are backend-gated during acquisition/live conflicts.
+
+### Control Plane vs Data Plane
+
+- **Control plane**: commands + state events (EventBus only).
+- **Data plane**: high-rate image frames (StreamHandler only).
+
+### No shims / no compatibility layers
+
+Do not add “compat”, “deprecated”, “dual path”, or “no-op” wiring to keep old flows alive. Delete old paths and update all publishers/subscribers.
+
 **Principles:**
 - **TDD**: Write tests first, then implementation
 - **DRY**: Don't repeat yourself - one place for each piece of logic

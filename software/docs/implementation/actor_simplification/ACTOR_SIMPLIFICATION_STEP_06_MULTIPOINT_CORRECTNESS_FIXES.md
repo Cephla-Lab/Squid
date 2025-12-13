@@ -33,33 +33,33 @@ Fix concrete MultiPoint acquisition bugs found in audit and align acquisition wi
 ## Implementation checklist
 
 ### 6.1 Fix bounds + focus map generation
-- [ ] Re-indent as:
+- [x] Re-indent as:
   - If `self.focus_map`: use existing surface interpolation.
   - `elif self.gen_focus_map and not self.do_reflection_af:`:
     - compute `bounds = self.scanCoordinates.get_scan_bounds()`
     - if bounds invalid: publish failure + reset state.
     - else generate AF map and restore position.
-- [ ] Add a targeted unit test for the gen_focus_map path (simulation ok).
+- [x] Add a targeted unit test for the gen_focus_map path (simulation ok).
 
 ### 6.2 Remove legacy flags and duplicate state
-- [ ] Delete unused local flags in `run_acquisition`.
-- [ ] Derive `acquisition_in_progress` solely from state machine.
-- [ ] Replace `abort_acqusition_requested` with state or a single Event/flag guarded by state machine.
+- [x] Delete unused local flags in `run_acquisition`.
+- [x] Derive `acquisition_in_progress` solely from state machine.
+- [x] Replace `abort_acqusition_requested` with state or a single Event/flag guarded by state machine.
 
 ### 6.3 Ensure single completion path
-- [ ] Audit for any call sites of `_on_acquisition_completed` besides `_on_worker_finished`.
-- [ ] Remove any remaining direct invocations.
-- [ ] Ensure worker only publishes `AcquisitionWorkerFinished`.
+- [x] Audit for any call sites of `_on_acquisition_completed` besides `_on_worker_finished`.
+- [x] Remove any remaining direct invocations.
+- [x] Ensure worker only publishes `AcquisitionWorkerFinished`.
 
 ### 6.4 Mode gate
-- [ ] On acquisition start: `mode_gate.set_mode(ACQUIRING)`.
-- [ ] On abort request: `mode_gate.set_mode(ABORTING)`.
-- [ ] On completion: restore previous mode (IDLE or LIVE).
+- [x] On acquisition start: `mode_gate.set_mode(ACQUIRING)`.
+- [x] On abort request: `mode_gate.set_mode(ABORTING)`.
+- [x] On completion: restore previous mode (IDLE or LIVE).
 
 ### 6.5 Remove redundant compatibility publishing
-- [ ] Remove `AcquisitionFinished` publishing from `MultiPointWorker` (keep `AcquisitionWorkerFinished`).
-- [ ] Audit UI subscriptions and migrate any listeners to the canonical events.
-- [ ] Remove any remaining “emit signal to re-enable UI” comments/paths that imply callbacks.
+- [x] Remove `AcquisitionFinished` publishing from `MultiPointWorker` (keep `AcquisitionWorkerFinished`).
+- [x] Audit UI subscriptions and migrate any listeners to the canonical events.
+- [x] Remove any remaining “emit signal to re-enable UI” comments/paths that imply callbacks.
 
 ## Verification
 
@@ -73,3 +73,7 @@ Fix concrete MultiPoint acquisition bugs found in audit and align acquisition wi
 - Focus-map generation path works and cannot reference undefined `bounds`.
 - Completion/cleanup only runs on EventBus thread.
 - Acquisition obeys mode gate rules.
+
+## Audit reference
+
+- `docs/implementation/actor_simplification/ACTOR_HARD_AUDIT.md`

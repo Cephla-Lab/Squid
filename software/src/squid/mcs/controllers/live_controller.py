@@ -6,8 +6,7 @@ from enum import Enum, auto
 from typing import Optional, Set, TYPE_CHECKING
 
 import squid.core.logging
-from squid.mcs.microcontroller import Microcontroller
-from squid.core.abc import CameraAcquisitionMode, AbstractCamera
+from squid.core.abc import CameraAcquisitionMode
 from squid.mcs.services import CameraService
 from squid.mcs.services.peripheral_service import PeripheralService
 from squid.mcs.services.illumination_service import IlluminationService
@@ -28,13 +27,12 @@ from squid.core.events import (
     FilterAutoSwitchChanged,
 )
 from squid.core.state_machine import StateMachine, InvalidStateForOperation
-from squid.core.coordinator import ResourceCoordinator, Resource, GlobalMode, ResourceLease
+from squid.core.mode_gate import GlobalMode, GlobalModeGate
 
 from _def import *
 from squid.core.utils import utils_channel
 
 if TYPE_CHECKING:
-    from squid.mcs.microscope import Microscope
     from squid.core.utils.config_utils import ChannelMode
 
 
@@ -45,13 +43,6 @@ class LiveControllerState(Enum):
     STARTING = auto()
     LIVE = auto()
     STOPPING = auto()
-
-
-# Resources required by LiveController
-LIVE_REQUIRED_RESOURCES: Set[Resource] = {
-    Resource.CAMERA_CONTROL,
-    Resource.ILLUMINATION_CONTROL,
-}
 
 
 @dataclass
@@ -68,20 +59,18 @@ class LiveStateData:
 class LiveController(StateMachine[LiveControllerState]):
     def __init__(
         self,
-        microscope: "Microscope",
-        # NOTE(imo): Right now, Microscope needs to import LiveController.  So we can't properly annotate it here.
-        camera: AbstractCamera,
-        event_bus: Optional[EventBus] = None,
-        camera_service: Optional[CameraService] = None,
+        camera_service: CameraService,
+        event_bus: EventBus,
         illumination_service: Optional[IlluminationService] = None,
         peripheral_service: Optional[PeripheralService] = None,
         filter_wheel_service: Optional[FilterWheelService] = None,
         nl5_service: Optional[NL5Service] = None,
-        coordinator: Optional[ResourceCoordinator] = None,
+        mode_gate: Optional[GlobalModeGate] = None,
         control_illumination: bool = True,
         use_internal_timer_for_hardware_trigger: bool = True,
         for_displacement_measurement: bool = False,
-        subscribe_to_bus: bool = True,
+        *,
+        camera: str = "main",
     ) -> None:
         # Initialize state machine with transitions
         transitions = {
@@ -94,23 +83,20 @@ class LiveController(StateMachine[LiveControllerState]):
             initial_state=LiveControllerState.STOPPED,
             transitions=transitions,
             event_bus=event_bus,
-            name="LiveController",
+            name=f"LiveController[{camera}]",
         )
 
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         # Note: StateMachine base class provides self._lock
-        self.microscope: "Microscope" = microscope
-        self.camera: AbstractCamera = camera
-        self._bus: Optional[EventBus] = event_bus
+        self._bus: EventBus = event_bus
         self._bus_subscribed: bool = False
-        self._enable_bus_commands = subscribe_to_bus
-        self._camera_service = camera_service
+        self._camera_service: CameraService = camera_service
+        self._camera: str = camera
         self._illumination_service = illumination_service
         self._peripheral_service = peripheral_service
         self._filter_wheel_service = filter_wheel_service
         self._nl5_service = nl5_service
-        self._coordinator = coordinator
-        self._resource_lease: Optional[ResourceLease] = None
+        self._mode_gate = mode_gate
         self.currentConfiguration: Optional["ChannelMode"] = None
         self.trigger_mode: Optional[TriggerMode] = (
             TriggerMode.SOFTWARE
@@ -144,6 +130,11 @@ class LiveController(StateMachine[LiveControllerState]):
             trigger_fps=self.fps_trigger,
         )
 
+        if self.control_illumination and self._illumination_service is None:
+            raise ValueError(
+                "LiveController(control_illumination=True) requires IlluminationService"
+            )
+
         # Register valid commands per state
         self.register_valid_commands(
             LiveControllerState.STOPPED,
@@ -162,44 +153,14 @@ class LiveController(StateMachine[LiveControllerState]):
         if self._bus:
             is_live = new_state == LiveControllerState.LIVE
             self._bus.publish(LiveStateChanged(
+                camera=self._camera,
                 is_live=is_live,
                 configuration=self.currentConfiguration.name if self.currentConfiguration else None,
             ))
 
-    def _acquire_resources(self) -> bool:
-        """Acquire required resources from coordinator.
-
-        Returns:
-            True if resources acquired (or no coordinator), False if unavailable
-        """
-        if self._coordinator is None:
-            return True  # No coordinator, proceed without resource tracking
-
-        lease = self._coordinator.acquire(
-            resources=LIVE_REQUIRED_RESOURCES,
-            owner="LiveController",
-            mode=GlobalMode.LIVE,
-        )
-        if lease is None:
-            self._log.warning("Could not acquire resources for live view")
-            return False
-
-        self._resource_lease = lease
-        self._log.debug(f"Acquired resource lease: {lease.lease_id[:8]}")
-        return True
-
-    def _release_resources(self) -> None:
-        """Release held resources back to coordinator."""
-        if self._coordinator is None or self._resource_lease is None:
-            return
-
-        self._coordinator.release(self._resource_lease)
-        self._log.debug(f"Released resource lease: {self._resource_lease.lease_id[:8]}")
-        self._resource_lease = None
-
     def _subscribe_to_bus(self, bus: Optional[EventBus]) -> None:
         """Subscribe to command events once for the provided bus."""
-        if bus is None or self._bus_subscribed or not self._enable_bus_commands:
+        if bus is None or self._bus_subscribed:
             return
         bus.subscribe(StartLiveCommand, self._on_start_live_command)
         bus.subscribe(StopLiveCommand, self._on_stop_live_command)
@@ -213,243 +174,107 @@ class LiveController(StateMachine[LiveControllerState]):
         )
         self._bus_subscribed = True
 
-    def attach_event_bus(self, bus: EventBus) -> None:
-        """
-        Attach an EventBus after construction (for ApplicationContext wiring).
-
-        Idempotent: if already attached to the same bus, this is a no-op.
-        """
-        if self._bus is bus and self._bus_subscribed:
-            return
-        self._bus = bus
-        self._bus_subscribed = False
-        self._subscribe_to_bus(bus)
-
-    def detach_event_bus_commands(self) -> None:
-        """Unsubscribe from EventBus command handlers (for actor routing)."""
-        if self._bus is None or not self._bus_subscribed:
-            return
-        self._bus.unsubscribe(StartLiveCommand, self._on_start_live_command)
-        self._bus.unsubscribe(StopLiveCommand, self._on_stop_live_command)
-        self._bus.unsubscribe(SetTriggerModeCommand, self._on_set_trigger_mode_command)
-        self._bus.unsubscribe(SetTriggerFPSCommand, self._on_set_trigger_fps_command)
-        self._bus.unsubscribe(SetFilterAutoSwitchCommand, self._on_set_filter_auto_switch)
-        self._bus.unsubscribe(UpdateIlluminationCommand, self._on_update_illumination)
-        self._bus.unsubscribe(
-            SetDisplayResolutionScalingCommand,
-            self._on_set_display_resolution_scaling,
-        )
-        self._bus_subscribed = False
-
     # illumination control
-    def _extract_wavelength(self) -> Optional[int]:
-        """Safely extract wavelength from the current configuration name."""
+    def _get_illumination_channel(self) -> Optional[int]:
+        """Return the configured illumination channel for the current mode."""
         if self.currentConfiguration is None:
             return None
-        try:
-            wavelength = utils_channel.extract_wavelength_from_config_name(
-                self.currentConfiguration.name
-            )
-            return int(wavelength) if wavelength is not None else None
-        except Exception:
-            self._log.exception(
-                "Failed to extract wavelength from configuration name '%s'",
+        channel = getattr(self.currentConfiguration, "illumination_source", None)
+        if channel is None:
+            self._log.debug(
+                "Cannot control illumination: configuration missing illumination_source (%s)",
                 getattr(self.currentConfiguration, "name", None),
             )
+            return None
+        try:
+            return int(channel)
+        except Exception:
+            self._log.debug(
+                "Cannot control illumination: invalid illumination_source=%r (%s)",
+                channel,
+                getattr(self.currentConfiguration, "name", None),
+            )
+            return None
+
+    def _get_illumination_intensity(self) -> Optional[float]:
+        if self.currentConfiguration is None:
+            return None
+        intensity = getattr(self.currentConfiguration, "illumination_intensity", None)
+        if intensity is None:
+            intensity = getattr(self.currentConfiguration, "intensity", None)
+        if intensity is None:
+            return None
+        try:
+            return float(intensity)
+        except Exception:
             return None
 
     def turn_on_illumination(self) -> None:
         if self.currentConfiguration is None:
             return
-        wavelength = self._extract_wavelength()
-        if wavelength is None:
-            self._log.debug("Cannot turn on illumination: wavelength not found.")
+        if self._illumination_service is None:
             return
-        is_led_matrix = "LED matrix" in self.currentConfiguration.name
-        if (
-            self._illumination_service
-            and not is_led_matrix
-            and getattr(self._illumination_service, "has_channel", lambda c: True)(
-                wavelength
-            )
-        ):
-            try:
-                self._illumination_service.turn_on_channel(wavelength)
-                self.illumination_on = True
-                return
-            except Exception:
-                self._log.exception("Failed to turn on illumination via service")
-        # Fallback to legacy hardware paths if service unavailable
-        if "LED matrix" not in self.currentConfiguration.name:
-            if hasattr(self.microscope, "illumination_controller"):
-                self.microscope.illumination_controller.turn_on_illumination(
-                    wavelength
-                )
-            else:
-                self._log.warning("No illumination controller available to turn on channel")
-        elif self.microscope.addons.sci_microscopy_led_array and "LED matrix" in self.currentConfiguration.name:
-            self.microscope.addons.sci_microscopy_led_array.turn_on_illumination()
-        else:
-            self._log.warning("LED matrix illumination controller unavailable; skipping turn on")
+        channel = self._get_illumination_channel()
+        if channel is None:
+            return
+        try:
+            intensity = self._get_illumination_intensity()
+            if intensity is not None:
+                self._illumination_service.set_channel_power(channel, intensity)
+            self._illumination_service.turn_on_channel(channel)
+        except Exception:
+            self._log.exception("Failed to turn on illumination via service")
+            return
         self.illumination_on = True
 
     def turn_off_illumination(self) -> None:
         if self.currentConfiguration is None:
             return
-        wavelength = self._extract_wavelength()
-        if wavelength is None:
-            self._log.warning("Cannot turn off illumination: wavelength not found.")
+        if self._illumination_service is None:
             return
-        is_led_matrix = "LED matrix" in self.currentConfiguration.name
-        if (
-            self._illumination_service
-            and not is_led_matrix
-            and getattr(self._illumination_service, "has_channel", lambda c: True)(
-                wavelength
-            )
-        ):
-            try:
-                self._illumination_service.turn_off_channel(wavelength)
-                self.illumination_on = False
-                return
-            except Exception:
-                self._log.exception("Failed to turn off illumination via service")
-        if "LED matrix" not in self.currentConfiguration.name:
-            if hasattr(self.microscope, "illumination_controller"):
-                self.microscope.illumination_controller.turn_off_illumination(
-                    wavelength
-                )
-        elif self.microscope.addons.sci_microscopy_led_array and "LED matrix" in self.currentConfiguration.name:
-            self.microscope.addons.sci_microscopy_led_array.turn_off_illumination()
-        else:
-            self._log.warning("LED matrix illumination controller unavailable; skipping turn off")
+        channel = self._get_illumination_channel()
+        if channel is None:
+            return
+        try:
+            self._illumination_service.turn_off_channel(channel)
+        except Exception:
+            self._log.exception("Failed to turn off illumination via service")
+            return
         self.illumination_on = False
 
     def update_illumination(self) -> None:
         if self.currentConfiguration is None:
             return
-        illumination_source = self.currentConfiguration.illumination_source
-        intensity = self.currentConfiguration.illumination_intensity
-        is_led_matrix = "LED matrix" in self.currentConfiguration.name
+        if self._illumination_service is None:
+            return
+        illumination_source = self._get_illumination_channel()
+        intensity = self._get_illumination_intensity()
+        if illumination_source is None or intensity is None:
+            return
+        try:
+            self._illumination_service.set_channel_power(illumination_source, intensity)
+        except Exception:
+            self._log.exception("Failed to update illumination via service")
+            return
+
         if (
-            self._illumination_service
-            and not is_led_matrix
-            and getattr(self._illumination_service, "has_channel", lambda c: True)(
-                illumination_source
-            )
+            self._nl5_service
+            and NL5_USE_DOUT
+            and "Fluorescence" in self.currentConfiguration.name
         ):
             try:
-                self._illumination_service.set_channel_power(
-                    illumination_source, intensity
+                wavelength = int(
+                    utils_channel.extract_wavelength_from_config_name(
+                        self.currentConfiguration.name
+                    )
                 )
-                return
+                self._nl5_service.set_active_channel(NL5_WAVENLENGTH_MAP[wavelength])
+                if NL5_USE_AOUT:
+                    self._nl5_service.set_laser_power(
+                        NL5_WAVENLENGTH_MAP[wavelength], int(intensity)
+                    )
             except Exception:
-                self._log.exception("Failed to update illumination via service")
-        if illumination_source < 10:  # LED matrix
-            if self.microscope.addons.sci_microscopy_led_array:
-                # set color
-                led_array = self.microscope.addons.sci_microscopy_led_array
-                if "BF LED matrix full_R" in self.currentConfiguration.name:
-                    led_colors = (1, 0, 0)
-                elif "BF LED matrix full_G" in self.currentConfiguration.name:
-                    led_colors = (0, 1, 0)
-                elif "BF LED matrix full_B" in self.currentConfiguration.name:
-                    led_colors = (0, 0, 1)
-                else:
-                    led_colors = SCIMICROSCOPY_LED_ARRAY_DEFAULT_COLOR
-
-                # set mode
-                if "BF LED matrix left half" in self.currentConfiguration.name:
-                    led_mode = "dpc.l"
-                elif "BF LED matrix right half" in self.currentConfiguration.name:
-                    led_mode = "dpc.r"
-                elif "BF LED matrix top half" in self.currentConfiguration.name:
-                    led_mode = "dpc.t"
-                elif "BF LED matrix bottom half" in self.currentConfiguration.name:
-                    led_mode = "dpc.b"
-                elif "BF LED matrix full" in self.currentConfiguration.name:
-                    led_mode = "bf"
-                elif "DF LED matrix" in self.currentConfiguration.name:
-                    led_mode = "df"
-                else:
-                    self._log.warning(
-                        "Unknown configuration name, using default mode 'bf'."
-                    )
-                    led_mode = "bf"
-
-                led_array.set_color(led_colors)
-                led_array.set_brightness(intensity)
-                led_array.set_illumination(led_mode)
-            else:
-                micro: Microcontroller = (
-                    self.microscope.low_level_drivers.microcontroller
-                )
-                if "BF LED matrix full_R" in self.currentConfiguration.name:
-                    micro.set_illumination_led_matrix(
-                        illumination_source, r=(intensity / 100), g=0, b=0
-                    )
-                elif "BF LED matrix full_G" in self.currentConfiguration.name:
-                    micro.set_illumination_led_matrix(
-                        illumination_source, r=0, g=(intensity / 100), b=0
-                    )
-                elif "BF LED matrix full_B" in self.currentConfiguration.name:
-                    micro.set_illumination_led_matrix(
-                        illumination_source, r=0, g=0, b=(intensity / 100)
-                    )
-                else:
-                    micro.set_illumination_led_matrix(
-                        illumination_source,
-                        r=(intensity / 100) * LED_MATRIX_R_FACTOR,
-                        g=(intensity / 100) * LED_MATRIX_G_FACTOR,
-                        b=(intensity / 100) * LED_MATRIX_B_FACTOR,
-                    )
-        else:
-            # update illumination
-            wavelength = int(
-                utils_channel.extract_wavelength_from_config_name(
-                    self.currentConfiguration.name
-                )
-            )
-            self.microscope.illumination_controller.set_intensity(wavelength, intensity)
-            if (
-                self._nl5_service
-                and NL5_USE_DOUT
-                and "Fluorescence" in self.currentConfiguration.name
-            ):
-                try:
-                    self._nl5_service.set_active_channel(
-                        NL5_WAVENLENGTH_MAP[wavelength]
-                    )
-                    if NL5_USE_AOUT:
-                        self._nl5_service.set_laser_power(
-                            NL5_WAVENLENGTH_MAP[wavelength], int(intensity)
-                        )
-                    if self.microscope.addons.cellx and ENABLE_CELLX:
-                        self.microscope.addons.cellx.set_laser_power(
-                            NL5_WAVENLENGTH_MAP[wavelength], int(intensity)
-                        )
-                except Exception:
-                    self._log.exception("Failed to set NL5 laser power via service")
-
-        # set emission filter position
-        if ENABLE_SPINNING_DISK_CONFOCAL:
-            if self.microscope.addons.xlight and not USE_DRAGONFLY:
-                try:
-                    self.microscope.addons.xlight.set_emission_filter(
-                        XLIGHT_EMISSION_FILTER_MAPPING[illumination_source],
-                        extraction=False,
-                        validate=XLIGHT_VALIDATE_WHEEL_POS,
-                    )
-                except Exception as e:
-                    print("not setting emission filter position due to " + str(e))
-            elif USE_DRAGONFLY and self.microscope.addons.dragonfly:
-                try:
-                    self.microscope.addons.dragonfly.set_emission_filter(
-                        self.microscope.addons.dragonfly.get_camera_port(),
-                        self.currentConfiguration.emission_filter_position,
-                    )
-                except Exception as e:
-                    print("not setting emission filter position due to " + str(e))
+                self._log.exception("Failed to set NL5 laser power via service")
 
         if (
             self._filter_wheel_service
@@ -459,7 +284,7 @@ class LiveController(StateMachine[LiveControllerState]):
             try:
                 delay = 0
                 if self.trigger_mode == TriggerMode.HARDWARE:
-                    delay = -self.camera.get_strobe_time()
+                    delay = -self._camera_service.get_strobe_time()
                 self._filter_wheel_service.set_delay_offset_ms(delay)
                 self._filter_wheel_service.set_filter_wheel_position(
                     {1: self.currentConfiguration.emission_filter_position}
@@ -467,29 +292,19 @@ class LiveController(StateMachine[LiveControllerState]):
             except Exception:
                 self._log.exception("Failed to set emission filter position via service")
 
-    def _resolve_configuration(self, configuration: Optional[str]) -> Optional["ChannelMode"]:
-        """Resolve a configuration name to a ChannelMode if possible."""
-        if configuration is None:
-            return None
-        manager = getattr(self.microscope, "channel_configuration_manager", None)
-        objective_store = getattr(self.microscope, "objective_store", None)
-        current_objective = getattr(objective_store, "current_objective", None)
-        if manager is None or current_objective is None:
-            return None
-        try:
-            return manager.get_channel_configuration_by_name(  # type: ignore[attr-defined]
-                current_objective, configuration
-            )
-        except Exception:
-            self._log.exception("Failed to resolve configuration %s", configuration)
-            return None
-
     def start_live(self, configuration: Optional[str] = None) -> None:
         """Start live imaging using the state machine/resource guard path."""
         self._start_live(configuration)
 
     def _start_live(self, configuration: Optional[str]) -> None:
         self._log.info(f"_start_live: is_live={self.is_live}, config={configuration}")
+
+        previous_mode = self._mode_gate.get_mode() if self._mode_gate else None
+        if self._mode_gate and self._mode_gate.blocked_for_ui_hardware_commands():
+            self._log.info(
+                "Ignoring start live: mode=%s", self._mode_gate.get_mode().name
+            )
+            return
 
         if not self._is_in_state(LiveControllerState.STOPPED):
             self._log.info(f"Cannot start live: state is {self.state.name}")
@@ -502,37 +317,17 @@ class LiveController(StateMachine[LiveControllerState]):
             self._log.warning("Invalid state for start_live")
             return
 
-        # Try to acquire resources
-        if not self._acquire_resources():
-            self._log.warning("Could not acquire resources, aborting start_live")
-            self._transition_to(LiveControllerState.STOPPED)
-            return
-
         try:
             with self._lock:
-                resolved_configuration = self._resolve_configuration(configuration)
-                if resolved_configuration is not None:
-                    self.currentConfiguration = resolved_configuration
-
                 self.is_live = True
 
-                # Start streaming via services when available
-                if self._camera_service:
-                    self._camera_service.start_streaming()
-                    if self.trigger_mode == TriggerMode.SOFTWARE or (
-                        self.trigger_mode == TriggerMode.HARDWARE
-                        and self.use_internal_timer_for_hardware_trigger
-                    ):
-                        self._camera_service.enable_callbacks(True)
-                        self._start_triggerred_acquisition()
-                else:
-                    self.camera.start_streaming()
-                    if self.trigger_mode == TriggerMode.SOFTWARE or (
-                        self.trigger_mode == TriggerMode.HARDWARE
-                        and self.use_internal_timer_for_hardware_trigger
-                    ):
-                        self.camera.enable_callbacks(True)
-                        self._start_triggerred_acquisition()
+                self._camera_service.start_streaming()
+                if self.trigger_mode == TriggerMode.SOFTWARE or (
+                    self.trigger_mode == TriggerMode.HARDWARE
+                    and self.use_internal_timer_for_hardware_trigger
+                ):
+                    self._camera_service.enable_callbacks(True)
+                    self._start_triggerred_acquisition()
 
                 if self.for_displacement_measurement:
                     if self._peripheral_service:
@@ -556,12 +351,15 @@ class LiveController(StateMachine[LiveControllerState]):
                 )
         except Exception:
             self._log.exception("Failed to start live; cleaning up")
-            self._release_resources()
+            if self._mode_gate and previous_mode is not None:
+                self._mode_gate.restore_mode(previous_mode, reason="live start failed")
             self._transition_to(LiveControllerState.STOPPED)
             return
 
         # Transition to LIVE (publishes state changed event via _publish_state_changed)
         self._transition_to(LiveControllerState.LIVE)
+        if self._mode_gate:
+            self._mode_gate.set_mode(GlobalMode.LIVE, reason="live start")
 
     def stop_live(self) -> None:
         """Stop live imaging using the state machine/resource guard path."""
@@ -585,10 +383,7 @@ class LiveController(StateMachine[LiveControllerState]):
                     and self.use_internal_timer_for_hardware_trigger
                 ):
                     self._stop_triggerred_acquisition()
-                if self._camera_service:
-                    self._camera_service.stop_streaming()
-                else:
-                    self.camera.stop_streaming()
+                self._camera_service.stop_streaming()
                 if self.control_illumination:
                     self.turn_off_illumination()
                 if self.for_displacement_measurement:
@@ -608,15 +403,15 @@ class LiveController(StateMachine[LiveControllerState]):
                 )
         except Exception:
             self._log.exception("Failed while stopping live; forcing STOPPED")
-            self._release_resources()
+            if self._mode_gate:
+                self._mode_gate.set_mode(GlobalMode.IDLE, reason="live stop failed")
             self._force_state(LiveControllerState.STOPPED, reason="stop_live failure")
             return
 
-        # Release resources
-        self._release_resources()
-
         # Transition to STOPPED (publishes state changed event via _publish_state_changed)
         self._transition_to(LiveControllerState.STOPPED)
+        if self._mode_gate:
+            self._mode_gate.set_mode(GlobalMode.IDLE, reason="live stop")
 
     def _trigger_acquisition_timer_fn(self) -> None:
         if self.trigger_acquisition():
@@ -632,19 +427,11 @@ class LiveController(StateMachine[LiveControllerState]):
     # software trigger related
     def trigger_acquisition(self) -> bool:
         with self._lock:
-            ready = (
-                self._camera_service.get_ready_for_trigger()
-                if self._camera_service
-                else self.camera.get_ready_for_trigger()
-            )
+            ready = self._camera_service.get_ready_for_trigger()
             if not ready:
                 self._trigger_skip_count += 1
                 if self._trigger_skip_count % 100 == 1:
-                    total_frame_time = (
-                        self._camera_service.get_total_frame_time()
-                        if self._camera_service
-                        else getattr(self.camera, "get_total_frame_time", lambda: 0)()
-                    )
+                    total_frame_time = self._camera_service.get_total_frame_time()
                     self._log.debug(
                         f"Not ready for trigger, skipping (_trigger_skip_count={self._trigger_skip_count}, total frame time = {total_frame_time} [ms])."
                     )
@@ -657,10 +444,7 @@ class LiveController(StateMachine[LiveControllerState]):
 
             self.trigger_ID = self.trigger_ID + 1
 
-            if self._camera_service:
-                self._camera_service.send_trigger()
-            else:
-                self.camera.send_trigger(self.camera.get_exposure_time())
+            self._camera_service.send_trigger()
 
             return True
 
@@ -723,15 +507,21 @@ class LiveController(StateMachine[LiveControllerState]):
                     and self.use_internal_timer_for_hardware_trigger
                 ):
                     self._stop_triggerred_acquisition()
-                self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+                self._camera_service.set_acquisition_mode(
+                    CameraAcquisitionMode.SOFTWARE_TRIGGER
+                )
                 if self.is_live:
                     self._start_triggerred_acquisition()
             if mode == TriggerMode.HARDWARE:
                 if self.trigger_mode == TriggerMode.SOFTWARE and self.is_live:
                     self._stop_triggerred_acquisition()
-                self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+                self._camera_service.set_acquisition_mode(
+                    CameraAcquisitionMode.HARDWARE_TRIGGER
+                )
                 if self.currentConfiguration is not None:
-                    self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
+                    self._camera_service.set_exposure_time(
+                        self.currentConfiguration.exposure_time
+                    )
 
                 if self.is_live and self.use_internal_timer_for_hardware_trigger:
                     self._start_triggerred_acquisition()
@@ -741,7 +531,7 @@ class LiveController(StateMachine[LiveControllerState]):
                     and self.use_internal_timer_for_hardware_trigger
                 ):
                     self._stop_triggerred_acquisition()
-                self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
+                self._camera_service.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
             self.trigger_mode = mode
 
     def set_trigger_fps(self, fps: float) -> None:
@@ -767,18 +557,11 @@ class LiveController(StateMachine[LiveControllerState]):
             # set camera exposure time and analog gain
             exposure = self.currentConfiguration.exposure_time
             gain = self.currentConfiguration.analog_gain
-            if self._camera_service:
-                self._camera_service.set_exposure_time(exposure)
-                try:
-                    self._camera_service.set_analog_gain(gain)
-                except Exception:
-                    self._log.debug("Analog gain not supported by camera service")
-            else:
-                self.camera.set_exposure_time(exposure)
-                try:
-                    self.camera.set_analog_gain(gain)
-                except NotImplementedError:
-                    pass
+            self._camera_service.set_exposure_time(exposure)
+            try:
+                self._camera_service.set_analog_gain(gain)
+            except Exception:
+                self._log.debug("Analog gain not supported by camera service")
 
             # set illumination
             if self.control_illumination:
@@ -837,16 +620,22 @@ class LiveController(StateMachine[LiveControllerState]):
 
     def _on_start_live_command(self, cmd: StartLiveCommand) -> None:
         """Handle StartLiveCommand from EventBus."""
+        if getattr(cmd, "camera", "main") != self._camera:
+            return
         self._log.info(f"_on_start_live_command: is_live={self.is_live}, config={cmd.configuration}")
         self._start_live(cmd.configuration)
 
     def _on_stop_live_command(self, cmd: StopLiveCommand) -> None:
         """Handle StopLiveCommand from EventBus."""
+        if getattr(cmd, "camera", "main") != self._camera:
+            return
         self._log.info(f"_on_stop_live_command: is_live={self.is_live}")
         self._stop_live()
 
     def _on_set_trigger_mode_command(self, cmd: SetTriggerModeCommand) -> None:
         """Handle SetTriggerModeCommand from EventBus."""
+        if getattr(cmd, "camera", "main") != self._camera:
+            return
         mode = self._str_to_trigger_mode(cmd.mode)
 
         with self._lock:
@@ -856,31 +645,21 @@ class LiveController(StateMachine[LiveControllerState]):
                     and self.use_internal_timer_for_hardware_trigger
                 ):
                     self._stop_triggerred_acquisition()
-                if self._camera_service:
-                    self._camera_service.set_acquisition_mode(
-                        CameraAcquisitionMode.SOFTWARE_TRIGGER
-                    )
-                    self._camera_service.enable_callbacks(True)
-                else:
-                    self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
-                    self.camera.enable_callbacks(True)
+                self._camera_service.set_acquisition_mode(
+                    CameraAcquisitionMode.SOFTWARE_TRIGGER
+                )
+                self._camera_service.enable_callbacks(True)
                 if self.is_live:
                     self._start_triggerred_acquisition()
             elif mode == TriggerMode.HARDWARE:
                 if self.trigger_mode == TriggerMode.SOFTWARE and self.is_live:
                     self._stop_triggerred_acquisition()
-                if self._camera_service:
-                    self._camera_service.set_acquisition_mode(
-                        CameraAcquisitionMode.HARDWARE_TRIGGER
-                    )
-                else:
-                    self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+                self._camera_service.set_acquisition_mode(
+                    CameraAcquisitionMode.HARDWARE_TRIGGER
+                )
                 if self.currentConfiguration is not None:
                     exposure = self.currentConfiguration.exposure_time
-                    if self._camera_service:
-                        self._camera_service.set_exposure_time(exposure)
-                    else:
-                        self.camera.set_exposure_time(exposure)
+                    self._camera_service.set_exposure_time(exposure)
                 if self.is_live and self.use_internal_timer_for_hardware_trigger:
                     self._start_triggerred_acquisition()
             elif mode == TriggerMode.CONTINUOUS:
@@ -889,18 +668,12 @@ class LiveController(StateMachine[LiveControllerState]):
                     and self.use_internal_timer_for_hardware_trigger
                 ):
                     self._stop_triggerred_acquisition()
-                if self._camera_service:
-                    self._camera_service.set_acquisition_mode(
-                        CameraAcquisitionMode.CONTINUOUS
-                    )
-                    self._camera_service.enable_callbacks(True)
-                    if self.is_live:
-                        self._camera_service.start_streaming()
-                else:
-                    self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
-                    self.camera.enable_callbacks(True)
-                    if self.is_live:
-                        self.camera.start_streaming()
+                self._camera_service.set_acquisition_mode(
+                    CameraAcquisitionMode.CONTINUOUS
+                )
+                self._camera_service.enable_callbacks(True)
+                if self.is_live:
+                    self._camera_service.start_streaming()
             else:
                 self._log.error(f"Unknown trigger mode: {mode}")
 
@@ -910,10 +683,12 @@ class LiveController(StateMachine[LiveControllerState]):
 
         # Publish outside lock
         if self._bus:
-            self._bus.publish(TriggerModeChanged(mode=cmd.mode))
+            self._bus.publish(TriggerModeChanged(camera=self._camera, mode=cmd.mode))
 
     def _on_set_trigger_fps_command(self, cmd: SetTriggerFPSCommand) -> None:
         """Handle SetTriggerFPSCommand from EventBus."""
+        if getattr(cmd, "camera", "main") != self._camera:
+            return
         with self._lock:
             # Inline set_trigger_fps logic to avoid nested lock
             if (self.trigger_mode == TriggerMode.SOFTWARE) or (
@@ -942,7 +717,7 @@ class LiveController(StateMachine[LiveControllerState]):
 
         # Publish outside lock
         if self._bus:
-            self._bus.publish(TriggerFPSChanged(fps=cmd.fps))
+            self._bus.publish(TriggerFPSChanged(camera=self._camera, fps=cmd.fps))
 
     def _on_set_filter_auto_switch(self, cmd: SetFilterAutoSwitchCommand) -> None:
         """Handle SetFilterAutoSwitchCommand from EventBus."""

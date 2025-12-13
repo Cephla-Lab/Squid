@@ -1,25 +1,20 @@
 from typing import Optional, Sequence
 
-import mcs.drivers.cameras.camera_utils
 import squid.core.config
 from squid.core.abc import AbstractCamera, CameraFrame
-from squid.mcs.drivers.cameras.camera_utils import SimulatedCamera
+from squid.mcs.drivers.cameras.camera_utils import SimulatedCamera, get_camera
 from squid.core.config import CameraConfig
 
 
 def test_create_simulated_camera():
-    control.peripherals.cameras.camera_utils.get_camera(
-        squid.core.config.get_camera_config(), simulated=True
-    )
+    get_camera(squid.core.config.get_camera_config(), simulated=True)
 
 
 def test_simulated_camera():
     sim_cam_config: CameraConfig = squid.core.config.get_camera_config().model_copy(
         update={"rotate_image_angle": None, "flip": None}
     )
-    sim_cam = control.peripherals.cameras.camera_utils.get_camera(
-        sim_cam_config, simulated=True
-    )
+    sim_cam = get_camera(sim_cam_config, simulated=True)
 
     # Really basic tests to make sure the simulated camera does what is expected.
     sim_cam.send_trigger()

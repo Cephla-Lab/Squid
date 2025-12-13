@@ -1,5 +1,7 @@
 from squid.ui.widgets.tracking._common import *
 from squid.mcs.services import PeripheralService
+from typing import Callable, Tuple
+import numpy as np
 from qtpy.QtWidgets import QListWidget, QAbstractItemView
 from qtpy.QtGui import QIcon
 from qtpy.QtCore import QMetaObject
@@ -27,7 +29,6 @@ class TrackingControllerWidget(QFrame):
     dropdown_tracker: QComboBox
     entry_tracking_interval: QDoubleSpinBox
     list_configurations: QListWidget
-    checkbox_withAutofocus: QCheckBox
     checkbox_saveImages: QCheckBox
     btn_track: QPushButton
     checkbox_enable_stage_tracking: QCheckBox
@@ -41,6 +42,7 @@ class TrackingControllerWidget(QFrame):
         objectivesWidget: ObjectivesWidget,
         initial_objective: str,
         initial_pixel_size_um: float,
+        roi_bbox_provider: Callable[[], object],
         show_configurations: bool = True,
         *args: Any,
         **kwargs: Any,
@@ -50,6 +52,7 @@ class TrackingControllerWidget(QFrame):
         self._channel_configs = list(initial_channel_configs)
         self.peripheral_service = peripheral_service
         self.objectivesWidget = objectivesWidget
+        self._roi_bbox_provider = roi_bbox_provider
         self._current_objective = initial_objective
         self._pixel_size_um = initial_pixel_size_um
         self.base_path_is_set = False
@@ -102,7 +105,6 @@ class TrackingControllerWidget(QFrame):
             QAbstractItemView.MultiSelection
         )  # ref: https://doc.qt.io/qt-5/qabstractitemview.html#SelectionMode-enum
 
-        self.checkbox_withAutofocus = QCheckBox("With AF")
         self.checkbox_saveImages = QCheckBox("Save Images")
         self.btn_track = QPushButton("Start Tracking")
         self.btn_track.setCheckable(True)
@@ -142,7 +144,6 @@ class TrackingControllerWidget(QFrame):
         tmp = QLabel("Tracking Interval (s)")
         grid_line1.addWidget(tmp)
         grid_line1.addWidget(self.entry_tracking_interval)
-        grid_line1.addWidget(self.checkbox_withAutofocus)
         grid_line1.addWidget(self.checkbox_saveImages)
 
         grid_line4 = QGridLayout()
@@ -163,9 +164,6 @@ class TrackingControllerWidget(QFrame):
         # connections - buttons, checkboxes, entries
         self.checkbox_enable_stage_tracking.stateChanged.connect(
             self._on_enable_stage_tracking_changed
-        )
-        self.checkbox_withAutofocus.stateChanged.connect(
-            self._on_autofocus_changed
         )
         self.checkbox_saveImages.stateChanged.connect(
             self._on_save_images_changed
@@ -214,7 +212,8 @@ class TrackingControllerWidget(QFrame):
             self._event_bus.publish(SetTrackingChannelsCommand(
                 channel_names=list(item.text() for item in self.list_configurations.selectedItems())
             ))
-            self._event_bus.publish(StartTrackingCommand())
+            bbox = tuple(int(x) for x in np.array(self._roi_bbox_provider()).tolist())
+            self._event_bus.publish(StartTrackingCommand(roi_bbox=bbox))  # type: ignore[arg-type]
         else:
             self._event_bus.publish(StopTrackingCommand())
 
@@ -242,7 +241,8 @@ class TrackingControllerWidget(QFrame):
             self._event_bus.publish(SetTrackingChannelsCommand(
                 channel_names=list(item.text() for item in self.list_configurations.selectedItems())
             ))
-            self._event_bus.publish(StartTrackingCommand())
+            bbox = tuple(int(x) for x in np.array(self._roi_bbox_provider()).tolist())
+            self._event_bus.publish(StartTrackingCommand(roi_bbox=bbox))  # type: ignore[arg-type]
         else:
             self._event_bus.publish(StopTrackingCommand())
 
@@ -276,12 +276,6 @@ class TrackingControllerWidget(QFrame):
         """Handle stage tracking checkbox change."""
         self._event_bus.publish(SetTrackingParametersCommand(
             enable_stage_tracking=state == Qt.Checked
-        ))
-
-    def _on_autofocus_changed(self, state: int) -> None:
-        """Handle autofocus checkbox change."""
-        self._event_bus.publish(SetTrackingParametersCommand(
-            enable_autofocus=state == Qt.Checked
         ))
 
     def _on_save_images_changed(self, state: int) -> None:

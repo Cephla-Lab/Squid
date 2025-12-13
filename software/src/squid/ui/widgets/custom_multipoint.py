@@ -6,6 +6,7 @@ import numpy as np
 
 from squid.ui.widgets import FlexibleMultiPointWidget
 import squid.core.logging
+from squid.core.events import AddTemplateRegionCommand
 
 
 class TemplateMultiPointWidget(FlexibleMultiPointWidget):
@@ -185,13 +186,28 @@ class TemplateMultiPointWidget(FlexibleMultiPointWidget):
                 row, 3, QTableWidgetItem(str(self.region_id))
             )
 
-        self.scanCoordinates.add_template_region(
-            ref_x,
-            ref_y,
-            ref_z,
-            template_df["x_offset_mm"],
-            template_df["y_offset_mm"],
-            str(self.region_id),
+        try:
+            x_offsets = tuple(float(v) for v in template_df["x_offset_mm"].tolist())
+            y_offsets = tuple(float(v) for v in template_df["y_offset_mm"].tolist())
+        except Exception:
+            QMessageBox.warning(
+                self,
+                "Template Error",
+                "Template offsets could not be parsed as numbers.",
+            )
+            self.table_location_list.blockSignals(False)
+            self.dropdown_location_list.blockSignals(False)
+            return
+
+        self._event_bus.publish(
+            AddTemplateRegionCommand(
+                region_id=str(self.region_id),
+                center_x_mm=float(ref_x),
+                center_y_mm=float(ref_y),
+                center_z_mm=float(ref_z),
+                x_offsets_mm=x_offsets,
+                y_offsets_mm=y_offsets,
+            )
         )
         self._log.info(
             f"Added {len(template_df)} locations from template '{template_name}'"

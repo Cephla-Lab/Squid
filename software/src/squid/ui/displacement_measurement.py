@@ -1,18 +1,12 @@
+"""UI-only displacement measurement utilities (Qt-based)."""
+
 # set QT_API environment variable
 import os
-
-os.environ["QT_API"] = "pyqt5"
-
-# qt libraries
-from qtpy.QtCore import *
-from qtpy.QtWidgets import *
-from qtpy.QtGui import *
-
-from _def import *
-
 import time
-import numpy as np
+
 import cv2
+import numpy as np
+from qtpy.QtCore import QObject, Signal
 
 
 class DisplacementMeasurementController(QObject):

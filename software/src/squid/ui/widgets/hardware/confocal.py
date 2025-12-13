@@ -1,7 +1,7 @@
 # Confocal microscope control widgets (XLight, Dragonfly)
-from typing import Any
+from typing import Any, Optional
 
-from qtpy.QtCore import Signal, Qt
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -15,14 +15,28 @@ from qtpy.QtWidgets import (
     QSizePolicy,
 )
 
+from squid.core.events import (
+    ObjectiveChanged,
+    SetConfocalModeCommand,
+)
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from squid.ui.ui_event_bus import UIEventBus
+
 
 class SpinningDiskConfocalWidget(QWidget):
-    signal_toggle_confocal_widefield: Signal = Signal(bool)
-
-    def __init__(self, xlight: Any) -> None:
+    def __init__(
+        self,
+        xlight: Any,
+        event_bus: Optional["UIEventBus"] = None,
+        initial_objective: Optional[str] = None,
+    ) -> None:
         super(SpinningDiskConfocalWidget, self).__init__()
 
         self.xlight: Any = xlight
+        self._event_bus = event_bus
+        self._current_objective = initial_objective
 
         self.init_ui()
 
@@ -37,10 +51,13 @@ class SpinningDiskConfocalWidget(QWidget):
         self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
 
         self.disk_position_state = self.xlight.get_disk_position()
-
-        self.signal_toggle_confocal_widefield.emit(
-            self.disk_position_state
-        )  # signal initial state
+        if self._event_bus is not None and self._current_objective is not None:
+            self._event_bus.publish(
+                SetConfocalModeCommand(
+                    objective_name=self._current_objective,
+                    is_confocal=bool(self.disk_position_state),
+                )
+            )
 
         if self.disk_position_state == 1:
             self.btn_toggle_widefield.setText("Switch to Widefield")
@@ -49,6 +66,13 @@ class SpinningDiskConfocalWidget(QWidget):
         self.btn_toggle_motor.clicked.connect(self.toggle_motor)
 
         self.dropdown_filter_slider.valueChanged.connect(self.set_filter_slider)
+
+        if self._event_bus is not None:
+            self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+
+    def _on_objective_changed(self, event: ObjectiveChanged) -> None:
+        if event.objective_name:
+            self._current_objective = event.objective_name
 
         if self.xlight.has_illumination_iris_diaphragm:
             illumination_iris = self.xlight.illumination_iris
@@ -181,7 +205,13 @@ class SpinningDiskConfocalWidget(QWidget):
             self.disk_position_state = self.xlight.set_disk_position(1)
             self.btn_toggle_widefield.setText("Switch to Widefield")
         self.enable_all_buttons(True)
-        self.signal_toggle_confocal_widefield.emit(self.disk_position_state)
+        if self._event_bus is not None and self._current_objective is not None:
+            self._event_bus.publish(
+                SetConfocalModeCommand(
+                    objective_name=self._current_objective,
+                    is_confocal=bool(self.disk_position_state),
+                )
+            )
 
     def toggle_motor(self) -> None:
         self.enable_all_buttons(False)
@@ -239,13 +269,18 @@ class SpinningDiskConfocalWidget(QWidget):
 
 
 class DragonflyConfocalWidget(QWidget):
-    signal_toggle_confocal_widefield: Signal = Signal(bool)
-
-    def __init__(self, dragonfly: Any) -> None:
+    def __init__(
+        self,
+        dragonfly: Any,
+        event_bus: Optional["UIEventBus"] = None,
+        initial_objective: Optional[str] = None,
+    ) -> None:
         super(DragonflyConfocalWidget, self).__init__()
 
         self.dragonfly: Any = dragonfly
         self.confocal_mode: bool = False
+        self._event_bus = event_bus
+        self._current_objective = initial_objective
 
         self.init_ui()
 
@@ -303,8 +338,19 @@ class DragonflyConfocalWidget(QWidget):
             self.set_field_aperture
         )
 
-        # Emit initial state
-        self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
+        # Publish initial state
+        if self._event_bus is not None and self._current_objective is not None:
+            self._event_bus.publish(
+                SetConfocalModeCommand(
+                    objective_name=self._current_objective,
+                    is_confocal=self.confocal_mode,
+                )
+            )
+            self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+
+    def _on_objective_changed(self, event: ObjectiveChanged) -> None:
+        if event.objective_name:
+            self._current_objective = event.objective_name
 
     def init_ui(self) -> None:
         main_layout = QVBoxLayout()
@@ -385,7 +431,13 @@ class DragonflyConfocalWidget(QWidget):
                 self.confocal_mode = True
                 self.btn_toggle_confocal.setText("Switch to Widefield")
 
-            self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
+            if self._event_bus is not None and self._current_objective is not None:
+                self._event_bus.publish(
+                    SetConfocalModeCommand(
+                        objective_name=self._current_objective,
+                        is_confocal=self.confocal_mode,
+                    )
+                )
         except Exception as e:
             print(f"Error toggling confocal mode: {e}")
         finally:

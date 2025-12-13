@@ -1,6 +1,5 @@
 """Tests for LiveController using services and EventBus."""
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from squid.core.events import (
@@ -22,30 +21,13 @@ from squid.mcs.controllers.live_controller import (
 from squid.core.abc import CameraAcquisitionMode
 
 
-class DummyMicroscope:
-    """Lightweight microscope stub for LiveController."""
-
-    def __init__(self):
-        self.low_level_drivers = MagicMock()
-        self.addons = MagicMock()
-        self.objective_store = SimpleNamespace(current_objective="10x")
-        self.channel_configuration_manager = MagicMock()
-        self.channel_configuration_manager.get_channel_configuration_by_name.return_value = SimpleNamespace(
-            name="BF"
-        )
-
-
 def make_controller(bus: EventBus):
-    mic = DummyMicroscope()
-    camera = MagicMock()
     cam_service = MagicMock()
     illum_service = MagicMock()
     periph_service = MagicMock()
     controller = LiveController(
-        microscope=mic,
-        camera=camera,
-        event_bus=bus,
         camera_service=cam_service,
+        event_bus=bus,
         illumination_service=illum_service,
         peripheral_service=periph_service,
     )
@@ -101,3 +83,14 @@ def test_trigger_fps_update():
     bus.drain()
     assert controller.observable_state.trigger_fps == 5.0
     assert events[-1].fps == 5.0
+
+
+def test_live_controller_requires_illumination_service_when_enabled():
+    bus = EventBus()
+    cam_service = MagicMock()
+    try:
+        LiveController(camera_service=cam_service, event_bus=bus)
+    except ValueError as exc:
+        assert "IlluminationService" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected ValueError when illumination service missing")

@@ -10,11 +10,8 @@ What’s aligned already
 
   Mismatches to your desired architecture
 
-  - You now have two control-plane threads: EventBus dispatch thread and BackendActor thread (src/squid/core/
-    actor/*, wired in src/squid/application.py). That’s not in your diagram, and it reintroduces cross‑thread
-    service access.
-  - ResourceCoordinator leasing is heavier than Plan 1’s “simple mode gate,” and it doesn’t actually block unsafe
-    commands at the service level. Services still execute moves even if acquisition holds leases.
+  - Control plane now correctly has a single backend thread: the queued EventBus dispatch thread.
+  - The lease-based coordinator has been removed and replaced with a minimal global mode gate.
   - Callbacks still exist:
       - AutoFocusController still accepts/calls finished_fn + image_to_display_fn (src/squid/mcs/controllers/
         autofocus/auto_focus_controller.py).
@@ -26,15 +23,13 @@ What’s aligned already
     backend encapsulation and threadsafety.
 
   Concrete failure modes still possible
-    thread while services also handle other commands on EventBus thread (e.g., StageService, CameraService). Locks
-    help but don’t guarantee SDK thread safety, especially if any direct hardware paths remain.
+    thread (EventBus dispatch) while long-running handlers block the queue. Locks help but don’t guarantee SDK
+    thread safety, especially if any direct hardware paths remain.
   - Handlers that block control-plane threads. Stage moves and some controller setup paths are synchronous; they
-    stall EventBus dispatch (and/or BackendActor), delaying Stop/Abort and UI state.
-  - Priority queue can’t preempt. Stop commands jump the queue but still wait for long-running handlers to return.
-  - Unsafe commands during acquisition. Because services don’t consult coordinator/mode, a widget publishing
-    MoveStageCommand can move the stage mid-acquisition.
-  - Lease revocation isn’t enforced. If timeouts are enabled later, watchdog revokes leases but controllers don’t
-    react, so two owners could drive hardware.
+    stall EventBus dispatch, delaying Stop/Abort and UI state.
+  - FIFO queue can’t preempt. Stop commands still wait for long-running handlers to return.
+  - Unsafe commands during acquisition if they bypass services. EventBus-driven stage/camera/peripheral commands
+    are now backend-gated, but any remaining direct hardware paths can still violate mode.
   - Real bug in acquisition focus‑map branch. In MultiPointController.run_acquisition the bounds check is mis-
     indented so bounds can be undefined and the focus‑map generation block is partly unreachable (src/squid/ops/
     acquisition/multi_point_controller.py around the elif self.gen_focus_map / if not bounds area). That can crash
@@ -47,15 +42,9 @@ What’s aligned already
   How to simplify to exactly your architecture (recommended path)
 
   1. Collapse to a single queued control plane.
-      - Remove BackendActor and BackendCommandRouter entirely and wire controllers back to core EventBus
-        subscriptions. The queued EventBus already enforces “UI thread never runs controller logic.”
-      - This restores the simple “EventBus thread = backend control thread” model you want.
-  2. Replace ResourceCoordinator with a minimal mode/resource gate.
-      - Implement a tiny SystemMode/GlobalModeService (Idle | Live | Acquiring | Aborting) owned on EventBus
-        thread.
-      - Controllers set mode when starting/stopping long ops.
-      - Services (or a single GateController subscribed early) reject/ignore unsafe commands when mode disallows
-        them. This fixes Step 4 without leasing/UUIDs/watchdog complexity.
+      - Completed: control-plane is now a single queued EventBus dispatch thread (“EventBus thread = backend control thread”).
+  2. Replace coordinator with a minimal mode/resource gate.
+      - Completed: implemented `GlobalModeGate` and service-level gating.
   3. Eliminate all callbacks, end-to-end.
       - Delete callback fields from MoveStageToLoadingPositionCommand and MoveStageToScanningPositionCommand;
         StageService publishes completion events instead.

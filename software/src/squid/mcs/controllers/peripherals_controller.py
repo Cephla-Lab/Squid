@@ -71,7 +71,6 @@ class PeripheralsController:
         piezo_service: Optional["PiezoService"],
         objective_store: Optional["ObjectiveStore"],
         event_bus: "EventBus",
-        subscribe_to_bus: bool = True,
     ) -> None:
         self._objective_service = objective_service
         self._spinning_disk_service = spinning_disk_service
@@ -79,7 +78,6 @@ class PeripheralsController:
         self._objective_store = objective_store
         self._bus = event_bus
         self._lock = threading.RLock()
-        self._bus_enabled = subscribe_to_bus
 
         self._state = self._read_initial_state()
 
@@ -87,7 +85,7 @@ class PeripheralsController:
         self._subscribe_to_bus()
 
     def _subscribe_to_bus(self) -> None:
-        if not self._bus_enabled or self._bus is None:
+        if self._bus is None:
             return
         if self._objective_service:
             self._bus.subscribe(SetObjectiveCommand, self._on_set_objective)
@@ -99,22 +97,6 @@ class PeripheralsController:
         if self._piezo_service:
             self._bus.subscribe(SetPiezoPositionCommand, self._on_set_piezo)
             self._bus.subscribe(MovePiezoRelativeCommand, self._on_move_piezo_relative)
-
-    def detach_event_bus_commands(self) -> None:
-        """Unsubscribe command handlers for actor routing."""
-        if self._bus is None:
-            return
-        self._bus_enabled = False
-        try:
-            self._bus.unsubscribe(SetObjectiveCommand, self._on_set_objective)
-            self._bus.unsubscribe(SetSpinningDiskPositionCommand, self._on_set_disk_position)
-            self._bus.unsubscribe(SetSpinningDiskSpinningCommand, self._on_set_spinning)
-            self._bus.unsubscribe(SetDiskDichroicCommand, self._on_set_dichroic)
-            self._bus.unsubscribe(SetDiskEmissionFilterCommand, self._on_set_emission)
-            self._bus.unsubscribe(SetPiezoPositionCommand, self._on_set_piezo)
-            self._bus.unsubscribe(MovePiezoRelativeCommand, self._on_move_piezo_relative)
-        except Exception:
-            pass
 
     @property
     def state(self) -> PeripheralsState:

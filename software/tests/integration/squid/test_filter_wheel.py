@@ -1,14 +1,14 @@
-import mcs.drivers.filter_wheels.utils
 from squid.core.config import (
     FilterWheelConfig,
     FilterWheelControllerVariant,
     SquidFilterWheelConfig,
 )
+from squid.mcs.drivers.filter_wheels.utils import SimulatedFilterWheelController
 
 
 def test_create_simulated_filter_wheel():
     """Test that we can create a simulated filter wheel controller."""
-    controller = control.peripherals.filter_wheel.utils.SimulatedFilterWheelController(
+    controller = SimulatedFilterWheelController(
         number_of_wheels=1, slots_per_wheel=8, simulate_delays=False
     )
     controller.initialize([1])
@@ -18,7 +18,7 @@ def test_create_simulated_filter_wheel():
 
 def test_simulated_filter_wheel_position():
     """Test setting and getting filter wheel positions."""
-    controller = control.peripherals.filter_wheel.utils.SimulatedFilterWheelController(
+    controller = SimulatedFilterWheelController(
         number_of_wheels=1, slots_per_wheel=8, simulate_delays=False
     )
     controller.initialize([1])
@@ -32,7 +32,7 @@ def test_simulated_filter_wheel_position():
 
 def test_simulated_filter_wheel_homing():
     """Test homing filter wheels."""
-    controller = control.peripherals.filter_wheel.utils.SimulatedFilterWheelController(
+    controller = SimulatedFilterWheelController(
         number_of_wheels=1, slots_per_wheel=8, simulate_delays=False
     )
     controller.initialize([1])

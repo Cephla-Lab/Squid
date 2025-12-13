@@ -44,7 +44,7 @@ A **Controller** is a state machine that orchestrates multi-step workflows using
 - Extends `StateMachine[StateEnum]` from `squid.core.state_machine`
 - Owns a state machine with defined transitions
 - Coordinates multiple services (e.g., camera + stage + illumination)
-- Acquires/releases resources via `ResourceCoordinator`
+- Sets/clears global mode via `GlobalModeGate` (backend-owned safety gate)
 - Subscribes to commands (e.g., `StartLiveCommand`, `StartAcquisitionCommand`)
 - Publishes high-level state events (e.g., `LiveStateChanged`, `AcquisitionStateChanged`)
 - May spawn worker threads for long-running operations
@@ -59,7 +59,7 @@ class LiveController(StateMachine[LiveControllerState]):
         self,
         camera_service: CameraService,
         illumination_service: IlluminationService,
-        coordinator: ResourceCoordinator,
+        mode_gate: GlobalModeGate,
         event_bus: EventBus,
     ):
         super().__init__(
@@ -67,21 +67,14 @@ class LiveController(StateMachine[LiveControllerState]):
             transitions={...},
             event_bus=event_bus,
         )
-        self._coordinator = coordinator
+        self._mode_gate = mode_gate
         # ...
 
     def start_live(self) -> None:
         self._require_state(LiveControllerState.STOPPED)
         self.transition_to(LiveControllerState.STARTING)
 
-        # Acquire resources
-        lease = self._coordinator.acquire(
-            {Resource.CAMERA_CONTROL, Resource.ILLUMINATION_CONTROL},
-            owner="LiveController",
-        )
-        if not lease:
-            self.transition_to(LiveControllerState.STOPPED)
-            return
+        self._mode_gate.set_mode(GlobalMode.LIVE, reason="live start")
 
         # Start streaming via service
         self._camera_service.start_streaming()

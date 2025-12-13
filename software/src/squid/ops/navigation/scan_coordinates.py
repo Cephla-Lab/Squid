@@ -8,6 +8,7 @@ import numpy as np
 
 import _def
 from squid.ops.navigation.objective_store import ObjectiveStore
+from squid.core.events import Event
 from squid.core.abc import AbstractStage, AbstractCamera
 import squid.core.logging
 
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class ScanCoordinatesUpdate:
+class ScanCoordinatesUpdate(Event):
     pass
 
 
@@ -50,8 +51,7 @@ class ClearedScanCoordinates(ScanCoordinatesUpdate):
 class ScanCoordinates:
     """Manages scan coordinates for multi-point acquisitions.
 
-    Can optionally publish ScanCoordinatesUpdated events via EventBus
-    when regions are modified, in addition to the callback mechanism.
+    Publishes scan coordinate updates via EventBus (when configured).
     """
 
     def __init__(
@@ -59,7 +59,6 @@ class ScanCoordinates:
         objectiveStore: ObjectiveStore,
         stage: AbstractStage,
         camera: AbstractCamera,
-        update_callback: Optional[Callable[[ScanCoordinatesUpdate], None]] = None,
         event_bus: Optional["EventBus"] = None,
     ) -> None:
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
@@ -67,11 +66,8 @@ class ScanCoordinates:
         self.objectiveStore: ObjectiveStore = objectiveStore
         self.stage: AbstractStage = stage
         self.camera: AbstractCamera = camera
-        self._update_callback: Callable[[ScanCoordinatesUpdate], None] = (
-            update_callback if update_callback else lambda update: None
-        )
         self._event_bus: Optional["EventBus"] = event_bus
-        self.well_selector: Optional[Any] = None
+        self._commands_subscribed: bool = False
         self.acquisition_pattern: str = _def.ACQUISITION_PATTERN
         self.fov_pattern: str = _def.FOV_PATTERN
         self.format: str = _def.WELLPLATE_FORMAT
@@ -85,6 +81,12 @@ class ScanCoordinates:
         self.a1_y_pixel: Optional[float] = None
         self.number_of_skip: Optional[int] = None
 
+        # State for event-driven well selection / scan settings (UI never injected)
+        self._selected_well_cells: Tuple[Tuple[int, int], ...] = tuple()
+        self._well_selection_scan_size_mm: float = 0.0
+        self._well_selection_overlap_percent: float = 10.0
+        self._well_selection_shape: str = "Square"
+
         # Centralized region management
         self.region_centers: Dict[str, List[float]] = {}  # {region_id: [x, y, z]}
         self.region_shapes: Dict[str, str] = {}  # {region_id: "Square"}
@@ -92,15 +94,255 @@ class ScanCoordinates:
             str, List[Tuple[float, ...]]
         ] = {}  # {region_id: [(x,y,z), ...]}
 
-    def set_update_callback(
-        self, update_callback: Callable[[ScanCoordinatesUpdate], None]
-    ) -> None:
-        """Replace the update callback used to notify listeners of changes."""
-        self._update_callback = update_callback if update_callback else lambda update: None
+        self._subscribe_to_commands()
 
     def set_event_bus(self, event_bus: Optional["EventBus"]) -> None:
         """Set the event bus for publishing ScanCoordinatesUpdated events."""
         self._event_bus = event_bus
+        self._commands_subscribed = False
+        self._subscribe_to_commands()
+
+    def _subscribe_to_commands(self) -> None:
+        if self._event_bus is None:
+            return
+        if self._commands_subscribed:
+            return
+        from squid.core.events import (
+            ClearScanCoordinatesCommand,
+            SortScanCoordinatesCommand,
+            SetLiveScanCoordinatesCommand,
+            SelectedWellsChanged,
+            SetWellSelectionScanCoordinatesCommand,
+            SetManualScanCoordinatesCommand,
+            LoadScanCoordinatesCommand,
+            RequestScanCoordinatesSnapshotCommand,
+            AddTemplateRegionCommand,
+            AddFlexibleRegionCommand,
+            AddFlexibleRegionWithStepSizeCommand,
+            RemoveScanCoordinateRegionCommand,
+            RenameScanCoordinateRegionCommand,
+            UpdateScanCoordinateRegionZCommand,
+            WellplateFormatChanged,
+        )
+
+        self._event_bus.subscribe(ClearScanCoordinatesCommand, self._on_clear_scan_coordinates)
+        self._event_bus.subscribe(SortScanCoordinatesCommand, self._on_sort_scan_coordinates)
+        self._event_bus.subscribe(SetLiveScanCoordinatesCommand, self._on_set_live_scan_coordinates)
+        self._event_bus.subscribe(SelectedWellsChanged, self._on_selected_wells_changed)
+        self._event_bus.subscribe(
+            SetWellSelectionScanCoordinatesCommand, self._on_set_well_selection_scan_coordinates
+        )
+        self._event_bus.subscribe(SetManualScanCoordinatesCommand, self._on_set_manual_scan_coordinates)
+        self._event_bus.subscribe(LoadScanCoordinatesCommand, self._on_load_scan_coordinates)
+        self._event_bus.subscribe(
+            RequestScanCoordinatesSnapshotCommand, self._on_request_scan_coordinates_snapshot
+        )
+        self._event_bus.subscribe(AddTemplateRegionCommand, self._on_add_template_region)
+        self._event_bus.subscribe(AddFlexibleRegionCommand, self._on_add_flexible_region)
+        self._event_bus.subscribe(
+            AddFlexibleRegionWithStepSizeCommand, self._on_add_flexible_region_with_step_size
+        )
+        self._event_bus.subscribe(RemoveScanCoordinateRegionCommand, self._on_remove_region_command)
+        self._event_bus.subscribe(RenameScanCoordinateRegionCommand, self._on_rename_region_command)
+        self._event_bus.subscribe(UpdateScanCoordinateRegionZCommand, self._on_update_region_z_command)
+        self._event_bus.subscribe(WellplateFormatChanged, self._on_wellplate_format_changed)
+        self._commands_subscribed = True
+
+    def _on_clear_scan_coordinates(self, _cmd: Event) -> None:
+        self.clear_regions()
+
+    def _on_sort_scan_coordinates(self, _cmd: Event) -> None:
+        self.sort_coordinates()
+
+    def _on_set_live_scan_coordinates(self, cmd: Event) -> None:
+        from squid.core.events import SetLiveScanCoordinatesCommand
+
+        assert isinstance(cmd, SetLiveScanCoordinatesCommand)
+        self.set_live_scan_coordinates(
+            cmd.x_mm, cmd.y_mm, cmd.scan_size_mm, cmd.overlap_percent, cmd.shape
+        )
+
+    def _on_add_template_region(self, cmd: Event) -> None:
+        from squid.core.events import AddTemplateRegionCommand
+
+        assert isinstance(cmd, AddTemplateRegionCommand)
+        if len(cmd.x_offsets_mm) != len(cmd.y_offsets_mm):
+            self._log.warning(
+                "AddTemplateRegionCommand ignored due to length mismatch: "
+                f"{len(cmd.x_offsets_mm)=} {len(cmd.y_offsets_mm)=}"
+            )
+            return
+        self.add_template_region(
+            cmd.center_x_mm,
+            cmd.center_y_mm,
+            cmd.center_z_mm,
+            np.array(cmd.x_offsets_mm, dtype=float),
+            np.array(cmd.y_offsets_mm, dtype=float),
+            cmd.region_id,
+        )
+
+    def _on_selected_wells_changed(self, event: Event) -> None:
+        from squid.core.events import SelectedWellsChanged
+
+        assert isinstance(event, SelectedWellsChanged)
+        self._selected_well_cells = tuple(event.selected_cells)
+        # If we already have scan settings, recompute immediately.
+        if self._well_selection_scan_size_mm > 0:
+            self._apply_well_selection_coordinates()
+
+    def _on_set_well_selection_scan_coordinates(self, cmd: Event) -> None:
+        from squid.core.events import SetWellSelectionScanCoordinatesCommand
+
+        assert isinstance(cmd, SetWellSelectionScanCoordinatesCommand)
+        self._well_selection_scan_size_mm = float(cmd.scan_size_mm)
+        self._well_selection_overlap_percent = float(cmd.overlap_percent)
+        self._well_selection_shape = str(cmd.shape)
+        self._apply_well_selection_coordinates()
+
+    def _apply_well_selection_coordinates(self) -> None:
+        # Only applies to wellplate selection mode; empty selection clears.
+        if not self._selected_well_cells:
+            self.clear_regions()
+            return
+        self.set_well_coordinates_from_selected_cells(
+            selected_cells=list(self._selected_well_cells),
+            scan_size_mm=self._well_selection_scan_size_mm,
+            overlap_percent=self._well_selection_overlap_percent,
+            shape=self._well_selection_shape,
+        )
+
+    def _on_set_manual_scan_coordinates(self, cmd: Event) -> None:
+        from squid.core.events import SetManualScanCoordinatesCommand
+
+        assert isinstance(cmd, SetManualScanCoordinatesCommand)
+        manual_shapes = None
+        if cmd.manual_shapes_mm is not None:
+            manual_shapes = [np.array(shape, dtype=float) for shape in cmd.manual_shapes_mm]
+        self.set_manual_coordinates(manual_shapes, cmd.overlap_percent)
+
+    def _on_load_scan_coordinates(self, cmd: Event) -> None:
+        from squid.core.events import LoadScanCoordinatesCommand
+
+        assert isinstance(cmd, LoadScanCoordinatesCommand)
+        self.clear_regions()
+
+        for region_id, coords_tuple in cmd.region_fov_coordinates.items():
+            coords: List[Tuple[float, ...]] = []
+            for c in coords_tuple:
+                coords.append(tuple(float(v) for v in c))
+            if not coords:
+                continue
+            self.region_fov_coordinates[str(region_id)] = coords
+            if cmd.region_centers and region_id in cmd.region_centers:
+                center_raw = cmd.region_centers[region_id]
+                center = [float(center_raw[0]), float(center_raw[1])]
+                if len(center_raw) > 2:
+                    center.append(float(center_raw[2]))
+            else:
+                xs = [c[0] for c in coords]
+                ys = [c[1] for c in coords]
+                z = float(coords[0][2]) if len(coords[0]) > 2 else float(self.stage.get_pos().z_mm)
+                center = [float(np.mean(xs)), float(np.mean(ys)), z]
+            if len(center) == 2:
+                center.append(float(self.stage.get_pos().z_mm))
+            self.region_centers[str(region_id)] = center
+            self.region_shapes[str(region_id)] = "Loaded"
+            self._publish_update(
+                AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(coords))
+            )
+
+    def _on_request_scan_coordinates_snapshot(self, cmd: Event) -> None:
+        from squid.core.events import RequestScanCoordinatesSnapshotCommand, ScanCoordinatesSnapshot
+
+        assert isinstance(cmd, RequestScanCoordinatesSnapshotCommand)
+        region_fov_coordinates = {
+            region_id: tuple(tuple(float(v) for v in coord) for coord in coords)
+            for region_id, coords in self.region_fov_coordinates.items()
+        }
+        region_centers = {
+            region_id: tuple(float(v) for v in center)
+            for region_id, center in self.region_centers.items()
+        }
+        if self._event_bus is not None:
+            self._event_bus.publish(
+                ScanCoordinatesSnapshot(
+                    request_id=cmd.request_id,
+                    region_fov_coordinates=region_fov_coordinates,
+                    region_centers=region_centers,
+                )
+            )
+
+    def _on_add_flexible_region(self, cmd: Event) -> None:
+        from squid.core.events import AddFlexibleRegionCommand
+
+        assert isinstance(cmd, AddFlexibleRegionCommand)
+        self.add_flexible_region(
+            region_id=cmd.region_id,
+            center_x=cmd.center_x_mm,
+            center_y=cmd.center_y_mm,
+            center_z=cmd.center_z_mm,
+            Nx=cmd.n_x,
+            Ny=cmd.n_y,
+            overlap_percent=cmd.overlap_percent,
+        )
+
+    def _on_add_flexible_region_with_step_size(self, cmd: Event) -> None:
+        from squid.core.events import AddFlexibleRegionWithStepSizeCommand
+
+        assert isinstance(cmd, AddFlexibleRegionWithStepSizeCommand)
+        self.add_flexible_region_with_step_size(
+            region_id=cmd.region_id,
+            center_x=cmd.center_x_mm,
+            center_y=cmd.center_y_mm,
+            center_z=cmd.center_z_mm,
+            Nx=cmd.n_x,
+            Ny=cmd.n_y,
+            dx=cmd.delta_x_mm,
+            dy=cmd.delta_y_mm,
+        )
+
+    def _on_remove_region_command(self, cmd: Event) -> None:
+        from squid.core.events import RemoveScanCoordinateRegionCommand
+
+        assert isinstance(cmd, RemoveScanCoordinateRegionCommand)
+        self.remove_region(cmd.region_id)
+
+    def _on_rename_region_command(self, cmd: Event) -> None:
+        from squid.core.events import RenameScanCoordinateRegionCommand
+
+        assert isinstance(cmd, RenameScanCoordinateRegionCommand)
+        self.rename_region(cmd.old_region_id, cmd.new_region_id)
+
+    def _on_update_region_z_command(self, cmd: Event) -> None:
+        from squid.core.events import UpdateScanCoordinateRegionZCommand
+
+        assert isinstance(cmd, UpdateScanCoordinateRegionZCommand)
+        self.update_region_z_level(cmd.region_id, cmd.z_mm)
+
+    def _on_wellplate_format_changed(self, event: Event) -> None:
+        from squid.core.events import WellplateFormatChanged
+
+        assert isinstance(event, WellplateFormatChanged)
+        self.update_wellplate_settings(
+            format_=event.format_name,
+            a1_x_mm=event.a1_x_mm,
+            a1_y_mm=event.a1_y_mm,
+            a1_x_pixel=event.a1_x_pixel,
+            a1_y_pixel=event.a1_y_pixel,
+            size_mm=event.well_size_mm,
+            spacing_mm=event.well_spacing_mm,
+            number_of_skip=event.number_of_skip,
+        )
+        # Conservative: format changes invalidate existing regions.
+        self.clear_regions()
+
+    def _publish_update(self, update: ScanCoordinatesUpdate) -> None:
+        if self._event_bus is None:
+            return
+        if not isinstance(update, Event):  # pragma: no cover - defensive
+            raise TypeError("ScanCoordinatesUpdate must inherit from Event")
+        self._event_bus.publish(update)
+        self._publish_coordinates_updated()
 
     def _publish_coordinates_updated(self) -> None:
         """Publish ScanCoordinatesUpdated event if event_bus is configured."""
@@ -115,9 +357,6 @@ class ScanCoordinates:
                 region_ids=tuple(self.region_fov_coordinates.keys()),
             )
         )
-
-    def add_well_selector(self, well_selector: Any) -> None:
-        self.well_selector = well_selector
 
     def update_wellplate_settings(
         self,
@@ -148,42 +387,92 @@ class ScanCoordinates:
             index //= 26
         return row
 
-    def get_selected_wells(self) -> Optional[Dict[str, Tuple[float, float]]]:
-        # get selected wells from the widget
-        self._log.info("getting selected wells for acquisition")
-        if not self.well_selector or self.format == "glass slide":
-            return None
+    def rename_region(self, old_region_id: str, new_region_id: str) -> None:
+        if old_region_id == new_region_id:
+            return
+        if old_region_id not in self.region_centers:
+            return
+        if new_region_id in self.region_centers:
+            self._log.warning(f"Cannot rename {old_region_id} -> {new_region_id}: target exists")
+            return
+        self.region_centers[new_region_id] = self.region_centers.pop(old_region_id)
+        if old_region_id in self.region_shapes:
+            self.region_shapes[new_region_id] = self.region_shapes.pop(old_region_id)
+        if old_region_id in self.region_fov_coordinates:
+            self.region_fov_coordinates[new_region_id] = self.region_fov_coordinates.pop(old_region_id)
+        self._publish_coordinates_updated()
 
-        selected_wells = np.array(self.well_selector.get_selected_cells())
-        well_centers = {}
+    def update_region_z_level(self, region_id: str, new_z: float) -> None:
+        if region_id not in self.region_centers:
+            return
+        center = self.region_centers[region_id]
+        if len(center) >= 3:
+            center[2] = new_z
+        else:
+            while len(center) < 2:
+                center.append(0.0)
+            center.append(new_z)
+        self.region_centers[region_id] = center
 
-        # if no well selected
-        if len(selected_wells) == 0:
-            return well_centers
-        # populate the coordinates
-        rows = np.unique(selected_wells[:, 0])
-        _increasing = True
-        for row in rows:
-            items = selected_wells[selected_wells[:, 0] == row]
-            columns = items[:, 1]
-            columns = np.sort(columns)
-            if not _increasing:
-                columns = np.flip(columns)
-            for column in columns:
-                x_mm = (
-                    self.a1_x_mm
-                    + (column * self.well_spacing_mm)
-                    + self.wellplate_offset_x_mm
-                )
-                y_mm = (
-                    self.a1_y_mm
-                    + (row * self.well_spacing_mm)
-                    + self.wellplate_offset_y_mm
-                )
-                well_id = self._index_to_row(row) + str(column + 1)
-                well_centers[well_id] = (x_mm, y_mm)
-            _increasing = not _increasing
-        return well_centers
+        if region_id in self.region_fov_coordinates:
+            updated: List[Tuple[float, ...]] = []
+            for coord in self.region_fov_coordinates[region_id]:
+                if len(coord) >= 2:
+                    updated.append((float(coord[0]), float(coord[1]), float(new_z)))
+            self.region_fov_coordinates[region_id] = updated
+        self._publish_coordinates_updated()
+
+    def set_well_coordinates_from_selected_cells(
+        self,
+        selected_cells: List[Tuple[int, int]],
+        scan_size_mm: float,
+        overlap_percent: float,
+        shape: str,
+    ) -> None:
+        if self.format == "glass slide":
+            pos = self.stage.get_pos()
+            self.set_live_scan_coordinates(
+                pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape
+            )
+            return
+
+        # Replace entire region set for "select wells" mode.
+        selected_ids: Dict[str, Tuple[float, float]] = {}
+        for row, col in selected_cells:
+            well_id = self._index_to_row(int(row)) + str(int(col) + 1)
+            x_mm = (
+                float(self.a1_x_mm)
+                + (float(col) * float(self.well_spacing_mm))
+                + float(self.wellplate_offset_x_mm)
+            )
+            y_mm = (
+                float(self.a1_y_mm)
+                + (float(row) * float(self.well_spacing_mm))
+                + float(self.wellplate_offset_y_mm)
+            )
+            selected_ids[well_id] = (x_mm, y_mm)
+
+        # Remove regions not selected (including any non-well regions)
+        for region_id in list(self.region_centers.keys()):
+            if region_id not in selected_ids:
+                self.remove_region(region_id)
+
+        # Add/update selected wells
+        for well_id, (x_mm, y_mm) in selected_ids.items():
+            z_mm: Optional[float] = None
+            if well_id in self.region_centers and len(self.region_centers[well_id]) >= 3:
+                z_mm = float(self.region_centers[well_id][2])
+            if well_id in self.region_centers:
+                self.remove_region(well_id)
+            self.add_region(
+                well_id,
+                x_mm,
+                y_mm,
+                scan_size_mm,
+                overlap_percent,
+                shape,
+                center_z_mm=z_mm,
+            )
 
     def set_live_scan_coordinates(
         self,
@@ -200,26 +489,12 @@ class ScanCoordinates:
     def set_well_coordinates(
         self, scan_size_mm: float, overlap_percent: float, shape: str
     ) -> None:
-        new_region_centers = self.get_selected_wells()
-
-        if self.format == "glass slide":
-            pos = self.stage.get_pos()
-            self.set_live_scan_coordinates(
-                pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape
-            )
-
-        elif bool(new_region_centers):
-            # Remove regions that are no longer selected
-            for well_id in list(self.region_centers.keys()):
-                if well_id not in new_region_centers.keys():
-                    self.remove_region(well_id)
-
-            # Add regions for selected wells
-            for well_id, (x, y) in new_region_centers.items():
-                if well_id not in self.region_centers:
-                    self.add_region(well_id, x, y, scan_size_mm, overlap_percent, shape)
-        else:
-            self.clear_regions()
+        self.set_well_coordinates_from_selected_cells(
+            selected_cells=list(self._selected_well_cells),
+            scan_size_mm=scan_size_mm,
+            overlap_percent=overlap_percent,
+            shape=shape,
+        )
 
     def set_manual_coordinates(
         self, manual_shapes: Optional[List[np.ndarray]], overlap_percent: float
@@ -242,14 +517,11 @@ class ScanCoordinates:
                     self.region_shapes[region_name] = "Manual"
                     self.region_fov_coordinates[region_name] = scan_coordinates
                     self._log.info(f"Added Manual Region: {region_name}")
-                    self._update_callback(
+                    self._publish_update(
                         AddScanCoordinateRegion(
-                            fov_centers=FovCenter.from_scan_coordinates(
-                                scan_coordinates
-                            )
+                            fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)
                         )
                     )
-                    self._publish_coordinates_updated()
         else:
             self._log.info("No Manual ROI found")
 
@@ -261,6 +533,7 @@ class ScanCoordinates:
         scan_size_mm: float,
         overlap_percent: float = 10,
         shape: str = "Square",
+        center_z_mm: Optional[float] = None,
     ) -> None:
         """Add region based on user inputs.
 
@@ -400,15 +673,14 @@ class ScanCoordinates:
         self.region_centers[well_id] = [
             float(center_x),
             float(center_y),
-            float(self.stage.get_pos().z_mm),
+            float(self.stage.get_pos().z_mm if center_z_mm is None else center_z_mm),
         ]
         self.region_fov_coordinates[well_id] = scan_coordinates
-        self._update_callback(
+        self._publish_update(
             AddScanCoordinateRegion(
                 fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)
             )
         )
-        self._publish_coordinates_updated()
         # Log positions summary for overlap verification
         if len(scan_coordinates) > 0:
             x_positions = sorted(set(c[0] for c in scan_coordinates))
@@ -435,17 +707,15 @@ class ScanCoordinates:
                     removed_fov_centers.append(FovCenter(x_mm=coord[0], y_mm=coord[1]))
 
             self._log.info(f"Removed Region: {well_id}")
-            self._update_callback(
+            self._publish_update(
                 RemovedScanCoordinateRegion(fov_centers=removed_fov_centers)
             )
-            self._publish_coordinates_updated()
 
     def clear_regions(self) -> None:
         self.region_centers.clear()
         self.region_shapes.clear()
         self.region_fov_coordinates.clear()
-        self._update_callback(ClearedScanCoordinates())
-        self._publish_coordinates_updated()
+        self._publish_update(ClearedScanCoordinates())
         self._log.info("Cleared All Regions")
 
     def add_flexible_region(
@@ -495,12 +765,11 @@ class ScanCoordinates:
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
             self.region_fov_coordinates[region_id] = scan_coordinates
-            self._update_callback(
+            self._publish_update(
                 AddScanCoordinateRegion(
                     fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)
                 )
             )
-            self._publish_coordinates_updated()
         else:
             self._log.info(f"Region Out of Bounds: {region_id}")
 
@@ -522,12 +791,11 @@ class ScanCoordinates:
 
         self.region_centers[region_id] = [clamped_x, clamped_y, center_z]
         self.region_fov_coordinates[region_id] = [(clamped_x, clamped_y)]
-        self._update_callback(
+        self._publish_update(
             AddScanCoordinateRegion(
                 fov_centers=[FovCenter(x_mm=clamped_x, y_mm=clamped_y)]
             )
         )
-        self._publish_coordinates_updated()
 
     def add_flexible_region_with_step_size(
         self,
@@ -561,12 +829,11 @@ class ScanCoordinates:
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
             self.region_fov_coordinates[region_id] = scan_coordinates
-            self._update_callback(
+            self._publish_update(
                 AddScanCoordinateRegion(
                     fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)
                 )
             )
-            self._publish_coordinates_updated()
         else:
             print(f"Region Out of Bounds: {region_id}")
 
@@ -684,12 +951,11 @@ class ScanCoordinates:
                 scan_coordinates.append((x, y))
         self.region_centers[region_id] = [x_mm, y_mm, z_mm]
         self.region_fov_coordinates[region_id] = scan_coordinates
-        self._update_callback(
+        self._publish_update(
             AddScanCoordinateRegion(
                 fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)
             )
         )
-        self._publish_coordinates_updated()
 
     def region_contains_coordinate(self, region_id: str, x: float, y: float) -> bool:
         # TODO: check for manual region
@@ -902,13 +1168,13 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         objectiveStore: ObjectiveStore,
         stage: AbstractStage,
         camera: AbstractCamera,
-        update_callback: Callable[[ScanCoordinatesUpdate], None],
+        event_bus: Optional["EventBus"] = None,
     ) -> None:
         super().__init__(
             objectiveStore=objectiveStore,
             stage=stage,
             camera=camera,
-            update_callback=update_callback,
+            event_bus=event_bus,
         )
 
     def get_scan_coordinates_from_selected_wells(

@@ -1,7 +1,8 @@
 import os
 import queue
 import time
-from typing import Callable, Dict, List, Optional, Tuple, Type, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, Type, TYPE_CHECKING
+from typing import Callable
 from datetime import datetime
 
 import imageio as iio
@@ -13,10 +14,8 @@ import squid.core.utils.hardware_utils as utils
 from squid.mcs.controllers.autofocus import AutoFocusController
 from squid.ops.configuration import ChannelConfigurationManager
 from squid.mcs.controllers.autofocus import LaserAutofocusController
-from squid.mcs.controllers.live_controller import LiveController
 from squid.ops.acquisition.multi_point_utils import AcquisitionParameters
 from squid.ops.navigation import ObjectiveStore
-from squid.mcs.microscope import Microscope
 from squid.core.utils.config_utils import ChannelMode
 from squid.core.abc import CameraFrame, CameraFrameFormat
 import squid.core.logging
@@ -30,9 +29,7 @@ from squid.ops.acquisition.job_processing import (
     JobResult,
 )
 from squid.core.config import CameraPixelFormat
-from squid.core.utils.safe_callback import safe_callback
 from squid.core.utils.thread_safe_state import ThreadSafeValue, ThreadSafeFlag
-from squid.core.utils.worker_manager import WorkerManager
 
 if TYPE_CHECKING:
     from squid.mcs.services import (
@@ -42,13 +39,14 @@ if TYPE_CHECKING:
         PiezoService,
         FluidicsService,
         NL5Service,
+        IlluminationService,
+        FilterWheelService,
     )
     from squid.mcs.controllers import MicroscopeModeController
     from squid.core.events import EventBus
 
 from squid.core.events import (
     AcquisitionStarted,
-    AcquisitionFinished,
     AcquisitionProgress,
     AcquisitionWorkerFinished,
     AcquisitionWorkerProgress,
@@ -58,61 +56,53 @@ from squid.core.events import (
 class MultiPointWorker:
     def __init__(
         self,
-        scope: Microscope,
-        live_controller: LiveController,
         auto_focus_controller: Optional[AutoFocusController],
         laser_auto_focus_controller: Optional[LaserAutofocusController],
         objective_store: ObjectiveStore,
         channel_configuration_mananger: ChannelConfigurationManager,
         acquisition_parameters: AcquisitionParameters,
-        abort_requested_fn: Callable[[], bool],
-        request_abort_fn: Callable[[], None],
+        camera_service: "CameraService",
+        stage_service: "StageService",
+        peripheral_service: "PeripheralService",
+        event_bus: "EventBus",
+        trigger_mode: TriggerMode = TriggerMode.SOFTWARE,
+        illumination_service: Optional["IlluminationService"] = None,
+        filter_wheel_service: Optional["FilterWheelService"] = None,
+        enable_channel_auto_filter_switching: bool = True,
+        *,
         extra_job_classes: list[type[Job]] | None = None,
         abort_on_failed_jobs: bool = True,
-        # New service-based parameters (optional for backwards compatibility)
-        camera_service: Optional["CameraService"] = None,
-        stage_service: Optional["StageService"] = None,
-        peripheral_service: Optional["PeripheralService"] = None,
         piezo_service: Optional["PiezoService"] = None,
         fluidics_service: Optional["FluidicsService"] = None,
         nl5_service: Optional["NL5Service"] = None,
-        microscope_mode_controller: Optional["MicroscopeModeController"] = None,
-        event_bus: Optional["EventBus"] = None,
-        # Display callbacks (data plane - Qt signal bridge)
-        on_new_image_fn: Optional[Callable[["CameraFrame", "CaptureInfo"], None]] = None,
-        on_acquisition_start_fn: Optional[Callable[["AcquisitionParameters"], None]] = None,
-        on_acquisition_finish_fn: Optional[Callable[[], None]] = None,
-        on_current_configuration_fn: Optional[Callable[["ChannelMode"], None]] = None,
-        on_current_fov_fn: Optional[Callable[[float, float], None]] = None,
+        stream_handler: Optional[object] = None,
     ):
         self._log = squid.core.logging.get_logger(__class__.__name__)
         self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
-        self.microscope: Microscope = scope
-
-        # Store services (required for service-based architecture)
-        self._camera_service = camera_service
-        self._stage_service = stage_service
-        self._peripheral_service = peripheral_service
+        self._camera_service: "CameraService" = camera_service
+        self._stage_service: "StageService" = stage_service
+        self._peripheral_service: "PeripheralService" = peripheral_service
         self._piezo_service = piezo_service
         self._fluidics_service = fluidics_service
         self._nl5_service = nl5_service
-        self._mode_controller = microscope_mode_controller
         self._event_bus = event_bus
+        self._stream_handler = stream_handler
+        self._trigger_mode = trigger_mode
+        self._illumination_service = illumination_service
+        self._filter_wheel_service = filter_wheel_service
+        self._enable_channel_auto_filter_switching = enable_channel_auto_filter_switching
 
-        # Display callbacks (data plane - Qt signal bridge for mosaic display)
-        self._on_new_image_fn = on_new_image_fn
-        self._on_acquisition_start_fn = on_acquisition_start_fn
-        self._on_acquisition_finish_fn = on_acquisition_finish_fn
-        self._on_current_configuration_fn = on_current_configuration_fn
-        self._on_current_fov_fn = on_current_fov_fn
+        if self._camera_service is None or self._stage_service is None or self._peripheral_service is None:
+            raise ValueError(
+                "MultiPointWorker requires CameraService, StageService, and PeripheralService"
+            )
 
         # Track acquisition timing for ETA calculation
         self._acquisition_start_time: Optional[float] = None
         self._total_images_to_acquire: int = 0
         self._images_acquired: int = 0
 
-        # Controller references (controller-to-controller is fine)
-        self.liveController = live_controller
+        # Controller references
         self.autofocusController: Optional[AutoFocusController] = auto_focus_controller
         self.laser_auto_focus_controller: Optional[LaserAutofocusController] = (
             laser_auto_focus_controller
@@ -123,9 +113,7 @@ class MultiPointWorker:
         )
         self.use_fluidics = acquisition_parameters.use_fluidics
         self._aborted: bool = False
-
-        self.abort_requested_fn: Callable[[], bool] = abort_requested_fn
-        self.request_abort_fn: Callable[[], None] = request_abort_fn
+        self._abort_requested = ThreadSafeFlag(initial=False)
         self.NZ = acquisition_parameters.NZ
         self.deltaZ = acquisition_parameters.deltaZ
 
@@ -207,13 +195,6 @@ class MultiPointWorker:
         self._last_error: Optional[Exception] = None
         self._last_stack_trace: Optional[str] = None
 
-        # Worker manager for timeout detection
-        self._worker_manager = WorkerManager(max_workers=2)
-        self._worker_manager.signals.timeout.connect(self._on_worker_timeout)
-
-        # Configurable acquisition timeout (default 5 minutes)
-        self._acquisition_timeout_ms = 300000
-
         job_classes = [SaveImageJob]
         if extra_job_classes:
             job_classes.extend(extra_job_classes)
@@ -265,6 +246,9 @@ class MultiPointWorker:
     def _camera_get_total_frame_time(self) -> float:
         return self._camera_service.get_total_frame_time()
 
+    def _camera_get_strobe_time(self) -> float:
+        return self._camera_service.get_strobe_time()
+
     def _camera_read_frame(self):
         return self._camera_service.read_frame()
 
@@ -309,6 +293,10 @@ class MultiPointWorker:
         self.use_piezo = value
         self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
 
+    def request_abort(self) -> None:
+        self._aborted = True
+        self._abort_requested.set()
+
     def _require_experiment_id(self) -> str:
         """Ensure we have a valid experiment ID before publishing events."""
         if not self.experiment_ID:
@@ -329,19 +317,10 @@ class MultiPointWorker:
         )
 
     def _publish_acquisition_finished(self, success: bool, error: Optional[Exception] = None) -> None:
-        """Publish AcquisitionFinished and AcquisitionWorkerFinished events via EventBus."""
+        """Publish AcquisitionWorkerFinished event via EventBus."""
         if not self._event_bus:
             return
         experiment_id = self._require_experiment_id()
-
-        # Publish AcquisitionFinished for backwards compatibility with UI
-        self._event_bus.publish(
-            AcquisitionFinished(
-                success=success,
-                experiment_id=experiment_id,
-                error=error,
-            )
-        )
 
         # Publish AcquisitionWorkerFinished for controller state machine
         self._event_bus.publish(
@@ -430,10 +409,6 @@ class MultiPointWorker:
             # Publish acquisition started event
             self._publish_acquisition_started()
 
-            # Call display callback for UI initialization (mosaic reset, tabs setup)
-            if self._on_acquisition_start_fn is not None:
-                self._on_acquisition_start_fn(self._acquisition_parameters)
-
             start_time: int = time.perf_counter_ns()
             # Register callback before starting streaming to avoid missing initial frames
             this_image_callback_id = self._camera_add_frame_callback(
@@ -444,8 +419,7 @@ class MultiPointWorker:
 
             while self.time_point < self.Nt:
                 # check if abort acquisition has been requested
-                if self.abort_requested_fn():
-                    self._aborted = True
+                if self._abort_requested.is_set():
                     self._log.debug("In run, abort_acquisition_requested=True")
                     break
 
@@ -486,8 +460,7 @@ class MultiPointWorker:
                         time.time()
                         < self.timestamp_acquisition_started + self.time_point * self.dt
                     ):
-                        if self.abort_requested_fn():
-                            self._aborted = True
+                        if self._abort_requested.is_set():
                             self._log.debug(
                                 "In run wait loop, abort_acquisition_requested=True"
                             )
@@ -508,7 +481,7 @@ class MultiPointWorker:
             )
             self._log.error(te)
             acquisition_error = te
-            self.request_abort_fn()
+            self.request_abort()
         except Exception as e:
             self._log.exception(e)
             acquisition_error = e
@@ -533,9 +506,6 @@ class MultiPointWorker:
                 success=(acquisition_error is None and not self._aborted),
                 error=acquisition_error,
             )
-            # Call display callback for UI cleanup (flush pending frames)
-            if self._on_acquisition_finish_fn is not None:
-                self._on_acquisition_finish_fn()
 
     def _wait_for_outstanding_callback_images(self) -> None:
         # If there are outstanding frames, wait for them to come in.
@@ -689,9 +659,10 @@ class MultiPointWorker:
             z_mm: float = coordinate_mm[2]
             self.move_to_z_level(z_mm)
 
-        # Notify UI of current FOV position for navigation viewer
-        if self._on_current_fov_fn is not None:
-            self._on_current_fov_fn(x_mm, y_mm)
+        if self._event_bus is not None:
+            from squid.core.events import CurrentFOVRegistered
+
+            self._event_bus.publish(CurrentFOVRegistered(x_mm=x_mm, y_mm=y_mm))
 
     def move_to_z_level(self, z_mm: float) -> None:
         print("moving z")
@@ -751,7 +722,7 @@ class MultiPointWorker:
                         self._log.error(
                             "Some jobs failed, aborting acquisition because abort_on_failed_job=True"
                         )
-                        self.request_abort_fn()
+                        self.request_abort()
                         return
 
                 with self._timing.get_timer("move_to_coordinate"):
@@ -759,8 +730,7 @@ class MultiPointWorker:
                 with self._timing.get_timer("acquire_at_position"):
                     self.acquire_at_position(region_id, current_path, fov)
 
-                if self.abort_requested_fn():
-                    self._aborted = True
+                if self._abort_requested.is_set():
                     self.handle_acquisition_abort(current_path)
                     return
 
@@ -861,8 +831,7 @@ class MultiPointWorker:
             # updates coordinates df
             self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov)
             # check if the acquisition should be aborted
-            if self.abort_requested_fn():
-                self._aborted = True
+            if self._abort_requested.is_set():
                 self.handle_acquisition_abort(current_path)
 
             # update FOV counter
@@ -875,11 +844,69 @@ class MultiPointWorker:
             self.move_z_back_after_stack()
 
     def _select_config(self, config: ChannelMode) -> None:
-        self.liveController.set_microscope_mode(config)
+        self._apply_channel_mode(config)
         self.wait_till_operation_is_completed()
-        # Notify UI of configuration change for display updates
-        if self._on_current_configuration_fn is not None:
-            self._on_current_configuration_fn(config)
+
+    def _apply_channel_mode(self, config: ChannelMode) -> None:
+        exposure = getattr(config, "exposure_time", None)
+        if exposure is not None:
+            self._camera_service.set_exposure_time(exposure)
+        gain = getattr(config, "analog_gain", None)
+        if gain is not None:
+            try:
+                self._camera_service.set_analog_gain(gain)
+            except Exception:
+                pass
+
+        if self._illumination_service is not None:
+            source = getattr(config, "illumination_source", None)
+            intensity = getattr(config, "illumination_intensity", None)
+            if source is not None and intensity is not None:
+                try:
+                    self._illumination_service.set_channel_power(int(source), float(intensity))
+                except Exception:
+                    pass
+
+        if (
+            self._filter_wheel_service
+            and self._filter_wheel_service.is_available()
+            and self._enable_channel_auto_filter_switching
+        ):
+            position = getattr(config, "emission_filter_position", None)
+            if position is not None:
+                try:
+                    delay = 0
+                    if self._trigger_mode == TriggerMode.HARDWARE:
+                        delay = -int(self._camera_get_strobe_time())
+                    self._filter_wheel_service.set_delay_offset_ms(delay)
+                except Exception:
+                    pass
+                try:
+                    self._filter_wheel_service.set_filter_wheel_position({1: int(position)})
+                except Exception:
+                    pass
+
+    def _turn_on_illumination(self, config: ChannelMode) -> None:
+        if self._illumination_service is None:
+            return
+        source = getattr(config, "illumination_source", None)
+        if source is None:
+            return
+        try:
+            self._illumination_service.turn_on_channel(int(source))
+        except Exception:
+            pass
+
+    def _turn_off_illumination(self, config: ChannelMode) -> None:
+        if self._illumination_service is None:
+            return
+        source = getattr(config, "illumination_source", None)
+        if source is None:
+            return
+        try:
+            self._illumination_service.turn_off_channel(int(source))
+        except Exception:
+            pass
 
     def perform_autofocus(self, region_id: str, fov: int) -> bool:
         if not self.do_reflection_af:
@@ -942,7 +969,7 @@ class MultiPointWorker:
         """
         Handle incoming camera frame.
 
-        Wrapped with safe_callback to contain exceptions and prevent crashes.
+        Must not throw - exceptions would destabilize the camera callback thread.
         """
         if self._ready_for_next_trigger.is_set():
             self._log.warning(
@@ -952,15 +979,11 @@ class MultiPointWorker:
 
         self._image_callback_idle.clear()
         try:
-            result: Any = safe_callback(
-                self._process_camera_frame,
-                camera_frame,
-                on_error=self._handle_callback_error,
-            )
-
-            if not result.success:
-                self._log.error(f"Image callback failed, aborting: {result.error}")
-                self.request_abort_fn()
+            self._process_camera_frame(camera_frame)
+        except Exception as exc:
+            self._handle_callback_error(exc, stack_trace="")
+            self._log.exception("Image callback failed, aborting acquisition")
+            self.request_abort()
         finally:
             self._image_callback_idle.set()
 
@@ -998,10 +1021,28 @@ class MultiPointWorker:
             height: int
             width: int
             height, width = image.shape[:2]
-            with self._timing.get_timer("image_to_display*.emit"):
-                # Call display callback for mosaic/live view update
-                if self._on_new_image_fn is not None:
-                    self._on_new_image_fn(camera_frame, info)
+            with self._timing.get_timer("acquisition frame fanout"):
+                if self._stream_handler is not None:
+                    self._stream_handler.on_new_image(  # type: ignore[attr-defined]
+                        image,
+                        frame_id=camera_frame.frame_id,
+                        timestamp=camera_frame.timestamp,
+                        is_color=camera_frame.is_color(),
+                        respect_accept_new_frame=False,
+                        capture_info=info,
+                    )
+
+            if self._event_bus is not None:
+                from squid.core.events import AcquisitionCoordinates
+
+                self._event_bus.publish(
+                    AcquisitionCoordinates(
+                        x_mm=info.position.x_mm,
+                        y_mm=info.position.y_mm,
+                        z_mm=info.position.z_mm,
+                        region_id=info.region_id,
+                    )
+                )
 
     def _handle_callback_error(self, error: Exception, stack_trace: str) -> None:
         """
@@ -1009,11 +1050,6 @@ class MultiPointWorker:
         """
         self._last_error = error
         self._last_stack_trace = stack_trace
-
-    def _on_worker_timeout(self, task_name: str) -> None:
-        """Handle worker timeout - abort gracefully instead of hanging."""
-        self._log.error(f"Worker '{task_name}' timed out, aborting acquisition")
-        self.request_abort_fn()
 
     def _frame_wait_timeout_s(self) -> float:
         override = getattr(self, "frame_wait_timeout_override_s", None)
@@ -1035,11 +1071,11 @@ class MultiPointWorker:
 
         # trigger acquisition (including turning on the illumination) and read frame
         camera_illumination_time: Optional[float] = self._camera_get_exposure_time()
-        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-            self.liveController.turn_on_illumination()
+        if self._trigger_mode == TriggerMode.SOFTWARE:
+            self._turn_on_illumination(config)
             self.wait_till_operation_is_completed()
             camera_illumination_time = None
-        elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
+        elif self._trigger_mode == TriggerMode.HARDWARE:
             if "Fluorescence" in config.name and ENABLE_NL5 and NL5_USE_DOUT:
                 # TODO(imo): This used to use the "reset_image_ready_flag=False" on the read_frame, but oinly the toupcam camera implementation had the
                 #  "reset_image_ready_flag" arg, so this is broken for all other cameras.  Also this used to do some other funky stuff like setting internal camera flags.
@@ -1100,7 +1136,7 @@ class MultiPointWorker:
 
         with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
             total_frame_time = self._camera_get_total_frame_time()
-            if self.liveController.trigger_mode == TriggerMode.HARDWARE:
+            if self._trigger_mode == TriggerMode.HARDWARE:
                 exposure_done_time: float = time.time() + total_frame_time / 1e3
                 # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
                 # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
@@ -1131,8 +1167,8 @@ class MultiPointWorker:
                     # Do not abort here; let caller decide based on _aborted flag.
 
         # turn off the illumination if using software trigger
-        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-            self.liveController.turn_off_illumination()
+        if self._trigger_mode == TriggerMode.SOFTWARE:
+            self._turn_off_illumination(config)
 
     def _sleep(self, sec: float) -> None:
         time_to_sleep: float = max(sec, 1e-6)
@@ -1165,9 +1201,8 @@ class MultiPointWorker:
                 self._select_config(config_)
 
                 # trigger acquisition (including turning on the illumination)
-                if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-                    # TODO(imo): use illum controller
-                    self.liveController.turn_on_illumination()
+                if self._trigger_mode == TriggerMode.SOFTWARE:
+                    self._turn_on_illumination(config_)
                     self.wait_till_operation_is_completed()
 
                 # read camera frame
@@ -1180,8 +1215,8 @@ class MultiPointWorker:
 
                 # TODO(imo): use illum controller
                 # turn off the illumination if using software trigger
-                if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-                    self.liveController.turn_off_illumination()
+                if self._trigger_mode == TriggerMode.SOFTWARE:
+                    self._turn_off_illumination(config_)
 
                 # add the image to dictionary
                 images[config_.name] = np.copy(image)
@@ -1217,10 +1252,38 @@ class MultiPointWorker:
             # If already RGB, write and emit individual channels
             print("writing R, G, B channels")
             self.handle_rgb_channels(images, current_capture_info)
+            rgb_image = None
+            try:
+                r = images["BF LED matrix full_R"]
+                g = images["BF LED matrix full_G"]
+                b = images["BF LED matrix full_B"]
+                if r.ndim == 3 and r.shape[2] == 3:
+                    r = r[:, :, 0]
+                if g.ndim == 3 and g.shape[2] == 3:
+                    g = g[:, :, 1]
+                if b.ndim == 3 and b.shape[2] == 3:
+                    b = b[:, :, 2]
+                rgb_image = np.stack([r, g, b], axis=2)
+            except Exception:
+                rgb_image = None
         else:
             # If monochrome, reconstruct RGB image
             print("constructing RGB image")
-            self.construct_rgb_image(images, current_capture_info)
+            rgb_image = self.construct_rgb_image(images, current_capture_info)
+
+        # Emit a single composite RGB frame onto the data-plane so the mosaic updates.
+        if rgb_image is not None and self._stream_handler is not None:
+            try:
+                self._stream_handler.on_new_image(  # type: ignore[attr-defined]
+                    rgb_image,
+                    frame_id=0,
+                    timestamp=current_capture_info.capture_time,
+                    is_color=True,
+                    respect_accept_new_frame=False,
+                    capture_info=current_capture_info,
+                )
+            except Exception:
+                self._log.exception("Failed to emit RGB image to StreamHandler for display")
 
     @staticmethod
     def handle_rgb_generation(
@@ -1298,7 +1361,7 @@ class MultiPointWorker:
 
     def construct_rgb_image(
         self, images: Dict[str, np.ndarray], capture_info: CaptureInfo
-    ) -> None:
+    ) -> np.ndarray:
         rgb_image: np.ndarray = np.zeros(
             (*images["BF LED matrix full_R"].shape, 3),
             dtype=images["BF LED matrix full_R"].dtype,
@@ -1306,17 +1369,6 @@ class MultiPointWorker:
         rgb_image[:, :, 0] = images["BF LED matrix full_R"]
         rgb_image[:, :, 1] = images["BF LED matrix full_G"]
         rgb_image[:, :, 2] = images["BF LED matrix full_B"]
-
-        # send image to display
-        height: int
-        width: int
-        height, width = rgb_image.shape[:2]
-        image_to_display: np.ndarray = utils.crop_image(
-            rgb_image,
-            round(width * self.display_resolution_scaling),
-            round(height * self.display_resolution_scaling),
-        )
-        # Display is handled by data plane / storage; callbacks removed
 
         # write the RGB image
         print("writing RGB image")
@@ -1330,6 +1382,7 @@ class MultiPointWorker:
             )
         )
         iio.imwrite(os.path.join(capture_info.save_directory, file_name), rgb_image)
+        return rgb_image
 
     def handle_acquisition_abort(self, current_path: str) -> None:
         # Save coordinates.csv
@@ -1346,7 +1399,7 @@ class MultiPointWorker:
             self.z_piezo_um += self.deltaZ * 1000
             self._piezo_move_to(self.z_piezo_um)
             if (
-                self.liveController.trigger_mode == TriggerMode.SOFTWARE
+                self._trigger_mode == TriggerMode.SOFTWARE
             ):  # for hardware trigger, delay is in waiting for the last row to start exposure
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
         else:
@@ -1358,7 +1411,7 @@ class MultiPointWorker:
             self.z_piezo_um = self.z_piezo_um - self.deltaZ * 1000 * (self.NZ - 1)
             self._piezo_move_to(self.z_piezo_um)
             if (
-                self.liveController.trigger_mode == TriggerMode.SOFTWARE
+                self._trigger_mode == TriggerMode.SOFTWARE
             ):  # for hardware trigger, delay is in waiting for the last row to start exposure
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
         else:

@@ -39,7 +39,7 @@ class CameraService(BaseService):
     Widgets should use this service instead of calling camera directly.
     """
 
-    def __init__(self, camera: "AbstractCamera", event_bus: EventBus):
+    def __init__(self, camera: "AbstractCamera", event_bus: EventBus, mode_gate=None):
         """
         Initialize camera service.
 
@@ -47,7 +47,7 @@ class CameraService(BaseService):
             camera: AbstractCamera implementation
             event_bus: EventBus for communication
         """
-        super().__init__(event_bus)
+        super().__init__(event_bus, mode_gate=mode_gate)
         self._camera = camera
         self._lock = threading.RLock()
 
@@ -63,37 +63,61 @@ class CameraService(BaseService):
 
     def _on_set_exposure_command(self, event: SetExposureTimeCommand):
         """Handle SetExposureTimeCommand event."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         self.set_exposure_time(event.exposure_time_ms)
 
     def _on_set_gain_command(self, event: SetAnalogGainCommand):
         """Handle SetAnalogGainCommand event."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         self.set_analog_gain(event.gain)
 
     def _on_set_roi_command(self, event: SetROICommand):
         """Handle SetROICommand event."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         self.set_region_of_interest(
             event.x_offset, event.y_offset, event.width, event.height
         )
 
     def _on_set_binning_command(self, event: SetBinningCommand):
         """Handle SetBinningCommand event."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         self.set_binning(event.binning_x, event.binning_y)
 
     def _on_set_pixel_format_command(self, event: SetPixelFormatCommand):
         """Handle SetPixelFormatCommand event."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         pixel_format = CameraPixelFormat.from_string(event.pixel_format)
         self.set_pixel_format(pixel_format)
 
     def _on_set_temperature_command(self, event: SetCameraTemperatureCommand):
         """Handle SetCameraTemperatureCommand event."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         self.set_temperature(event.temperature_celsius)
 
     def _on_set_black_level_command(self, event: SetBlackLevelCommand):
         """Handle SetBlackLevelCommand event."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         self.set_black_level(event.level)
 
     def _on_set_auto_wb_command(self, event: SetAutoWhiteBalanceCommand):
         """Handle SetAutoWhiteBalanceCommand event."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+            return
         self.set_auto_white_balance(event.enabled)
 
     def set_exposure_time(self, exposure_time_ms: float) -> None:
@@ -335,6 +359,11 @@ class CameraService(BaseService):
         with self._lock:
             return self._camera.get_total_frame_time()
 
+    def get_strobe_time(self) -> float:
+        """Get strobe time in milliseconds."""
+        with self._lock:
+            return self._camera.get_strobe_time()
+
     def read_frame(self):
         """Read a frame from the camera (blocking)."""
         with self._lock:
@@ -368,3 +397,14 @@ class CameraService(BaseService):
         """Check if callbacks are enabled."""
         with self._lock:
             return self._camera.get_callbacks_enabled()
+
+    def set_reference_position(self) -> None:
+        """Set camera reference position when hardware supports it.
+
+        Used by simulated focus cameras to anchor laser-AF spot position.
+        """
+        with self._lock:
+            fn = getattr(self._camera, "set_reference_position", None)
+            if fn is None:
+                raise AttributeError("Underlying camera does not support set_reference_position")
+            fn()

@@ -1,13 +1,23 @@
 from squid.ui.widgets.wellplate._common import *
 from _def import WELLPLATE_OFFSET_X_mm, WELLPLATE_OFFSET_Y_mm
 
+from squid.core.events import (
+    ClickToMoveEnabledChanged,
+    MoveStageToCommand,
+    SelectedWellsChanged,
+    WellplateFormatChanged,
+)
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from squid.ui.ui_event_bus import UIEventBus
+
 
 class Well1536SelectionWidget(QWidget):
-    signal_wellSelected = Signal(bool)
-    signal_wellSelectedPos = Signal(float, float)
-
-    def __init__(self):
+    def __init__(self, event_bus: "UIEventBus"):
         super().__init__()
+        self._bus = event_bus
+        self._click_to_move_enabled: bool = True
         self.format = "1536 well plate"
         self.selected_cells = {}  # Dictionary to keep track of selected cells and their colors
         self.current_cell = None  # To track the current (green) cell
@@ -20,7 +30,31 @@ class Well1536SelectionWidget(QWidget):
         self.a1_y_mm = 7.86  # measured stage position - to update
         self.a1_x_pixel = 144  # coordinate on the png - to update
         self.a1_y_pixel = 108  # coordinate on the png - to update
+        self._bus.subscribe(ClickToMoveEnabledChanged, self._on_click_to_move_enabled_changed)
+        self._bus.subscribe(WellplateFormatChanged, self._on_wellplate_format_changed)
         self.initUI()
+
+    def _on_click_to_move_enabled_changed(self, event: ClickToMoveEnabledChanged) -> None:
+        self._click_to_move_enabled = event.enabled
+
+    def _publish_selection(self) -> None:
+        self._bus.publish(
+            SelectedWellsChanged(
+                format_name=self.format,
+                selected_cells=tuple(self.get_selected_cells()),
+            )
+        )
+
+    def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
+        if event.format_name != "1536 well plate":
+            return
+        self.spacing_mm = float(event.well_spacing_mm)
+        self.number_of_skip = int(event.number_of_skip)
+        self.well_size_mm = float(event.well_size_mm)
+        self.a1_x_mm = float(event.a1_x_mm)
+        self.a1_y_mm = float(event.a1_y_mm)
+        self.a1_x_pixel = int(event.a1_x_pixel)
+        self.a1_y_pixel = int(event.a1_y_pixel)
 
     def initUI(self):
         self.setWindowTitle("1536 Well Plate")
@@ -142,7 +176,7 @@ class Well1536SelectionWidget(QWidget):
                 print(f"Added well {cell_name}")
 
             self.redraw_wells()
-            self.signal_wellSelected.emit(bool(self.selected_cells))
+            self._publish_selection()
 
     def add_well_to_selection_input(self, cell_name):
         current_selection = self.selection_input.text()
@@ -170,7 +204,8 @@ class Well1536SelectionWidget(QWidget):
 
         x_mm = col * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
         y_mm = row * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
-        self.signal_wellSelectedPos.emit(x_mm, y_mm)
+        if self._click_to_move_enabled:
+            self._bus.publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
 
     def redraw_wells(self):
         self.image.fill(QColor("white"))  # Clear the pixmap first
@@ -200,7 +235,8 @@ class Well1536SelectionWidget(QWidget):
             self.redraw_wells()  # Redraw with the new current cell
             x_mm = col_index * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
             y_mm = row_index * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
-            self.signal_wellSelectedPos.emit(x_mm, y_mm)
+            if self._click_to_move_enabled:
+                self._bus.publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
 
     def select_cells(self):
         # first clear selection
@@ -230,8 +266,7 @@ class Well1536SelectionWidget(QWidget):
                 else:  # It's a single cell
                     self.selected_cells[(start_row_index, start_col_index)] = "#1f77b4"
         self.redraw_wells()
-        if self.selected_cells:
-            self.signal_wellSelected.emit(True)
+        self._publish_selection()
 
     def row_to_index(self, row):
         index = 0
@@ -240,11 +275,7 @@ class Well1536SelectionWidget(QWidget):
         return index - 1
 
     def onSelectionChanged(self):
-        self.get_selected_cells()
-
-    def onWellplateChanged(self):
-        """A placeholder to match the method in WellSelectionWidget"""
-        pass
+        self._publish_selection()
 
     def get_selected_cells(self):
         list_of_selected_cells = list(self.selected_cells.keys())

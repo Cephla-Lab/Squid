@@ -46,6 +46,7 @@ from squid.core.events import (
     TriggerModeChanged,
     TriggerFPSChanged,
     MicroscopeModeChanged,
+    AutoLevelCommand,
     # New camera settings commands
     SetROICommand,
     SetBinningCommand,
@@ -66,8 +67,8 @@ from squid.core.events import (
     UpdateChannelConfigurationCommand,
     ProfileChanged,
 )
-from squid.storage.stream_handler import StreamHandler, ImageSaver
-from squid.mcs.controllers.live_controller import LiveController
+from squid.storage.stream_handler import StreamHandler
+from squid.ui.image_saver import ImageSaver
 from squid.ops.navigation import ObjectiveStore
 from squid.ops.configuration import ChannelConfigurationManager
 from squid.core.utils.config_utils import ChannelMode

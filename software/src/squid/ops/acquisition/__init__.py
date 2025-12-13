@@ -12,7 +12,6 @@ from squid.ops.acquisition.multi_point_utils import (
     AcquisitionParameters,
 )
 from squid.ops.acquisition.multi_point_worker import MultiPointWorker
-from squid.ops.acquisition.platereader import PlateReadingController
 
 __all__ = [
     "CaptureInfo",
@@ -25,5 +24,4 @@ __all__ = [
     "ScanPositionInformation",
     "AcquisitionParameters",
     "MultiPointWorker",
-    "PlateReadingController",
 ]

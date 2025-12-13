@@ -1,6 +1,5 @@
 import time
-from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, Any, Callable, TYPE_CHECKING
+from typing import Optional, Tuple, Dict, Any, TYPE_CHECKING
 
 import cv2
 from datetime import datetime
@@ -10,12 +9,8 @@ import numpy as np
 import squid.core.utils.hardware_utils as utils
 import _def
 from squid.mcs.controllers.autofocus.laser_af_settings_manager import LaserAFSettingManager
-from squid.mcs.controllers.live_controller import LiveController
 from squid.ops.navigation import ObjectiveStore
-from squid.mcs.microcontroller import Microcontroller
-from squid.mcs.drivers.peripherals.piezo import PiezoStage
 from squid.core.utils.config_utils import LaserAFConfig
-from squid.core.abc import AbstractCamera, AbstractStage
 import squid.core.logging
 from squid.core.events import (
     EventBus,
@@ -32,63 +27,42 @@ from squid.core.events import (
     LaserAFReferenceSet,
     LaserAFDisplacementMeasured,
     LaserAFFrameCaptured,
+    LaserAFCrossCorrelationMeasured,
+    LaserAFSpotCentroidMeasured,
+    ObjectiveChanged,
+    ProfileChanged,
 )
 
 if TYPE_CHECKING:
     from squid.mcs.services import CameraService, StageService, PeripheralService, PiezoService
 
 
-@dataclass
-class LaserAFCallbacks:
-    """Plain callbacks for laser autofocus notifications."""
-
-    image_to_display: Optional[Callable[[np.ndarray], None]] = None
-    displacement_um: Optional[Callable[[float], None]] = None
-    cross_correlation: Optional[Callable[[float], None]] = None
-    piezo_position_update: Optional[Callable[[], None]] = None
-
-
 class LaserAutofocusController:
 
     def __init__(
         self,
-        microcontroller: Microcontroller,
-        camera: AbstractCamera,
-        liveController: LiveController,
-        stage: AbstractStage,
-        piezo: Optional[PiezoStage] = None,
+        camera_service: "CameraService",
+        stage_service: "StageService",
+        peripheral_service: "PeripheralService",
+        event_bus: "EventBus",
+        piezo_service: Optional["PiezoService"] = None,
         objectiveStore: Optional[ObjectiveStore] = None,
         laserAFSettingManager: Optional[LaserAFSettingManager] = None,
-        # Service-based parameters (optional for backwards compatibility)
-        camera_service: Optional["CameraService"] = None,
-        stage_service: Optional["StageService"] = None,
-        peripheral_service: Optional["PeripheralService"] = None,
-        piezo_service: Optional["PiezoService"] = None,
-        event_bus: Optional["EventBus"] = None,
-        callbacks: Optional[LaserAFCallbacks] = None,
-        subscribe_to_bus: bool = True,
+        stream_handler: Optional[object] = None,
     ):
         self._log = squid.core.logging.get_logger(__class__.__name__)
 
-        # Direct hardware references (for fallback)
-        self.microcontroller: Microcontroller = microcontroller
-        self.camera: AbstractCamera = camera
-        self.liveController: LiveController = liveController
-        self.stage: AbstractStage = stage
-        self.piezo: Optional[PiezoStage] = piezo
         self.objectiveStore: Optional[ObjectiveStore] = objectiveStore
         self.laserAFSettingManager: Optional[LaserAFSettingManager] = (
             laserAFSettingManager
         )
 
-        # Service references
-        self._camera_service = camera_service
-        self._stage_service = stage_service
-        self._peripheral_service = peripheral_service
-        self._piezo_service = piezo_service
-        self._event_bus = event_bus
-        self._bus_enabled = subscribe_to_bus
-        self._callbacks = callbacks or LaserAFCallbacks()
+        self._camera_service: "CameraService" = camera_service
+        self._stage_service: "StageService" = stage_service
+        self._peripheral_service: "PeripheralService" = peripheral_service
+        self._piezo_service: Optional["PiezoService"] = piezo_service
+        self._event_bus: "EventBus" = event_bus
+        self._stream_handler = stream_handler
 
         self.characterization_mode: bool = _def.LASER_AF_CHARACTERIZATION_MODE
         self.is_initialized: bool = False
@@ -112,7 +86,7 @@ class LaserAutofocusController:
         self._subscribe_to_bus()
 
     def _subscribe_to_bus(self) -> None:
-        if self._event_bus is None or not self._bus_enabled:
+        if self._event_bus is None:
             return
         self._event_bus.subscribe(SetLaserAFPropertiesCommand, self._on_set_properties)
         self._event_bus.subscribe(InitializeLaserAFCommand, self._on_initialize)
@@ -122,139 +96,83 @@ class LaserAutofocusController:
         self._event_bus.subscribe(SetLaserAFReferenceCommand, self._on_set_reference)
         self._event_bus.subscribe(MeasureLaserAFDisplacementCommand, self._on_measure_displacement)
         self._event_bus.subscribe(CaptureLaserAFFrameCommand, self._on_capture_frame)
+        self._event_bus.subscribe(ObjectiveChanged, lambda _e: self.on_settings_changed())
+        self._event_bus.subscribe(ProfileChanged, lambda _e: self.on_settings_changed())
 
-    def detach_event_bus_commands(self) -> None:
-        """Unsubscribe EventBus command handlers for actor routing."""
+    def _stream_image(self, image: np.ndarray) -> None:
+        if self._stream_handler is None:
+            return
+        try:
+            self._stream_handler.on_new_image(image)  # type: ignore[attr-defined]
+        except Exception:  # pragma: no cover - defensive
+            self._log.exception("Failed to stream laser AF image")
+
+    def _publish_displacement(self, displacement_um: float) -> None:
         if self._event_bus is None:
             return
-        self._bus_enabled = False
-        try:
-            self._event_bus.unsubscribe(SetLaserAFPropertiesCommand, self._on_set_properties)
-            self._event_bus.unsubscribe(InitializeLaserAFCommand, self._on_initialize)
-            self._event_bus.unsubscribe(SetLaserAFCharacterizationModeCommand, self._on_set_characterization_mode)
-            self._event_bus.unsubscribe(UpdateLaserAFThresholdCommand, self._on_update_threshold)
-            self._event_bus.unsubscribe(MoveToLaserAFTargetCommand, self._on_move_to_target)
-            self._event_bus.unsubscribe(SetLaserAFReferenceCommand, self._on_set_reference)
-            self._event_bus.unsubscribe(MeasureLaserAFDisplacementCommand, self._on_measure_displacement)
-            self._event_bus.unsubscribe(CaptureLaserAFFrameCommand, self._on_capture_frame)
-        except Exception:
-            pass
-
-    def set_callbacks(self, callbacks: LaserAFCallbacks) -> None:
-        """Update the callbacks for UI notifications."""
-        self._callbacks = callbacks or LaserAFCallbacks()
+        success = not math.isnan(displacement_um)
+        self._event_bus.publish(
+            LaserAFDisplacementMeasured(
+                displacement_um=displacement_um if success else None,
+                success=success,
+            )
+        )
 
     # =========================================================================
-    # Callback emitters
-    # =========================================================================
-    def _emit_image(self, image: np.ndarray) -> None:
-        if self._callbacks.image_to_display:
-            self._callbacks.image_to_display(image)
-
-    def _emit_displacement(self, displacement_um: float) -> None:
-        if self._callbacks.displacement_um:
-            self._callbacks.displacement_um(displacement_um)
-
-    def _emit_cross_correlation(self, correlation: float) -> None:
-        if self._callbacks.cross_correlation:
-            self._callbacks.cross_correlation(correlation)
-
-    def _emit_piezo_position_update(self) -> None:
-        if self._callbacks.piezo_position_update:
-            self._callbacks.piezo_position_update()
-
-    # =========================================================================
-    # Service helper methods - use service if available, fallback to direct
+    # Service helper methods (services-only)
     # =========================================================================
 
     def _set_camera_roi(self, x: int, y: int, width: int, height: int) -> None:
         """Set camera region of interest."""
-        if self._camera_service:
-            self._camera_service.set_region_of_interest(x, y, width, height)
-        else:
-            self.camera.set_region_of_interest(x, y, width, height)
+        self._camera_service.set_region_of_interest(x, y, width, height)
 
     def _set_camera_exposure(self, exposure_ms: float) -> None:
         """Set camera exposure time."""
-        if self._camera_service:
-            self._camera_service.set_exposure_time(exposure_ms)
-        else:
-            self.camera.set_exposure_time(exposure_ms)
+        self._camera_service.set_exposure_time(exposure_ms)
 
     def _get_camera_exposure(self) -> float:
         """Get camera exposure time."""
-        if self._camera_service:
-            return self._camera_service.get_exposure_time()
-        else:
-            return self.camera.get_exposure_time()
+        return self._camera_service.get_exposure_time()
 
     def _set_camera_analog_gain(self, gain: float) -> None:
         """Set camera analog gain."""
-        if self._camera_service:
-            self._camera_service.set_analog_gain(gain)
-        else:
-            self.camera.set_analog_gain(gain)
+        self._camera_service.set_analog_gain(gain)
 
     def _send_camera_trigger(self) -> None:
         """Send camera trigger."""
-        if self._camera_service:
-            self._camera_service.send_trigger()
-        else:
-            self.camera.send_trigger()
+        self._camera_service.send_trigger()
 
     def _read_camera_frame(self) -> Optional[np.ndarray]:
         """Read frame from camera."""
-        if self._camera_service:
-            return self._camera_service.read_frame()
-        else:
-            return self.camera.read_frame()
+        return self._camera_service.read_frame()
 
     def _enable_camera_callbacks(self, enabled: bool) -> None:
         """Enable/disable camera callbacks."""
-        if self._camera_service:
-            self._camera_service.enable_callbacks(enabled)
-        else:
-            self.camera.enable_callbacks(enabled)
+        self._camera_service.enable_callbacks(enabled)
 
     def _turn_on_af_laser(self, wait: bool = True) -> None:
         """Turn on autofocus laser."""
-        if self._peripheral_service:
-            self._peripheral_service.turn_on_af_laser(wait_for_completion=wait)
-        else:
-            self.microcontroller.turn_on_AF_laser()
-            if wait:
-                self.microcontroller.wait_till_operation_is_completed()
+        self._peripheral_service.turn_on_af_laser(wait_for_completion=wait)
 
     def _turn_off_af_laser(self, wait: bool = True) -> None:
         """Turn off autofocus laser."""
-        if self._peripheral_service:
-            self._peripheral_service.turn_off_af_laser(wait_for_completion=wait)
-        else:
-            self.microcontroller.turn_off_AF_laser()
-            if wait:
-                self.microcontroller.wait_till_operation_is_completed()
+        self._peripheral_service.turn_off_af_laser(wait_for_completion=wait)
 
     def _move_stage_z(self, distance_mm: float) -> None:
         """Move stage Z by relative distance."""
-        if self._stage_service:
-            self._stage_service.move_z(distance_mm)
-        else:
-            self.stage.move_z(distance_mm)
+        self._stage_service.move_z(distance_mm)
 
     def _move_piezo(self, position_um: float) -> None:
         """Move piezo to absolute position."""
-        if self._piezo_service:
-            self._piezo_service.move_to(position_um)
-        elif self.piezo:
-            self.piezo.move_to(position_um)
+        if self._piezo_service is None:
+            raise RuntimeError("PiezoService required for piezo move")
+        self._piezo_service.move_to(position_um)
 
     def _get_piezo_position(self) -> float:
         """Get current piezo position."""
-        if self._piezo_service:
-            return self._piezo_service.get_position()
-        elif self.piezo:
-            return self.piezo.position
-        return 0.0
+        if self._piezo_service is None:
+            raise RuntimeError("PiezoService required for piezo position")
+        return self._piezo_service.get_position()
 
     # =========================================================================
 
@@ -411,7 +329,7 @@ class LaserAutofocusController:
 
         # Move to first position and measure
         self._move_z(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
-        if self.piezo is not None:
+        if self._piezo_service is not None:
             time.sleep(_def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
         result = self._get_laser_spot_centroid()
@@ -453,7 +371,7 @@ class LaserAutofocusController:
 
         # move back to initial position
         self._move_z(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
-        if self.piezo is not None:
+        if self._piezo_service is not None:
             time.sleep(_def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
         # Calculate conversion factor
@@ -508,7 +426,7 @@ class LaserAutofocusController:
         """
 
         def finish_with(um: float) -> float:
-            self._emit_displacement(um)
+            self._publish_displacement(um)
             return um
 
         try:
@@ -583,7 +501,8 @@ class LaserAutofocusController:
         # For other targets, the spot won't match the reference and that's expected
         if abs(target_um) < 1.0:  # Only verify when target is near zero
             cc_result, correlation = self._verify_spot_alignment()
-            self._emit_cross_correlation(correlation)
+            if self._event_bus is not None:
+                self._event_bus.publish(LaserAFCrossCorrelationMeasured(correlation=correlation))
             if not cc_result:
                 self._log.warning("Cross correlation check failed - spots not well aligned")
                 # move back to the current position
@@ -595,14 +514,10 @@ class LaserAutofocusController:
         return True
 
     def _move_z(self, um_to_move: float) -> None:
-        if self.piezo is not None or self._piezo_service is not None:
-            if self._piezo_service:
-                self._piezo_service.move_relative(um_to_move)
-            else:
-                self.piezo.move_relative(um_to_move)
-            self._emit_piezo_position_update()
-        else:
-            self._move_stage_z(um_to_move / 1000)
+        if self._piezo_service is not None:
+            self._piezo_service.move_relative(um_to_move)
+            return
+        self._move_stage_z(um_to_move / 1000)
 
     def set_reference(self) -> bool:
         """Set the current spot position as the reference position.
@@ -663,12 +578,14 @@ class LaserAutofocusController:
             reference_crop
         )
 
-        self._emit_displacement(0)
+        self._publish_displacement(0)
         self._log.info(f"Set reference position to ({x:.1f}, {y:.1f})")
 
         # Tell simulated camera to use current Z as reference (for spot position simulation)
-        if hasattr(self.camera, 'set_reference_position'):
-            self.camera.set_reference_position()
+        try:
+            self._camera_service.set_reference_position()  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
         self.laser_af_properties = self.laser_af_properties.model_copy(
             update={"x_reference": x, "has_reference": True}
@@ -783,10 +700,9 @@ class LaserAutofocusController:
 
     def get_new_frame(self) -> Optional[np.ndarray]:
         # IMPORTANT: This assumes that the autofocus laser is already on!
-        if self._camera_service:
-            self._camera_service.send_trigger(illumination_time=self._get_camera_exposure())
-        else:
-            self.camera.send_trigger(self.camera.get_exposure_time())
+        self._camera_service.send_trigger(
+            illumination_time=self._get_camera_exposure()
+        )
         return self._read_camera_frame()
 
     def _get_laser_spot_centroid(
@@ -893,7 +809,7 @@ class LaserAutofocusController:
 
         # optionally display the image
         if _def.LASER_AF_DISPLAY_SPOT_IMAGE and image is not None:
-            self._emit_image(image)
+            self._stream_image(image)
 
         # Check if we got enough successful detections
         if successful_detections <= 0:
@@ -935,7 +851,7 @@ class LaserAutofocusController:
                 self._log.error("Failed to read frame in get_image")
                 return None
 
-            self._emit_image(image)
+            self._stream_image(image)
             return image
 
         except Exception as e:
@@ -986,51 +902,43 @@ class LaserAutofocusController:
 
     def _on_measure_displacement(self, cmd: MeasureLaserAFDisplacementCommand) -> None:
         """Handle MeasureLaserAFDisplacementCommand from EventBus."""
-        displacement = self.measure_displacement()
-        success = not math.isnan(displacement)
-        if self._event_bus:
-            self._event_bus.publish(LaserAFDisplacementMeasured(
-                displacement_um=displacement if success else None,
-                success=success
-            ))
+        self.measure_displacement()
 
     def _on_capture_frame(self, cmd: CaptureLaserAFFrameCommand) -> None:
         """Handle CaptureLaserAFFrameCommand from EventBus."""
-        frame = self.get_image()
-        if self._event_bus:
-            self._event_bus.publish(LaserAFFrameCaptured(
-                frame=frame,
-                success=frame is not None
-            ))
+        if self._event_bus is None:
+            return
 
-
-# Optional Qt adapter for UI layer -------------------------------------------------
-try:  # pragma: no cover - optional UI bridge
-    from qtpy.QtCore import QObject, Signal
-
-    class LaserAutofocusQtAdapter(QObject):
-        """Qt signal bridge for LaserAutofocusController."""
-
-        image_to_display = Signal(np.ndarray)
-        signal_displacement_um = Signal(float)
-        signal_cross_correlation = Signal(float)
-        signal_piezo_position_update = Signal()
-
-        def __init__(self, controller: LaserAutofocusController):
-            super().__init__()
-            self.controller = controller
-            controller.set_callbacks(
-                LaserAFCallbacks(
-                    image_to_display=self.image_to_display.emit,
-                    displacement_um=self.signal_displacement_um.emit,
-                    cross_correlation=self.signal_cross_correlation.emit,
-                    piezo_position_update=self.signal_piezo_position_update.emit,
-                )
+        try:
+            self._turn_on_af_laser()
+        except TimeoutError:
+            self._log.exception("Failed to turn on AF laser for frame capture")
+            self._event_bus.publish(LaserAFFrameCaptured(success=False))
+            self._event_bus.publish(
+                LaserAFSpotCentroidMeasured(success=False, error="Failed to turn on AF laser")
             )
+            return
 
-        def __getattr__(self, item):
-            """Delegate attribute access to the underlying controller."""
-            return getattr(self.controller, item)
-
-except Exception:  # pragma: no cover - Qt not available in some environments
-    LaserAutofocusQtAdapter = None  # type: ignore
+        try:
+            result = self._get_laser_spot_centroid()
+            image = self.image
+            if image is not None:
+                self._stream_image(image)
+            if result is None:
+                self._event_bus.publish(LaserAFFrameCaptured(success=False))
+                self._event_bus.publish(
+                    LaserAFSpotCentroidMeasured(
+                        success=False, error="Spot detection failed"
+                    )
+                )
+            else:
+                x, y = result
+                self._event_bus.publish(LaserAFFrameCaptured(success=True))
+                self._event_bus.publish(
+                    LaserAFSpotCentroidMeasured(success=True, x_px=x, y_px=y)
+                )
+        finally:
+            try:
+                self._turn_off_af_laser()
+            except TimeoutError:
+                self._log.exception("Failed to turn off AF laser after frame capture")

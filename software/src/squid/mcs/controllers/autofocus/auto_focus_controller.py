@@ -4,7 +4,7 @@ import threading
 import time
 from enum import Enum, auto
 from threading import Thread
-from typing import Optional, Callable, TYPE_CHECKING, List, Set, Tuple
+from typing import Optional, TYPE_CHECKING, List, Set, Tuple
 
 import numpy as np
 
@@ -13,14 +13,17 @@ import squid.core.utils.hardware_utils as utils
 import _def
 from squid.mcs.controllers.autofocus.auto_focus_worker import AutofocusWorker
 from squid.mcs.controllers.live_controller import LiveController
-from squid.mcs.microcontroller import Microcontroller
-from squid.core.abc import AbstractCamera, AbstractStage
 from squid.core.state_machine import StateMachine
-from squid.core.coordinator import ResourceCoordinator, Resource, GlobalMode, ResourceLease
+from squid.core.mode_gate import GlobalMode, GlobalModeGate
 
 if TYPE_CHECKING:
-    from squid.mcs.microscope import NL5
-    from squid.mcs.services import CameraService, StageService, PeripheralService
+    from squid.mcs.services import (
+        CameraService,
+        StageService,
+        PeripheralService,
+        NL5Service,
+        IlluminationService,
+    )
     from squid.core.events import EventBus
 
 
@@ -33,31 +36,18 @@ class AutofocusControllerState(Enum):
     FAILED = auto()
 
 
-# Resources required by AutoFocusController
-AUTOFOCUS_REQUIRED_RESOURCES: Set[Resource] = {
-    Resource.CAMERA_CONTROL,
-    Resource.STAGE_CONTROL,
-    Resource.FOCUS_AUTHORITY,
-}
-
-
 class AutoFocusController(StateMachine[AutofocusControllerState]):
     def __init__(
         self,
-        camera: AbstractCamera,
-        stage: AbstractStage,
         liveController: LiveController,
-        microcontroller: Microcontroller,
-        finished_fn: Optional[Callable[[], None]] = None,
-        image_to_display_fn: Optional[Callable[[np.ndarray], None]] = None,
-        nl5: Optional["NL5"] = None,
-        # Service-based parameters (optional for backwards compatibility)
-        camera_service: Optional["CameraService"] = None,
-        stage_service: Optional["StageService"] = None,
-        peripheral_service: Optional["PeripheralService"] = None,
-        event_bus: Optional["EventBus"] = None,
-        coordinator: Optional[ResourceCoordinator] = None,
-        subscribe_to_bus: bool = True,
+        camera_service: "CameraService",
+        stage_service: "StageService",
+        peripheral_service: "PeripheralService",
+        event_bus: "EventBus",
+        nl5_service: Optional["NL5Service"] = None,
+        illumination_service: Optional["IlluminationService"] = None,
+        stream_handler: Optional[object] = None,
+        mode_gate: Optional[GlobalModeGate] = None,
     ):
         # Initialize state machine with transitions
         # IDLE -> RUNNING: normal autofocus start
@@ -85,22 +75,16 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
         self._focus_thread: Optional[Thread] = None
         self._keep_running = threading.Event()
 
-        # Direct hardware references (for fallback)
-        self.camera: AbstractCamera = camera
-        self.stage: AbstractStage = stage
-        self.microcontroller: Microcontroller = microcontroller
         self.liveController: LiveController = liveController
-        self._finished_fn = finished_fn
-        self._image_to_display_fn = image_to_display_fn
-        self.nl5: Optional["NL5"] = nl5
+        self._stream_handler = stream_handler
 
-        # Service references
-        self._camera_service = camera_service
-        self._stage_service = stage_service
-        self._peripheral_service = peripheral_service
-        self._coordinator = coordinator
-        self._resource_lease: Optional[ResourceLease] = None
-        self._bus_enabled = subscribe_to_bus
+        self._camera_service: "CameraService" = camera_service
+        self._stage_service: "StageService" = stage_service
+        self._peripheral_service: "PeripheralService" = peripheral_service
+        self._nl5_service: Optional["NL5Service"] = nl5_service
+        self._illumination_service: Optional["IlluminationService"] = illumination_service
+        self._mode_gate = mode_gate
+        self._previous_mode: Optional[GlobalMode] = None
 
         # Start with "Reasonable" defaults.
         self.N: int = 10
@@ -113,17 +97,16 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
         self.was_live_before_autofocus: bool = False
         self.callback_was_enabled_before_autofocus: bool = False
 
-        # Subscribe to EventBus commands for thread-safe UI control
-        if self._event_bus is not None and subscribe_to_bus:
-            self._subscribe_to_bus()
+        self._subscribe_to_bus()
 
     def _subscribe_to_bus(self) -> None:
-        if self._event_bus is None or not self._bus_enabled:
+        if self._event_bus is None:
             return
         from squid.core.events import (
             StartAutofocusCommand,
             StopAutofocusCommand,
             SetAutofocusParamsCommand,
+            AutofocusWorkerFinished,
         )
 
         self._event_bus.subscribe(StartAutofocusCommand, self._on_start_command)
@@ -131,6 +114,7 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
         self._event_bus.subscribe(
             SetAutofocusParamsCommand, self._on_set_params_command
         )
+        self._event_bus.subscribe(AutofocusWorkerFinished, self._on_worker_finished)
 
     def _publish_state_changed(
         self, old_state: AutofocusControllerState, new_state: AutofocusControllerState
@@ -147,71 +131,10 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
                 )
             )
 
-    def _acquire_resources(self) -> bool:
-        """Acquire required resources from coordinator.
-
-        Returns:
-            True if resources acquired (or no coordinator), False if unavailable
-        """
-        if self._coordinator is None:
-            return True  # No coordinator, proceed without resource tracking
-
-        lease = self._coordinator.acquire(
-            resources=AUTOFOCUS_REQUIRED_RESOURCES,
-            owner="AutoFocusController",
-            mode=GlobalMode.ACQUIRING,
-        )
-        if lease is None:
-            self._log.warning("Could not acquire resources for autofocus")
-            return False
-
-        self._resource_lease = lease
-        self._log.debug(f"Acquired resource lease: {lease.lease_id[:8]}")
-        return True
-
-    def _release_resources(self) -> None:
-        """Release held resources back to coordinator."""
-        if self._coordinator is None or self._resource_lease is None:
-            return
-
-        self._coordinator.release(self._resource_lease)
-        self._log.debug(f"Released resource lease: {self._resource_lease.lease_id[:8]}")
-        self._resource_lease = None
-
     @property
     def autofocus_in_progress(self) -> bool:
         """Check if autofocus is running (backwards compatibility property)."""
         return self._is_in_state(AutofocusControllerState.RUNNING)
-
-    def detach_event_bus_commands(self) -> None:
-        """Unsubscribe bus commands to allow actor routing."""
-        if self._event_bus is None:
-            return
-        self._bus_enabled = False
-        try:
-            from squid.core.events import (
-                StartAutofocusCommand,
-                StopAutofocusCommand,
-                SetAutofocusParamsCommand,
-            )
-
-            self._event_bus.unsubscribe(StartAutofocusCommand, self._on_start_command)
-            self._event_bus.unsubscribe(StopAutofocusCommand, self._on_stop_command)
-            self._event_bus.unsubscribe(
-                SetAutofocusParamsCommand, self._on_set_params_command
-            )
-        except Exception:
-            pass
-
-    def set_finished_callback(self, finished_fn: Optional[Callable[[], None]]) -> None:
-        """Attach or replace the completion callback."""
-        self._finished_fn = finished_fn
-
-    def set_image_callback(
-        self, image_callback: Optional[Callable[[np.ndarray], None]]
-    ) -> None:
-        """Attach or replace the image callback."""
-        self._image_to_display_fn = image_callback
 
     def set_N(self, N: int) -> None:
         self.N = N
@@ -230,16 +153,15 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
             return
 
         if self.use_focus_map and (not focus_map_override):
+            previous_mode = self._mode_gate.get_mode() if self._mode_gate else None
+            if self._mode_gate:
+                self._mode_gate.set_mode(GlobalMode.ACQUIRING, reason="autofocus focus-map")
+
             # Focus map path - quick synchronous operation
             self._transition_to(AutofocusControllerState.RUNNING)
 
-            # Use service if available, otherwise direct access
-            if self._stage_service:
-                self._stage_service.wait_for_idle(1.0)
-                pos = self._stage_service.get_position()
-            else:
-                self.stage.wait_for_idle(1.0)
-                pos = self.stage.get_pos()
+            self._stage_service.wait_for_idle(1.0)
+            pos = self._stage_service.get_position()
 
             # z here is in mm because that's how the navigation controller stores it
             target_z = utils.interpolate_plane(
@@ -248,19 +170,18 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
             self._log.info(
                 f"Interpolated target z as {target_z} mm from focus map, moving there."
             )
-            if self._stage_service:
-                self._stage_service.move_z_to(target_z)
-            else:
-                self.stage.move_z_to(target_z)
+            self._stage_service.move_z_to(target_z)
             self._transition_to(AutofocusControllerState.COMPLETED)
-            self._emit_finished()
+            self._publish_completed(success=True, error=None)
             self._transition_to(AutofocusControllerState.IDLE)
+            if self._mode_gate and previous_mode is not None:
+                self._mode_gate.restore_mode(previous_mode, reason="autofocus focus-map complete")
             return
 
-        # Acquire resources for full autofocus
-        if not self._acquire_resources():
-            self._log.warning("Could not acquire resources, aborting autofocus")
-            return
+        # Full autofocus: set global mode while worker runs
+        if self._mode_gate:
+            self._previous_mode = self._mode_gate.get_mode()
+            self._mode_gate.set_mode(GlobalMode.ACQUIRING, reason="autofocus start")
 
         # Transition to RUNNING
         self._transition_to(AutofocusControllerState.RUNNING)
@@ -272,18 +193,12 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
         else:
             self.was_live_before_autofocus = False
 
-        # temporarily disable call back -> image does not go through streamHandler
-        if self._camera_service:
-            callbacks_enabled = self._camera_service.get_callbacks_enabled()
-        else:
-            callbacks_enabled = self.camera.get_callbacks_enabled()
+        # temporarily disable callbacks -> image does not go through StreamHandler
+        callbacks_enabled = self._camera_service.get_callbacks_enabled()
 
         if callbacks_enabled:
             self.callback_was_enabled_before_autofocus = True
-            if self._camera_service:
-                self._camera_service.enable_callbacks(False)
-            else:
-                self.camera.enable_callbacks(False)
+            self._camera_service.enable_callbacks(False)
         else:
             self.callback_was_enabled_before_autofocus = False
 
@@ -295,24 +210,44 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
             except RuntimeError as e:
                 self._log.exception("Critical error joining previous autofocus thread.")
                 self._transition_to(AutofocusControllerState.FAILED)
-                self._emit_finished_failed("Critical error joining previous autofocus thread")
-                self._release_resources()
+                self._publish_completed(
+                    success=False,
+                    error="Critical error joining previous autofocus thread",
+                )
+                if self._mode_gate and self._previous_mode is not None:
+                    self._mode_gate.restore_mode(self._previous_mode, reason="autofocus failed")
                 self._transition_to(AutofocusControllerState.IDLE)
                 raise e
             if self._focus_thread.is_alive():
                 self._log.error("Previous focus thread failed to join!")
                 self._transition_to(AutofocusControllerState.FAILED)
-                self._emit_finished_failed("Previous focus thread failed to join")
-                self._release_resources()
+                self._publish_completed(
+                    success=False,
+                    error="Previous focus thread failed to join",
+                )
+                if self._mode_gate and self._previous_mode is not None:
+                    self._mode_gate.restore_mode(self._previous_mode, reason="autofocus failed")
                 self._transition_to(AutofocusControllerState.IDLE)
                 raise RuntimeError("Previous focus thread failed to join")
 
         self._keep_running.set()
+        trigger_mode = getattr(self.liveController, "trigger_mode", None)
+        configuration = getattr(self.liveController, "currentConfiguration", None)
         self._autofocus_worker = AutofocusWorker(
-            self,
-            self._on_autofocus_completed,
-            self._image_to_display_fn,
-            self._keep_running,
+            camera_service=self._camera_service,
+            stage_service=self._stage_service,
+            peripheral_service=self._peripheral_service,
+            nl5_service=self._nl5_service,
+            illumination_service=self._illumination_service,
+            trigger_mode=trigger_mode,
+            configuration=configuration,
+            keep_running=self._keep_running,
+            event_bus=self._event_bus,
+            stream_handler=self._stream_handler,
+            n_planes=self.N,
+            delta_z_mm=self.deltaZ,
+            crop_width=self.crop_width,
+            crop_height=self.crop_height,
         )
         self._focus_thread = Thread(target=self._autofocus_worker.run, daemon=True)
         self._focus_thread.start()
@@ -325,80 +260,60 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
         self._autofocus_abort_requested = True
         self._keep_running.clear()
 
-        if self._focus_thread and self._focus_thread.is_alive():
-            try:
-                self._focus_thread.join(timeout=1.0)
-            except Exception as exc:  # pragma: no cover - defensive
-                self._log.debug(f"Error joining autofocus thread: {exc}")
-
-    def _on_autofocus_completed(self) -> None:
+    def _on_worker_finished(self, event) -> None:
+        if not self.autofocus_in_progress:
+            return
         # re-enable callback
         if self.callback_was_enabled_before_autofocus:
-            if self._camera_service:
-                self._camera_service.enable_callbacks(True)
-            else:
-                self.camera.enable_callbacks(True)
+            self._camera_service.enable_callbacks(True)
 
         # re-enable live if it's previously on
         if self.was_live_before_autofocus:
             self.liveController.start_live()
 
-        if self._autofocus_abort_requested:
+        aborted = self._autofocus_abort_requested or getattr(event, "aborted", False)
+        if aborted:
             # Transition to FAILED, emit failure, then reset to IDLE
             self._transition_to(AutofocusControllerState.FAILED)
-            self._emit_finished_failed("Autofocus aborted")
+            self._publish_completed(success=False, error="Autofocus aborted")
             self._log.info("autofocus aborted")
+        elif not getattr(event, "success", False):
+            self._transition_to(AutofocusControllerState.FAILED)
+            self._publish_completed(success=False, error=getattr(event, "error", None) or "Autofocus failed")
+            self._log.info("autofocus failed")
         else:
             # Transition to COMPLETED, emit success, then reset to IDLE
             self._transition_to(AutofocusControllerState.COMPLETED)
-            self._emit_finished()
+            self._publish_completed(success=True, error=None)
             self._log.info("autofocus finished")
 
-        # Release resources and reset state
-        self._release_resources()
+        # Restore mode and reset state
+        if self._mode_gate and self._previous_mode is not None:
+            self._mode_gate.restore_mode(self._previous_mode, reason="autofocus complete")
+        self._previous_mode = None
         self._transition_to(AutofocusControllerState.IDLE)
         self._autofocus_abort_requested = False
 
-    def _emit_finished(self) -> None:
-        """Emit autofocus finished via callback or EventBus."""
-        if self._finished_fn is not None:
-            self._finished_fn()
-        elif self._event_bus is not None:
-            from squid.core.events import AutofocusCompleted
-            # Get final Z position
-            if self._stage_service:
-                pos = self._stage_service.get_position()
-                z_pos = pos.z_mm
-            else:
-                pos = self.stage.get_pos()
-                z_pos = pos.z_mm
-            self._event_bus.publish(AutofocusCompleted(
-                success=True,
+    def _publish_completed(self, success: bool, error: Optional[str]) -> None:
+        if self._event_bus is None:
+            return
+        from squid.core.events import AutofocusCompleted
+
+        z_pos: Optional[float]
+        if success:
+            pos = self._stage_service.get_position()
+            z_pos = pos.z_mm
+        else:
+            z_pos = None
+
+        self._event_bus.publish(
+            AutofocusCompleted(
+                success=success,
                 z_position=z_pos,
-                score=None,  # Score tracking would need to be added to worker
-            ))
-
-    def _emit_image(self, image: np.ndarray) -> None:
-        """Emit image for display via callback or StreamHandler.
-
-        Note: Images go through StreamHandler, not EventBus, to avoid
-        overwhelming the event system with high-frequency frame data.
-        """
-        if self._image_to_display_fn is not None:
-            self._image_to_display_fn(image)
-
-    def _emit_finished_failed(self, error: str) -> None:
-        """Emit autofocus failed via callback or EventBus."""
-        if self._finished_fn is not None:
-            self._finished_fn()  # Legacy callback doesn't distinguish success/failure
-        elif self._event_bus is not None:
-            from squid.core.events import AutofocusCompleted
-            self._event_bus.publish(AutofocusCompleted(
-                success=False,
-                z_position=None,
                 score=None,
                 error=error,
-            ))
+            )
+        )
 
     def wait_till_autofocus_has_completed(self) -> None:
         while self.autofocus_in_progress:
@@ -482,21 +397,14 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
             self._log.info(
                 f"Navigating to coordinates ({coord[0]},{coord[1]}) to sample for focus map"
             )
-            if self._stage_service:
-                self._stage_service.move_x_to(coord[0])
-                self._stage_service.move_y_to(coord[1])
-            else:
-                self.stage.move_x_to(coord[0])
-                self.stage.move_y_to(coord[1])
+            self._stage_service.move_x_to(coord[0])
+            self._stage_service.move_y_to(coord[1])
 
             self._log.info("Autofocusing")
             self.autofocus(True)
             self.wait_till_autofocus_has_completed()
 
-            if self._stage_service:
-                pos = self._stage_service.get_position()
-            else:
-                pos = self.stage.get_pos()
+            pos = self._stage_service.get_position()
 
             self._log.info(
                 f"Adding coordinates ({pos.x_mm},{pos.y_mm},{pos.z_mm}) to focus map"
@@ -508,17 +416,11 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
     def add_current_coords_to_focus_map(self) -> None:
         if len(self.focus_map_coords) >= 3:
             self._log.info("Replacing last coordinate on focus map.")
-        if self._stage_service:
-            self._stage_service.wait_for_idle(timeout_s=0.5)
-        else:
-            self.stage.wait_for_idle(timeout_s=0.5)
+        self._stage_service.wait_for_idle(timeout_s=0.5)
         self._log.info("Autofocusing")
         self.autofocus(True)
         self.wait_till_autofocus_has_completed()
-        if self._stage_service:
-            pos = self._stage_service.get_position()
-        else:
-            pos = self.stage.get_pos()
+        pos = self._stage_service.get_position()
         x = pos.x_mm
         y = pos.y_mm
         z = pos.z_mm

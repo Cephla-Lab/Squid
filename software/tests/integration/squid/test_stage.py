@@ -5,8 +5,6 @@ Tests for stage functionality including SimulatedStage and CephlaStage.
 import pytest
 import tempfile
 
-import mcs.drivers.stages.cephla
-import mcs.drivers.stages.stage_utils
 from squid.mcs.drivers.stages.simulated import SimulatedStage
 import squid.core.config
 import squid.core.abc
@@ -133,7 +131,7 @@ def test_create_simulated_cephla_stage(simulated_cephla_stage):
 @pytest.mark.integration
 def test_simulated_cephla_stage_ops(simulated_cephla_stage):
     """Test simulated CephlaStage operations."""
-    assert simulated_cephla_stage.get_pos() == squid.abc.Pos(
+    assert simulated_cephla_stage.get_pos() == squid.core.abc.Pos(
         x_mm=0.0, y_mm=0.0, z_mm=0.0, theta_rad=0.0
     )
 
@@ -162,13 +160,11 @@ def test_position_caching():
     (unused_temp_fd, temp_cache_path) = tempfile.mkstemp(".cache", "squid_testing_")
 
     # Use 6 figures after the decimal so we test that we can capture nanometers
-    p = squid.abc.Pos(x_mm=11.111111, y_mm=22.222222, z_mm=1.333333, theta_rad=None)
-    control.peripherals.stage.stage_utils.cache_position(
-        pos=p, stage_config=squid.core.config.get_stage_config(), cache_path=temp_cache_path
-    )
+    p = squid.core.abc.Pos(x_mm=11.111111, y_mm=22.222222, z_mm=1.333333, theta_rad=None)
+    from squid.mcs.drivers.stages.stage_utils import cache_position, get_cached_position
 
-    p_read = control.peripherals.stage.stage_utils.get_cached_position(
-        cache_path=temp_cache_path
-    )
+    cache_position(pos=p, stage_config=squid.core.config.get_stage_config(), cache_path=temp_cache_path)
+
+    p_read = get_cached_position(cache_path=temp_cache_path)
 
     assert p_read == p

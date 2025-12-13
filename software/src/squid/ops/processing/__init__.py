@@ -1,8 +1,4 @@
-# Image processing module
-from squid.ops.processing.stitcher import Stitcher
-from squid.ops.processing.coordinate_stitcher import CoordinateStitcher
+"""Backend image processing helpers (Qt-free)."""
 
 __all__ = [
-    "Stitcher",
-    "CoordinateStitcher",
 ]

@@ -1,6 +1,7 @@
 """Integration tests for StageService with simulated stage."""
 
 import pytest
+import threading
 
 import _def as _def
 from squid.core.events import (
@@ -8,6 +9,10 @@ from squid.core.events import (
     MoveStageCommand,
     HomeStageCommand,
     StagePositionChanged,
+    MoveStageToLoadingPositionCommand,
+    MoveStageToScanningPositionCommand,
+    StageMoveToLoadingPositionFinished,
+    StageMoveToScanningPositionFinished,
 )
 from squid.mcs.services import StageService
 
@@ -25,6 +30,7 @@ def test_move_command_updates_position_and_emits_event(simulated_stage):
     bus.subscribe(StagePositionChanged, lambda e: position_events.append(e))
 
     bus.publish(MoveStageCommand(axis="x", distance_mm=1.0))
+    bus.drain()
 
     expected = x_min + 1.0
     assert simulated_stage.get_pos().x_mm == pytest.approx(expected)
@@ -42,6 +48,7 @@ def test_home_command_resets_axes(simulated_stage):
     bus.subscribe(StagePositionChanged, lambda e: position_events.append(e))
 
     bus.publish(HomeStageCommand(x=True, y=True, z=True, theta=False))
+    bus.drain()
 
     pos = simulated_stage.get_pos()
     assert pos.x_mm == pytest.approx(0.0)
@@ -55,14 +62,29 @@ def test_move_to_loading_and_scanning_positions(simulated_stage):
     bus = EventBus()
     service = StageService(simulated_stage, bus)
 
-    # Move to loading position (wellplate defaults)
-    service.move_to_loading_position(blocking=True, is_wellplate=True)
+    loading_done = threading.Event()
+    scanning_done = threading.Event()
+
+    bus.subscribe(
+        StageMoveToLoadingPositionFinished,
+        lambda e: loading_done.set() if e.success else None,
+    )
+    bus.subscribe(
+        StageMoveToScanningPositionFinished,
+        lambda e: scanning_done.set() if e.success else None,
+    )
+
+    bus.publish(MoveStageToLoadingPositionCommand(is_wellplate=True))
+    bus.drain()
+    assert loading_done.wait(timeout=2.0)
     pos_loading = simulated_stage.get_pos()
     assert pos_loading.x_mm == pytest.approx(_def.SLIDE_POSITION.LOADING_X_MM)
     assert pos_loading.y_mm == pytest.approx(_def.SLIDE_POSITION.LOADING_Y_MM)
 
     # Move back to scanning position
-    service.move_to_scanning_position(blocking=True, is_wellplate=True)
+    bus.publish(MoveStageToScanningPositionCommand(is_wellplate=True))
+    bus.drain()
+    assert scanning_done.wait(timeout=2.0)
     pos_scan = simulated_stage.get_pos()
     assert pos_scan.x_mm == pytest.approx(_def.SLIDE_POSITION.SCANNING_X_MM)
     assert pos_scan.y_mm == pytest.approx(_def.SLIDE_POSITION.SCANNING_Y_MM)

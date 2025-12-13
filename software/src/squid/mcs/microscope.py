@@ -418,7 +418,11 @@ class Microscope:
     def _create_controllers(
         self, stream_handler_callbacks: Optional[StreamHandlerFunctions] = None
     ) -> None:
-        """Create controllers internally. Called by __init__ unless skip_controller_creation=True."""
+        """Create core non-Qt components internally.
+
+        Controllers are created by `ApplicationContext` so they can be constructed
+        with service dependencies and without UI coupling.
+        """
         if stream_handler_callbacks is None:
             stream_handler_callbacks = NoOpStreamHandlerFunctions
 
@@ -428,19 +432,7 @@ class Microscope:
             self.stream_handler_focus = StreamHandler(
                 handler_functions=NoOpStreamHandlerFunctions
             )
-            self.live_controller_focus = LiveController(
-                microscope=self,
-                camera=self.addons.camera_focus,
-                event_bus=event_bus,
-                control_illumination=False,
-                for_displacement_measurement=True,
-            )
-
-        self.live_controller = LiveController(
-            microscope=self,
-            camera=self.camera,
-            event_bus=event_bus,
-        )
+        # Live controllers are created externally by ApplicationContext.
 
     def _prepare_for_use(self) -> None:
         self.low_level_drivers.prepare_for_use()

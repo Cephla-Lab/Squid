@@ -5,8 +5,8 @@ crop_width_unbinned/binning_factor x crop_height_unbinned/binning_factor
 instead of using hardcoded values.
 """
 
-import mcs.drivers.cameras.camera_utils
 from squid.core.config import CameraConfig, CameraVariant
+from squid.mcs.drivers.cameras.camera_utils import get_camera
 
 
 def test_simulated_camera_with_crop_dimensions():
@@ -25,9 +25,7 @@ def test_simulated_camera_with_crop_dimensions():
         default_pixel_format="MONO12",
     )
 
-    sim_cam = control.peripherals.cameras.camera_utils.get_camera(
-        config, simulated=True
-    )
+    sim_cam = get_camera(config, simulated=True)
 
     # With binning (2, 2), the expected resolution should be:
     # width = 2400 / 2 = 1200
@@ -64,9 +62,7 @@ def test_simulated_camera_fallback_to_full_sensor():
         default_pixel_format="MONO12",
     )
 
-    sim_cam = control.peripherals.cameras.camera_utils.get_camera(
-        config, simulated=True
-    )
+    sim_cam = get_camera(config, simulated=True)
 
     # When no crop dimensions specified, use full sensor size (3088x2064) divided by binning
     # For (2, 2) binning: 3088/2 = 1544, 2064/2 = 1032

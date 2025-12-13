@@ -124,3 +124,8 @@ class FluidicsService(BaseService):
         """Wait for current fluidics operation to complete."""
         with self._lock:
             self._fluidics.wait_for_completion()
+
+    def set_rounds(self, rounds: list) -> None:
+        """Set the sequence of fluidics rounds (port indices) to run."""
+        with self._lock:
+            self._fluidics.set_rounds(rounds)

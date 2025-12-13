@@ -14,7 +14,13 @@ from qtpy.QtWidgets import QWidget, QVBoxLayout
 from _def import CHANNEL_COLORS_MAP, USE_NAPARI_FOR_LIVE_VIEW
 
 from squid.ops.configuration import ContrastManager
-from squid.core.events import EventBus, BinningChanged, ObjectiveChanged
+from squid.core.events import (
+    EventBus,
+    BinningChanged,
+    ObjectiveChanged,
+    SetAcquisitionChannelsCommand,
+    SetAcquisitionParametersCommand,
+)
 
 if TYPE_CHECKING:
     pass
@@ -78,6 +84,12 @@ class NapariMultiChannelWidget(QWidget):
         # Subscribe to events for dynamic values
         self._event_bus.subscribe(BinningChanged, self._on_binning_changed)
         self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+        self._event_bus.subscribe(
+            SetAcquisitionChannelsCommand, self._on_set_acquisition_channels
+        )
+        self._event_bus.subscribe(
+            SetAcquisitionParametersCommand, self._on_set_acquisition_parameters
+        )
 
         # Initialize a napari Viewer without showing its standalone window.
         self.initNapariViewer()
@@ -91,6 +103,16 @@ class NapariMultiChannelWidget(QWidget):
         """Update cached pixel size factor when objective changes."""
         if event.pixel_size_um is not None:
             self._pixel_size_factor = event.pixel_size_um
+
+    def _on_set_acquisition_channels(self, event: SetAcquisitionChannelsCommand) -> None:
+        self.initChannels(set(event.channel_names))
+
+    def _on_set_acquisition_parameters(
+        self, event: SetAcquisitionParametersCommand
+    ) -> None:
+        nz = int(event.n_z) if event.n_z is not None else int(self.Nz)
+        dz = float(event.delta_z_um) if event.delta_z_um is not None else float(self.dz_um)
+        self.initLayersShape(nz, dz)
 
     def initNapariViewer(self) -> None:
         self.viewer = napari.Viewer(show=False)

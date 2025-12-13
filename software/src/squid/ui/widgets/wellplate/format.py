@@ -4,7 +4,6 @@ from squid.core.events import LiveStateChanged, SaveWellplateCalibrationCommand,
 import csv
 
 if TYPE_CHECKING:
-    from squid.ui.widgets.display.navigation import NavigationViewer
     from squid.storage.stream_handler import StreamHandler
 
 
@@ -15,21 +14,15 @@ class WellplateFormatWidget(EventBusWidget):
     Subscribes to LiveStateChanged to track live state for calibration dialog.
     """
 
-    signalWellplateSettings: Signal = Signal(
-        QVariant, float, float, int, int, float, float, int, int, int
-    )
-
     def __init__(
         self,
         event_bus: "UIEventBus",
-        navigationViewer: "NavigationViewer",
         streamHandler: "StreamHandler",
         # Read-only config for calibration (passed to dialog)
         pixel_size_factor: float = 1.0,
         pixel_size_binned_um: float = 0.084665,
     ) -> None:
         super().__init__(event_bus)
-        self.navigationViewer: "NavigationViewer" = navigationViewer
         self.streamHandler: "StreamHandler" = streamHandler
         self._pixel_size_factor = pixel_size_factor
         self._pixel_size_binned_um = pixel_size_binned_um
@@ -49,6 +42,8 @@ class WellplateFormatWidget(EventBusWidget):
 
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Track live state for passing to calibration dialog."""
+        if getattr(event, "camera", "main") != "main":
+            return
         self._is_live = event.is_live
 
     def initUI(self) -> None:
@@ -95,32 +90,36 @@ class WellplateFormatWidget(EventBusWidget):
         self.comboBox.setItemData(index, font, Qt.ItemDataRole.FontRole)
 
     def wellplateChanged(self, index: int) -> None:
-        self.wellplate_format = self.comboBox.itemData(index)
-        if self.wellplate_format == "custom":
+        selected = self.comboBox.itemData(index)
+        if selected == "custom":
+            previous_format = self.wellplate_format
             calibration_dialog = WellplateCalibration(  # type: ignore[name-defined]
                 event_bus=self._bus,
                 wellplateFormatWidget=self,
-                navigationViewer=self.navigationViewer,
                 streamHandler=self.streamHandler,
                 pixel_size_factor=self._pixel_size_factor,
                 pixel_size_binned_um=self._pixel_size_binned_um,
                 was_live=self._is_live,
+                previous_format=previous_format,
             )
             result = calibration_dialog.exec_()
             if result == QDialog.Rejected:
-                # If the dialog was closed without adding a new format, revert to the previous selection
-                prev_index = self.comboBox.findData(self.wellplate_format)
-                self.comboBox.setCurrentIndex(prev_index)
+                prev_index = self.comboBox.findData(previous_format)
+                if prev_index >= 0:
+                    self.comboBox.blockSignals(True)
+                    self.comboBox.setCurrentIndex(prev_index)
+                    self.comboBox.blockSignals(False)
+                self.setWellplateSettings(previous_format)
+            return
         else:
+            self.wellplate_format = selected
             self.setWellplateSettings(self.wellplate_format)
 
     def setWellplateSettings(self, wellplate_format: str) -> None:
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
             settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
         elif wellplate_format == "glass slide":
-            self.signalWellplateSettings.emit(
-                QVariant("glass slide"), 0, 0, 0, 0, 0, 0, 0, 1, 1
-            )
+            self.wellplate_format = "glass slide"
             self._publish(WellplateFormatChanged(
                 format_name="glass slide",
                 rows=1,
@@ -129,24 +128,16 @@ class WellplateFormatWidget(EventBusWidget):
                 well_size_mm=0.0,
                 a1_x_mm=0.0,
                 a1_y_mm=0.0,
+                a1_x_pixel=0,
+                a1_y_pixel=0,
+                number_of_skip=0,
             ))
             return
         else:
             print(f"Wellplate format {wellplate_format} not recognized")
             return
 
-        self.signalWellplateSettings.emit(
-            QVariant(wellplate_format),
-            settings["a1_x_mm"],
-            settings["a1_y_mm"],
-            settings["a1_x_pixel"],
-            settings["a1_y_pixel"],
-            settings["well_size_mm"],
-            settings["well_spacing_mm"],
-            settings["number_of_skip"],
-            settings["rows"],
-            settings["cols"],
-        )
+        self.wellplate_format = wellplate_format
         self._publish(WellplateFormatChanged(
             format_name=wellplate_format,
             rows=settings["rows"],
@@ -155,6 +146,9 @@ class WellplateFormatWidget(EventBusWidget):
             well_size_mm=settings["well_size_mm"],
             a1_x_mm=settings["a1_x_mm"],
             a1_y_mm=settings["a1_y_mm"],
+            a1_x_pixel=settings["a1_x_pixel"],
+            a1_y_pixel=settings["a1_y_pixel"],
+            number_of_skip=settings["number_of_skip"],
         ))
 
     def getWellplateSettings(

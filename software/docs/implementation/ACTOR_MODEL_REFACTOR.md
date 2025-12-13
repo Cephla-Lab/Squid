@@ -1,5 +1,37 @@
 # Actor Model Architecture Refactor - Implementation Checklist
 
+## Final Target Architecture (Authoritative)
+
+This repository is converging on a **simple, correct** frontend/backend separation with **one** backend control-plane thread:
+
+- **UI thread**: Qt widgets only (render state, emit commands). No business logic, no services/controllers.
+- **UIEventBus**: the *only* bus visible to widgets; it delivers state updates onto the UI thread safely.
+- **Core EventBus**: a **queued** dispatcher with a dedicated dispatch thread. This dispatch thread is the backend “actor.”
+- **Controllers**: subscribe/publish on core EventBus; orchestrate workflows; call services directly; spawn workers for long work.
+- **Services**: thread-safe hardware access + validation; may subscribe/publish on core EventBus.
+- **Data plane**: StreamHandler/Qt signals only (frames/images never go through EventBus).
+
+The plan to remove transitional/legacy mechanisms is tracked in:
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_00_MASTER_PLAN.md`
+
+### Control Plane vs Data Plane
+
+- **Control plane**: commands + state events (EventBus only).
+- **Data plane**: high-rate image frames (StreamHandler only).
+
+### Non‑negotiable invariants (acceptance criteria)
+
+- **I1**: Only one backend control thread exists: the core `EventBus` dispatch thread.
+- **I2**: UI thread never runs controller/service logic.
+- **I3**: No control-plane callbacks exist anywhere; all control-plane communication is via EventBus events.
+- **I4**: Frames/images never go through EventBus; StreamHandler-only data plane.
+- **I5**: Long operations never block the control thread; use workers and report via events.
+- **I6**: Unsafe commands are backend-gated during acquisition/live conflicts.
+
+### No shims / no compatibility layers
+
+Do not add “compat”, “deprecated”, “dual path”, or “no-op” wiring to keep old flows alive. If something must change, delete the old path and update all callers/subscribers.
+
 ## Overview
 
 Transform Squid from synchronous EventBus with mixed threading to a proper actor model:
@@ -57,118 +89,33 @@ def _dispatch_loop(self) -> None:
 - [x] Add `experiment_id: str` field to `AcquisitionFinished`
 - [x] Update all places that publish these events
 
-### 1.3 Thread Assertion Utilities ✅
+### 1.3 BackendActor/Router (removed) ✅
 
-**New File:** `src/squid/core/actor/thread_assertions.py`
+The `BackendActor`/router/thread-assertion infrastructure was removed to satisfy invariant **I1** (“single backend control thread”): the queued core `EventBus` dispatch thread is the backend actor.
 
-- [x] Create file with module-level `_backend_thread` variable
-- [x] Implement `set_backend_thread(thread)` function
-- [x] Implement `assert_backend_thread(operation)` function
-- [x] Implement `assert_not_backend_thread(operation)` function
-- [x] Added `get_backend_thread()` and `clear_backend_thread()` helper functions
-- [x] Created `src/squid/core/actor/__init__.py` with exports
-- [x] Added comprehensive unit tests
+Authoritative plan + status live in:
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_02_SINGLE_CONTROL_THREAD_REMOVE_BACKENDACTOR.md`
 
----
-
-## Phase 2: Backend Actor Infrastructure ✅
-
-### 2.1 Create BackendActor Class ✅
-
-**New File:** `src/squid/core/actor/backend_actor.py`
-
-- [x] Create `CommandEnvelope` dataclass (command, priority, timestamp)
-- [x] Create `PriorityCommandQueue` class
-- [x] Create `BackendActor` class with:
-  - [x] Constructor with worker_pool_size parameter
-  - [x] `_command_queue: PriorityCommandQueue`
-  - [x] `_worker_pool: ThreadPoolExecutor` for compute/IO
-  - [x] `start()` method - spawns backend thread
-  - [x] `stop(timeout_s)` method - graceful shutdown
-  - [x] `enqueue(command, priority)` method
-  - [x] `_run_loop()` method - main processing loop
-  - [x] `_dispatch_command(command)` method - routes to registered handlers
-  - [x] `register_handler()` / `unregister_handler()` methods
-  - [x] `submit_work()` for offloading compute/IO to thread pool
-  - [x] `drain()` for synchronous test support
-- [x] Add unit tests (19 tests)
-
-### 2.2 Create BackendCommandRouter ✅
-
-**New File:** `src/squid/core/actor/command_router.py`
-
-- [x] Create `BackendCommandRouter` class
-- [x] Implement `register_commands(command_types)` - subscribes to all
-- [x] Implement `_route(command)` - enqueues to BackendActor
-- [x] Implement `_get_priority(command)` - detects Stop/Abort/Cancel keywords
-- [x] Add unit tests (11 tests)
-
-### 2.3 Create Package Init ✅
-
-**New File:** `src/squid/core/actor/__init__.py`
-
-- [x] Export `BackendActor`, `BackendCommandRouter`
-- [x] Export `CommandEnvelope`, `Priority`, `PriorityCommandQueue`
-- [x] Export thread assertion functions
-
-### 2.4 Wire into ApplicationContext ✅
-
-**File:** `src/squid/application.py`
-
-- [x] Add `_backend_actor: BackendActor` attribute
-- [x] Add `_command_router: BackendCommandRouter` attribute
-- [x] Create `_build_backend_actor()` method
-- [x] Call after controllers/services are built
-- [x] Start BackendActor in `__init__`
-- [x] Stop BackendActor in `shutdown()`
-- [x] Register common command types with router (Live, Mode, Peripheral, Autofocus, Acquisition)
+Summary of the removal:
+- Deleted `src/squid/core/actor/`
+- Removed `ApplicationContext` actor/router wiring
+- Controllers now subscribe directly to command events on the core `EventBus`
 
 ---
 
-## Phase 3: ResourceCoordinator ✅
+## Phase 3: GlobalModeGate ✅
 
-### 3.1 Create ResourceCoordinator ✅
+The lease-based coordinator was replaced with a minimal **mode gate** to satisfy invariant **I6** (“backend-gate unsafe commands”).
 
-**New File:** `src/squid/core/coordinator.py`
+Authoritative plan + status live in:
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_03_REPLACE_COORDINATOR_WITH_MODE_GATE.md`
 
-- [x] Create `Resource` enum:
-  - [x] CAMERA_CONTROL
-  - [x] STAGE_CONTROL
-  - [x] ILLUMINATION_CONTROL
-  - [x] FLUIDICS_CONTROL
-  - [x] FOCUS_AUTHORITY
-- [x] Create `GlobalMode` enum:
-  - [x] IDLE, LIVE, ACQUIRING, ABORTING, ERROR
-- [x] Create `ResourceLease` dataclass:
-  - [x] lease_id, owner, resources, acquired_at, expires_at
-- [x] Create `ResourceCoordinator` class:
-  - [x] `_leases: Dict[str, ResourceLease]`
-  - [x] `_resource_owners: Dict[Resource, str]`
-  - [x] `acquire(resources, owner, timeout_s)` - returns lease or None
-  - [x] `release(lease)` - release held lease
-  - [x] `can_acquire(resources)` - check without acquiring
-  - [x] `get_mode()` - derive from active leases
-  - [x] Watchdog thread for expired leases
-- [x] Add unit tests (28 tests)
-
-### 3.2 Add Coordinator Events ✅
-
-**File:** `src/squid/core/events.py`
-
-- [x] Add `GlobalModeChanged(old_mode, new_mode)` event
-- [x] Add `LeaseAcquired(lease_id, owner, resources)` event
-- [x] Add `LeaseReleased(lease_id, owner)` event
-- [x] Add `LeaseRevoked(lease_id, owner, reason)` event
-
-### 3.3 Wire Coordinator into ApplicationContext ✅
-
-**File:** `src/squid/application.py`
-
-- [x] Add `_coordinator: ResourceCoordinator` attribute
-- [x] Create `_build_coordinator()` method
-- [x] Wire coordinator callbacks to publish EventBus events
-- [x] Start/stop coordinator in lifecycle
-- [x] Add `coordinator` property for access
+Summary of the change:
+- Added `src/squid/core/mode_gate.py` (`GlobalModeGate`, `GlobalMode`)
+- Kept `GlobalModeChanged` (now includes a `reason`)
+- Removed `src/squid/core/coordinator.py` and lease events (`LeaseAcquired/Released/Revoked`)
+- Controllers set mode on start/stop (live/acquisition/autofocus)
+- Services reject UI-originated hardware commands during `ACQUIRING`/`ABORTING`
 
 ---
 
@@ -195,20 +142,18 @@ def _dispatch_loop(self) -> None:
 - [x] Create `LiveControllerState` enum: STOPPED, STARTING, LIVE, STOPPING
 - [x] Make `LiveController` extend `StateMachine[LiveControllerState]`
 - [x] Define transitions in constructor
-- [x] Add `_coordinator: ResourceCoordinator` dependency
-- [x] Define `LIVE_REQUIRED_RESOURCES = {CAMERA_CONTROL, ILLUMINATION_CONTROL}`
+- [x] Add `_mode_gate: GlobalModeGate` dependency
 - [x] Refactor `_on_start_live_command()`:
   - [x] Check state == STOPPED
   - [x] Transition to STARTING
-  - [x] Acquire resources via coordinator
-  - [x] If failed, transition back to STOPPED
+  - [x] Publish global mode `LIVE` on success
   - [x] Start streaming
   - [x] Transition to LIVE
 - [x] Refactor `_on_stop_live_command()`:
   - [x] Check state == LIVE
   - [x] Transition to STOPPING
   - [x] Stop streaming
-  - [x] Release resources
+  - [x] Publish global mode `IDLE` on stop
   - [x] Transition to STOPPED
 - [x] Added `observable_state` property for UI state
 - [x] Update tests
@@ -220,17 +165,16 @@ def _dispatch_loop(self) -> None:
 - [x] Create `AutofocusControllerState` enum: IDLE, RUNNING, COMPLETED, FAILED
 - [x] Make `AutoFocusController` extend `StateMachine[AutofocusControllerState]`
 - [x] Define transitions
-- [x] Add `_coordinator` dependency
-- [x] Define `AUTOFOCUS_REQUIRED_RESOURCES = {CAMERA_CONTROL, STAGE_CONTROL, FOCUS_AUTHORITY}`
+- [x] Add `_mode_gate` dependency
 - [x] Added `AutofocusStateChanged` event to `events.py`
 - [x] Refactor `autofocus()`:
   - [x] Check state == IDLE
-  - [x] Acquire resources
+  - [x] Set global mode `ACQUIRING`
   - [x] Transition to RUNNING
   - [x] Spawn worker
 - [x] Handle completion:
   - [x] Transition to COMPLETED or FAILED
-  - [x] Release resources
+  - [x] Restore previous global mode
   - [x] Transition to IDLE
 - [x] Added `autofocus_in_progress` property (backwards compatibility)
 - [x] Update tests
@@ -242,12 +186,11 @@ def _dispatch_loop(self) -> None:
 - [x] Create `AcquisitionControllerState` enum: IDLE, PREPARING, RUNNING, ABORTING, COMPLETED, FAILED
 - [x] Make `MultiPointController` extend `StateMachine[AcquisitionControllerState]`
 - [x] Define transitions
-- [x] Add `_coordinator` dependency
-- [x] Define `ACQUISITION_REQUIRED_RESOURCES = {CAMERA_CONTROL, STAGE_CONTROL, ILLUMINATION_CONTROL, FOCUS_AUTHORITY}`
+- [x] Add `_mode_gate` dependency
 - [x] Refactor `run_acquisition()`:
   - [x] Check state == IDLE
   - [x] Transition to PREPARING
-  - [x] Acquire resources
+  - [x] Set global mode `ACQUIRING`
   - [x] Validate settings
   - [x] Transition to RUNNING
   - [x] Spawn worker
@@ -257,7 +200,7 @@ def _dispatch_loop(self) -> None:
 - [x] Refactor `_on_acquisition_completed()`:
   - [x] Transition to COMPLETED
   - [x] Cleanup
-  - [x] Release resources
+  - [x] Set global mode `IDLE` (or `LIVE` if resumed)
   - [x] Transition to IDLE
 - [x] Updated `acquisition_in_progress()` to use state machine
 - [x] Update tests
@@ -427,7 +370,7 @@ Updated all simple widgets to use `UIEventBus` type hints instead of `EventBus`:
 - [x] Subscribes to `ImageCoordinateClickedCommand` and `ClickToMoveEnabledChanged`
 - [x] Publishes `MoveStageCommand` for X and Y axes
 - [x] Uses `ObjectiveStore` and `CameraService` for pixel size calculation
-- [x] Registered with BackendActor for command routing
+- [x] Subscribes directly on the core `EventBus` (single control thread)
 
 **New UI Coordinator `src/squid/ui/acquisition_ui_coordinator.py`:**
 - [x] `AcquisitionUICoordinator` - Manages UI state during acquisition lifecycle
@@ -450,8 +393,8 @@ Updated all simple widgets to use `UIEventBus` type hints instead of `EventBus`:
 
 - [x] `Controllers` dataclass extended with `image_click` field
 - [x] `_build_image_click_controller()` method creates ImageClickController
-- [x] ImageClickController registered with BackendActor for command routing
-- [x] `ImageCoordinateClickedCommand` and `ClickToMoveEnabledChanged` routed through BackendActor
+- [x] ImageClickController constructed in `ApplicationContext`
+- [x] `ImageCoordinateClickedCommand` and `ClickToMoveEnabledChanged` handled on the core `EventBus` thread
 
 ### 8.4 Widget Updates ✅
 
@@ -481,7 +424,7 @@ Updated all simple widgets to use `UIEventBus` type hints instead of `EventBus`:
 - `AcquisitionUICoordinator` exists but should be either:
   - (A) deleted in favor of direct widget subscriptions and simple main-window container logic, or
   - (B) constructed and used, with `toggleAcquisitionStart` logic removed from `main_window.py` to eliminate duplication.
-- `ImageClickController` is currently “actor-routed”. If the final architecture is a single queued EventBus control plane, it should instead subscribe directly on the core EventBus and the BackendActor/router machinery should be removed.
+- `ImageClickController` subscribes directly on the core `EventBus` (no secondary routing thread).
 
 **Remaining Qt signal connections in signal_connector.py:**
 - [ ] `signal_toggle_live_scan_grid` - Consider converting to `LiveScanGridCommand`
@@ -502,14 +445,14 @@ Phase 1–8 delivered major infrastructure and some UI decoupling, but the codeb
 
 Authoritative step-by-step execution plan:
 
-- [ ] `docs/implementation/ACTOR_SIMPLIFICATION_STEP_01_FREEZE_ARCHITECTURE.md`
-- [ ] `docs/implementation/ACTOR_SIMPLIFICATION_STEP_02_SINGLE_CONTROL_THREAD_REMOVE_BACKENDACTOR.md`
-- [ ] `docs/implementation/ACTOR_SIMPLIFICATION_STEP_03_REPLACE_COORDINATOR_WITH_MODE_GATE.md`
-- [ ] `docs/implementation/ACTOR_SIMPLIFICATION_STEP_04_PURGE_ALL_CALLBACKS.md`
-- [ ] `docs/implementation/ACTOR_SIMPLIFICATION_STEP_05_SERVICES_ONLY_CONTROLLERS.md`
-- [ ] `docs/implementation/ACTOR_SIMPLIFICATION_STEP_06_MULTIPOINT_CORRECTNESS_FIXES.md`
-- [ ] `docs/implementation/ACTOR_SIMPLIFICATION_STEP_07_UI_ONLY_WIDGETS_AND_MAIN_WINDOW.md`
-- [ ] `docs/implementation/ACTOR_SIMPLIFICATION_STEP_08_VALIDATION_AND_DOCS.md`
+- [ ] `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_01_FREEZE_ARCHITECTURE.md`
+- [ ] `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_02_SINGLE_CONTROL_THREAD_REMOVE_BACKENDACTOR.md`
+- [ ] `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_03_REPLACE_COORDINATOR_WITH_MODE_GATE.md`
+- [ ] `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_04_PURGE_ALL_CALLBACKS.md`
+- [ ] `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_05_SERVICES_ONLY_CONTROLLERS.md`
+- [ ] `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_06_MULTIPOINT_CORRECTNESS_FIXES.md`
+- [ ] `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_07_UI_ONLY_WIDGETS_AND_MAIN_WINDOW.md`
+- [ ] `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_08_VALIDATION_AND_DOCS.md`
 
 ---
 
@@ -549,8 +492,6 @@ Authoritative step-by-step execution plan:
 - `docs/architecture/SERVICE_VS_CONTROLLER.md` - Layering guidance
 
 ### Known complexity to remove (audit-driven)
-- `src/squid/core/actor/` - BackendActor/Router introduces a second control-plane thread
-- `src/squid/core/coordinator.py` - Lease-based coordinator is heavier than required for gating
 - Callback/compat layers (controllers, services, widgets) - remove once event-driven paths are verified
 - `src/squid/ui/gui/signal_connector.py` - delete after remaining Qt signal migrations
 - Unused Phase 8 artifacts:
@@ -558,11 +499,13 @@ Authoritative step-by-step execution plan:
   - `src/squid/ui/acquisition_ui_coordinator.py` (if not constructed/used)
 
 ### Simplification plan (authoritative)
-- `docs/implementation/ACTOR_SIMPLIFICATION_STEP_01_FREEZE_ARCHITECTURE.md`
-- `docs/implementation/ACTOR_SIMPLIFICATION_STEP_02_SINGLE_CONTROL_THREAD_REMOVE_BACKENDACTOR.md`
-- `docs/implementation/ACTOR_SIMPLIFICATION_STEP_03_REPLACE_COORDINATOR_WITH_MODE_GATE.md`
-- `docs/implementation/ACTOR_SIMPLIFICATION_STEP_04_PURGE_ALL_CALLBACKS.md`
-- `docs/implementation/ACTOR_SIMPLIFICATION_STEP_05_SERVICES_ONLY_CONTROLLERS.md`
-- `docs/implementation/ACTOR_SIMPLIFICATION_STEP_06_MULTIPOINT_CORRECTNESS_FIXES.md`
-- `docs/implementation/ACTOR_SIMPLIFICATION_STEP_07_UI_ONLY_WIDGETS_AND_MAIN_WINDOW.md`
-- `docs/implementation/ACTOR_SIMPLIFICATION_STEP_08_VALIDATION_AND_DOCS.md`
+- `docs/implementation/actor_simplification/ACTOR_HARD_AUDIT.md`
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_00_MASTER_PLAN.md`
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_01_FREEZE_ARCHITECTURE.md`
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_02_SINGLE_CONTROL_THREAD_REMOVE_BACKENDACTOR.md`
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_03_REPLACE_COORDINATOR_WITH_MODE_GATE.md`
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_04_PURGE_ALL_CALLBACKS.md`
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_05_SERVICES_ONLY_CONTROLLERS.md`
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_06_MULTIPOINT_CORRECTNESS_FIXES.md`
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_07_UI_ONLY_WIDGETS_AND_MAIN_WINDOW.md`
+- `docs/implementation/actor_simplification/ACTOR_SIMPLIFICATION_STEP_08_VALIDATION_AND_DOCS.md`

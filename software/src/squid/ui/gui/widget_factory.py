@@ -31,11 +31,15 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
     if ENABLE_SPINNING_DISK_CONFOCAL:
         if USE_DRAGONFLY:
             gui.spinningDiskConfocalWidget = widgets.DragonflyConfocalWidget(
-                gui.dragonfly
+                gui.dragonfly,
+                event_bus=gui._ui_event_bus,
+                initial_objective=getattr(gui.objectiveStore, "current_objective", None),
             )
         else:
             gui.spinningDiskConfocalWidget = widgets.SpinningDiskConfocalWidget(
-                gui.xlight
+                gui.xlight,
+                event_bus=gui._ui_event_bus,
+                initial_objective=getattr(gui.objectiveStore, "current_objective", None),
             )
 
     # NL5 widget
@@ -236,6 +240,7 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
 def create_wellplate_widgets(gui: "HighContentScreeningGui") -> None:
     """Create wellplate-related widgets (format, selection, focus map)."""
     from squid.ops.navigation.focus_map import FocusMap
+    from _def import WELLPLATE_FORMAT_SETTINGS, WELLPLATE_FORMAT
 
     # Get pixel size info from objectiveStore for calibration
     pixel_size_factor = gui.objectiveStore.get_pixel_size_factor() if hasattr(gui.objectiveStore, 'get_pixel_size_factor') else 1.0
@@ -243,21 +248,41 @@ def create_wellplate_widgets(gui: "HighContentScreeningGui") -> None:
 
     gui.wellplateFormatWidget = widgets.WellplateFormatWidget(
         event_bus=gui._ui_event_bus,
-        navigationViewer=gui.navigationViewer,
         streamHandler=gui.streamHandler,
         pixel_size_factor=pixel_size_factor,
         pixel_size_binned_um=pixel_size_binned_um,
     )
+    settings = WELLPLATE_FORMAT_SETTINGS.get(
+        WELLPLATE_FORMAT,
+        {
+            "rows": 1,
+            "cols": 1,
+            "well_spacing_mm": 0.0,
+            "well_size_mm": 0.0,
+            "a1_x_mm": 0.0,
+            "a1_y_mm": 0.0,
+            "a1_x_pixel": 0,
+            "a1_y_pixel": 0,
+            "number_of_skip": 0,
+        },
+    )
     if WELLPLATE_FORMAT != "1536 well plate":
         gui.wellSelectionWidget = widgets.WellSelectionWidget(
-            WELLPLATE_FORMAT, gui.wellplateFormatWidget
+            gui._ui_event_bus,
+            WELLPLATE_FORMAT,
+            rows=settings["rows"],
+            cols=settings["cols"],
+            well_spacing_mm=settings["well_spacing_mm"],
+            well_size_mm=settings["well_size_mm"],
+            a1_x_mm=settings["a1_x_mm"],
+            a1_y_mm=settings["a1_y_mm"],
+            a1_x_pixel=settings["a1_x_pixel"],
+            a1_y_pixel=settings["a1_y_pixel"],
+            number_of_skip=settings["number_of_skip"],
         )
     else:
-        gui.wellSelectionWidget = widgets.Well1536SelectionWidget()
-    gui.scanCoordinates.add_well_selector(gui.wellSelectionWidget)
+        gui.wellSelectionWidget = widgets.Well1536SelectionWidget(gui._ui_event_bus)
     gui.focusMapWidget = widgets.FocusMapWidget(
-        gui.navigationViewer,
-        gui.scanCoordinates,
         FocusMap(),
         gui._ui_event_bus,
     )
@@ -303,7 +328,7 @@ def create_laser_autofocus_widgets(gui: "HighContentScreeningGui") -> None:
         initial_is_initialized=gui.laserAutofocusController.is_initialized,
         initial_has_reference=laser_af_props.has_reference,
     )
-    gui.imageDisplayWindow_focus = ImageDisplayWindow()
+    gui.imageDisplayWindow_focus = ImageDisplayWindow(event_bus=gui._ui_event_bus)
     # Connect image display window to settings widget for spot tracking
     gui.laserAutofocusSettingWidget.set_image_display_window(gui.imageDisplayWindow_focus)
 
@@ -311,7 +336,7 @@ def create_laser_autofocus_widgets(gui: "HighContentScreeningGui") -> None:
 def create_fluidics_widget(gui: "HighContentScreeningGui") -> None:
     """Create fluidics widget if enabled."""
     if RUN_FLUIDICS:
-        gui.fluidicsWidget = widgets.FluidicsWidget(gui.fluidics)
+        gui.fluidicsWidget = widgets.FluidicsWidget(gui.fluidics, event_bus=gui._ui_event_bus)
 
 
 def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
@@ -344,9 +369,13 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
     # Stage conversion is optional; pass through if available
     z_ustep_per_mm = getattr(stage_service, "z_ustep_per_mm", None)
 
+    camera_fov_size_mm = (
+        float(gui.camera.get_fov_size_mm())
+        if getattr(gui, "camera", None) is not None and hasattr(gui.camera, "get_fov_size_mm")
+        else 0.0
+    )
+
     gui.flexibleMultiPointWidget = widgets.FlexibleMultiPointWidget(
-        gui.navigationViewer,
-        gui.scanCoordinates,
         gui.focusMapWidget,
         gui._ui_event_bus,
         initial_channel_configs=initial_channel_names,
@@ -354,42 +383,36 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
         initial_z_mm=initial_z_mm,
     )
     gui.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(
-        gui.navigationViewer,
-        gui.scanCoordinates,
         gui._ui_event_bus,
         initial_channel_configs=initial_channel_names,
         initial_objective=objective_name,
         objective_pixel_size_factors=objective_pixel_size_factors,
+        camera_fov_size_mm=camera_fov_size_mm,
         focusMapWidget=gui.focusMapWidget,
-        napariMosaicWidget=gui.napariMosaicDisplayWidget,
-        tab_widget=gui.recordTabWidget,
         well_selection_widget=gui.wellSelectionWidget,
         z_ustep_per_mm=z_ustep_per_mm,
         initial_z_mm=initial_z_mm,
     )
     if USE_TEMPLATE_MULTIPOINT:
         gui.templateMultiPointWidget = TemplateMultiPointWidget(
-            gui.navigationViewer,
-            gui.multipointController,
-            gui.objectiveStore,
-            gui.channelConfigurationManager,
-            gui.scanCoordinates,
             gui.focusMapWidget,
             gui._ui_event_bus,
+            initial_channel_configs=initial_channel_names,
+            z_ustep_per_mm=z_ustep_per_mm,
+            initial_z_mm=initial_z_mm,
         )
     gui.multiPointWithFluidicsWidget = widgets.MultiPointWithFluidicsWidget(
-        gui.navigationViewer,
-        gui.scanCoordinates,
         gui._ui_event_bus,
         initial_channel_configs=initial_channel_names,
-        napariMosaicWidget=gui.napariMosaicDisplayWidget,
         z_ustep_per_mm=z_ustep_per_mm,
     )
     gui.sampleSettingsWidget = widgets.SampleSettingsWidget(
-        gui.objectivesWidget, gui.wellplateFormatWidget
+        gui.objectivesWidget, gui.wellplateFormatWidget, event_bus=gui._ui_event_bus
     )
 
     if ENABLE_TRACKING:
+        if not hasattr(gui, "imageDisplayWindow") or gui.imageDisplayWindow is None:
+            raise RuntimeError("Tracking requires ImageDisplayWindow for ROI selection")
         gui.trackingControlWidget = widgets.TrackingControllerWidget(
             event_bus=gui._ui_event_bus,
             initial_channel_configs=initial_channel_names,
@@ -397,5 +420,6 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
             objectivesWidget=gui.objectivesWidget,
             initial_objective=objective_name,
             initial_pixel_size_um=initial_pixel_size_factor,
+            roi_bbox_provider=gui.imageDisplayWindow.get_roi_bounding_box,
             show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
         )

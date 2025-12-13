@@ -49,7 +49,6 @@ class MicroscopeModeController:
         event_bus: "EventBus",
         filter_wheel_service: Optional["FilterWheelService"] = None,
         illumination_service: Optional["IlluminationService"] = None,
-        subscribe_to_bus: bool = True,
     ) -> None:
         self._camera = camera_service
         self._illumination = illumination_service
@@ -57,7 +56,6 @@ class MicroscopeModeController:
         self._channel_configs = channel_configs
         self._bus = event_bus
         self._lock = threading.RLock()
-        self._bus_enabled = subscribe_to_bus
 
         self._state = MicroscopeModeState(
             current_mode=None,
@@ -67,21 +65,10 @@ class MicroscopeModeController:
         self._subscribe_to_bus()
 
     def _subscribe_to_bus(self) -> None:
-        if self._bus is None or not self._bus_enabled:
+        if self._bus is None:
             return
         self._bus.subscribe(SetMicroscopeModeCommand, self._on_set_mode)
         self._bus.subscribe(UpdateChannelConfigurationCommand, self._on_update_config)
-
-    def detach_event_bus_commands(self) -> None:
-        """Unsubscribe command handlers so routing can go through BackendActor."""
-        if self._bus is None:
-            return
-        self._bus_enabled = False
-        try:
-            self._bus.unsubscribe(SetMicroscopeModeCommand, self._on_set_mode)
-            self._bus.unsubscribe(UpdateChannelConfigurationCommand, self._on_update_config)
-        except Exception:
-            pass
 
     @property
     def state(self) -> MicroscopeModeState:

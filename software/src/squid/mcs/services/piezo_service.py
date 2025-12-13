@@ -56,8 +56,9 @@ class PiezoService(BaseService):
         self,
         piezo: Optional["PiezoStage"],
         event_bus: EventBus,
+        mode_gate=None,
     ) -> None:
-        super().__init__(event_bus)
+        super().__init__(event_bus, mode_gate=mode_gate)
         self._piezo = piezo
         self._lock = threading.RLock()
 
@@ -112,6 +113,9 @@ class PiezoService(BaseService):
 
     def _on_set_position_command(self, cmd: SetPiezoPositionCommand) -> None:
         """Handle SetPiezoPositionCommand from EventBus."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(cmd).__name__)
+            return
         with self._lock:
             clamped = self._clamp_position(cmd.position_um)
             if self._piezo:
@@ -127,6 +131,9 @@ class PiezoService(BaseService):
 
     def _on_move_relative_command(self, cmd: MovePiezoRelativeCommand) -> None:
         """Handle MovePiezoRelativeCommand from EventBus."""
+        if self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring %s due to global mode gate", type(cmd).__name__)
+            return
         with self._lock:
             if self._piezo:
                 current = getattr(self._piezo, "position", 0.0)

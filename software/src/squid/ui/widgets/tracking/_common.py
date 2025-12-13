@@ -35,7 +35,6 @@ from _def import (
 )
 from squid.ops.navigation import ObjectiveStore
 from squid.ops.configuration import ChannelConfigurationManager
-from squid.ops.tracking import TrackingController
 
 if TYPE_CHECKING:
     pass

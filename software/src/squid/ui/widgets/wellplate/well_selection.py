@@ -2,52 +2,65 @@ from squid.ui.widgets.wellplate._common import *
 from _def import WELLPLATE_OFFSET_X_mm, WELLPLATE_OFFSET_Y_mm
 
 if TYPE_CHECKING:
-    from squid.ui.widgets.wellplate.format import WellplateFormatWidget
+    from squid.ui.ui_event_bus import UIEventBus
+
+from squid.core.events import (
+    ClickToMoveEnabledChanged,
+    MoveStageToCommand,
+    SelectedWellsChanged,
+    WellplateFormatChanged,
+)
 
 
 class WellSelectionWidget(QTableWidget):
-    signal_wellSelected: Signal = Signal(bool)
-    signal_wellSelectedPos: Signal = Signal(float, float)
-
     def __init__(
         self,
+        event_bus: "UIEventBus",
         format_: str,
-        wellplateFormatWidget: "WellplateFormatWidget",
+        rows: int,
+        cols: int,
+        well_spacing_mm: float,
+        well_size_mm: float,
+        a1_x_mm: float,
+        a1_y_mm: float,
+        a1_x_pixel: int = 0,
+        a1_y_pixel: int = 0,
+        number_of_skip: int = 0,
         *args: Any,
         **kwargs: Any,
     ) -> None:
         super(WellSelectionWidget, self).__init__(*args, **kwargs)
-        self.wellplateFormatWidget: "WellplateFormatWidget" = wellplateFormatWidget
+        self._bus = event_bus
+        self._click_to_move_enabled: bool = True
         self.cellDoubleClicked.connect(self.onDoubleClick)
         self.itemSelectionChanged.connect(self.onSelectionChanged)
         self.fixed_height: int = 400
-        self.format: str = ""
-        self.rows: int = 0
-        self.columns: int = 0
-        self.spacing_mm: float = 0.0
-        self.number_of_skip: int = 0
-        self.a1_x_mm: float = 0.0
-        self.a1_y_mm: float = 0.0
-        self.a1_x_pixel: int = 0
-        self.a1_y_pixel: int = 0
-        self.well_size_mm: float = 0.0
-        self.setFormat(format_)
+        self.format: str = format_
+        self.rows: int = int(rows)
+        self.columns: int = int(cols)
+        self.spacing_mm: float = float(well_spacing_mm)
+        self.number_of_skip: int = int(number_of_skip)
+        self.a1_x_mm: float = float(a1_x_mm)
+        self.a1_y_mm: float = float(a1_y_mm)
+        self.a1_x_pixel: int = int(a1_x_pixel)
+        self.a1_y_pixel: int = int(a1_y_pixel)
+        self.well_size_mm: float = float(well_size_mm)
+        self._apply_format()
+        self._bus.subscribe(ClickToMoveEnabledChanged, self._on_click_to_move_enabled_changed)
+        self._bus.subscribe(WellplateFormatChanged, self._on_wellplate_format_changed)
 
-    def setFormat(self, format_: str) -> None:
-        self.format = format_
-        settings = self.wellplateFormatWidget.getWellplateSettings(self.format)
-        if settings is None:
-            return
-        self.rows = int(settings["rows"])
-        self.columns = int(settings["cols"])
-        self.spacing_mm = float(settings["well_spacing_mm"])
-        self.number_of_skip = int(settings["number_of_skip"])
-        self.a1_x_mm = float(settings["a1_x_mm"])
-        self.a1_y_mm = float(settings["a1_y_mm"])
-        self.a1_x_pixel = int(settings["a1_x_pixel"])
-        self.a1_y_pixel = int(settings["a1_y_pixel"])
-        self.well_size_mm = float(settings["well_size_mm"])
+    def _on_click_to_move_enabled_changed(self, event: ClickToMoveEnabledChanged) -> None:
+        self._click_to_move_enabled = event.enabled
 
+    def _publish_selection(self) -> None:
+        self._bus.publish(
+            SelectedWellsChanged(
+                format_name=self.format,
+                selected_cells=tuple(self.get_selected_cells()),
+            )
+        )
+
+    def _apply_format(self) -> None:
         self.setRowCount(self.rows)
         self.setColumnCount(self.columns)
         self.initUI()
@@ -124,8 +137,22 @@ class WellSelectionWidget(QTableWidget):
         if viewport is not None:
             viewport.update()
 
-    def onWellplateChanged(self) -> None:
-        self.setFormat(self.wellplateFormatWidget.wellplate_format)
+    def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
+        # If the app switches to the 1536 selector widget, main_window replaces this widget.
+        if event.format_name == "1536 well plate":
+            return
+        self.format = event.format_name
+        self.rows = int(event.rows)
+        self.columns = int(event.cols)
+        self.spacing_mm = float(event.well_spacing_mm)
+        self.number_of_skip = int(event.number_of_skip)
+        self.a1_x_mm = float(event.a1_x_mm)
+        self.a1_y_mm = float(event.a1_y_mm)
+        self.a1_x_pixel = int(event.a1_x_pixel)
+        self.a1_y_pixel = int(event.a1_y_pixel)
+        self.well_size_mm = float(event.well_size_mm)
+        self._apply_format()
+        self._publish_selection()
 
     def setData(self) -> None:
         for i in range(self.rowCount()):
@@ -198,11 +225,12 @@ class WellSelectionWidget(QTableWidget):
         ):
             x_mm = col * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
             y_mm = row * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
-            self.signal_wellSelectedPos.emit(x_mm, y_mm)
             print("well location:", (x_mm, y_mm))
-            self.signal_wellSelected.emit(True)
+            if self._click_to_move_enabled:
+                self._bus.publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
+            self._publish_selection()
         else:
-            self.signal_wellSelected.emit(False)
+            self._publish_selection()
 
     def onSingleClick(self, row: int, col: int) -> None:
         print("single click well", row, col)
@@ -213,15 +241,12 @@ class WellSelectionWidget(QTableWidget):
             col >= 0 + self.number_of_skip
             and col <= self.columns - 1 - self.number_of_skip
         ):
-            self.signal_wellSelected.emit(True)
+            self._publish_selection()
         else:
-            self.signal_wellSelected.emit(False)
+            self._publish_selection()
 
     def onSelectionChanged(self) -> None:
-        # Check if there are any selected indexes before proceeding
-        if self.format != "glass slide":
-            has_selection = bool(self.selectedIndexes())
-            self.signal_wellSelected.emit(has_selection)
+        self._publish_selection()
 
     def get_selected_cells(self) -> List[Tuple[int, int]]:
         list_of_selected_cells: List[Tuple[int, int]] = []

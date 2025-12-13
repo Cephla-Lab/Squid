@@ -35,13 +35,13 @@ The repo currently has *two* control-plane threads (EventBus dispatch + BackendA
 
 ## Mechanical steps
 
-- [ ] Update `ACTOR_MODEL_REFACTOR.md` with:
+- [x] Update `ACTOR_MODEL_REFACTOR.md` with:
   - A “Final Architecture” section matching the diagram you provided.
   - A “Single control-plane thread” note: EventBus dispatch thread is the backend actor.
   - A “No callbacks” note: callbacks are treated as hard failures.
-- [ ] Update `SERVICE_LAYER_ARCHITECTURE.md` to reference the same invariants.
-- [ ] Add a short “Control vs Data plane” paragraph to both docs.
-- [ ] Add a “Do not add new shims/compat” warning.
+- [x] Update `SERVICE_LAYER_ARCHITECTURE.md` to reference the same invariants.
+- [x] Add a short “Control vs Data plane” paragraph to both docs.
+- [x] Add a “Do not add new shims/compat” warning.
 
 ## Verification
 
@@ -52,3 +52,6 @@ The repo currently has *two* control-plane threads (EventBus dispatch + BackendA
 - Both docs updated and cross-linked.
 - Invariants I1–I6 are explicitly written and agreed on.
 
+## Inputs (audit)
+
+- `docs/implementation/actor_simplification/ACTOR_HARD_AUDIT.md`

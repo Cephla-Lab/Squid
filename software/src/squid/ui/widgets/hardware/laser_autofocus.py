@@ -36,7 +36,8 @@ from squid.core.events import (
     CaptureLaserAFFrameCommand,
     LaserAFInitialized,
     LaserAFReferenceSet,
-    LaserAFFrameCaptured,
+    LaserAFCrossCorrelationMeasured,
+    LaserAFSpotCentroidMeasured,
     LaserAFPropertiesChanged,
     LaserAFDisplacementMeasured,
     ProfileChanged,
@@ -58,7 +59,7 @@ class LaserAutofocusSettingWidget(QWidget):
     signal_newExposureTime: Signal = Signal(float)
     signal_newAnalogGain: Signal = Signal(float)
     signal_apply_settings: Signal = Signal()
-    signal_laser_spot_location: Signal = Signal(np.ndarray, float, float)
+    # Note: spot marking is handled internally via ImageDisplayWindow.set_image_display_window().
 
     def __init__(
         self,
@@ -103,10 +104,10 @@ class LaserAutofocusSettingWidget(QWidget):
         self.spot_mode_combo: QComboBox
         self._image_display_window: Optional["ImageDisplayWindow"] = None
         self._is_live = False
-        self._pending_spot_detection: Optional[dict] = None  # Store params when waiting for frame
+        self._last_frame: Optional[np.ndarray] = None
 
         # Set initial trigger/display FPS via EventBus
-        self._event_bus.publish(SetTriggerFPSCommand(fps=10))
+        self._event_bus.publish(SetTriggerFPSCommand(camera="focus", fps=10))
         self.streamHandler.set_display_fps(10)
 
         # Enable background filling
@@ -123,10 +124,18 @@ class LaserAutofocusSettingWidget(QWidget):
         # Subscribe to state events
         self._event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
         self._event_bus.subscribe(LaserAFInitialized, self._on_laser_af_initialized)
-        self._event_bus.subscribe(LaserAFFrameCaptured, self._on_frame_captured)
+        self._event_bus.subscribe(LaserAFSpotCentroidMeasured, self._on_spot_centroid_measured)
+        self._event_bus.subscribe(LaserAFCrossCorrelationMeasured, self._on_cross_correlation_measured)
         self._event_bus.subscribe(LaserAFPropertiesChanged, self._on_properties_changed)
         self._event_bus.subscribe(ProfileChanged, self._on_profile_or_objective_changed)
         self._event_bus.subscribe(ObjectiveChanged, self._on_profile_or_objective_changed)
+
+        # Keep the most recent displayed focus-camera frame for spot marking.
+        if hasattr(self.streamHandler, "image_to_display"):
+            try:
+                self.streamHandler.image_to_display.connect(self._on_new_frame)  # type: ignore[attr-defined]
+            except Exception:  # pragma: no cover - defensive
+                pass
 
     def _on_properties_changed(self, event: LaserAFPropertiesChanged) -> None:
         """Handle laser AF properties change from EventBus."""
@@ -138,6 +147,8 @@ class LaserAutofocusSettingWidget(QWidget):
 
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Handle live state changes from EventBus."""
+        if getattr(event, "camera", "main") != "focus":
+            return
         self._is_live = event.is_live
         if event.is_live:
             self.btn_live.setText("Stop Live")
@@ -182,19 +193,21 @@ class LaserAutofocusSettingWidget(QWidget):
                 "- Calibration failed"
             )
 
-    def _on_frame_captured(self, event: LaserAFFrameCaptured) -> None:
-        """Handle frame captured from LaserAutofocusController."""
-        if self._pending_spot_detection is None:
-            return  # Not waiting for a frame
+    def _on_new_frame(self, frame: np.ndarray) -> None:
+        self._last_frame = frame
 
-        params = self._pending_spot_detection
-        self._pending_spot_detection = None  # Clear pending state
-
-        if not event.success or event.frame is None:
+    def _on_spot_centroid_measured(self, event: LaserAFSpotCentroidMeasured) -> None:
+        if not event.success or event.x_px is None or event.y_px is None:
             self._show_spot_detection_error()
             return
+        if self._last_frame is None:
+            self._show_spot_detection_error()
+            return
+        if self._image_display_window is not None:
+            self._image_display_window.mark_spot(self._last_frame, event.x_px, event.y_px)
 
-        self._process_spot_detection(event.frame, params)
+    def _on_cross_correlation_measured(self, event: LaserAFCrossCorrelationMeasured) -> None:
+        self.show_cross_correlation_result(event.correlation)
 
     def _on_profile_or_objective_changed(self, event) -> None:
         """Handle profile or objective changes - refresh widget values."""
@@ -458,7 +471,7 @@ class LaserAutofocusSettingWidget(QWidget):
 
     def toggle_live(self, pressed: bool) -> None:
         if pressed:
-            self._event_bus.publish(StartLiveCommand())
+            self._event_bus.publish(StartLiveCommand(camera="focus"))
             # Enable spot tracking only if laser AF is initialized
             if (
                 self._image_display_window is not None
@@ -474,7 +487,7 @@ class LaserAutofocusSettingWidget(QWidget):
                     filter_sigma=int(sigma) if sigma and sigma > 0 else None,
                 )
         else:
-            self._event_bus.publish(StopLiveCommand())
+            self._event_bus.publish(StopLiveCommand(camera="focus"))
 
     def stop_live(self) -> None:
         """Used for stopping live when switching to other tabs"""
@@ -593,46 +606,9 @@ class LaserAutofocusSettingWidget(QWidget):
     def run_spot_detection(self) -> None:
         """Run spot detection with current settings.
 
-        This is async - stores params and requests frame via EventBus.
-        Processing happens in _on_frame_captured when frame arrives.
+        This is async - backend captures frame + computes centroid.
         """
-        # Store parameters for when frame arrives
-        self._pending_spot_detection = {
-            "params": {
-                "y_window": int(self.spinboxes["y_window"].value()),
-                "x_window": int(self.spinboxes["x_window"].value()),
-                "min_peak_width": self.spinboxes["min_peak_width"].value(),
-                "min_peak_distance": self.spinboxes["min_peak_distance"].value(),
-                "min_peak_prominence": self.spinboxes["min_peak_prominence"].value(),
-                "spot_spacing": self.spinboxes["spot_spacing"].value(),
-            },
-            "mode": self.spot_mode_combo.currentData(),
-            "sigma": self.spinboxes["filter_sigma"].value(),
-        }
-        # Request frame from controller via EventBus
         self._event_bus.publish(CaptureLaserAFFrameCommand())
-
-    def _process_spot_detection(self, frame: np.ndarray, detection_params: dict) -> None:
-        """Process spot detection on a captured frame."""
-        params = detection_params["params"]
-        mode = detection_params["mode"]
-        sigma = detection_params["sigma"]
-
-        try:
-            result = utils.find_spot_location(
-                frame,
-                mode=mode,
-                params=params,
-                filter_sigma=int(sigma) if sigma else None,
-                debug_plot=True,
-            )
-            if result is not None:
-                x, y = result
-                self.signal_laser_spot_location.emit(frame, x, y)
-            else:
-                raise Exception("No spot detection result returned")
-        except Exception:
-            self._show_spot_detection_error()
 
     def _show_spot_detection_error(self) -> None:
         """Show spot detection error label."""
@@ -714,6 +690,8 @@ class LaserAutofocusControlWidget(QFrame):
 
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Track live state for stop/start around operations."""
+        if getattr(event, "camera", "main") != "focus":
+            return
         self._is_live = event.is_live
 
     def _on_reference_set(self, event: LaserAFReferenceSet) -> None:
@@ -799,24 +777,24 @@ class LaserAutofocusControlWidget(QFrame):
     def move_to_target(self) -> None:
         was_live = self._is_live
         if was_live:
-            self._event_bus.publish(StopLiveCommand())
+            self._event_bus.publish(StopLiveCommand(camera="focus"))
         self._event_bus.publish(MoveToLaserAFTargetCommand(displacement_um=self.entry_target.value()))
         if was_live:
-            self._event_bus.publish(StartLiveCommand())
+            self._event_bus.publish(StartLiveCommand(camera="focus"))
 
     def on_set_reference_clicked(self) -> None:
         """Handle set reference button click"""
         was_live = self._is_live
         if was_live:
-            self._event_bus.publish(StopLiveCommand())
+            self._event_bus.publish(StopLiveCommand(camera="focus"))
         self._event_bus.publish(SetLaserAFReferenceCommand())
         if was_live:
-            self._event_bus.publish(StartLiveCommand())
+            self._event_bus.publish(StartLiveCommand(camera="focus"))
 
     def on_measure_displacement_clicked(self) -> None:
         was_live = self._is_live
         if was_live:
-            self._event_bus.publish(StopLiveCommand())
+            self._event_bus.publish(StopLiveCommand(camera="focus"))
         self._event_bus.publish(MeasureLaserAFDisplacementCommand())
         if was_live:
-            self._event_bus.publish(StartLiveCommand())
+            self._event_bus.publish(StartLiveCommand(camera="focus"))

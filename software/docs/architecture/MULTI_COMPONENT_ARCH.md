@@ -89,7 +89,7 @@ Your GUI currently disables controls during acquisition (e.g., `toggleAcquisitio
 
 Add a backend “resource gate”:
 
-* Introduce a small `SystemMode` / `ResourceLease` in the control plane, owned by a controller (or a dedicated coordinator):
+* Introduce a small `GlobalModeGate` in the control plane:
 
   * `mode = Idle | Live | Acquiring | Aborting`
 * When `mode == Acquiring`:

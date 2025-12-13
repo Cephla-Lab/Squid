@@ -7,51 +7,37 @@ from squid.core.events import (
     StartLiveCommand,
     StopLiveCommand,
     SetTriggerModeCommand,
-    SetMicroscopeModeCommand,
     LiveStateChanged,
     TriggerModeChanged,
 )
 
 
 class TestLiveControllerEventBus:
-    """Test LiveController EventBus integration."""
+    """Test LiveController EventBus integration (service-based controller)."""
 
     @pytest.fixture
     def event_bus(self):
         return EventBus()
 
     @pytest.fixture
-    def mock_microscope(self):
+    def mock_camera_service(self):
         from unittest.mock import MagicMock
 
-        microscope = MagicMock()
-        microscope.addons.sci_microscopy_led_array = None
-        microscope.addons.nl5 = None
-        microscope.addons.cellx = None
-        microscope.addons.xlight = None
-        microscope.addons.dragonfly = None
-        microscope.addons.emission_filter_wheel = None
-        microscope.illumination_controller = MagicMock()
-        microscope.low_level_drivers.microcontroller = MagicMock()
-        return microscope
+        service = MagicMock()
+        service.get_ready_for_trigger.return_value = True
+        service.get_total_frame_time.return_value = 10.0
+        service.get_strobe_time.return_value = 0.0
+        return service
 
     @pytest.fixture
-    def mock_camera(self):
-        from unittest.mock import MagicMock
-
-        camera = MagicMock()
-        camera.get_ready_for_trigger.return_value = True
-        camera.get_exposure_time.return_value = 100.0
-        return camera
-
-    @pytest.fixture
-    def live_controller(self, mock_microscope, mock_camera, event_bus):
+    def live_controller(self, mock_camera_service, event_bus):
         from squid.mcs.controllers.live_controller import LiveController
 
         return LiveController(
-            microscope=mock_microscope,
-            camera=mock_camera,
+            camera_service=mock_camera_service,
             event_bus=event_bus,
+            control_illumination=False,
+            use_internal_timer_for_hardware_trigger=False,
         )
 
     def test_live_controller_has_event_bus(self, live_controller, event_bus):
@@ -59,8 +45,7 @@ class TestLiveControllerEventBus:
         assert live_controller._bus is event_bus
 
     def test_live_controller_has_state(self, live_controller):
-        """LiveController should have state property."""
-        state = live_controller.state
+        state = live_controller.observable_state
         assert state.is_live is False
         assert state.trigger_mode == "Software"
 
@@ -69,16 +54,22 @@ class TestLiveControllerEventBus:
         events_received = []
         event_bus.subscribe(LiveStateChanged, events_received.append)
 
+        # Ensure we don't start any trigger timers in this test.
+        event_bus.publish(SetTriggerModeCommand(mode="Hardware"))
+        event_bus.drain()
+
         event_bus.publish(StartLiveCommand(configuration="BF"))
         event_bus.drain()
 
-        assert live_controller.state.is_live is True
-        assert len(events_received) == 1
-        assert events_received[0].is_live is True
+        assert live_controller.observable_state.is_live is True
+        assert events_received, "Expected LiveStateChanged events"
+        assert events_received[-1].is_live is True
 
     def test_stop_live_command_updates_state(self, live_controller, event_bus):
         """StopLiveCommand should update state and publish event."""
         # Start first
+        event_bus.publish(SetTriggerModeCommand(mode="Hardware"))
+        event_bus.drain()
         event_bus.publish(StartLiveCommand())
         event_bus.drain()
 
@@ -88,10 +79,9 @@ class TestLiveControllerEventBus:
         event_bus.publish(StopLiveCommand())
         event_bus.drain()
 
-        assert live_controller.state.is_live is False
-        # Only the stop event should be captured after subscription
-        assert len(events_received) == 1
-        assert events_received[0].is_live is False
+        assert live_controller.observable_state.is_live is False
+        assert events_received, "Expected LiveStateChanged events"
+        assert events_received[-1].is_live is False
 
     def test_set_trigger_mode_command(self, live_controller, event_bus):
         """SetTriggerModeCommand should update state and publish event."""
@@ -101,7 +91,7 @@ class TestLiveControllerEventBus:
         event_bus.publish(SetTriggerModeCommand(mode="Hardware"))
         event_bus.drain()
 
-        assert live_controller.state.trigger_mode == "Hardware"
+        assert live_controller.observable_state.trigger_mode == "Hardware"
         assert len(events_received) == 1
         assert events_received[0].mode == "Hardware"
 

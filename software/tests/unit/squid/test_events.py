@@ -591,52 +591,20 @@ class TestNewAutofocusEvents:
 
 
 # ============================================================================
-# Tests for Phase 3 Coordinator Events
+# Tests for Global Mode Events
 # ============================================================================
 
 
-class TestCoordinatorEvents:
-    """Test resource coordinator events."""
+class TestGlobalModeEvents:
+    """Test global mode events."""
 
     def test_global_mode_changed(self):
         from squid.core.events import GlobalModeChanged
 
-        event = GlobalModeChanged(old_mode="IDLE", new_mode="LIVE")
+        event = GlobalModeChanged(old_mode="IDLE", new_mode="LIVE", reason="live start")
         assert event.old_mode == "IDLE"
         assert event.new_mode == "LIVE"
-
-    def test_lease_acquired(self):
-        from squid.core.events import LeaseAcquired
-
-        event = LeaseAcquired(
-            lease_id="lease-123",
-            owner="LiveController",
-            resources=["CAMERA_CONTROL", "ILLUMINATION_CONTROL"],
-        )
-        assert event.lease_id == "lease-123"
-        assert event.owner == "LiveController"
-        assert len(event.resources) == 2
-        assert "CAMERA_CONTROL" in event.resources
-        assert "ILLUMINATION_CONTROL" in event.resources
-
-    def test_lease_released(self):
-        from squid.core.events import LeaseReleased
-
-        event = LeaseReleased(lease_id="lease-456", owner="AcquisitionController")
-        assert event.lease_id == "lease-456"
-        assert event.owner == "AcquisitionController"
-
-    def test_lease_revoked(self):
-        from squid.core.events import LeaseRevoked
-
-        event = LeaseRevoked(
-            lease_id="lease-789",
-            owner="StaleController",
-            reason="expired",
-        )
-        assert event.lease_id == "lease-789"
-        assert event.owner == "StaleController"
-        assert event.reason == "expired"
+        assert event.reason == "live start"
 
     def test_acquisition_worker_finished_success(self):
         from squid.core.events import AcquisitionWorkerFinished

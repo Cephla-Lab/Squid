@@ -6,6 +6,7 @@ from squid.core.events import (
     StopAutofocusCommand,
     SetAutofocusParamsCommand,
     AutofocusCompleted,
+    AutofocusWorkerFinished,
 )
 from squid.core.abc import Pos
 from squid.mcs.controllers.autofocus.auto_focus_controller import (
@@ -14,26 +15,33 @@ from squid.mcs.controllers.autofocus.auto_focus_controller import (
 )
 
 
-class FakeStage:
-    def __init__(self):
-        self._pos = Pos(x_mm=0.0, y_mm=0.0, z_mm=0.0, theta_rad=None)
+def _make_controller(bus: EventBus) -> AutoFocusController:
+    live_controller = MagicMock()
+    live_controller.is_live = False
 
-    def get_pos(self):
-        return self._pos
+    camera_service = MagicMock()
+    camera_service.get_callbacks_enabled.return_value = False
 
-    def wait_for_idle(self, *_args, **_kwargs):
-        return
+    stage_service = MagicMock()
+    stage_service.get_position.return_value = Pos(
+        x_mm=0.0, y_mm=0.0, z_mm=0.0, theta_rad=None
+    )
+
+    peripheral_service = MagicMock()
+    peripheral_service.wait_till_operation_is_completed.return_value = None
+
+    return AutoFocusController(
+        liveController=live_controller,
+        camera_service=camera_service,
+        stage_service=stage_service,
+        peripheral_service=peripheral_service,
+        event_bus=bus,
+    )
 
 
 def test_autofocus_controller_starts_on_command(monkeypatch):
     bus = EventBus()
-    controller = AutoFocusController(
-        camera=MagicMock(),
-        stage=FakeStage(),
-        liveController=MagicMock(),
-        microcontroller=MagicMock(),
-        event_bus=bus,
-    )
+    controller = _make_controller(bus)
     controller.autofocus = MagicMock()
 
     bus.publish(StartAutofocusCommand())
@@ -44,13 +52,7 @@ def test_autofocus_controller_starts_on_command(monkeypatch):
 
 def test_autofocus_controller_updates_params_from_command():
     bus = EventBus()
-    controller = AutoFocusController(
-        camera=MagicMock(),
-        stage=FakeStage(),
-        liveController=MagicMock(),
-        microcontroller=MagicMock(),
-        event_bus=bus,
-    )
+    controller = _make_controller(bus)
 
     bus.publish(SetAutofocusParamsCommand(n_planes=7, delta_z_um=200.0))
     bus.drain()
@@ -64,13 +66,7 @@ def test_autofocus_controller_emits_failure_on_abort():
     completed = []
     bus.subscribe(AutofocusCompleted, completed.append)
 
-    controller = AutoFocusController(
-        camera=MagicMock(),
-        stage=FakeStage(),
-        liveController=MagicMock(),
-        microcontroller=MagicMock(),
-        event_bus=bus,
-    )
+    controller = _make_controller(bus)
 
     # Force state to RUNNING to simulate autofocus in progress
     controller._force_state(AutofocusControllerState.RUNNING, reason="test setup")
@@ -78,8 +74,8 @@ def test_autofocus_controller_emits_failure_on_abort():
 
     bus.publish(StopAutofocusCommand())
     bus.drain()
-    # Simulate worker finishing after abort
-    controller._on_autofocus_completed()
+    # Simulate worker finishing after abort (worker thread publishes this event)
+    bus.publish(AutofocusWorkerFinished(success=True, aborted=True))
     bus.drain()
 
     assert completed, "Expected AutofocusCompleted on abort"

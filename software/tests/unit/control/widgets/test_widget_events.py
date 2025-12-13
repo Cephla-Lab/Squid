@@ -331,9 +331,6 @@ class TestDACWidgetEvents:
 class TestWellplateFormatWidgetEvents:
     """WellplateFormatWidget handles save calibration events."""
 
-    class DummyNav:
-        pass
-
     class DummyStream:
         pass
 
@@ -343,7 +340,6 @@ class TestWellplateFormatWidgetEvents:
         bus = FakeBus()
         widget = WellplateFormatWidget(
             event_bus=bus,
-            navigationViewer=self.DummyNav(),
             streamHandler=self.DummyStream(),
         )
         calibration = {"a1_x_mm": 1.0, "a1_y_mm": 2.0, "well_size_mm": 3.0, "well_spacing_mm": 9.0, "number_of_skip": 0, "rows": 2, "cols": 2, "a1_x_pixel": 0, "a1_y_pixel": 0}
@@ -409,7 +405,6 @@ class TestNoDirectHardwareAttributes:
         well = WellplateCalibration(
             event_bus=bus,
             wellplateFormatWidget=DummyDeps(),
-            navigationViewer=DummyDeps(),
             streamHandler=DummyDeps(),
         )
 

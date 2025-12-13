@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QWidget,
     QHBoxLayout,
@@ -26,8 +25,6 @@ if TYPE_CHECKING:
 
 
 class ObjectivesWidget(QWidget):
-    signal_objective_changed: Signal = Signal()
-
     def __init__(
         self,
         objective_store: ObjectiveStore,
@@ -81,5 +78,3 @@ class ObjectivesWidget(QWidget):
             magnification=magnification,
             pixel_size_um=pixel_size_factor,  # This is the lens factor, camera multiplies by sensor size
         ))
-
-        self.signal_objective_changed.emit()

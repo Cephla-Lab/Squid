@@ -10,6 +10,8 @@ import squid.core.logging
 from squid.core.events import (
     UpdateChannelConfigurationCommand,
     ChannelConfigurationsChanged,
+    SetConfocalModeCommand,
+    ConfocalModeChanged,
 )
 
 if TYPE_CHECKING:
@@ -49,6 +51,10 @@ class ChannelConfigurationManager:
             self._event_bus.subscribe(
                 UpdateChannelConfigurationCommand,
                 self._on_update_configuration_command
+            )
+            self._event_bus.subscribe(
+                SetConfocalModeCommand,
+                self._on_set_confocal_mode_command,
             )
 
     def set_profile_path(self, profile_path: Path) -> None:
@@ -181,6 +187,12 @@ class ChannelConfigurationManager:
         self.active_config_type = (
             ConfigType.CONFOCAL if confocal else ConfigType.WIDEFIELD
         )
+
+    def _on_set_confocal_mode_command(self, cmd: SetConfocalModeCommand) -> None:
+        self.toggle_confocal_widefield(cmd.is_confocal)
+        self._publish_configurations_changed(cmd.objective_name)
+        if self._event_bus is not None:
+            self._event_bus.publish(ConfocalModeChanged(is_confocal=cmd.is_confocal))
 
     def _publish_configurations_changed(self, objective: str) -> None:
         """Publish ChannelConfigurationsChanged event."""

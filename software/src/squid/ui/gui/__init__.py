@@ -1,10 +1,6 @@
-# GUI module - Qt signal bridges for controller-to-widget communication
-from squid.ui.gui.qt_controllers import (
-    ImageSignalBridge,
-    MultiPointSignalBridge,
-)
+"""GUI helpers.
 
-__all__ = [
-    "ImageSignalBridge",
-    "MultiPointSignalBridge",
-]
+Qt bridge classes were removed as part of the actor simplification refactor.
+"""
+
+__all__: list[str] = []
