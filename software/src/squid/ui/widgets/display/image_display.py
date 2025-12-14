@@ -799,19 +799,38 @@ class ImageDisplayWindow(QMainWindow):
             image: Image to mark
             x: x-coordinate of the spot
             y: y-coordinate of the spot
-
-        Returns:
-            Image with marked spot
         """
-        # Draw a green crosshair at the specified x,y coordinates
-        crosshair_size = 10  # Size of crosshair lines in pixels
-        crosshair_color = (0, 255, 0)  # Green in BGR format
-        crosshair_thickness = 1
+        # Draw a bright red crosshair at the specified x,y coordinates
+        crosshair_size = 50  # Size of crosshair lines in pixels (larger for visibility)
+        crosshair_color = (0, 0, 255)  # Red in BGR format (contrasts with laser spot)
+        crosshair_thickness = 3
         x = int(round(x))
         y = int(round(y))
 
-        # Convert grayscale to BGR
-        marked_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        self._log.debug(f"mark_spot called: x={x}, y={y}, image shape={image.shape}, dtype={image.dtype}")
+
+        # Handle different image formats
+        if len(image.shape) == 2:
+            # Grayscale image - convert to BGR
+            marked_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        elif len(image.shape) == 3 and image.shape[2] == 3:
+            # Already BGR/RGB - make a copy
+            marked_image = image.copy()
+        elif len(image.shape) == 3 and image.shape[2] == 4:
+            # BGRA/RGBA - convert to BGR
+            marked_image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+        else:
+            self._log.error(f"Unexpected image format: shape={image.shape}")
+            # Try to display original image anyway
+            self.display_image(image)
+            return
+
+        # Ensure we have uint8 for drawing
+        if marked_image.dtype != np.uint8:
+            if marked_image.max() <= 1.0:
+                marked_image = (marked_image * 255).astype(np.uint8)
+            else:
+                marked_image = marked_image.astype(np.uint8)
 
         # Draw horizontal line
         cv2.line(
@@ -831,6 +850,10 @@ class ImageDisplayWindow(QMainWindow):
             crosshair_thickness,
         )
 
+        # Convert BGR to RGB for pyqtgraph display
+        marked_image = cv2.cvtColor(marked_image, cv2.COLOR_BGR2RGB)
+
+        self._log.debug("Displaying marked image")
         self.display_image(marked_image)
 
     def set_spot_tracking(
@@ -865,11 +888,11 @@ class ImageDisplayWindow(QMainWindow):
             y: y-coordinate of the spot
 
         Returns:
-            Image with marker drawn
+            Image with marker drawn (in RGB format for pyqtgraph)
         """
-        crosshair_size = 10
-        crosshair_color = (0, 255, 0)  # Green in BGR
-        crosshair_thickness = 1
+        crosshair_size = 30
+        crosshair_color = (0, 0, 255)  # Red in BGR (will be converted to RGB)
+        crosshair_thickness = 2
         x_int = int(round(x))
         y_int = int(round(y))
 
@@ -897,6 +920,8 @@ class ImageDisplayWindow(QMainWindow):
             crosshair_thickness,
         )
 
+        # Convert BGR to RGB for pyqtgraph display
+        marked_image = cv2.cvtColor(marked_image, cv2.COLOR_BGR2RGB)
         return marked_image
 
     def update_contrast_limits(self) -> None:

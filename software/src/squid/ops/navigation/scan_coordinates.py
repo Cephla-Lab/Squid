@@ -25,12 +25,19 @@ class ScanCoordinatesUpdate(Event):
 class FovCenter:
     x_mm: float
     y_mm: float
+    fov_width_mm: float = 0.0  # FOV width at time of registration
+    fov_height_mm: float = 0.0  # FOV height at time of registration
 
     @staticmethod
     def from_scan_coordinates(
         scan_coordinates: List[Tuple[float, float]],
+        fov_width_mm: float = 0.0,
+        fov_height_mm: float = 0.0,
     ) -> List["FovCenter"]:
-        return [FovCenter(x_mm=sc[0], y_mm=sc[1]) for sc in scan_coordinates]
+        return [
+            FovCenter(x_mm=sc[0], y_mm=sc[1], fov_width_mm=fov_width_mm, fov_height_mm=fov_height_mm)
+            for sc in scan_coordinates
+        ]
 
 
 @dataclass
@@ -101,6 +108,20 @@ class ScanCoordinates:
         self._event_bus = event_bus
         self._commands_subscribed = False
         self._subscribe_to_commands()
+
+    def _get_current_fov_dimensions(self) -> Tuple[float, float]:
+        """Get current FOV dimensions from camera and objective."""
+        pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
+        if pixel_size_factor is None:
+            pixel_size_factor = 1.0
+
+        fov_width_mm = pixel_size_factor * self.camera.get_fov_size_mm()
+        if hasattr(self.camera, "get_fov_height_mm") and self.camera.get_fov_height_mm() is not None:
+            fov_height_mm = pixel_size_factor * self.camera.get_fov_height_mm()
+        else:
+            fov_height_mm = fov_width_mm
+
+        return fov_width_mm, fov_height_mm
 
     def _subscribe_to_commands(self) -> None:
         if self._event_bus is None:
@@ -247,8 +268,11 @@ class ScanCoordinates:
                 center.append(float(self.stage.get_pos().z_mm))
             self.region_centers[str(region_id)] = center
             self.region_shapes[str(region_id)] = "Loaded"
+            fov_width_mm, fov_height_mm = self._get_current_fov_dimensions()
             self._publish_update(
-                AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(coords))
+                AddScanCoordinateRegion(
+                    fov_centers=FovCenter.from_scan_coordinates(coords, fov_width_mm, fov_height_mm)
+                )
             )
 
     def _on_request_scan_coordinates_snapshot(self, cmd: Event) -> None:
@@ -501,6 +525,14 @@ class ScanCoordinates:
     ) -> None:
         self.clear_regions()
         if manual_shapes is not None:
+            # Get current FOV dimensions for manual regions
+            pixel_size_factor = self.objectiveStore.get_pixel_size_factor() or 1.0
+            fov_width_mm = pixel_size_factor * self.camera.get_fov_size_mm()
+            if hasattr(self.camera, 'get_fov_height_mm') and self.camera.get_fov_height_mm() is not None:
+                fov_height_mm = pixel_size_factor * self.camera.get_fov_height_mm()
+            else:
+                fov_height_mm = fov_width_mm
+
             # Handle manual ROIs
             scan_coordinates = None
             for i, shape_coords in enumerate(manual_shapes):
@@ -519,7 +551,11 @@ class ScanCoordinates:
                     self._log.info(f"Added Manual Region: {region_name}")
                     self._publish_update(
                         AddScanCoordinateRegion(
-                            fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)
+                            fov_centers=FovCenter.from_scan_coordinates(
+                                scan_coordinates,
+                                fov_width_mm=fov_width_mm,
+                                fov_height_mm=fov_height_mm,
+                            )
                         )
                     )
         else:
@@ -678,7 +714,11 @@ class ScanCoordinates:
         self.region_fov_coordinates[well_id] = scan_coordinates
         self._publish_update(
             AddScanCoordinateRegion(
-                fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)
+                fov_centers=FovCenter.from_scan_coordinates(
+                    scan_coordinates,
+                    fov_width_mm=fov_width_mm,
+                    fov_height_mm=fov_height_mm,
+                )
             )
         )
         # Log positions summary for overlap verification
@@ -767,7 +807,11 @@ class ScanCoordinates:
             self.region_fov_coordinates[region_id] = scan_coordinates
             self._publish_update(
                 AddScanCoordinateRegion(
-                    fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)
+                    fov_centers=FovCenter.from_scan_coordinates(
+                        scan_coordinates,
+                        fov_width_mm=fov_width_mm,
+                        fov_height_mm=fov_height_mm,
+                    )
                 )
             )
         else:
@@ -791,9 +835,17 @@ class ScanCoordinates:
 
         self.region_centers[region_id] = [clamped_x, clamped_y, center_z]
         self.region_fov_coordinates[region_id] = [(clamped_x, clamped_y)]
+        fov_width_mm, fov_height_mm = self._get_current_fov_dimensions()
         self._publish_update(
             AddScanCoordinateRegion(
-                fov_centers=[FovCenter(x_mm=clamped_x, y_mm=clamped_y)]
+                fov_centers=[
+                    FovCenter(
+                        x_mm=clamped_x,
+                        y_mm=clamped_y,
+                        fov_width_mm=fov_width_mm,
+                        fov_height_mm=fov_height_mm,
+                    )
+                ]
             )
         )
 
@@ -829,9 +881,12 @@ class ScanCoordinates:
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
             self.region_fov_coordinates[region_id] = scan_coordinates
+            fov_width_mm, fov_height_mm = self._get_current_fov_dimensions()
             self._publish_update(
                 AddScanCoordinateRegion(
-                    fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)
+                    fov_centers=FovCenter.from_scan_coordinates(
+                        scan_coordinates, fov_width_mm, fov_height_mm
+                    )
                 )
             )
         else:
@@ -951,9 +1006,12 @@ class ScanCoordinates:
                 scan_coordinates.append((x, y))
         self.region_centers[region_id] = [x_mm, y_mm, z_mm]
         self.region_fov_coordinates[region_id] = scan_coordinates
+        fov_width_mm, fov_height_mm = self._get_current_fov_dimensions()
         self._publish_update(
             AddScanCoordinateRegion(
-                fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)
+                fov_centers=FovCenter.from_scan_coordinates(
+                    scan_coordinates, fov_width_mm, fov_height_mm
+                )
             )
         )
 

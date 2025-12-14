@@ -2,13 +2,15 @@
 from __future__ import annotations
 import math
 import numpy as np
-from typing import Any, Optional
+from dataclasses import dataclass
+from threading import RLock
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import napari
 from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
 
-from qtpy.QtCore import Signal
+from qtpy.QtCore import QObject, QThread, QTimer, Signal, Slot
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QPushButton
 
 from _def import CHANNEL_COLORS_MAP, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM
@@ -25,6 +27,313 @@ from squid.core.events import (
 )
 
 import squid.core.logging
+
+
+@dataclass
+class TileUpdate:
+    """Processed tile ready for GUI insertion."""
+    channel: str
+    mosaic: np.ndarray
+    extents: Tuple[float, float, float, float]  # (min_y, max_y, min_x, max_x)
+    top_left: Tuple[float, float]  # (y_mm, x_mm)
+    pixel_size_mm: float
+    contrast_min: Optional[float] = None
+    contrast_max: Optional[float] = None
+
+
+class MosaicWorker(QObject):
+    """Worker that runs in QThread, composites tiles into mosaic arrays."""
+
+    # Signal emitted when mosaic is updated (channel, TileUpdate)
+    mosaic_updated = Signal(object)
+
+    def __init__(self, target_pixel_size_um: float):
+        super().__init__()
+        self._log = squid.core.logging.get_logger(self.__class__.__name__)
+        self._target_pixel_size_um = target_pixel_size_um
+        self._mosaics: Dict[str, np.ndarray] = {}
+        self._extents: Dict[str, List[float]] = {}  # channel -> [min_y, max_y, min_x, max_x]
+        self._top_left: Dict[str, List[float]] = {}  # channel -> [y_mm, x_mm]
+        self._mosaic_dtype: Optional[np.dtype] = None
+        self._pixel_size_mm: float = 0.0
+        self._lock = RLock()
+        self._contrast_limits: Dict[str, Tuple[float, float]] = {}
+
+    @Slot(object, object, str)
+    def process_tile(self, image: np.ndarray, info: CaptureInfo, channel: str) -> None:
+        """Process a tile on the worker thread."""
+        try:
+            if image is None or not hasattr(image, "shape") or len(image.shape) < 2:
+                return
+            if image.shape[0] <= 0 or image.shape[1] <= 0:
+                return
+
+            pixel_size_um = info.physical_size_x_um or info.physical_size_y_um
+            if pixel_size_um is None or pixel_size_um <= 0:
+                return
+
+            # Stage position is tile center
+            center_x_mm = info.position.x_mm
+            center_y_mm = info.position.y_mm
+            self._log.info(f"process_tile: center=({center_x_mm:.4f}, {center_y_mm:.4f}) mm, channel={channel}")
+            original_shape = image.shape
+
+            # Compute initial contrast limits on first image per channel
+            if channel not in self._contrast_limits:
+                try:
+                    sample = image
+                    if sample.ndim == 3 and sample.shape[-1] == 3:
+                        sample_vals = sample.reshape(-1, 3).astype(np.float32)
+                        sample = (
+                            0.2126 * sample_vals[:, 0]
+                            + 0.7152 * sample_vals[:, 1]
+                            + 0.0722 * sample_vals[:, 2]
+                        )
+                    else:
+                        # Subsample for speed (every 4th pixel)
+                        sample = sample[::4, ::4].astype(np.float32).ravel()
+                    if sample.size > 0:
+                        lo, hi = float(np.percentile(sample, 0.5)), float(np.percentile(sample, 99.5))
+                        if math.isfinite(lo) and math.isfinite(hi) and hi > lo:
+                            self._contrast_limits[channel] = (lo, hi)
+                except Exception:
+                    pass
+
+            # Downsample
+            downsample_factor = max(1, int(round(self._target_pixel_size_um / pixel_size_um)))
+            image_pixel_size_um = pixel_size_um * downsample_factor
+            image_pixel_size_mm = image_pixel_size_um / 1000
+
+            # Calculate tile size before downsampling
+            original_tile_width_mm = original_shape[1] * pixel_size_um / 1000
+            original_tile_height_mm = original_shape[0] * pixel_size_um / 1000
+
+            if downsample_factor != 1:
+                image = cv2.resize(
+                    image,
+                    (
+                        max(1, int(round(image.shape[1] / downsample_factor))),
+                        max(1, int(round(image.shape[0] / downsample_factor))),
+                    ),
+                    interpolation=cv2.INTER_AREA,
+                )
+
+            with self._lock:
+                # Initialize mosaic dtype from first tile
+                if self._mosaic_dtype is None:
+                    self._mosaic_dtype = image.dtype
+                    self._pixel_size_mm = image_pixel_size_mm
+
+                # Convert dtype if needed (use float32, not float64)
+                if image.dtype != self._mosaic_dtype:
+                    image = self._convert_dtype_fast(image, self._mosaic_dtype)
+
+                # Handle scale mismatch
+                if image_pixel_size_mm != self._pixel_size_mm:
+                    scale_factor = image_pixel_size_mm / self._pixel_size_mm
+                    if math.isfinite(scale_factor) and scale_factor > 0:
+                        target_w = max(1, int(round(image.shape[1] * scale_factor)))
+                        target_h = max(1, int(round(image.shape[0] * scale_factor)))
+                        image = cv2.resize(image, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+                # Convert center to top-left corner
+                x_mm = center_x_mm - original_tile_width_mm / 2
+                y_mm = center_y_mm - original_tile_height_mm / 2
+
+                # Initialize or update channel mosaic
+                if channel not in self._mosaics:
+                    self._extents[channel] = [
+                        y_mm,
+                        y_mm + image.shape[0] * self._pixel_size_mm,
+                        x_mm,
+                        x_mm + image.shape[1] * self._pixel_size_mm,
+                    ]
+                    self._top_left[channel] = [y_mm, x_mm]
+                    if image.ndim == 3 and image.shape[2] == 3:
+                        self._mosaics[channel] = np.zeros_like(image)
+                    else:
+                        self._mosaics[channel] = np.zeros_like(image)
+                else:
+                    # Update extents
+                    ext = self._extents[channel]
+                    ext[0] = min(ext[0], y_mm)
+                    ext[1] = max(ext[1], y_mm + image.shape[0] * self._pixel_size_mm)
+                    ext[2] = min(ext[2], x_mm)
+                    ext[3] = max(ext[3], x_mm + image.shape[1] * self._pixel_size_mm)
+
+                # Resize mosaic if needed
+                self._ensure_mosaic_size(channel, image)
+
+                # Insert tile
+                self._insert_tile(channel, image, x_mm, y_mm)
+
+                # Prepare update - COPY the mosaic array for thread safety
+                # The GUI thread will receive its own copy that won't be modified by the worker
+                contrast = self._contrast_limits.get(channel)
+                update = TileUpdate(
+                    channel=channel,
+                    mosaic=self._mosaics[channel].copy(),
+                    extents=tuple(self._extents[channel]),
+                    top_left=tuple(self._top_left[channel]),
+                    pixel_size_mm=self._pixel_size_mm,
+                    contrast_min=contrast[0] if contrast else None,
+                    contrast_max=contrast[1] if contrast else None,
+                )
+
+            # Emit update (Qt delivers to GUI thread)
+            self.mosaic_updated.emit(update)
+
+        except Exception as e:
+            self._log.error(f"MosaicWorker.process_tile error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _convert_dtype_fast(self, image: np.ndarray, target_dtype: np.dtype) -> np.ndarray:
+        """Fast dtype conversion using float32 intermediate (not float64)."""
+        if image.dtype == target_dtype:
+            return image
+
+        if np.issubdtype(image.dtype, np.integer):
+            src_max = np.float32(np.iinfo(image.dtype).max)
+        else:
+            src_max = np.float32(1.0)
+
+        if np.issubdtype(target_dtype, np.integer):
+            dst_max = np.float32(np.iinfo(target_dtype).max)
+        else:
+            dst_max = np.float32(1.0)
+
+        scale = dst_max / src_max
+        return (image.astype(np.float32) * scale).astype(target_dtype)
+
+    def _ensure_mosaic_size(self, channel: str, image: np.ndarray) -> None:
+        """Expand mosaic if extents have grown."""
+        ext = self._extents[channel]
+        mosaic_height = int(math.ceil((ext[1] - ext[0]) / self._pixel_size_mm))
+        mosaic_width = int(math.ceil((ext[3] - ext[2]) / self._pixel_size_mm))
+
+        mosaic = self._mosaics[channel]
+        if mosaic.shape[0] >= mosaic_height and mosaic.shape[1] >= mosaic_width:
+            return  # No resize needed
+
+        # Create new mosaic with padding for future growth
+        pad_factor = 1.2
+        new_height = int(mosaic_height * pad_factor)
+        new_width = int(mosaic_width * pad_factor)
+
+        is_rgb = mosaic.ndim == 3 and mosaic.shape[2] == 3
+        if is_rgb:
+            new_mosaic = np.zeros((new_height, new_width, 3), dtype=mosaic.dtype)
+        else:
+            new_mosaic = np.zeros((new_height, new_width), dtype=mosaic.dtype)
+
+        # Copy existing data
+        old_top_left = self._top_left[channel]
+        new_top_left = [ext[0], ext[2]]
+
+        y_offset = int(round((old_top_left[0] - new_top_left[0]) / self._pixel_size_mm))
+        x_offset = int(round((old_top_left[1] - new_top_left[1]) / self._pixel_size_mm))
+
+        y_offset = max(0, y_offset)
+        x_offset = max(0, x_offset)
+
+        y_end = min(y_offset + mosaic.shape[0], new_mosaic.shape[0])
+        x_end = min(x_offset + mosaic.shape[1], new_mosaic.shape[1])
+
+        if y_end > y_offset and x_end > x_offset:
+            if is_rgb:
+                new_mosaic[y_offset:y_end, x_offset:x_end, :] = mosaic[:y_end - y_offset, :x_end - x_offset, :]
+            else:
+                new_mosaic[y_offset:y_end, x_offset:x_end] = mosaic[:y_end - y_offset, :x_end - x_offset]
+
+        self._mosaics[channel] = new_mosaic
+        self._top_left[channel] = new_top_left
+
+    def _insert_tile(self, channel: str, image: np.ndarray, x_mm: float, y_mm: float) -> None:
+        """Insert tile into mosaic at correct position."""
+        mosaic = self._mosaics[channel]
+        top_left = self._top_left[channel]
+
+        y_pos = int(round((y_mm - top_left[0]) / self._pixel_size_mm))
+        x_pos = int(round((x_mm - top_left[1]) / self._pixel_size_mm))
+
+        # Clip to bounds
+        y_img0, x_img0 = 0, 0
+        if y_pos < 0:
+            y_img0 = -y_pos
+            y_pos = 0
+        if x_pos < 0:
+            x_img0 = -x_pos
+            x_pos = 0
+
+        y_end = min(y_pos + (image.shape[0] - y_img0), mosaic.shape[0])
+        x_end = min(x_pos + (image.shape[1] - x_img0), mosaic.shape[1])
+
+        if y_end <= y_pos or x_end <= x_pos:
+            return
+
+        is_rgb = image.ndim == 3 and image.shape[2] == 3
+        if is_rgb:
+            mosaic[y_pos:y_end, x_pos:x_end, :] = image[
+                y_img0:y_img0 + (y_end - y_pos),
+                x_img0:x_img0 + (x_end - x_pos),
+                :
+            ]
+        else:
+            mosaic[y_pos:y_end, x_pos:x_end] = image[
+                y_img0:y_img0 + (y_end - y_pos),
+                x_img0:x_img0 + (x_end - x_pos)
+            ]
+
+    def clear(self) -> None:
+        """Clear all mosaics (called when clearing the view)."""
+        with self._lock:
+            self._mosaics.clear()
+            self._extents.clear()
+            self._top_left.clear()
+            self._mosaic_dtype = None
+            self._pixel_size_mm = 0.0
+            self._contrast_limits.clear()
+
+
+class MosaicCompositor(QObject):
+    """Manages the MosaicWorker thread lifecycle."""
+
+    # Signal to send tiles to worker (image, info, channel)
+    _tile_received = Signal(object, object, str)
+
+    def __init__(self, target_pixel_size_um: float, parent: Optional[QObject] = None):
+        super().__init__(parent)
+        self._log = squid.core.logging.get_logger(self.__class__.__name__)
+        self._thread = QThread()
+        self._worker = MosaicWorker(target_pixel_size_um)
+        self._worker.moveToThread(self._thread)
+
+        # Connect signal to worker slot
+        self._tile_received.connect(self._worker.process_tile)
+
+        self._thread.start()
+        self._log.info("MosaicCompositor started")
+
+    def submit(self, image: np.ndarray, info: CaptureInfo, channel: str) -> None:
+        """Submit tile from any thread - Qt handles delivery to worker thread."""
+        # Copy image before emitting (releases camera buffer)
+        self._tile_received.emit(image.copy(), info, channel)
+
+    @property
+    def mosaic_updated(self) -> Signal:
+        """Expose worker's update signal for GUI connection."""
+        return self._worker.mosaic_updated
+
+    def clear(self) -> None:
+        """Clear worker state."""
+        self._worker.clear()
+
+    def stop(self) -> None:
+        """Stop the worker thread."""
+        self._thread.quit()
+        self._thread.wait()
+        self._log.info("MosaicCompositor stopped")
 
 
 class NapariMosaicDisplayWidget(QWidget):
@@ -72,6 +381,17 @@ class NapariMosaicDisplayWidget(QWidget):
         self.top_left_coordinate = None  # [y, x] in mm
         self.mosaic_dtype = None
         self._click_to_move_enabled = True
+
+        # Background compositor for tile processing (moves heavy work off GUI thread)
+        self._compositor = MosaicCompositor(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM, parent=self)
+        self._compositor.mosaic_updated.connect(self._on_mosaic_updated)
+
+        # Throttle napari updates to max 10 FPS
+        self._pending_updates: Dict[str, TileUpdate] = {}
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.timeout.connect(self._flush_pending_updates)
+        self._refresh_timer.start(100)  # 100ms = 10 FPS max
+
         if self._event_bus is not None:
             self._event_bus.subscribe(
                 ManualShapeDrawingEnabledChanged,
@@ -239,6 +559,92 @@ class NapariMosaicDisplayWidget(QWidget):
         self.Nz = 1
         self.dz_um = dz
 
+    @Slot(object)
+    def _on_mosaic_updated(self, update: TileUpdate) -> None:
+        """Called when compositor has a new tile ready. Queue for batch refresh."""
+        self._pending_updates[update.channel] = update
+
+    def _flush_pending_updates(self) -> None:
+        """Apply pending updates to napari layers (runs on GUI thread via QTimer)."""
+        if not self._pending_updates:
+            return
+
+        channels_updated = set()
+        for channel, update in self._pending_updates.items():
+            try:
+                self._apply_tile_update(update)
+                channels_updated.add(channel)
+            except Exception as e:
+                self._log.error(f"Error applying tile update for {channel}: {e}")
+
+        self._pending_updates.clear()
+
+        # Single batch refresh for all updated layers
+        if channels_updated:
+            for layer in self.viewer.layers:
+                if layer.name in channels_updated:
+                    layer.refresh()
+
+    def _apply_tile_update(self, update: TileUpdate) -> None:
+        """Apply a single tile update to the napari viewer."""
+        channel = update.channel
+
+        # Update widget state from the update
+        self.viewer_pixel_size_mm = update.pixel_size_mm
+        self.viewer_extents = list(update.extents)
+        self.top_left_coordinate = list(update.top_left)
+
+        if not self.layers_initialized and not self._has_mosaic_image_layers():
+            self.layers_initialized = True
+            self.mosaic_dtype = update.mosaic.dtype
+            self.signal_layers_initialized.emit()
+            if self._event_bus is not None:
+                self._event_bus.publish(MosaicLayersInitialized())
+
+        # Convert top_left from mm to um for napari translate (matching scale)
+        translate_um = (
+            update.top_left[0] * 1000,  # y in um
+            update.top_left[1] * 1000,  # x in um
+        )
+
+        # Create layer if it doesn't exist
+        if channel not in self.viewer.layers:
+            channel_info = CHANNEL_COLORS_MAP.get(
+                self.extractWavelength(channel), {"hex": 0xFFFFFF, "name": "gray"}
+            )
+            if channel_info["name"] in AVAILABLE_COLORMAPS:
+                color = AVAILABLE_COLORMAPS[channel_info["name"]]
+            else:
+                color = self.generateColormap(channel_info)
+
+            is_rgb = update.mosaic.ndim == 3 and update.mosaic.shape[2] == 3
+            layer = self.viewer.add_image(
+                update.mosaic,
+                name=channel,
+                rgb=is_rgb,
+                colormap=color,
+                visible=True,
+                blending="additive",
+                scale=(
+                    self.viewer_pixel_size_mm * 1000,
+                    self.viewer_pixel_size_mm * 1000,
+                ),
+                translate=translate_um,
+            )
+            layer.mouse_double_click_callbacks.append(self.onDoubleClick)
+            layer.events.contrast_limits.connect(self.signalContrastLimits)
+        else:
+            # Update existing layer data and position
+            layer = self.viewer.layers[channel]
+            layer.data = update.mosaic
+            layer.translate = translate_um
+
+        # Update contrast limits
+        if update.contrast_min is not None and update.contrast_max is not None:
+            # Update ContrastManager
+            self.contrastManager.update_limits(channel, update.contrast_min, update.contrast_max)
+            layer.contrast_limits = (update.contrast_min, update.contrast_max)
+
     def extractWavelength(self, name: str) -> str:
         # extract wavelength from channel name
         parts = name.split()
@@ -262,9 +668,11 @@ class NapariMosaicDisplayWidget(QWidget):
         return Colormap(colors=[c0, c1], controls=[0, 1], name=channel_info["name"])
 
     def updateMosaic(self, image: np.ndarray, info: CaptureInfo, channel_name: str) -> None:
-        import time
-        t_start = time.perf_counter()
+        """Submit tile to background compositor for processing.
 
+        Heavy work (downsample, dtype conversion, compositing) happens on a
+        background QThread. The GUI thread is only updated via QTimer at 10 FPS.
+        """
         if image is None or not hasattr(image, "shape") or len(image.shape) < 2:
             self._log.error("updateMosaic: invalid image (None or missing shape)")
             return
@@ -272,196 +680,8 @@ class NapariMosaicDisplayWidget(QWidget):
             self._log.error(f"updateMosaic: empty image shape={getattr(image, 'shape', None)}")
             return
 
-        # Stage position is interpreted as the tile center in mm.
-        center_x_mm, center_y_mm = info.position.x_mm, info.position.y_mm
-        original_shape = image.shape
-
-        # Use authoritative per-capture physical pixel size.
-        pixel_size_um = info.physical_size_x_um or info.physical_size_y_um
-        if pixel_size_um is None or pixel_size_um <= 0:
-            self._log.error(
-                "updateMosaic: CaptureInfo missing/invalid physical pixel size; "
-                f"physical_size_x_um={info.physical_size_x_um}, physical_size_y_um={info.physical_size_y_um}"
-            )
-            return
-
-        # If no per-channel contrast has been set yet, seed it from the actual image.
-        # Using full dtype range for 16-bit fluorescence often renders as "all black".
-        if channel_name not in self.contrastManager.contrast_limits:
-            try:
-                sample = image
-                if sample is not None and hasattr(sample, "shape"):
-                    if sample.ndim == 3 and sample.shape[-1] == 3:
-                        # RGB: use luminance-like aggregation for robust limits.
-                        sample_vals = sample.reshape(-1, 3).astype(np.float64)
-                        sample = (
-                            0.2126 * sample_vals[:, 0]
-                            + 0.7152 * sample_vals[:, 1]
-                            + 0.0722 * sample_vals[:, 2]
-                        )
-                    else:
-                        sample = sample.astype(np.float64).ravel()
-
-                    if sample.size > 0:
-                        lo, hi = np.percentile(sample, (0.5, 99.5))
-                        if not (math.isfinite(lo) and math.isfinite(hi)) or hi <= lo:
-                            lo = float(np.min(sample))
-                            hi = float(np.max(sample))
-                        if math.isfinite(lo) and math.isfinite(hi) and hi > lo:
-                            self.contrastManager.update_limits(channel_name, float(lo), float(hi))
-            except Exception:  # pragma: no cover - best effort
-                pass
-
-        downsample_factor = max(
-            1, int(round(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um))
-        )
-        image_pixel_size_um = pixel_size_um * downsample_factor
-        image_pixel_size_mm = image_pixel_size_um / 1000
-        image_dtype = image.dtype
-
-        # Calculate tile size BEFORE downsampling (this should match acquisition FOV).
-        original_tile_width_mm = original_shape[1] * pixel_size_um / 1000
-        original_tile_height_mm = original_shape[0] * pixel_size_um / 1000
-
-        # downsample image
-        if downsample_factor != 1:
-            image = cv2.resize(
-                image,
-                (
-                    max(1, int(round(image.shape[1] / downsample_factor))),
-                    max(1, int(round(image.shape[0] / downsample_factor))),
-                ),
-                interpolation=cv2.INTER_AREA,
-            )
-
-        if not self._has_mosaic_image_layers():
-            # initialize first layer
-            self.layers_initialized = True
-            self.signal_layers_initialized.emit()
-            if self._event_bus is not None:
-                self._event_bus.publish(MosaicLayersInitialized())
-            self.viewer_pixel_size_mm = image_pixel_size_mm
-            self.mosaic_dtype = image_dtype
-        else:
-            # convert image dtype and scale if necessary
-            image = self.convertImageDtype(image, self.mosaic_dtype)
-            if image_pixel_size_mm != self.viewer_pixel_size_mm:
-                scale_factor = image_pixel_size_mm / self.viewer_pixel_size_mm
-                if not math.isfinite(scale_factor) or scale_factor <= 0:
-                    self._log.error(
-                        "updateMosaic: invalid scale factor for resize; "
-                        f"image_pixel_size_mm={image_pixel_size_mm}, viewer_pixel_size_mm={self.viewer_pixel_size_mm}, "
-                        f"scale_factor={scale_factor}"
-                    )
-                    return
-                target_w = max(1, int(round(image.shape[1] * scale_factor)))
-                target_h = max(1, int(round(image.shape[0] * scale_factor)))
-                image = cv2.resize(
-                    image,
-                    (
-                        target_w,
-                        target_h,
-                    ),
-                    interpolation=cv2.INTER_LINEAR,
-                )
-
-        # Convert center position to top-left corner for array placement.
-        # Use original tile dimensions (pre-downsample) to avoid systematic drift from
-        # integer resize rounding across a large mosaic.
-        x_mm = center_x_mm - original_tile_width_mm / 2
-        y_mm = center_y_mm - original_tile_height_mm / 2
-
-        if self.top_left_coordinate is None:
-            self.viewer_extents = [
-                y_mm,
-                y_mm + image.shape[0] * self.viewer_pixel_size_mm,
-                x_mm,
-                x_mm + image.shape[1] * self.viewer_pixel_size_mm,
-            ]
-            self.top_left_coordinate = [y_mm, x_mm]
-
-        self._log.debug(
-            "updateMosaic: "
-            f"center=({center_x_mm:.4f}, {center_y_mm:.4f})mm, "
-            f"pixel_size={pixel_size_um:.3f}um, downsample={downsample_factor}, "
-            f"orig_shape={original_shape}, display_shape={image.shape}, "
-            f"top_left=({x_mm:.4f}, {y_mm:.4f})mm"
-        )
-
-        if channel_name not in self.viewer.layers:
-            # create new layer for channel
-            channel_info = CHANNEL_COLORS_MAP.get(
-                self.extractWavelength(channel_name), {"hex": 0xFFFFFF, "name": "gray"}
-            )
-            if channel_info["name"] in AVAILABLE_COLORMAPS:
-                color = AVAILABLE_COLORMAPS[channel_info["name"]]
-            else:
-                color = self.generateColormap(channel_info)
-
-            layer = self.viewer.add_image(
-                np.zeros_like(image),
-                name=channel_name,
-                rgb=len(image.shape) == 3,
-                colormap=color,
-                visible=True,
-                blending="additive",
-                scale=(
-                    self.viewer_pixel_size_mm * 1000,
-                    self.viewer_pixel_size_mm * 1000,
-                ),
-            )
-            layer.mouse_double_click_callbacks.append(self.onDoubleClick)
-            layer.events.contrast_limits.connect(self.signalContrastLimits)
-
-        # get layer for channel
-        layer = self.viewer.layers[channel_name]
-
-        # update extents
-        self.viewer_extents[0] = min(self.viewer_extents[0], y_mm)
-        self.viewer_extents[1] = max(
-            self.viewer_extents[1], y_mm + image.shape[0] * self.viewer_pixel_size_mm
-        )
-        self.viewer_extents[2] = min(self.viewer_extents[2], x_mm)
-        self.viewer_extents[3] = max(
-            self.viewer_extents[3], x_mm + image.shape[1] * self.viewer_pixel_size_mm
-        )
-
-        # store previous top-left coordinate
-        prev_top_left = (
-            self.top_left_coordinate.copy() if self.top_left_coordinate else None
-        )
-        self.top_left_coordinate = [self.viewer_extents[0], self.viewer_extents[2]]
-
-        # update layer
-        t_layer_start = time.perf_counter()
-        self.updateLayer(layer, image, x_mm, y_mm, prev_top_left)
-        t_layer_end = time.perf_counter()
-
-        # update contrast limits
-        min_val, max_val = self.contrastManager.get_limits(channel_name, dtype=image_dtype)
-        from_dtype = self.contrastManager.acquisition_dtype
-        if from_dtype is None:
-            layer.contrast_limits = (min_val, max_val)
-        else:
-            scaled_min = self.convertValue(min_val, from_dtype, self.mosaic_dtype)
-            scaled_max = self.convertValue(max_val, from_dtype, self.mosaic_dtype)
-            layer.contrast_limits = (scaled_min, scaled_max)
-        t_refresh_start = time.perf_counter()
-        layer.refresh()
-        t_refresh_end = time.perf_counter()
-
-        t_total = t_refresh_end - t_start
-        if t_total > 0.1:  # Log if > 100ms
-            self._log.warning(
-                f"updateMosaic SLOW: total={t_total*1000:.1f}ms, "
-                f"updateLayer={(t_layer_end - t_layer_start)*1000:.1f}ms, "
-                f"refresh={(t_refresh_end - t_refresh_start)*1000:.1f}ms, "
-                f"layer.data.shape={layer.data.shape}"
-            )
-        else:
-            self._log.debug(
-                f"updateMosaic: total={t_total*1000:.1f}ms"
-            )
+        # Submit to background compositor (image is copied in submit())
+        self._compositor.submit(image, info, channel_name)
 
     def updateLayer(
         self,
@@ -699,6 +919,17 @@ class NapariMosaicDisplayWidget(QWidget):
             self.signal_shape_drawn.emit([])
 
     def clearAllLayers(self) -> None:
+        # Clear pending updates and compositor state
+        self._pending_updates.clear()
+        self._compositor.clear()
+
+        # Reset widget state
+        self.layers_initialized = False
+        self.viewer_extents = []
+        self.top_left_coordinate = None
+        self.mosaic_dtype = None
+        self.channels = set()
+
         # Keep the Manual ROI layer and clear the content of all other layers
         for layer in self.viewer.layers:
             if layer.name == "Manual ROI":
@@ -718,8 +949,6 @@ class NapariMosaicDisplayWidget(QWidget):
                     )
 
                 layer.data = empty_data
-
-        self.channels = set()
 
         for layer in self.viewer.layers:
             layer.refresh()

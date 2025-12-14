@@ -721,6 +721,14 @@ class ApplicationContext:
         self._services.register("movement", movement_service)
         movement_service.start()  # Start polling immediately
 
+        # Wire piezo service to focus camera for simulation mode
+        # This allows the camera to read piezo position directly for immediate updates
+        camera_focus = getattr(self._microscope.addons, "camera_focus", None)
+        piezo_service = self._services.get("piezo")
+        if camera_focus is not None and piezo_service is not None:
+            if hasattr(camera_focus, 'set_piezo_service'):
+                camera_focus.set_piezo_service(piezo_service)
+
         self._log.info("Services built successfully")
 
     @property

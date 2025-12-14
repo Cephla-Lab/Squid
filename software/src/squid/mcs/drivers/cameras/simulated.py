@@ -456,7 +456,12 @@ class SimulatedFocusCamera(SimulatedCameraBase):
 
         # Event bus for position tracking
         self._event_bus = None
-        self._piezo = None  # Legacy fallback
+        self._piezo = None  # Legacy fallback - PiezoStage object
+        self._piezo_service = None  # PiezoService for simulation mode
+
+    def set_piezo_service(self, piezo_service) -> None:
+        """Set the piezo service for position tracking (simulation mode)."""
+        self._piezo_service = piezo_service
 
     def set_event_bus(self, event_bus) -> None:
         """Set the event bus for position tracking."""
@@ -494,19 +499,29 @@ class SimulatedFocusCamera(SimulatedCameraBase):
         self._pending_initialization_z_capture = False
 
     def _get_total_z_um(self) -> float:
-        """Get total Z position in microns (stage + piezo)."""
-        if self._event_bus is not None:
-            return self._stage_z_um + self._piezo_z_um
+        """Get total Z position in microns (stage + piezo).
 
-        # Fallback to direct piezo read (legacy)
-        if self._piezo is not None:
+        Prefers direct piezo read for immediate accuracy, since event-based
+        position tracking can be delayed by the EventBus queue.
+        """
+        piezo_z = self._piezo_z_um  # Default to event-based value
+
+        # Try PiezoService first (simulation mode)
+        if self._piezo_service is not None:
+            try:
+                # PiezoService tracks position internally, home is at 150
+                piezo_z = self._piezo_service.get_position() - 150.0
+            except Exception:
+                pass
+        # Then try direct PiezoStage read (hardware mode)
+        elif self._piezo is not None:
             try:
                 piezo_home = getattr(self._piezo, '_home_position_um', 150)
-                return self._piezo.position - piezo_home
+                piezo_z = self._piezo.position - piezo_home
             except Exception:
                 pass
 
-        return 0.0
+        return self._stage_z_um + piezo_z
 
     def _get_spot_position(self) -> Tuple[int, int]:
         """Calculate spot position based on Z position."""

@@ -749,6 +749,18 @@ class LaserAutofocusController:
         # disable camera callback
         self._enable_camera_callbacks(False)
 
+        # Wait for camera to settle after disabling callbacks
+        # This is necessary because if live mode just stopped, the camera
+        # might still be processing frames or in a transitional state
+        time.sleep(0.05)  # 50ms settle time
+
+        # Flush any stale frames in the buffer by doing a dummy read
+        try:
+            self._camera_service.send_trigger(illumination_time=self._get_camera_exposure())
+            _ = self._read_camera_frame()  # Discard this frame
+        except Exception:
+            pass  # Ignore errors during flush
+
         successful_detections: int = 0
         tmp_x: float = 0
         tmp_y: float = 0
@@ -784,9 +796,9 @@ class LaserAutofocusController:
                 spot_detection_params: Dict[str, Any] = {
                     "y_window": self.laser_af_properties.y_window,
                     "x_window": self.laser_af_properties.x_window,
-                    "peak_width": self.laser_af_properties.min_peak_width,
-                    "peak_distance": self.laser_af_properties.min_peak_distance,
-                    "peak_prominence": self.laser_af_properties.min_peak_prominence,
+                    "min_peak_width": self.laser_af_properties.min_peak_width,
+                    "min_peak_distance": self.laser_af_properties.min_peak_distance,
+                    "min_peak_prominence": self.laser_af_properties.min_peak_prominence,
                     "spot_spacing": self.laser_af_properties.spot_spacing,
                 }
                 result: Optional[Tuple[float, float]] = utils.find_spot_location(
@@ -935,7 +947,7 @@ class LaserAutofocusController:
     def _on_capture_frame(self, cmd: CaptureLaserAFFrameCommand) -> None:
         """Handle CaptureLaserAFFrameCommand from EventBus.
 
-        This captures a single frame and runs spot detection with debug visualization.
+        This captures a single frame and runs spot detection.
         """
         if self._event_bus is None:
             return
@@ -963,7 +975,7 @@ class LaserAutofocusController:
 
             self.image = image  # Store for debugging
 
-            # Run spot detection WITH debug plot enabled
+            # Run spot detection
             spot_detection_params = {
                 "y_window": self.laser_af_properties.y_window,
                 "x_window": self.laser_af_properties.x_window,
@@ -979,13 +991,13 @@ class LaserAutofocusController:
                     mode=self.laser_af_properties.spot_detection_mode,
                     params=spot_detection_params,
                     filter_sigma=self.laser_af_properties.filter_sigma,
-                    debug_plot=True,  # Show the matplotlib debug plot
+                    debug_plot=False,
                 )
             except Exception as e:
                 self._log.error(f"Spot detection failed: {e}")
                 result = None
 
-            # Stream the image to the display
+            # Stream the image to the display first
             if image is not None:
                 self._stream_image(image)
 

@@ -3,6 +3,8 @@ from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 
+import squid.core.logging
+
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QWidget,
@@ -55,6 +57,9 @@ class LaserAutofocusSettingWidget(QWidget):
 
     Subscribes to LaserAFPropertiesChanged, LaserAFInitialized, and LiveStateChanged events.
     No direct controller access - pure event-driven architecture.
+
+    NOTE: This widget receives UIEventBus which automatically marshals event handlers
+    to the Qt main thread, ensuring thread-safe GUI updates.
     """
 
     signal_newExposureTime: Signal = Signal(float)
@@ -84,8 +89,11 @@ class LaserAutofocusSettingWidget(QWidget):
             stretch: Whether to add stretch to layout
         """
         super().__init__()
+        self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self.streamHandler: "StreamHandler" = streamHandler
         self._event_bus = event_bus
+        self.spot_result_label: Optional[QLabel] = None
+        self.spot_detection_error_label: Optional[QLabel] = None
         self._exposure_limits = exposure_limits
         self.stretch: bool = stretch
 
@@ -122,7 +130,7 @@ class LaserAutofocusSettingWidget(QWidget):
         self.init_ui()
         self.update_calibration_label()
 
-        # Subscribe to state events
+        # Subscribe to state events (UIEventBus handles thread marshalling automatically)
         self._event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
         self._event_bus.subscribe(LaserAFInitialized, self._on_laser_af_initialized)
         self._event_bus.subscribe(LaserAFSpotCentroidMeasured, self._on_spot_centroid_measured)
@@ -155,6 +163,17 @@ class LaserAutofocusSettingWidget(QWidget):
             self.btn_live.setText("Stop Live")
             self.btn_live.setChecked(True)
             self.run_spot_detection_button.setEnabled(False)
+            # Enable spot tracking on display window (always, even before initialization)
+            if self._image_display_window is not None:
+                mode = self.spot_mode_combo.currentData()
+                params = self._get_spot_tracking_params()
+                sigma = self.spinboxes["filter_sigma"].value()
+                self._image_display_window.set_spot_tracking(
+                    enabled=True,
+                    mode=mode,
+                    params=params,
+                    filter_sigma=int(sigma) if sigma and sigma > 0 else None,
+                )
         else:
             self.btn_live.setText("Start Live")
             self.btn_live.setChecked(False)
@@ -198,18 +217,43 @@ class LaserAutofocusSettingWidget(QWidget):
         self._last_frame = frame
 
     def _on_spot_centroid_measured(self, event: LaserAFSpotCentroidMeasured) -> None:
+        """Handle spot centroid measurement event.
+
+        NOTE: This handler runs on the Qt main thread because UIEventBus
+        automatically marshals handlers from the EventBus dispatch thread.
+        """
+        self._log.debug(f"Received LaserAFSpotCentroidMeasured event: success={event.success}, x={event.x_px}, y={event.y_px}")
+
+        # Clear any previous result labels
+        self._clear_spot_result_label()
+
         if not event.success or event.x_px is None or event.y_px is None:
-            self._show_spot_detection_error()
+            error_msg = getattr(event, 'error', None) or "Spot detection failed"
+            self._log.warning(f"Spot detection failed: {error_msg}")
+            self._show_spot_detection_error(error_msg)
             return
+
+        # Show spot detection result in GUI
+        self._show_spot_result(event.x_px, event.y_px)
+
         # Use the image from the event if provided, otherwise fall back to _last_frame
         image = getattr(event, 'image', None)
         if image is None:
+            self._log.debug("No image in event, falling back to _last_frame")
             image = self._last_frame
         if image is None:
-            self._show_spot_detection_error()
+            self._log.warning("No image available for spot display")
             return
-        if self._image_display_window is not None:
+        self._log.debug(f"Image shape: {image.shape}, dtype: {image.dtype}")
+        if self._image_display_window is None:
+            self._log.error("_image_display_window is None - cannot display spot")
+            return
+        try:
+            self._log.debug(f"Calling mark_spot with coords ({event.x_px:.1f}, {event.y_px:.1f})")
             self._image_display_window.mark_spot(image, event.x_px, event.y_px)
+            self._log.debug("mark_spot completed successfully")
+        except Exception as e:
+            self._log.exception(f"Failed to display spot location: {e}")
 
     def _on_cross_correlation_measured(self, event: LaserAFCrossCorrelationMeasured) -> None:
         self.show_cross_correlation_result(event.correlation)
@@ -615,7 +659,7 @@ class LaserAutofocusSettingWidget(QWidget):
         """
         self._event_bus.publish(CaptureLaserAFFrameCommand())
 
-    def _show_spot_detection_error(self) -> None:
+    def _show_spot_detection_error(self, error_msg: str = "Spot detection failed!") -> None:
         """Show spot detection error label."""
         # Clear previous error label if it exists
         if (
@@ -625,10 +669,31 @@ class LaserAutofocusSettingWidget(QWidget):
             self.spot_detection_error_label.deleteLater()
 
         # Create and add new error label
-        self.spot_detection_error_label: QLabel = QLabel("Spot detection failed!")
+        self.spot_detection_error_label: QLabel = QLabel(error_msg)
+        self.spot_detection_error_label.setStyleSheet("color: red; font-weight: bold;")
         layout = self.layout()
         if layout is not None:
             layout.addWidget(self.spot_detection_error_label)
+
+    def _show_spot_result(self, x: float, y: float) -> None:
+        """Show spot detection result in GUI."""
+        # Clear previous result label if it exists
+        self._clear_spot_result_label()
+
+        # Create and add new result label
+        self.spot_result_label: QLabel = QLabel(
+            f"Spot detected at: ({x:.1f}, {y:.1f}) px"
+        )
+        self.spot_result_label.setStyleSheet("color: green; font-weight: bold;")
+        layout = self.layout()
+        if layout is not None:
+            layout.addWidget(self.spot_result_label)
+
+    def _clear_spot_result_label(self) -> None:
+        """Clear spot result label if it exists."""
+        if hasattr(self, "spot_result_label") and self.spot_result_label is not None:
+            self.spot_result_label.deleteLater()
+            self.spot_result_label = None
 
     def show_cross_correlation_result(self, value: float) -> None:
         """Show cross-correlation value from validating laser af images"""
@@ -649,6 +714,9 @@ class LaserAutofocusControlWidget(QFrame):
 
     Subscribes to LaserAFInitialized, LaserAFReferenceSet, LaserAFDisplacementMeasured,
     and LiveStateChanged events. No direct controller access - pure event-driven architecture.
+
+    NOTE: This widget receives UIEventBus which automatically marshals event handlers
+    to the Qt main thread, ensuring thread-safe GUI updates.
     """
 
     def __init__(
@@ -685,7 +753,7 @@ class LaserAutofocusControlWidget(QFrame):
         self.update_init_state()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
-        # Subscribe to state events
+        # Subscribe to state events (UIEventBus handles thread marshalling automatically)
         self._event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
         self._event_bus.subscribe(LaserAFReferenceSet, self._on_reference_set)
         self._event_bus.subscribe(LaserAFInitialized, self._on_initialized)
@@ -713,18 +781,16 @@ class LaserAutofocusControlWidget(QFrame):
         self.update_init_state()
 
     def _on_displacement_measured(self, event: LaserAFDisplacementMeasured) -> None:
-        """Handle displacement measurement event - replaces Qt signal connection."""
+        """Handle displacement measurement event."""
         if event.success and event.displacement_um is not None:
             self.label_displacement.setNum(event.displacement_um)
 
     def _on_move_completed(self, event: LaserAFMoveCompleted) -> None:
         """Handle move to target completion event."""
         if event.success:
-            # Update displacement label with final displacement
             if event.final_displacement_um is not None:
                 self.label_displacement.setNum(event.final_displacement_um)
         else:
-            # Show error to user
             from qtpy.QtWidgets import QMessageBox
             error_msg = event.error or "Unknown error"
             QMessageBox.warning(

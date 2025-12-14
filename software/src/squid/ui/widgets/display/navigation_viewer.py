@@ -113,8 +113,8 @@ class NavigationViewer(QFrame):
         self.fov_size_mm: float = 0.0
         self.fov_width_mm: float = 0.0
         self.fov_height_mm: float = 0.0
-        self._pending_fovs: List[Tuple[float, float]] = []  # Pending FOV positions (red)
-        self._completed_fovs: List[Tuple[float, float]] = []  # Completed FOV positions (blue)
+        self._pending_fovs: List[FovCenter] = []  # Pending FOV positions (red)
+        self._completed_fovs: List[FovCenter] = []  # Completed FOV positions (blue)
         self._base_line_thickness: int = 1  # Base thickness at 1:1 zoom
         self._current_thickness: int = 1  # Track current thickness to avoid unnecessary redraws
         self.image_height: int = 0
@@ -246,16 +246,31 @@ class NavigationViewer(QFrame):
     def _on_current_fov_registered(self, event: CurrentFOVRegistered) -> None:
         """Mark an FOV as completed (moves from red to blue)."""
         pos = (event.x_mm, event.y_mm)
-        self._log.info(f"CurrentFOVRegistered received: {pos}, pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}")
+        self._log.info(
+            f"CurrentFOVRegistered received: {pos}, "
+            f"size=({event.fov_width_mm}, {event.fov_height_mm}), "
+            f"pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}"
+        )
         # Remove from pending if present (use tolerance for floating point comparison)
         tolerance = 1e-6
         self._pending_fovs = [
-            (x, y) for (x, y) in self._pending_fovs
-            if abs(x - pos[0]) > tolerance or abs(y - pos[1]) > tolerance
+            f for f in self._pending_fovs
+            if abs(f.x_mm - pos[0]) > tolerance or abs(f.y_mm - pos[1]) > tolerance
         ]
-        # Add to completed
-        if pos not in self._completed_fovs:
-            self._completed_fovs.append(pos)
+        # Add to completed with FOV dimensions from the event
+        completed_fov = FovCenter(
+            x_mm=event.x_mm,
+            y_mm=event.y_mm,
+            fov_width_mm=event.fov_width_mm,
+            fov_height_mm=event.fov_height_mm,
+        )
+        # Check if this position is already in completed (use tolerance)
+        already_completed = any(
+            abs(f.x_mm - pos[0]) <= tolerance and abs(f.y_mm - pos[1]) <= tolerance
+            for f in self._completed_fovs
+        )
+        if not already_completed:
+            self._completed_fovs.append(completed_fov)
         self._log.info(f"After update: pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}")
         self._redraw_scan_overlay()
 
@@ -407,18 +422,21 @@ class NavigationViewer(QFrame):
 
     def register_fovs_to_image(self, fov_centers: List[FovCenter]) -> None:
         for center in fov_centers:
-            self.register_fov_to_image(center.x_mm, center.y_mm)
+            self.register_fov_to_image(center)
 
-    def register_fov_to_image(self, x_mm: float, y_mm: float) -> None:
+    def register_fov_to_image(self, fov: FovCenter) -> None:
         """Add a pending FOV position (drawn in red)."""
-        self._pending_fovs.append((x_mm, y_mm))
-        self._log.info(f"Registered pending FOV: ({x_mm}, {y_mm}), total pending={len(self._pending_fovs)}")
+        self._pending_fovs.append(fov)
+        self._log.info(
+            f"Registered pending FOV: ({fov.x_mm}, {fov.y_mm}), "
+            f"size=({fov.fov_width_mm}, {fov.fov_height_mm}), total pending={len(self._pending_fovs)}"
+        )
         self._redraw_scan_overlay()
 
     def deregister_fovs_from_image(self, fov_centers: List[FovCenter]) -> None:
         # Only remove from pending - completed FOVs stay visible until explicitly cleared
         to_remove = {(c.x_mm, c.y_mm) for c in fov_centers}
-        self._pending_fovs = [(x, y) for (x, y) in self._pending_fovs if (x, y) not in to_remove]
+        self._pending_fovs = [f for f in self._pending_fovs if (f.x_mm, f.y_mm) not in to_remove]
         self._redraw_scan_overlay()
 
     def draw_fov_current_location(self, pos: Pos) -> None:
@@ -436,15 +454,21 @@ class NavigationViewer(QFrame):
         *,
         color: Tuple[int, int, int, int],
         thickness: int,
+        fov_width_mm: Optional[float] = None,
+        fov_height_mm: Optional[float] = None,
     ) -> None:
         if self.mm_per_pixel <= 0:
             return
+        # Use provided FOV dimensions or fall back to current objective dimensions
+        width_mm = fov_width_mm if fov_width_mm and fov_width_mm > 0 else self.fov_width_mm
+        height_mm = fov_height_mm if fov_height_mm and fov_height_mm > 0 else self.fov_height_mm
+
         # Convert mm to pixels: A1 position (a1_x_mm, a1_y_mm) maps to (a1_x_pixel, a1_y_pixel)
         x_px = int(round(self.origin_x_pixel + (x_mm - self.a1_x_mm) / self.mm_per_pixel))
         y_px = int(round(self.origin_y_pixel + (y_mm - self.a1_y_mm) / self.mm_per_pixel))
 
-        half_w = int(round((self.fov_width_mm / max(self.mm_per_pixel, 1e-6)) / 2))
-        half_h = int(round((self.fov_height_mm / max(self.mm_per_pixel, 1e-6)) / 2))
+        half_w = int(round((width_mm / max(self.mm_per_pixel, 1e-6)) / 2))
+        half_h = int(round((height_mm / max(self.mm_per_pixel, 1e-6)) / 2))
         top_left = (x_px - half_w, y_px - half_h)
         bottom_right = (x_px + half_w, y_px + half_h)
         cv2.rectangle(overlay, top_left, bottom_right, color, thickness=thickness)
@@ -455,22 +479,26 @@ class NavigationViewer(QFrame):
         self.scan_overlay[:] = 0
         thickness = self._get_zoom_adjusted_thickness()
         # Draw pending FOVs in red
-        for x_mm, y_mm in self._pending_fovs:
+        for fov in self._pending_fovs:
             self._draw_fov_box(
                 self.scan_overlay,
-                x_mm,
-                y_mm,
+                fov.x_mm,
+                fov.y_mm,
                 color=(255, 0, 0, 200),
                 thickness=thickness,
+                fov_width_mm=fov.fov_width_mm,
+                fov_height_mm=fov.fov_height_mm,
             )
         # Draw completed FOVs in blue
-        for x_mm, y_mm in self._completed_fovs:
+        for fov in self._completed_fovs:
             self._draw_fov_box(
                 self.scan_overlay,
-                x_mm,
-                y_mm,
+                fov.x_mm,
+                fov.y_mm,
                 color=(0, 0, 255, 200),
                 thickness=thickness,
+                fov_width_mm=fov.fov_width_mm,
+                fov_height_mm=fov.fov_height_mm,
             )
         self.scan_overlay_item.setImage(self.scan_overlay)
 

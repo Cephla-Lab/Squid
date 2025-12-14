@@ -225,6 +225,25 @@ class MultiPointWorker:
     def _camera_get_pixel_size_binned_um(self) -> Optional[float]:
         return self._camera_service.get_pixel_size_binned_um() if self._camera_service else None
 
+    def _get_current_fov_dimensions(self) -> Tuple[float, float]:
+        """Get current FOV dimensions from camera and objective."""
+        pixel_size_factor = self.objectiveStore.get_pixel_size_factor()
+        if pixel_size_factor is None:
+            pixel_size_factor = 1.0
+
+        camera = self._camera_service._camera if self._camera_service else None
+        if camera is None:
+            return 0.0, 0.0
+
+        fov_width_mm = pixel_size_factor * (camera.get_fov_size_mm() or 0.0)
+        fov_height_mm = (
+            pixel_size_factor * camera.get_fov_height_mm()
+            if hasattr(camera, "get_fov_height_mm") and camera.get_fov_height_mm() is not None
+            else fov_width_mm
+        )
+
+        return fov_width_mm, fov_height_mm
+
     def _camera_add_frame_callback(self, callback: Callable) -> str:
         return self._camera_service.add_frame_callback(callback)
 
@@ -661,7 +680,15 @@ class MultiPointWorker:
         if self._event_bus is not None:
             from squid.core.events import CurrentFOVRegistered
 
-            self._event_bus.publish(CurrentFOVRegistered(x_mm=x_mm, y_mm=y_mm))
+            fov_width_mm, fov_height_mm = self._get_current_fov_dimensions()
+            self._event_bus.publish(
+                CurrentFOVRegistered(
+                    x_mm=x_mm,
+                    y_mm=y_mm,
+                    fov_width_mm=fov_width_mm,
+                    fov_height_mm=fov_height_mm,
+                )
+            )
 
     def move_to_z_level(self, z_mm: float) -> None:
         print("moving z")

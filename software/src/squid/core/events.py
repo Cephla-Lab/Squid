@@ -1066,6 +1066,8 @@ class CurrentFOVRegistered(Event):
 
     x_mm: float
     y_mm: float
+    fov_width_mm: float = 0.0  # FOV width at time of acquisition
+    fov_height_mm: float = 0.0  # FOV height at time of acquisition
 
 
 @dataclass
