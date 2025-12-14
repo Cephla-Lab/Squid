@@ -1325,6 +1325,17 @@ class LaserAFSpotCentroidMeasured(Event):
     x_px: Optional[float] = None
     y_px: Optional[float] = None
     error: Optional[str] = None
+    image: Optional[Any] = None  # np.ndarray, included for display purposes
+
+
+@dataclass
+class LaserAFMoveCompleted(Event):
+    """State: Move to target displacement completed."""
+
+    success: bool
+    target_um: float
+    final_displacement_um: Optional[float] = None
+    error: Optional[str] = None
 
 
 # ============================================================================

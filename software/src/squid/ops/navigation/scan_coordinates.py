@@ -578,9 +578,9 @@ class ScanCoordinates:
         scan_coordinates = []
 
         if shape == "Rectangle":
-            # Use scan_size_mm as height, width is 0.6 * height
-            height_mm = scan_size_mm
-            width_mm = scan_size_mm * 0.6
+            # Use scan_size_mm as width, height is 0.6 * width (landscape orientation)
+            width_mm = scan_size_mm
+            height_mm = scan_size_mm * 0.6
 
             # Calculate number of tiles to cover the scan area
             # n tiles cover: (n-1) * step + fov >= scan_size

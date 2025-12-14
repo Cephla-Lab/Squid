@@ -39,7 +39,6 @@ from squid.core.events import (
     FocusPointOverlayVisibilityChanged,
     MoveStageToCommand,
     ObjectiveChanged,
-    ScanningPositionReached,
     StageMovementStopped,
     WellplateFormatChanged,
 )
@@ -85,8 +84,7 @@ class NavigationViewer(QFrame):
                 RemovedScanCoordinateRegion,
                 lambda update: self.deregister_fovs_from_image(update.fov_centers),
             )
-            self._subscribe(ClearedScanCoordinates, lambda _u: self.clear_overlay())
-            self._subscribe(ScanningPositionReached, lambda _e: self.clear_slide())
+            self._subscribe(ClearedScanCoordinates, lambda _u: self._clear_pending_fovs())
             self._subscribe(FocusPointOverlaySet, self._on_focus_point_overlay_set)
             self._subscribe(
                 FocusPointOverlayVisibilityChanged,
@@ -115,7 +113,8 @@ class NavigationViewer(QFrame):
         self.fov_size_mm: float = 0.0
         self.fov_width_mm: float = 0.0
         self.fov_height_mm: float = 0.0
-        self._registered_fovs: List[Tuple[float, float]] = []  # Store FOV positions for redrawing
+        self._pending_fovs: List[Tuple[float, float]] = []  # Pending FOV positions (red)
+        self._completed_fovs: List[Tuple[float, float]] = []  # Completed FOV positions (blue)
         self._base_line_thickness: int = 1  # Base thickness at 1:1 zoom
         self._current_thickness: int = 1  # Track current thickness to avoid unnecessary redraws
         self.image_height: int = 0
@@ -188,10 +187,10 @@ class NavigationViewer(QFrame):
         self.view.sigRangeChanged.connect(self._on_view_range_changed)
 
     def _publish_clear_scan_grid(self) -> None:
-        if self._event_bus is None:
-            self.clear_overlay()
-            return
-        self._event_bus.publish(ClearScanCoordinatesCommand())
+        # Always clear the overlay fully (including completed FOVs) when user clicks button
+        self.clear_overlay()
+        if self._event_bus is not None:
+            self._event_bus.publish(ClearScanCoordinatesCommand())
 
     def _position_button(self) -> None:
         margin = 10
@@ -227,6 +226,9 @@ class NavigationViewer(QFrame):
         self._click_to_move_enabled = event.enabled
 
     def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
+        # Clear all FOVs when wellplate format changes - old positions are no longer valid
+        self._pending_fovs.clear()
+        self._completed_fovs.clear()
         self.update_wellplate_settings(
             event.format_name,
             event.a1_x_mm,
@@ -242,7 +244,20 @@ class NavigationViewer(QFrame):
         self.update_display_properties(self.sample)
 
     def _on_current_fov_registered(self, event: CurrentFOVRegistered) -> None:
-        self.register_fov_to_image(event.x_mm, event.y_mm)
+        """Mark an FOV as completed (moves from red to blue)."""
+        pos = (event.x_mm, event.y_mm)
+        self._log.info(f"CurrentFOVRegistered received: {pos}, pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}")
+        # Remove from pending if present (use tolerance for floating point comparison)
+        tolerance = 1e-6
+        self._pending_fovs = [
+            (x, y) for (x, y) in self._pending_fovs
+            if abs(x - pos[0]) > tolerance or abs(y - pos[1]) > tolerance
+        ]
+        # Add to completed
+        if pos not in self._completed_fovs:
+            self._completed_fovs.append(pos)
+        self._log.info(f"After update: pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}")
+        self._redraw_scan_overlay()
 
     def clear_slide(self) -> None:
         if self.background_item is not None:
@@ -283,6 +298,7 @@ class NavigationViewer(QFrame):
         self._update_scale_and_origin()
         self._create_background_layer()
         self._create_overlays()
+        self._redraw_scan_overlay()
 
     def _update_scale_and_origin(self) -> None:
         pixel_size_factor = self.objectiveStore.get_pixel_size_factor() or 1.0
@@ -292,14 +308,13 @@ class NavigationViewer(QFrame):
         self.fov_height_mm = float(fov_height_mm or 0.0)
         self.fov_size_mm = max(self.fov_width_mm, self.fov_height_mm)
 
-        if self.well_size_mm <= 0 or self.well_spacing_mm <= 0:
+        if self.a1_x_pixel <= 0:
             self.mm_per_pixel = 0.0
             return
 
-        if IS_HCS:
-            self.mm_per_pixel = self.well_spacing_mm / max(1.0, float(self.a1_x_pixel))
-        else:
-            self.mm_per_pixel = self.well_size_mm / max(1.0, float(self.a1_x_pixel))
+        # mm_per_pixel is the scale factor: A1 at (a1_x_mm, a1_y_mm) maps to pixel (a1_x_pixel, a1_y_pixel)
+        # Using X dimension for scale (assumes square pixels and consistent scaling)
+        self.mm_per_pixel = self.a1_x_mm / max(1.0, float(self.a1_x_pixel))
 
         self.origin_x_pixel = float(self.a1_x_pixel)
         self.origin_y_pixel = float(self.a1_y_pixel)
@@ -347,12 +362,21 @@ class NavigationViewer(QFrame):
         self.number_of_skip = number_of_skip
         self.update_display_properties(format_name)
 
+    def _clear_pending_fovs(self) -> None:
+        """Clear only pending FOVs (keeps completed FOVs visible)."""
+        self._log.info(f"_clear_pending_fovs called, clearing {len(self._pending_fovs)} pending (keeping {len(self._completed_fovs)} completed)")
+        self._pending_fovs.clear()
+        self._redraw_scan_overlay()
+
     def clear_overlay(self) -> None:
+        """Clear all FOVs (both pending and completed). Used by Clear Scan Grid button."""
+        self._log.info(f"clear_overlay called, clearing {len(self._pending_fovs)} pending and {len(self._completed_fovs)} completed FOVs")
         if self.scan_overlay is not None:
             self.scan_overlay[:] = 0
         if self.scan_overlay_item is not None:
             self.scan_overlay_item.setImage(self.scan_overlay)
-        self._registered_fovs.clear()
+        self._pending_fovs.clear()
+        self._completed_fovs.clear()
 
     def clear_focus_points(self) -> None:
         if self.focus_point_overlay_item is not None:
@@ -364,8 +388,9 @@ class NavigationViewer(QFrame):
         overlay = self.focus_point_overlay_item.image
         if overlay is None:
             overlay = np.zeros_like(self.scan_overlay)
-        x_px = int(round(self.origin_x_pixel + x_mm / self.mm_per_pixel))
-        y_px = int(round(self.origin_y_pixel + y_mm / self.mm_per_pixel))
+        # Convert mm to pixels: A1 position (a1_x_mm, a1_y_mm) maps to (a1_x_pixel, a1_y_pixel)
+        x_px = int(round(self.origin_x_pixel + (x_mm - self.a1_x_mm) / self.mm_per_pixel))
+        y_px = int(round(self.origin_y_pixel + (y_mm - self.a1_y_mm) / self.mm_per_pixel))
         cv2.circle(overlay, (x_px, y_px), 6, (0, 255, 0, 200), thickness=-1)
         self.focus_point_overlay_item.setImage(overlay)
 
@@ -374,8 +399,9 @@ class NavigationViewer(QFrame):
             x_range, y_range = self.view.viewRange()
             view_width = abs(x_range[1] - x_range[0])
             zoom_factor = max(1.0, self.image_width / max(1.0, view_width))
-            thickness = max(1, int(self._base_line_thickness * zoom_factor * 0.5))
-            return min(thickness, 10)
+            # Scale thickness more gently - use sqrt for sublinear scaling
+            thickness = max(1, int(self._base_line_thickness * (zoom_factor ** 0.3)))
+            return min(thickness, 8)
         except Exception:
             return self._base_line_thickness
 
@@ -384,12 +410,15 @@ class NavigationViewer(QFrame):
             self.register_fov_to_image(center.x_mm, center.y_mm)
 
     def register_fov_to_image(self, x_mm: float, y_mm: float) -> None:
-        self._registered_fovs.append((x_mm, y_mm))
+        """Add a pending FOV position (drawn in red)."""
+        self._pending_fovs.append((x_mm, y_mm))
+        self._log.info(f"Registered pending FOV: ({x_mm}, {y_mm}), total pending={len(self._pending_fovs)}")
         self._redraw_scan_overlay()
 
     def deregister_fovs_from_image(self, fov_centers: List[FovCenter]) -> None:
+        # Only remove from pending - completed FOVs stay visible until explicitly cleared
         to_remove = {(c.x_mm, c.y_mm) for c in fov_centers}
-        self._registered_fovs = [(x, y) for (x, y) in self._registered_fovs if (x, y) not in to_remove]
+        self._pending_fovs = [(x, y) for (x, y) in self._pending_fovs if (x, y) not in to_remove]
         self._redraw_scan_overlay()
 
     def draw_fov_current_location(self, pos: Pos) -> None:
@@ -410,8 +439,9 @@ class NavigationViewer(QFrame):
     ) -> None:
         if self.mm_per_pixel <= 0:
             return
-        x_px = int(round(self.origin_x_pixel + x_mm / self.mm_per_pixel))
-        y_px = int(round(self.origin_y_pixel + y_mm / self.mm_per_pixel))
+        # Convert mm to pixels: A1 position (a1_x_mm, a1_y_mm) maps to (a1_x_pixel, a1_y_pixel)
+        x_px = int(round(self.origin_x_pixel + (x_mm - self.a1_x_mm) / self.mm_per_pixel))
+        y_px = int(round(self.origin_y_pixel + (y_mm - self.a1_y_mm) / self.mm_per_pixel))
 
         half_w = int(round((self.fov_width_mm / max(self.mm_per_pixel, 1e-6)) / 2))
         half_h = int(round((self.fov_height_mm / max(self.mm_per_pixel, 1e-6)) / 2))
@@ -424,7 +454,8 @@ class NavigationViewer(QFrame):
             return
         self.scan_overlay[:] = 0
         thickness = self._get_zoom_adjusted_thickness()
-        for x_mm, y_mm in self._registered_fovs:
+        # Draw pending FOVs in red
+        for x_mm, y_mm in self._pending_fovs:
             self._draw_fov_box(
                 self.scan_overlay,
                 x_mm,
@@ -432,10 +463,19 @@ class NavigationViewer(QFrame):
                 color=(255, 0, 0, 200),
                 thickness=thickness,
             )
+        # Draw completed FOVs in blue
+        for x_mm, y_mm in self._completed_fovs:
+            self._draw_fov_box(
+                self.scan_overlay,
+                x_mm,
+                y_mm,
+                color=(0, 0, 255, 200),
+                thickness=thickness,
+            )
         self.scan_overlay_item.setImage(self.scan_overlay)
 
     def _on_view_range_changed(self, *args: Any) -> None:
-        if self._registered_fovs:
+        if self._pending_fovs or self._completed_fovs:
             new_thickness = self._get_zoom_adjusted_thickness()
             if self._current_thickness != new_thickness:
                 self._current_thickness = new_thickness
@@ -446,8 +486,9 @@ class NavigationViewer(QFrame):
             return
         try:
             mouse_point = self.background_item.mapFromScene(evt.scenePos())  # type: ignore[union-attr]
-            x_mm = (mouse_point.x() - self.origin_x_pixel) * self.mm_per_pixel
-            y_mm = (mouse_point.y() - self.origin_y_pixel) * self.mm_per_pixel
+            # Convert pixels to mm: (a1_x_pixel, a1_y_pixel) maps to (a1_x_mm, a1_y_mm)
+            x_mm = (mouse_point.x() - self.origin_x_pixel) * self.mm_per_pixel + self.a1_x_mm
+            y_mm = (mouse_point.y() - self.origin_y_pixel) * self.mm_per_pixel + self.a1_y_mm
 
             if not self._click_to_move_enabled:
                 return

@@ -771,7 +771,7 @@ class HighContentScreeningGui(QMainWindow):
                     [
                         (
                             self.napariMosaicDisplayWidget.signal_clear_viewer,
-                            self.navigationViewer.clear_slide,
+                            self.navigationViewer.clear_overlay,
                         ),
                     ]
                 )

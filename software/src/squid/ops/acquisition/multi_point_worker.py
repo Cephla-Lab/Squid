@@ -650,12 +650,11 @@ class MultiPointWorker:
                 last_z_mm: float = self._last_time_point_z_pos[(region_id, fov)]
                 self.move_to_z_level(last_z_mm)
                 self._log.info(f"Moved to last z position {last_z_mm} [mm]")
-                return
             else:
                 self._log.warning(
                     f"No last z position found for region {region_id}, fov {fov}"
                 )
-        if len(coordinate_mm) == 3:
+        elif len(coordinate_mm) == 3:
             z_mm: float = coordinate_mm[2]
             self.move_to_z_level(z_mm)
 

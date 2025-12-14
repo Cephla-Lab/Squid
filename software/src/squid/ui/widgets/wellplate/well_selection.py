@@ -69,6 +69,7 @@ class WellSelectionWidget(QTableWidget):
     def initUI(self) -> None:
         # Disable editing, scrollbars, and other interactions
         self.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         v_scroll = self.verticalScrollBar()

@@ -1761,6 +1761,8 @@ class WellplateMultiPointWidget(QFrame):
     def update_coverage_from_scan_size(self):
         if self._wellplate_format != "glass slide":
             effective_well_size = self.get_effective_well_size()
+            if effective_well_size <= 0:
+                return
             scan_size = self.entry_scan_size.value()
             coverage = round((scan_size / effective_well_size) * 100, 2)
             self.entry_well_coverage.blockSignals(True)
@@ -1770,6 +1772,8 @@ class WellplateMultiPointWidget(QFrame):
 
     def update_scan_size_from_coverage(self):
         effective_well_size = self.get_effective_well_size()
+        if effective_well_size <= 0:
+            return
         coverage = self.entry_well_coverage.value()
         scan_size = round((coverage / 100) * effective_well_size, 3)
         self.entry_scan_size.setValue(scan_size)

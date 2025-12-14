@@ -29,6 +29,7 @@ from squid.core.events import (
     LaserAFFrameCaptured,
     LaserAFCrossCorrelationMeasured,
     LaserAFSpotCentroidMeasured,
+    LaserAFMoveCompleted,
     ObjectiveChanged,
     ProfileChanged,
 )
@@ -464,17 +465,22 @@ class LaserAutofocusController:
         ) * self.laser_af_properties.pixel_to_um
         return finish_with(displacement_um)
 
-    def move_to_target(self, target_um: float) -> bool:
+    def move_to_target(self, target_um: float, publish_result: bool = True) -> bool:
         """Move the stage to reach a target displacement from reference position.
 
         Args:
             target_um: Target displacement in micrometers
+            publish_result: Whether to publish LaserAFMoveCompleted event (default True)
 
         Returns:
             bool: True if move was successful, False if measurement failed or displacement was out of range
         """
         if not self.laser_af_properties.has_reference:
             self._log.warning("Cannot move to target - reference not set")
+            if publish_result and self._event_bus is not None:
+                self._event_bus.publish(LaserAFMoveCompleted(
+                    success=False, target_um=target_um, error="Reference not set"
+                ))
             return False
 
         current_displacement_um = self.measure_displacement()
@@ -486,12 +492,21 @@ class LaserAutofocusController:
             self._log.error(
                 "Cannot move to target: failed to measure current displacement"
             )
+            if publish_result and self._event_bus is not None:
+                self._event_bus.publish(LaserAFMoveCompleted(
+                    success=False, target_um=target_um, error="Failed to measure current displacement"
+                ))
             return False
 
         if abs(current_displacement_um) > self.laser_af_properties.laser_af_range:
             self._log.warning(
                 f"Measured displacement ({current_displacement_um:.1f} μm) is unreasonably large, using previous z position"
             )
+            if publish_result and self._event_bus is not None:
+                self._event_bus.publish(LaserAFMoveCompleted(
+                    success=False, target_um=target_um,
+                    error=f"Displacement {current_displacement_um:.1f} μm out of range"
+                ))
             return False
 
         um_to_move = target_um - current_displacement_um
@@ -507,9 +522,22 @@ class LaserAutofocusController:
                 self._log.warning("Cross correlation check failed - spots not well aligned")
                 # move back to the current position
                 self._move_z(-um_to_move)
+                if publish_result and self._event_bus is not None:
+                    self._event_bus.publish(LaserAFMoveCompleted(
+                        success=False, target_um=target_um, error="Cross-correlation check failed"
+                    ))
                 return False
             else:
                 self._log.info("Cross correlation check passed - spots are well aligned")
+
+        # Measure final displacement after move to confirm
+        final_displacement = self.measure_displacement()
+        self._log.info(f"Final displacement after move: {final_displacement:.1f} μm (target: {target_um:.1f} μm)")
+
+        if publish_result and self._event_bus is not None:
+            self._event_bus.publish(LaserAFMoveCompleted(
+                success=True, target_um=target_um, final_displacement_um=final_displacement
+            ))
 
         return True
 
@@ -905,7 +933,10 @@ class LaserAutofocusController:
         self.measure_displacement()
 
     def _on_capture_frame(self, cmd: CaptureLaserAFFrameCommand) -> None:
-        """Handle CaptureLaserAFFrameCommand from EventBus."""
+        """Handle CaptureLaserAFFrameCommand from EventBus.
+
+        This captures a single frame and runs spot detection with debug visualization.
+        """
         if self._event_bus is None:
             return
 
@@ -920,22 +951,58 @@ class LaserAutofocusController:
             return
 
         try:
-            result = self._get_laser_spot_centroid()
-            image = self.image
+            # Capture a single frame for spot detection
+            image = self.get_new_frame()
+            if image is None:
+                self._log.error("Failed to capture frame for spot detection")
+                self._event_bus.publish(LaserAFFrameCaptured(success=False))
+                self._event_bus.publish(
+                    LaserAFSpotCentroidMeasured(success=False, error="Failed to capture frame")
+                )
+                return
+
+            self.image = image  # Store for debugging
+
+            # Run spot detection WITH debug plot enabled
+            spot_detection_params = {
+                "y_window": self.laser_af_properties.y_window,
+                "x_window": self.laser_af_properties.x_window,
+                "min_peak_width": self.laser_af_properties.min_peak_width,
+                "min_peak_distance": self.laser_af_properties.min_peak_distance,
+                "min_peak_prominence": self.laser_af_properties.min_peak_prominence,
+                "spot_spacing": self.laser_af_properties.spot_spacing,
+            }
+
+            try:
+                result = utils.find_spot_location(
+                    image,
+                    mode=self.laser_af_properties.spot_detection_mode,
+                    params=spot_detection_params,
+                    filter_sigma=self.laser_af_properties.filter_sigma,
+                    debug_plot=True,  # Show the matplotlib debug plot
+                )
+            except Exception as e:
+                self._log.error(f"Spot detection failed: {e}")
+                result = None
+
+            # Stream the image to the display
             if image is not None:
                 self._stream_image(image)
+
             if result is None:
                 self._event_bus.publish(LaserAFFrameCaptured(success=False))
                 self._event_bus.publish(
                     LaserAFSpotCentroidMeasured(
-                        success=False, error="Spot detection failed"
+                        success=False, error="Spot detection failed", image=image
                     )
                 )
             else:
                 x, y = result
+                self._log.info(f"Spot detected at ({x:.1f}, {y:.1f})")
                 self._event_bus.publish(LaserAFFrameCaptured(success=True))
+                # Include the image in the event so the widget can display it with the crosshair
                 self._event_bus.publish(
-                    LaserAFSpotCentroidMeasured(success=True, x_px=x, y_px=y)
+                    LaserAFSpotCentroidMeasured(success=True, x_px=x, y_px=y, image=image)
                 )
         finally:
             try:

@@ -571,13 +571,13 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             if acquire_current_fov:
                 pos = self._stage_service.get_position()
                 # No callback - we don't want to clobber existing info with this one off fov acquisition
+                # Don't pass event_bus to avoid publishing ClearedScanCoordinates globally
                 acquisition_scan_coordinates = ScanCoordinates(
                     objectiveStore=self.scanCoordinates.objectiveStore,
                     stage=self.scanCoordinates.stage,
                     camera=self.scanCoordinates.camera,
-                    event_bus=self._event_bus,
+                    event_bus=None,
                 )
-                acquisition_scan_coordinates.clear_regions()
                 acquisition_scan_coordinates.add_single_fov_region(
                     "current", center_x=pos.x_mm, center_y=pos.y_mm, center_z=pos.z_mm
                 )

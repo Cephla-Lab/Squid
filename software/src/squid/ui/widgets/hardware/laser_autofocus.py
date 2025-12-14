@@ -40,6 +40,7 @@ from squid.core.events import (
     LaserAFSpotCentroidMeasured,
     LaserAFPropertiesChanged,
     LaserAFDisplacementMeasured,
+    LaserAFMoveCompleted,
     ProfileChanged,
     ObjectiveChanged,
 )
@@ -200,11 +201,15 @@ class LaserAutofocusSettingWidget(QWidget):
         if not event.success or event.x_px is None or event.y_px is None:
             self._show_spot_detection_error()
             return
-        if self._last_frame is None:
+        # Use the image from the event if provided, otherwise fall back to _last_frame
+        image = getattr(event, 'image', None)
+        if image is None:
+            image = self._last_frame
+        if image is None:
             self._show_spot_detection_error()
             return
         if self._image_display_window is not None:
-            self._image_display_window.mark_spot(self._last_frame, event.x_px, event.y_px)
+            self._image_display_window.mark_spot(image, event.x_px, event.y_px)
 
     def _on_cross_correlation_measured(self, event: LaserAFCrossCorrelationMeasured) -> None:
         self.show_cross_correlation_result(event.correlation)
@@ -685,6 +690,7 @@ class LaserAutofocusControlWidget(QFrame):
         self._event_bus.subscribe(LaserAFReferenceSet, self._on_reference_set)
         self._event_bus.subscribe(LaserAFInitialized, self._on_initialized)
         self._event_bus.subscribe(LaserAFDisplacementMeasured, self._on_displacement_measured)
+        self._event_bus.subscribe(LaserAFMoveCompleted, self._on_move_completed)
         self._event_bus.subscribe(ProfileChanged, self._on_profile_or_objective_changed)
         self._event_bus.subscribe(ObjectiveChanged, self._on_profile_or_objective_changed)
 
@@ -710,6 +716,22 @@ class LaserAutofocusControlWidget(QFrame):
         """Handle displacement measurement event - replaces Qt signal connection."""
         if event.success and event.displacement_um is not None:
             self.label_displacement.setNum(event.displacement_um)
+
+    def _on_move_completed(self, event: LaserAFMoveCompleted) -> None:
+        """Handle move to target completion event."""
+        if event.success:
+            # Update displacement label with final displacement
+            if event.final_displacement_um is not None:
+                self.label_displacement.setNum(event.final_displacement_um)
+        else:
+            # Show error to user
+            from qtpy.QtWidgets import QMessageBox
+            error_msg = event.error or "Unknown error"
+            QMessageBox.warning(
+                self,
+                "Move to Target Failed",
+                f"Failed to move to target {event.target_um:.2f} μm:\n{error_msg}"
+            )
 
     def _on_profile_or_objective_changed(self, event) -> None:
         """Handle profile or objective changes - refresh init state."""
