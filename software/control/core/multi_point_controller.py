@@ -67,6 +67,7 @@ class MultiPointController:
         self.multiPointWorker: Optional[MultiPointWorker] = None
         self.fluidics: Optional[Any] = microscope.addons.fluidics
         self.thread: Optional[Thread] = None
+        self._per_acq_log_handler = None
 
         self.NX = 1
         self.deltaX = control._def.Acquisition.DX
@@ -101,6 +102,34 @@ class MultiPointController:
         self.z_stacking_config = control._def.Z_STACKING_CONFIG
 
         self._start_position: Optional[squid.abc.Pos] = None
+
+    def _start_per_acquisition_log(self) -> None:
+        if not control._def.ENABLE_PER_ACQUISITION_LOG:
+            return
+        if self._per_acq_log_handler is not None:
+            return
+        if not self.base_path or not self.experiment_ID:
+            return
+
+        acq_dir = os.path.join(self.base_path, self.experiment_ID)
+        log_path = os.path.join(acq_dir, "acquisition.log")
+        try:
+            self._per_acq_log_handler = squid.logging.add_file_handler(
+                log_path, replace_existing=True, level=squid.logging.py_logging.DEBUG
+            )
+        except Exception:
+            self._log.exception("Failed to start per-acquisition logging")
+            self._per_acq_log_handler = None
+
+    def _stop_per_acquisition_log(self) -> None:
+        if self._per_acq_log_handler is None:
+            return
+        try:
+            squid.logging.remove_handler(self._per_acq_log_handler)
+        except Exception:
+            self._log.exception("Failed to stop per-acquisition logging")
+        finally:
+            self._per_acq_log_handler = None
 
     def acquisition_in_progress(self):
         if self.thread and self.thread.is_alive() and self.multiPointWorker:
@@ -331,164 +360,178 @@ class MultiPointController:
             # emit acquisition finished signal to re-enable the UI
             self.callbacks.signal_acquisition_finished()
             return
+        self._start_per_acquisition_log()
+        thread_started = False
+        try:
+            self._log.info("start multipoint")
+            self._start_position = self.stage.get_pos()
 
-        self._log.info("start multipoint")
-        self._start_position = self.stage.get_pos()
+            if self.z_range is None:
+                self.z_range = (self._start_position.z_mm, self._start_position.z_mm + self.deltaZ * (self.NZ - 1))
 
-        if self.z_range is None:
-            self.z_range = (self._start_position.z_mm, self._start_position.z_mm + self.deltaZ * (self.NZ - 1))
+            acquisition_scan_coordinates = self.scanCoordinates
+            self.run_acquisition_current_fov = False
+            if acquire_current_fov:
+                pos = self.stage.get_pos()
+                # No callback - we don't want to clobber existing info with this one off fov acquisition
+                acquisition_scan_coordinates = ScanCoordinates(
+                    objectiveStore=self.scanCoordinates.objectiveStore,
+                    stage=self.scanCoordinates.stage,
+                    camera=self.scanCoordinates.camera,
+                )
+                acquisition_scan_coordinates.clear_regions()
+                acquisition_scan_coordinates.add_single_fov_region(
+                    "current", center_x=pos.x_mm, center_y=pos.y_mm, center_z=pos.z_mm
+                )
+                self.run_acquisition_current_fov = True
 
-        acquisition_scan_coordinates = self.scanCoordinates
-        self.run_acquisition_current_fov = False
-        if acquire_current_fov:
-            pos = self.stage.get_pos()
-            # No callback - we don't want to clobber existing info with this one off fov acquisition
-            acquisition_scan_coordinates = ScanCoordinates(
-                objectiveStore=self.scanCoordinates.objectiveStore,
-                stage=self.scanCoordinates.stage,
-                camera=self.scanCoordinates.camera,
+            scan_position_information = ScanPositionInformation.from_scan_coordinates(acquisition_scan_coordinates)
+
+            # Save coordinates to CSV in top level folder
+            coordinates_df = pd.DataFrame(columns=["region", "x (mm)", "y (mm)", "z (mm)"])
+            for region_id, coords_list in scan_position_information.scan_region_fov_coords_mm.items():
+                for coord in coords_list:
+                    row = {"region": region_id, "x (mm)": coord[0], "y (mm)": coord[1]}
+                    # Add z coordinate if available
+                    if len(coord) > 2:
+                        row["z (mm)"] = coord[2]
+                    coordinates_df = pd.concat([coordinates_df, pd.DataFrame([row])], ignore_index=True)
+            coordinates_df.to_csv(os.path.join(self.base_path, self.experiment_ID, "coordinates.csv"), index=False)
+
+            self._log.info(
+                f"num fovs: {sum(len(coords) for coords in scan_position_information.scan_region_fov_coords_mm)}"
             )
-            acquisition_scan_coordinates.clear_regions()
-            acquisition_scan_coordinates.add_single_fov_region(
-                "current", center_x=pos.x_mm, center_y=pos.y_mm, center_z=pos.z_mm
+            self._log.info(f"num regions: {len(scan_position_information.scan_region_coords_mm)}")
+            self._log.info(f"region ids: {scan_position_information.scan_region_names}")
+            self._log.info(f"region centers: {scan_position_information.scan_region_coords_mm}")
+
+            self.abort_acqusition_requested = False
+
+            self.configuration_before_running_multipoint = self.liveController.currentConfiguration
+            # stop live
+            if self.liveController.is_live:
+                self.liveController_was_live_before_multipoint = True
+                self.liveController.stop_live()  # @@@ to do: also uncheck the live button
+            else:
+                self.liveController_was_live_before_multipoint = False
+
+            self.camera_callback_was_enabled_before_multipoint = self.camera.get_callbacks_enabled()
+            # We need callbacks, because we trigger and then use callbacks for image processing.  This
+            # lets us do overlapping triggering (soon).
+            self.camera.enable_callbacks(True)
+
+            # run the acquisition
+            self.timestamp_acquisition_started = time.time()
+            if self.focus_map:
+                self._log.info("Using focus surface for Z interpolation")
+                for region_id in scan_position_information.scan_region_names:
+                    region_fov_coords = scan_position_information.scan_region_fov_coords_mm[region_id]
+                    # Convert each tuple to list for modification
+                    for i, coords in enumerate(region_fov_coords):
+                        x, y = coords[:2]  # This handles both (x,y) and (x,y,z) formats
+                        z = self.focus_map.interpolate(x, y, region_id)
+                        # Modify the list directly
+                        region_fov_coords[i] = (x, y, z)
+                        self.scanCoordinates.update_fov_z_level(region_id, i, z)
+
+            elif self.gen_focus_map and not self.do_reflection_af:
+                self._log.info("Generating autofocus plane for multipoint grid")
+                bounds = self.scanCoordinates.get_scan_bounds()
+                if not bounds:
+                    return
+                x_min, x_max = bounds["x"]
+                y_min, y_max = bounds["y"]
+
+                # Calculate scan dimensions and center
+                x_span = abs(x_max - x_min)
+                y_span = abs(y_max - y_min)
+                x_center = (x_max + x_min) / 2
+                y_center = (y_max + y_min) / 2
+
+                # Determine grid size based on scan dimensions
+                if x_span < self.deltaX:
+                    fmap_Nx = 2
+                    fmap_dx = self.deltaX  # Force deltaX spacing for small scans
+                else:
+                    fmap_Nx = min(4, max(2, int(x_span / self.deltaX) + 1))
+                    fmap_dx = max(self.deltaX, x_span / (fmap_Nx - 1))
+
+                if y_span < self.deltaY:
+                    fmap_Ny = 2
+                    fmap_dy = self.deltaY  # Force deltaY spacing for small scans
+                else:
+                    fmap_Ny = min(4, max(2, int(y_span / self.deltaY) + 1))
+                    fmap_dy = max(self.deltaY, y_span / (fmap_Ny - 1))
+
+                # Calculate starting corner position (top-left of the AF map grid)
+                starting_x_mm = x_center - (fmap_Nx - 1) * fmap_dx / 2
+                starting_y_mm = y_center - (fmap_Ny - 1) * fmap_dy / 2
+                # TODO(sm): af map should be a grid mapped to a surface, instead of just corners mapped to a plane
+                try:
+                    # Store existing AF map if any
+                    self.focus_map_storage = []
+                    self.already_using_fmap = self.autofocusController.use_focus_map
+                    for x, y, z in self.autofocusController.focus_map_coords:
+                        self.focus_map_storage.append((x, y, z))
+
+                    # Define grid corners for AF map
+                    coord1 = (starting_x_mm, starting_y_mm)  # Starting corner
+                    coord2 = (
+                        starting_x_mm + (fmap_Nx - 1) * fmap_dx,
+                        starting_y_mm,
+                    )  # X-axis corner
+                    coord3 = (
+                        starting_x_mm,
+                        starting_y_mm + (fmap_Ny - 1) * fmap_dy,
+                    )  # Y-axis corner
+
+                    self._log.info(f"Generating AF Map: Nx={fmap_Nx}, Ny={fmap_Ny}")
+                    self._log.info(f"Spacing: dx={fmap_dx:.3f}mm, dy={fmap_dy:.3f}mm")
+                    self._log.info(f"Center:  x=({x_center:.3f}mm, y={y_center:.3f}mm)")
+
+                    # Generate and enable the AF map
+                    self.autofocusController.gen_focus_map(coord1, coord2, coord3)
+                    self.autofocusController.set_focus_map_use(True)
+
+                    # Return to center position
+                    self.stage.move_x_to(x_center)
+                    self.stage.move_y_to(y_center)
+
+                except ValueError:
+                    self._log.exception("Invalid coordinates for autofocus plane, aborting.")
+                    return
+
+            def finish_fn():
+                try:
+                    self._on_acquisition_completed()
+                    self.callbacks.signal_acquisition_finished()
+                finally:
+                    self._stop_per_acquisition_log()
+
+            updated_callbacks = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
+
+            acquisition_params = self.build_params(scan_position_information=scan_position_information)
+            self.callbacks.signal_acquisition_start(acquisition_params)
+            self.multiPointWorker = MultiPointWorker(
+                scope=self.microscope,
+                live_controller=self.liveController,
+                auto_focus_controller=self.autofocusController,
+                laser_auto_focus_controller=self.laserAutoFocusController,
+                objective_store=self.objectiveStore,
+                channel_configuration_mananger=self.channelConfigurationManager,
+                acquisition_parameters=acquisition_params,
+                callbacks=updated_callbacks,
+                abort_requested_fn=lambda: self.abort_acqusition_requested,
+                request_abort_fn=self.request_abort_aquisition,
+                extra_job_classes=[],
             )
-            self.run_acquisition_current_fov = True
 
-        scan_position_information = ScanPositionInformation.from_scan_coordinates(acquisition_scan_coordinates)
-
-        # Save coordinates to CSV in top level folder
-        coordinates_df = pd.DataFrame(columns=["region", "x (mm)", "y (mm)", "z (mm)"])
-        for region_id, coords_list in scan_position_information.scan_region_fov_coords_mm.items():
-            for coord in coords_list:
-                row = {"region": region_id, "x (mm)": coord[0], "y (mm)": coord[1]}
-                # Add z coordinate if available
-                if len(coord) > 2:
-                    row["z (mm)"] = coord[2]
-                coordinates_df = pd.concat([coordinates_df, pd.DataFrame([row])], ignore_index=True)
-        coordinates_df.to_csv(os.path.join(self.base_path, self.experiment_ID, "coordinates.csv"), index=False)
-
-        self._log.info(
-            f"num fovs: {sum(len(coords) for coords in scan_position_information.scan_region_fov_coords_mm)}"
-        )
-        self._log.info(f"num regions: {len(scan_position_information.scan_region_coords_mm)}")
-        self._log.info(f"region ids: {scan_position_information.scan_region_names}")
-        self._log.info(f"region centers: {scan_position_information.scan_region_coords_mm}")
-
-        self.abort_acqusition_requested = False
-
-        self.configuration_before_running_multipoint = self.liveController.currentConfiguration
-        # stop live
-        if self.liveController.is_live:
-            self.liveController_was_live_before_multipoint = True
-            self.liveController.stop_live()  # @@@ to do: also uncheck the live button
-        else:
-            self.liveController_was_live_before_multipoint = False
-
-        self.camera_callback_was_enabled_before_multipoint = self.camera.get_callbacks_enabled()
-        # We need callbacks, because we trigger and then use callbacks for image processing.  This
-        # lets us do overlapping triggering (soon).
-        self.camera.enable_callbacks(True)
-
-        # run the acquisition
-        self.timestamp_acquisition_started = time.time()
-
-        if self.focus_map:
-            self._log.info("Using focus surface for Z interpolation")
-            for region_id in scan_position_information.scan_region_names:
-                region_fov_coords = scan_position_information.scan_region_fov_coords_mm[region_id]
-                # Convert each tuple to list for modification
-                for i, coords in enumerate(region_fov_coords):
-                    x, y = coords[:2]  # This handles both (x,y) and (x,y,z) formats
-                    z = self.focus_map.interpolate(x, y, region_id)
-                    # Modify the list directly
-                    region_fov_coords[i] = (x, y, z)
-                    self.scanCoordinates.update_fov_z_level(region_id, i, z)
-
-        elif self.gen_focus_map and not self.do_reflection_af:
-            self._log.info("Generating autofocus plane for multipoint grid")
-            bounds = self.scanCoordinates.get_scan_bounds()
-            if not bounds:
-                return
-            x_min, x_max = bounds["x"]
-            y_min, y_max = bounds["y"]
-
-            # Calculate scan dimensions and center
-            x_span = abs(x_max - x_min)
-            y_span = abs(y_max - y_min)
-            x_center = (x_max + x_min) / 2
-            y_center = (y_max + y_min) / 2
-
-            # Determine grid size based on scan dimensions
-            if x_span < self.deltaX:
-                fmap_Nx = 2
-                fmap_dx = self.deltaX  # Force deltaX spacing for small scans
-            else:
-                fmap_Nx = min(4, max(2, int(x_span / self.deltaX) + 1))
-                fmap_dx = max(self.deltaX, x_span / (fmap_Nx - 1))
-
-            if y_span < self.deltaY:
-                fmap_Ny = 2
-                fmap_dy = self.deltaY  # Force deltaY spacing for small scans
-            else:
-                fmap_Ny = min(4, max(2, int(y_span / self.deltaY) + 1))
-                fmap_dy = max(self.deltaY, y_span / (fmap_Ny - 1))
-
-            # Calculate starting corner position (top-left of the AF map grid)
-            starting_x_mm = x_center - (fmap_Nx - 1) * fmap_dx / 2
-            starting_y_mm = y_center - (fmap_Ny - 1) * fmap_dy / 2
-            # TODO(sm): af map should be a grid mapped to a surface, instead of just corners mapped to a plane
-            try:
-                # Store existing AF map if any
-                self.focus_map_storage = []
-                self.already_using_fmap = self.autofocusController.use_focus_map
-                for x, y, z in self.autofocusController.focus_map_coords:
-                    self.focus_map_storage.append((x, y, z))
-
-                # Define grid corners for AF map
-                coord1 = (starting_x_mm, starting_y_mm)  # Starting corner
-                coord2 = (starting_x_mm + (fmap_Nx - 1) * fmap_dx, starting_y_mm)  # X-axis corner
-                coord3 = (starting_x_mm, starting_y_mm + (fmap_Ny - 1) * fmap_dy)  # Y-axis corner
-
-                self._log.info(f"Generating AF Map: Nx={fmap_Nx}, Ny={fmap_Ny}")
-                self._log.info(f"Spacing: dx={fmap_dx:.3f}mm, dy={fmap_dy:.3f}mm")
-                self._log.info(f"Center:  x=({x_center:.3f}mm, y={y_center:.3f}mm)")
-
-                # Generate and enable the AF map
-                self.autofocusController.gen_focus_map(coord1, coord2, coord3)
-                self.autofocusController.set_focus_map_use(True)
-
-                # Return to center position
-                self.stage.move_x_to(x_center)
-                self.stage.move_y_to(y_center)
-
-            except ValueError:
-                self._log.exception("Invalid coordinates for autofocus plane, aborting.")
-                return
-
-        def finish_fn():
-            self._on_acquisition_completed()
-            self.callbacks.signal_acquisition_finished()
-
-        updated_callbacks = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
-
-        acquisition_params = self.build_params(scan_position_information=scan_position_information)
-        self.callbacks.signal_acquisition_start(acquisition_params)
-        self.multiPointWorker = MultiPointWorker(
-            scope=self.microscope,
-            live_controller=self.liveController,
-            auto_focus_controller=self.autofocusController,
-            laser_auto_focus_controller=self.laserAutoFocusController,
-            objective_store=self.objectiveStore,
-            channel_configuration_mananger=self.channelConfigurationManager,
-            acquisition_parameters=acquisition_params,
-            callbacks=updated_callbacks,
-            abort_requested_fn=lambda: self.abort_acqusition_requested,
-            request_abort_fn=self.request_abort_aquisition,
-            extra_job_classes=[],
-        )
-
-        self.thread = Thread(target=self.multiPointWorker.run, name="Acquisition thread", daemon=True)
-        self.thread.start()
+            self.thread = Thread(target=self.multiPointWorker.run, name="Acquisition thread", daemon=True)
+            thread_started = True
+            self.thread.start()
+        finally:
+            if not thread_started:
+                self._stop_per_acquisition_log()
 
     def build_params(self, scan_position_information: ScanPositionInformation) -> AcquisitionParameters:
         return AcquisitionParameters(
