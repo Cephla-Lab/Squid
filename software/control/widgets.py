@@ -6238,6 +6238,30 @@ class MultiPointWithFluidicsWidget(QFrame):
                 QMessageBox.warning(self, "Warning", "Please enter valid round numbers (1-24)")
                 return
 
+            num_fovs = sum(len(coords) for coords in self.scanCoordinates.region_fov_coordinates.values())
+            if num_fovs <= 0:
+                self.btn_startAcquisition.setChecked(False)
+                QMessageBox.warning(self, "Warning", "Please load coordinates first")
+                return
+
+            msg = (
+                f"About to start acquisition with:\n\n"
+                f"- Regions: {len(self.scanCoordinates.region_fov_coordinates)}\n"
+                f"- FOVs: {num_fovs}\n"
+                f"- Rounds: {len(rounds)}\n"
+                f"Continue?"
+            )
+            reply = QMessageBox.question(
+                self,
+                "Confirm Acquisition",
+                msg,
+                QMessageBox.Ok | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            if reply != QMessageBox.Ok:
+                self.btn_startAcquisition.setChecked(False)
+                return
+
             self.setEnabled_all(False)
             self.is_current_acquisition_widget = True
             self.btn_startAcquisition.setText("Stop\n Acquisition ")
