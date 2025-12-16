@@ -10225,7 +10225,7 @@ class Well1536SelectionWidget(QWidget):
     signal_wellSelected = Signal(bool)
     signal_wellSelectedPos = Signal(float, float)
 
-    def __init__(self):
+    def __init__(self, wellplateFormatWidget):
         super().__init__()
         self.format = "1536 well plate"
         self.selected_cells = {}  # Dictionary to keep track of selected cells and their colors
@@ -10239,6 +10239,19 @@ class Well1536SelectionWidget(QWidget):
         self.a1_y_mm = 7.86  # measured stage position - to update
         self.a1_x_pixel = 144  # coordinate on the png - to update
         self.a1_y_pixel = 108  # coordinate on the png - to update
+
+        if self.wellplateFormatWidget is not None:
+            s = self.wellplateFormatWidget.getWellplateSettings(self.format)
+            self.rows = s["rows"]
+            self.columns = s["cols"]
+            self.spacing_mm = s["well_spacing_mm"]
+            self.number_of_skip = s["number_of_skip"]
+            self.a1_x_mm = s["a1_x_mm"]
+            self.a1_y_mm = s["a1_y_mm"]
+            self.a1_x_pixel = s["a1_x_pixel"]
+            self.a1_y_pixel = s["a1_y_pixel"]
+            self.well_size_mm = s["well_size_mm"]
+
         self.initUI()
 
     def initUI(self):

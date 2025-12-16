@@ -605,7 +605,7 @@ class HighContentScreeningGui(QMainWindow):
         if WELLPLATE_FORMAT != "1536 well plate":
             self.wellSelectionWidget = widgets.WellSelectionWidget(WELLPLATE_FORMAT, self.wellplateFormatWidget)
         else:
-            self.wellSelectionWidget = widgets.Well1536SelectionWidget()
+            self.wellSelectionWidget = widgets.Well1536SelectionWidget(self.wellplateFormatWidget)
         self.scanCoordinates.add_well_selector(self.wellSelectionWidget)
         self.focusMapWidget = widgets.FocusMapWidget(
             self.stage, self.navigationViewer, self.scanCoordinates, core.FocusMap()
