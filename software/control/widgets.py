@@ -10283,6 +10283,7 @@ class Well1536SelectionWidget(QWidget):
         self.selection_input = QLineEdit(self)
         self.selection_input.setPlaceholderText("e.g. A1:E48, X1, AC24, Z2:AF6, ...")
         self.selection_input.editingFinished.connect(self.select_cells)
+        self.selection_input.returnPressed.connect(self.select_cells)
 
         # Create navigation buttons
         up_button = QPushButton("↑", self)
