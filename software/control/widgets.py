@@ -6245,10 +6245,10 @@ class MultiPointWithFluidicsWidget(QFrame):
                 return
 
             msg = (
-                f"About to start acquisition with:\n\n"
+                f"About to start acquisition with:\n"
                 f"- Regions: {len(self.scanCoordinates.region_fov_coordinates)}\n"
                 f"- FOVs: {num_fovs}\n"
-                f"- Rounds: {len(rounds)}\n"
+                f"- Rounds: {len(rounds)}\n\n"
                 f"Continue?"
             )
             reply = QMessageBox.question(
@@ -10251,9 +10251,12 @@ class Well1536SelectionWidget(QWidget):
 
     def __init__(self):
         super().__init__()
+        self.wellplateFormatWidget = wellplateFormatWidget
         self.format = "1536 well plate"
         self.selected_cells = {}  # Dictionary to keep track of selected cells and their colors
         self.current_cell = None  # To track the current (green) cell
+
+        # defaults
         self.rows = 32
         self.columns = 48
         self.spacing_mm = 2.25
