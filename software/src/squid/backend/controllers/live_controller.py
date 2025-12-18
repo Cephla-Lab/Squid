@@ -113,6 +113,7 @@ class LiveController(StateMachine[LiveControllerState]):
         self.timer_trigger_interval: float = (1.0 / self.fps_trigger) * 1000
         self._trigger_skip_count: int = 0
         self.timer_trigger: Optional[threading.Timer] = None
+        self._illumination_off_pending: bool = False
 
         self.trigger_ID: int = -1
 
@@ -322,11 +323,11 @@ class LiveController(StateMachine[LiveControllerState]):
                 self.is_live = True
 
                 self._camera_service.start_streaming()
+                self._camera_service.enable_callbacks(True)
                 if self.trigger_mode == TriggerMode.SOFTWARE or (
                     self.trigger_mode == TriggerMode.HARDWARE
                     and self.use_internal_timer_for_hardware_trigger
                 ):
-                    self._camera_service.enable_callbacks(True)
                     self._start_triggerred_acquisition()
 
                 if self.for_displacement_measurement:
@@ -386,6 +387,7 @@ class LiveController(StateMachine[LiveControllerState]):
                 self._camera_service.stop_streaming()
                 if self.control_illumination:
                     self.turn_off_illumination()
+                self._illumination_off_pending = False
                 if self.for_displacement_measurement:
                     if self._peripheral_service:
                         try:
@@ -580,8 +582,24 @@ class LiveController(StateMachine[LiveControllerState]):
     # slot
     def on_new_frame(self) -> None:
         if self.fps_trigger <= 5:
-            if self.control_illumination and self.illumination_on:
+            self._request_illumination_off()
+
+    def _request_illumination_off(self) -> None:
+        if not self.control_illumination or not self.illumination_on:
+            return
+        with self._lock:
+            if self._illumination_off_pending:
+                return
+            self._illumination_off_pending = True
+
+        def _turn_off() -> None:
+            try:
                 self.turn_off_illumination()
+            finally:
+                with self._lock:
+                    self._illumination_off_pending = False
+
+        threading.Timer(0, _turn_off).start()
 
     def set_display_resolution_scaling(self, display_resolution_scaling: float) -> None:
         self.display_resolution_scaling = display_resolution_scaling / 100
@@ -657,6 +675,7 @@ class LiveController(StateMachine[LiveControllerState]):
                 self._camera_service.set_acquisition_mode(
                     CameraAcquisitionMode.HARDWARE_TRIGGER
                 )
+                self._camera_service.enable_callbacks(True)
                 if self.currentConfiguration is not None:
                     exposure = self.currentConfiguration.exposure_time
                     self._camera_service.set_exposure_time(exposure)

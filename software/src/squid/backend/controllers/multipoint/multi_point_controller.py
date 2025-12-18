@@ -585,6 +585,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 )
                 self.run_acquisition_current_fov = True
 
+            scan_coordinates_target = acquisition_scan_coordinates
             scan_position_information: ScanPositionInformation = (
                 ScanPositionInformation.from_scan_coordinates(acquisition_scan_coordinates)
             )
@@ -659,7 +660,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                         z = self.focus_map.interpolate(x, y, region_id)
                         # Modify the list directly
                         region_fov_coords[i] = (x, y, z)
-                        self.scanCoordinates.update_fov_z_level(region_id, i, z)
+                        scan_coordinates_target.update_fov_z_level(region_id, i, z)
 
             elif self.gen_focus_map and not self.do_reflection_af:
                 self._log.info("Generating autofocus plane for multipoint grid")
@@ -930,14 +931,18 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
     def validate_acquisition_settings(self) -> bool:
         """Validate settings before starting acquisition"""
-        if (
-            self.do_reflection_af
-            and not self.laserAutoFocusController.laser_af_properties.has_reference
-        ):
-            self._log.error(
-                "Laser Autofocus Not Ready - Please set the laser autofocus reference position before starting acquisition with laser AF enabled."
-            )
-            return False
+        if self.do_reflection_af:
+            if self.laserAutoFocusController is None:
+                self._log.error(
+                    "Laser Autofocus Not Ready - Laser AF controller not configured."
+                )
+                return False
+            laser_props = getattr(self.laserAutoFocusController, "laser_af_properties", None)
+            if laser_props is None or not getattr(laser_props, "has_reference", False):
+                self._log.error(
+                    "Laser Autofocus Not Ready - Please set the laser autofocus reference position before starting acquisition with laser AF enabled."
+                )
+                return False
         return True
 
     # =========================================================================

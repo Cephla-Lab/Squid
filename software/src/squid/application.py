@@ -162,7 +162,17 @@ class ApplicationContext:
                 self._log.exception("Failed to set stage limits")
 
             try:
-                stage_service.home(x=True, y=True, z=True, theta=False)
+                x_home = True
+                y_home = True
+                z_home = True
+                if _config is not None:
+                    x_home = bool(getattr(_config, "HOMING_ENABLED_X", True))
+                    y_home = bool(getattr(_config, "HOMING_ENABLED_Y", True))
+                    z_home = bool(getattr(_config, "HOMING_ENABLED_Z", True))
+                if x_home or y_home or z_home:
+                    stage_service.home(x=x_home, y=y_home, z=z_home, theta=False)
+                else:
+                    self._log.info("Skipping stage homing; disabled in config")
             except Exception:
                 self._log.exception("Failed to home stage")
 
@@ -426,6 +436,7 @@ class ApplicationContext:
             filter_wheel_service=filter_wheel_service,
             channel_configs=channel_configs,
             event_bus=event_bus,
+            objective_store=self._microscope.objective_store,
         )
 
     def _refresh_channel_configs(

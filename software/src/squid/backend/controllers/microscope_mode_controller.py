@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from squid.backend.services import CameraService
     from squid.backend.services.illumination_service import IlluminationService
     from squid.backend.services.filter_wheel_service import FilterWheelService
+    from squid.backend.managers.objective_store import ObjectiveStore
 
 
 @dataclass
@@ -49,12 +50,14 @@ class MicroscopeModeController:
         event_bus: "EventBus",
         filter_wheel_service: Optional["FilterWheelService"] = None,
         illumination_service: Optional["IlluminationService"] = None,
+        objective_store: Optional["ObjectiveStore"] = None,
     ) -> None:
         self._camera = camera_service
         self._illumination = illumination_service
         self._filter_wheel = filter_wheel_service
         self._channel_configs = channel_configs
         self._bus = event_bus
+        self._objective_store = objective_store
         self._lock = threading.RLock()
 
         self._state = MicroscopeModeState(
@@ -75,8 +78,18 @@ class MicroscopeModeController:
         """Get current state."""
         return self._state
 
+    def _objective_matches(self, objective: Optional[str]) -> bool:
+        if self._objective_store is None or objective is None:
+            return True
+        current = getattr(self._objective_store, "current_objective", None)
+        if current is None:
+            return True
+        return objective == current
+
     def _on_update_config(self, cmd: UpdateChannelConfigurationCommand) -> None:
         """Handle UpdateChannelConfigurationCommand - update internal config cache."""
+        if not self._objective_matches(cmd.objective_name):
+            return
         with self._lock:
             config_name = cmd.config_name
             if config_name not in self._channel_configs:
@@ -97,6 +110,8 @@ class MicroscopeModeController:
 
     def _on_set_mode(self, cmd: SetMicroscopeModeCommand) -> None:
         """Handle SetMicroscopeModeCommand."""
+        if not self._objective_matches(cmd.objective):
+            return
         mode = cmd.configuration_name
 
         with self._lock:
