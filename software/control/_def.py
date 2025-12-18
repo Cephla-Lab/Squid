@@ -563,6 +563,10 @@ ENABLE_RECORDING = False
 
 RESUME_LIVE_AFTER_ACQUISITION = True
 
+# When enabled, each multipoint acquisition will write a second log file scoped to that acquisition at:
+#   <base_path>/<experiment_ID>/acquisition.log
+ENABLE_PER_ACQUISITION_LOG = False
+
 CAMERA_SN = {"ch 1": "SN1", "ch 2": "SN2"}  # for multiple cameras, to be overwritten in the configuration file
 
 ENABLE_STROBE_OUTPUT = False
