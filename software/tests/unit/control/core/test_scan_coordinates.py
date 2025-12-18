@@ -1,11 +1,11 @@
-from squid.ops.navigation.scan_coordinates import (
+from squid.backend.managers.scan_coordinates import (
     ScanCoordinates,
     AddScanCoordinateRegion,
     RemovedScanCoordinateRegion,
     ClearedScanCoordinates,
 )
 from squid.core.events import EventBus, ScanCoordinatesUpdated
-from squid.mcs.microscope import Microscope
+from squid.backend.microscope import Microscope
 
 
 def test_scan_coordinates_basic_operation():

@@ -12,7 +12,7 @@ from squid.core.events import (
     TriggerFPSChanged,
     LiveStateChanged,
 )
-from squid.mcs.controllers.live_controller import (
+from squid.backend.controllers.live_controller import (
     LiveController,
     TriggerMode,
     LiveStateData,

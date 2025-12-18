@@ -51,7 +51,7 @@ except ImportError:
 
 import squid.core.logging
 from squid.core.abc import AbstractStage
-from squid.mcs.services import StageService
+from squid.backend.services import StageService
 from _def import (
     CACHE_DIR,
     WELLPLATE_FORMAT,

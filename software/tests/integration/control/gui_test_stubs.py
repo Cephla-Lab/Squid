@@ -1,15 +1,16 @@
 import pathlib
+from typing import TYPE_CHECKING
 
-import mcs.microscope
-import ops.navigation.objective_store
-import mcs.microcontroller
+import squid.backend.microscope as microscope_module
+import squid.backend.microcontroller as microcontroller_module
 
-from squid.ops.configuration import ChannelConfigurationManager
-from squid.ops.configuration import ConfigurationManager
-from squid.ops.navigation import NavigationViewer
-from squid.mcs.controllers.autofocus import LaserAFSettingManager
-from squid.ops.acquisition import MultiPointController
-from squid.mcs.microscope import Microscope
+from squid.backend.managers import ChannelConfigurationManager, ConfigurationManager, ObjectiveStore
+from squid.backend.microcontroller import Microcontroller
+from squid.ui.widgets.display.navigation_viewer import NavigationViewer
+from squid.backend.controllers.autofocus import LaserAFSettingManager
+from squid.backend.controllers.multipoint import MultiPointController
+from squid.backend.microscope import Microscope
+from squid.backend.drivers.lighting.led import IlluminationController, IntensityControlMode, ShutterControlMode
 from tests.tools import get_repo_root
 import tests.control.test_stubs as ts
 
@@ -29,17 +30,17 @@ def get_test_configuration_manager() -> ConfigurationManager:
 
 
 def get_test_illumination_controller(
-    microcontroller: control.microcontroller.Microcontroller,
-) -> control.lighting.IlluminationController:
-    return control.lighting.IlluminationController(
+    microcontroller: Microcontroller,
+) -> IlluminationController:
+    return IlluminationController(
         microcontroller=microcontroller,
-        intensity_control_mode=control.lighting.IntensityControlMode.Software,
-        shutter_control_mode=control.lighting.ShutterControlMode.Software,
+        intensity_control_mode=IntensityControlMode.Software,
+        shutter_control_mode=ShutterControlMode.Software,
     )
 
 
 def get_test_navigation_viewer(
-    objective_store: control.core.objective_store.ObjectiveStore,
+    objective_store: ObjectiveStore,
     camera_pixel_size: float,
 ):
     return NavigationViewer(objective_store, camera_pixel_size)

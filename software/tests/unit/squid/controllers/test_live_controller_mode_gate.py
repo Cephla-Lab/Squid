@@ -4,7 +4,7 @@ from unittest.mock import Mock
 def test_live_controller_sets_mode_gate_live_and_idle() -> None:
     from squid.core.events import EventBus, GlobalModeChanged
     from squid.core.mode_gate import GlobalMode, GlobalModeGate
-    from squid.mcs.controllers.live_controller import LiveController
+    from squid.backend.controllers.live_controller import LiveController
     from _def import TriggerMode
 
     bus = EventBus()

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Optional
 import squid.core.logging
 
 if TYPE_CHECKING:
-    from squid.mcs.drivers.fluidics.fluidics import Fluidics
+    from squid.backend.drivers.fluidics.fluidics import Fluidics
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QWidget,

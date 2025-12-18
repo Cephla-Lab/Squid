@@ -2,8 +2,8 @@
 import numpy as np
 from typing import TYPE_CHECKING, List, Optional
 
-from squid.ops.configuration import ContrastManager
-from squid.storage.stream_handler import StreamHandler
+from squid.backend.managers import ContrastManager
+from squid.backend.io.stream_handler import StreamHandler
 import squid.core.logging
 import pyqtgraph as pg
 import napari

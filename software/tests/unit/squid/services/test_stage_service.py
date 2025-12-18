@@ -31,7 +31,7 @@ class TestStageService:
 
     def test_move_x_calls_stage(self):
         """move_x should call stage.move_x."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -45,7 +45,7 @@ class TestStageService:
 
     def test_move_y_calls_stage(self):
         """move_y should call stage.move_y."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -59,7 +59,7 @@ class TestStageService:
 
     def test_move_z_calls_stage(self):
         """move_z should call stage.move_z."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -73,7 +73,7 @@ class TestStageService:
 
     def test_move_publishes_position(self):
         """move_x should publish StagePositionChanged."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus, StagePositionChanged
 
         mock_stage = Mock()
@@ -96,7 +96,7 @@ class TestStageService:
 
     def test_move_publishes_theta_when_available(self):
         """move_x should publish theta when present on Pos."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus, StagePositionChanged
 
         mock_stage = Mock()
@@ -116,7 +116,7 @@ class TestStageService:
 
     def test_handles_move_command(self):
         """Should respond to MoveStageCommand events."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus, MoveStageCommand
 
         mock_stage = Mock()
@@ -132,7 +132,7 @@ class TestStageService:
 
     def test_rejects_move_commands_during_acquiring_mode(self):
         """EventBus stage moves should be blocked during acquisition/aborting."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus, MoveStageCommand
         from squid.core.mode_gate import GlobalMode, GlobalModeGate
 
@@ -157,7 +157,7 @@ class TestStageService:
 
     def test_handles_home_command(self):
         """Should respond to HomeStageCommand events."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus, HomeStageCommand
 
         mock_stage = Mock()
@@ -173,7 +173,7 @@ class TestStageService:
 
     def test_handles_zero_command(self):
         """Should respond to ZeroStageCommand events."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus, ZeroStageCommand
 
         mock_stage = Mock()
@@ -189,7 +189,7 @@ class TestStageService:
 
     def test_handles_move_to_loading_position_command(self):
         """Should respond to MoveStageToLoadingPositionCommand events."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import (
             EventBus,
             MoveStageToLoadingPositionCommand,
@@ -223,7 +223,7 @@ class TestStageService:
 
     def test_handles_move_to_scanning_position_command(self):
         """Should respond to MoveStageToScanningPositionCommand events."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import (
             EventBus,
             MoveStageToScanningPositionCommand,
@@ -260,7 +260,7 @@ class TestStageService:
 
     def test_move_to_calls_stage(self):
         """move_to should call stage.move_x_to/move_y_to/move_z_to."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -276,7 +276,7 @@ class TestStageService:
 
     def test_home_calls_stage(self):
         """home should call stage.home with all 4 axis params."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -291,7 +291,7 @@ class TestStageService:
 
     def test_home_with_theta(self):
         """home should support theta axis."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -305,7 +305,7 @@ class TestStageService:
 
     def test_zero_calls_stage(self):
         """zero should call stage.zero with all 4 axis params."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -320,7 +320,7 @@ class TestStageService:
 
     def test_zero_with_theta(self):
         """zero should support theta axis."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -334,7 +334,7 @@ class TestStageService:
 
     def test_get_position(self):
         """get_position should return stage position."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -354,7 +354,7 @@ class TestStageService:
 
     def test_move_theta(self):
         """move_theta should call stage.move_theta."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -368,7 +368,7 @@ class TestStageService:
 
     def test_move_theta_to(self):
         """move_theta_to should call stage.move_theta_to."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -386,7 +386,7 @@ class TestStageService:
 
     def test_get_config(self):
         """get_config should return stage configuration."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -407,7 +407,7 @@ class TestStageService:
 
     def test_wait_for_idle(self):
         """wait_for_idle should call stage.wait_for_idle."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -421,7 +421,7 @@ class TestStageService:
 
     def test_set_limits(self):
         """set_limits should call stage.set_limits."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -449,7 +449,7 @@ class TestStageService:
 
     def test_get_x_mm_per_ustep(self):
         """get_x_mm_per_ustep should return mm per microstep."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -465,7 +465,7 @@ class TestStageService:
 
     def test_get_y_mm_per_ustep(self):
         """get_y_mm_per_ustep should return mm per microstep."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -481,7 +481,7 @@ class TestStageService:
 
     def test_get_z_mm_per_ustep(self):
         """get_z_mm_per_ustep should return mm per microstep."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
 
         mock_stage = Mock()
@@ -497,7 +497,7 @@ class TestStageService:
 
     def test_move_to_safety_position(self):
         """move_to_safety_position should move Z to safety point."""
-        from squid.mcs.services.stage_service import StageService
+        from squid.backend.services.stage_service import StageService
         from squid.core.events import EventBus
         import _def as _def
 

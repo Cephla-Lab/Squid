@@ -24,7 +24,7 @@ from squid.ui.widgets.base import CollapsibleGroupBox
 from squid.core.events import ProfileChanged
 
 if TYPE_CHECKING:
-    from squid.ops.configuration import ConfigurationManager
+    from squid.backend.managers import ConfigurationManager
     from squid.ui.ui_event_bus import UIEventBus
 
 

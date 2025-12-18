@@ -31,7 +31,7 @@ class TestLiveControllerEventBus:
 
     @pytest.fixture
     def live_controller(self, mock_camera_service, event_bus):
-        from squid.mcs.controllers.live_controller import LiveController
+        from squid.backend.controllers.live_controller import LiveController
 
         return LiveController(
             camera_service=mock_camera_service,
@@ -123,19 +123,19 @@ class TestNewControllerImports:
 
     def test_import_microscope_mode_controller(self):
         """MicroscopeModeController should be importable."""
-        from squid.mcs.controllers import MicroscopeModeController
+        from squid.backend.controllers import MicroscopeModeController
 
         assert MicroscopeModeController is not None
 
     def test_import_peripherals_controller(self):
         """PeripheralsController should be importable."""
-        from squid.mcs.controllers import PeripheralsController
+        from squid.backend.controllers import PeripheralsController
 
         assert PeripheralsController is not None
 
     def test_controllers_module_exports(self):
-        """Controllers should be available from squid.mcs.controllers."""
-        import squid.mcs.controllers as controllers
+        """Controllers should be available from squid.backend.controllers."""
+        import squid.backend.controllers as controllers
 
         assert hasattr(controllers, "MicroscopeModeController")
         assert hasattr(controllers, "PeripheralsController")

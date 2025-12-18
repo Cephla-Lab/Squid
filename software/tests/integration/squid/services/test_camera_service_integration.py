@@ -10,7 +10,7 @@ from squid.core.events import (
     ROIChanged,
     PixelFormatChanged,
 )
-from squid.mcs.services import CameraService
+from squid.backend.services import CameraService
 from squid.core.config import CameraPixelFormat
 
 

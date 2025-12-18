@@ -2,9 +2,9 @@
 from __future__ import annotations
 import os
 
-from squid.mcs.controllers.autofocus import AutoFocusController
-from squid.mcs.controllers.autofocus import LaserAutofocusController
-from squid.mcs.services import ServiceRegistry
+from squid.backend.controllers.autofocus import AutoFocusController
+from squid.backend.controllers.autofocus import LaserAutofocusController
+from squid.backend.services import ServiceRegistry
 
 os.environ["QT_API"] = "pyqt5"
 from typing import Any, Optional
@@ -18,23 +18,23 @@ from _def import *
 
 # app specific libraries
 from squid.ui.widgets.nl5 import NL5Widget
-from squid.ops.configuration import ChannelConfigurationManager
-from squid.ops.configuration import ConfigurationManager
-from squid.ops.configuration import ContrastManager
-from squid.mcs.controllers.autofocus import LaserAFSettingManager
-from squid.mcs.controllers.live_controller import LiveController
-from squid.ops.navigation import ObjectiveStore
-from squid.storage.stream_handler import StreamHandler
-from squid.mcs.microcontroller import Microcontroller
+from squid.backend.managers import ChannelConfigurationManager
+from squid.backend.managers import ConfigurationManager
+from squid.backend.managers import ContrastManager
+from squid.backend.controllers.autofocus import LaserAFSettingManager
+from squid.backend.controllers.live_controller import LiveController
+from squid.backend.managers import ObjectiveStore
+from squid.backend.io.stream_handler import StreamHandler
+from squid.backend.microcontroller import Microcontroller
 from squid.core.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
-import squid.mcs.microscope
+import squid.backend.microscope
 import squid.ui.widgets as widgets
 import pyqtgraph.dockarea as dock
 import squid.core.abc
-import squid.mcs.drivers.cameras.camera_utils
+import squid.backend.drivers.cameras.camera_utils
 import squid.core.config
 import squid.core.logging
-import squid.mcs.drivers.stages.stage_utils
+import squid.backend.drivers.stages.stage_utils
 from squid.core.events import (
     event_bus,
     MoveStageCommand,
@@ -54,10 +54,10 @@ from squid.core.events import (
 log = squid.core.logging.get_logger(__name__)
 
 if USE_PRIOR_STAGE:
-    import squid.mcs.drivers.stages.prior
+    import squid.backend.drivers.stages.prior
 else:
-    import squid.mcs.drivers.stages.cephla
-from squid.mcs.drivers.peripherals.piezo import PiezoStage
+    import squid.backend.drivers.stages.cephla
+from squid.backend.drivers.peripherals.piezo import PiezoStage
 
 if USE_XERYON:
     pass
@@ -66,13 +66,13 @@ if USE_XERYON:
 from squid.ui.qt_stream_handler import QtStreamHandler
 from squid.ui.image_saver import ImageSaver
 from squid.ui.widgets.display.image_display import ImageDisplay, ImageDisplayWindow, ImageArrayDisplayWindow
-from squid.ops.navigation.focus_map import FocusMap
+from squid.backend.managers.focus_map import FocusMap
 from squid.ui.widgets.display.navigation_viewer import NavigationViewer
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from squid.mcs.controllers.tracking_controller import TrackingControllerCore
-import squid.mcs.drivers.lighting as serial_peripherals
+    from squid.backend.controllers.tracking_controller import TrackingControllerCore
+import squid.backend.drivers.lighting as serial_peripherals
 
 if SUPPORT_LASER_AUTOFOCUS:
     import squid.ui.displacement_measurement as core_displacement_measurement
@@ -83,7 +83,7 @@ if USE_JUPYTER_CONSOLE:
     from squid.ui.console import JupyterWidget
 
 if RUN_FLUIDICS:
-    from squid.mcs.drivers.fluidics.fluidics import Fluidics
+    from squid.backend.drivers.fluidics.fluidics import Fluidics
 
 # Import the custom widget
 from squid.ui.widgets.custom_multipoint import TemplateMultiPointWidget
@@ -104,7 +104,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def __init__(
         self,
-        microscope: squid.mcs.microscope.Microscope,
+        microscope: squid.backend.microscope.Microscope,
         controllers: Optional["Controllers"] = None,
         services: ServiceRegistry = None,  # ServiceRegistry from ApplicationContext
         is_simulation: bool = False,
@@ -140,7 +140,7 @@ class HighContentScreeningGui(QMainWindow):
             self._qt_dispatcher = None  # Owned by ApplicationContext
             self.log.info("Using UIEventBus from ServiceRegistry")
 
-        self.microscope: squid.mcs.microscope.Microscope = microscope
+        self.microscope: squid.backend.microscope.Microscope = microscope
         self.stage: AbstractStage = microscope.stage
         self.camera: AbstractCamera = microscope.camera
         self.microcontroller: Microcontroller = (

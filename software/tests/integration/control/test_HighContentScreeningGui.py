@@ -12,7 +12,7 @@ if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
 import ui.main_window
 from PyQt5.QtWidgets import QMessageBox
 
-import mcs.microscope
+import squid.backend.microscope as microscope
 from squid.application import ApplicationContext
 
 

@@ -11,8 +11,8 @@ import _def as _def
 # Avoid spawning JobRunner processes in tests
 _def.Acquisition.USE_MULTIPROCESSING = False
 
-from squid.ops.acquisition.multi_point_worker import MultiPointWorker
-from squid.ops.acquisition.multi_point_utils import (
+from squid.backend.controllers.multipoint.multi_point_worker import MultiPointWorker
+from squid.backend.controllers.multipoint.multi_point_utils import (
     AcquisitionParameters,
     ScanPositionInformation,
 )

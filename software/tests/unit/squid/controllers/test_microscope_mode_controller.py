@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from squid.core.events import EventBus, SetMicroscopeModeCommand, MicroscopeModeChanged
-from squid.mcs.controllers.microscope_mode_controller import MicroscopeModeController
+from squid.backend.controllers.microscope_mode_controller import MicroscopeModeController
 
 
 class MockConfig:

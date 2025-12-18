@@ -239,7 +239,7 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
 
 def create_wellplate_widgets(gui: "HighContentScreeningGui") -> None:
     """Create wellplate-related widgets (format, selection, focus map)."""
-    from squid.ops.navigation.focus_map import FocusMap
+    from squid.backend.managers.focus_map import FocusMap
     from _def import WELLPLATE_FORMAT_SETTINGS, WELLPLATE_FORMAT
 
     # Get pixel size info from objectiveStore for calibration

@@ -2,7 +2,7 @@ from typing import Optional, Sequence
 
 import squid.core.config
 from squid.core.abc import AbstractCamera, CameraFrame
-from squid.mcs.drivers.cameras.camera_utils import SimulatedCamera, get_camera
+from squid.backend.drivers.cameras.camera_utils import SimulatedCamera, get_camera
 from squid.core.config import CameraConfig
 
 

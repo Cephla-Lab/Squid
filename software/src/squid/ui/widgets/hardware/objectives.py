@@ -19,8 +19,8 @@ from _def import (
 from squid.core.events import ObjectiveChanged
 
 if TYPE_CHECKING:
-    from squid.ops.navigation import ObjectiveStore
-    from squid.mcs.drivers.peripherals.objective_changer import ObjectiveChanger2PosController
+    from squid.backend.managers import ObjectiveStore
+    from squid.backend.drivers.peripherals.objective_changer import ObjectiveChanger2PosController
     from squid.ui.ui_event_bus import UIEventBus
 
 

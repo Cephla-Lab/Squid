@@ -22,8 +22,8 @@ from _def import (
     WELL_SPACING_MM,
     PROJECT_ROOT,
 )
-from squid.ops.navigation.objective_store import ObjectiveStore
-from squid.ops.navigation.scan_coordinates import (
+from squid.backend.managers.objective_store import ObjectiveStore
+from squid.backend.managers.scan_coordinates import (
     AddScanCoordinateRegion,
     ClearedScanCoordinates,
     FovCenter,

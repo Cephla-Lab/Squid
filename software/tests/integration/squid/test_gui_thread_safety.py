@@ -11,7 +11,7 @@ from squid.core.events import (
 )
 from squid.ui.qt_event_dispatcher import QtEventDispatcher
 from squid.ui.ui_event_bus import UIEventBus
-from squid.mcs.services.movement_service import MovementService
+from squid.backend.services.movement_service import MovementService
 from squid.core.events import AcquisitionProgress
 from squid.core.abc import Pos, StageStage
 

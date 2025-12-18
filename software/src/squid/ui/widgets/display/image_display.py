@@ -27,7 +27,7 @@ from qtpy.QtWidgets import (
 )
 
 from _def import ENABLE_TRACKING, SpotDetectionMode
-from squid.ops.configuration import ContrastManager
+from squid.backend.managers import ContrastManager
 import squid.core.utils.hardware_utils as utils
 import squid.core.logging
 from squid.core.events import AutoLevelCommand, LiveStateChanged, MicroscopeModeChanged

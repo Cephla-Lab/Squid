@@ -6,7 +6,7 @@ instead of using hardcoded values.
 """
 
 from squid.core.config import CameraConfig, CameraVariant
-from squid.mcs.drivers.cameras.camera_utils import get_camera
+from squid.backend.drivers.cameras.camera_utils import get_camera
 
 
 def test_simulated_camera_with_crop_dimensions():

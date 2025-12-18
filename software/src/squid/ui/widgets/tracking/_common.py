@@ -33,8 +33,8 @@ from _def import (
     DEFAULT_TRACKER,
     PLATE_READER,
 )
-from squid.ops.navigation import ObjectiveStore
-from squid.ops.configuration import ChannelConfigurationManager
+from squid.backend.managers import ObjectiveStore
+from squid.backend.managers import ChannelConfigurationManager
 
 if TYPE_CHECKING:
     pass

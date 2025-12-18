@@ -50,7 +50,7 @@ from squid.core.events import (
 )
 
 if TYPE_CHECKING:
-    from squid.mcs.services import StageService
+    from squid.backend.services import StageService
 from qtpy.QtCore import Qt, QTimer, QEventLoop
 from qtpy.QtWidgets import (
     QFrame,

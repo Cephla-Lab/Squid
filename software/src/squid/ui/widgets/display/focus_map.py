@@ -37,7 +37,7 @@ from squid.core.events import (
 )
 
 if TYPE_CHECKING:
-    from squid.ops.navigation import FocusMap
+    from squid.backend.managers import FocusMap
     from squid.ui.ui_event_bus import UIEventBus
 
 

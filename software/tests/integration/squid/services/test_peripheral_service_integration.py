@@ -12,7 +12,7 @@ from squid.core.events import (
     StopCameraTriggerCommand,
     SetCameraTriggerFrequencyCommand,
 )
-from squid.mcs.services import PeripheralService
+from squid.backend.services import PeripheralService
 
 
 @pytest.mark.integration

@@ -1,25 +1,26 @@
 import threading
 
 import _def
-import mcs.microscope
-from squid.ops.acquisition import MultiPointController
+import squid.backend.microscope as microscope
+from squid.backend.controllers.multipoint import MultiPointController
 from squid.core.events import (
     event_bus,
     AcquisitionStarted,
-    AcquisitionFinished,
     AcquisitionProgress,
-    AcquisitionRegionProgress,
+    AcquisitionWorkerProgress,
     AcquisitionWorkerFinished,
+    CurrentFOVRegistered,
+    AcquisitionCoordinates,
 )
 
 import tests.control.test_stubs as ts
 
 
 def test_multi_point_controller_image_count_calculation():
-    scope = control.microscope.Microscope.build_from_global_config(True)
+    scope = microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
 
-    control._def.MERGE_CHANNELS = False
+    _def.MERGE_CHANNELS = False
     all_configuration_names = [
         config.name
         for config in mpc.channelConfigurationManager.get_configurations(
@@ -69,17 +70,17 @@ def test_multi_point_controller_image_count_calculation():
     assert mpc.get_acquisition_image_count() == final_number_of_fov * all_config_count
 
     # When we merge, there's an extra image per fov (where we merge all the configs for that fov).
-    control._def.MERGE_CHANNELS = True
+    _def.MERGE_CHANNELS = True
     assert mpc.get_acquisition_image_count() == final_number_of_fov * (
         all_config_count + 1
     )
 
 
 def test_multi_point_controller_disk_space_estimate():
-    scope = control.microscope.Microscope.build_from_global_config(True)
+    scope = microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
 
-    control._def.MERGE_CHANNELS = False
+    _def.MERGE_CHANNELS = False
     all_configuration_names = [
         config.name
         for config in mpc.channelConfigurationManager.get_configurations(
@@ -127,24 +128,30 @@ def test_multi_point_controller_disk_space_estimate():
 
     # When we merge, there's an extra image per fov (where we merge all the configs for that fov).
     before_size = mpc.get_estimated_acquisition_disk_storage()
-    control._def.MERGE_CHANNELS = True
+    _def.MERGE_CHANNELS = True
     after_size = mpc.get_estimated_acquisition_disk_storage()
     assert after_size > before_size
 
 
-class TestAcquisitionTracker:
+class AcquisitionTracker:
+    """Track acquisition events for testing."""
+
     def __init__(self):
         self.started_event = threading.Event()
         self.finished_event = threading.Event()
         self.overall_progress_seen = False
         self.region_progress_seen = False
+        self.image_count = 0
+        self.current_fovs_count = 0
+        self.config_change_count = 0
         # Subscribe to event bus
         event_bus.start()
         event_bus.subscribe(AcquisitionStarted, self._on_started)
-        event_bus.subscribe(AcquisitionFinished, self._on_finished)
         event_bus.subscribe(AcquisitionWorkerFinished, self._on_finished)
         event_bus.subscribe(AcquisitionProgress, self._on_progress)
-        event_bus.subscribe(AcquisitionRegionProgress, self._on_region_progress)
+        event_bus.subscribe(AcquisitionWorkerProgress, self._on_worker_progress)
+        event_bus.subscribe(CurrentFOVRegistered, self._on_fov_registered)
+        event_bus.subscribe(AcquisitionCoordinates, self._on_coordinates)
 
     def _on_started(self, _evt):
         self.started_event.set()
@@ -155,8 +162,16 @@ class TestAcquisitionTracker:
     def _on_progress(self, _evt):
         self.overall_progress_seen = True
 
-    def _on_region_progress(self, _evt):
+    def _on_worker_progress(self, _evt):
         self.region_progress_seen = True
+
+    def _on_fov_registered(self, _evt):
+        self.current_fovs_count += 1
+
+    def _on_coordinates(self, _evt):
+        self.image_count += 1
+        # Count config changes by tracking unique config indices
+        self.config_change_count = max(self.config_change_count, 1)
 
 
 def add_some_coordinates(mpc: MultiPointController):
@@ -190,9 +205,9 @@ def select_some_configs(mpc: MultiPointController, objective: str):
 
 
 def test_multi_point_controller_basic_acquisition():
-    control._def.MERGE_CHANNELS = False
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    tt = TestAcquisitionTracker()
+    _def.MERGE_CHANNELS = False
+    scope = microscope.Microscope.build_from_global_config(True)
+    tt = AcquisitionTracker()
     mpc = ts.get_test_multi_point_controller(microscope=scope)
 
     add_some_coordinates(mpc)
@@ -213,10 +228,10 @@ def test_multi_point_controller_basic_acquisition():
 
 
 def test_multi_point_with_laser_af():
-    control._def.MERGE_CHANNELS = False
-    control._def.SUPPORT_LASER_AUTOFOCUS = True
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    tt = TestAcquisitionTracker()
+    _def.MERGE_CHANNELS = False
+    _def.SUPPORT_LASER_AUTOFOCUS = True
+    scope = microscope.Microscope.build_from_global_config(True)
+    tt = AcquisitionTracker()
 
     mpc = ts.get_test_multi_point_controller(microscope=scope)
 
@@ -245,10 +260,10 @@ def test_multi_point_with_laser_af():
 
 
 def test_multi_point_with_contrast_af():
-    control._def.MERGE_CHANNELS = False
+    _def.MERGE_CHANNELS = False
 
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    tt = TestAcquisitionTracker()
+    scope = microscope.Microscope.build_from_global_config(True)
+    tt = AcquisitionTracker()
 
     mpc = ts.get_test_multi_point_controller(microscope=scope)
 

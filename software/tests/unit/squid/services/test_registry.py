@@ -7,7 +7,7 @@ class TestServiceRegistry:
 
     def test_register_and_get(self):
         """Should register and retrieve services by name."""
-        from squid.mcs.services import ServiceRegistry, BaseService
+        from squid.backend.services import ServiceRegistry, BaseService
         from squid.core.events import EventBus
 
         class MockService(BaseService):
@@ -23,7 +23,7 @@ class TestServiceRegistry:
 
     def test_get_unknown_returns_none(self):
         """get() should return None for unknown service."""
-        from squid.mcs.services import ServiceRegistry
+        from squid.backend.services import ServiceRegistry
         from squid.core.events import EventBus
 
         registry = ServiceRegistry(EventBus())
@@ -32,7 +32,7 @@ class TestServiceRegistry:
 
     def test_shutdown_calls_all_services(self):
         """shutdown() should call shutdown on all registered services."""
-        from squid.mcs.services import ServiceRegistry, BaseService
+        from squid.backend.services import ServiceRegistry, BaseService
         from squid.core.events import EventBus
 
         class MockService(BaseService):

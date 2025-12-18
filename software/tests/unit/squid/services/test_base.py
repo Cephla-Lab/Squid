@@ -7,7 +7,7 @@ class TestBaseService:
 
     def test_init_requires_event_bus(self):
         """BaseService requires an EventBus."""
-        from squid.mcs.services.base import BaseService
+        from squid.backend.services.base import BaseService
         from squid.core.events import EventBus
 
         bus = EventBus()
@@ -21,7 +21,7 @@ class TestBaseService:
 
     def test_subscribe_registers_handler(self):
         """subscribe() should register handler with event bus."""
-        from squid.mcs.services.base import BaseService
+        from squid.backend.services.base import BaseService
         from squid.core.events import EventBus, Event
         from dataclasses import dataclass
 
@@ -50,7 +50,7 @@ class TestBaseService:
 
     def test_publish_sends_event(self):
         """publish() should send event through event bus."""
-        from squid.mcs.services.base import BaseService
+        from squid.backend.services.base import BaseService
         from squid.core.events import EventBus, Event
         from dataclasses import dataclass
 
@@ -75,7 +75,7 @@ class TestBaseService:
 
     def test_shutdown_unsubscribes(self):
         """shutdown() should unsubscribe from all events."""
-        from squid.mcs.services.base import BaseService
+        from squid.backend.services.base import BaseService
         from squid.core.events import EventBus, Event
         from dataclasses import dataclass
 

@@ -18,24 +18,24 @@ from typing import Optional, TYPE_CHECKING
 
 import squid.core.logging
 
-from squid.mcs.microscope import Microscope
-from squid.mcs.controllers.live_controller import LiveController
-from squid.storage.stream_handler import StreamHandler
-from squid.ops.acquisition import MultiPointController
-from squid.ops.configuration import ChannelConfigurationManager
-from squid.ops.navigation import ObjectiveStore
-from squid.ops.navigation.scan_coordinates import ScanCoordinates
-from squid.ops.navigation.navigation_state_service import NavigationViewerStateService
-from squid.mcs.services import ServiceRegistry
-from squid.mcs.controllers import MicroscopeModeController, PeripheralsController, ImageClickController
+from squid.backend.microscope import Microscope
+from squid.backend.controllers.live_controller import LiveController
+from squid.backend.io.stream_handler import StreamHandler
+from squid.backend.controllers.multipoint import MultiPointController
+from squid.backend.managers import ChannelConfigurationManager
+from squid.backend.managers import ObjectiveStore
+from squid.backend.managers.scan_coordinates import ScanCoordinates
+from squid.backend.managers.navigation_state_service import NavigationViewerStateService
+from squid.backend.services import ServiceRegistry
+from squid.backend.controllers import MicroscopeModeController, PeripheralsController, ImageClickController
 from squid.core.events import event_bus
 from squid.core.mode_gate import GlobalModeGate
-from squid.mcs.controllers.autofocus import AutoFocusController, LaserAutofocusController
+from squid.backend.controllers.autofocus import AutoFocusController, LaserAutofocusController
 
 if TYPE_CHECKING:
     from squid.ui.qt_event_dispatcher import QtEventDispatcher
     from squid.ui.ui_event_bus import UIEventBus
-    from squid.mcs.controllers.tracking_controller import TrackingControllerCore
+    from squid.backend.controllers.tracking_controller import TrackingControllerCore
 
 
 @dataclass
@@ -175,7 +175,7 @@ class ApplicationContext:
                         getattr(_config, "HOMING_ENABLED_Z", False),
                     ]
                 ):
-                    import squid.mcs.drivers.stages.stage_utils as stage_utils
+                    import squid.backend.drivers.stages.stage_utils as stage_utils
 
                     cached_pos = stage_utils.get_cached_position()
                     safety_z = float(getattr(_config, "Z_HOME_SAFETY_POINT", 0)) / 1000.0
@@ -240,7 +240,7 @@ class ApplicationContext:
 
     def _build_microscope(self) -> None:
         """Build the microscope from configuration."""
-        from squid.mcs.microscope import Microscope
+        from squid.backend.microscope import Microscope
 
         self._log.info("Building microscope...")
         self._microscope = Microscope.build_from_global_config(
@@ -265,8 +265,8 @@ class ApplicationContext:
 
     def _create_controllers_externally(self) -> None:
         """Create controllers with explicit dependency injection."""
-        from squid.mcs.controllers.live_controller import LiveController
-        from squid.storage.stream_handler import (
+        from squid.backend.controllers.live_controller import LiveController
+        from squid.backend.io.stream_handler import (
             StreamHandler,
             StreamHandlerFunctions,
         )
@@ -387,7 +387,7 @@ class ApplicationContext:
         if not getattr(_config, "ENABLE_TRACKING", False):
             return None
 
-        from squid.mcs.controllers.tracking_controller import TrackingControllerCore
+        from squid.backend.controllers.tracking_controller import TrackingControllerCore
 
         camera_service = self._services.get("camera")
         stage_service = self._services.get("stage")
@@ -614,7 +614,7 @@ class ApplicationContext:
 
     def _build_services(self) -> None:
         """Build service layer."""
-        from squid.mcs.services import (
+        from squid.backend.services import (
             ServiceRegistry,
             CameraService,
             StageService,
@@ -884,7 +884,7 @@ class ApplicationContext:
         stage_service = self._services.get("stage")
         if stage_service is not None:
             try:
-                import squid.mcs.drivers.stages.stage_utils as stage_utils
+                import squid.backend.drivers.stages.stage_utils as stage_utils
 
                 stage_utils.cache_position(
                     pos=stage_service.get_position(),

@@ -4,7 +4,7 @@ from squid.core.events import LiveStateChanged, SaveWellplateCalibrationCommand,
 import csv
 
 if TYPE_CHECKING:
-    from squid.storage.stream_handler import StreamHandler
+    from squid.backend.io.stream_handler import StreamHandler
 
 
 class WellplateFormatWidget(EventBusWidget):

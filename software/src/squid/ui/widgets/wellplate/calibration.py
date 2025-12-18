@@ -9,7 +9,7 @@ from squid.core.events import (
 )
 
 if TYPE_CHECKING:
-    from squid.storage.stream_handler import StreamHandler
+    from squid.backend.io.stream_handler import StreamHandler
     from squid.ui.widgets.wellplate.format import WellplateFormatWidget
     from squid.ui.widgets.tracking.joystick import Joystick
 

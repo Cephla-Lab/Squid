@@ -1,5 +1,5 @@
 from squid.ui.widgets.tracking._common import *
-from squid.mcs.services import PeripheralService
+from squid.backend.services import PeripheralService
 from typing import Callable, Tuple
 import numpy as np
 from qtpy.QtWidgets import QListWidget, QAbstractItemView

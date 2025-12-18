@@ -9,7 +9,7 @@ class TestPeripheralService:
 
     def test_set_dac_calls_hardware(self):
         """set_dac should call microcontroller.analog_write_onboard_DAC."""
-        from squid.mcs.services.peripheral_service import PeripheralService
+        from squid.backend.services.peripheral_service import PeripheralService
         from squid.core.events import EventBus
 
         mock_mcu = Mock()
@@ -23,7 +23,7 @@ class TestPeripheralService:
 
     def test_set_dac_clamps_percentage(self):
         """set_dac should clamp percentage to 0-100."""
-        from squid.mcs.services.peripheral_service import PeripheralService
+        from squid.backend.services.peripheral_service import PeripheralService
         from squid.core.events import EventBus
 
         mock_mcu = Mock()
@@ -40,7 +40,7 @@ class TestPeripheralService:
 
     def test_set_dac_publishes_event(self):
         """set_dac should publish DACValueChanged event."""
-        from squid.mcs.services.peripheral_service import PeripheralService
+        from squid.backend.services.peripheral_service import PeripheralService
         from squid.core.events import EventBus, DACValueChanged
 
         mock_mcu = Mock()
@@ -59,7 +59,7 @@ class TestPeripheralService:
 
     def test_handles_set_dac_command(self):
         """Should respond to SetDACCommand events."""
-        from squid.mcs.services.peripheral_service import PeripheralService
+        from squid.backend.services.peripheral_service import PeripheralService
         from squid.core.events import EventBus, SetDACCommand
 
         mock_mcu = Mock()
@@ -75,7 +75,7 @@ class TestPeripheralService:
 
     def test_handles_start_trigger_command(self):
         """Should respond to StartCameraTriggerCommand events."""
-        from squid.mcs.services.peripheral_service import PeripheralService
+        from squid.backend.services.peripheral_service import PeripheralService
         from squid.core.events import EventBus, StartCameraTriggerCommand
 
         mock_mcu = Mock()
@@ -89,7 +89,7 @@ class TestPeripheralService:
 
     def test_handles_stop_trigger_command(self):
         """Should respond to StopCameraTriggerCommand events."""
-        from squid.mcs.services.peripheral_service import PeripheralService
+        from squid.backend.services.peripheral_service import PeripheralService
         from squid.core.events import EventBus, StopCameraTriggerCommand
 
         mock_mcu = Mock()
@@ -103,7 +103,7 @@ class TestPeripheralService:
 
     def test_handles_set_trigger_frequency_command(self):
         """Should respond to SetCameraTriggerFrequencyCommand events."""
-        from squid.mcs.services.peripheral_service import PeripheralService
+        from squid.backend.services.peripheral_service import PeripheralService
         from squid.core.events import EventBus, SetCameraTriggerFrequencyCommand
 
         mock_mcu = Mock()
@@ -117,7 +117,7 @@ class TestPeripheralService:
 
     def test_handles_af_laser_commands(self):
         """Should respond to AF laser on/off commands and wait when requested."""
-        from squid.mcs.services.peripheral_service import PeripheralService
+        from squid.backend.services.peripheral_service import PeripheralService
         from squid.core.events import (
             EventBus,
             TurnOnAFLaserCommand,
@@ -138,7 +138,7 @@ class TestPeripheralService:
 
     def test_add_joystick_button_listener(self):
         """add_joystick_button_listener should delegate to microcontroller."""
-        from squid.mcs.services.peripheral_service import PeripheralService
+        from squid.backend.services.peripheral_service import PeripheralService
         from squid.core.events import EventBus
 
         mock_mcu = Mock()

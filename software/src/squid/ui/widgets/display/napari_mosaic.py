@@ -14,8 +14,8 @@ from qtpy.QtCore import QObject, QThread, QTimer, Signal, Slot
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QPushButton
 
 from _def import CHANNEL_COLORS_MAP, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM
-from squid.ops.configuration import ContrastManager
-from squid.ops.acquisition.job_processing import CaptureInfo
+from squid.backend.managers import ContrastManager
+from squid.backend.controllers.multipoint.job_processing import CaptureInfo
 from squid.core.events import (
     EventBus,
     ClickToMoveEnabledChanged,

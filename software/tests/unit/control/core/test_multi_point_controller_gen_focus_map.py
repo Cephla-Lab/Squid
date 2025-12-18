@@ -12,7 +12,7 @@ from squid.core.events import (
     AcquisitionWorkerFinished,
 )
 from squid.core.mode_gate import GlobalModeGate, GlobalMode
-from squid.ops.acquisition.multi_point_controller import MultiPointController
+from squid.backend.controllers.multipoint.multi_point_controller import MultiPointController
 
 
 @dataclass

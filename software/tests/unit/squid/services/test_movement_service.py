@@ -4,7 +4,7 @@ from squid.core.events import (
     StageMovementStopped,
     PiezoPositionChanged,
 )
-from squid.mcs.services.movement_service import MovementService
+from squid.backend.services.movement_service import MovementService
 from squid.core.abc import Pos, StageStage
 
 

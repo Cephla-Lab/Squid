@@ -2,7 +2,7 @@ import numpy as np
 
 
 def test_qt_stream_handler_capture_bridges_to_qt_signal(qtbot):
-    from squid.storage.stream_handler import StreamHandler, StreamHandlerFunctions
+    from squid.backend.io.stream_handler import StreamHandler, StreamHandlerFunctions
     from squid.ui.qt_stream_handler import QtStreamHandler
 
     backend_capture_calls: list[object] = []
@@ -33,7 +33,7 @@ def test_qt_stream_handler_capture_bridges_to_qt_signal(qtbot):
 
 
 def test_qt_stream_handler_merge_accept_new_frame_is_and(qtbot):
-    from squid.storage.stream_handler import StreamHandler, StreamHandlerFunctions
+    from squid.backend.io.stream_handler import StreamHandler, StreamHandlerFunctions
     from squid.ui.qt_stream_handler import QtStreamHandler
 
     backend_accept = {"value": True}

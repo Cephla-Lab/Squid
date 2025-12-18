@@ -9,7 +9,7 @@ from squid.core.events import (
     AutofocusWorkerFinished,
 )
 from squid.core.abc import Pos
-from squid.mcs.controllers.autofocus.auto_focus_controller import (
+from squid.backend.controllers.autofocus.auto_focus_controller import (
     AutoFocusController,
     AutofocusControllerState,
 )

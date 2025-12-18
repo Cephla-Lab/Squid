@@ -3,7 +3,7 @@ from squid.core.config import (
     FilterWheelControllerVariant,
     SquidFilterWheelConfig,
 )
-from squid.mcs.drivers.filter_wheels.utils import SimulatedFilterWheelController
+from squid.backend.drivers.filter_wheels.utils import SimulatedFilterWheelController
 
 
 def test_create_simulated_filter_wheel():

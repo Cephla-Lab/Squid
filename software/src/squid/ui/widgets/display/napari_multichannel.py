@@ -13,7 +13,7 @@ from qtpy.QtWidgets import QWidget, QVBoxLayout
 
 from _def import CHANNEL_COLORS_MAP, USE_NAPARI_FOR_LIVE_VIEW
 
-from squid.ops.configuration import ContrastManager
+from squid.backend.managers import ContrastManager
 from squid.core.events import (
     EventBus,
     BinningChanged,

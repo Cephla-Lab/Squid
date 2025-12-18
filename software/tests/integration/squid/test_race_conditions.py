@@ -19,7 +19,7 @@ def _wait_until(predicate, *, timeout_s: float = 3.0, interval_s: float = 0.01) 
 
 @pytest.fixture(autouse=True)
 def _fast_multipoint(monkeypatch):
-    import squid.ops.acquisition.multi_point_worker as mpw
+    import squid.backend.controllers.multipoint.multi_point_worker as mpw
 
     # Keep integration tests fast/deterministic by eliminating stabilization sleeps.
     monkeypatch.setattr(mpw.MultiPointWorker, "_sleep", lambda _self, _sec: None)
@@ -45,7 +45,7 @@ def _move_stage_into_cacheable_range(ctx) -> None:
 
 
 def _pick_channel_name(ctx) -> str:
-    from squid.ops.configuration.channel_configuration_manager import ChannelConfigurationManager
+    from squid.backend.managers.channel_configuration_manager import ChannelConfigurationManager
     import _def
 
     manager: ChannelConfigurationManager = ctx.controllers.channel_config_manager
@@ -192,7 +192,7 @@ def test_move_stage_command_blocked_during_acquisition(simulated_application_con
         StartAcquisitionCommand,
         AcquisitionStateChanged,
     )
-    import squid.ops.acquisition.multi_point_worker as mpw
+    import squid.backend.controllers.multipoint.multi_point_worker as mpw
 
     ctx = simulated_application_context
     _move_stage_into_cacheable_range(ctx)

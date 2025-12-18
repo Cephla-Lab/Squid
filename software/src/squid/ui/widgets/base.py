@@ -20,7 +20,7 @@ import pandas as pd
 import squid.core.utils.hardware_utils as utils
 
 if TYPE_CHECKING:
-    from squid.ops.acquisition import MultiPointController
+    from squid.backend.controllers.multipoint import MultiPointController
     from squid.core.events import EventBus, Event
     from squid.ui.ui_event_bus import UIEventBus
 

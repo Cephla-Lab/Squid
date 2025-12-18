@@ -6,9 +6,9 @@ import numpy as np
 from squid.core.abc import CameraFrame, CameraFrameFormat, Pos
 from squid.core.config import CameraPixelFormat
 from squid.core.events import AcquisitionCoordinates, EventBus
-from squid.ops.acquisition.job_processing import CaptureInfo
-from squid.ops.acquisition.multi_point_worker import MultiPointWorker
-from squid.ops.acquisition.multi_point_utils import AcquisitionParameters, ScanPositionInformation
+from squid.backend.controllers.multipoint.job_processing import CaptureInfo
+from squid.backend.controllers.multipoint.multi_point_worker import MultiPointWorker
+from squid.backend.controllers.multipoint.multi_point_utils import AcquisitionParameters, ScanPositionInformation
 
 
 def _make_params() -> AcquisitionParameters:

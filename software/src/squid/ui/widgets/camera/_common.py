@@ -67,10 +67,10 @@ from squid.core.events import (
     UpdateChannelConfigurationCommand,
     ProfileChanged,
 )
-from squid.storage.stream_handler import StreamHandler
+from squid.backend.io.stream_handler import StreamHandler
 from squid.ui.image_saver import ImageSaver
-from squid.ops.navigation import ObjectiveStore
-from squid.ops.configuration import ChannelConfigurationManager
+from squid.backend.managers import ObjectiveStore
+from squid.backend.managers import ChannelConfigurationManager
 from squid.core.utils.config_utils import ChannelMode
 from squid.ui.widgets.base import EventBusFrame
 

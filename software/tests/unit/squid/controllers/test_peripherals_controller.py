@@ -17,7 +17,7 @@ from squid.core.events import (
     PiezoPositionChanged,
     PixelSizeChanged,
 )
-from squid.mcs.controllers.peripherals_controller import PeripheralsController
+from squid.backend.controllers.peripherals_controller import PeripheralsController
 
 
 class MockObjectiveInfo:

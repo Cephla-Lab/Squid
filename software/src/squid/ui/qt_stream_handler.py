@@ -6,7 +6,7 @@ import numpy as np
 from qtpy.QtCore import QObject, Signal
 
 from squid.core.abc import CameraFrame
-from squid.storage.stream_handler import StreamHandler, StreamHandlerFunctions
+from squid.backend.io.stream_handler import StreamHandler, StreamHandlerFunctions
 
 
 class QtStreamHandler(QObject):

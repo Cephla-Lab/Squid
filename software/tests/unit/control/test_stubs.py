@@ -1,15 +1,15 @@
 from _def import OBJECTIVES, DEFAULT_OBJECTIVE
-from squid.mcs.controllers.autofocus import AutoFocusController
-from squid.mcs.controllers.live_controller import LiveController
-from squid.ops.acquisition.multi_point_controller import MultiPointController
-from squid.ops.navigation import ObjectiveStore
-from squid.ops.navigation import ScanCoordinates
-from squid.mcs.microcontroller import Microcontroller
-from squid.mcs.microscope import Microscope
+from squid.backend.controllers.autofocus import AutoFocusController
+from squid.backend.controllers.live_controller import LiveController
+from squid.backend.controllers.multipoint.multi_point_controller import MultiPointController
+from squid.backend.managers import ObjectiveStore
+from squid.backend.managers import ScanCoordinates
+from squid.backend.microcontroller import Microcontroller
+from squid.backend.microscope import Microscope
 import numpy as np
 from squid.core.abc import AbstractStage, AbstractCamera
 from squid.core.events import event_bus
-from squid.mcs.services import (
+from squid.backend.services import (
     ServiceRegistry,
     CameraService,
     StageService,
@@ -73,10 +73,8 @@ def get_test_live_controller(
 ) -> LiveController:
     services = services or _build_test_services(microscope)
     controller = LiveController(
-        microscope=microscope,
-        camera=microscope.camera,
-        event_bus=event_bus,
         camera_service=services.get("camera"),
+        event_bus=event_bus,
         illumination_service=services.get("illumination"),
         peripheral_service=services.get("peripheral"),
         filter_wheel_service=services.get("filter_wheel"),
@@ -93,20 +91,11 @@ def get_test_live_controller(
 
 
 def get_test_autofocus_controller(
-    camera,
-    stage: AbstractStage,
     live_controller: LiveController,
-    microcontroller: Microcontroller,
-    services: ServiceRegistry | None = None,
+    services: ServiceRegistry,
 ):
-    services = services or _build_test_services(live_controller.microscope)
     return AutoFocusController(
-        camera=camera,
-        stage=stage,
         liveController=live_controller,
-        microcontroller=microcontroller,
-        nl5=None,
-        stream_handler=None,
         camera_service=services.get("camera"),
         stage_service=services.get("stage"),
         peripheral_service=services.get("peripheral"),
@@ -144,14 +133,10 @@ def get_test_multi_point_controller(
     )
 
     multi_point_controller = MultiPointController(
-        microscope=microscope,
         live_controller=live_controller,
         autofocus_controller=get_test_autofocus_controller(
-            microscope.camera,
-            microscope.stage,
             live_controller,
-            microscope.low_level_drivers.microcontroller,
-            services=services,
+            services,
         ),
         channel_configuration_manager=microscope.channel_configuration_manager,
         scan_coordinates=get_test_scan_coordinates(

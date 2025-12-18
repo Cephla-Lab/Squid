@@ -14,7 +14,7 @@ from squid.core.events import (
     StageMoveToLoadingPositionFinished,
     StageMoveToScanningPositionFinished,
 )
-from squid.mcs.services import StageService
+from squid.backend.services import StageService
 
 
 @pytest.mark.integration

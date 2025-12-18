@@ -2,7 +2,7 @@ from squid.ui.widgets.camera._common import *
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from squid.storage.stream_handler import StreamHandler
+    from squid.backend.io.stream_handler import StreamHandler
     from squid.ui.image_saver import ImageSaver
 
 

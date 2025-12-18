@@ -58,13 +58,13 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
     # Imports that rely on the stubs and project path
     import _def as _def
     from _def import FileSavingOption
-    from squid.ops.acquisition.job_processing import (
+    from squid.backend.controllers.multipoint.job_processing import (
         SaveImageJob,
         CaptureInfo,
         JobImage,
     )
     from squid.core.utils.config_utils import ChannelMode
-    import squid.core.abc
+    from squid.core.abc import Pos
 
     original_option = _def.FILE_SAVING_OPTION
     _def.FILE_SAVING_OPTION = FileSavingOption.OME_TIFF
@@ -90,7 +90,7 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             experiment_dir = Path(tmp_dir) / "experiment"
             positions = [
-                squid.abc.Pos(
+                Pos(
                     x_mm=float(t), y_mm=float(c), z_mm=float(z), theta_rad=None
                 )
                 for t in range(total_timepoints)

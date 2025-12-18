@@ -2,13 +2,13 @@ import time
 
 import pytest
 import _def
-import mcs.microcontroller
-from squid.mcs.microcontroller import Microcontroller
+import squid.backend.microcontroller as microcontroller
+from squid.backend.microcontroller import Microcontroller
 
 
-def get_test_micro() -> control.microcontroller.Microcontroller:
-    return control.microcontroller.Microcontroller(
-        serial_device=control.microcontroller.get_microcontroller_serial_device(
+def get_test_micro() -> Microcontroller:
+    return Microcontroller(
+        serial_device=microcontroller.get_microcontroller_serial_device(
             simulated=True
         )
     )
@@ -192,8 +192,8 @@ def test_home_directions():
     test_micro = get_test_micro()
 
     dirs = (
-        control.microcontroller.HomingDirection.HOMING_DIRECTION_FORWARD,
-        control.microcontroller.HomingDirection.HOMING_DIRECTION_BACKWARD,
+        microcontroller.HomingDirection.HOMING_DIRECTION_FORWARD,
+        microcontroller.HomingDirection.HOMING_DIRECTION_BACKWARD,
     )
 
     home_methods = (

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from squid.core.events import EventBus, SetIlluminationCommand
-from squid.mcs.services.illumination_service import IlluminationService
+from squid.backend.services.illumination_service import IlluminationService
 
 
 class FakeLegacyIlluminationController:
