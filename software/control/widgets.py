@@ -4162,6 +4162,10 @@ class WellplateMultiPointWidget(QFrame):
         self.set_default_scan_size()
 
     def add_components(self):
+        # NDViewer: keep references so windows don't get garbage-collected.
+        self._ndviewer_windows = []
+        self._last_experiment_path = None
+
         self.entry_well_coverage = QDoubleSpinBox()
         self.entry_well_coverage.setKeyboardTracking(False)
         self.entry_well_coverage.setRange(1, 999.99)
@@ -4312,6 +4316,9 @@ class WellplateMultiPointWidget(QFrame):
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self.btn_openNDViewer = QPushButton("Open NDViewer")
+        self.btn_openNDViewer.setEnabled(False)  # grayed out until an acquisition is started
 
         self.progress_label = QLabel("Region -/-")
         self.progress_bar = QProgressBar()
@@ -4536,6 +4543,7 @@ class WellplateMultiPointWidget(QFrame):
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
+        button_layout.addWidget(self.btn_openNDViewer)
 
         bottom_right = QHBoxLayout()
         bottom_right.addLayout(options_layout)
@@ -4586,6 +4594,7 @@ class WellplateMultiPointWidget(QFrame):
         # Connections
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
+        self.btn_openNDViewer.clicked.connect(self.open_ndviewer)
         self.entry_deltaZ.valueChanged.connect(self.set_deltaZ)
         self.entry_NZ.valueChanged.connect(self.multipointController.set_NZ)
         self.entry_dt.valueChanged.connect(self.multipointController.set_deltat)
@@ -5727,6 +5736,16 @@ class WellplateMultiPointWidget(QFrame):
                 self._log.error("Failed to start acquisition.  Not enough disk space available.")
                 return
 
+            # Enable NDViewer after a successful acquisition start (folder + experiment ID exist).
+            try:
+                base_path = getattr(self.multipointController, "base_path", None)
+                experiment_id = getattr(self.multipointController, "experiment_ID", None)
+                if base_path and experiment_id:
+                    self._last_experiment_path = os.path.join(base_path, experiment_id)
+                    self.btn_openNDViewer.setEnabled(True)
+            except Exception:
+                self._log.exception("Failed to set NDViewer experiment path")
+
             self.setEnabled_all(False)
             self.is_current_acquisition_widget = True
             self.btn_startAcquisition.setText("Stop\n Acquisition ")
@@ -5767,6 +5786,7 @@ class WellplateMultiPointWidget(QFrame):
         for widget in self.findChildren(QWidget):
             if (
                 widget != self.btn_startAcquisition
+                and widget != self.btn_openNDViewer
                 and widget != self.progress_bar
                 and widget != self.progress_label
                 and widget != self.eta_label
@@ -5793,6 +5813,35 @@ class WellplateMultiPointWidget(QFrame):
             if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position":
                 # In Current Position mode, coverage should be disabled (N/A)
                 self.entry_well_coverage.setEnabled(False)
+
+        # Maintain NDViewer enablement independent of global enable/disable.
+        self.btn_openNDViewer.setEnabled(bool(self._last_experiment_path))
+
+    def open_ndviewer(self):
+        """Open the lightweight NDViewer (ndviewer_light.py) on the most recent acquisition folder."""
+        if not self._last_experiment_path:
+            QMessageBox.information(self, "NDViewer", "Start an acquisition first to open NDViewer.")
+            return
+
+        try:
+            dataset_path = self._last_experiment_path
+            if not os.path.isdir(dataset_path):
+                QMessageBox.warning(
+                    self,
+                    "NDViewer",
+                    f"Acquisition folder not found:\n{dataset_path}",
+                )
+                return
+
+            # Import lazily to avoid any startup cost unless the user clicks.
+            from control import ndviewer_light
+
+            window = ndviewer_light.LightweightMainWindow(dataset_path)
+            window.show()
+            self._ndviewer_windows.append(window)
+        except Exception as e:
+            self._log.exception("Failed to open NDViewer")
+            QMessageBox.critical(self, "NDViewer", f"Failed to open NDViewer:\n{e}")
 
     def disable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(False)
