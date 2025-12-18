@@ -1,4 +1,129 @@
-## Setting up the environments
+# Squid Microscope Control Software
+
+Python microscopy control system for Cephla Squid microscopes. PyQt5 GUI with napari/pyqtgraph visualization.
+
+**Supported workflows:** Slide scanning, live cell imaging, high content screening, spatial omics.
+
+**Hardware support:** 8+ camera vendors (FLIR, Hamamatsu, iDS, ToupTek, Tucsen, Photometrics, etc.), multiple stage and filter wheel types, full simulation mode for offline development.
+
+## Architecture Overview
+
+Squid uses a **3-layer architecture** that separates concerns and enables clean communication patterns:
+
+```
+     ui (Layer 2)        ← Pure PyQt5 widgets, no business logic
+        │
+        ▼ (events only)
+    backend (Layer 1)    ← Hardware + orchestration
+        │
+        ▼ (implements ABCs)
+     core (Layer 0)      ← Foundation: ABCs, events, config
+```
+
+### Layer 0: Core (`squid/core/`)
+
+Foundation layer with no dependencies on other squid modules:
+
+- **`abc.py`** - Hardware ABCs (`AbstractCamera`, `AbstractStage`, `LightSource`)
+- **`events.py`** - `EventBus` and typed event dataclasses
+- **`config/`** - Pydantic configuration models
+- **`utils/`** - Thread-safe utilities (`ThreadSafeValue`, `safe_callback`)
+
+### Layer 1: Backend (`squid/backend/`)
+
+All hardware interaction and orchestration:
+
+| Directory | Purpose | Examples |
+|-----------|---------|----------|
+| `drivers/` | Vendor-specific hardware implementations | Camera SDKs, stage controllers |
+| `services/` | Thread-safe wrappers with `threading.RLock()` | `CameraService`, `StageService` |
+| `controllers/` | State machines for workflows | `LiveController`, `AutoFocusController` |
+| `managers/` | Stateful configuration managers | `ObjectiveStore`, `ChannelConfigurationManager` |
+| `processing/` | Image processing and tracking algorithms | Autofocus metrics, stitching |
+| `io/` | Frame streaming and file writers | `StreamHandler`, OME-ZARR writers |
+
+### Layer 2: UI (`squid/ui/`)
+
+Pure PyQt5 widgets organized by domain:
+
+- Widgets communicate **exclusively** via EventBus events
+- Publish **Commands** when users interact
+- Subscribe to **State** events for display updates
+- **No direct hardware access** - always go through services or publish commands
+
+### Communication Patterns
+
+**EventBus** (`core/events.py`) - Control plane for decoupled communication:
+- Commands flow from UI → backend
+- State events flow from backend → UI
+
+**StreamHandler** (`backend/io/stream_handler.py`) - Data plane for 60fps camera frames, separate from EventBus to prevent frame floods.
+
+### Threading Model
+
+- **GUI Thread:** Qt event loop. Never block.
+- **EventBus Thread:** Processes event queue. Handlers must return quickly.
+- **Camera Thread:** SDK callbacks. Hand off to StreamHandler immediately.
+- **Worker Threads:** Long operations via services with internal locks.
+
+### Directory Structure
+
+```
+software/src/squid/
+├── core/              # Layer 0: Foundation
+│   ├── abc.py             # Hardware ABCs
+│   ├── events.py          # EventBus + typed events
+│   ├── config/            # Pydantic config models
+│   └── utils/             # Thread-safe utilities
+│
+├── backend/           # Layer 1: Hardware + orchestration
+│   ├── microscope.py      # Hardware orchestrator
+│   ├── microcontroller.py # Teensy serial protocol
+│   ├── drivers/           # Vendor implementations
+│   ├── services/          # Thread-safe wrappers
+│   ├── controllers/       # Workflow state machines
+│   ├── managers/          # Stateful managers
+│   ├── processing/        # Algorithms
+│   └── io/                # Data I/O
+│
+├── ui/                # Layer 2: Frontend
+│   ├── main_window.py     # Main PyQt5 window
+│   ├── widgets/           # Pure UI by domain
+│   └── ui_event_bus.py    # Thread-safe UI event wrapper
+│
+└── application.py     # DI container
+```
+
+## Running the Software
+
+**With hardware:**
+```bash
+cd software
+python main_hcs.py
+```
+
+**Simulation mode (no hardware needed):**
+```bash
+python main_hcs.py --simulation
+```
+
+## Testing
+
+```bash
+cd software
+pytest tests/unit -v             # Fast unit tests
+pytest tests/integration -v      # Simulated hardware tests
+pytest -m "not slow" tests/      # Skip slow tests
+```
+
+## Configuration
+
+Copy the `.ini` file associated with your microscope configuration to the software folder. Modify as needed (e.g. `camera_type`, `support_laser_autofocus`, `focus_camera_exposure_time_ms`).
+
+Configuration files are located in `configurations/`.
+
+## Setting up the Environment
+
 Run the following script in terminal to clone the repo and set up the environment
 ```
 wget https://raw.githubusercontent.com/Cephla-Lab/Squid/master/software/setup_22.04.sh
@@ -8,7 +133,7 @@ chmod +x setup_22.04.sh
 
 Reboot the computer to finish the installation.
 
-## Optional or Hardware-specific dependencies
+## Optional and Hardware-Specific Dependencies
 
 <details>
 <summary>image stitching dependencies (optional)</summary>
@@ -142,15 +267,3 @@ git submodule update
 ```
 
 </details>
-
-## Configuring the software
-Copy the .ini file associated with the microscope configuration to the software folder. Make modifications as needed (e.g. `camera_type`, `support_laser_autofocus`,`focus_camera_exposure_time_ms`)
-
-## Using the software
-```
-python3 main_hcs.py
-```
-To start the program when no hardware is connected, use
-```
-python3 main_hcs.py --simulation
-```
