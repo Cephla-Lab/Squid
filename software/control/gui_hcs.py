@@ -745,6 +745,13 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageArrayDisplayWindow = core.ImageArrayDisplayWindow()
                 self.imageDisplayTabs.addTab(self.imageArrayDisplayWindow.widget, "Multichannel Acquisition")
 
+            # Embedded NDViewer (lightweight) - updated automatically when a new acquisition starts.
+            try:
+                self.ndviewerTab = widgets.NDViewerTab()
+                self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
+            except Exception:
+                self.log.exception("Failed to initialize NDViewer tab")
+
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
                     self.objectiveStore, self.camera, self.contrastManager
@@ -1497,6 +1504,15 @@ class HighContentScreeningGui(QMainWindow):
         self.log.debug(f"toggleAcquisitionStarted({acquisition_started=})")
         if acquisition_started:
             self.log.info("STARTING ACQUISITION")
+            # Update NDViewer tab to point at the newly created experiment folder.
+            try:
+                if hasattr(self, "ndviewerTab") and self.ndviewerTab is not None:
+                    base_path = getattr(self.multipointController, "base_path", None)
+                    experiment_id = getattr(self.multipointController, "experiment_ID", None)
+                    if base_path and experiment_id:
+                        self.ndviewerTab.set_dataset_path(os.path.join(base_path, experiment_id))
+            except Exception:
+                self.log.exception("Failed to update NDViewer tab for new acquisition")
             if self.is_live_scan_grid_on:
                 self.toggle_live_scan_grid(on=False)
                 self.live_scan_grid_was_on = True

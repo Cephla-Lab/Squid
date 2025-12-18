@@ -93,6 +93,89 @@ class WrapperWindow(QMainWindow):
         super().closeEvent(event)
 
 
+class NDViewerTab(QWidget):
+    """
+    Embedded NDViewer (ndviewer_light) for showing the latest acquisition.
+
+    This is designed to live inside an existing QTabWidget (no separate QApplication / process).
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent=parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._viewer = None
+        self._dataset_path: Optional[str] = None
+
+        self._layout = QVBoxLayout()
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self._layout)
+
+        self._placeholder = QLabel("NDViewer: waiting for an acquisition to start…")
+        self._placeholder.setAlignment(Qt.AlignCenter)
+        self._layout.addWidget(self._placeholder, 1)
+
+    def set_dataset_path(self, dataset_path: Optional[str]):
+        """
+        Point the embedded NDViewer at a dataset folder and refresh.
+
+        Pass None to clear the view.
+        """
+        dataset_path = dataset_path or None
+        if dataset_path == self._dataset_path:
+            return
+        self._dataset_path = dataset_path
+
+        if not dataset_path:
+            self._placeholder.setText("NDViewer: waiting for an acquisition to start…")
+            self._placeholder.setVisible(True)
+            if self._viewer is not None:
+                self._viewer.setVisible(False)
+            return
+
+        if not os.path.isdir(dataset_path):
+            self._placeholder.setText(f"NDViewer: dataset folder not found:\n{dataset_path}")
+            self._placeholder.setVisible(True)
+            if self._viewer is not None:
+                self._viewer.setVisible(False)
+            return
+
+        try:
+            # Lazy import so the main UI doesn't pay NDV import costs until needed.
+            from control import ndviewer_light
+        except Exception as e:
+            self._placeholder.setText(f"NDViewer: failed to import ndviewer_light:\n{e}")
+            self._placeholder.setVisible(True)
+            if self._viewer is not None:
+                self._viewer.setVisible(False)
+            return
+
+        # If NDV isn't available, ndviewer_light already renders a useful placeholder inside its viewer.
+        try:
+            if self._viewer is None:
+                self._viewer = ndviewer_light.LightweightViewer(dataset_path)
+                self._layout.addWidget(self._viewer, 1)
+            else:
+                # Best-effort cleanup of open handles when switching datasets.
+                try:
+                    self._viewer._close_open_handles()
+                except Exception:
+                    pass
+                self._viewer.load_dataset(dataset_path)
+                try:
+                    self._viewer._force_refresh()
+                except Exception:
+                    pass
+
+            self._viewer.setVisible(True)
+            self._placeholder.setVisible(False)
+        except Exception:
+            self._log.exception("NDViewerTab failed to load dataset")
+            self._placeholder.setText(f"NDViewer: failed to load dataset:\n{dataset_path}")
+            self._placeholder.setVisible(True)
+            if self._viewer is not None:
+                self._viewer.setVisible(False)
+
+
 class CollapsibleGroupBox(QGroupBox):
     def __init__(self, title):
         super(CollapsibleGroupBox, self).__init__(title)
