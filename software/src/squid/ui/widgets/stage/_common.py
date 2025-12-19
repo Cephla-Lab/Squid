@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QGridLayout,
     QLabel,
+    QSlider,
     QSizePolicy,
     QWidget,
     QCheckBox,

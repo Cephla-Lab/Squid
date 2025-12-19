@@ -298,6 +298,100 @@ def simulated_application_context() -> Generator:
 
 
 # ============================================================================
+# Headless GUI Fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def headless_qt_env(monkeypatch):
+    """Force offscreen Qt platform for headless GUI tests."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+
+@pytest.fixture
+def qapp(headless_qt_env):
+    """Ensure a QApplication exists for GUI tests."""
+    from qtpy.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    return app
+
+
+@pytest.fixture
+def gui_dialog_patches(monkeypatch, tmp_path):
+    """Patch modal dialogs to avoid blocking in headless tests."""
+    from qtpy.QtWidgets import QFileDialog, QMessageBox, QInputDialog
+
+    input_path = tmp_path / "input.txt"
+    input_path.write_text("test")
+    save_path = tmp_path / "output.txt"
+
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        staticmethod(lambda *args, **kwargs: str(tmp_path)),
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *args, **kwargs: (str(input_path), "")),
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        staticmethod(lambda *args, **kwargs: (str(save_path), "")),
+    )
+
+    def _msg_exec(self):
+        return QMessageBox.Ok
+
+    monkeypatch.setattr(QMessageBox, "exec_", _msg_exec, raising=False)
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *args, **kwargs: QMessageBox.Ok)
+    )
+    monkeypatch.setattr(
+        QMessageBox, "information", staticmethod(lambda *args, **kwargs: QMessageBox.Ok)
+    )
+    monkeypatch.setattr(
+        QMessageBox, "critical", staticmethod(lambda *args, **kwargs: QMessageBox.Ok)
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *args, **kwargs: QMessageBox.Yes)
+    )
+
+    def _get_item(_parent, _title, _label, items, current=0, editable=False, *args, **kwargs):
+        selection = items[current] if items else ""
+        return selection, True
+
+    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(_get_item))
+    return tmp_path
+
+
+@pytest.fixture
+def gui_factory(monkeypatch, qapp, qtbot, gui_dialog_patches):
+    """Build simulated GUI contexts with optional feature flag overrides."""
+    from tests.gui_helpers import apply_gui_flags
+    from squid.application import ApplicationContext
+
+    contexts = []
+
+    def _factory(**flags):
+        if flags:
+            apply_gui_flags(monkeypatch, **flags)
+        context = ApplicationContext(simulation=True)
+        gui = context.create_gui()
+        if hasattr(qtbot, "add_widget"):
+            qtbot.add_widget(gui)
+        contexts.append(context)
+        return context, gui
+
+    yield _factory
+    for context in contexts:
+        context.shutdown()
+
+# ============================================================================
 # Piezo Stage Fixture
 # ============================================================================
 

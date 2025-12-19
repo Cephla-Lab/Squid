@@ -66,10 +66,10 @@ class DACControWidget(EventBusFrame):
 
         # connections - use _publish for events
         self.entry_DAC0.valueChanged.connect(self.set_DAC0)
-        self.entry_DAC0.valueChanged.connect(self.slider_DAC0.setValue)
+        self.entry_DAC0.valueChanged.connect(lambda value: self.slider_DAC0.setValue(int(value)))
         self.slider_DAC0.valueChanged.connect(self.entry_DAC0.setValue)
         self.entry_DAC1.valueChanged.connect(self.set_DAC1)
-        self.entry_DAC1.valueChanged.connect(self.slider_DAC1.setValue)
+        self.entry_DAC1.valueChanged.connect(lambda value: self.slider_DAC1.setValue(int(value)))
         self.slider_DAC1.valueChanged.connect(self.entry_DAC1.setValue)
 
         # layout
