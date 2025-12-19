@@ -35,7 +35,9 @@ def get_pixel_size(
     except KeyError:
         magnification = default_magnification
 
-    pixel_size_xy = pixel_size_um / (magnification / (objective_tube_lens_mm / tube_lens_mm))
+    pixel_size_xy = pixel_size_um / (
+        magnification / (objective_tube_lens_mm / tube_lens_mm)
+    )
 
     return pixel_size_xy
 
@@ -57,13 +59,14 @@ def get_overlap(slide_path, **kwargs):
     dx = float(parameters["dx(mm)"]) * 1000.0
     dy = float(parameters["dy(mm)"]) * 1000.0
 
-    overlap_percent = compute_overlap_percent(dx, dy, fov_width, fov_height, pixel_size_xy)
+    overlap_percent = compute_overlap_percent(
+        dx, dy, fov_width, fov_height, pixel_size_xy
+    )
 
     return overlap_percent
 
 
 def get_time_indices(slide_path):
-
     parameter_path = os.path.join(slide_path, "acquisition parameters.json")
     parameters = {}
     with open(parameter_path, "r") as f:
@@ -74,7 +77,9 @@ def get_time_indices(slide_path):
 
 
 def get_channels(slide_path):
-    config_xml_tree_root = ET.parse(os.path.join(slide_path, "configurations.xml")).getroot()
+    config_xml_tree_root = ET.parse(
+        os.path.join(slide_path, "configurations.xml")
+    ).getroot()
     channel_names = []
     for mode in config_xml_tree_root.iter("mode"):
         if mode.get("Selected") == "1":

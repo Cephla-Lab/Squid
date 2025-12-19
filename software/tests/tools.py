@@ -9,14 +9,14 @@ import pathlib
 import git
 import matplotlib
 
-import control.microcontroller
-import squid.stage
-import squid.stage.cephla
-import squid.camera.utils
-from control.microcontroller import Microcontroller
-from control.piezo import PiezoStage
-from squid.config import get_stage_config
-import control._def
+import squid.backend.microcontroller
+import squid.backend.drivers.stages
+import squid.backend.drivers.stages.cephla
+import squid.backend.drivers.cameras.camera_utils
+from squid.backend.microcontroller import Microcontroller
+from squid.backend.drivers.peripherals.piezo import PiezoStage
+from squid.core.config import get_stage_config
+import _def
 
 
 class NonInteractiveMatplotlib:
@@ -32,16 +32,24 @@ class NonInteractiveMatplotlib:
             matplotlib.use(self._existing_backend)
 
 
-def get_test_microcontroller() -> control.microcontroller.Microcontroller:
-    return control.microcontroller.Microcontroller(control.microcontroller.SimSerial(), True)
+def get_test_microcontroller() -> squid.backend.microcontroller.Microcontroller:
+    return squid.backend.microcontroller.Microcontroller(
+        squid.backend.microcontroller.SimSerial(), True
+    )
 
 
 def get_test_camera():
-    return squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+    import squid.core.config
+
+    return squid.backend.drivers.cameras.camera_utils.get_camera(
+        squid.core.config.get_camera_config(), simulated=True
+    )
 
 
 def get_test_stage(microcontroller):
-    return squid.stage.cephla.CephlaStage(microcontroller=microcontroller, stage_config=get_stage_config())
+    return squid.backend.drivers.stages.cephla.CephlaStage(
+        microcontroller=microcontroller, stage_config=get_stage_config()
+    )
 
 
 def get_repo_root() -> pathlib.Path:

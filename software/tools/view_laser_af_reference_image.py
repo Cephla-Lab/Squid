@@ -2,7 +2,15 @@ import sys
 import json
 import base64
 import numpy as np
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QFileDialog
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
+    QPushButton,
+    QFileDialog,
+)
 from PyQt5.QtCore import Qt
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
@@ -89,7 +97,10 @@ class ReferenceImageViewer(QMainWindow):
 
     def browse_file(self):
         file_paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select laser_af_settings.json", "", "JSON Files (*.json);;All Files (*)"
+            self,
+            "Select laser_af_settings.json",
+            "",
+            "JSON Files (*.json);;All Files (*)",
         )
         for file_path in file_paths:
             self.load_reference_image(file_path)
@@ -110,18 +121,26 @@ class ReferenceImageViewer(QMainWindow):
 
             # Decode image
             image_data = base64.b64decode(ref_image_b64)
-            image_array = np.frombuffer(image_data, dtype=np.dtype(dtype)).reshape(shape)
+            image_array = np.frombuffer(image_data, dtype=np.dtype(dtype)).reshape(
+                shape
+            )
 
             # Create new window for this image
             image_window = ImageWindow(image_array, file_path)
             image_window.show()
-            self.image_windows.append(image_window)  # Keep reference to prevent garbage collection
+            self.image_windows.append(
+                image_window
+            )  # Keep reference to prevent garbage collection
 
             # Update status in drop area
-            self.drop_label.setText(f"Loaded: {file_path}\n\nDrag another file here to view")
+            self.drop_label.setText(
+                f"Loaded: {file_path}\n\nDrag another file here to view"
+            )
 
         except Exception as e:
-            self.drop_label.setText(f"Error loading {file_path}: {str(e)}\n\nTry another file")
+            self.drop_label.setText(
+                f"Error loading {file_path}: {str(e)}\n\nTry another file"
+            )
 
 
 if __name__ == "__main__":

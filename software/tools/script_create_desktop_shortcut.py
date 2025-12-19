@@ -4,7 +4,7 @@ import stat
 
 def create_desktop_shortcut_simulation(directory_path, script_name):
     squid_suffix = script_name.replace("main_", "")
-    icon_path = os.path.join(directory_path, "icon/cephla_logo.svg")
+    icon_path = os.path.join(directory_path, "assets/icon/cephla_logo.svg")
     if squid_suffix != "main" and squid_suffix != "":
         shortcut_content = f"""\
 [Desktop Entry]
@@ -27,7 +27,7 @@ Terminal=true
     if squid_suffix != "main" and squid_suffix != "":
         desktop_path_base = f"~/Desktop/Squid_{squid_suffix}_simulation.desktop"
     else:
-        desktop_path_base = f"~/Desktop/Squid_simulation.desktop"
+        desktop_path_base = "~/Desktop/Squid_simulation.desktop"
     desktop_path = os.path.expanduser(desktop_path_base)
     with open(desktop_path, "w") as shortcut_file:
         shortcut_file.write(shortcut_content)
@@ -37,7 +37,7 @@ Terminal=true
 
 def create_desktop_shortcut(directory_path, script_name):
     squid_suffix = script_name.replace("main_", "")
-    icon_path = os.path.join(directory_path, "icon/cephla_logo.svg")
+    icon_path = os.path.join(directory_path, "assets/icon/cephla_logo.svg")
     if squid_suffix != "main" and squid_suffix != "":
         shortcut_content = f"""\
 [Desktop Entry]
@@ -60,7 +60,7 @@ Terminal=true
     if squid_suffix != "main" and squid_suffix != "":
         desktop_path_base = f"~/Desktop/Squid_{squid_suffix}.desktop"
     else:
-        desktop_path_base = f"~/Desktop/Squid.desktop"
+        desktop_path_base = "~/Desktop/Squid.desktop"
     desktop_path = os.path.expanduser(desktop_path_base)
     with open(desktop_path, "w") as shortcut_file:
         shortcut_file.write(shortcut_content)
@@ -71,9 +71,14 @@ Terminal=true
 def main():
     # Prompt for directory path and script name
     directory_path = (
-        input("Enter the directory path to octopi-research/software (default: current directory): ") or os.getcwd()
+        input(
+            "Enter the directory path to octopi-research/software (default: current directory): "
+        )
+        or os.getcwd()
     )
-    script_name = input("Enter the main script name under octopi-research/software (without .py extension): ")
+    script_name = input(
+        "Enter the main script name under octopi-research/software (without .py extension): "
+    )
 
     simulation = input("Is this for launching in simulation mode? [NO/yes]: ") or False
     if str(simulation).lower() == "yes":

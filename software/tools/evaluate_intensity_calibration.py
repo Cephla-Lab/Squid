@@ -12,9 +12,13 @@ sys.path.append(software_dir)
 os.chdir(software_dir)
 
 from PM16 import PM16
-from control.lighting import IlluminationController, IntensityControlMode, ShutterControlMode
-import control.microcontroller as microcontroller
-from control._def import *
+from mcs.drivers.lighting.led import (
+    IlluminationController,
+    IntensityControlMode,
+    ShutterControlMode,
+)
+import mcs.microcontroller as microcontroller
+from _def import *
 
 
 def measure_power(pm: PM16, num_measurements: int = 5, delay: float = 0.1) -> float:
@@ -73,7 +77,12 @@ def test_calibration(
         controller.turn_off_illumination(wavelength)
 
     # Create DataFrame
-    return pd.DataFrame({"Requested Power (%)": requested_powers, "Measured Power (mW)": measured_powers})
+    return pd.DataFrame(
+        {
+            "Requested Power (%)": requested_powers,
+            "Measured Power (mW)": measured_powers,
+        }
+    )
 
 
 def plot_calibration_test(data: pd.DataFrame, wavelength: int, output_dir: Path):
@@ -81,19 +90,34 @@ def plot_calibration_test(data: pd.DataFrame, wavelength: int, output_dir: Path)
     plt.figure(figsize=(12, 8))
 
     # Plot measured vs requested power
-    plt.plot(data["Requested Power (%)"], data["Measured Power (mW)"], "bo-", label="Measured Power", alpha=0.7)
+    plt.plot(
+        data["Requested Power (%)"],
+        data["Measured Power (mW)"],
+        "bo-",
+        label="Measured Power",
+        alpha=0.7,
+    )
 
     # Calculate ideal linear relationship
     max_power = data["Measured Power (mW)"].max()
     ideal_power = max_power * data["Requested Power (%)"] / 100
 
-    plt.plot(data["Requested Power (%)"], ideal_power, "r--", label="Ideal Linear Power", alpha=0.7)
+    plt.plot(
+        data["Requested Power (%)"],
+        ideal_power,
+        "r--",
+        label="Ideal Linear Power",
+        alpha=0.7,
+    )
 
     # Calculate error metrics
     mse = np.mean((data["Measured Power (mW)"] - ideal_power) ** 2)
     max_error = np.max(np.abs(data["Measured Power (mW)"] - ideal_power))
 
-    plt.title(f"Calibration Test - {wavelength}nm\n" f"MSE: {mse:.2f} mW², Max Error: {max_error:.2f} mW")
+    plt.title(
+        f"Calibration Test - {wavelength}nm\n"
+        f"MSE: {mse:.2f} mW², Max Error: {max_error:.2f} mW"
+    )
     plt.xlabel("Requested Power (%)")
     plt.ylabel("Measured Power (mW)")
     plt.grid(True)
@@ -126,7 +150,9 @@ def main():
 
     # Initialize illumination controller
     mcu = microcontroller.Microcontroller(
-        serial_device=microcontroller.get_microcontroller_serial_device(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)
+        serial_device=microcontroller.get_microcontroller_serial_device(
+            version=CONTROLLER_VERSION, sn=CONTROLLER_SN
+        )
     )
     controller = IlluminationController(
         mcu,
@@ -140,7 +166,9 @@ def main():
         print(f"\nTesting {wavelength}nm...")
 
         # Run calibration test
-        test_data = test_calibration(pm, controller, wavelength, POWER_PERCENTAGES, NUM_MEASUREMENTS, DELAY)
+        test_data = test_calibration(
+            pm, controller, wavelength, POWER_PERCENTAGES, NUM_MEASUREMENTS, DELAY
+        )
 
         # Save test data
         output_file = output_dir / f"{wavelength}_test_data.csv"
