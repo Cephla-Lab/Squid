@@ -93,7 +93,14 @@ class MicroscopeAddons:
 
         nl5 = None
         if _def.ENABLE_NL5:
-            nl5 = NL5.NL5() if not simulated else NL5.NL5_Simulation()
+            nl5_module = NL5
+            if not hasattr(nl5_module, "NL5"):
+                import squid.backend.drivers.peripherals.nl5 as nl5_module
+            nl5 = (
+                nl5_module.NL5()
+                if not simulated
+                else nl5_module.NL5_Simulation()
+            )
 
         cellx = None
         if _def.ENABLE_CELLX:

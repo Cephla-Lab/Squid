@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
     QSlider,
     QLineEdit,
     QFileDialog,
+    QMessageBox,
 )
 from qtpy.QtGui import QIcon
 
