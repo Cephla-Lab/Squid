@@ -51,24 +51,39 @@ class LiveController:
         self.enable_channel_auto_filter_switching: bool = True
 
     # illumination control
-    def turn_on_illumination(self):
-        if not "LED matrix" in self.currentConfiguration.name:
+    def turn_on_illumination(self, configuration=None):
+        """
+        Turn on illumination for the provided configuration (or the current one if omitted).
+
+        NOTE: Channel switching can happen while live; callers may need to turn off illumination for the *previous*
+        configuration before changing `self.currentConfiguration`.
+        """
+        config = configuration if configuration is not None else self.currentConfiguration
+        if config is None:
+            return
+
+        if not "LED matrix" in config.name:
             self.microscope.illumination_controller.turn_on_illumination(
-                int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
+                int(utils_channel.extract_wavelength_from_config_name(config.name))
             )
-        elif self.microscope.addons.sci_microscopy_led_array and "LED matrix" in self.currentConfiguration.name:
+        elif self.microscope.addons.sci_microscopy_led_array and "LED matrix" in config.name:
             self.microscope.addons.sci_microscopy_led_array.turn_on_illumination()
         # LED matrix
         else:
             self.microscope.low_level_drivers.microcontroller.turn_on_illumination()  # to wrap microcontroller in Squid_led_array
         self.illumination_on = True
 
-    def turn_off_illumination(self):
-        if not "LED matrix" in self.currentConfiguration.name:
+    def turn_off_illumination(self, configuration=None):
+        """Turn off illumination for the provided configuration (or the current one if omitted)."""
+        config = configuration if configuration is not None else self.currentConfiguration
+        if config is None:
+            return
+
+        if not "LED matrix" in config.name:
             self.microscope.illumination_controller.turn_off_illumination(
-                int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
+                int(utils_channel.extract_wavelength_from_config_name(config.name))
             )
-        elif self.microscope.addons.sci_microscopy_led_array and "LED matrix" in self.currentConfiguration.name:
+        elif self.microscope.addons.sci_microscopy_led_array and "LED matrix" in config.name:
             self.microscope.addons.sci_microscopy_led_array.turn_off_illumination()
         # LED matrix
         else:
@@ -303,15 +318,18 @@ class LiveController:
     # set microscope mode
     # @@@ to do: change softwareTriggerGenerator to TriggerGeneratror
     def set_microscope_mode(self, configuration):
-
-        self.currentConfiguration = configuration
-        self._log.info("setting microscope mode to " + self.currentConfiguration.name)
+        previous_configuration = self.currentConfiguration
+        self._log.info("setting microscope mode to " + configuration.name)
 
         # temporarily stop live while changing mode
         if self.is_live is True:
             self._stop_existing_timer()
             if self.control_illumination:
-                self.turn_off_illumination()
+                # Important for HW trigger: the *previous* channel may be left on continuously.
+                # Turn it off explicitly before switching `self.currentConfiguration`.
+                self.turn_off_illumination(configuration=previous_configuration)
+
+        self.currentConfiguration = configuration
 
         # set camera exposure time and analog gain
         self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
