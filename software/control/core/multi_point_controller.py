@@ -401,6 +401,13 @@ class MultiPointController:
             # If color information isn't available, fall back to the monochrome assumption.
             pass
         num_channels = len(self.selected_configurations)
+        if num_channels == 0:
+            # No channels selected; this is likely an invalid acquisition state.
+            # Log a warning (similar to disk storage estimation) and return 0 as a sentinel.
+            squid.logging.get_logger(__name__).warning(
+                "Estimated mosaic RAM is 0 because no channel configurations are selected."
+            )
+            return 0
 
         return mosaic_width * mosaic_height * bytes_per_pixel * num_channels
 
