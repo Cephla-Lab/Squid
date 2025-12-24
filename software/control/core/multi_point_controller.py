@@ -358,8 +358,26 @@ class MultiPointController:
 
     def get_estimated_mosaic_ram_bytes(self) -> int:
         """
-        Estimate RAM required for mosaic view based on scan area and pixel size.
-        Returns bytes needed for all mosaic layers.
+        Estimate the RAM (in bytes) required to hold the mosaic view in memory.
+
+        The estimate is based on:
+
+        * The mosaic scan bounds in stage space (mm) derived from ``self.scanCoordinates``.
+        * The effective camera pixel size at the sample, computed from the objective
+          magnification factor and the binned camera pixel size in microns.
+        * A downsampling factor chosen so that the effective mosaic pixel size is at
+          least ``control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM`` (in µm). The scan
+          extents are divided by this downsampled pixel size to obtain the mosaic width
+          and height in pixels.
+
+        Assumptions:
+
+        * Each mosaic pixel is stored as a 16‑bit unsigned integer (2 bytes per pixel).
+        * The returned value includes memory for all mosaic channel layers, by
+          multiplying by ``len(self.selected_configurations)``.
+        * The estimate only applies when ``control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY``
+          is enabled and when valid scan coordinates with regions are available;
+          otherwise, it returns 0.
         """
         if not control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
             return 0
