@@ -263,6 +263,7 @@ class QtMultiPointController(MultiPointController, QObject):
 class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
+    signal_performance_mode_changed = Signal(bool)
 
     def __init__(
         self, microscope: control.microscope.Microscope, is_simulation=False, live_only_mode=False, *args, **kwargs
@@ -666,6 +667,7 @@ class HighContentScreeningGui(QMainWindow):
             self.channelConfigurationManager,
             self.scanCoordinates,
             self.focusMapWidget,
+            self.napariMosaicDisplayWidget,
         )
         self.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(
             self.stage,
@@ -942,14 +944,17 @@ class HighContentScreeningGui(QMainWindow):
 
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.flexibleMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+            self.signal_performance_mode_changed.connect(self.flexibleMultiPointWidget.set_performance_mode)
 
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellplateMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.wellplateMultiPointWidget.signal_toggle_live_scan_grid.connect(self.toggle_live_scan_grid)
+            self.signal_performance_mode_changed.connect(self.wellplateMultiPointWidget.set_performance_mode)
 
         if RUN_FLUIDICS:
             self.multiPointWithFluidicsWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.fluidicsWidget.fluidics_initialized_signal.connect(self.multiPointWithFluidicsWidget.init_fluidics)
+            self.signal_performance_mode_changed.connect(self.multiPointWithFluidicsWidget.set_performance_mode)
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
 
@@ -1313,6 +1318,7 @@ class HighContentScreeningGui(QMainWindow):
         self.performanceModeToggle.setText(button_txt + " Performance Mode")
         self.updateNapariConnections()
         self.toggleNapariTabs()
+        self.signal_performance_mode_changed.emit(self.performance_mode)
         print(f"Performance mode {'enabled' if self.performance_mode else 'disabled'}")
 
     def setAcquisitionDisplayTabs(self, selected_configurations, Nz):

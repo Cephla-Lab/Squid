@@ -2853,6 +2853,7 @@ class FlexibleMultiPointWidget(QFrame):
         channelConfigurationManager,
         scanCoordinates,
         focusMapWidget,
+        napariMosaicWidget=None,
         *args,
         **kwargs,
     ):
@@ -2868,6 +2869,9 @@ class FlexibleMultiPointWidget(QFrame):
         self.channelConfigurationManager = channelConfigurationManager
         self.scanCoordinates = scanCoordinates
         self.focusMapWidget = focusMapWidget
+        if napariMosaicWidget is not None:
+            self.napariMosaicWidget = napariMosaicWidget
+        self.performance_mode = False
         self.base_path_is_set = False
         self.location_list = np.empty((0, 3), dtype=float)
         self.location_ids = np.empty((0,), dtype="<U20")
@@ -4112,6 +4116,9 @@ class FlexibleMultiPointWidget(QFrame):
     def enable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(True)
 
+    def set_performance_mode(self, enabled):
+        self.performance_mode = enabled
+
 
 class WellplateMultiPointWidget(QFrame):
 
@@ -4147,11 +4154,9 @@ class WellplateMultiPointWidget(QFrame):
         self.channelConfigurationManager = channelConfigurationManager
         self.scanCoordinates = scanCoordinates
         self.focusMapWidget = focusMapWidget
-        if napariMosaicWidget is None:
-            self.performance_mode = True
-        else:
+        if napariMosaicWidget is not None:
             self.napariMosaicWidget = napariMosaicWidget
-            self.performance_mode = False
+        self.performance_mode = False
         self.tab_widget: Optional[QTabWidget] = tab_widget
         self.well_selection_widget: Optional[WellSelectionWidget] = well_selection_widget
         self.base_path_is_set = False
@@ -5847,6 +5852,9 @@ class WellplateMultiPointWidget(QFrame):
     def enable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(True)
 
+    def set_performance_mode(self, enabled):
+        self.performance_mode = enabled
+
     def set_saving_dir(self):
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
@@ -6087,11 +6095,9 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.objectiveStore = objectiveStore
         self.channelConfigurationManager = channelConfigurationManager
         self.scanCoordinates = scanCoordinates
-        if napariMosaicWidget is None:
-            self.performance_mode = True
-        else:
+        if napariMosaicWidget is not None:
             self.napariMosaicWidget = napariMosaicWidget
-            self.performance_mode = False
+        self.performance_mode = False
 
         self.base_path_is_set = False
         self.acquisition_start_time = None
@@ -6101,6 +6107,9 @@ class MultiPointWithFluidicsWidget(QFrame):
 
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
+
+    def set_performance_mode(self, enabled):
+        self.performance_mode = enabled
 
     def add_components(self):
         self.btn_setSavingDir = QPushButton("Browse")
