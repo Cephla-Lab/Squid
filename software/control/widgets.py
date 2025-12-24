@@ -82,7 +82,7 @@ def check_space_available_with_error_dialog(
 def check_ram_available_with_error_dialog(
     multi_point_controller: MultiPointController,
     logger: logging.Logger,
-    factor_of_safety: float = 1.5,
+    factor_of_safety: float = 1.15,
     performance_mode: bool = False,
 ) -> bool:
     """Check if enough RAM is available for mosaic view."""
