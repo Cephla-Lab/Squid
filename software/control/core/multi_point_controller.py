@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import math
 import os
 import pathlib
 import tempfile
@@ -354,6 +355,40 @@ class MultiPointController:
         non_image_file_size = 100 * 1024
 
         return size_per_image * self.get_acquisition_image_count() + non_image_file_size
+
+    def get_estimated_mosaic_ram_bytes(self) -> int:
+        """
+        Estimate RAM required for mosaic view based on scan area and pixel size.
+        Returns bytes needed for all mosaic layers.
+        """
+        if not control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
+            return 0
+
+        if not self.scanCoordinates or not self.scanCoordinates.has_regions():
+            return 0
+
+        bounds = self.scanCoordinates.get_scan_bounds()
+        if not bounds:
+            return 0
+
+        # Calculate scan extents in mm
+        width_mm = bounds["x"][1] - bounds["x"][0]
+        height_mm = bounds["y"][1] - bounds["y"][0]
+
+        # Get effective pixel size (with downsampling)
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
+        downsample_factor = max(1, int(control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um))
+        viewer_pixel_size_mm = (pixel_size_um * downsample_factor) / 1000
+
+        # Calculate mosaic dimensions in pixels
+        mosaic_width = int(math.ceil(width_mm / viewer_pixel_size_mm))
+        mosaic_height = int(math.ceil(height_mm / viewer_pixel_size_mm))
+
+        # Assume 2 bytes per pixel (uint16), multiply by number of channels
+        bytes_per_pixel = 2
+        num_channels = len(self.selected_configurations)
+
+        return mosaic_width * mosaic_height * bytes_per_pixel * num_channels
 
     def run_acquisition(self, acquire_current_fov=False):
         if not self.validate_acquisition_settings():
