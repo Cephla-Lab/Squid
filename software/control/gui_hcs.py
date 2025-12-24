@@ -385,6 +385,9 @@ class HighContentScreeningGui(QMainWindow):
         self.setup_layout()
         self.make_connections()
 
+        # Emit initial performance mode state to sync widgets
+        self.signal_performance_mode_changed.emit(self.performance_mode)
+
         # Initialize live scan grid state
         self.wellplateMultiPointWidget.initialize_live_scan_grid_state()
 
