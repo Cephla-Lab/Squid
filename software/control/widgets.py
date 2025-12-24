@@ -3017,6 +3017,9 @@ class FlexibleMultiPointWidget(QFrame):
         self.checkbox_stitchOutput = QCheckBox("Stitch Scans")
         self.checkbox_stitchOutput.setChecked(False)
 
+        self.checkbox_skipSaving = QCheckBox("Skip Saving")
+        self.checkbox_skipSaving.setChecked(False)
+
         self.checkbox_set_z_range = QCheckBox("Set Z-range")
         self.checkbox_set_z_range.toggled.connect(self.toggle_z_range_controls)
 
@@ -3181,6 +3184,7 @@ class FlexibleMultiPointWidget(QFrame):
         if HAS_OBJECTIVE_PIEZO:
             grid_af.addWidget(self.checkbox_usePiezo)
         grid_af.addWidget(self.checkbox_set_z_range)
+        grid_af.addWidget(self.checkbox_skipSaving)
 
         grid_config = QHBoxLayout()
         grid_config.addWidget(self.list_configurations)
@@ -3251,6 +3255,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
+        self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
@@ -3581,12 +3586,15 @@ class FlexibleMultiPointWidget(QFrame):
             self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
             self.multipointController.set_base_path(self.lineEdit_savingDir.text())
             self.multipointController.set_use_fluidics(False)
+            self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
             self.multipointController.set_selected_configurations(
                 (item.text() for item in self.list_configurations.selectedItems())
             )
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
-            if not check_space_available_with_error_dialog(self.multipointController, self._log):
+            if self.checkbox_skipSaving.isChecked():
+                self._log.info("Skipping disk space check - image saving is disabled")
+            elif not check_space_available_with_error_dialog(self.multipointController, self._log):
                 self._log.error("Failed to start acquisition.  Not enough disk space available.")
                 self.btn_startAcquisition.setChecked(False)
                 return
@@ -4307,6 +4315,9 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_stitchOutput = QCheckBox("Stitch Scans")
         self.checkbox_stitchOutput.setChecked(False)
 
+        self.checkbox_skipSaving = QCheckBox("Skip Saving")
+        self.checkbox_skipSaving.setChecked(False)
+
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
         self.btn_startAcquisition.setCheckable(True)
@@ -4532,6 +4543,7 @@ class WellplateMultiPointWidget(QFrame):
         options_layout.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
+        options_layout.addWidget(self.checkbox_skipSaving)
 
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
@@ -4601,6 +4613,7 @@ class WellplateMultiPointWidget(QFrame):
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_useFocusMap.toggled.connect(self.multipointController.set_manual_focus_map_flag)
         self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
+        self.checkbox_skipSaving.toggled.connect(self.multipointController.set_skip_saving)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
@@ -5717,12 +5730,15 @@ class WellplateMultiPointWidget(QFrame):
             self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
             self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
             self.multipointController.set_use_fluidics(False)
+            self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
             self.multipointController.set_selected_configurations(
                 [item.text() for item in self.list_configurations.selectedItems()]
             )
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
-            if not check_space_available_with_error_dialog(self.multipointController, self._log):
+            if self.checkbox_skipSaving.isChecked():
+                self._log.info("Skipping disk space check - image saving is disabled")
+            elif not check_space_available_with_error_dialog(self.multipointController, self._log):
                 self.btn_startAcquisition.setChecked(False)
                 self._log.error("Failed to start acquisition.  Not enough disk space available.")
                 return

@@ -90,6 +90,7 @@ class MultiPointController:
         self.use_manual_focus_map = False
         self.base_path = None
         self.use_fluidics = False
+        self.skip_saving = False
 
         self.focus_map = None
         self.gen_focus_map = False
@@ -198,6 +199,9 @@ class MultiPointController:
 
     def set_use_fluidics(self, use_fluidics):
         self.use_fluidics = use_fluidics
+
+    def set_skip_saving(self, skip_saving):
+        self.skip_saving = skip_saving
 
     def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
@@ -555,6 +559,7 @@ class MultiPointController:
             z_stacking_config=self.z_stacking_config,
             z_range=self.z_range,
             use_fluidics=self.use_fluidics,
+            skip_saving=self.skip_saving,
         )
 
     def _on_acquisition_completed(self):
