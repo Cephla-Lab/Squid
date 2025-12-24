@@ -384,8 +384,22 @@ class MultiPointController:
         mosaic_width = int(math.ceil(width_mm / viewer_pixel_size_mm))
         mosaic_height = int(math.ceil(height_mm / viewer_pixel_size_mm))
 
-        # Assume 2 bytes per pixel (uint16), multiply by number of channels
+        # Assume 2 bytes per pixel component (uint16), adjust for color and multiply by number of channels
         bytes_per_pixel = 2
+
+        # If the camera provides color images (e.g. RGB), account for multiple components per pixel.
+        # Mirror the logic used in get_estimated_acquisition_disk_storage to keep estimates consistent.
+        try:
+            # Common patterns: a boolean property or a zero-arg method named "is_color"
+            is_color_attr = getattr(self.camera, "is_color", None)
+            if callable(is_color_attr):
+                if is_color_attr():
+                    bytes_per_pixel *= 3
+            elif isinstance(is_color_attr, bool) and is_color_attr:
+                bytes_per_pixel *= 3
+        except Exception:
+            # If color information isn't available, fall back to the monochrome assumption.
+            pass
         num_channels = len(self.selected_configurations)
 
         return mosaic_width * mosaic_height * bytes_per_pixel * num_channels
