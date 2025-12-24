@@ -368,6 +368,12 @@ class SimulatedCamera(AbstractCamera):
         if self._acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
             self._log.warning("Sending triggers in continuous acquisition mode is not allowed.")
             return
+        # Record trigger timestamp
+        self._last_trigger_timestamp = time.time()
+        # Wait for exposure time to simulate real camera behavior
+        # Use total frame time (exposure + strobe) to match real camera timing
+        total_frame_time_s = self.get_total_frame_time() / 1000.0  # Convert ms to seconds
+        time.sleep(total_frame_time_s)
         self._next_frame()
 
     @debug_log
@@ -409,7 +415,8 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def get_ready_for_trigger(self) -> bool:
-        return time.time() - self._last_trigger_timestamp > self.get_exposure_time()
+        # Use total frame time (exposure + strobe) to match real camera behavior
+        return time.time() - self._last_trigger_timestamp > self.get_total_frame_time() / 1000.0
 
     @debug_log
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
