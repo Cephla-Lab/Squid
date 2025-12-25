@@ -1,3 +1,4 @@
+import gc
 import os
 import json
 import yaml
@@ -8279,29 +8280,40 @@ class NapariMosaicDisplayWidget(QWidget):
 
     def on_shape_change(self, event=None):
         if self.shape_layer is not None and len(self.shape_layer.data) > 0:
-            # convert shapes to mm coordinates
-            self.shapes_mm = [self.convert_shape_to_mm(shape) for shape in self.shape_layer.data]
+            # Only convert shapes to mm if mosaic is initialized (has valid coordinate system)
+            if self.layers_initialized and self.top_left_coordinate is not None:
+                self.shapes_mm = [self.convert_shape_to_mm(shape) for shape in self.shape_layer.data]
+            # else: keep existing shapes_mm (they're already in mm from before clear)
         else:
             self.shapes_mm = []
         self.signal_shape_drawn.emit(self.shapes_mm)
 
     def convert_shape_to_mm(self, shape_data):
         shape_data_mm = []
+        # Scale factor: viewer uses um (mm * 1000), so data coords = world coords / (pixel_size_mm * 1000)
+        scale = self.viewer_pixel_size_mm * 1000
         for point in shape_data:
-            coords = self.viewer.layers[0].world_to_data(point)
-            x_mm = self.top_left_coordinate[1] + coords[1] * self.viewer_pixel_size_mm
-            y_mm = self.top_left_coordinate[0] + coords[0] * self.viewer_pixel_size_mm
+            # Convert world coordinates (um) to data coordinates (pixels)
+            y_data = point[0] / scale
+            x_data = point[1] / scale
+            # Convert data coordinates to mm
+            x_mm = self.top_left_coordinate[1] + x_data * self.viewer_pixel_size_mm
+            y_mm = self.top_left_coordinate[0] + y_data * self.viewer_pixel_size_mm
             shape_data_mm.append([x_mm, y_mm])
         return np.array(shape_data_mm)
 
     def convert_mm_to_viewer_shapes(self, shapes_mm):
         viewer_shapes = []
+        # Scale factor: viewer uses um (mm * 1000), so world coords = data coords * (pixel_size_mm * 1000)
+        scale = self.viewer_pixel_size_mm * 1000
         for shape_mm in shapes_mm:
             viewer_shape = []
             for point_mm in shape_mm:
+                # Convert mm to data coordinates (pixels)
                 x_data = (point_mm[0] - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm
                 y_data = (point_mm[1] - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm
-                world_coords = self.viewer.layers[0].data_to_world([y_data, x_data])
+                # Convert data coordinates to world coordinates (um)
+                world_coords = [y_data * scale, x_data * scale]
                 viewer_shape.append(world_coords)
             viewer_shapes.append(viewer_shape)
         return viewer_shapes
@@ -8373,8 +8385,8 @@ class NapariMosaicDisplayWidget(QWidget):
         x_mm -= (image.shape[1] * image_pixel_size_mm) / 2
         y_mm -= (image.shape[0] * image_pixel_size_mm) / 2
 
-        if not self.viewer.layers:
-            # initialize first layer
+        if not self.layers_initialized:
+            # initialize mosaic state for first image (or after clearAllLayers)
             self.layers_initialized = True
             self.signal_layers_initialized.emit()
             self.viewer_pixel_size_mm = image_pixel_size_mm
@@ -8386,6 +8398,11 @@ class NapariMosaicDisplayWidget(QWidget):
             ]
             self.top_left_coordinate = [y_mm, x_mm]
             self.mosaic_dtype = image_dtype
+
+            # Update Manual ROI shapes to new coordinate system if they exist
+            if self.shape_layer is not None and len(self.shapes_mm) > 0:
+                new_shapes = self.convert_mm_to_viewer_shapes(self.shapes_mm)
+                self.shape_layer.data = new_shapes
         else:
             # convert image dtype and scale if necessary
             image = self.convertImageDtype(image, self.mosaic_dtype)
@@ -8563,29 +8580,19 @@ class NapariMosaicDisplayWidget(QWidget):
             self.signal_shape_drawn.emit([])
 
     def clearAllLayers(self):
-        # Keep the Manual ROI layer and clear the content of all other layers
-        # Replace layer data with 1x1 arrays to actually free memory
-        for layer in self.viewer.layers:
-            if layer.name == "Manual ROI":
-                continue
+        # Remove all layers except Manual ROI to free memory and allow proper reinitialization
+        layers_to_remove = [layer for layer in self.viewer.layers if layer.name != "Manual ROI"]
+        for layer in layers_to_remove:
+            self.viewer.layers.remove(layer)
 
-            if hasattr(layer, "data") and hasattr(layer.data, "shape"):
-                # Replace with 1x1 array to free memory (instead of same-size zero array)
-                if len(layer.data.shape) == 3 and layer.data.shape[2] == 3:  # RGB
-                    layer.data = np.zeros((1, 1, 3), dtype=layer.data.dtype)
-                else:  # Grayscale
-                    layer.data = np.zeros((1, 1), dtype=layer.data.dtype)
-
+        # Reset mosaic-related state so reinitialization logic can run cleanly
         self.channels = set()
-        # Reset viewer extents so next acquisition rebuilds the canvas properly
         self.viewer_extents = None
-
-        for layer in self.viewer.layers:
-            layer.refresh()
+        self.layers_initialized = False
+        self.top_left_coordinate = None
+        self.mosaic_dtype = None
 
         # Force garbage collection to return memory to OS
-        import gc
-
         gc.collect()
 
         self.signal_clear_viewer.emit()
