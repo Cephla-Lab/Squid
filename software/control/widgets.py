@@ -8564,23 +8564,29 @@ class NapariMosaicDisplayWidget(QWidget):
 
     def clearAllLayers(self):
         # Keep the Manual ROI layer and clear the content of all other layers
+        # Replace layer data with 1x1 arrays to actually free memory
         for layer in self.viewer.layers:
             if layer.name == "Manual ROI":
                 continue
 
             if hasattr(layer, "data") and hasattr(layer.data, "shape"):
-                # Create an empty array matching the layer's dimensions
+                # Replace with 1x1 array to free memory (instead of same-size zero array)
                 if len(layer.data.shape) == 3 and layer.data.shape[2] == 3:  # RGB
-                    empty_data = np.zeros((layer.data.shape[0], layer.data.shape[1], 3), dtype=layer.data.dtype)
+                    layer.data = np.zeros((1, 1, 3), dtype=layer.data.dtype)
                 else:  # Grayscale
-                    empty_data = np.zeros((layer.data.shape[0], layer.data.shape[1]), dtype=layer.data.dtype)
-
-                layer.data = empty_data
+                    layer.data = np.zeros((1, 1), dtype=layer.data.dtype)
 
         self.channels = set()
+        # Reset viewer extents so next acquisition rebuilds the canvas properly
+        self.viewer_extents = None
 
         for layer in self.viewer.layers:
             layer.refresh()
+
+        # Force garbage collection to return memory to OS
+        import gc
+
+        gc.collect()
 
         self.signal_clear_viewer.emit()
 
