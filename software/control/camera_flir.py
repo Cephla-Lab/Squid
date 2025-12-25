@@ -3,7 +3,20 @@ import cv2
 import time
 import numpy as np
 import PySpin
+from typing import Optional, Callable, Sequence, Tuple
+import threading
+
 from control._def import *
+from squid.abc import (
+    AbstractCamera,
+    CameraError,
+    CameraFrame,
+    CameraFrameFormat,
+    CameraGainRange,
+    CameraAcquisitionMode,
+)
+from squid.config import CameraConfig, CameraPixelFormat, FLIRCameraModel, CameraSensor
+import control._def as _def
 
 
 class ReadType:
@@ -409,7 +422,6 @@ class ImageEventHandler(PySpin.ImageEventHandler):
         self._processor.SetColorProcessing(PySpin.SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR)
 
     def OnImageEvent(self, raw_image):
-
         if raw_image.IsIncomplete():
             print("Image incomplete with image status %i ..." % raw_image.GetImageStatus())
             return
@@ -438,31 +450,69 @@ class ImageEventHandler(PySpin.ImageEventHandler):
                     numpy_image = converted_image.GetNDArray()
                 if self.camera.pixel_format == "MONO12":
                     numpy_image = numpy_image << 4
-        self.camera.current_frame = numpy_image
-        self.camera.frame_ID_software = self.camera.frame_ID_software + 1
-        self.camera.frame_ID = raw_image.GetFrameID()
-        if self.camera.trigger_mode == TriggerMode.HARDWARE:
-            if self.camera.frame_ID_offset_hardware_trigger == None:
-                self.camera.frame_ID_offset_hardware_trigger = self.camera.frame_ID
-            self.camera.frame_ID = self.camera.frame_ID - self.camera.frame_ID_offset_hardware_trigger
-        self.camera.timestamp = time.time()
-        self.camera.new_image_callback_external(self.camera)
+
+        # Process frame and create CameraFrame object
+        processed_frame = self.camera._process_raw_frame(numpy_image)
+
+        with self.camera._frame_lock:
+            self.camera.frame_ID_software = self.camera.frame_ID_software + 1
+            self.camera.frame_ID = raw_image.GetFrameID()
+            if self.camera.trigger_mode == TriggerMode.HARDWARE:
+                if self.camera.frame_ID_offset_hardware_trigger == None:
+                    self.camera.frame_ID_offset_hardware_trigger = self.camera.frame_ID
+                self.camera.frame_ID = self.camera.frame_ID - self.camera.frame_ID_offset_hardware_trigger
+            self.camera.timestamp = time.time()
+
+            camera_frame = CameraFrame(
+                frame_id=self.camera.frame_ID,
+                timestamp=self.camera.timestamp,
+                frame=processed_frame,
+                frame_format=self.camera.get_frame_format(),
+                frame_pixel_format=self.camera.get_pixel_format(),
+            )
+            self.camera.current_frame = camera_frame
+
+        # Propagate to callbacks
+        self.camera._propogate_frame(camera_frame)
 
 
-class Camera(object):
+class FLIRCamera(AbstractCamera):
 
-    def __init__(self, sn=None, is_global_shutter=False, rotate_image_angle=None, flip_image=None, is_color=False):
+    def __init__(
+        self,
+        camera_config: CameraConfig,
+        hw_trigger_fn: Optional[Callable[[Optional[float]], bool]],
+        hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]],
+    ):
+        super().__init__(camera_config, hw_trigger_fn, hw_set_strobe_delay_ms_fn)
+
+        # Map camera models to sensors
+        model_to_sensor = {
+            FLIRCameraModel.BFS_U3_63S4M_C: CameraSensor.IMX178,
+        }
+
+        # Set pixel size based on camera model/sensor
+        if camera_config.camera_model and camera_config.camera_model in model_to_sensor:
+            sensor = model_to_sensor[camera_config.camera_model]
+            self.PIXEL_SIZE_UM = _def.CAMERA_PIXEL_SIZE_UM[sensor.value]
+        else:
+            self.PIXEL_SIZE_UM = _def.CAMERA_PIXEL_SIZE_UM[CameraSensor.IMX178.value]
+
+        self._frame_lock = threading.Lock()
+        self._last_trigger_timestamp = 0
+        self._trigger_sent = threading.Event()
+        self._trigger_sent.clear()
 
         self.py_spin_system = PySpin.System.GetInstance()
         self.camera_list = self.py_spin_system.GetCameras()
-        self.sn = sn
-        self_is_color = is_color
-        # many to be purged
-        self.is_global_shutter = is_global_shutter
+        self.sn = camera_config.serial_number
+
+        # Camera-specific attributes
+        self.is_global_shutter = False  # Can be made configurable
         self.device_info_dict = None
         self.device_index = 0
         self.camera = None  # PySpin CameraPtr type
-        self.is_color = None
+        self.is_color = False  # Will be determined from config
         self.gamma_lut = None
         self.contrast_lut = None
         self.color_correction_param = None
@@ -476,9 +526,6 @@ class Camera(object):
         self.auto_gain_mode = None
         self.auto_wb_mode = None
         self.auto_wb_profile = None
-
-        self.rotate_image_angle = rotate_image_angle
-        self.flip_image = flip_image
 
         self.exposure_time = 1  # unit: ms
         self.analog_gain = 0
@@ -516,24 +563,28 @@ class Camera(object):
         self.is_live = False  # this determines whether a new frame received will be handled in the streamHandler
 
         self.image_event_handler = ImageEventHandler(self)
-        # mainly for discarding the last frame received after stop_live() is called, where illumination is being turned off during exposure
 
-    def open(self, index=0, is_color=None):
-        if is_color is None:
-            is_color = self.is_color
+        # Open the camera
+        self._open_camera(camera_config)
+
+    def _open_camera(self, camera_config: CameraConfig):
+        """Internal method to open and initialize the camera."""
         try:
-            self.camera.DeInit()
-            del self.camera
+            if self.camera:
+                self.camera.DeInit()
+                del self.camera
         except AttributeError:
             pass
+
         self.camera_list.Clear()
         self.camera_list = self.py_spin_system.GetCameras()
         device_num = self.camera_list.GetSize()
         if device_num == 0:
-            raise RuntimeError("Could not find any USB camera devices!")
+            raise CameraError("Could not find any USB camera devices!")
+
         if self.sn is None:
-            self.device_index = index
-            self.camera = self.camera_list.GetByIndex(index)
+            self.device_index = 0
+            self.camera = self.camera_list.GetByIndex(0)
         else:
             self.camera = self.camera_list.GetBySerial(str(self.sn))
 
@@ -542,9 +593,11 @@ class Camera(object):
         self.camera.Init()
         self.nodemap = self.camera.GetNodeMap()
 
-        self.is_color = is_color
-        if self.is_color:
-            self.set_wb_ratios(2, 1, 2)
+        # Determine if color camera
+        self.is_color = CameraPixelFormat.is_color_format(camera_config.default_pixel_format)
+        if self.is_color and camera_config.default_white_balance_gains:
+            wb = camera_config.default_white_balance_gains
+            self.set_white_balance_gains(wb.r, wb.g, wb.b)
 
         # set to highest possible framerate
         PySpin.CBooleanPtr(self.nodemap.GetNode("AcquisitionFrameRateEnable")).SetValue(True)
@@ -566,67 +619,33 @@ class Camera(object):
         self.WidthMaxAbsolute = PySpin.CIntegerPtr(self.nodemap.GetNode("SensorWidth")).GetValue()
         self.HeightMaxAbsolute = PySpin.CIntegerPtr(self.nodemap.GetNode("SensorHeight")).GetValue()
 
-        self.set_ROI(0, 0)
+        self.set_region_of_interest(0, 0, self.WidthMaxAbsolute, self.HeightMaxAbsolute)
 
-        self.WidthMaxAbsolute = PySpin.CIntegerPtr(self.nodemap.GetNode("WidthMax")).GetValue()
-        self.HeightMaxAbsolute = PySpin.CIntegerPtr(self.nodemap.GetNode("HeightMax")).GetValue()
-
-        self.set_ROI(0, 0, self.WidthMaxAbsolute, self.HeightMaxAbsolute)
-
-        self.WidthMax = self.WidthMaxAbsolute
-        self.HeightMax = self.HeightMaxAbsolute
+        self.WidthMax = PySpin.CIntegerPtr(self.nodemap.GetNode("WidthMax")).GetValue()
+        self.HeightMax = PySpin.CIntegerPtr(self.nodemap.GetNode("HeightMax")).GetValue()
         self.OffsetX = PySpin.CIntegerPtr(self.nodemap.GetNode("OffsetX")).GetValue()
         self.OffsetY = PySpin.CIntegerPtr(self.nodemap.GetNode("OffsetY")).GetValue()
 
         # disable gamma
         PySpin.CBooleanPtr(self.nodemap.GetNode("GammaEnable")).SetValue(False)
 
-    def set_callback(self, function):
-        self.new_image_callback_external = function
+        # Apply default configuration
+        if camera_config.default_pixel_format:
+            self.set_pixel_format(camera_config.default_pixel_format)
 
-    def enable_callback(self):
-        if self.callback_is_enabled == False:
-            # stop streaming
-            if self.is_streaming:
-                was_streaming = True
-                self.stop_streaming()
-            else:
-                was_streaming = False
-            # enable callback
-            try:
-                self.camera.RegisterEventHandler(self.image_event_handler)
-                self.callback_is_enabled = True
-            except PySpin.SpinnakerException as ex:
-                print("Error: %s" % ex)
-            # resume streaming if it was on
-            if was_streaming:
-                self.start_streaming()
-            self.callback_is_enabled = True
-        else:
-            pass
+        if camera_config.default_binning:
+            self.set_binning(camera_config.default_binning[0], camera_config.default_binning[1])
 
-    def disable_callback(self):
-        if self.callback_is_enabled == True:
-            # stop streaming
-            if self.is_streaming:
-                was_streaming = True
-                self.stop_streaming()
-            else:
-                was_streaming = False
-            try:
-                self.camera.UnregisterEventHandler(self.image_event_handler)
-                self.callback_is_enabled = False
-            except PySpin.SpinnakerException as ex:
-                print("Error: %s" % ex)
-            # resume streaming if it was on
-            if was_streaming:
-                self.start_streaming()
-        else:
-            pass
+        if camera_config.default_roi and any(r is not None for r in camera_config.default_roi):
+            roi = camera_config.default_roi
+            offset_x = roi[0] if roi[0] is not None else 0
+            offset_y = roi[1] if roi[1] is not None else 0
+            width = roi[2] if roi[2] is not None else self.WidthMax
+            height = roi[3] if roi[3] is not None else self.HeightMax
+            self.set_region_of_interest(offset_x, offset_y, width, height)
 
-    def open_by_sn(self, sn, is_color=None):
-        self.sn = sn
-        self.open(is_color=is_color)
+    # Callback management now handled by base class AbstractCamera
+    # Users should use add_frame_callback() and remove_frame_callback() instead
 
     def close(self):
         try:
@@ -648,14 +667,14 @@ class Camera(object):
         self.last_converted_image = None
         self.last_numpy_image = None
 
-    def set_exposure_time(self, exposure_time):  ## NOTE: Disables auto-exposure
+    def set_exposure_time(self, exposure_time_ms: float):
+        """Sets the exposure time in ms. Disables auto-exposure."""
         use_strobe = self.trigger_mode == TriggerMode.HARDWARE  # true if using hardware trigger
         self.nodemap = self.camera.GetNodeMap()
         node_auto_exposure = PySpin.CEnumerationPtr(self.nodemap.GetNode("ExposureAuto"))
         node_auto_exposure_off = PySpin.CEnumEntryPtr(node_auto_exposure.GetEntryByName("Off"))
         if not PySpin.IsReadable(node_auto_exposure_off) or not PySpin.IsWritable(node_auto_exposure):
-            print("Unable to set exposure manually (cannot disable auto exposure)")
-            return
+            raise CameraError("Unable to set exposure manually (cannot disable auto exposure)")
 
         if node_auto_exposure.GetIntValue() != node_auto_exposure_off.GetValue():
             self.auto_exposure_mode = PySpin.CEnumEntryPtr(node_auto_exposure.GetCurrentEntry()).GetValue()
@@ -664,14 +683,14 @@ class Camera(object):
 
         node_exposure_time = PySpin.CFloatPtr(self.nodemap.GetNode("ExposureTime"))
         if not PySpin.IsWritable(node_exposure_time):
-            print("Unable to set exposure manually after disabling auto exposure")
+            raise CameraError("Unable to set exposure manually after disabling auto exposure")
 
         if use_strobe == False or self.is_global_shutter:
-            self.exposure_time = exposure_time
-            node_exposure_time.SetValue(exposure_time * 1000.0)
+            self.exposure_time = exposure_time_ms
+            node_exposure_time.SetValue(exposure_time_ms * 1000.0)
         else:
             # set the camera exposure time such that the active exposure time (illumination on time) is the desired value
-            self.exposure_time = exposure_time
+            self.exposure_time = exposure_time_ms
             # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
             camera_exposure_time = (
                 self.exposure_delay_us
@@ -681,17 +700,37 @@ class Camera(object):
             )  # add an additional 500 us so that the illumination can fully turn off before rows start to end exposure
             node_exposure_time.SetValue(camera_exposure_time)
 
+            # Set hardware strobe delay if in hardware trigger mode
+            if self._hw_set_strobe_delay_ms_fn:
+                strobe_time_ms = self.get_strobe_time()
+                self._hw_set_strobe_delay_ms_fn(strobe_time_ms)
+
+    def get_exposure_time(self) -> float:
+        """Returns the current exposure time in milliseconds."""
+        return self.exposure_time
+
+    def get_exposure_limits(self) -> Tuple[float, float]:
+        """Return the valid range of exposure times in inclusive milliseconds."""
+        return (self.EXPOSURE_TIME_MS_MIN, self.EXPOSURE_TIME_MS_MAX)
+
+    def get_strobe_time(self) -> float:
+        """
+        Given the current exposure time, return the strobe time such that
+        get_strobe_time() + get_exposure_time() == total frame time. In milliseconds.
+        """
+        return self.strobe_delay_us / 1000.0
+
     def update_camera_exposure_time(self):
         self.set_exposure_time(self.exposure_time)
 
-    def set_analog_gain(self, analog_gain):  ## NOTE: Disables auto-gain
+    def set_analog_gain(self, analog_gain: float):
+        """Set analog gain as an input multiple. Disables auto-gain."""
         self.nodemap = self.camera.GetNodeMap()
 
         node_auto_gain = PySpin.CEnumerationPtr(self.nodemap.GetNode("GainAuto"))
         node_auto_gain_off = PySpin.CEnumEntryPtr(node_auto_gain.GetEntryByName("Off"))
         if not PySpin.IsReadable(node_auto_gain_off) or not PySpin.IsWritable(node_auto_gain):
-            print("Unable to set gain manually (cannot disable auto gain)")
-            return
+            raise CameraError("Unable to set gain manually (cannot disable auto gain)")
 
         if node_auto_gain.GetIntValue() != node_auto_gain_off.GetValue():
             self.auto_gain_mode = PySpin.CEnumEntryPtr(node_auto_gain.GetCurrentEntry()).GetValue()
@@ -701,13 +740,21 @@ class Camera(object):
         node_gain = PySpin.CFloatPtr(self.nodemap.GetNode("Gain"))
 
         if not PySpin.IsWritable(node_gain):
-            print("Unable to set gain manually after disabling auto gain")
-            return
+            raise CameraError("Unable to set gain manually after disabling auto gain")
 
         self.analog_gain = analog_gain
         node_gain.SetValue(analog_gain)
 
-    def get_awb_ratios(self):  ## NOTE: Enables auto WB, defaults to continuous WB
+    def get_analog_gain(self) -> float:
+        """Returns gain in the same units as set_analog_gain."""
+        return self.analog_gain
+
+    def get_gain_range(self) -> CameraGainRange:
+        """Returns the gain range, and minimum gain step, for this camera."""
+        return CameraGainRange(min_gain=self.GAIN_MIN, max_gain=self.GAIN_MAX, gain_step=self.GAIN_STEP)
+
+    def get_white_balance_gains(self) -> Tuple[float, float, float]:
+        """Returns the (R, G, B) white balance gains."""
         self.nodemap = self.camera.GetNodeMap()
         node_balance_white_auto = PySpin.CEnumerationPtr(self.nodemap.GetNode("BalanceWhiteAuto"))
         # node_balance_white_auto_options = [PySpin.CEnumEntryPtr(entry).GetName() for entry in node_balance_white_auto.GetEntries()]
@@ -783,20 +830,20 @@ class Camera(object):
 
         return (awb_r, awb_g, awb_b)
 
-    def set_wb_ratios(self, wb_r=None, wb_g=None, wb_b=None):  ## NOTE disables auto WB, stores extant
-        ## auto WB mode if any
+    def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
+        """Set the (R, G, B) white balance gains. Disables auto WB."""
         self.nodemap = self.camera.GetNodeMap()
         node_balance_white_auto = PySpin.CEnumerationPtr(self.nodemap.GetNode("BalanceWhiteAuto"))
         node_balance_ratio_select = PySpin.CEnumerationPtr(self.nodemap.GetNode("BalanceRatioSelector"))
         node_balance_white_auto_off = PySpin.CEnumEntryPtr(node_balance_white_auto.GetEntryByName("Off"))
         if not PySpin.IsReadable(node_balance_white_auto) or not PySpin.IsReadable(node_balance_white_auto_off):
-            print("Unable to check if white balance is auto or not")
+            self._log.warning("Unable to check if white balance is auto or not")
         elif node_balance_white_auto.GetIntValue() != node_balance_white_auto_off.GetValue():
             self.auto_wb_value = node_balance_white_auto.GetIntValue()
             if PySpin.IsWritable(node_balance_white_auto):
                 node_balance_white_auto.SetIntValue(node_balance_white_auto_off.GetValue())
             else:
-                print("Cannot turn off auto WB")
+                self._log.warning("Cannot turn off auto WB")
 
         balance_ratio_red = PySpin.CEnumEntryPtr(node_balance_ratio_select.GetEntryByName("Red"))
         balance_ratio_green = PySpin.CEnumEntryPtr(node_balance_ratio_select.GetEntryByName("Green"))
@@ -808,29 +855,47 @@ class Camera(object):
             or not PySpin.IsReadable(balance_ratio_green)
             or not PySpin.IsReadable(balance_ratio_blue)
         ):
-            print("Unable to move balance ratio selector")
-            return
+            raise CameraError("Unable to move balance ratio selector")
 
         node_balance_ratio_select.SetIntValue(balance_ratio_red.GetValue())
         if not PySpin.IsWritable(node_balance_ratio):
-            print("Unable to write balance ratio for red")
-        else:
-            if wb_r is not None:
-                node_balance_ratio.SetValue(wb_r)
+            raise CameraError("Unable to write balance ratio for red")
+        node_balance_ratio.SetValue(red_gain)
 
         node_balance_ratio_select.SetIntValue(balance_ratio_green.GetValue())
         if not PySpin.IsWritable(node_balance_ratio):
-            print("Unable to write balance ratio for green")
-        else:
-            if wb_g is not None:
-                node_balance_ratio.SetValue(wb_g)
+            raise CameraError("Unable to write balance ratio for green")
+        node_balance_ratio.SetValue(green_gain)
 
         node_balance_ratio_select.SetIntValue(balance_ratio_blue.GetValue())
         if not PySpin.IsWritable(node_balance_ratio):
-            print("Unable to write balance ratio for blue")
+            raise CameraError("Unable to write balance ratio for blue")
+        node_balance_ratio.SetValue(blue_gain)
+
+    def set_auto_white_balance_gains(self, on: bool):
+        """Turn auto white balance on or off."""
+        self.nodemap = self.camera.GetNodeMap()
+        node_balance_white_auto = PySpin.CEnumerationPtr(self.nodemap.GetNode("BalanceWhiteAuto"))
+
+        if on:
+            # Try continuous mode first
+            node_balance_white_continuous = PySpin.CEnumEntryPtr(node_balance_white_auto.GetEntryByName("Continuous"))
+            if PySpin.IsReadable(node_balance_white_continuous) and PySpin.IsWritable(node_balance_white_auto):
+                node_balance_white_auto.SetIntValue(node_balance_white_continuous.GetValue())
+            else:
+                # Fallback to Once mode
+                node_balance_white_once = PySpin.CEnumEntryPtr(node_balance_white_auto.GetEntryByName("Once"))
+                if PySpin.IsReadable(node_balance_white_once) and PySpin.IsWritable(node_balance_white_auto):
+                    node_balance_white_auto.SetIntValue(node_balance_white_once.GetValue())
+                else:
+                    raise CameraError("Cannot turn on auto white balance")
         else:
-            if wb_b is not None:
-                node_balance_ratio.SetValue(wb_b)
+            # Turn off auto WB
+            node_balance_white_auto_off = PySpin.CEnumEntryPtr(node_balance_white_auto.GetEntryByName("Off"))
+            if PySpin.IsReadable(node_balance_white_auto_off) and PySpin.IsWritable(node_balance_white_auto):
+                node_balance_white_auto.SetIntValue(node_balance_white_auto_off.GetValue())
+            else:
+                raise CameraError("Cannot turn off auto white balance")
 
     def set_reverse_x(self, value):
         self.nodemap = self.camera.GetNodeMap()
@@ -851,252 +916,398 @@ class Camera(object):
             node_reverse_y.SetValue(bool(value))
 
     def start_streaming(self):
-        self.camera.Init()
-
+        """Start camera frame streaming."""
         if not self.is_streaming:
             try:
+                # Register the event handler for callbacks
+                if not self.callback_is_enabled:
+                    self.camera.RegisterEventHandler(self.image_event_handler)
+                    self.callback_is_enabled = True
                 self.camera.BeginAcquisition()
             except PySpin.SpinnakerException as ex:
-                print("Spinnaker exception: " + str(ex))
+                raise CameraError(f"Spinnaker exception during start_streaming: {str(ex)}")
         if self.camera.IsStreaming():
-            print("Camera is streaming")
+            self._log.debug("Camera is streaming")
             self.is_streaming = True
+            self._trigger_sent.clear()
 
     def stop_streaming(self):
+        """Stop camera frame streaming."""
         if self.is_streaming:
             try:
+                if self.callback_is_enabled:
+                    self.camera.UnregisterEventHandler(self.image_event_handler)
+                    self.callback_is_enabled = False
                 self.camera.EndAcquisition()
             except PySpin.SpinnakerException as ex:
-                print("Spinnaker exception: " + str(ex))
+                raise CameraError(f"Spinnaker exception during stop_streaming: {str(ex)}")
         if not self.camera.IsStreaming():
-            print("Camera is not streaming")
+            self._log.debug("Camera is not streaming")
             self.is_streaming = False
+            self._trigger_sent.clear()
 
-    def set_pixel_format(self, pixel_format, convert_if_not_native=False):
-        if self.is_streaming == True:
-            was_streaming = True
-            self.stop_streaming()
+    def get_is_streaming(self):
+        """Returns whether the camera is currently streaming."""
+        return self.is_streaming
+
+    # Black level methods
+    def set_black_level(self, black_level: float):
+        """Sets the black level of captured images."""
+        raise NotImplementedError("Black level control not implemented for FLIR cameras")
+
+    def get_black_level(self) -> float:
+        """Gets the black level set on the camera."""
+        raise NotImplementedError("Black level control not implemented for FLIR cameras")
+
+    def set_pixel_format(self, pixel_format: CameraPixelFormat, convert_if_not_native=False):
+        """Set the pixel format of the camera."""
+        # Convert enum to string if needed
+        if isinstance(pixel_format, CameraPixelFormat):
+            pixel_format_str = pixel_format.value
         else:
-            was_streaming = False
-        self.nodemap = self.camera.GetNodeMap()
+            pixel_format_str = str(pixel_format)
 
-        node_pixel_format = PySpin.CEnumerationPtr(self.nodemap.GetNode("PixelFormat"))
-        node_adc_bit_depth = PySpin.CEnumerationPtr(self.nodemap.GetNode("AdcBitDepth"))
+        with self._pause_streaming():
+            self.nodemap = self.camera.GetNodeMap()
 
-        if PySpin.IsWritable(node_pixel_format) and PySpin.IsWritable(node_adc_bit_depth):
-            pixel_selection = None
-            pixel_size_byte = None
-            adc_bit_depth = None
-            fallback_pixel_selection = None
-            conversion_pixel_format = None
-            if pixel_format == "MONO8":
-                pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono8"))
-                conversion_pixel_format = PySpin.PixelFormat_Mono8
-                pixel_size_byte = 1
-                adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit10"))
-            if pixel_format == "MONO10":
-                pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono10"))
-                fallback_pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono10p"))
-                conversion_pixel_format = PySpin.PixelFormat_Mono8
-                pixel_size_byte = 1
-                adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit10"))
-            if pixel_format == "MONO12":
-                pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono12"))
-                fallback_pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono12p"))
-                conversion_pixel_format = PySpin.PixelFormat_Mono16
-                pixel_size_byte = 2
-                adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit12"))
-            if pixel_format == "MONO14":  # MONO14/16 are aliases of each other, since they both
-                # do ADC at bit depth 14
-                pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono16"))
-                conversion_pixel_format = PySpin.PixelFormat_Mono16
-                pixel_size_byte = 2
-                adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit14"))
-            if pixel_format == "MONO16":
-                pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono16"))
-                conversion_pixel_format = PySpin.PixelFormat_Mono16
-                pixel_size_byte = 2
-                adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit14"))
-            if pixel_format == "BAYER_RG8":
-                pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("BayerRG8"))
-                conversion_pixel_format = PySpin.PixelFormat_BayerRG8
-                pixel_size_byte = 1
-                adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit10"))
-            if pixel_format == "BAYER_RG12":
-                pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("BayerRG12"))
-                conversion_pixel_format = PySpin.PixelFormat_BayerRG12
-                pixel_size_byte = 2
-                adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit12"))
+            node_pixel_format = PySpin.CEnumerationPtr(self.nodemap.GetNode("PixelFormat"))
+            node_adc_bit_depth = PySpin.CEnumerationPtr(self.nodemap.GetNode("AdcBitDepth"))
 
-            if pixel_selection is not None and adc_bit_depth is not None:
-                if PySpin.IsReadable(pixel_selection):
-                    node_pixel_format.SetIntValue(pixel_selection.GetValue())
-                    self.pixel_size_byte = pixel_size_byte
-                    self.pixel_format = pixel_format
-                    self.convert_pixel_format = False
-                    if PySpin.IsReadable(adc_bit_depth):
-                        node_adc_bit_depth.SetIntValue(adc_bit_depth.GetValue())
-                elif PySpin.IsReadable(fallback_pixel_selection):
-                    node_pixel_format.SetIntValue(fallback_pixel_selection.GetValue())
-                    self.pixel_size_byte = pixel_size_byte
-                    self.pixel_format = pixel_format
-                    self.conversion_pixel_format = conversion_pixel_format
-                    self.convert_pixel_format = True
-                    if PySpin.IsReadable(adc_bit_depth):
-                        node_adc_bit_depth.SetIntValue(adc_bit_depth.GetValue())
-                else:
-                    self.convert_pixel_format = convert_if_not_native
-                    if convert_if_not_native:
+            if PySpin.IsWritable(node_pixel_format) and PySpin.IsWritable(node_adc_bit_depth):
+                pixel_selection = None
+                pixel_size_byte = None
+                adc_bit_depth = None
+                fallback_pixel_selection = None
+                conversion_pixel_format = None
+                if pixel_format_str == "MONO8":
+                    pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono8"))
+                    conversion_pixel_format = PySpin.PixelFormat_Mono8
+                    pixel_size_byte = 1
+                    adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit10"))
+                if pixel_format_str == "MONO10":
+                    pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono10"))
+                    fallback_pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono10p"))
+                    conversion_pixel_format = PySpin.PixelFormat_Mono8
+                    pixel_size_byte = 1
+                    adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit10"))
+                if pixel_format_str == "MONO12":
+                    pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono12"))
+                    fallback_pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono12p"))
+                    conversion_pixel_format = PySpin.PixelFormat_Mono16
+                    pixel_size_byte = 2
+                    adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit12"))
+                if pixel_format_str == "MONO14":  # MONO14/16 are aliases of each other, since they both
+                    # do ADC at bit depth 14
+                    pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono16"))
+                    conversion_pixel_format = PySpin.PixelFormat_Mono16
+                    pixel_size_byte = 2
+                    adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit14"))
+                if pixel_format_str == "MONO16":
+                    pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("Mono16"))
+                    conversion_pixel_format = PySpin.PixelFormat_Mono16
+                    pixel_size_byte = 2
+                    adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit14"))
+                if pixel_format_str == "BAYER_RG8":
+                    pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("BayerRG8"))
+                    conversion_pixel_format = PySpin.PixelFormat_BayerRG8
+                    pixel_size_byte = 1
+                    adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit10"))
+                if pixel_format_str == "BAYER_RG12":
+                    pixel_selection = PySpin.CEnumEntryPtr(node_pixel_format.GetEntryByName("BayerRG12"))
+                    conversion_pixel_format = PySpin.PixelFormat_BayerRG12
+                    pixel_size_byte = 2
+                    adc_bit_depth = PySpin.CEnumEntryPtr(node_adc_bit_depth.GetEntryByName("Bit12"))
+
+                if pixel_selection is not None and adc_bit_depth is not None:
+                    if PySpin.IsReadable(pixel_selection):
+                        node_pixel_format.SetIntValue(pixel_selection.GetValue())
+                        self.pixel_size_byte = pixel_size_byte
+                        self.pixel_format = pixel_format_str
+                        self.convert_pixel_format = False
+                        if PySpin.IsReadable(adc_bit_depth):
+                            node_adc_bit_depth.SetIntValue(adc_bit_depth.GetValue())
+                    elif PySpin.IsReadable(fallback_pixel_selection):
+                        node_pixel_format.SetIntValue(fallback_pixel_selection.GetValue())
+                        self.pixel_size_byte = pixel_size_byte
+                        self.pixel_format = pixel_format_str
                         self.conversion_pixel_format = conversion_pixel_format
-                    print("Pixel format not available for this camera")
-                    if PySpin.IsReadable(adc_bit_depth):
-                        node_adc_bit_depth.SetIntValue(adc_bit_depth.GetValue())
-                        print("Still able to set ADC bit depth to " + adc_bit_depth.GetSymbolic())
+                        self.convert_pixel_format = True
+                        if PySpin.IsReadable(adc_bit_depth):
+                            node_adc_bit_depth.SetIntValue(adc_bit_depth.GetValue())
+                    else:
+                        self.convert_pixel_format = convert_if_not_native
+                        if convert_if_not_native:
+                            self.conversion_pixel_format = conversion_pixel_format
+                        self._log.warning("Pixel format not available for this camera")
+                        if PySpin.IsReadable(adc_bit_depth):
+                            node_adc_bit_depth.SetIntValue(adc_bit_depth.GetValue())
+                            self._log.info("Still able to set ADC bit depth to " + adc_bit_depth.GetSymbolic())
+                else:
+                    raise ValueError(f"Pixel format {pixel_format_str} not implemented for FLIR camera")
+            else:
+                raise CameraError("pixel format is not writable")
+
+            # update the exposure delay and strobe delay
+            self.exposure_delay_us = self.exposure_delay_us_8bit * self.pixel_size_byte
+            self.strobe_delay_us = self.exposure_delay_us + self.row_period_us * self.pixel_size_byte * (
+                self.row_numbers - 1
+            )
+
+    def get_pixel_format(self) -> CameraPixelFormat:
+        """Returns the current pixel format."""
+        if self.pixel_format:
+            try:
+                return CameraPixelFormat(self.pixel_format)
+            except ValueError:
+                self._log.warning(f"Unknown pixel format {self.pixel_format}, returning MONO8")
+                return CameraPixelFormat.MONO8
+        return CameraPixelFormat.MONO8
+
+    def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
+        """Returns the list of pixel formats supported by the camera."""
+        return [
+            CameraPixelFormat.MONO8,
+            CameraPixelFormat.MONO10,
+            CameraPixelFormat.MONO12,
+            CameraPixelFormat.MONO14,
+            CameraPixelFormat.MONO16,
+            CameraPixelFormat.BAYER_RG8,
+            CameraPixelFormat.BAYER_RG12,
+        ]
+
+    def set_frame_format(self, frame_format: CameraFrameFormat):
+        """Set the frame format. FLIR cameras only support RAW."""
+        if frame_format != CameraFrameFormat.RAW:
+            raise ValueError("Only the RAW frame format is supported by FLIR cameras.")
+        return True
+
+    def get_frame_format(self) -> CameraFrameFormat:
+        """Returns the current frame format."""
+        return CameraFrameFormat.RAW
+
+    def get_resolution(self) -> Tuple[int, int]:
+        """Returns the maximum resolution of the camera under the current binning setting."""
+        return (self.Width, self.Height)
+
+    def set_binning(self, binning_factor_x: int, binning_factor_y: int):
+        """Set the binning factor of the camera."""
+        # FLIR cameras typically handle binning through the Spinnaker API
+        # For now, only support 1x1 binning (no binning)
+        if binning_factor_x != 1 or binning_factor_y != 1:
+            raise NotImplementedError("Binning has not been implemented for this FLIR camera yet.")
+
+    def get_binning(self) -> Tuple[int, int]:
+        """Return the (binning_factor_x, binning_factor_y) of the camera right now."""
+        return (1, 1)
+
+    def get_binning_options(self) -> Sequence[Tuple[int, int]]:
+        """Return the list of binning options supported by the camera."""
+        return [(1, 1)]
+
+    def get_pixel_size_unbinned_um(self) -> float:
+        """Returns the pixel size without binning in microns."""
+        return self.PIXEL_SIZE_UM
+
+    def get_pixel_size_binned_um(self) -> float:
+        """Returns the pixel size after binning in microns."""
+        binning = self.get_binning()
+        return self.PIXEL_SIZE_UM * binning[0]
+
+    def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
+        """Set the acquisition mode of the camera."""
+        with self._pause_streaming():
+            self.nodemap = self.camera.GetNodeMap()
+            node_trigger_mode = PySpin.CEnumerationPtr(self.nodemap.GetNode("TriggerMode"))
+
+            if acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
+                node_trigger_mode_off = PySpin.CEnumEntryPtr(node_trigger_mode.GetEntryByName("Off"))
+                if not PySpin.IsWritable(node_trigger_mode) or not PySpin.IsReadable(node_trigger_mode_off):
+                    raise CameraError("Cannot toggle TriggerMode to Off")
+                node_trigger_mode.SetIntValue(node_trigger_mode_off.GetValue())
+                self.trigger_mode = TriggerMode.CONTINUOUS
+
+            elif acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
+                node_trigger_mode_on = PySpin.CEnumEntryPtr(node_trigger_mode.GetEntryByName("On"))
+                if not PySpin.IsWritable(node_trigger_mode) or not PySpin.IsReadable(node_trigger_mode_on):
+                    raise CameraError("Cannot toggle TriggerMode to On")
+                node_trigger_mode.SetIntValue(node_trigger_mode_on.GetValue())
+
+                node_trigger_source = PySpin.CEnumerationPtr(self.nodemap.GetNode("TriggerSource"))
+                node_trigger_source_software = PySpin.CEnumEntryPtr(node_trigger_source.GetEntryByName("Software"))
+                if not PySpin.IsWritable(node_trigger_source) or not PySpin.IsReadable(node_trigger_source_software):
+                    raise CameraError("Cannot set Trigger source to Software")
+                node_trigger_source.SetIntValue(node_trigger_source_software.GetValue())
+                self.trigger_mode = TriggerMode.SOFTWARE
+
+            elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                node_trigger_mode_on = PySpin.CEnumEntryPtr(node_trigger_mode.GetEntryByName("On"))
+                if not PySpin.IsWritable(node_trigger_mode) or not PySpin.IsReadable(node_trigger_mode_on):
+                    raise CameraError("Cannot toggle TriggerMode to On")
+                node_trigger_mode.SetIntValue(node_trigger_mode_on.GetValue())
+
+                # Use Line2 as default hardware trigger source
+                node_trigger_source = PySpin.CEnumerationPtr(self.nodemap.GetNode("TriggerSource"))
+                node_trigger_source_line2 = PySpin.CEnumEntryPtr(node_trigger_source.GetEntryByName("Line2"))
+                if not PySpin.IsWritable(node_trigger_source) or not PySpin.IsReadable(node_trigger_source_line2):
+                    raise CameraError("Cannot set Trigger source to Line2")
+                node_trigger_source.SetIntValue(node_trigger_source_line2.GetValue())
+
+                # Set trigger activation to rising edge
+                node_trigger_activation = PySpin.CEnumerationPtr(self.nodemap.GetNode("TriggerActivation"))
+                node_trigger_activation_rising = PySpin.CEnumEntryPtr(
+                    node_trigger_activation.GetEntryByName("RisingEdge")
+                )
+                if not PySpin.IsWritable(node_trigger_activation) or not PySpin.IsReadable(
+                    node_trigger_activation_rising
+                ):
+                    raise CameraError("Cannot set trigger activation mode to RisingEdge")
+                node_trigger_activation.SetIntValue(node_trigger_activation_rising.GetValue())
+
+                self.frame_ID_offset_hardware_trigger = None
+                self.trigger_mode = TriggerMode.HARDWARE
 
             else:
-                print("Pixel format not implemented for Squid")
+                raise ValueError(f"Unsupported acquisition mode: {acquisition_mode}")
 
+            self.update_camera_exposure_time()
+        return True
+
+    def get_acquisition_mode(self) -> CameraAcquisitionMode:
+        """Returns the current acquisition mode."""
+        if self.trigger_mode == TriggerMode.CONTINUOUS:
+            return CameraAcquisitionMode.CONTINUOUS
+        elif self.trigger_mode == TriggerMode.SOFTWARE:
+            return CameraAcquisitionMode.SOFTWARE_TRIGGER
+        elif self.trigger_mode == TriggerMode.HARDWARE:
+            return CameraAcquisitionMode.HARDWARE_TRIGGER
         else:
-            print("pixel format is not writable")
+            # Default to continuous if not set
+            return CameraAcquisitionMode.CONTINUOUS
 
-        if was_streaming:
-            self.start_streaming()
+    def send_trigger(self, illumination_time: Optional[float] = None):
+        """Send a trigger to the camera."""
+        if not self.get_is_streaming():
+            raise CameraError("Camera is not streaming, cannot send trigger")
 
-        # update the exposure delay and strobe delay
-        self.exposure_delay_us = self.exposure_delay_us_8bit * self.pixel_size_byte
-        self.strobe_delay_us = self.exposure_delay_us + self.row_period_us * self.pixel_size_byte * (
-            self.row_numbers - 1
-        )
-
-    def set_continuous_acquisition(self):
-        self.nodemap = self.camera.GetNodeMap()
-        node_trigger_mode = PySpin.CEnumerationPtr(self.nodemap.GetNode("TriggerMode"))
-        node_trigger_mode_off = PySpin.CEnumEntryPtr(node_trigger_mode.GetEntryByName("Off"))
-        if not PySpin.IsWritable(node_trigger_mode) or not PySpin.IsReadable(node_trigger_mode_off):
-            print("Cannot toggle TriggerMode")
-            return
-        node_trigger_mode.SetIntValue(node_trigger_mode_off.GetValue())
-        self.trigger_mode = TriggerMode.CONTINUOUS
-        self.update_camera_exposure_time()
-
-    def set_triggered_acquisition_flir(self, source, activation=None):
-        self.nodemap = self.camera.GetNodeMap()
-        node_trigger_mode = PySpin.CEnumerationPtr(self.nodemap.GetNode("TriggerMode"))
-        node_trigger_mode_on = PySpin.CEnumEntryPtr(node_trigger_mode.GetEntryByName("On"))
-        if not PySpin.IsWritable(node_trigger_mode) or not PySpin.IsReadable(node_trigger_mode_on):
-            print("Cannot toggle TriggerMode")
-            return
-        node_trigger_source = PySpin.CEnumerationPtr(self.nodemap.GetNode("TriggerSource"))
-        node_trigger_source_option = PySpin.CEnumEntryPtr(node_trigger_source.GetEntryByName(str(source)))
-
-        node_trigger_mode.SetIntValue(node_trigger_mode_on.GetValue())
-
-        if not PySpin.IsWritable(node_trigger_source) or not PySpin.IsReadable(node_trigger_source_option):
-            print("Cannot set Trigger source")
-            return
-
-        node_trigger_source.SetIntValue(node_trigger_source_option.GetValue())
-
-        if source != "Software" and activation is not None:  # Set activation criteria for hardware trigger
-            node_trigger_activation = PySpin.CEnumerationPtr(self.nodemap.GetNode("TriggerActivation"))
-            node_trigger_activation_option = PySpin.CEnumEntryPtr(
-                node_trigger_activation.GetEntryByName(str(activation))
+        if not self.get_ready_for_trigger():
+            raise CameraError(
+                f"Requested trigger too early (last trigger was {time.time() - self._last_trigger_timestamp} [s] ago), refusing."
             )
-            if not PySpin.IsWritable(node_trigger_activation) or not PySpin.IsReadable(node_trigger_activation_option):
-                print("Cannot set trigger activation mode")
-                return
-            node_trigger_activation.SetIntValue(node_trigger_activation_option.GetValue())
 
-    def set_software_triggered_acquisition(self):
-
-        self.set_triggered_acquisition_flir(source="Software")
-
-        self.trigger_mode = TriggerMode.SOFTWARE
-        self.update_camera_exposure_time()
-
-    def set_hardware_triggered_acquisition(self, source="Line2", activation="RisingEdge"):
-        self.set_triggered_acquisition_flir(source=source, activation=activation)
-        self.frame_ID_offset_hardware_trigger = None
-        self.trigger_mode = TriggerMode.HARDWARE
-        self.update_camera_exposure_time()
-
-    def send_trigger(self):
-        if self.is_streaming:
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+            if not self._hw_trigger_fn:
+                raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
+            self._hw_trigger_fn(illumination_time)
+        elif self.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER:
             self.nodemap = self.camera.GetNodeMap()
             node_trigger = PySpin.CCommandPtr(self.nodemap.GetNode("TriggerSoftware"))
             if not PySpin.IsWritable(node_trigger):
-                print("Trigger node not writable")
-                return
+                raise CameraError("Trigger node not writable")
             node_trigger.Execute()
-        else:
-            print("trigger not sent - camera is not streaming")
 
-    def read_frame(self):
+        self._last_trigger_timestamp = time.time()
+        self._trigger_sent.set()
+
+    def get_ready_for_trigger(self) -> bool:
+        """Returns true if the camera is ready for another trigger."""
+        if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
+            self._trigger_sent.clear()
+        return not self._trigger_sent.is_set()
+
+    def read_camera_frame(self) -> Optional[CameraFrame]:
+        """
+        Read a frame from the camera and return it as a CameraFrame object.
+        This should be called with the event handler disabled in most cases since the event
+        handler will automatically propagate frames to callbacks.
+        """
         if not self.camera.IsStreaming():
-            print("Cannot read frame, camera not streaming")
-            return np.zeros((self.Width, self.Height))
-        callback_was_enabled = False
-        if self.callback_is_enabled:  # need to disable callback to read stream manually
-            callback_was_enabled = True
-            self.disable_callback()
-        raw_image = self.camera.GetNextImage(1000)
-        if raw_image.IsIncomplete():
-            print("Image incomplete with image status %d ..." % raw_image.GetImageStatus())
-            raw_image.Release()
-            return np.zeros((self.Width, self.Height))
+            self._log.error("Cannot read frame, camera not streaming")
+            return None
 
-        if self.is_color and "mono" not in self.pixel_format.lower():
-            if (
-                "10" in self.pixel_format
-                or "12" in self.pixel_format
-                or "14" in self.pixel_format
-                or "16" in self.pixel_format
-            ):
-                rgb_image = self.one_frame_post_processor.Convert(raw_image, PySpin.PixelFormat_RGB16)
-            else:
-                rgb_image = self.one_frame_post_processor.Convert(raw_image, PySpin.PixelFormat_RGB8)
-            numpy_image = rgb_image.GetNDArray()
-            if self.pixel_format == "BAYER_RG12":
-                numpy_image = numpy_image << 4
-        else:
-            if self.convert_pixel_format:
-                converted_image = self.one_frame_post_processor.Convert(raw_image, self.conversion_pixel_format)
-                numpy_image = converted_image.GetNDArray()
-                if self.conversion_pixel_format == PySpin.PixelFormat_Mono12:
+        try:
+            raw_image = self.camera.GetNextImage(1000)
+            if raw_image.IsIncomplete():
+                self._log.warning(f"Image incomplete with image status {raw_image.GetImageStatus()}")
+                raw_image.Release()
+                return None
+
+            if self.is_color and "mono" not in self.pixel_format.lower():
+                if (
+                    "10" in self.pixel_format
+                    or "12" in self.pixel_format
+                    or "14" in self.pixel_format
+                    or "16" in self.pixel_format
+                ):
+                    rgb_image = self.one_frame_post_processor.Convert(raw_image, PySpin.PixelFormat_RGB16)
+                else:
+                    rgb_image = self.one_frame_post_processor.Convert(raw_image, PySpin.PixelFormat_RGB8)
+                numpy_image = rgb_image.GetNDArray()
+                if self.pixel_format == "BAYER_RG12":
                     numpy_image = numpy_image << 4
             else:
-                try:
-                    numpy_image = raw_image.GetNDArray()
-                except PySpin.SpinnakerException:
-                    print("Encountered problem getting ndarray, falling back to conversion to Mono8")
-                    converted_image = self.one_frame_post_processor.Convert(raw_image, PySpin.PixelFormat_Mono8)
+                if self.convert_pixel_format:
+                    converted_image = self.one_frame_post_processor.Convert(raw_image, self.conversion_pixel_format)
                     numpy_image = converted_image.GetNDArray()
-                if self.pixel_format == "MONO12":
-                    numpy_image = numpy_image << 4
-        # self.current_frame = numpy_image
-        raw_image.Release()
-        if callback_was_enabled:  # reenable callback if it was disabled
-            self.enable_callback()
-        return numpy_image
+                    if self.conversion_pixel_format == PySpin.PixelFormat_Mono12:
+                        numpy_image = numpy_image << 4
+                else:
+                    try:
+                        numpy_image = raw_image.GetNDArray()
+                    except PySpin.SpinnakerException:
+                        self._log.warning("Encountered problem getting ndarray, falling back to conversion to Mono8")
+                        converted_image = self.one_frame_post_processor.Convert(raw_image, PySpin.PixelFormat_Mono8)
+                        numpy_image = converted_image.GetNDArray()
+                    if self.pixel_format == "MONO12":
+                        numpy_image = numpy_image << 4
 
-    def set_ROI(self, offset_x=None, offset_y=None, width=None, height=None):
+            # Process frame and create CameraFrame object
+            processed_frame = self._process_raw_frame(numpy_image)
 
-        # stop streaming if streaming is on
-        if self.is_streaming == True:
-            was_streaming = True
-            self.stop_streaming()
-        else:
-            was_streaming = False
+            with self._frame_lock:
+                self.frame_ID_software = self.frame_ID_software + 1
+                self.frame_ID = raw_image.GetFrameID()
+                if self.trigger_mode == TriggerMode.HARDWARE:
+                    if self.frame_ID_offset_hardware_trigger == None:
+                        self.frame_ID_offset_hardware_trigger = self.frame_ID
+                    self.frame_ID = self.frame_ID - self.frame_ID_offset_hardware_trigger
+                self.timestamp = time.time()
 
-        self.nodemap = self.camera.GetNodeMap()
-        node_width = PySpin.CIntegerPtr(self.nodemap.GetNode("Width"))
-        node_height = PySpin.CIntegerPtr(self.nodemap.GetNode("Height"))
-        node_width_max = PySpin.CIntegerPtr(self.nodemap.GetNode("WidthMax"))
-        node_height_max = PySpin.CIntegerPtr(self.nodemap.GetNode("HeightMax"))
-        node_offset_x = PySpin.CIntegerPtr(self.nodemap.GetNode("OffsetX"))
-        node_offset_y = PySpin.CIntegerPtr(self.nodemap.GetNode("OffsetY"))
+                camera_frame = CameraFrame(
+                    frame_id=self.frame_ID,
+                    timestamp=self.timestamp,
+                    frame=processed_frame,
+                    frame_format=self.get_frame_format(),
+                    frame_pixel_format=self.get_pixel_format(),
+                )
+                self.current_frame = camera_frame
 
-        if width is not None:
+            raw_image.Release()
+
+            # Propagate to callbacks
+            self._propogate_frame(camera_frame)
+
+            return camera_frame
+
+        except PySpin.SpinnakerException as ex:
+            self._log.error(f"Spinnaker exception during read_camera_frame: {str(ex)}")
+            return None
+
+    def get_frame_id(self) -> int:
+        """Returns the frame id of the current frame."""
+        with self._frame_lock:
+            return self.frame_ID if self.current_frame else -1
+
+    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+        """Set the region of interest of the camera."""
+        with self._pause_streaming():
+            self.nodemap = self.camera.GetNodeMap()
+            node_width = PySpin.CIntegerPtr(self.nodemap.GetNode("Width"))
+            node_height = PySpin.CIntegerPtr(self.nodemap.GetNode("Height"))
+            node_width_max = PySpin.CIntegerPtr(self.nodemap.GetNode("WidthMax"))
+            node_height_max = PySpin.CIntegerPtr(self.nodemap.GetNode("HeightMax"))
+            node_offset_x = PySpin.CIntegerPtr(self.nodemap.GetNode("OffsetX"))
+            node_offset_y = PySpin.CIntegerPtr(self.nodemap.GetNode("OffsetY"))
+
             # update the camera setting
             if PySpin.IsWritable(node_width):
                 node_min = node_width.GetMin()
@@ -1107,9 +1318,8 @@ class Camera(object):
                 self.Width = width
                 node_width.SetValue(min(max(int(width), 0), node_width_max.GetValue()))
             else:
-                print("Width is not implemented or not writable")
+                raise CameraError("Width is not implemented or not writable")
 
-        if height is not None:
             # update the camera setting
             if PySpin.IsWritable(node_height):
                 node_min = node_height.GetMin()
@@ -1121,9 +1331,8 @@ class Camera(object):
                 self.Height = height
                 node_height.SetValue(min(max(int(height), 0), node_height_max.GetValue()))
             else:
-                print("Height is not implemented or not writable")
+                raise CameraError("Height is not implemented or not writable")
 
-        if offset_x is not None:
             # update the camera setting
             if PySpin.IsWritable(node_offset_x):
                 node_min = node_offset_x.GetMin()
@@ -1136,9 +1345,8 @@ class Camera(object):
                 self.OffsetX = offset_x
                 node_offset_x.SetValue(min(int(offset_x), node_max))
             else:
-                print("OffsetX is not implemented or not writable")
+                raise CameraError("OffsetX is not implemented or not writable")
 
-        if offset_y is not None:
             # update the camera setting
             if PySpin.IsWritable(node_offset_y):
                 node_min = node_offset_y.GetMin()
@@ -1151,11 +1359,23 @@ class Camera(object):
                 self.OffsetY = offset_y
                 node_offset_y.SetValue(min(int(offset_y), node_max))
             else:
-                print("OffsetY is not implemented or not writable")
+                raise CameraError("OffsetY is not implemented or not writable")
 
-        # restart streaming if it was previously on
-        if was_streaming == True:
-            self.start_streaming()
+    def get_region_of_interest(self) -> Tuple[int, int, int, int]:
+        """Returns the region of interest as a tuple of (x corner, y corner, width, height)."""
+        return (self.OffsetX, self.OffsetY, self.Width, self.Height)
+
+    def set_temperature(self, temperature_deg_c: Optional[float]):
+        """Set the desired temperature of the camera in degrees C."""
+        raise NotImplementedError("Temperature control not implemented for FLIR cameras")
+
+    def get_temperature(self) -> float:
+        """Get the current temperature of the camera in deg C."""
+        raise NotImplementedError("Temperature reading not implemented for FLIR cameras")
+
+    def set_temperature_reading_callback(self, callback: Callable):
+        """Set the callback to be called when the temperature reading changes."""
+        raise NotImplementedError("Temperature reading callback not implemented for FLIR cameras")
 
     def reset_camera_acquisition_counter(self):
         self.nodemap = self.camera.GetNodeMap()
