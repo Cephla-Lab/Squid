@@ -5,7 +5,7 @@ This plan outlines the steps for a comprehensive architectural analysis of the S
 ## Phase 1: Current State Analysis & Discovery
 Perform a deep dive into the existing codebase to map dependencies, identify monolithic components, and document the current data flow.
 
-- [ ] Task: Map High-Level Architecture. Document the interactions between UI, `backend`, and `core` modules.
+- [x] Task: Map High-Level Architecture. Document the interactions between UI, `backend`, and `core` modules. 92f35f9
 - [ ] Task: Dependency Analysis. Identify tight coupling and circular dependencies within `software/src/squid/core` and `software/src/squid/backend`.
 - [ ] Task: Complexity Audit. Identify "large objects" and complex methods (hotspots) in the backend and core modules.
 - [ ] Task: Data Flow Analysis. Trace the path of image data and control signals to identify current performance bottlenecks.
