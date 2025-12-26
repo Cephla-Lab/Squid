@@ -14,9 +14,9 @@ Perform a deep dive into the existing codebase to map dependencies, identify mon
 ## Phase 2: Ideal State Design & Architectural Blueprint
 Define the target architecture for the Squid software, prioritizing modularity, performance, and scalability.
 
-- [ ] Task: Research & Design Target Architecture. Propose a modular blueprint (e.g., using Dependency Injection or Event-Driven patterns).
-- [ ] Task: High-Performance Data Handling Design. Propose a strategy for low-latency image processing and hardware control.
-- [ ] Task: State Management Design. Define a consistent and scalable approach for application-wide state.
+- [x] Task: Research & Design Target Architecture. Propose a modular blueprint (e.g., using Dependency Injection or Event-Driven patterns). 96a214f
+- [x] Task: High-Performance Data Handling Design. Propose a strategy for low-latency image processing and hardware control. fc07d8b
+- [x] Task: State Management Design. Define a consistent and scalable approach for application-wide state. f454476
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: Ideal State Design & Architectural Blueprint' (Protocol in workflow.md)
 
 ## Phase 3: Refactoring Roadmap & Strategy
