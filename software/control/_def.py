@@ -159,6 +159,7 @@ class CMD_SET:
     SEND_HARDWARE_TRIGGER = 30
     SET_STROBE_DELAY = 31
     SET_AXIS_DISABLE_ENABLE = 32
+    SET_TRIGGER_MODE = 33
     SET_PIN_LEVEL = 41
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -753,6 +754,9 @@ PRIOR_STAGE_SN = ""
 
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
+
+# level trigger for toupcamera settings
+TOUPCAMER_LEVEL_TRIGGER_ENABLE = False
 
 
 def read_objectives_csv(file_path):

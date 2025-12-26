@@ -350,7 +350,7 @@ TOUPCAM_OPTION_FPNC                   = 0x67       # Fix Pattern Noise Correctio
                                                    #         1: enable
                                                    #        -1: reset
                                                    #         (0xff000000 | n): set the average number to n, [1~255]
-                                                   #     get: 
+                                                   #     get:
                                                    #         (val & 0xff): 0 => disable, 1 => enable, 2 => inited
                                                    #         ((val & 0xff00) >> 8): sequence
                                                    #         ((val & 0xff0000) >> 16): average number
@@ -386,6 +386,12 @@ TOUPCAM_OPTION_LINE_TIME              = 0x77       # Line-time of sensor in nano
 TOUPCAM_OPTION_ZERO_PADDING           = 0x78       # Zero padding: 0 => high, 1 => low; default: 0
 TOUPCAM_OPTION_UPTIME                 = 0x79       # device uptime in millisecond
 TOUPCAM_OPTION_BITRANGE               = 0x7a       # Bit range: [0, 8]
+TOUPCAM_OPTION_MODE_SEQ_TIMESTAMP     = 0x7b       # Mode of seq & timestamp: 0 => reset to 0 automatically; 1 => never reset automatically; default: 0
+TOUPCAP_OPTION_TIMED_TRIGGER_NUM      = 0x7c       # Timed trigger number
+TOUPCAM_OPTION_TIMED_TRIGGER_LOW      = 0x20000000 # Timed trigger: lower 32 bits of 64-bit integer, nanosecond since epoch (00:00:00 UTC on Thursday, 1 January 1970, see https://en.wikipedia.org/wiki/Unix_time)
+TOUPCAM_OPTION_TIMED_TRIGGER_HIGH     = 0x40000000 # Timed trigger: high 32 bits. The lower 32 bits must be set first, followed by the higher 32 bits
+TOUPCAM_OPTION_AUTOEXP_THLD_TRIGGER   = 0x7d       # trigger threshold of auto exposure
+TOUPCAM_OPTION_LANE                   = 0x7e
 
 TOUPCAM_PIXELFORMAT_RAW8              = 0x00
 TOUPCAM_PIXELFORMAT_RAW10             = 0x01
@@ -418,6 +424,7 @@ TOUPCAM_FRAMEINFO_FLAG_AUTOFOCUS          = 0x00000080   # auto focus: uLum & uF
 TOUPCAM_FRAMEINFO_FLAG_COUNT              = 0x00000100   # timecount, framecount, tricount
 TOUPCAM_FRAMEINFO_FLAG_MECHANICALSHUTTER  = 0x00000200   # Mechanical shutter: closed
 TOUPCAM_FRAMEINFO_FLAG_STILL              = 0x00008000   # still image
+TOUPCAM_FRAMEINFO_FLAG_CG                 = 0x00010000   # Conversion Gain: High
 
 TOUPCAM_IOCONTROLTYPE_GET_SUPPORTEDMODE            = 0x01  # 0x01 => Input, 0x02 => Output, (0x01 | 0x02) => support both Input and Output
 TOUPCAM_IOCONTROLTYPE_GET_GPIODIR                  = 0x03  # 0x01 => Input, 0x02 => Output
@@ -579,85 +586,89 @@ E_GEN_FAILURE   = 0x8007001f # Device not functioning # Remark: It is generally 
 E_BUSY          = 0x800700aa # The requested resource is in use # Remark: The camera is already in use, such as duplicated opening/starting the camera, or being used by other application, etc
 E_PENDING       = 0x8000000a # The data necessary to complete this operation is not yet available # Remark: No data is available at this time
 E_TIMEOUT       = 0x8001011f # This operation returned because the timeout period expired
+E_UNREACH       = 0x80072743 # Network is unreachable
 
-TOUPCAM_EXPOGAIN_DEF             = 100      # exposure gain, default value
-TOUPCAM_EXPOGAIN_MIN             = 100      # exposure gain, minimum value
-TOUPCAM_TEMP_DEF                 = 6503     # color temperature, default value
-TOUPCAM_TEMP_MIN                 = 2000     # color temperature, minimum value
-TOUPCAM_TEMP_MAX                 = 15000    # color temperature, maximum value
-TOUPCAM_TINT_DEF                 = 1000     # tint
-TOUPCAM_TINT_MIN                 = 200      # tint
-TOUPCAM_TINT_MAX                 = 2500     # tint
-TOUPCAM_HUE_DEF                  = 0        # hue
-TOUPCAM_HUE_MIN                  = -180     # hue
-TOUPCAM_HUE_MAX                  = 180      # hue
-TOUPCAM_SATURATION_DEF           = 128      # saturation
-TOUPCAM_SATURATION_MIN           = 0        # saturation
-TOUPCAM_SATURATION_MAX           = 255      # saturation
-TOUPCAM_BRIGHTNESS_DEF           = 0        # brightness
-TOUPCAM_BRIGHTNESS_MIN           = -255     # brightness
-TOUPCAM_BRIGHTNESS_MAX           = 255      # brightness
-TOUPCAM_CONTRAST_DEF             = 0        # contrast
-TOUPCAM_CONTRAST_MIN             = -255     # contrast
-TOUPCAM_CONTRAST_MAX             = 255      # contrast
-TOUPCAM_GAMMA_DEF                = 100      # gamma
-TOUPCAM_GAMMA_MIN                = 20       # gamma
-TOUPCAM_GAMMA_MAX                = 180      # gamma
-TOUPCAM_AETARGET_DEF             = 120      # target of auto exposure
-TOUPCAM_AETARGET_MIN             = 16       # target of auto exposure
-TOUPCAM_AETARGET_MAX             = 220      # target of auto exposure
-TOUPCAM_WBGAIN_DEF               = 0        # white balance gain
-TOUPCAM_WBGAIN_MIN               = -127     # white balance gain
-TOUPCAM_WBGAIN_MAX               = 127      # white balance gain
-TOUPCAM_BLACKLEVEL_MIN           = 0        # minimum black level
-TOUPCAM_BLACKLEVEL8_MAX          = 31       # maximum black level for bitdepth = 8
-TOUPCAM_BLACKLEVEL10_MAX         = 31 * 4   # maximum black level for bitdepth = 10
-TOUPCAM_BLACKLEVEL11_MAX         = 31 * 8   # maximum black level for bitdepth = 11
-TOUPCAM_BLACKLEVEL12_MAX         = 31 * 16  # maximum black level for bitdepth = 12
-TOUPCAM_BLACKLEVEL14_MAX         = 31 * 64  # maximum black level for bitdepth = 14
-TOUPCAM_BLACKLEVEL16_MAX         = 31 * 256 # maximum black level for bitdepth = 16
-TOUPCAM_SHARPENING_STRENGTH_DEF  = 0        # sharpening strength
-TOUPCAM_SHARPENING_STRENGTH_MIN  = 0        # sharpening strength
-TOUPCAM_SHARPENING_STRENGTH_MAX  = 500      # sharpening strength
-TOUPCAM_SHARPENING_RADIUS_DEF    = 2        # sharpening radius
-TOUPCAM_SHARPENING_RADIUS_MIN    = 1        # sharpening radius
-TOUPCAM_SHARPENING_RADIUS_MAX    = 10       # sharpening radius
-TOUPCAM_SHARPENING_THRESHOLD_DEF = 0        # sharpening threshold
-TOUPCAM_SHARPENING_THRESHOLD_MIN = 0        # sharpening threshold
-TOUPCAM_SHARPENING_THRESHOLD_MAX = 255      # sharpening threshold
-TOUPCAM_AUTOEXPO_THRESHOLD_DEF   = 5        # auto exposure threshold
-TOUPCAM_AUTOEXPO_THRESHOLD_MIN   = 2        # auto exposure threshold
-TOUPCAM_AUTOEXPO_THRESHOLD_MAX   = 15       # auto exposure threshold
-TOUPCAM_AUTOEXPO_DAMP_DEF        = 0        # auto exposure damping coefficient: thousandths
-TOUPCAM_AUTOEXPO_DAMP_MIN        = 0        # auto exposure damping coefficient: thousandths
-TOUPCAM_AUTOEXPO_DAMP_MAX        = 1000     # auto exposure damping coefficient: thousandths
-TOUPCAM_BANDWIDTH_DEF            = 100      # bandwidth
-TOUPCAM_BANDWIDTH_MIN            = 1        # bandwidth
-TOUPCAM_BANDWIDTH_MAX            = 100      # bandwidth
-TOUPCAM_DENOISE_DEF              = 0        # denoise
-TOUPCAM_DENOISE_MIN              = 0        # denoise
-TOUPCAM_DENOISE_MAX              = 100      # denoise
-TOUPCAM_HEARTBEAT_MIN            = 100      # millisecond
-TOUPCAM_HEARTBEAT_MAX            = 10000    # millisecond
-TOUPCAM_AE_PERCENT_MIN           = 0        # auto exposure percent; 0 or 100 => full roi average, means "disabled"
-TOUPCAM_AE_PERCENT_MAX           = 100
-TOUPCAM_AE_PERCENT_DEF           = 10       # auto exposure percent: enabled, percentage = 10%
-TOUPCAM_NOPACKET_TIMEOUT_MIN     = 500      # no packet timeout minimum: 500ms
-TOUPCAM_NOFRAME_TIMEOUT_MIN      = 500      # no frame timeout minimum: 500ms
-TOUPCAM_DYNAMIC_DEFECT_T1_MIN    = 0        # dynamic defect pixel correction, dead pixel ratio: the smaller the dead ratio is, the more stringent the conditions for processing dead pixels are, and fewer pixels will be processed
-TOUPCAM_DYNAMIC_DEFECT_T1_MAX    = 100      # means: 1.0
-TOUPCAM_DYNAMIC_DEFECT_T1_DEF    = 90       # means: 0.9
-TOUPCAM_DYNAMIC_DEFECT_T2_MIN    = 0        # dynamic defect pixel correction, hot pixel ratio: the smaller the hot ratio is, the more stringent the conditions for processing hot pixels are, and fewer pixels will be processed
-TOUPCAM_DYNAMIC_DEFECT_T2_MAX    = 100
-TOUPCAM_DYNAMIC_DEFECT_T2_DEF    = 90
-TOUPCAM_HDR_K_MIN                = 1        # HDR synthesize
-TOUPCAM_HDR_K_MAX                = 25500
-TOUPCAM_HDR_B_MIN                = 0
-TOUPCAM_HDR_B_MAX                = 65535
-TOUPCAM_HDR_THRESHOLD_MIN        = 0
-TOUPCAM_HDR_THRESHOLD_MAX        = 4094
-TOUPCAM_CDS_MIN                  = 0
-TOUPCAM_CDS_MAX                  = 4094
+TOUPCAM_EXPOGAIN_DEF              = 100      # exposure gain, default value
+TOUPCAM_EXPOGAIN_MIN              = 100      # exposure gain, minimum value
+TOUPCAM_TEMP_DEF                  = 6503     # color temperature, default value
+TOUPCAM_TEMP_MIN                  = 2000     # color temperature, minimum value
+TOUPCAM_TEMP_MAX                  = 15000    # color temperature, maximum value
+TOUPCAM_TINT_DEF                  = 1000     # tint
+TOUPCAM_TINT_MIN                  = 200      # tint
+TOUPCAM_TINT_MAX                  = 2500     # tint
+TOUPCAM_HUE_DEF                   = 0        # hue
+TOUPCAM_HUE_MIN                   = -180     # hue
+TOUPCAM_HUE_MAX                   = 180      # hue
+TOUPCAM_SATURATION_DEF            = 128      # saturation
+TOUPCAM_SATURATION_MIN            = 0        # saturation
+TOUPCAM_SATURATION_MAX            = 255      # saturation
+TOUPCAM_BRIGHTNESS_DEF            = 0        # brightness
+TOUPCAM_BRIGHTNESS_MIN            = -255     # brightness
+TOUPCAM_BRIGHTNESS_MAX            = 255      # brightness
+TOUPCAM_CONTRAST_DEF              = 0        # contrast
+TOUPCAM_CONTRAST_MIN              = -255     # contrast
+TOUPCAM_CONTRAST_MAX              = 255      # contrast
+TOUPCAM_GAMMA_DEF                 = 100      # gamma
+TOUPCAM_GAMMA_MIN                 = 20       # gamma
+TOUPCAM_GAMMA_MAX                 = 180      # gamma
+TOUPCAM_AETARGET_DEF              = 120      # target of auto exposure
+TOUPCAM_AETARGET_MIN              = 16       # target of auto exposure
+TOUPCAM_AETARGET_MAX              = 220      # target of auto exposure
+TOUPCAM_WBGAIN_DEF                = 0        # white balance gain
+TOUPCAM_WBGAIN_MIN                = -127     # white balance gain
+TOUPCAM_WBGAIN_MAX                = 127      # white balance gain
+TOUPCAM_BLACKLEVEL_MIN            = 0        # minimum black level
+TOUPCAM_BLACKLEVEL8_MAX           = 31       # maximum black level for bitdepth = 8
+TOUPCAM_BLACKLEVEL10_MAX          = 31 * 4   # maximum black level for bitdepth = 10
+TOUPCAM_BLACKLEVEL11_MAX          = 31 * 8   # maximum black level for bitdepth = 11
+TOUPCAM_BLACKLEVEL12_MAX          = 31 * 16  # maximum black level for bitdepth = 12
+TOUPCAM_BLACKLEVEL14_MAX          = 31 * 64  # maximum black level for bitdepth = 14
+TOUPCAM_BLACKLEVEL16_MAX          = 31 * 256 # maximum black level for bitdepth = 16
+TOUPCAM_SHARPENING_STRENGTH_DEF   = 0        # sharpening strength
+TOUPCAM_SHARPENING_STRENGTH_MIN   = 0        # sharpening strength
+TOUPCAM_SHARPENING_STRENGTH_MAX   = 500      # sharpening strength
+TOUPCAM_SHARPENING_RADIUS_DEF     = 2        # sharpening radius
+TOUPCAM_SHARPENING_RADIUS_MIN     = 1        # sharpening radius
+TOUPCAM_SHARPENING_RADIUS_MAX     = 10       # sharpening radius
+TOUPCAM_SHARPENING_THRESHOLD_DEF  = 0        # sharpening threshold
+TOUPCAM_SHARPENING_THRESHOLD_MIN  = 0        # sharpening threshold
+TOUPCAM_SHARPENING_THRESHOLD_MAX  = 255      # sharpening threshold
+TOUPCAM_AUTOEXPO_THRESHOLD_DEF    = 5        # auto exposure threshold
+TOUPCAM_AUTOEXPO_THRESHOLD_MIN    = 2        # auto exposure threshold
+TOUPCAM_AUTOEXPO_THRESHOLD_MAX    = 15       # auto exposure threshold
+TOUPCAM_AUTOEXPO_THLD_TRIGGER_DEF = 5        # auto exposure trigger threshold
+TOUPCAM_AUTOEXPO_THLD_TRIGGER_MIN = 2        # auto exposure trigger threshold
+TOUPCAM_AUTOEXPO_THLD_TRIGGER_MAX = 64       # auto exposure trigger threshold
+TOUPCAM_AUTOEXPO_DAMP_DEF         = 0        # auto exposure damping coefficient: thousandths
+TOUPCAM_AUTOEXPO_DAMP_MIN         = 0        # auto exposure damping coefficient: thousandths
+TOUPCAM_AUTOEXPO_DAMP_MAX         = 1000     # auto exposure damping coefficient: thousandths
+TOUPCAM_BANDWIDTH_DEF             = 100      # bandwidth
+TOUPCAM_BANDWIDTH_MIN             = 1        # bandwidth
+TOUPCAM_BANDWIDTH_MAX             = 100      # bandwidth
+TOUPCAM_DENOISE_DEF               = 0        # denoise
+TOUPCAM_DENOISE_MIN               = 0        # denoise
+TOUPCAM_DENOISE_MAX               = 100      # denoise
+TOUPCAM_HEARTBEAT_MIN             = 100      # millisecond
+TOUPCAM_HEARTBEAT_MAX             = 10000    # millisecond
+TOUPCAM_AE_PERCENT_MIN            = 0        # auto exposure percent; 0 or 100 => full roi average, means "disabled"
+TOUPCAM_AE_PERCENT_MAX            = 100
+TOUPCAM_AE_PERCENT_DEF            = 10       # auto exposure percent: enabled, percentage = 10%
+TOUPCAM_NOPACKET_TIMEOUT_MIN      = 500      # no packet timeout minimum: 500ms
+TOUPCAM_NOFRAME_TIMEOUT_MIN       = 500      # no frame timeout minimum: 500ms
+TOUPCAM_DYNAMIC_DEFECT_T1_MIN     = 0        # dynamic defect pixel correction, dead pixel ratio: the smaller the dead ratio is, the more stringent the conditions for processing dead pixels are, and fewer pixels will be processed
+TOUPCAM_DYNAMIC_DEFECT_T1_MAX     = 100      # means: 1.0
+TOUPCAM_DYNAMIC_DEFECT_T1_DEF     = 90       # means: 0.9
+TOUPCAM_DYNAMIC_DEFECT_T2_MIN     = 0        # dynamic defect pixel correction, hot pixel ratio: the smaller the hot ratio is, the more stringent the conditions for processing hot pixels are, and fewer pixels will be processed
+TOUPCAM_DYNAMIC_DEFECT_T2_MAX     = 100
+TOUPCAM_DYNAMIC_DEFECT_T2_DEF     = 90
+TOUPCAM_HDR_K_MIN                 = 1        # HDR synthesize
+TOUPCAM_HDR_K_MAX                 = 25500
+TOUPCAM_HDR_B_MIN                 = 0
+TOUPCAM_HDR_B_MAX                 = 65535
+TOUPCAM_HDR_THRESHOLD_MIN         = 0
+TOUPCAM_HDR_THRESHOLD_MAX         = 4094
+TOUPCAM_CDS_MIN                   = 0
+TOUPCAM_CDS_MAX                   = 4094
 
 def TDIBWIDTHBYTES(bits):
     return ((bits + 31) // 32 * 4)
@@ -901,7 +912,7 @@ class Toupcam:
 
     @classmethod
     def Version(cls):
-        """get the version of this dll, which is: 57.27348.20241224"""
+        """get the version of this dll, which is: 57.28165.20250401"""
         cls.__initlib()
         return cls.__lib.Toupcam_Version()
 
@@ -1489,7 +1500,7 @@ class Toupcam:
         return x.value
 
     def get_RealExpoTime(self):
-        """in microseconds"""
+        """actual exposure time"""
         x = ctypes.c_uint(0)
         self.__lib.Toupcam_get_RealExpoTime(self.__h, ctypes.byref(x))
         return x.value
@@ -1813,6 +1824,31 @@ class Toupcam:
         self.__lib.Toupcam_get_PixelFormatSupport(self.__h, cmd, ctypes.byref(x))
         return x.value
 
+    # Hardware Binning
+    # Value: 1x1, 2x2, etc
+    # Method: Average, Add, Skip
+    def put_Binning(self, Value, Method):
+        self.__lib.Toupcam_put_Binning(self.__h, Value, Metho)
+
+    def get_Binning(self):        
+        pValue = ctypes.c_char_p(0)
+        pMethod = ctypes.c_char_p(0)
+        self.__lib.Toupcam_get_Binning(self.__h, ctypes.ref(pValue), ctypes.ref(pMethod))
+        return (pValue.value, pMethod.value)
+        
+    def get_BinningNumber(self):
+        return self.__lib.Toupcam_get_BinningNumber(self.__h)
+
+    def get_BinningValue(self):
+        p = ctypes.c_char_p(0)
+        self.__lib.Toupcam_get_BinningValue(self.__h, ctypes.ref(p))
+        return p.value
+
+    def get_BinningMethod(self):
+        p = ctypes.c_char_p(0)
+        self.__lib.Toupcam_get_BinningMethod(self.__h, ctypes.ref(p))
+        return p.value
+
     def put_Linear(self, v8, v16):
         self.__lib.Toupcam_put_Linear(self.__h, v8, v16)
 
@@ -2004,9 +2040,9 @@ class Toupcam:
         else:
             self.__lib.Toupcam_FpncImport(self.__h, filePath.encode())
 
-    def IoControl(self, ioLineNumber, eType, outVal):
+    def IoControl(self, ioLine, eType, outVal):
         x = ctypes.c_int(0)
-        self.__lib.Toupcam_IoControl(self.__h, ctypes.c_uint(ioLineNumber), ctypes.c_uint(eType), ctypes.c_int(outVal), ctypes.byref(x))
+        self.__lib.Toupcam_IoControl(self.__h, ctypes.c_uint(ioLine), ctypes.c_uint(eType), ctypes.c_int(outVal), ctypes.byref(x))
         return x.value
 
     def AAF(self, action, outVal):
@@ -2614,6 +2650,24 @@ class Toupcam:
             cls.__lib.Toupcam_get_PixelFormatSupport.argtypes = [ctypes.c_void_p, ctypes.c_char, ctypes.POINTER(ctypes.c_int)]
             cls.__lib.Toupcam_get_PixelFormatName.restype = ctypes.c_char_p
             cls.__lib.Toupcam_get_PixelFormatName.argtypes = [ctypes.c_int]
+            # Hardware Binning
+            # Value: 1x1, 2x2, etc
+            # Method: Average, Add
+            cls.__lib.Toupcam_put_Binning.restype = ctypes.c_int
+            cls.__lib.Toupcam_put_Binning.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
+            cls.__lib.Toupcam_put_Binning.errcheck = cls.__errcheck
+            cls.__lib.Toupcam_get_Binning.restype = ctypes.c_int
+            cls.__lib.Toupcam_get_Binning.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_char_p)]
+            cls.__lib.Toupcam_get_Binning.errcheck = cls.__errcheck
+            cls.__lib.Toupcam_get_BinningNumber.restype = ctypes.c_int
+            cls.__lib.Toupcam_get_BinningNumber.argtypes = [ctypes.c_void_p]
+            cls.__lib.Toupcam_get_BinningNumber.errcheck = cls.__errcheck
+            cls.__lib.Toupcam_get_BinningValue.restype = ctypes.c_int
+            cls.__lib.Toupcam_get_BinningValue.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_char_p)]
+            cls.__lib.Toupcam_get_BinningValue.errcheck = cls.__errcheck
+            cls.__lib.Toupcam_get_BinningMethod.restype = ctypes.c_int
+            cls.__lib.Toupcam_get_BinningMethod.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_char_p)]
+            cls.__lib.Toupcam_get_BinningMethod.errcheck = cls.__errcheck
             cls.__lib.Toupcam_put_Roi.restype = ctypes.c_int
             cls.__lib.Toupcam_put_Roi.errcheck = cls.__errcheck
             cls.__lib.Toupcam_put_Roi.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]

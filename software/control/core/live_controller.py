@@ -278,6 +278,7 @@ class LiveController:
             self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
             if self.is_live:
                 self._start_triggerred_acquisition()
+            self.microscope.low_level_drivers.microcontroller.set_trigger_mode(0)
         if mode == TriggerMode.HARDWARE:
             if self.trigger_mode == TriggerMode.SOFTWARE and self.is_live:
                 self._stop_triggerred_acquisition()
@@ -286,12 +287,19 @@ class LiveController:
 
             if self.is_live and self.use_internal_timer_for_hardware_trigger:
                 self._start_triggerred_acquisition()
+
+            if TOUPCAMER_LEVEL_TRIGGER_ENABLE:
+                self.microscope.low_level_drivers.microcontroller.set_trigger_mode(1)
+            else:
+                self.microscope.low_level_drivers.microcontroller.set_trigger_mode(0)
+
         if mode == TriggerMode.CONTINUOUS:
             if (self.trigger_mode == TriggerMode.SOFTWARE) or (
                 self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
             ):
                 self._stop_triggerred_acquisition()
             self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
+            self.microscope.low_level_drivers.microcontroller.set_trigger_mode(0)
         self.trigger_mode = mode
 
     def set_trigger_fps(self, fps):

@@ -827,21 +827,39 @@ class ToupcamCamera(AbstractCamera):
         self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, trigger_option_value)
 
         if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
-            # select trigger source to GPIO0
-            try:
-                self._camera.IoControl(1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 1)
-            except toupcam.HRESULTException as ex:
-                error_type = hresult_checker(ex)
-                self._log.exception("Unable to select trigger source: " + error_type)
-                raise
-            # set GPIO1 to trigger wait
-            try:
-                self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE, 0)
-                self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER, 0)
-            except toupcam.HRESULTException as ex:
-                error_type = hresult_checker(ex)
-                self._log.exception("Unable to set GPIO1 for trigger ready: " + error_type)
-                raise
+            if TOUPCAMER_LEVEL_TRIGGER_ENABLE:
+                try:
+                    self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, 2)
+                except toupcam.HRESULTException as ex:
+                    error_type = hresult_checker(ex)
+                    # TODO(imo): Propagate error in some way and handle
+                    self.log.error("Unable to set option_trigger to 2: " + error_type)
+
+                try:
+                    # set IO controltype to PWM mode
+                    self._camera.IoControl(0, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 4)
+                    self._camera.IoControl(2, toupcam.TOUPCAM_IOCONTROLTYPE_SET_GPIODIR, 0)
+                    self._camera.IoControl(2, toupcam.TOUPCAM_IOCONTROLTYPE_SET_PWMSOURCE, 1)
+                except toupcam.HRESULTException as ex:
+                    error_type = hresult_checker(ex)
+                    # TODO(imo): Propagate error in some way and handle
+                    self.log.error("Unable to select trigger source: " + error_type)
+            else:
+                # select trigger source to GPIO0
+                try:
+                    self._camera.IoControl(1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 1)
+                except toupcam.HRESULTException as ex:
+                    error_type = hresult_checker(ex)
+                    self._log.exception("Unable to select trigger source: " + error_type)
+                    raise
+                # set GPIO1 to trigger wait
+                try:
+                    self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE, 0)
+                    self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER, 0)
+                except toupcam.HRESULTException as ex:
+                    error_type = hresult_checker(ex)
+                    self._log.exception("Unable to set GPIO1 for trigger ready: " + error_type)
+                    raise
         # Re-set exposure time to force strobe to get set to the remote.
         self.set_exposure_time(self.get_exposure_time())
 
