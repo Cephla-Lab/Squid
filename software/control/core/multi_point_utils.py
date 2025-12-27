@@ -61,6 +61,9 @@ class AcquisitionParameters:
     plate_num_rows: int = 8  # For 96-well plate
     plate_num_cols: int = 12  # For 96-well plate
 
+    # XY mode for determining scan type
+    xy_mode: str = "Current Position"  # "Current Position", "Select Wells", "Manual", "Load Coordinates"
+
 
 @dataclass
 class OverallProgressUpdate:

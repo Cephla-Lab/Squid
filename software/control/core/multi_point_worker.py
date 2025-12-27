@@ -163,7 +163,11 @@ class MultiPointWorker:
             job_classes.extend(extra_job_classes)
 
         # Downsampled view generation setup
-        self._generate_downsampled_views = acquisition_parameters.generate_downsampled_views
+        # Only generate downsampled views for "Select Wells" mode
+        self._generate_downsampled_views = (
+            acquisition_parameters.generate_downsampled_views
+            and acquisition_parameters.xy_mode == "Select Wells"
+        )
         self._downsampled_view_manager: Optional[DownsampledViewManager] = None
         self._downsampled_well_resolutions_um = acquisition_parameters.downsampled_well_resolutions_um or [5.0, 10.0, 20.0]
         self._downsampled_plate_resolution_um = acquisition_parameters.downsampled_plate_resolution_um

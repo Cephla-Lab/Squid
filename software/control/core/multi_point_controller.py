@@ -92,6 +92,7 @@ class MultiPointController:
         self.base_path = None
         self.use_fluidics = False
         self.skip_saving = False
+        self.xy_mode = "Current Position"
 
         self.focus_map = None
         self.gen_focus_map = False
@@ -203,6 +204,9 @@ class MultiPointController:
 
     def set_skip_saving(self, skip_saving):
         self.skip_saving = skip_saving
+
+    def set_xy_mode(self, xy_mode):
+        self.xy_mode = xy_mode
 
     def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
@@ -650,6 +654,7 @@ class MultiPointController:
             downsampled_z_projection=control._def.DOWNSAMPLED_Z_PROJECTION,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
+            xy_mode=self.xy_mode,
         )
 
     def _on_acquisition_completed(self):

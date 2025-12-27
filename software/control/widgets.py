@@ -5777,6 +5777,7 @@ class WellplateMultiPointWidget(QFrame):
             self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
             self.multipointController.set_use_fluidics(False)
             self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
+            self.multipointController.set_xy_mode(self.combobox_xy_mode.currentText())
             self.multipointController.set_selected_configurations(
                 [item.text() for item in self.list_configurations.selectedItems()]
             )
