@@ -8602,6 +8602,193 @@ class NapariMosaicDisplayWidget(QWidget):
         self.viewer.window.activate()
 
 
+class NapariPlateViewWidget(QWidget):
+    """Widget for displaying downsampled plate view with multi-channel support.
+
+    Similar to NapariMosaicDisplayWidget but specifically for plate-based acquisitions.
+    Displays downsampled well images in a grid layout.
+    """
+
+    signal_well_fov_clicked = Signal(str, int)  # well_id, fov_index
+
+    def __init__(self, contrastManager, parent=None):
+        super().__init__(parent)
+        self.contrastManager = contrastManager
+        self.viewer = napari.Viewer(show=False)
+        self.layout = QVBoxLayout()
+        self.layout.addWidget(self.viewer.window._qt_window)
+
+        # Clear button
+        self.clear_button = QPushButton("Clear Plate View")
+        self.clear_button.clicked.connect(self.clearAllLayers)
+        self.layout.addWidget(self.clear_button)
+
+        self.setLayout(self.layout)
+
+        # Plate layout info (set by initPlateLayout)
+        self.num_rows = 0
+        self.num_cols = 0
+        self.well_slot_shape = (0, 0)  # (height, width) pixels per well
+        self.fov_grid_shape = (1, 1)  # (ny, nx) FOVs per well
+        self.channel_names = []
+        self.plate_dtype = None
+        self.layers_initialized = False
+
+    def initPlateLayout(self, num_rows, num_cols, well_slot_shape, fov_grid_shape=None, channel_names=None):
+        """Initialize plate layout for click coordinate calculations.
+
+        Args:
+            num_rows: Number of rows in the plate
+            num_cols: Number of columns in the plate
+            well_slot_shape: (height, width) of each well slot in pixels
+            fov_grid_shape: (ny, nx) FOVs per well for click mapping
+            channel_names: List of channel names
+        """
+        self.num_rows = num_rows
+        self.num_cols = num_cols
+        self.well_slot_shape = well_slot_shape
+        self.fov_grid_shape = fov_grid_shape or (1, 1)
+        self.channel_names = channel_names or []
+        self.layers_initialized = False
+
+    def extractWavelength(self, name):
+        """Extract wavelength from channel name for colormap selection."""
+        parts = name.split()
+        if "Fluorescence" in parts:
+            index = parts.index("Fluorescence") + 1
+            if index < len(parts):
+                return parts[index].split()[0]
+        for color in ["R", "G", "B"]:
+            if color in parts or f"full_{color}" in parts:
+                return color
+        return None
+
+    def generateColormap(self, channel_info):
+        """Generate colormap from hex value."""
+        c0 = (0, 0, 0)
+        c1 = (
+            ((channel_info["hex"] >> 16) & 0xFF) / 255,
+            ((channel_info["hex"] >> 8) & 0xFF) / 255,
+            (channel_info["hex"] & 0xFF) / 255,
+        )
+        return Colormap(colors=[c0, c1], controls=[0, 1], name=channel_info["name"])
+
+    def updatePlateView(self, channel_idx, channel_name, plate_image):
+        """Update a single channel's plate view.
+
+        Args:
+            channel_idx: Channel index (0-based)
+            channel_name: Name of the channel
+            plate_image: 2D numpy array with the channel's plate view
+        """
+        if plate_image is None:
+            return
+
+        if not self.layers_initialized:
+            self.layers_initialized = True
+            self.plate_dtype = plate_image.dtype
+
+        if channel_name not in self.viewer.layers:
+            # Create layer with appropriate colormap
+            channel_info = CHANNEL_COLORS_MAP.get(
+                self.extractWavelength(channel_name), {"hex": 0xFFFFFF, "name": "gray"}
+            )
+            if channel_info["name"] in AVAILABLE_COLORMAPS:
+                color = AVAILABLE_COLORMAPS[channel_info["name"]]
+            else:
+                color = self.generateColormap(channel_info)
+
+            layer = self.viewer.add_image(
+                plate_image,
+                name=channel_name,
+                colormap=color,
+                visible=True,
+                blending="additive",
+            )
+            layer.mouse_double_click_callbacks.append(self.onDoubleClick)
+            layer.events.contrast_limits.connect(self.signalContrastLimits)
+        else:
+            self.viewer.layers[channel_name].data = plate_image
+
+        # Apply contrast from contrastManager
+        layer = self.viewer.layers[channel_name]
+        min_val, max_val = self.contrastManager.get_limits(channel_name)
+        layer.contrast_limits = (min_val, max_val)
+        layer.refresh()
+
+    def signalContrastLimits(self, event):
+        """Handle contrast limit changes and propagate to contrastManager."""
+        layer = event.source
+        min_val, max_val = layer.contrast_limits
+        self.contrastManager.update_limits(layer.name, min_val, max_val)
+
+    def onDoubleClick(self, layer, event):
+        """Handle double-click: calculate well_id and fov_index."""
+        coords = layer.world_to_data(event.position)
+        if coords is None or self.well_slot_shape[0] == 0 or self.well_slot_shape[1] == 0:
+            return
+
+        y, x = int(coords[-2]), int(coords[-1])
+
+        # Calculate well position
+        well_row = y // self.well_slot_shape[0]
+        well_col = x // self.well_slot_shape[1]
+
+        # Validate well position
+        if well_row < 0 or well_row >= self.num_rows or well_col < 0 or well_col >= self.num_cols:
+            print(f"Clicked outside plate bounds: row={well_row}, col={well_col}")
+            return
+
+        # Generate well ID (A1, B2, etc.)
+        if well_row < 26:
+            well_id = f"{chr(ord('A') + well_row)}{well_col + 1}"
+        else:
+            # For rows > 26, use AA, AB, etc.
+            first_letter = chr(ord('A') + (well_row // 26) - 1)
+            second_letter = chr(ord('A') + (well_row % 26))
+            well_id = f"{first_letter}{second_letter}{well_col + 1}"
+
+        # Calculate FOV within well
+        y_in_well = y % self.well_slot_shape[0]
+        x_in_well = x % self.well_slot_shape[1]
+
+        fov_ny, fov_nx = self.fov_grid_shape
+        if fov_ny > 0 and fov_nx > 0:
+            fov_height = self.well_slot_shape[0] // fov_ny
+            fov_width = self.well_slot_shape[1] // fov_nx
+            if fov_height > 0 and fov_width > 0:
+                fov_row = y_in_well // fov_height
+                fov_col = x_in_well // fov_width
+                fov_index = fov_row * fov_nx + fov_col
+            else:
+                fov_index = 0
+        else:
+            fov_index = 0
+
+        print(f"Clicked: Well {well_id}, FOV {fov_index}")
+        self.signal_well_fov_clicked.emit(well_id, fov_index)
+
+    def resetView(self):
+        """Reset the viewer to fit all data."""
+        self.viewer.reset_view()
+        for layer in self.viewer.layers:
+            layer.refresh()
+
+    def clearAllLayers(self):
+        """Clear all layers to free memory."""
+        layers_to_remove = list(self.viewer.layers)
+        for layer in layers_to_remove:
+            self.viewer.layers.remove(layer)
+
+        self.layers_initialized = False
+        self.plate_dtype = None
+        gc.collect()
+
+    def activate(self):
+        """Activate the viewer window."""
+        self.viewer.window.activate()
+
+
 class TrackingControllerWidget(QFrame):
     def __init__(
         self,
