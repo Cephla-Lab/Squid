@@ -404,7 +404,8 @@ class MultiPointWorker:
                 # Wait for pending downsampled view jobs to complete
                 self._wait_for_downsampled_view_jobs()
                 # Save plate view
-                plate_view_path = os.path.join(current_path, "downsampled", "plate_10um.tiff")
+                plate_resolution = int(self._downsampled_plate_resolution_um)
+                plate_view_path = os.path.join(current_path, "downsampled", f"plate_{plate_resolution}um.tiff")
                 self.save_plate_view(plate_view_path)
                 self._log.info(f"Saved plate view for timepoint {self.time_point} to {plate_view_path}")
                 # Clear plate view for next timepoint
@@ -512,7 +513,7 @@ class MultiPointWorker:
         else:
             self._log.info(f"Got result for job {job_result.job_id}, it completed!")
             # Handle DownsampledViewResult - update plate view
-            if isinstance(job_result.result, DownsampledViewResult) and job_result.result.well_image_10um is not None:
+            if isinstance(job_result.result, DownsampledViewResult) and job_result.result.well_images:
                 self._handle_downsampled_view_result(job_result.result)
             return True
 
