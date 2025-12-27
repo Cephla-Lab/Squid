@@ -21,6 +21,7 @@ try:
         JobImage,
     )
     from control.core.downsampled_views import DownsampledViewManager
+
     MODULE_AVAILABLE = True
 except ImportError:
     MODULE_AVAILABLE = False
@@ -33,6 +34,7 @@ def make_test_capture_info(region_id: str = "A1", fov: int = 0) -> CaptureInfo:
     """Create a CaptureInfo for testing."""
     # Use the existing test helper from the other test file
     from tests.control.core.test_job_processing_downsampled import make_test_capture_info as _make_info
+
     return _make_info(region_id=region_id, fov=fov)
 
 
@@ -75,13 +77,13 @@ class TestPlateViewTiming:
             try:
                 dispatch_time = time.time()
                 runner.dispatch(job)
-                
+
                 result = runner.output_queue().get(timeout=30.0)
                 complete_time = time.time()
-                
+
                 elapsed_ms = (complete_time - dispatch_time) * 1000
                 print(f"\nSingle job timing: {elapsed_ms:.1f} ms")
-                
+
                 # Should complete in reasonable time
                 assert elapsed_ms < 5000, f"Job took too long: {elapsed_ms:.1f} ms"
             finally:
@@ -100,18 +102,18 @@ class TestPlateViewTiming:
             num_wells = 4
             fovs_per_well = 4
             tile_size = 256
-            
+
             timings = []
-            
+
             try:
                 for well_idx in range(num_wells):
                     well_id = f"{chr(ord('A') + well_idx)}1"
                     well_start = time.time()
-                    
+
                     # Simulate capturing FOVs for this well
                     for fov_idx in range(fovs_per_well):
                         tile = np.random.randint(0, 65535, (tile_size, tile_size), dtype=np.uint16)
-                        
+
                         job = DownsampledViewJob(
                             capture_info=make_test_capture_info(region_id=well_id, fov=fov_idx),
                             capture_image=JobImage(image_array=tile),
@@ -132,11 +134,11 @@ class TestPlateViewTiming:
                             channel_names=["BF"],
                         )
                         runner.dispatch(job)
-                    
+
                     # Wait for this well to complete
                     result = runner.output_queue().get(timeout=30.0)
                     well_complete = time.time()
-                    
+
                     elapsed_ms = (well_complete - well_start) * 1000
                     timings.append(elapsed_ms)
                     print(f"\nWell {well_id} complete: {elapsed_ms:.1f} ms")
@@ -144,7 +146,7 @@ class TestPlateViewTiming:
                 print(f"\nTotal wells: {num_wells}")
                 print(f"Mean per-well time: {np.mean(timings):.1f} ms")
                 print(f"Max per-well time: {np.max(timings):.1f} ms")
-                
+
             finally:
                 runner.shutdown(timeout_s=5.0)
 
@@ -160,15 +162,15 @@ class TestPlateViewTiming:
 
             num_wells = 8
             tile_size = 128
-            
+
             # Submit all jobs
             submit_times = {}
-            
+
             try:
                 for well_idx in range(num_wells):
                     well_id = f"{chr(ord('A') + well_idx)}1"
                     tile = np.random.randint(0, 65535, (tile_size, tile_size), dtype=np.uint16)
-                    
+
                     job = DownsampledViewJob(
                         capture_info=make_test_capture_info(region_id=well_id, fov=0),
                         capture_image=JobImage(image_array=tile),
@@ -192,34 +194,36 @@ class TestPlateViewTiming:
                     runner.dispatch(job)
                     # Simulate inter-FOV delay (camera exposure + stage move)
                     time.sleep(0.05)  # 50ms
-                
+
                 all_submitted = time.time()
                 print(f"\nAll {num_wells} jobs submitted")
-                
+
                 # Now poll for results (simulating acquisition loop)
                 receive_times = {}
                 out_queue = runner.output_queue()
-                
+
                 while len(receive_times) < num_wells:
                     try:
                         result = out_queue.get_nowait()
                         receive_times[result.result.well_id] = time.time()
                     except queue.Empty:
                         time.sleep(0.01)  # Poll every 10ms
-                    
+
                     if time.time() - all_submitted > 30:
                         break
-                
+
                 # Analyze timing
                 print(f"\nResult arrival order:")
                 for well_id in sorted(receive_times.keys(), key=lambda x: receive_times[x]):
                     submit = submit_times[well_id]
                     receive = receive_times[well_id]
                     latency_ms = (receive - submit) * 1000
-                    print(f"  {well_id}: submitted at +{(submit - submit_times['A1'])*1000:.0f}ms, "
-                          f"received at +{(receive - submit_times['A1'])*1000:.0f}ms, "
-                          f"latency={latency_ms:.0f}ms")
-                
+                    print(
+                        f"  {well_id}: submitted at +{(submit - submit_times['A1'])*1000:.0f}ms, "
+                        f"received at +{(receive - submit_times['A1'])*1000:.0f}ms, "
+                        f"latency={latency_ms:.0f}ms"
+                    )
+
             finally:
                 runner.shutdown(timeout_s=5.0)
 
@@ -234,20 +238,20 @@ class TestPlateViewTiming:
             runner.start()
 
             callback_times = []
-            
+
             def mock_callback(result):
                 callback_times.append(time.time())
 
             num_wells = 4
             tile_size = 128
-            
+
             try:
                 submit_start = time.time()
-                
+
                 for well_idx in range(num_wells):
                     well_id = f"{chr(ord('A') + well_idx)}1"
                     tile = np.random.randint(0, 65535, (tile_size, tile_size), dtype=np.uint16)
-                    
+
                     job = DownsampledViewJob(
                         capture_info=make_test_capture_info(region_id=well_id, fov=0),
                         capture_image=JobImage(image_array=tile),
@@ -268,12 +272,12 @@ class TestPlateViewTiming:
                         channel_names=["BF"],
                     )
                     runner.dispatch(job)
-                
+
                 # Poll and invoke callbacks
                 out_queue = runner.output_queue()
                 received = 0
                 poll_start = time.time()
-                
+
                 while received < num_wells:
                     try:
                         result = out_queue.get(timeout=0.01)
@@ -281,15 +285,15 @@ class TestPlateViewTiming:
                         received += 1
                     except queue.Empty:
                         pass
-                    
+
                     if time.time() - poll_start > 30:
                         break
-                
+
                 print(f"\nCallback invocation times (relative to first):")
                 for i, t in enumerate(callback_times):
                     rel_time = (t - callback_times[0]) * 1000
                     print(f"  Callback {i+1}: +{rel_time:.1f}ms")
-                
+
             finally:
                 runner.shutdown(timeout_s=5.0)
 
@@ -300,12 +304,12 @@ class TestPlateViewTiming:
             os.makedirs(os.path.join(output_dir, "wells"), exist_ok=True)
 
             tile = np.random.randint(0, 65535, (512, 512), dtype=np.uint16)
-            
+
             # Test with TIFF saving (3 resolutions)
             runner1 = JobRunner()
             runner1.daemon = True
             runner1.start()
-            
+
             try:
                 job_with_save = DownsampledViewJob(
                     capture_info=make_test_capture_info(region_id="A1", fov=0),
@@ -326,23 +330,23 @@ class TestPlateViewTiming:
                     output_dir=output_dir,
                     channel_names=["BF"],
                 )
-                
+
                 start = time.time()
                 runner1.dispatch(job_with_save)
                 runner1.output_queue().get(timeout=30.0)
                 time_with_save = (time.time() - start) * 1000
-                
+
             finally:
                 runner1.shutdown(timeout_s=5.0)
-            
+
             # Test with single resolution (plate only)
             output_dir2 = os.path.join(tmpdir, "downsampled2")
             os.makedirs(os.path.join(output_dir2, "wells"), exist_ok=True)
-            
+
             runner2 = JobRunner()
             runner2.daemon = True
             runner2.start()
-            
+
             try:
                 job_single_res = DownsampledViewJob(
                     capture_info=make_test_capture_info(region_id="B1", fov=0),
@@ -363,112 +367,18 @@ class TestPlateViewTiming:
                     output_dir=output_dir2,
                     channel_names=["BF"],
                 )
-                
+
                 start = time.time()
                 runner2.dispatch(job_single_res)
                 runner2.output_queue().get(timeout=30.0)
                 time_single_res = (time.time() - start) * 1000
-                
+
             finally:
                 runner2.shutdown(timeout_s=5.0)
-            
+
             print(f"\n3 resolutions (with TIFF saving): {time_with_save:.1f}ms")
             print(f"1 resolution (with TIFF saving): {time_single_res:.1f}ms")
             print(f"Overhead of extra resolutions: {time_with_save - time_single_res:.1f}ms")
-
-
-class TestJobRunnerWarmup:
-    """Test JobRunner warmup functionality."""
-
-    def test_warmup_reduces_first_job_latency(self):
-        """Verify that warmup reduces the first job latency."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = os.path.join(tmpdir, "downsampled")
-            os.makedirs(os.path.join(output_dir, "wells"), exist_ok=True)
-
-            tile = np.random.randint(0, 65535, (64, 64), dtype=np.uint16)
-
-            # Test WITHOUT warmup
-            runner1 = JobRunner()
-            runner1.daemon = True
-            runner1.start()
-            
-            try:
-                job = DownsampledViewJob(
-                    capture_info=make_test_capture_info(region_id="A1", fov=0),
-                    capture_image=JobImage(image_array=tile.copy()),
-                    well_id="A1",
-                    well_row=0,
-                    well_col=0,
-                    fov_index=0,
-                    total_fovs_in_well=1,
-                    channel_idx=0,
-                    total_channels=1,
-                    channel_name="BF",
-                    fov_position_in_well=(0.0, 0.0),
-                    overlap_pixels=(0, 0, 0, 0),
-                    pixel_size_um=1.0,
-                    target_resolutions_um=[10.0],
-                    plate_resolution_um=10.0,
-                    output_dir=output_dir,
-                    channel_names=["BF"],
-                )
-                
-                start = time.time()
-                runner1.dispatch(job)
-                runner1.output_queue().get(timeout=30.0)
-                time_without_warmup = (time.time() - start) * 1000
-            finally:
-                runner1.shutdown(timeout_s=5.0)
-
-            # Test WITH warmup
-            output_dir2 = os.path.join(tmpdir, "downsampled2")
-            os.makedirs(os.path.join(output_dir2, "wells"), exist_ok=True)
-            
-            runner2 = JobRunner()
-            runner2.daemon = True
-            runner2.start()
-            
-            try:
-                # Warmup first
-                warmup_start = time.time()
-                runner2.warmup(timeout_s=10.0)
-                warmup_time = (time.time() - warmup_start) * 1000
-                
-                job = DownsampledViewJob(
-                    capture_info=make_test_capture_info(region_id="B1", fov=0),
-                    capture_image=JobImage(image_array=tile.copy()),
-                    well_id="B1",
-                    well_row=1,
-                    well_col=0,
-                    fov_index=0,
-                    total_fovs_in_well=1,
-                    channel_idx=0,
-                    total_channels=1,
-                    channel_name="BF",
-                    fov_position_in_well=(0.0, 0.0),
-                    overlap_pixels=(0, 0, 0, 0),
-                    pixel_size_um=1.0,
-                    target_resolutions_um=[10.0],
-                    plate_resolution_um=10.0,
-                    output_dir=output_dir2,
-                    channel_names=["BF"],
-                )
-                
-                start = time.time()
-                runner2.dispatch(job)
-                runner2.output_queue().get(timeout=30.0)
-                time_with_warmup = (time.time() - start) * 1000
-            finally:
-                runner2.shutdown(timeout_s=5.0)
-
-            print(f"\nWithout warmup: {time_without_warmup:.1f}ms")
-            print(f"With warmup: warmup took {warmup_time:.1f}ms, first job took {time_with_warmup:.1f}ms")
-            print(f"Improvement: {time_without_warmup - time_with_warmup:.1f}ms faster")
-            
-            # First job after warmup should be significantly faster
-            assert time_with_warmup < time_without_warmup / 2, \
-                f"Expected warmed job to be <50% of cold job time, got {time_with_warmup:.1f}ms vs {time_without_warmup:.1f}ms"
 
 
 class TestSignalEmissionTiming:
@@ -478,66 +388,66 @@ class TestSignalEmissionTiming:
         """Simulate signal emission from worker thread."""
         from PySide6.QtCore import QObject, Signal, QThread, QCoreApplication
         import sys
-        
+
         # Need QApplication for signals to work
         app = QCoreApplication.instance()
         if app is None:
             app = QCoreApplication(sys.argv)
-        
+
         signal_emit_times = []
         signal_receive_times = []
-        
+
         class Emitter(QObject):
             update_signal = Signal(int, float)
-            
+
         class Receiver(QObject):
             def __init__(self, receive_times):
                 super().__init__()
                 self.receive_times = receive_times
-                
+
             def on_update(self, idx, value):
                 self.receive_times.append((idx, time.time()))
-        
+
         emitter = Emitter()
         receiver = Receiver(signal_receive_times)
         emitter.update_signal.connect(receiver.on_update)
-        
+
         # Emit from main thread
         num_signals = 10
         for i in range(num_signals):
             emit_time = time.time()
             signal_emit_times.append((i, emit_time))
             emitter.update_signal.emit(i, emit_time)
-        
+
         # Process events
         app.processEvents()
-        
+
         print(f"\nSignal emission from main thread:")
         for (i, emit_t), (j, recv_t) in zip(signal_emit_times, signal_receive_times):
             latency_us = (recv_t - emit_t) * 1_000_000
             print(f"  Signal {i}: latency = {latency_us:.1f} µs")
-        
+
         # Now test from worker thread
         signal_emit_times.clear()
         signal_receive_times.clear()
-        
+
         def emit_from_thread():
             for i in range(num_signals):
                 emit_time = time.time()
                 signal_emit_times.append((i, emit_time))
                 emitter.update_signal.emit(i, emit_time)
                 time.sleep(0.01)
-        
+
         thread = threading.Thread(target=emit_from_thread)
         thread.start()
-        
+
         # Process events while thread runs
         while thread.is_alive() or len(signal_receive_times) < num_signals:
             app.processEvents()
             time.sleep(0.001)
-        
+
         thread.join()
-        
+
         print(f"\nSignal emission from worker thread:")
         for (i, emit_t), (j, recv_t) in zip(signal_emit_times, signal_receive_times):
             latency_us = (recv_t - emit_t) * 1_000_000

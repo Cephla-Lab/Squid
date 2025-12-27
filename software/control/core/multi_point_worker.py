@@ -8,8 +8,10 @@ from datetime import datetime
 
 class SummarizeResult(NamedTuple):
     """Result from processing job output queues."""
-    none_failed: bool   # True if no jobs failed (or no results to process)
-    had_results: bool   # True if any results were pulled from queue
+
+    none_failed: bool  # True if no jobs failed (or no results to process)
+    had_results: bool  # True if any results were pulled from queue
+
 
 import imageio as iio
 import numpy as np
@@ -167,16 +169,16 @@ class MultiPointWorker:
         # Downsampled view generation setup
         # Only generate downsampled views for well-based acquisitions
         is_select_wells = acquisition_parameters.xy_mode == "Select Wells"
-        is_loaded_wells = (
-            acquisition_parameters.xy_mode == "Load Coordinates"
-            and self._is_well_based_acquisition()
-        )
-        self._generate_downsampled_views = (
-            acquisition_parameters.generate_downsampled_views
-            and (is_select_wells or is_loaded_wells)
+        is_loaded_wells = acquisition_parameters.xy_mode == "Load Coordinates" and self._is_well_based_acquisition()
+        self._generate_downsampled_views = acquisition_parameters.generate_downsampled_views and (
+            is_select_wells or is_loaded_wells
         )
         self._downsampled_view_manager: Optional[DownsampledViewManager] = None
-        self._downsampled_well_resolutions_um = acquisition_parameters.downsampled_well_resolutions_um or [5.0, 10.0, 20.0]
+        self._downsampled_well_resolutions_um = acquisition_parameters.downsampled_well_resolutions_um or [
+            5.0,
+            10.0,
+            20.0,
+        ]
         self._downsampled_plate_resolution_um = acquisition_parameters.downsampled_plate_resolution_um
         self._downsampled_z_projection = acquisition_parameters.downsampled_z_projection
         self._plate_num_rows = acquisition_parameters.plate_num_rows
@@ -196,7 +198,9 @@ class MultiPointWorker:
             for region_id, coords in self.scan_region_fov_coords_mm.items():
                 self._region_fov_counts[region_id] = len(coords)
             mode = "Select Wells" if is_select_wells else "Load Coordinates (auto-detected)"
-            self._log.info(f"Downsampled view generation enabled ({mode}). Resolutions: {self._downsampled_well_resolutions_um} um")
+            self._log.info(
+                f"Downsampled view generation enabled ({mode}). Resolutions: {self._downsampled_well_resolutions_um} um"
+            )
 
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
@@ -212,25 +216,20 @@ class MultiPointWorker:
             self._job_runners.append((job_class, job_runner))
         self._abort_on_failed_job = abort_on_failed_jobs
 
-        # Pre-warm JobRunners to avoid startup delay on first real job
-        for job_class, job_runner in self._job_runners:
-            if job_runner:
-                job_runner.warmup(timeout_s=10.0)
-
     def update_use_piezo(self, value):
         self.use_piezo = value
         self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
 
     def _is_well_based_acquisition(self) -> bool:
         """Check if regions represent a valid well-based acquisition.
-        
+
         Returns True if:
         - All region names are valid well IDs (A1, B2, etc.)
         - All regions have the same FOV grid pattern (same distinct X and Y counts)
         """
         if not self.scan_region_names:
             return False
-        
+
         # Check all region names are valid well IDs
         for region_id in self.scan_region_names:
             # Must have both letters and digits (e.g., "A1", "B12", "AA1")
@@ -240,7 +239,7 @@ class MultiPointWorker:
                 parse_well_id(region_id)
             except ValueError:
                 return False
-        
+
         # Check all wells have same grid size
         grid_sizes = set()
         for region_id, coords in self.scan_region_fov_coords_mm.items():
@@ -249,7 +248,7 @@ class MultiPointWorker:
             x_positions = set(round(c[0], 4) for c in coords)  # Round to avoid float precision issues
             y_positions = set(round(c[1], 4) for c in coords)
             grid_sizes.add((len(x_positions), len(y_positions)))
-        
+
         # All wells should have the same grid pattern
         return len(grid_sizes) == 1
 
@@ -483,10 +482,10 @@ class MultiPointWorker:
 
     def _summarize_runner_outputs(self, drain_all: bool = False) -> SummarizeResult:
         """Process job results from output queues.
-        
+
         Args:
             drain_all: If True, process ALL available results. If False, process at most one per queue.
-            
+
         Returns:
             SummarizeResult with none_failed and had_results.
         """
@@ -536,21 +535,27 @@ class MultiPointWorker:
                 f"Updated plate view for well {result.well_id} at ({result.well_row}, {result.well_col}) "
                 f"with {len(result.well_images)} channels"
             )
-            
+
             # Emit plate view update for each channel
             for ch_idx, plate_image in enumerate(self._downsampled_view_manager.plate_view):
-                channel_name = self._downsampled_view_manager.channel_names[ch_idx] if ch_idx < len(self._downsampled_view_manager.channel_names) else f"Channel_{ch_idx}"
-                self.callbacks.signal_plate_view_update(PlateViewUpdate(
-                    channel_idx=ch_idx,
-                    channel_name=channel_name,
-                    plate_image=plate_image.copy(),
-                ))
+                channel_name = (
+                    self._downsampled_view_manager.channel_names[ch_idx]
+                    if ch_idx < len(self._downsampled_view_manager.channel_names)
+                    else f"Channel_{ch_idx}"
+                )
+                self.callbacks.signal_plate_view_update(
+                    PlateViewUpdate(
+                        channel_idx=ch_idx,
+                        channel_name=channel_name,
+                        plate_image=plate_image.copy(),
+                    )
+                )
         except Exception as e:
             self._log.exception(f"Failed to update plate view for well {result.well_id}: {e}")
 
     def _create_job(self, job_class: Type[Job], info: CaptureInfo, image: np.ndarray) -> Optional[Job]:
         """Create a job instance for the given job class.
-        
+
         Returns None if the job should be skipped.
         """
         if job_class == DownsampledViewJob:
@@ -560,7 +565,7 @@ class MultiPointWorker:
 
     def _create_downsampled_view_job(self, info: CaptureInfo, image: np.ndarray) -> Optional[DownsampledViewJob]:
         """Create a DownsampledViewJob for the given capture.
-        
+
         Returns None if downsampled views are disabled or not applicable.
         """
         if not self._generate_downsampled_views:
@@ -695,7 +700,7 @@ class MultiPointWorker:
             f"{num_channels} channels, slot shape ({well_slot_height}, {well_slot_width}), "
             f"well extent ({well_extent_x_mm:.2f}x{well_extent_y_mm:.2f} mm)"
         )
-        
+
         # Calculate FOV grid shape for click coordinate mapping
         # Determine from the first region that has multiple FOVs
         fov_grid_shape = (1, 1)
@@ -705,15 +710,17 @@ class MultiPointWorker:
                 y_positions = set(round(c[1], 4) for c in coords)
                 fov_grid_shape = (len(y_positions), len(x_positions))
                 break
-        
+
         # Emit plate view init signal
-        self.callbacks.signal_plate_view_init(PlateViewInit(
-            num_rows=self._plate_num_rows,
-            num_cols=self._plate_num_cols,
-            well_slot_shape=(well_slot_height, well_slot_width),
-            fov_grid_shape=fov_grid_shape,
-            channel_names=channel_names,
-        ))
+        self.callbacks.signal_plate_view_init(
+            PlateViewInit(
+                num_rows=self._plate_num_rows,
+                num_cols=self._plate_num_cols,
+                well_slot_shape=(well_slot_height, well_slot_width),
+                fov_grid_shape=fov_grid_shape,
+                channel_names=channel_names,
+            )
+        )
 
     def _calculate_overlap_pixels(self, image: np.ndarray) -> None:
         """Calculate overlap pixels based on acquisition parameters."""
