@@ -53,6 +53,14 @@ class AcquisitionParameters:
     use_fluidics: bool
     skip_saving: bool = False
 
+    # Downsampled view generation parameters
+    generate_downsampled_views: bool = False
+    downsampled_well_resolutions_um: Optional[List[float]] = None
+    downsampled_plate_resolution_um: float = 10.0
+    downsampled_z_projection: str = "mip"  # "mip" or "middle"
+    plate_num_rows: int = 8  # For 96-well plate
+    plate_num_cols: int = 12  # For 96-well plate
+
 
 @dataclass
 class OverallProgressUpdate:

@@ -2,8 +2,14 @@ import os
 import queue
 import threading
 import time
-from typing import Callable, List, Optional, Tuple, Type
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Type
 from datetime import datetime
+
+
+class SummarizeResult(NamedTuple):
+    """Result from processing job output queues."""
+    none_failed: bool   # True if no jobs failed (or no results to process)
+    had_results: bool   # True if any results were pulled from queue
 
 import imageio as iio
 import numpy as np
@@ -29,7 +35,22 @@ from control.utils_config import ChannelMode
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.logging
 import control.core.job_processing
-from control.core.job_processing import CaptureInfo, SaveImageJob, Job, JobImage, JobRunner, JobResult
+from control.core.job_processing import (
+    CaptureInfo,
+    SaveImageJob,
+    Job,
+    JobImage,
+    JobRunner,
+    JobResult,
+    DownsampledViewJob,
+    DownsampledViewResult,
+)
+from control.core.downsampled_views import (
+    DownsampledViewManager,
+    calculate_overlap_pixels,
+    parse_well_id,
+    ensure_plate_resolution_in_well_resolutions,
+)
 from squid.config import CameraPixelFormat
 
 
@@ -141,6 +162,30 @@ class MultiPointWorker:
         if extra_job_classes:
             job_classes.extend(extra_job_classes)
 
+        # Downsampled view generation setup
+        self._generate_downsampled_views = acquisition_parameters.generate_downsampled_views
+        self._downsampled_view_manager: Optional[DownsampledViewManager] = None
+        self._downsampled_well_resolutions_um = acquisition_parameters.downsampled_well_resolutions_um or [5.0, 10.0, 20.0]
+        self._downsampled_plate_resolution_um = acquisition_parameters.downsampled_plate_resolution_um
+        self._downsampled_z_projection = acquisition_parameters.downsampled_z_projection
+        self._plate_num_rows = acquisition_parameters.plate_num_rows
+        self._plate_num_cols = acquisition_parameters.plate_num_cols
+        self._overlap_pixels: Optional[Tuple[int, int, int, int]] = None
+        self._region_fov_counts: Dict[str, int] = {}  # Track total FOVs per region
+
+        if self._generate_downsampled_views:
+            # Ensure plate resolution is in well resolutions
+            self._downsampled_well_resolutions_um = ensure_plate_resolution_in_well_resolutions(
+                self._downsampled_well_resolutions_um,
+                self._downsampled_plate_resolution_um,
+            )
+            # Add DownsampledViewJob to job classes
+            job_classes.append(DownsampledViewJob)
+            # Pre-calculate FOV counts per region
+            for region_id, coords in self.scan_region_fov_coords_mm.items():
+                self._region_fov_counts[region_id] = len(coords)
+            self._log.info(f"Downsampled view generation enabled. Resolutions: {self._downsampled_well_resolutions_um} um")
+
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
@@ -246,7 +291,8 @@ class MultiPointWorker:
         self._image_callback_idle.set()
 
     def _finish_jobs(self, timeout_s=10):
-        self._summarize_runner_outputs()
+        # Drain any results that have already completed
+        self._summarize_runner_outputs(drain_all=True)
 
         self._log.info(
             f"Waiting for jobs to finish on {len(self._job_runners)} job runners before shutting them down..."
@@ -262,6 +308,8 @@ class MultiPointWorker:
         for job_class, job_runner in self._job_runners:
             if job_runner is not None:
                 while job_runner.has_pending():
+                    # Process any available results while waiting
+                    self._summarize_runner_outputs(drain_all=True)
                     if not timed_out():
                         time.sleep(0.1)
                     else:
@@ -271,8 +319,16 @@ class MultiPointWorker:
                         job_runner.kill()
                         break
 
+                # Give worker a moment to put results in queue after processing
+                time.sleep(0.2)
+                # Drain results before shutdown
+                self._summarize_runner_outputs(drain_all=True)
+
                 self._log.info("Trying to shut down job runner...")
                 job_runner.shutdown(time_left())
+
+        # Final drain of all output queues
+        self._summarize_runner_outputs(drain_all=True)
 
     def wait_till_operation_is_completed(self):
         self.microcontroller.wait_till_operation_is_completed()
@@ -298,6 +354,17 @@ class MultiPointWorker:
 
             with self._timing.get_timer("run_coordinate_acquisition"):
                 self.run_coordinate_acquisition(current_path)
+
+            # Save plate view for this timepoint
+            if self._generate_downsampled_views and self._downsampled_view_manager is not None:
+                # Wait for pending downsampled view jobs to complete
+                self._wait_for_downsampled_view_jobs()
+                # Save plate view
+                plate_view_path = os.path.join(current_path, "downsampled", "plate_10um.tiff")
+                self.save_plate_view(plate_view_path)
+                self._log.info(f"Saved plate view for timepoint {self.time_point} to {plate_view_path}")
+                # Clear plate view for next timepoint
+                self._downsampled_view_manager.clear()
 
             # finished region scan
             self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
@@ -364,20 +431,32 @@ class MultiPointWorker:
         self.stage.move_z_to(z_mm)
         self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
-    def _summarize_runner_outputs(self):
+    def _summarize_runner_outputs(self, drain_all: bool = False) -> SummarizeResult:
+        """Process job results from output queues.
+        
+        Args:
+            drain_all: If True, process ALL available results. If False, process at most one per queue.
+            
+        Returns:
+            SummarizeResult with none_failed and had_results.
+        """
         none_failed = True
+        had_results = False
         for job_class, job_runner in self._job_runners:
             if job_runner is None:
                 continue
             out_queue = job_runner.output_queue()
-            try:
-                job_result: JobResult = out_queue.get_nowait()
-                # TODO(imo): Should we abort if there is a failure?
-                none_failed = none_failed and self._summarize_job_result(job_result)
-            except queue.Empty:
-                continue
+            while True:
+                try:
+                    job_result: JobResult = out_queue.get_nowait()
+                    none_failed = none_failed and self._summarize_job_result(job_result)
+                    had_results = True
+                    if not drain_all:
+                        break  # Only process one result per queue if not draining
+                except queue.Empty:
+                    break
 
-        return none_failed
+        return SummarizeResult(none_failed=none_failed, had_results=had_results)
 
     def _summarize_job_result(self, job_result: JobResult) -> bool:
         """
@@ -388,7 +467,258 @@ class MultiPointWorker:
             return False
         else:
             self._log.info(f"Got result for job {job_result.job_id}, it completed!")
+            # Handle DownsampledViewResult - update plate view
+            if isinstance(job_result.result, DownsampledViewResult) and job_result.result.well_image_10um is not None:
+                self._handle_downsampled_view_result(job_result.result)
             return True
+
+    def _handle_downsampled_view_result(self, result: DownsampledViewResult) -> None:
+        """Update plate view with completed well image."""
+        if self._downsampled_view_manager is None:
+            return
+        try:
+            self._downsampled_view_manager.update_well(
+                result.well_row,
+                result.well_col,
+                result.well_image_10um,
+            )
+            self._log.info(f"Updated plate view for well {result.well_id} at ({result.well_row}, {result.well_col})")
+        except Exception as e:
+            self._log.exception(f"Failed to update plate view for well {result.well_id}: {e}")
+
+    def _create_job(self, job_class: Type[Job], info: CaptureInfo, image: np.ndarray) -> Optional[Job]:
+        """Create a job instance for the given job class.
+        
+        Returns None if the job should be skipped.
+        """
+        if job_class == DownsampledViewJob:
+            return self._create_downsampled_view_job(info, image)
+        else:
+            return job_class(capture_info=info, capture_image=JobImage(image_array=image))
+
+    def _create_downsampled_view_job(self, info: CaptureInfo, image: np.ndarray) -> Optional[DownsampledViewJob]:
+        """Create a DownsampledViewJob for the given capture.
+        
+        Returns None if downsampled views are disabled or not applicable.
+        """
+        if not self._generate_downsampled_views:
+            return None
+
+        # Calculate overlap first (needed for plate view manager initialization)
+        if self._overlap_pixels is None:
+            self._calculate_overlap_pixels(image)
+
+        # Initialize plate view manager on first image (we need image dimensions)
+        if self._downsampled_view_manager is None:
+            self._initialize_downsampled_view_manager(image)
+
+        # Get well info from region_id
+        region_id = str(info.region_id)
+        try:
+            well_row, well_col = parse_well_id(region_id)
+        except (ValueError, IndexError):
+            # Region ID is not a valid well ID (e.g., "R0", "manual")
+            # Use region index as a fallback
+            self._log.debug(f"Region {region_id} is not a well ID, using fallback positioning")
+            region_idx = self.scan_region_names.index(region_id) if region_id in self.scan_region_names else 0
+            well_row = region_idx // self._plate_num_cols
+            well_col = region_idx % self._plate_num_cols
+
+        # Get FOV position within well
+        total_fovs = self._region_fov_counts.get(region_id, 1)
+        fov_index = info.fov
+
+        # Get the first FOV position for this region to calculate relative position
+        region_coords = self.scan_region_fov_coords_mm.get(region_id, [])
+        if region_coords and fov_index < len(region_coords):
+            first_fov = region_coords[0]
+            current_fov = region_coords[fov_index]
+            # Relative position in mm from first FOV
+            fov_position = (current_fov[0] - first_fov[0], current_fov[1] - first_fov[1])
+        else:
+            fov_position = (0.0, 0.0)
+
+        # Determine output directory
+        output_dir = os.path.join(self.experiment_path, str(self.time_point), "downsampled")
+
+        # Get channel info
+        channel_idx = info.configuration_idx
+        total_channels = len(self.selected_configurations)
+        channel_name = info.configuration.name if info.configuration else f"Channel_{channel_idx}"
+        channel_names = [cfg.name for cfg in self.selected_configurations]
+
+        return DownsampledViewJob(
+            capture_info=info,
+            capture_image=JobImage(image_array=image),
+            well_id=region_id,
+            well_row=well_row,
+            well_col=well_col,
+            fov_index=fov_index,
+            total_fovs_in_well=total_fovs,
+            channel_idx=channel_idx,
+            total_channels=total_channels,
+            channel_name=channel_name,
+            fov_position_in_well=fov_position,
+            overlap_pixels=self._overlap_pixels,
+            pixel_size_um=self._pixel_size_um or 1.0,
+            target_resolutions_um=self._downsampled_well_resolutions_um,
+            plate_resolution_um=self._downsampled_plate_resolution_um,
+            output_dir=output_dir,
+            channel_names=channel_names,
+            z_index=info.z_index,
+            total_z_levels=self.NZ,
+            z_projection_mode=self._downsampled_z_projection,
+        )
+
+    def _initialize_downsampled_view_manager(self, image: np.ndarray) -> None:
+        """Initialize the plate view manager based on image dimensions and FOV grid."""
+        height, width = image.shape[:2]
+        pixel_size_um = self._pixel_size_um or 1.0
+
+        # Calculate downsample factor
+        downsample_factor = int(self._downsampled_plate_resolution_um / pixel_size_um)
+        if downsample_factor < 1:
+            downsample_factor = 1
+
+        # Calculate expected stitched well size based on FOV grid
+        # Find a region with FOVs to determine the grid extent
+        well_extent_x_mm = 0.0
+        well_extent_y_mm = 0.0
+        fov_width_mm = width * pixel_size_um / 1000.0
+        fov_height_mm = height * pixel_size_um / 1000.0
+
+        for region_id, coords in self.scan_region_fov_coords_mm.items():
+            if len(coords) >= 1:
+                # Find extent of FOV positions within this well
+                x_coords = [c[0] for c in coords]
+                y_coords = [c[1] for c in coords]
+                extent_x = max(x_coords) - min(x_coords) + fov_width_mm
+                extent_y = max(y_coords) - min(y_coords) + fov_height_mm
+                well_extent_x_mm = max(well_extent_x_mm, extent_x)
+                well_extent_y_mm = max(well_extent_y_mm, extent_y)
+
+        # Account for overlap cropping
+        if self._overlap_pixels:
+            top, bottom, left, right = self._overlap_pixels
+            crop_x_mm = (left + right) * pixel_size_um / 1000.0
+            crop_y_mm = (top + bottom) * pixel_size_um / 1000.0
+            # Each tile loses overlap, but stitching recovers some
+            # Approximate: total crop is roughly one tile's worth of overlap
+            well_extent_x_mm -= crop_x_mm * 0.5
+            well_extent_y_mm -= crop_y_mm * 0.5
+
+        # Convert to pixels at plate resolution
+        well_slot_width = int(well_extent_x_mm * 1000.0 / self._downsampled_plate_resolution_um)
+        well_slot_height = int(well_extent_y_mm * 1000.0 / self._downsampled_plate_resolution_um)
+
+        # Ensure minimum size (single FOV)
+        min_slot_size = max(width, height) // downsample_factor
+        well_slot_width = max(well_slot_width, min_slot_size)
+        well_slot_height = max(well_slot_height, min_slot_size)
+
+        self._downsampled_view_manager = DownsampledViewManager(
+            num_rows=self._plate_num_rows,
+            num_cols=self._plate_num_cols,
+            well_slot_shape=(well_slot_height, well_slot_width),
+            dtype=image.dtype,
+        )
+        self._log.info(
+            f"Initialized downsampled view manager: {self._plate_num_rows}x{self._plate_num_cols} wells, "
+            f"slot shape ({well_slot_height}, {well_slot_width}), "
+            f"well extent ({well_extent_x_mm:.2f}x{well_extent_y_mm:.2f} mm)"
+        )
+
+    def _calculate_overlap_pixels(self, image: np.ndarray) -> None:
+        """Calculate overlap pixels based on acquisition parameters."""
+        height, width = image.shape[:2]
+        pixel_size_um = self._pixel_size_um or 1.0
+
+        # Try to compute step size from FOV positions
+        # Need to find both X and Y step sizes by examining all FOV pairs
+        dx_mm = 0.0
+        dy_mm = 0.0
+
+        try:
+            # Try to get from first region with multiple FOVs
+            for region_id, coords in self.scan_region_fov_coords_mm.items():
+                if len(coords) >= 2:
+                    # Examine all pairs to find non-zero X and Y steps
+                    for i in range(len(coords)):
+                        for j in range(i + 1, len(coords)):
+                            step_x = abs(coords[j][0] - coords[i][0])
+                            step_y = abs(coords[j][1] - coords[i][1])
+                            # Update dx if we found a non-zero X step that's smaller than current
+                            # (we want the minimum non-zero step)
+                            if step_x > 0.001:  # > 1 micron threshold
+                                if dx_mm == 0 or step_x < dx_mm:
+                                    dx_mm = step_x
+                            if step_y > 0.001:
+                                if dy_mm == 0 or step_y < dy_mm:
+                                    dy_mm = step_y
+                    if dx_mm > 0 or dy_mm > 0:
+                        break
+        except Exception as e:
+            self._log.warning(f"Could not calculate step size from coordinates: {e}")
+            dx_mm = 0
+            dy_mm = 0
+
+        # If only one direction has steps, assume same step in both directions (square grid)
+        if dx_mm > 0 and dy_mm == 0:
+            dy_mm = dx_mm
+        elif dy_mm > 0 and dx_mm == 0:
+            dx_mm = dy_mm
+
+        if dx_mm == 0 and dy_mm == 0:
+            # No overlap or single FOV per well - don't crop anything
+            self._overlap_pixels = (0, 0, 0, 0)
+            self._log.info("Single FOV per well or cannot determine step size, no overlap cropping")
+        else:
+            self._overlap_pixels = calculate_overlap_pixels(width, height, dx_mm, dy_mm, pixel_size_um)
+            self._log.info(f"Calculated overlap pixels: {self._overlap_pixels} (dx={dx_mm}mm, dy={dy_mm}mm)")
+
+    def _wait_for_downsampled_view_jobs(self, timeout_s: float = 30.0) -> None:
+        """Wait for all pending downsampled view jobs to complete and process results."""
+        from control.core.job_processing import DownsampledViewJob
+
+        timeout_time = time.time() + timeout_s
+
+        for job_class, job_runner in self._job_runners:
+            if job_runner is None or job_class != DownsampledViewJob:
+                continue
+
+            # Wait for input queue to empty
+            while job_runner.has_pending():
+                self._summarize_runner_outputs(drain_all=True)
+                if time.time() > timeout_time:
+                    self._log.warning("Timeout waiting for downsampled view jobs to complete")
+                    break
+                time.sleep(0.1)
+
+            # After input queue is empty, the last job may still be running
+            # Keep polling for results until we get no new results for a while
+            last_result_time = time.time()
+            while time.time() < timeout_time:
+                result = self._summarize_runner_outputs(drain_all=True)
+                if result.had_results:
+                    last_result_time = time.time()
+                # If no results for 2 seconds, assume all jobs are done
+                if time.time() - last_result_time > 2.0:
+                    break
+                time.sleep(0.1)
+
+            # Final drain of results
+            self._summarize_runner_outputs(drain_all=True)
+
+    def get_plate_view(self) -> Optional[np.ndarray]:
+        """Get a copy of the current plate view array."""
+        if self._downsampled_view_manager is None:
+            return None
+        return self._downsampled_view_manager.get_plate_view()
+
+    def save_plate_view(self, path: str) -> None:
+        """Save the plate view to disk."""
+        if self._downsampled_view_manager is not None:
+            self._downsampled_view_manager.save_plate_view(path)
 
     def run_coordinate_acquisition(self, current_path):
         n_regions = len(self.scan_region_coords_mm)
@@ -408,7 +738,8 @@ class MultiPointWorker:
             for fov, coordinate_mm in enumerate(coordinates):
                 # Just so the job result queues don't get too big, check and print a summary of intermediate results here
                 with self._timing.get_timer("job result summaries"):
-                    if not self._summarize_runner_outputs() and self._abort_on_failed_job:
+                    result = self._summarize_runner_outputs()
+                    if not result.none_failed and self._abort_on_failed_job:
                         self._log.error("Some jobs failed, aborting acquisition because abort_on_failed_job=True")
                         self.request_abort_fn()
                         return
@@ -579,7 +910,9 @@ class MultiPointWorker:
 
                 with self._timing.get_timer("job creation and dispatch"):
                     for job_class, job_runner in self._job_runners:
-                        job = job_class(capture_info=info, capture_image=JobImage(image_array=image))
+                        job = self._create_job(job_class, info, image)
+                        if job is None:
+                            continue  # Skip if job creation returns None (e.g., downsampled views disabled for this image)
                         if job_runner is not None:
                             if not job_runner.dispatch(job):
                                 self._log.error("Failed to dispatch multiprocessing job!")

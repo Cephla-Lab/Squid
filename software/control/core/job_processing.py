@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - platform without fcntl
     fcntl = None
 
 from dataclasses import dataclass, field
+from typing import ClassVar, Tuple
 
 import imageio as iio
 import numpy as np
@@ -25,6 +26,12 @@ import squid.abc
 import squid.logging
 from control.utils_config import ChannelMode
 from . import utils_ome_tiff_writer as ome_tiff_writer
+from .downsampled_views import (
+    crop_overlap,
+    downsample_tile,
+    stitch_tiles,
+    WellTileAccumulator,
+)
 
 
 # NOTE(imo): We want this to be fast.  But pydantic does not support numpy serialization natively, which means
@@ -259,6 +266,154 @@ class ThrowImmediatelyJobException(RuntimeError):
 class ThrowImmediatelyJob(Job):
     def run(self) -> bool:
         raise ThrowImmediatelyJobException("ThrowImmediatelyJob threw")
+
+
+@dataclass
+class DownsampledViewResult:
+    """Result from DownsampledViewJob containing the 10um well image for plate view update."""
+
+    well_id: str
+    well_row: int
+    well_col: int
+    well_image_10um: Optional[np.ndarray]
+
+
+@dataclass
+class DownsampledViewJob(Job):
+    """Job to generate downsampled well images and contribute to plate view.
+
+    This job:
+    1. Crops overlap from the tile
+    2. Accumulates tiles for the well (using class-level storage per process)
+    3. When all FOVs for all channels are received, stitches and saves as multipage TIFF
+    4. Returns the first channel 10um image via queue for plate view update in main process
+    """
+
+    # All fields must have defaults because parent class Job has job_id with default
+    well_id: str = ""
+    well_row: int = 0
+    well_col: int = 0
+    fov_index: int = 0
+    total_fovs_in_well: int = 1
+    channel_idx: int = 0
+    total_channels: int = 1
+    channel_name: str = ""
+    fov_position_in_well: Tuple[float, float] = (0.0, 0.0)  # (x_mm, y_mm) relative to well origin
+    overlap_pixels: Tuple[int, int, int, int] = (0, 0, 0, 0)  # (top, bottom, left, right)
+    pixel_size_um: float = 1.0
+    target_resolutions_um: List[float] = field(default_factory=lambda: [5.0, 10.0, 20.0])
+    plate_resolution_um: float = 10.0
+    output_dir: str = ""
+    channel_names: List[str] = field(default_factory=list)
+    z_index: int = 0
+    total_z_levels: int = 1
+    z_projection_mode: str = "middle"  # "mip" or "middle"
+
+    # Class-level accumulator storage (per-process, keyed by well_id)
+    _well_accumulators: ClassVar[Dict[str, WellTileAccumulator]] = {}
+
+    def run(self) -> Optional[DownsampledViewResult]:
+        log = squid.logging.get_logger(self.__class__.__name__)
+
+        # Crop overlap from tile
+        tile = self.image_array()
+        cropped = crop_overlap(tile, self.overlap_pixels)
+
+        # Get or create accumulator for this well
+        if self.well_id not in self._well_accumulators:
+            self._well_accumulators[self.well_id] = WellTileAccumulator(
+                well_id=self.well_id,
+                total_fovs=self.total_fovs_in_well,
+                total_channels=self.total_channels,
+                pixel_size_um=self.pixel_size_um,
+                channel_names=self.channel_names if self.channel_names else None,
+                total_z_levels=self.total_z_levels,
+                z_projection_mode=self.z_projection_mode,
+            )
+
+        accumulator = self._well_accumulators[self.well_id]
+        accumulator.add_tile(
+            cropped,
+            self.fov_position_in_well,
+            self.channel_idx,
+            fov_idx=self.fov_index,
+            z_index=self.z_index,
+        )
+
+        # If not all FOVs for all channels received yet, return None
+        if not accumulator.is_complete():
+            z_info = f" z {self.z_index + 1}/{self.total_z_levels}" if self.total_z_levels > 1 else ""
+            log.debug(
+                f"Well {self.well_id}: channel {self.channel_idx} FOV {self.fov_index + 1}/{self.total_fovs_in_well}{z_info}, "
+                f"channels: {accumulator.get_channel_count()}/{self.total_channels}"
+            )
+            return None
+
+        # All FOVs for all channels (and z-levels for MIP) received - stitch and save
+        z_info = f" x {self.total_z_levels} z-levels ({self.z_projection_mode})" if self.total_z_levels > 1 else ""
+        log.info(
+            f"Well {self.well_id}: all {self.total_fovs_in_well} FOVs x {self.total_channels} channels{z_info} received, stitching..."
+        )
+
+        try:
+            # Stitch all channels
+            stitched_channels = accumulator.stitch_all_channels()
+
+            # Ensure output directories exist
+            wells_dir = os.path.join(self.output_dir, "wells")
+            os.makedirs(wells_dir, exist_ok=True)
+
+            # Get channel names for metadata
+            channel_names = accumulator.channel_names
+
+            # Generate and save each resolution as multipage TIFF
+            well_image_for_plate = None
+            for resolution in self.target_resolutions_um:
+                # Downsample each channel
+                downsampled_stack = []
+                for ch_idx in sorted(stitched_channels.keys()):
+                    downsampled = downsample_tile(stitched_channels[ch_idx], self.pixel_size_um, resolution)
+                    downsampled_stack.append(downsampled)
+
+                if not downsampled_stack:
+                    continue
+
+                # Stack channels into multipage array (C, H, W)
+                stacked = np.stack(downsampled_stack, axis=0)
+
+                filename = f"{self.well_id}_{int(resolution)}um.tiff"
+                filepath = os.path.join(wells_dir, filename)
+
+                # Save as multipage TIFF with channel metadata
+                tifffile.imwrite(
+                    filepath,
+                    stacked,
+                    metadata={
+                        "axes": "CYX",
+                        "Channel": {"Name": channel_names[:len(downsampled_stack)]},
+                    },
+                )
+                log.debug(f"Saved {filepath} with shape {stacked.shape} ({len(downsampled_stack)} channels)")
+
+                # Use first channel for plate view
+                if resolution == self.plate_resolution_um:
+                    well_image_for_plate = downsampled_stack[0] if downsampled_stack else None
+
+            # Clear accumulator
+            del self._well_accumulators[self.well_id]
+
+            return DownsampledViewResult(
+                well_id=self.well_id,
+                well_row=self.well_row,
+                well_col=self.well_col,
+                well_image_10um=well_image_for_plate,
+            )
+
+        except Exception as e:
+            log.exception(f"Error processing well {self.well_id}: {e}")
+            # Clean up accumulator on error
+            self._well_accumulators.pop(self.well_id, None)
+            raise
 
 
 class JobRunner(multiprocessing.Process):
