@@ -26,6 +26,8 @@ from control.core.multi_point_utils import (
     MultiPointControllerFunctions,
     OverallProgressUpdate,
     RegionProgressUpdate,
+    PlateViewInit,
+    PlateViewUpdate,
 )
 from control.core.objective_store import ObjectiveStore
 from control.microcontroller import Microcontroller
@@ -528,6 +530,15 @@ class MultiPointWorker:
                 f"Updated plate view for well {result.well_id} at ({result.well_row}, {result.well_col}) "
                 f"with {len(result.well_images)} channels"
             )
+            
+            # Emit plate view update for each channel
+            for ch_idx, plate_image in enumerate(self._downsampled_view_manager.plate_view):
+                channel_name = self._downsampled_view_manager.channel_names[ch_idx] if ch_idx < len(self._downsampled_view_manager.channel_names) else f"Channel_{ch_idx}"
+                self.callbacks.signal_plate_view_update(PlateViewUpdate(
+                    channel_idx=ch_idx,
+                    channel_name=channel_name,
+                    plate_image=plate_image.copy(),
+                ))
         except Exception as e:
             self._log.exception(f"Failed to update plate view for well {result.well_id}: {e}")
 
@@ -678,6 +689,25 @@ class MultiPointWorker:
             f"{num_channels} channels, slot shape ({well_slot_height}, {well_slot_width}), "
             f"well extent ({well_extent_x_mm:.2f}x{well_extent_y_mm:.2f} mm)"
         )
+        
+        # Calculate FOV grid shape for click coordinate mapping
+        # Determine from the first region that has multiple FOVs
+        fov_grid_shape = (1, 1)
+        for region_id, coords in self.scan_region_fov_coords_mm.items():
+            if len(coords) >= 1:
+                x_positions = set(round(c[0], 4) for c in coords)
+                y_positions = set(round(c[1], 4) for c in coords)
+                fov_grid_shape = (len(y_positions), len(x_positions))
+                break
+        
+        # Emit plate view init signal
+        self.callbacks.signal_plate_view_init(PlateViewInit(
+            num_rows=self._plate_num_rows,
+            num_cols=self._plate_num_cols,
+            well_slot_shape=(well_slot_height, well_slot_width),
+            fov_grid_shape=fov_grid_shape,
+            channel_names=channel_names,
+        ))
 
     def _calculate_overlap_pixels(self, image: np.ndarray) -> None:
         """Calculate overlap pixels based on acquisition parameters."""

@@ -81,6 +81,24 @@ class RegionProgressUpdate:
 
 
 @dataclass
+class PlateViewUpdate:
+    """Data for plate view channel update."""
+    channel_idx: int
+    channel_name: str
+    plate_image: "np.ndarray"  # Forward reference
+
+
+@dataclass
+class PlateViewInit:
+    """Data for plate view initialization."""
+    num_rows: int
+    num_cols: int
+    well_slot_shape: Tuple[int, int]
+    fov_grid_shape: Tuple[int, int]
+    channel_names: List[str]
+
+
+@dataclass
 class MultiPointControllerFunctions:
     signal_acquisition_start: Callable[[AcquisitionParameters], None]
     signal_acquisition_finished: Callable[[], None]
@@ -89,3 +107,6 @@ class MultiPointControllerFunctions:
     signal_current_fov: Callable[[float, float], None]
     signal_overall_progress: Callable[[OverallProgressUpdate], None]
     signal_region_progress: Callable[[RegionProgressUpdate], None]
+    # Optional plate view callbacks (default to no-op)
+    signal_plate_view_init: Callable[[PlateViewInit], None] = lambda *a, **kw: None
+    signal_plate_view_update: Callable[[PlateViewUpdate], None] = lambda *a, **kw: None
