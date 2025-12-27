@@ -416,6 +416,13 @@ class HighContentScreeningGui(QMainWindow):
         # Create the menu bar
         menubar = self.menuBar()
         settings_menu = menubar.addMenu("Settings")
+
+        # Configuration action
+        config_action = QAction("Configuration...", self)
+        config_action.setMenuRole(QAction.NoRole)
+        config_action.triggered.connect(self.openPreferences)
+        settings_menu.addAction(config_action)
+
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             led_matrix_action = QAction("LED Matrix", self)
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
@@ -1342,6 +1349,17 @@ class HighContentScreeningGui(QMainWindow):
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             dialog = widgets.LedMatrixSettingsDialog(self.liveController.led_array)
             dialog.exec_()
+
+    def openPreferences(self):
+        from configparser import ConfigParser
+
+        if CACHED_CONFIG_FILE_PATH:
+            config = ConfigParser()
+            config.read(CACHED_CONFIG_FILE_PATH)
+            dialog = widgets.PreferencesDialog(config, CACHED_CONFIG_FILE_PATH, self)
+            dialog.exec_()
+        else:
+            self.log.warning("No configuration file found")
 
     def onTabChanged(self, index):
         is_flexible_acquisition = (

@@ -4,6 +4,7 @@ import json
 import yaml
 import logging
 import sys
+from pathlib import Path
 from typing import Optional
 
 import squid.logging
@@ -281,6 +282,739 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
         except:
             pass
         self.close()
+
+
+class PreferencesDialog(QDialog):
+    """User-friendly preferences dialog with tabbed interface for common settings."""
+
+    signal_config_changed = Signal()
+
+    def __init__(self, config, config_filepath, parent=None):
+        super().__init__(parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.config = config
+        self.config_filepath = config_filepath
+        self.setWindowTitle("Preferences")
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(600)
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Tab widget
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+
+        # Create tabs
+        self._create_general_tab()
+        self._create_acquisition_tab()
+        self._create_camera_tab()
+        self._create_advanced_tab()
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.save_button = QPushButton("Save")
+        self.save_button.clicked.connect(self._save_and_close)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.reject)
+
+        button_layout.addStretch()
+        button_layout.addWidget(self.save_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addLayout(button_layout)
+
+    def _create_general_tab(self):
+        tab = QWidget()
+        layout = QFormLayout(tab)
+        layout.setSpacing(10)
+
+        # File Saving Format
+        self.file_saving_combo = QComboBox()
+        self.file_saving_combo.addItems(["OME_TIFF", "MULTI_PAGE_TIFF", "INDIVIDUAL_IMAGES"])
+        current_value = self._get_config_value("GENERAL", "file_saving_option", "OME_TIFF")
+        self.file_saving_combo.setCurrentText(current_value)
+        layout.addRow("File Saving Format:", self.file_saving_combo)
+
+        # Default Saving Path
+        path_widget = QWidget()
+        path_layout = QHBoxLayout(path_widget)
+        path_layout.setContentsMargins(0, 0, 0, 0)
+        self.saving_path_edit = QLineEdit()
+        self.saving_path_edit.setText(
+            self._get_config_value("GENERAL", "default_saving_path", str(Path.home() / "Downloads"))
+        )
+        browse_button = QPushButton("Browse...")
+        browse_button.clicked.connect(self._browse_saving_path)
+        path_layout.addWidget(self.saving_path_edit)
+        path_layout.addWidget(browse_button)
+        layout.addRow("Default Saving Path:", path_widget)
+
+        self.tab_widget.addTab(tab, "General")
+
+    def _create_acquisition_tab(self):
+        tab = QWidget()
+        layout = QFormLayout(tab)
+        layout.setSpacing(10)
+
+        # Autofocus Channel
+        self.autofocus_channel_edit = QLineEdit()
+        self.autofocus_channel_edit.setText(
+            self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")
+        )
+        layout.addRow("Autofocus Channel:", self.autofocus_channel_edit)
+
+        # Enable Flexible Multipoint
+        self.flexible_multipoint_checkbox = QCheckBox()
+        self.flexible_multipoint_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "enable_flexible_multipoint", True)
+        )
+        layout.addRow("Enable Flexible Multipoint:", self.flexible_multipoint_checkbox)
+
+        self.tab_widget.addTab(tab, "Acquisition")
+
+    def _create_camera_tab(self):
+        tab = QWidget()
+        layout = QFormLayout(tab)
+        layout.setSpacing(10)
+
+        # Restart warning label
+        restart_label = QLabel("Note: Camera settings require software restart to take effect.")
+        restart_label.setStyleSheet("color: #666; font-style: italic;")
+        layout.addRow(restart_label)
+
+        # Default Binning Factor
+        self.binning_spinbox = QSpinBox()
+        self.binning_spinbox.setRange(1, 4)
+        self.binning_spinbox.setValue(self._get_config_int("CAMERA_CONFIG", "binning_factor_default", 2))
+        layout.addRow("Default Binning Factor:", self.binning_spinbox)
+
+        # Image Flip
+        self.flip_combo = QComboBox()
+        self.flip_combo.addItems(["None", "Vertical", "Horizontal", "Both"])
+        current_flip = self._get_config_value("CAMERA_CONFIG", "flip_image", "None")
+        self.flip_combo.setCurrentText(current_flip)
+        layout.addRow("Image Flip:", self.flip_combo)
+
+        # Temperature Default
+        self.temperature_spinbox = QSpinBox()
+        self.temperature_spinbox.setRange(-20, 40)
+        self.temperature_spinbox.setValue(self._get_config_int("CAMERA_CONFIG", "temperature_default", 20))
+        self.temperature_spinbox.setSuffix(" C")
+        layout.addRow("Temperature Default:", self.temperature_spinbox)
+
+        # ROI Width
+        self.roi_width_spinbox = QSpinBox()
+        self.roi_width_spinbox.setRange(0, 10000)
+        self.roi_width_spinbox.setSpecialValueText("Auto")
+        roi_width = self._get_config_value("CAMERA_CONFIG", "roi_width_default", "None")
+        self.roi_width_spinbox.setValue(0 if roi_width == "None" else int(roi_width))
+        layout.addRow("ROI Width:", self.roi_width_spinbox)
+
+        # ROI Height
+        self.roi_height_spinbox = QSpinBox()
+        self.roi_height_spinbox.setRange(0, 10000)
+        self.roi_height_spinbox.setSpecialValueText("Auto")
+        roi_height = self._get_config_value("CAMERA_CONFIG", "roi_height_default", "None")
+        self.roi_height_spinbox.setValue(0 if roi_height == "None" else int(roi_height))
+        layout.addRow("ROI Height:", self.roi_height_spinbox)
+
+        self.tab_widget.addTab(tab, "Camera")
+
+    def _create_advanced_tab(self):
+        tab = QWidget()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_content = QWidget()
+        layout = QVBoxLayout(scroll_content)
+
+        # Stage & Motion section
+        stage_group = CollapsibleGroupBox("Stage && Motion")
+        stage_layout = QFormLayout()
+
+        self.max_vel_x = QDoubleSpinBox()
+        self.max_vel_x.setRange(0.1, 100)
+        self.max_vel_x.setValue(self._get_config_float("GENERAL", "max_velocity_x_mm", 30))
+        self.max_vel_x.setSuffix(" mm/s")
+        stage_layout.addRow("Max Velocity X:", self.max_vel_x)
+
+        self.max_vel_y = QDoubleSpinBox()
+        self.max_vel_y.setRange(0.1, 100)
+        self.max_vel_y.setValue(self._get_config_float("GENERAL", "max_velocity_y_mm", 30))
+        self.max_vel_y.setSuffix(" mm/s")
+        stage_layout.addRow("Max Velocity Y:", self.max_vel_y)
+
+        self.max_vel_z = QDoubleSpinBox()
+        self.max_vel_z.setRange(0.1, 20)
+        self.max_vel_z.setValue(self._get_config_float("GENERAL", "max_velocity_z_mm", 3.8))
+        self.max_vel_z.setSuffix(" mm/s")
+        stage_layout.addRow("Max Velocity Z:", self.max_vel_z)
+
+        self.max_accel_x = QDoubleSpinBox()
+        self.max_accel_x.setRange(1, 2000)
+        self.max_accel_x.setValue(self._get_config_float("GENERAL", "max_acceleration_x_mm", 500))
+        self.max_accel_x.setSuffix(" mm/s2")
+        stage_layout.addRow("Max Acceleration X:", self.max_accel_x)
+
+        self.max_accel_y = QDoubleSpinBox()
+        self.max_accel_y.setRange(1, 2000)
+        self.max_accel_y.setValue(self._get_config_float("GENERAL", "max_acceleration_y_mm", 500))
+        self.max_accel_y.setSuffix(" mm/s2")
+        stage_layout.addRow("Max Acceleration Y:", self.max_accel_y)
+
+        self.max_accel_z = QDoubleSpinBox()
+        self.max_accel_z.setRange(1, 500)
+        self.max_accel_z.setValue(self._get_config_float("GENERAL", "max_acceleration_z_mm", 100))
+        self.max_accel_z.setSuffix(" mm/s2")
+        stage_layout.addRow("Max Acceleration Z:", self.max_accel_z)
+
+        self.scan_stab_x = QSpinBox()
+        self.scan_stab_x.setRange(0, 1000)
+        self.scan_stab_x.setValue(self._get_config_int("GENERAL", "scan_stabilization_time_ms_x", 25))
+        self.scan_stab_x.setSuffix(" ms")
+        stage_layout.addRow("Scan Stabilization X:", self.scan_stab_x)
+
+        self.scan_stab_y = QSpinBox()
+        self.scan_stab_y.setRange(0, 1000)
+        self.scan_stab_y.setValue(self._get_config_int("GENERAL", "scan_stabilization_time_ms_y", 25))
+        self.scan_stab_y.setSuffix(" ms")
+        stage_layout.addRow("Scan Stabilization Y:", self.scan_stab_y)
+
+        self.scan_stab_z = QSpinBox()
+        self.scan_stab_z.setRange(0, 1000)
+        self.scan_stab_z.setValue(self._get_config_int("GENERAL", "scan_stabilization_time_ms_z", 20))
+        self.scan_stab_z.setSuffix(" ms")
+        stage_layout.addRow("Scan Stabilization Z:", self.scan_stab_z)
+
+        stage_group.content.addLayout(stage_layout)
+        layout.addWidget(stage_group)
+
+        # Contrast Autofocus section
+        af_group = CollapsibleGroupBox("Contrast Autofocus")
+        af_layout = QFormLayout()
+
+        self.af_stop_threshold = QDoubleSpinBox()
+        self.af_stop_threshold.setRange(0.1, 1.0)
+        self.af_stop_threshold.setSingleStep(0.05)
+        self.af_stop_threshold.setValue(self._get_config_float("AF", "stop_threshold", 0.85))
+        af_layout.addRow("Stop Threshold:", self.af_stop_threshold)
+
+        self.af_crop_width = QSpinBox()
+        self.af_crop_width.setRange(100, 4000)
+        self.af_crop_width.setValue(self._get_config_int("AF", "crop_width", 800))
+        self.af_crop_width.setSuffix(" px")
+        af_layout.addRow("Crop Width:", self.af_crop_width)
+
+        self.af_crop_height = QSpinBox()
+        self.af_crop_height.setRange(100, 4000)
+        self.af_crop_height.setValue(self._get_config_int("AF", "crop_height", 800))
+        self.af_crop_height.setSuffix(" px")
+        af_layout.addRow("Crop Height:", self.af_crop_height)
+
+        af_group.content.addLayout(af_layout)
+        layout.addWidget(af_group)
+
+        # Hardware Configuration section
+        hw_group = CollapsibleGroupBox("Hardware Configuration")
+        hw_layout = QFormLayout()
+
+        self.z_motor_combo = QComboBox()
+        self.z_motor_combo.addItems(["STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"])
+        self.z_motor_combo.setCurrentText(self._get_config_value("GENERAL", "z_motor_config", "STEPPER"))
+        hw_layout.addRow("Z Motor Config:", self.z_motor_combo)
+
+        self.spinning_disk_checkbox = QCheckBox()
+        self.spinning_disk_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False))
+        hw_layout.addRow("Enable Spinning Disk:", self.spinning_disk_checkbox)
+
+        self.led_r_factor = QDoubleSpinBox()
+        self.led_r_factor.setRange(0.0, 1.0)
+        self.led_r_factor.setSingleStep(0.1)
+        self.led_r_factor.setValue(self._get_config_float("GENERAL", "led_matrix_r_factor", 1.0))
+        hw_layout.addRow("LED Matrix R Factor:", self.led_r_factor)
+
+        self.led_g_factor = QDoubleSpinBox()
+        self.led_g_factor.setRange(0.0, 1.0)
+        self.led_g_factor.setSingleStep(0.1)
+        self.led_g_factor.setValue(self._get_config_float("GENERAL", "led_matrix_g_factor", 1.0))
+        hw_layout.addRow("LED Matrix G Factor:", self.led_g_factor)
+
+        self.led_b_factor = QDoubleSpinBox()
+        self.led_b_factor.setRange(0.0, 1.0)
+        self.led_b_factor.setSingleStep(0.1)
+        self.led_b_factor.setValue(self._get_config_float("GENERAL", "led_matrix_b_factor", 1.0))
+        hw_layout.addRow("LED Matrix B Factor:", self.led_b_factor)
+
+        self.illumination_factor = QDoubleSpinBox()
+        self.illumination_factor.setRange(0.0, 1.0)
+        self.illumination_factor.setSingleStep(0.1)
+        self.illumination_factor.setValue(self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6))
+        hw_layout.addRow("Illumination Intensity Factor:", self.illumination_factor)
+
+        hw_group.content.addLayout(hw_layout)
+        layout.addWidget(hw_group)
+
+        # Software Position Limits section
+        limits_group = CollapsibleGroupBox("Software Position Limits")
+        limits_layout = QFormLayout()
+
+        self.limit_x_pos = QDoubleSpinBox()
+        self.limit_x_pos.setRange(0, 500)
+        self.limit_x_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115))
+        self.limit_x_pos.setSuffix(" mm")
+        limits_layout.addRow("X Positive:", self.limit_x_pos)
+
+        self.limit_x_neg = QDoubleSpinBox()
+        self.limit_x_neg.setRange(0, 500)
+        self.limit_x_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "x_negative", 5))
+        self.limit_x_neg.setSuffix(" mm")
+        limits_layout.addRow("X Negative:", self.limit_x_neg)
+
+        self.limit_y_pos = QDoubleSpinBox()
+        self.limit_y_pos.setRange(0, 500)
+        self.limit_y_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_positive", 76))
+        self.limit_y_pos.setSuffix(" mm")
+        limits_layout.addRow("Y Positive:", self.limit_y_pos)
+
+        self.limit_y_neg = QDoubleSpinBox()
+        self.limit_y_neg.setRange(0, 500)
+        self.limit_y_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "y_negative", 4))
+        self.limit_y_neg.setSuffix(" mm")
+        limits_layout.addRow("Y Negative:", self.limit_y_neg)
+
+        self.limit_z_pos = QDoubleSpinBox()
+        self.limit_z_pos.setRange(0, 50)
+        self.limit_z_pos.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_positive", 6))
+        self.limit_z_pos.setSuffix(" mm")
+        limits_layout.addRow("Z Positive:", self.limit_z_pos)
+
+        self.limit_z_neg = QDoubleSpinBox()
+        self.limit_z_neg.setRange(0, 50)
+        self.limit_z_neg.setDecimals(3)
+        self.limit_z_neg.setValue(self._get_config_float("SOFTWARE_POS_LIMIT", "z_negative", 0.05))
+        self.limit_z_neg.setSuffix(" mm")
+        limits_layout.addRow("Z Negative:", self.limit_z_neg)
+
+        limits_group.content.addLayout(limits_layout)
+        layout.addWidget(limits_group)
+
+        # Tracking section
+        tracking_group = CollapsibleGroupBox("Tracking")
+        tracking_layout = QFormLayout()
+
+        self.enable_tracking_checkbox = QCheckBox()
+        self.enable_tracking_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_tracking", False))
+        tracking_layout.addRow("Enable Tracking:", self.enable_tracking_checkbox)
+
+        self.default_tracker_combo = QComboBox()
+        self.default_tracker_combo.addItems(["csrt", "kcf", "mil", "tld", "medianflow", "mosse", "daSiamRPN"])
+        self.default_tracker_combo.setCurrentText(self._get_config_value("TRACKING", "default_tracker", "csrt"))
+        tracking_layout.addRow("Default Tracker:", self.default_tracker_combo)
+
+        self.search_area_ratio = QSpinBox()
+        self.search_area_ratio.setRange(1, 50)
+        self.search_area_ratio.setValue(self._get_config_int("TRACKING", "search_area_ratio", 10))
+        tracking_layout.addRow("Search Area Ratio:", self.search_area_ratio)
+
+        tracking_group.content.addLayout(tracking_layout)
+        layout.addWidget(tracking_group)
+
+        layout.addStretch()
+        scroll.setWidget(scroll_content)
+
+        tab_layout = QVBoxLayout(tab)
+        tab_layout.addWidget(scroll)
+        self.tab_widget.addTab(tab, "Advanced")
+
+    def _get_config_value(self, section, option, default=""):
+        try:
+            return self.config.get(section, option)
+        except:
+            return default
+
+    def _get_config_bool(self, section, option, default=False):
+        try:
+            val = self.config.get(section, option).lower()
+            return val == "true"
+        except:
+            return default
+
+    def _get_config_int(self, section, option, default=0):
+        try:
+            return int(self.config.get(section, option))
+        except:
+            return default
+
+    def _get_config_float(self, section, option, default=0.0):
+        try:
+            return float(self.config.get(section, option))
+        except:
+            return default
+
+    def _browse_saving_path(self):
+        path = QFileDialog.getExistingDirectory(self, "Select Default Saving Path", self.saving_path_edit.text())
+        if path:
+            self.saving_path_edit.setText(path)
+
+    def _apply_settings(self):
+        # General settings
+        self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
+        self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
+
+        # Acquisition settings
+        self.config.set("GENERAL", "multipoint_autofocus_channel", self.autofocus_channel_edit.text())
+        self.config.set("GENERAL", "enable_flexible_multipoint", str(self.flexible_multipoint_checkbox.isChecked()))
+
+        # Camera settings
+        self.config.set("CAMERA_CONFIG", "binning_factor_default", str(self.binning_spinbox.value()))
+        self.config.set("CAMERA_CONFIG", "flip_image", self.flip_combo.currentText())
+        self.config.set("CAMERA_CONFIG", "temperature_default", str(self.temperature_spinbox.value()))
+        roi_width = "None" if self.roi_width_spinbox.value() == 0 else str(self.roi_width_spinbox.value())
+        roi_height = "None" if self.roi_height_spinbox.value() == 0 else str(self.roi_height_spinbox.value())
+        self.config.set("CAMERA_CONFIG", "roi_width_default", roi_width)
+        self.config.set("CAMERA_CONFIG", "roi_height_default", roi_height)
+
+        # Advanced - Stage & Motion
+        self.config.set("GENERAL", "max_velocity_x_mm", str(self.max_vel_x.value()))
+        self.config.set("GENERAL", "max_velocity_y_mm", str(self.max_vel_y.value()))
+        self.config.set("GENERAL", "max_velocity_z_mm", str(self.max_vel_z.value()))
+        self.config.set("GENERAL", "max_acceleration_x_mm", str(self.max_accel_x.value()))
+        self.config.set("GENERAL", "max_acceleration_y_mm", str(self.max_accel_y.value()))
+        self.config.set("GENERAL", "max_acceleration_z_mm", str(self.max_accel_z.value()))
+        self.config.set("GENERAL", "scan_stabilization_time_ms_x", str(self.scan_stab_x.value()))
+        self.config.set("GENERAL", "scan_stabilization_time_ms_y", str(self.scan_stab_y.value()))
+        self.config.set("GENERAL", "scan_stabilization_time_ms_z", str(self.scan_stab_z.value()))
+
+        # Advanced - Autofocus
+        self.config.set("AF", "stop_threshold", str(self.af_stop_threshold.value()))
+        self.config.set("AF", "crop_width", str(self.af_crop_width.value()))
+        self.config.set("AF", "crop_height", str(self.af_crop_height.value()))
+
+        # Advanced - Hardware
+        self.config.set("GENERAL", "z_motor_config", self.z_motor_combo.currentText())
+        self.config.set("GENERAL", "enable_spinning_disk_confocal", str(self.spinning_disk_checkbox.isChecked()))
+        self.config.set("GENERAL", "led_matrix_r_factor", str(self.led_r_factor.value()))
+        self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
+        self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
+        self.config.set("GENERAL", "illumination_intensity_factor", str(self.illumination_factor.value()))
+
+        # Advanced - Position Limits
+        self.config.set("SOFTWARE_POS_LIMIT", "x_positive", str(self.limit_x_pos.value()))
+        self.config.set("SOFTWARE_POS_LIMIT", "x_negative", str(self.limit_x_neg.value()))
+        self.config.set("SOFTWARE_POS_LIMIT", "y_positive", str(self.limit_y_pos.value()))
+        self.config.set("SOFTWARE_POS_LIMIT", "y_negative", str(self.limit_y_neg.value()))
+        self.config.set("SOFTWARE_POS_LIMIT", "z_positive", str(self.limit_z_pos.value()))
+        self.config.set("SOFTWARE_POS_LIMIT", "z_negative", str(self.limit_z_neg.value()))
+
+        # Advanced - Tracking
+        self.config.set("GENERAL", "enable_tracking", str(self.enable_tracking_checkbox.isChecked()))
+        self.config.set("TRACKING", "default_tracker", self.default_tracker_combo.currentText())
+        self.config.set("TRACKING", "search_area_ratio", str(self.search_area_ratio.value()))
+
+        # Save to file
+        try:
+            with open(self.config_filepath, "w") as f:
+                self.config.write(f)
+            self._log.info(f"Configuration saved to {self.config_filepath}")
+
+            # Update runtime values for settings that can be applied live
+            self._apply_live_settings()
+
+            self.signal_config_changed.emit()
+            QMessageBox.information(
+                self, "Settings Saved", "Settings have been saved. Some settings require a restart to take effect."
+            )
+        except Exception as e:
+            self._log.exception(f"Failed to save configuration: {e}")
+            QMessageBox.warning(self, "Error", f"Failed to save configuration: {e}")
+
+    def _apply_live_settings(self):
+        """Apply settings that can take effect without restart."""
+        import control._def as _def
+
+        # File saving option
+        _def.FILE_SAVING_OPTION = _def.FileSavingOption.convert_to_enum(self.file_saving_combo.currentText())
+
+        # Default saving path
+        _def.DEFAULT_SAVING_PATH = self.saving_path_edit.text()
+
+        # Autofocus channel
+        _def.MULTIPOINT_AUTOFOCUS_CHANNEL = self.autofocus_channel_edit.text()
+
+        # Flexible multipoint
+        _def.ENABLE_FLEXIBLE_MULTIPOINT = self.flexible_multipoint_checkbox.isChecked()
+
+        # AF settings
+        _def.AF.STOP_THRESHOLD = self.af_stop_threshold.value()
+        _def.AF.CROP_WIDTH = self.af_crop_width.value()
+        _def.AF.CROP_HEIGHT = self.af_crop_height.value()
+
+        # LED matrix factors
+        _def.LED_MATRIX_R_FACTOR = self.led_r_factor.value()
+        _def.LED_MATRIX_G_FACTOR = self.led_g_factor.value()
+        _def.LED_MATRIX_B_FACTOR = self.led_b_factor.value()
+
+        # Illumination intensity factor
+        _def.ILLUMINATION_INTENSITY_FACTOR = self.illumination_factor.value()
+
+        # Software position limits
+        _def.SOFTWARE_POS_LIMIT.X_POSITIVE = self.limit_x_pos.value()
+        _def.SOFTWARE_POS_LIMIT.X_NEGATIVE = self.limit_x_neg.value()
+        _def.SOFTWARE_POS_LIMIT.Y_POSITIVE = self.limit_y_pos.value()
+        _def.SOFTWARE_POS_LIMIT.Y_NEGATIVE = self.limit_y_neg.value()
+        _def.SOFTWARE_POS_LIMIT.Z_POSITIVE = self.limit_z_pos.value()
+        _def.SOFTWARE_POS_LIMIT.Z_NEGATIVE = self.limit_z_neg.value()
+
+        # Tracking settings
+        _def.ENABLE_TRACKING = self.enable_tracking_checkbox.isChecked()
+        _def.Tracking.DEFAULT_TRACKER = self.default_tracker_combo.currentText()
+        _def.Tracking.SEARCH_AREA_RATIO = self.search_area_ratio.value()
+
+    def _get_changes(self):
+        """Get list of settings that have changed from current config. Returns list of (name, old, new) tuples."""
+        changes = []
+
+        # General settings
+        old_val = self._get_config_value("GENERAL", "file_saving_option", "OME_TIFF")
+        new_val = self.file_saving_combo.currentText()
+        if old_val != new_val:
+            changes.append(("File Saving Format", old_val, new_val))
+
+        old_val = self._get_config_value("GENERAL", "default_saving_path", "")
+        new_val = self.saving_path_edit.text()
+        if old_val != new_val:
+            changes.append(("Default Saving Path", old_val, new_val))
+
+        # Acquisition settings
+        old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "")
+        new_val = self.autofocus_channel_edit.text()
+        if old_val != new_val:
+            changes.append(("Autofocus Channel", old_val, new_val))
+
+        old_val = self._get_config_bool("GENERAL", "enable_flexible_multipoint", True)
+        new_val = self.flexible_multipoint_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Enable Flexible Multipoint", str(old_val), str(new_val)))
+
+        # Camera settings
+        old_val = self._get_config_int("CAMERA_CONFIG", "binning_factor_default", 2)
+        new_val = self.binning_spinbox.value()
+        if old_val != new_val:
+            changes.append(("Default Binning Factor", str(old_val), str(new_val)))
+
+        old_val = self._get_config_value("CAMERA_CONFIG", "flip_image", "None")
+        new_val = self.flip_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Image Flip", old_val, new_val))
+
+        old_val = self._get_config_int("CAMERA_CONFIG", "temperature_default", 20)
+        new_val = self.temperature_spinbox.value()
+        if old_val != new_val:
+            changes.append(("Temperature Default", f"{old_val} C", f"{new_val} C"))
+
+        old_val = self._get_config_value("CAMERA_CONFIG", "roi_width_default", "None")
+        new_val = "None" if self.roi_width_spinbox.value() == 0 else str(self.roi_width_spinbox.value())
+        if old_val != new_val:
+            changes.append(("ROI Width", old_val, new_val))
+
+        old_val = self._get_config_value("CAMERA_CONFIG", "roi_height_default", "None")
+        new_val = "None" if self.roi_height_spinbox.value() == 0 else str(self.roi_height_spinbox.value())
+        if old_val != new_val:
+            changes.append(("ROI Height", old_val, new_val))
+
+        # Advanced - Stage & Motion
+        old_val = self._get_config_float("GENERAL", "max_velocity_x_mm", 30)
+        new_val = self.max_vel_x.value()
+        if old_val != new_val:
+            changes.append(("Max Velocity X", f"{old_val} mm/s", f"{new_val} mm/s"))
+
+        old_val = self._get_config_float("GENERAL", "max_velocity_y_mm", 30)
+        new_val = self.max_vel_y.value()
+        if old_val != new_val:
+            changes.append(("Max Velocity Y", f"{old_val} mm/s", f"{new_val} mm/s"))
+
+        old_val = self._get_config_float("GENERAL", "max_velocity_z_mm", 3.8)
+        new_val = self.max_vel_z.value()
+        if old_val != new_val:
+            changes.append(("Max Velocity Z", f"{old_val} mm/s", f"{new_val} mm/s"))
+
+        old_val = self._get_config_float("GENERAL", "max_acceleration_x_mm", 500)
+        new_val = self.max_accel_x.value()
+        if old_val != new_val:
+            changes.append(("Max Acceleration X", f"{old_val} mm/s2", f"{new_val} mm/s2"))
+
+        old_val = self._get_config_float("GENERAL", "max_acceleration_y_mm", 500)
+        new_val = self.max_accel_y.value()
+        if old_val != new_val:
+            changes.append(("Max Acceleration Y", f"{old_val} mm/s2", f"{new_val} mm/s2"))
+
+        old_val = self._get_config_float("GENERAL", "max_acceleration_z_mm", 100)
+        new_val = self.max_accel_z.value()
+        if old_val != new_val:
+            changes.append(("Max Acceleration Z", f"{old_val} mm/s2", f"{new_val} mm/s2"))
+
+        old_val = self._get_config_int("GENERAL", "scan_stabilization_time_ms_x", 25)
+        new_val = self.scan_stab_x.value()
+        if old_val != new_val:
+            changes.append(("Scan Stabilization X", f"{old_val} ms", f"{new_val} ms"))
+
+        old_val = self._get_config_int("GENERAL", "scan_stabilization_time_ms_y", 25)
+        new_val = self.scan_stab_y.value()
+        if old_val != new_val:
+            changes.append(("Scan Stabilization Y", f"{old_val} ms", f"{new_val} ms"))
+
+        old_val = self._get_config_int("GENERAL", "scan_stabilization_time_ms_z", 20)
+        new_val = self.scan_stab_z.value()
+        if old_val != new_val:
+            changes.append(("Scan Stabilization Z", f"{old_val} ms", f"{new_val} ms"))
+
+        # Advanced - Autofocus
+        old_val = self._get_config_float("AF", "stop_threshold", 0.85)
+        new_val = self.af_stop_threshold.value()
+        if old_val != new_val:
+            changes.append(("AF Stop Threshold", str(old_val), str(new_val)))
+
+        old_val = self._get_config_int("AF", "crop_width", 800)
+        new_val = self.af_crop_width.value()
+        if old_val != new_val:
+            changes.append(("AF Crop Width", f"{old_val} px", f"{new_val} px"))
+
+        old_val = self._get_config_int("AF", "crop_height", 800)
+        new_val = self.af_crop_height.value()
+        if old_val != new_val:
+            changes.append(("AF Crop Height", f"{old_val} px", f"{new_val} px"))
+
+        # Advanced - Hardware
+        old_val = self._get_config_value("GENERAL", "z_motor_config", "STEPPER")
+        new_val = self.z_motor_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Z Motor Config", old_val, new_val))
+
+        old_val = self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False)
+        new_val = self.spinning_disk_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Enable Spinning Disk", str(old_val), str(new_val)))
+
+        old_val = self._get_config_float("GENERAL", "led_matrix_r_factor", 1.0)
+        new_val = self.led_r_factor.value()
+        if old_val != new_val:
+            changes.append(("LED Matrix R Factor", str(old_val), str(new_val)))
+
+        old_val = self._get_config_float("GENERAL", "led_matrix_g_factor", 1.0)
+        new_val = self.led_g_factor.value()
+        if old_val != new_val:
+            changes.append(("LED Matrix G Factor", str(old_val), str(new_val)))
+
+        old_val = self._get_config_float("GENERAL", "led_matrix_b_factor", 1.0)
+        new_val = self.led_b_factor.value()
+        if old_val != new_val:
+            changes.append(("LED Matrix B Factor", str(old_val), str(new_val)))
+
+        old_val = self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6)
+        new_val = self.illumination_factor.value()
+        if old_val != new_val:
+            changes.append(("Illumination Intensity Factor", str(old_val), str(new_val)))
+
+        # Advanced - Position Limits
+        old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115)
+        new_val = self.limit_x_pos.value()
+        if old_val != new_val:
+            changes.append(("X Positive Limit", f"{old_val} mm", f"{new_val} mm"))
+
+        old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "x_negative", 5)
+        new_val = self.limit_x_neg.value()
+        if old_val != new_val:
+            changes.append(("X Negative Limit", f"{old_val} mm", f"{new_val} mm"))
+
+        old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "y_positive", 76)
+        new_val = self.limit_y_pos.value()
+        if old_val != new_val:
+            changes.append(("Y Positive Limit", f"{old_val} mm", f"{new_val} mm"))
+
+        old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "y_negative", 4)
+        new_val = self.limit_y_neg.value()
+        if old_val != new_val:
+            changes.append(("Y Negative Limit", f"{old_val} mm", f"{new_val} mm"))
+
+        old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "z_positive", 6)
+        new_val = self.limit_z_pos.value()
+        if old_val != new_val:
+            changes.append(("Z Positive Limit", f"{old_val} mm", f"{new_val} mm"))
+
+        old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "z_negative", 0.05)
+        new_val = self.limit_z_neg.value()
+        if old_val != new_val:
+            changes.append(("Z Negative Limit", f"{old_val} mm", f"{new_val} mm"))
+
+        # Advanced - Tracking
+        old_val = self._get_config_bool("GENERAL", "enable_tracking", False)
+        new_val = self.enable_tracking_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Enable Tracking", str(old_val), str(new_val)))
+
+        old_val = self._get_config_value("TRACKING", "default_tracker", "csrt")
+        new_val = self.default_tracker_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Default Tracker", old_val, new_val))
+
+        old_val = self._get_config_int("TRACKING", "search_area_ratio", 10)
+        new_val = self.search_area_ratio.value()
+        if old_val != new_val:
+            changes.append(("Search Area Ratio", str(old_val), str(new_val)))
+
+        return changes
+
+    def _save_and_close(self):
+        changes = self._get_changes()
+
+        if not changes:
+            QMessageBox.information(self, "No Changes", "No settings have been changed.")
+            self.accept()
+            return
+
+        # For single change, save directly without confirmation
+        if len(changes) == 1:
+            self._apply_settings()
+            self.accept()
+            return
+
+        # For multiple changes, show confirmation dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Confirm Changes")
+        dialog.setMinimumWidth(450)
+        layout = QVBoxLayout(dialog)
+
+        label = QLabel("The following settings will be changed:")
+        layout.addWidget(label)
+
+        # Create text showing before/after for each change
+        changes_text = QTextEdit()
+        changes_text.setReadOnly(True)
+        changes_lines = []
+        for name, old_val, new_val in changes:
+            changes_lines.append(f"{name}:\n  Before: {old_val}\n  After:  {new_val}")
+        changes_text.setPlainText("\n\n".join(changes_lines))
+        changes_text.setMinimumHeight(200)
+        layout.addWidget(changes_text)
+
+        note_label = QLabel("Note: Some settings require a restart to take effect.")
+        note_label.setStyleSheet("color: #666; font-style: italic;")
+        layout.addWidget(note_label)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        save_btn = QPushButton("Save")
+        cancel_btn = QPushButton("Cancel")
+        save_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(save_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+
+        if dialog.exec_() == QDialog.Accepted:
+            self._apply_settings()
+            self.accept()
 
 
 class StageUtils(QDialog):
@@ -7555,8 +8289,9 @@ class NapariLiveWidget(QWidget):
         # if hasattr(self.viewer.window, "_status_bar"):
         #     self.viewer.window._status_bar.hide()
 
-        # Hide the napari menu bar (clear it for macOS global menu bar)
-        self.viewer.window.main_menu.clear()
+        # Disable napari's native menu bar so it doesn't take over macOS global menu bar
+        self.viewer.window.main_menu.setNativeMenuBar(False)
+        self.viewer.window.main_menu.hide()
 
         # Hide the layer buttons
         if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
@@ -8073,8 +8808,9 @@ class NapariMultiChannelWidget(QWidget):
         # if hasattr(self.viewer.window, "_status_bar"):
         #     self.viewer.window._status_bar.hide()
 
-        # Hide the napari menu bar (clear it for macOS global menu bar)
-        self.viewer.window.main_menu.clear()
+        # Disable napari's native menu bar so it doesn't take over macOS global menu bar
+        self.viewer.window.main_menu.setNativeMenuBar(False)
+        self.viewer.window.main_menu.hide()
 
         # Hide the layer buttons
         if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
@@ -8249,8 +8985,9 @@ class NapariMosaicDisplayWidget(QWidget):
         # if hasattr(self.viewer.window, "_status_bar"):
         #     self.viewer.window._status_bar.hide()
 
-        # Hide the napari menu bar (clear it for macOS global menu bar)
-        self.viewer.window.main_menu.clear()
+        # Disable napari's native menu bar so it doesn't take over macOS global menu bar
+        self.viewer.window.main_menu.setNativeMenuBar(False)
+        self.viewer.window.main_menu.hide()
 
         self.viewer.bind_key("D", self.toggle_draw_mode)
 
