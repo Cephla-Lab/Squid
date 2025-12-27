@@ -8634,6 +8634,18 @@ class NapariPlateViewWidget(QWidget):
         self.plate_dtype = None
         self.layers_initialized = False
 
+        # Zoom limits (updated in initPlateLayout based on plate size)
+        self.min_zoom = 0.1  # Prevent zooming out too far
+        self.max_zoom = None  # No max limit until plate size is known
+        self._clamping_zoom = False
+
+        # Override wheel event on vispy canvas to enforce zoom limits
+        canvas_widget = self.viewer.window._qt_viewer.canvas.native
+        canvas_widget.wheelEvent = self._custom_wheel_event
+
+        # Clamp zoom for programmatic changes (e.g., reset_view)
+        self.viewer.camera.events.zoom.connect(self._on_zoom_changed)
+
     def initPlateLayout(self, num_rows, num_cols, well_slot_shape, fov_grid_shape=None, channel_names=None):
         """Initialize plate layout for click coordinate calculations.
 
@@ -8650,6 +8662,100 @@ class NapariPlateViewWidget(QWidget):
         self.fov_grid_shape = fov_grid_shape or (1, 1)
         self.channel_names = channel_names or []
         self.layers_initialized = False
+
+        # Calculate zoom limits based on plate size
+        plate_height = num_rows * well_slot_shape[0]
+        plate_width = num_cols * well_slot_shape[1]
+        if plate_height > 0 and plate_width > 0:
+            # Max zoom: ensure at least 500 pixels visible in each dimension
+            min_plate_dim = min(plate_height, plate_width)
+            self.max_zoom = max(1.0, min_plate_dim / 500.0)
+
+        # Draw plate boundaries
+        self._draw_plate_boundaries()
+
+        # Reset view to fit plate, then capture that zoom as the min (zoom out limit)
+        self.viewer.reset_view()
+        self.min_zoom = self.viewer.camera.zoom
+
+    def _custom_wheel_event(self, event):
+        """Custom wheel event handler that enforces zoom limits."""
+        # Block ALL wheel events from reaching vispy - we handle zoom ourselves
+        event.accept()
+
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+
+        # Calculate new zoom with our own factor
+        zoom = self.viewer.camera.zoom
+        zoom_factor = 1.1 ** (delta / 120.0)  # Standard wheel: 120 units per notch
+        new_zoom = zoom * zoom_factor
+
+        # Clamp to limits
+        new_zoom = max(self.min_zoom, new_zoom)
+        if self.max_zoom is not None:
+            new_zoom = min(self.max_zoom, new_zoom)
+
+        # Apply clamped zoom
+        if new_zoom != zoom:
+            self._clamping_zoom = True
+            self.viewer.camera.zoom = new_zoom
+            self._clamping_zoom = False
+
+    def _on_zoom_changed(self, event):
+        """Clamp zoom to limits after any zoom change (e.g., reset_view)."""
+        if self._clamping_zoom:
+            return
+        zoom = self.viewer.camera.zoom
+        target_zoom = zoom
+        if zoom < self.min_zoom:
+            target_zoom = self.min_zoom
+        elif self.max_zoom is not None and zoom > self.max_zoom:
+            target_zoom = self.max_zoom
+        if target_zoom != zoom:
+            self._clamping_zoom = True
+            self.viewer.camera.zoom = target_zoom
+            self._clamping_zoom = False
+
+    def _draw_plate_boundaries(self):
+        """Draw boundary rectangles around each well."""
+        if self.num_rows == 0 or self.num_cols == 0:
+            return
+        if self.well_slot_shape[0] == 0 or self.well_slot_shape[1] == 0:
+            return
+
+        # Remove existing boundary layer
+        if "_plate_boundaries" in self.viewer.layers:
+            self.viewer.layers.remove("_plate_boundaries")
+
+        rectangles = []
+        slot_h, slot_w = self.well_slot_shape
+
+        for row in range(self.num_rows):
+            for col in range(self.num_cols):
+                y0 = row * slot_h
+                x0 = col * slot_w
+                # Rectangle corners: top-left, top-right, bottom-right, bottom-left
+                rect = [
+                    [y0, x0],
+                    [y0, x0 + slot_w],
+                    [y0 + slot_h, x0 + slot_w],
+                    [y0 + slot_h, x0],
+                ]
+                rectangles.append(rect)
+
+        if rectangles:
+            self.viewer.add_shapes(
+                rectangles,
+                shape_type="polygon",
+                edge_color="white",
+                edge_width=2,
+                face_color="transparent",
+                name="_plate_boundaries",
+            )
+            # Move boundaries layer to bottom so it doesn't interfere with clicks
+            self.viewer.layers.move(len(self.viewer.layers) - 1, 0)
 
     def extractWavelength(self, name):
         """Extract wavelength from channel name for colormap selection."""
@@ -8744,8 +8850,8 @@ class NapariPlateViewWidget(QWidget):
             well_id = f"{chr(ord('A') + well_row)}{well_col + 1}"
         else:
             # For rows > 26, use AA, AB, etc.
-            first_letter = chr(ord('A') + (well_row // 26) - 1)
-            second_letter = chr(ord('A') + (well_row % 26))
+            first_letter = chr(ord("A") + (well_row // 26) - 1)
+            second_letter = chr(ord("A") + (well_row % 26))
             well_id = f"{first_letter}{second_letter}{well_col + 1}"
 
         # Calculate FOV within well
