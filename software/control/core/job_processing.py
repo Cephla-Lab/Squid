@@ -309,6 +309,7 @@ class DownsampledViewJob(Job):
     z_index: int = 0
     total_z_levels: int = 1
     z_projection_mode: str = "middle"  # "mip" or "middle"
+    skip_saving: bool = False  # Skip TIFF file saving (just generate for display)
 
     # Class-level accumulator storage (per-process, keyed by well_id)
     _well_accumulators: ClassVar[Dict[str, WellTileAccumulator]] = {}
@@ -360,46 +361,50 @@ class DownsampledViewJob(Job):
             # Stitch all channels
             stitched_channels = accumulator.stitch_all_channels()
 
-            # Ensure output directories exist
-            wells_dir = os.path.join(self.output_dir, "wells")
-            os.makedirs(wells_dir, exist_ok=True)
-
             # Get channel names for metadata
             channel_names = accumulator.channel_names
 
-            # Generate and save each resolution as multipage TIFF
+            # Generate plate view images first (at plate resolution only)
             well_images_for_plate: Dict[int, np.ndarray] = {}
-            for resolution in self.target_resolutions_um:
-                # Downsample each channel
-                downsampled_stack = []
-                for ch_idx in sorted(stitched_channels.keys()):
-                    downsampled = downsample_tile(stitched_channels[ch_idx], self.pixel_size_um, resolution)
-                    downsampled_stack.append(downsampled)
+            for ch_idx in sorted(stitched_channels.keys()):
+                downsampled = downsample_tile(stitched_channels[ch_idx], self.pixel_size_um, self.plate_resolution_um)
+                well_images_for_plate[ch_idx] = downsampled
 
-                if not downsampled_stack:
-                    continue
+            # Save TIFFs only if not skipping
+            if not self.skip_saving:
+                wells_dir = os.path.join(self.output_dir, "wells")
+                os.makedirs(wells_dir, exist_ok=True)
 
-                # Stack channels into multipage array (C, H, W)
-                stacked = np.stack(downsampled_stack, axis=0)
+                for resolution in self.target_resolutions_um:
+                    # Downsample each channel
+                    downsampled_stack = []
+                    for ch_idx in sorted(stitched_channels.keys()):
+                        if resolution == self.plate_resolution_um:
+                            # Reuse already computed plate resolution
+                            downsampled_stack.append(well_images_for_plate[ch_idx])
+                        else:
+                            downsampled = downsample_tile(stitched_channels[ch_idx], self.pixel_size_um, resolution)
+                            downsampled_stack.append(downsampled)
 
-                filename = f"{self.well_id}_{int(resolution)}um.tiff"
-                filepath = os.path.join(wells_dir, filename)
+                    if not downsampled_stack:
+                        continue
 
-                # Save as multipage TIFF with channel metadata
-                tifffile.imwrite(
-                    filepath,
-                    stacked,
-                    metadata={
-                        "axes": "CYX",
-                        "Channel": {"Name": channel_names[:len(downsampled_stack)]},
-                    },
-                )
-                log.debug(f"Saved {filepath} with shape {stacked.shape} ({len(downsampled_stack)} channels)")
+                    # Stack channels into multipage array (C, H, W)
+                    stacked = np.stack(downsampled_stack, axis=0)
 
-                # Collect all channels for plate view at plate resolution
-                if resolution == self.plate_resolution_um:
-                    for ch_idx, downsampled in enumerate(downsampled_stack):
-                        well_images_for_plate[ch_idx] = downsampled
+                    filename = f"{self.well_id}_{int(resolution)}um.tiff"
+                    filepath = os.path.join(wells_dir, filename)
+
+                    # Save as multipage TIFF with channel metadata
+                    tifffile.imwrite(
+                        filepath,
+                        stacked,
+                        metadata={
+                            "axes": "CYX",
+                            "Channel": {"Name": channel_names[:len(downsampled_stack)]},
+                        },
+                    )
+                    log.debug(f"Saved {filepath} with shape {stacked.shape} ({len(downsampled_stack)} channels)")
 
             # Clear accumulator
             del self._well_accumulators[self.well_id]
@@ -451,9 +456,13 @@ class JobRunner(multiprocessing.Process):
                 job = self._input_queue.get(timeout=self._input_timeout)
                 self._log.info(f"Running job {job.job_id}...")
                 result = job.run()
-                self._log.info(f"Job {job.job_id} returned. Sending result to output queue.")
-                self._output_queue.put_nowait(JobResult(job_id=job.job_id, result=result, exception=None))
-                self._log.debug(f"Result for {job.job_id} is on output queue.")
+                # Only queue non-None results (DownsampledViewJob returns None for intermediate FOVs)
+                if result is not None:
+                    self._log.info(f"Job {job.job_id} returned. Sending result to output queue.")
+                    self._output_queue.put_nowait(JobResult(job_id=job.job_id, result=result, exception=None))
+                    self._log.debug(f"Result for {job.job_id} is on output queue.")
+                else:
+                    self._log.debug(f"Job {job.job_id} returned None, not queuing.")
             except queue.Empty:
                 pass
             except Exception as e:
