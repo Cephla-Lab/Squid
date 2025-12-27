@@ -377,6 +377,100 @@ class TestPlateViewTiming:
             print(f"Overhead of extra resolutions: {time_with_save - time_single_res:.1f}ms")
 
 
+class TestJobRunnerWarmup:
+    """Test JobRunner warmup functionality."""
+
+    def test_warmup_reduces_first_job_latency(self):
+        """Verify that warmup reduces the first job latency."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = os.path.join(tmpdir, "downsampled")
+            os.makedirs(os.path.join(output_dir, "wells"), exist_ok=True)
+
+            tile = np.random.randint(0, 65535, (64, 64), dtype=np.uint16)
+
+            # Test WITHOUT warmup
+            runner1 = JobRunner()
+            runner1.daemon = True
+            runner1.start()
+            
+            try:
+                job = DownsampledViewJob(
+                    capture_info=make_test_capture_info(region_id="A1", fov=0),
+                    capture_image=JobImage(image_array=tile.copy()),
+                    well_id="A1",
+                    well_row=0,
+                    well_col=0,
+                    fov_index=0,
+                    total_fovs_in_well=1,
+                    channel_idx=0,
+                    total_channels=1,
+                    channel_name="BF",
+                    fov_position_in_well=(0.0, 0.0),
+                    overlap_pixels=(0, 0, 0, 0),
+                    pixel_size_um=1.0,
+                    target_resolutions_um=[10.0],
+                    plate_resolution_um=10.0,
+                    output_dir=output_dir,
+                    channel_names=["BF"],
+                )
+                
+                start = time.time()
+                runner1.dispatch(job)
+                runner1.output_queue().get(timeout=30.0)
+                time_without_warmup = (time.time() - start) * 1000
+            finally:
+                runner1.shutdown(timeout_s=5.0)
+
+            # Test WITH warmup
+            output_dir2 = os.path.join(tmpdir, "downsampled2")
+            os.makedirs(os.path.join(output_dir2, "wells"), exist_ok=True)
+            
+            runner2 = JobRunner()
+            runner2.daemon = True
+            runner2.start()
+            
+            try:
+                # Warmup first
+                warmup_start = time.time()
+                runner2.warmup(timeout_s=10.0)
+                warmup_time = (time.time() - warmup_start) * 1000
+                
+                job = DownsampledViewJob(
+                    capture_info=make_test_capture_info(region_id="B1", fov=0),
+                    capture_image=JobImage(image_array=tile.copy()),
+                    well_id="B1",
+                    well_row=1,
+                    well_col=0,
+                    fov_index=0,
+                    total_fovs_in_well=1,
+                    channel_idx=0,
+                    total_channels=1,
+                    channel_name="BF",
+                    fov_position_in_well=(0.0, 0.0),
+                    overlap_pixels=(0, 0, 0, 0),
+                    pixel_size_um=1.0,
+                    target_resolutions_um=[10.0],
+                    plate_resolution_um=10.0,
+                    output_dir=output_dir2,
+                    channel_names=["BF"],
+                )
+                
+                start = time.time()
+                runner2.dispatch(job)
+                runner2.output_queue().get(timeout=30.0)
+                time_with_warmup = (time.time() - start) * 1000
+            finally:
+                runner2.shutdown(timeout_s=5.0)
+
+            print(f"\nWithout warmup: {time_without_warmup:.1f}ms")
+            print(f"With warmup: warmup took {warmup_time:.1f}ms, first job took {time_with_warmup:.1f}ms")
+            print(f"Improvement: {time_without_warmup - time_with_warmup:.1f}ms faster")
+            
+            # First job after warmup should be significantly faster
+            assert time_with_warmup < time_without_warmup / 2, \
+                f"Expected warmed job to be <50% of cold job time, got {time_with_warmup:.1f}ms vs {time_without_warmup:.1f}ms"
+
+
 class TestSignalEmissionTiming:
     """Test timing of Qt signal emission and processing."""
 

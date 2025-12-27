@@ -424,6 +424,15 @@ class DownsampledViewJob(Job):
             raise
 
 
+@dataclass
+class WarmupJob:
+    """No-op job to pre-warm the subprocess (force module imports)."""
+    job_id: str = field(default_factory=lambda: str(uuid4()))
+    
+    def run(self):
+        return "warmed_up"
+
+
 class JobRunner(multiprocessing.Process):
     def __init__(self):
         super().__init__()
@@ -433,11 +442,36 @@ class JobRunner(multiprocessing.Process):
         self._input_timeout = 1.0
         self._output_queue: multiprocessing.Queue = multiprocessing.Queue()
         self._shutdown_event: multiprocessing.Event = multiprocessing.Event()
+        self._warmed_up = False
 
     def dispatch(self, job: Job):
         self._input_queue.put_nowait(job)
 
         return True
+
+    def warmup(self, timeout_s: float = 5.0) -> bool:
+        """Send a warmup job to pre-initialize the subprocess.
+        
+        This forces the subprocess to import all modules before the first real job.
+        Returns True if warmup succeeded, False if timed out.
+        """
+        if self._warmed_up:
+            return True
+        
+        self._log.info("Warming up JobRunner subprocess...")
+        warmup_job = WarmupJob()
+        self.dispatch(warmup_job)
+        
+        try:
+            result = self._output_queue.get(timeout=timeout_s)
+            if result.result == "warmed_up":
+                self._warmed_up = True
+                self._log.info("JobRunner warmup complete.")
+                return True
+        except queue.Empty:
+            self._log.warning(f"JobRunner warmup timed out after {timeout_s}s")
+        
+        return False
 
     def output_queue(self) -> multiprocessing.Queue:
         return self._output_queue

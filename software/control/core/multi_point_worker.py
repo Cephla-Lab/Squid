@@ -212,6 +212,11 @@ class MultiPointWorker:
             self._job_runners.append((job_class, job_runner))
         self._abort_on_failed_job = abort_on_failed_jobs
 
+        # Pre-warm JobRunners to avoid startup delay on first real job
+        for job_class, job_runner in self._job_runners:
+            if job_runner:
+                job_runner.warmup(timeout_s=10.0)
+
     def update_use_piezo(self, value):
         self.use_piezo = value
         self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
