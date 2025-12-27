@@ -163,10 +163,15 @@ class MultiPointWorker:
             job_classes.extend(extra_job_classes)
 
         # Downsampled view generation setup
-        # Only generate downsampled views for "Select Wells" mode
+        # Only generate downsampled views for well-based acquisitions
+        is_select_wells = acquisition_parameters.xy_mode == "Select Wells"
+        is_loaded_wells = (
+            acquisition_parameters.xy_mode == "Load Coordinates"
+            and self._is_well_based_acquisition()
+        )
         self._generate_downsampled_views = (
             acquisition_parameters.generate_downsampled_views
-            and acquisition_parameters.xy_mode == "Select Wells"
+            and (is_select_wells or is_loaded_wells)
         )
         self._downsampled_view_manager: Optional[DownsampledViewManager] = None
         self._downsampled_well_resolutions_um = acquisition_parameters.downsampled_well_resolutions_um or [5.0, 10.0, 20.0]
@@ -188,7 +193,8 @@ class MultiPointWorker:
             # Pre-calculate FOV counts per region
             for region_id, coords in self.scan_region_fov_coords_mm.items():
                 self._region_fov_counts[region_id] = len(coords)
-            self._log.info(f"Downsampled view generation enabled. Resolutions: {self._downsampled_well_resolutions_um} um")
+            mode = "Select Wells" if is_select_wells else "Load Coordinates (auto-detected)"
+            self._log.info(f"Downsampled view generation enabled ({mode}). Resolutions: {self._downsampled_well_resolutions_um} um")
 
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
@@ -207,6 +213,38 @@ class MultiPointWorker:
     def update_use_piezo(self, value):
         self.use_piezo = value
         self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
+
+    def _is_well_based_acquisition(self) -> bool:
+        """Check if regions represent a valid well-based acquisition.
+        
+        Returns True if:
+        - All region names are valid well IDs (A1, B2, etc.)
+        - All regions have the same FOV grid pattern (same distinct X and Y counts)
+        """
+        if not self.scan_region_names:
+            return False
+        
+        # Check all region names are valid well IDs
+        for region_id in self.scan_region_names:
+            # Must have both letters and digits (e.g., "A1", "B12", "AA1")
+            if not region_id or not any(c.isalpha() for c in region_id) or not any(c.isdigit() for c in region_id):
+                return False
+            try:
+                parse_well_id(region_id)
+            except ValueError:
+                return False
+        
+        # Check all wells have same grid size
+        grid_sizes = set()
+        for region_id, coords in self.scan_region_fov_coords_mm.items():
+            if not coords:
+                continue
+            x_positions = set(round(c[0], 4) for c in coords)  # Round to avoid float precision issues
+            y_positions = set(round(c[1], 4) for c in coords)
+            grid_sizes.add((len(x_positions), len(y_positions)))
+        
+        # All wells should have the same grid pattern
+        return len(grid_sizes) == 1
 
     def run(self):
         this_image_callback_id = None
