@@ -26,6 +26,7 @@
 1.  **Decompose `MultiPointController`:**
     - Extract `ScanPlanner` (pure logic).
     - Extract `AcquisitionEngine` (single-point orchestration).
+    - **Implement Hardware-Orchestrated FOV Acquisition:** Offload the single-FOV Z-stack and channel sequence to the microcontroller for maximum execution speed.
     - Implement the new `AcquisitionCoordinator` state machine.
 2.  **Data Archive Service:** Migrate all disk IO and folder management logic from `MultiPointWorker` to a dedicated service.
 

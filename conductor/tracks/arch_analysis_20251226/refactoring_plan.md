@@ -15,7 +15,8 @@ The `MultiPointController` handles too many responsibilities. It will be broken 
 - **Interactions:** Inputs: User Config; Outputs: `List[AcquisitionPoint]`.
 
 ### C. `AcquisitionEngine` (The Heart)
-- **Responsibility:** Orchestrates the precise timing and hardware synchronization for a single acquisition point.
+- **Responsibility:** Orchestrates the precise timing and hardware synchronization for a single acquisition point (FOV).
+- **Hardware-Orchestrated FOV:** Specifically designed to "compile" and upload the Z-stack and channel sequence for a single FOV to the microcontroller, allowing the hardware to handle the tight Z-Move -> Settle -> Illumination -> Trigger loop without Python intervention.
 - **Interactions:** Coordinates `MotionService`, `ImagingService`, and `TriggerService`.
 
 ### D. `DataArchiveService` (The Librarian)
