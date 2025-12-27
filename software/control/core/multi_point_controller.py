@@ -92,6 +92,7 @@ class MultiPointController:
         self.base_path = None
         self.use_fluidics = False
         self.skip_saving = False
+        self.xy_mode = "Current Position"
 
         self.focus_map = None
         self.gen_focus_map = False
@@ -203,6 +204,9 @@ class MultiPointController:
 
     def set_skip_saving(self, skip_saving):
         self.skip_saving = skip_saving
+
+    def set_xy_mode(self, xy_mode):
+        self.xy_mode = xy_mode
 
     def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
@@ -612,6 +616,15 @@ class MultiPointController:
                 self._stop_per_acquisition_log()
 
     def build_params(self, scan_position_information: ScanPositionInformation) -> AcquisitionParameters:
+        # Determine plate dimensions from wellplate format if available
+        plate_num_rows = 8  # Default for 96-well
+        plate_num_cols = 12
+        if hasattr(self.scanCoordinates, 'format') and self.scanCoordinates.format:
+            format_settings = control._def.get_wellplate_settings(self.scanCoordinates.format)
+            if format_settings:
+                plate_num_rows = format_settings.get('rows', 8)
+                plate_num_cols = format_settings.get('cols', 12)
+
         return AcquisitionParameters(
             experiment_ID=self.experiment_ID,
             base_path=self.base_path,
@@ -634,10 +647,20 @@ class MultiPointController:
             z_range=self.z_range,
             use_fluidics=self.use_fluidics,
             skip_saving=self.skip_saving,
+            # Downsampled view generation parameters
+            generate_downsampled_views=control._def.GENERATE_DOWNSAMPLED_VIEWS,
+            downsampled_well_resolutions_um=list(control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM),
+            downsampled_plate_resolution_um=control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
+            downsampled_z_projection=control._def.DOWNSAMPLED_Z_PROJECTION,
+            plate_num_rows=plate_num_rows,
+            plate_num_cols=plate_num_cols,
+            xy_mode=self.xy_mode,
         )
 
     def _on_acquisition_completed(self):
         self._log.debug("MultiPointController._on_acquisition_completed called")
+        # Note: Plate views are saved per timepoint in the worker's run_single_time_point method
+
         # restore the previous selected mode
         if self.gen_focus_map:
             self.autofocusController.clear_focus_map()
@@ -687,3 +710,13 @@ class MultiPointController:
             )
             return False
         return True
+
+    def get_plate_view(self) -> np.ndarray:
+        """Get the current plate view array from the acquisition.
+        
+        Returns:
+            Copy of the plate view array, or None if not available.
+        """
+        if self.multiPointWorker is not None:
+            return self.multiPointWorker.get_plate_view()
+        return None

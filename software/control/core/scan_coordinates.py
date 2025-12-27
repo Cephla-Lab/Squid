@@ -565,7 +565,13 @@ class ScanCoordinates:
         """Get region boundaries"""
         if not self.validate_region(region_id):
             return None
-        fovs = np.array(self.region_fov_coordinates[region_id])
+        coords = self.region_fov_coordinates[region_id]
+        if not coords:
+            return None
+        fovs = np.array(coords)
+        # Handle case where there's only one FOV (1D array)
+        if fovs.ndim == 1:
+            fovs = fovs.reshape(1, -1)
         return {
             "min_x": np.min(fovs[:, 0]),
             "max_x": np.max(fovs[:, 0]),

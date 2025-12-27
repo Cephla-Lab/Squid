@@ -53,6 +53,17 @@ class AcquisitionParameters:
     use_fluidics: bool
     skip_saving: bool = False
 
+    # Downsampled view generation parameters
+    generate_downsampled_views: bool = False
+    downsampled_well_resolutions_um: Optional[List[float]] = None
+    downsampled_plate_resolution_um: float = 10.0
+    downsampled_z_projection: str = "mip"  # "mip" or "middle"
+    plate_num_rows: int = 8  # For 96-well plate
+    plate_num_cols: int = 12  # For 96-well plate
+
+    # XY mode for determining scan type
+    xy_mode: str = "Current Position"  # "Current Position", "Select Wells", "Manual", "Load Coordinates"
+
 
 @dataclass
 class OverallProgressUpdate:
@@ -70,6 +81,24 @@ class RegionProgressUpdate:
 
 
 @dataclass
+class PlateViewUpdate:
+    """Data for plate view channel update."""
+    channel_idx: int
+    channel_name: str
+    plate_image: "np.ndarray"  # Forward reference
+
+
+@dataclass
+class PlateViewInit:
+    """Data for plate view initialization."""
+    num_rows: int
+    num_cols: int
+    well_slot_shape: Tuple[int, int]
+    fov_grid_shape: Tuple[int, int]
+    channel_names: List[str]
+
+
+@dataclass
 class MultiPointControllerFunctions:
     signal_acquisition_start: Callable[[AcquisitionParameters], None]
     signal_acquisition_finished: Callable[[], None]
@@ -78,3 +107,6 @@ class MultiPointControllerFunctions:
     signal_current_fov: Callable[[float, float], None]
     signal_overall_progress: Callable[[OverallProgressUpdate], None]
     signal_region_progress: Callable[[RegionProgressUpdate], None]
+    # Optional plate view callbacks (default to no-op)
+    signal_plate_view_init: Callable[[PlateViewInit], None] = lambda *a, **kw: None
+    signal_plate_view_update: Callable[[PlateViewUpdate], None] = lambda *a, **kw: None
