@@ -64,6 +64,7 @@ if __name__ == "__main__":
         legacy_config = True
     app = QApplication([])
     app.setStyle("Fusion")
+    app.setWindowIcon(QIcon("icon/cephla_logo.ico"))
     # This allows shutdown via ctrl+C even after the gui has popped up.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 

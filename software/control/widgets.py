@@ -7555,6 +7555,9 @@ class NapariLiveWidget(QWidget):
         # if hasattr(self.viewer.window, "_status_bar"):
         #     self.viewer.window._status_bar.hide()
 
+        # Hide the napari menu bar (clear it for macOS global menu bar)
+        self.viewer.window.main_menu.clear()
+
         # Hide the layer buttons
         if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
             self.viewer.window._qt_viewer.layerButtons.hide()
@@ -8070,6 +8073,9 @@ class NapariMultiChannelWidget(QWidget):
         # if hasattr(self.viewer.window, "_status_bar"):
         #     self.viewer.window._status_bar.hide()
 
+        # Hide the napari menu bar (clear it for macOS global menu bar)
+        self.viewer.window.main_menu.clear()
+
         # Hide the layer buttons
         if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
             self.viewer.window._qt_viewer.layerButtons.hide()
@@ -8242,6 +8248,10 @@ class NapariMosaicDisplayWidget(QWidget):
         # # hide status bar
         # if hasattr(self.viewer.window, "_status_bar"):
         #     self.viewer.window._status_bar.hide()
+
+        # Hide the napari menu bar (clear it for macOS global menu bar)
+        self.viewer.window.main_menu.clear()
+
         self.viewer.bind_key("D", self.toggle_draw_mode)
 
     def toggle_draw_mode(self, viewer):
