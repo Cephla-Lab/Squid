@@ -522,9 +522,12 @@ class MultiPointWorker:
             self._downsampled_view_manager.update_well(
                 result.well_row,
                 result.well_col,
-                result.well_image_10um,
+                result.well_images,
             )
-            self._log.info(f"Updated plate view for well {result.well_id} at ({result.well_row}, {result.well_col})")
+            self._log.info(
+                f"Updated plate view for well {result.well_id} at ({result.well_row}, {result.well_col}) "
+                f"with {len(result.well_images)} channels"
+            )
         except Exception as e:
             self._log.exception(f"Failed to update plate view for well {result.well_id}: {e}")
 
@@ -658,15 +661,21 @@ class MultiPointWorker:
         well_slot_width = max(well_slot_width, min_slot_size)
         well_slot_height = max(well_slot_height, min_slot_size)
 
+        # Get channel info
+        num_channels = len(self.selected_configurations)
+        channel_names = [cfg.name for cfg in self.selected_configurations]
+
         self._downsampled_view_manager = DownsampledViewManager(
             num_rows=self._plate_num_rows,
             num_cols=self._plate_num_cols,
             well_slot_shape=(well_slot_height, well_slot_width),
+            num_channels=num_channels,
+            channel_names=channel_names,
             dtype=image.dtype,
         )
         self._log.info(
             f"Initialized downsampled view manager: {self._plate_num_rows}x{self._plate_num_cols} wells, "
-            f"slot shape ({well_slot_height}, {well_slot_width}), "
+            f"{num_channels} channels, slot shape ({well_slot_height}, {well_slot_width}), "
             f"well extent ({well_extent_x_mm:.2f}x{well_extent_y_mm:.2f} mm)"
         )
 

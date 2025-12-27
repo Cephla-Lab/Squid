@@ -252,7 +252,8 @@ class TestPlateViewManager:
 
         manager = DownsampledViewManager(num_rows, num_cols, well_slot_shape)
 
-        assert manager.plate_view.shape == (800, 1200)
+        # Shape is (C, H, W) with default 1 channel
+        assert manager.plate_view.shape == (1, 800, 1200)
         assert manager.plate_view.dtype == np.uint16
         assert np.all(manager.plate_view == 0)
 
@@ -262,42 +263,50 @@ class TestPlateViewManager:
 
         assert manager.plate_view.dtype == np.uint8
 
+    def test_plate_view_manager_init_multi_channel(self):
+        """Test plate view with multiple channels."""
+        manager = DownsampledViewManager(4, 6, (50, 50), num_channels=3, channel_names=["DAPI", "GFP", "RFP"])
+
+        assert manager.plate_view.shape == (3, 200, 300)
+        assert manager.num_channels == 3
+        assert manager.channel_names == ["DAPI", "GFP", "RFP"]
+
     def test_plate_view_manager_update_well(self):
         """Test well image placed at correct grid position."""
         manager = DownsampledViewManager(8, 12, (100, 100))
         well_image = np.ones((80, 80), dtype=np.uint16) * 5000
 
-        # Update well B3 (row=1, col=2)
-        manager.update_well(1, 2, well_image)
+        # Update well B3 (row=1, col=2) - pass as dict with channel_idx
+        manager.update_well(1, 2, {0: well_image})
 
-        # Check image placed at correct position
+        # Check image placed at correct position (channel 0)
         y_start = 1 * 100
         x_start = 2 * 100
-        assert np.all(manager.plate_view[y_start:y_start+80, x_start:x_start+80] == 5000)
+        assert np.all(manager.plate_view[0, y_start:y_start+80, x_start:x_start+80] == 5000)
         # Check surrounding area is still zero
-        assert manager.plate_view[0, 0] == 0
-        assert manager.plate_view[y_start-1, x_start] == 0
+        assert manager.plate_view[0, 0, 0] == 0
+        assert manager.plate_view[0, y_start-1, x_start] == 0
 
     def test_plate_view_compact_layout(self):
         """Test wells are immediately adjacent (no gaps)."""
         manager = DownsampledViewManager(2, 2, (100, 100))
 
-        # Fill all wells with different values
-        manager.update_well(0, 0, np.ones((100, 100), dtype=np.uint16) * 1000)
-        manager.update_well(0, 1, np.ones((100, 100), dtype=np.uint16) * 2000)
-        manager.update_well(1, 0, np.ones((100, 100), dtype=np.uint16) * 3000)
-        manager.update_well(1, 1, np.ones((100, 100), dtype=np.uint16) * 4000)
+        # Fill all wells with different values (pass as dicts)
+        manager.update_well(0, 0, {0: np.ones((100, 100), dtype=np.uint16) * 1000})
+        manager.update_well(0, 1, {0: np.ones((100, 100), dtype=np.uint16) * 2000})
+        manager.update_well(1, 0, {0: np.ones((100, 100), dtype=np.uint16) * 3000})
+        manager.update_well(1, 1, {0: np.ones((100, 100), dtype=np.uint16) * 4000})
 
-        # Check wells are adjacent - no gaps between them
-        assert manager.plate_view[99, 99] == 1000   # Bottom-right of A1
-        assert manager.plate_view[99, 100] == 2000  # Bottom-left of A2 (immediately adjacent)
-        assert manager.plate_view[100, 99] == 3000  # Top-right of B1 (immediately adjacent)
-        assert manager.plate_view[100, 100] == 4000 # Top-left of B2
+        # Check wells are adjacent - no gaps between them (channel 0)
+        assert manager.plate_view[0, 99, 99] == 1000   # Bottom-right of A1
+        assert manager.plate_view[0, 99, 100] == 2000  # Bottom-left of A2 (immediately adjacent)
+        assert manager.plate_view[0, 100, 99] == 3000  # Top-right of B1 (immediately adjacent)
+        assert manager.plate_view[0, 100, 100] == 4000 # Top-left of B2
 
     def test_plate_view_save(self):
         """Test plate view can be saved to disk."""
         manager = DownsampledViewManager(2, 2, (50, 50))
-        manager.update_well(0, 0, np.ones((50, 50), dtype=np.uint16) * 1000)
+        manager.update_well(0, 0, {0: np.ones((50, 50), dtype=np.uint16) * 1000})
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "plate_10um.tiff")
@@ -307,21 +316,39 @@ class TestPlateViewManager:
             # Verify we can read it back
             import tifffile
             loaded = tifffile.imread(path)
-            assert loaded.shape == (100, 100)
-            assert np.all(loaded[0:50, 0:50] == 1000)
+            # Shape is (C, H, W) with 1 channel
+            assert loaded.shape == (1, 100, 100)
+            assert np.all(loaded[0, 0:50, 0:50] == 1000)
 
     def test_plate_view_partial_acquisition(self):
         """Test plate view valid even if only some wells imaged."""
         manager = DownsampledViewManager(8, 12, (100, 100))
 
-        # Only image wells A1 and H12
-        manager.update_well(0, 0, np.ones((100, 100), dtype=np.uint16) * 1000)
-        manager.update_well(7, 11, np.ones((100, 100), dtype=np.uint16) * 2000)
+        # Only image wells A1 and H12 (pass as dicts)
+        manager.update_well(0, 0, {0: np.ones((100, 100), dtype=np.uint16) * 1000})
+        manager.update_well(7, 11, {0: np.ones((100, 100), dtype=np.uint16) * 2000})
 
-        # Both wells should be present, rest should be zero
-        assert np.all(manager.plate_view[0:100, 0:100] == 1000)
-        assert np.all(manager.plate_view[700:800, 1100:1200] == 2000)
-        assert np.all(manager.plate_view[100:700, :] == 0)  # Middle rows empty
+        # Both wells should be present, rest should be zero (channel 0)
+        assert np.all(manager.plate_view[0, 0:100, 0:100] == 1000)
+        assert np.all(manager.plate_view[0, 700:800, 1100:1200] == 2000)
+        assert np.all(manager.plate_view[0, 100:700, :] == 0)  # Middle rows empty
+
+    def test_plate_view_multi_channel_update(self):
+        """Test updating multiple channels for a well."""
+        manager = DownsampledViewManager(2, 2, (50, 50), num_channels=2, channel_names=["Ch0", "Ch1"])
+
+        # Update well A1 with different values for each channel
+        manager.update_well(0, 0, {
+            0: np.ones((50, 50), dtype=np.uint16) * 1000,
+            1: np.ones((50, 50), dtype=np.uint16) * 2000,
+        })
+
+        # Check each channel has correct values
+        assert np.all(manager.plate_view[0, 0:50, 0:50] == 1000)
+        assert np.all(manager.plate_view[1, 0:50, 0:50] == 2000)
+        # Other wells still zero
+        assert np.all(manager.plate_view[0, 0:50, 50:100] == 0)
+        assert np.all(manager.plate_view[1, 0:50, 50:100] == 0)
 
 
 class TestWellIdParsing:
@@ -400,16 +427,16 @@ class TestCircularScanInSquareSlot:
         mask = (x - center[0])**2 + (y - center[1])**2 <= radius**2
         well_image[mask] = 5000
 
-        manager.update_well(0, 0, well_image)
+        manager.update_well(0, 0, {0: well_image})
 
-        # Corners should be zero (outside circle)
-        assert manager.plate_view[0, 0] == 0
-        assert manager.plate_view[0, 99] == 0
-        assert manager.plate_view[99, 0] == 0
-        assert manager.plate_view[99, 99] == 0
+        # Corners should be zero (outside circle) - channel 0
+        assert manager.plate_view[0, 0, 0] == 0
+        assert manager.plate_view[0, 0, 99] == 0
+        assert manager.plate_view[0, 99, 0] == 0
+        assert manager.plate_view[0, 99, 99] == 0
 
         # Center should have data
-        assert manager.plate_view[50, 50] == 5000
+        assert manager.plate_view[0, 50, 50] == 5000
 
 
 class TestWellTileAccumulatorZProjection:

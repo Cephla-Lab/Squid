@@ -234,6 +234,7 @@ class DownsampledViewManager:
 
     The plate view is a compact grid where wells are placed immediately adjacent
     to each other based on their grid position (row, col), not their stage coordinates.
+    Supports multi-channel plate views.
     """
 
     def __init__(
@@ -241,6 +242,8 @@ class DownsampledViewManager:
         num_rows: int,
         num_cols: int,
         well_slot_shape: Tuple[int, int],
+        num_channels: int = 1,
+        channel_names: Optional[List[str]] = None,
         dtype: np.dtype = np.uint16,
     ):
         """Initialize the plate view manager.
@@ -249,62 +252,91 @@ class DownsampledViewManager:
             num_rows: Number of rows in the plate (e.g., 8 for 96-well)
             num_cols: Number of columns in the plate (e.g., 12 for 96-well)
             well_slot_shape: (height, width) of each well slot in pixels
+            num_channels: Number of imaging channels
+            channel_names: List of channel names for metadata
             dtype: Data type for the plate view array
         """
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.num_rows = num_rows
         self.num_cols = num_cols
         self.well_slot_shape = well_slot_shape
+        self.num_channels = num_channels
+        self.channel_names = channel_names or [f"Channel_{i}" for i in range(num_channels)]
         self.dtype = dtype
 
         plate_height = num_rows * well_slot_shape[0]
         plate_width = num_cols * well_slot_shape[1]
 
-        self.plate_view = np.zeros((plate_height, plate_width), dtype=dtype)
+        # Shape: (C, H, W) for multi-channel
+        self.plate_view = np.zeros((num_channels, plate_height, plate_width), dtype=dtype)
         self._log.info(
             f"Initialized plate view: {num_rows}x{num_cols} wells, "
-            f"slot shape {well_slot_shape}, total shape {self.plate_view.shape}"
+            f"{num_channels} channels, slot shape {well_slot_shape}, total shape {self.plate_view.shape}"
         )
 
-    def update_well(self, row: int, col: int, well_image: np.ndarray) -> None:
-        """Copy stitched well image into plate view grid.
+    def update_well(self, row: int, col: int, well_images: Dict[int, np.ndarray]) -> None:
+        """Copy stitched well images into plate view grid for all channels.
 
         Args:
             row: 0-based row index
             col: 0-based column index
-            well_image: Downsampled well image to place
+            well_images: Dict mapping channel_idx -> downsampled well image
         """
         y_start = row * self.well_slot_shape[0]
         x_start = col * self.well_slot_shape[1]
 
-        h, w = well_image.shape[:2]
-        y_end = y_start + h
-        x_end = x_start + w
+        for ch_idx, well_image in well_images.items():
+            if ch_idx >= self.num_channels:
+                self._log.warning(f"Channel index {ch_idx} exceeds num_channels {self.num_channels}")
+                continue
 
-        # Clip to plate bounds
-        y_end = min(y_end, self.plate_view.shape[0])
-        x_end = min(x_end, self.plate_view.shape[1])
+            h, w = well_image.shape[:2]
+            y_end = y_start + h
+            x_end = x_start + w
 
-        self.plate_view[y_start:y_end, x_start:x_end] = well_image[:y_end - y_start, :x_end - x_start]
-        self._log.debug(f"Updated well ({row}, {col}) at position ({y_start}, {x_start})")
+            # Clip to plate bounds
+            y_end = min(y_end, self.plate_view.shape[1])
+            x_end = min(x_end, self.plate_view.shape[2])
+
+            self.plate_view[ch_idx, y_start:y_end, x_start:x_end] = well_image[:y_end - y_start, :x_end - x_start]
+
+        self._log.debug(f"Updated well ({row}, {col}) at position ({y_start}, {x_start}) for {len(well_images)} channels")
 
     def save_plate_view(self, path: str) -> None:
-        """Save plate view to disk as TIFF.
+        """Save plate view to disk as multi-channel TIFF.
 
         Args:
             path: Output file path
         """
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tifffile.imwrite(path, self.plate_view)
-        self._log.info(f"Saved plate view to {path}")
+        tifffile.imwrite(
+            path,
+            self.plate_view,
+            metadata={
+                "axes": "CYX",
+                "Channel": {"Name": self.channel_names[:self.num_channels]},
+            },
+        )
+        self._log.info(f"Saved plate view to {path} with {self.num_channels} channels")
 
     def get_plate_view(self) -> np.ndarray:
         """Get a copy of the plate view array.
 
         Returns:
-            Copy of the plate view array
+            Copy of the plate view array with shape (C, H, W)
         """
         return self.plate_view.copy()
+
+    def get_channel_view(self, channel_idx: int) -> np.ndarray:
+        """Get a copy of a single channel's plate view.
+
+        Args:
+            channel_idx: Channel index (0-based)
+
+        Returns:
+            Copy of the channel's plate view with shape (H, W)
+        """
+        return self.plate_view[channel_idx].copy()
 
     def clear(self) -> None:
         """Clear the plate view (fill with zeros)."""

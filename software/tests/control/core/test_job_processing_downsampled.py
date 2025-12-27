@@ -72,13 +72,16 @@ class TestDownsampledViewResult:
             well_id="A1",
             well_row=0,
             well_col=0,
-            well_image_10um=well_image,
+            well_images={0: well_image},
+            channel_names=["BF"],
         )
 
         assert result.well_id == "A1"
         assert result.well_row == 0
         assert result.well_col == 0
-        assert result.well_image_10um.shape == (100, 100)
+        assert 0 in result.well_images
+        assert result.well_images[0].shape == (100, 100)
+        assert result.channel_names == ["BF"]
 
     def test_downsampled_view_result_serialization(self):
         """Test result can be pickled/unpickled (for multiprocessing queue)."""
@@ -88,7 +91,8 @@ class TestDownsampledViewResult:
             well_id="B3",
             well_row=1,
             well_col=2,
-            well_image_10um=well_image,
+            well_images={0: well_image},
+            channel_names=["BF"],
         )
 
         # Pickle and unpickle (simulates queue transfer)
@@ -98,21 +102,22 @@ class TestDownsampledViewResult:
         assert unpickled.well_id == "B3"
         assert unpickled.well_row == 1
         assert unpickled.well_col == 2
-        assert np.array_equal(unpickled.well_image_10um, well_image)
+        assert np.array_equal(unpickled.well_images[0], well_image)
 
     def test_downsampled_view_result_none_image(self):
-        """Test result with None image (for intermediate FOVs)."""
+        """Test result with empty images dict (for intermediate FOVs)."""
         result = DownsampledViewResult(
             well_id="A1",
             well_row=0,
             well_col=0,
-            well_image_10um=None,
+            well_images={},
+            channel_names=[],
         )
 
         pickled = pickle.dumps(result)
         unpickled = pickle.loads(pickled)
 
-        assert unpickled.well_image_10um is None
+        assert unpickled.well_images == {}
 
 
 class TestDownsampledViewJob:
@@ -157,8 +162,9 @@ class TestDownsampledViewJob:
             # Check result returned
             assert result is not None
             assert result.well_id == "A1"
-            assert result.well_image_10um is not None
-            assert result.well_image_10um.shape == (20, 20)  # 200/10 = 20
+            assert 0 in result.well_images
+            assert result.well_images[0].shape == (20, 20)  # 200/10 = 20
+            assert result.channel_names == ["BF"]
 
             # Verify multipage TIFF structure
             import tifffile
@@ -220,8 +226,9 @@ class TestDownsampledViewJob:
             assert results[2] is None
             assert results[3] is not None
 
-            # Check stitched image shape
-            assert results[3].well_image_10um.shape == (20, 20)  # 200/10 = 20
+            # Check stitched image shape (multi-channel: well_images is dict)
+            assert 0 in results[3].well_images
+            assert results[3].well_images[0].shape == (20, 20)  # 200/10 = 20
 
     def test_downsampled_view_job_multi_channel(self):
         """Test job accumulates multiple channels and saves multipage TIFF."""
@@ -278,9 +285,11 @@ class TestDownsampledViewJob:
                 assert np.isclose(data[0].mean(), 1000, rtol=0.01)
                 assert np.isclose(data[1].mean(), 2000, rtol=0.01)
 
-            # Plate view should use first channel
-            assert results[1].well_image_10um is not None
-            assert np.isclose(results[1].well_image_10um.mean(), 1000, rtol=0.01)
+            # Plate view should have both channels
+            assert 0 in results[1].well_images
+            assert 1 in results[1].well_images
+            assert np.isclose(results[1].well_images[0].mean(), 1000, rtol=0.01)
+            assert np.isclose(results[1].well_images[1].mean(), 2000, rtol=0.01)
 
     def test_downsampled_view_job_with_overlap_cropping(self):
         """Test job correctly crops overlap before stitching."""
@@ -319,8 +328,9 @@ class TestDownsampledViewJob:
             result = job.run()
 
             # Cropped tile should be 80x80, all center value
-            assert result.well_image_10um.shape == (80, 80)
-            assert np.all(result.well_image_10um == 5000)
+            assert 0 in result.well_images
+            assert result.well_images[0].shape == (80, 80)
+            assert np.all(result.well_images[0] == 5000)
 
 
 class TestJobRunnerIntegration:
@@ -408,11 +418,11 @@ class TestJobRunnerIntegration:
                 runner.dispatch(job)
                 result = runner.output_queue().get(timeout=10.0)
 
-                # Verify the well image was transferred correctly
-                assert result.result.well_image_10um is not None
-                assert result.result.well_image_10um.shape == (10, 10)
+                # Verify the well images were transferred correctly (multi-channel)
+                assert 0 in result.result.well_images
+                assert result.result.well_images[0].shape == (10, 10)
                 # Mean should be close to 12345 (some averaging due to downsampling)
-                assert np.isclose(result.result.well_image_10um.mean(), 12345, rtol=0.01)
+                assert np.isclose(result.result.well_images[0].mean(), 12345, rtol=0.01)
             finally:
                 runner.shutdown(timeout_s=5.0)
 
@@ -453,15 +463,15 @@ class TestJobRunnerIntegration:
                 runner.dispatch(job)
                 job_result = runner.output_queue().get(timeout=10.0)
 
-                # Simulate main process updating plate view
+                # Simulate main process updating plate view (multi-channel)
                 manager = DownsampledViewManager(8, 12, (10, 10))
                 result = job_result.result
-                manager.update_well(result.well_row, result.well_col, result.well_image_10um)
+                manager.update_well(result.well_row, result.well_col, result.well_images)
 
-                # Verify plate view was updated correctly
+                # Verify plate view was updated correctly (channel 0)
                 y_start = 1 * 10
                 x_start = 1 * 10
-                well_region = manager.plate_view[y_start:y_start+10, x_start:x_start+10]
+                well_region = manager.plate_view[0, y_start:y_start+10, x_start:x_start+10]
                 assert np.isclose(well_region.mean(), 7777, rtol=0.01)
             finally:
                 runner.shutdown(timeout_s=5.0)

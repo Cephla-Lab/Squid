@@ -270,12 +270,13 @@ class ThrowImmediatelyJob(Job):
 
 @dataclass
 class DownsampledViewResult:
-    """Result from DownsampledViewJob containing the 10um well image for plate view update."""
+    """Result from DownsampledViewJob containing well images for plate view update."""
 
     well_id: str
     well_row: int
     well_col: int
-    well_image_10um: Optional[np.ndarray]
+    well_images: Dict[int, np.ndarray]  # channel_idx -> downsampled image
+    channel_names: List[str]
 
 
 @dataclass
@@ -367,7 +368,7 @@ class DownsampledViewJob(Job):
             channel_names = accumulator.channel_names
 
             # Generate and save each resolution as multipage TIFF
-            well_image_for_plate = None
+            well_images_for_plate: Dict[int, np.ndarray] = {}
             for resolution in self.target_resolutions_um:
                 # Downsample each channel
                 downsampled_stack = []
@@ -395,9 +396,10 @@ class DownsampledViewJob(Job):
                 )
                 log.debug(f"Saved {filepath} with shape {stacked.shape} ({len(downsampled_stack)} channels)")
 
-                # Use first channel for plate view
+                # Collect all channels for plate view at plate resolution
                 if resolution == self.plate_resolution_um:
-                    well_image_for_plate = downsampled_stack[0] if downsampled_stack else None
+                    for ch_idx, downsampled in enumerate(downsampled_stack):
+                        well_images_for_plate[ch_idx] = downsampled
 
             # Clear accumulator
             del self._well_accumulators[self.well_id]
@@ -406,7 +408,8 @@ class DownsampledViewJob(Job):
                 well_id=self.well_id,
                 well_row=self.well_row,
                 well_col=self.well_col,
-                well_image_10um=well_image_for_plate,
+                well_images=well_images_for_plate,
+                channel_names=channel_names,
             )
 
         except Exception as e:
