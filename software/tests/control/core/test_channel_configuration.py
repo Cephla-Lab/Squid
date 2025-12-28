@@ -1,0 +1,377 @@
+"""Tests for the channel configuration system."""
+
+import json
+import os
+import tempfile
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+from control.utils_config import (
+    ChannelType,
+    NumericChannelMapping,
+    ChannelDefinition,
+    ObjectiveChannelSettings,
+    ChannelDefinitionsConfig,
+)
+from control.core.channel_configuration_mananger import (
+    ChannelConfigurationManager,
+    ConfigType,
+)
+
+
+class TestChannelType:
+    """Test ChannelType enum."""
+
+    def test_fluorescence_value(self):
+        assert ChannelType.FLUORESCENCE.value == "fluorescence"
+
+    def test_led_matrix_value(self):
+        assert ChannelType.LED_MATRIX.value == "led_matrix"
+
+
+class TestNumericChannelMapping:
+    """Test NumericChannelMapping model."""
+
+    def test_create_mapping(self):
+        mapping = NumericChannelMapping(illumination_source=11, ex_wavelength=405)
+        assert mapping.illumination_source == 11
+        assert mapping.ex_wavelength == 405
+
+    def test_mapping_serialization(self):
+        mapping = NumericChannelMapping(illumination_source=12, ex_wavelength=488)
+        data = mapping.model_dump()
+        assert data == {"illumination_source": 12, "ex_wavelength": 488}
+
+
+class TestChannelDefinition:
+    """Test ChannelDefinition model."""
+
+    def test_create_fluorescence_channel(self):
+        channel = ChannelDefinition(
+            name="Fluorescence 488 nm Ex",
+            type=ChannelType.FLUORESCENCE,
+            numeric_channel=2,
+            emission_filter_position=1,
+            display_color="#1FFF00",
+        )
+        assert channel.name == "Fluorescence 488 nm Ex"
+        assert channel.type == ChannelType.FLUORESCENCE
+        assert channel.numeric_channel == 2
+        assert channel.enabled is True  # default
+
+    def test_create_led_matrix_channel(self):
+        channel = ChannelDefinition(
+            name="BF LED matrix full",
+            type=ChannelType.LED_MATRIX,
+            illumination_source=0,
+        )
+        assert channel.name == "BF LED matrix full"
+        assert channel.type == ChannelType.LED_MATRIX
+        assert channel.illumination_source == 0
+
+    def test_fluorescence_requires_numeric_channel(self):
+        with pytest.raises(ValueError, match="must have numeric_channel set"):
+            ChannelDefinition(
+                name="Test",
+                type=ChannelType.FLUORESCENCE,
+                # numeric_channel missing
+            )
+
+    def test_led_matrix_requires_illumination_source(self):
+        with pytest.raises(ValueError, match="must have illumination_source set"):
+            ChannelDefinition(
+                name="Test",
+                type=ChannelType.LED_MATRIX,
+                # illumination_source missing
+            )
+
+    def test_color_conversion_from_int(self):
+        channel = ChannelDefinition(
+            name="Test",
+            type=ChannelType.FLUORESCENCE,
+            numeric_channel=1,
+            display_color=0xFF0000,  # int format
+        )
+        assert channel.display_color == "#FF0000"
+
+    def test_get_illumination_source_fluorescence(self):
+        channel = ChannelDefinition(
+            name="Test",
+            type=ChannelType.FLUORESCENCE,
+            numeric_channel=2,
+        )
+        mapping = {"2": NumericChannelMapping(illumination_source=12, ex_wavelength=488)}
+        assert channel.get_illumination_source(mapping) == 12
+
+    def test_get_illumination_source_led_matrix(self):
+        channel = ChannelDefinition(
+            name="Test",
+            type=ChannelType.LED_MATRIX,
+            illumination_source=3,
+        )
+        assert channel.get_illumination_source({}) == 3
+
+    def test_get_ex_wavelength_fluorescence(self):
+        channel = ChannelDefinition(
+            name="Test",
+            type=ChannelType.FLUORESCENCE,
+            numeric_channel=2,
+        )
+        mapping = {"2": NumericChannelMapping(illumination_source=12, ex_wavelength=488)}
+        assert channel.get_ex_wavelength(mapping) == 488
+
+    def test_get_ex_wavelength_led_matrix_returns_none(self):
+        channel = ChannelDefinition(
+            name="Test",
+            type=ChannelType.LED_MATRIX,
+            illumination_source=0,
+        )
+        assert channel.get_ex_wavelength({}) is None
+
+
+class TestObjectiveChannelSettings:
+    """Test ObjectiveChannelSettings model."""
+
+    def test_default_values(self):
+        settings = ObjectiveChannelSettings()
+        assert settings.exposure_time == 25.0
+        assert settings.analog_gain == 0.0
+        assert settings.illumination_intensity == 20.0
+        assert settings.z_offset == 0.0
+
+    def test_custom_values(self):
+        settings = ObjectiveChannelSettings(
+            exposure_time=100.0,
+            analog_gain=5.0,
+            illumination_intensity=50.0,
+            z_offset=1.5,
+        )
+        assert settings.exposure_time == 100.0
+        assert settings.analog_gain == 5.0
+
+
+class TestChannelDefinitionsConfig:
+    """Test ChannelDefinitionsConfig model."""
+
+    @pytest.fixture
+    def sample_config(self):
+        return ChannelDefinitionsConfig(
+            max_fluorescence_channels=5,
+            channels=[
+                ChannelDefinition(
+                    name="Fluorescence 488 nm Ex",
+                    type=ChannelType.FLUORESCENCE,
+                    numeric_channel=2,
+                    enabled=True,
+                ),
+                ChannelDefinition(
+                    name="BF LED matrix full",
+                    type=ChannelType.LED_MATRIX,
+                    illumination_source=0,
+                    enabled=True,
+                ),
+                ChannelDefinition(
+                    name="Disabled Channel",
+                    type=ChannelType.FLUORESCENCE,
+                    numeric_channel=1,
+                    enabled=False,
+                ),
+            ],
+            numeric_channel_mapping={
+                "1": NumericChannelMapping(illumination_source=11, ex_wavelength=405),
+                "2": NumericChannelMapping(illumination_source=12, ex_wavelength=488),
+            },
+        )
+
+    def test_get_enabled_channels(self, sample_config):
+        enabled = sample_config.get_enabled_channels()
+        assert len(enabled) == 2
+        assert all(ch.enabled for ch in enabled)
+
+    def test_get_channel_by_name(self, sample_config):
+        channel = sample_config.get_channel_by_name("BF LED matrix full")
+        assert channel is not None
+        assert channel.type == ChannelType.LED_MATRIX
+
+    def test_get_channel_by_name_not_found(self, sample_config):
+        channel = sample_config.get_channel_by_name("Nonexistent")
+        assert channel is None
+
+    def test_save_and_load(self, sample_config):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            filepath = Path(f.name)
+
+        try:
+            sample_config.save(filepath)
+            loaded = ChannelDefinitionsConfig.load(filepath)
+
+            assert loaded.max_fluorescence_channels == 5
+            assert len(loaded.channels) == 3
+            assert len(loaded.numeric_channel_mapping) == 2
+        finally:
+            filepath.unlink()
+
+    def test_generate_default(self):
+        config = ChannelDefinitionsConfig.generate_default()
+        assert config.max_fluorescence_channels == 5
+        assert len(config.channels) > 0
+        assert len(config.numeric_channel_mapping) == 5
+
+        # Check both channel types exist
+        types = {ch.type for ch in config.channels}
+        assert ChannelType.FLUORESCENCE in types
+        assert ChannelType.LED_MATRIX in types
+
+
+class TestChannelConfigurationManager:
+    """Test ChannelConfigurationManager class."""
+
+    @pytest.fixture
+    def temp_config_dir(self):
+        """Create a temporary directory for configurations."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def manager_with_config(self, temp_config_dir):
+        """Create a manager with a default config."""
+        # Create default config file
+        default_config = ChannelDefinitionsConfig.generate_default()
+        default_file = temp_config_dir / "channel_definitions.default.json"
+        default_config.save(default_file)
+
+        manager = ChannelConfigurationManager(configurations_path=temp_config_dir)
+        return manager
+
+    def test_init_without_config_path(self):
+        manager = ChannelConfigurationManager()
+        assert manager.channel_definitions is None
+
+    def test_init_with_config_path(self, manager_with_config, temp_config_dir):
+        assert manager_with_config.channel_definitions is not None
+        # User file should be created from default
+        user_file = temp_config_dir / "channel_definitions.json"
+        assert user_file.exists()
+
+    def test_load_creates_user_file_from_default(self, temp_config_dir):
+        # Create only default file
+        default_config = ChannelDefinitionsConfig.generate_default()
+        default_file = temp_config_dir / "channel_definitions.default.json"
+        default_config.save(default_file)
+
+        user_file = temp_config_dir / "channel_definitions.json"
+        assert not user_file.exists()
+
+        manager = ChannelConfigurationManager(configurations_path=temp_config_dir)
+
+        assert user_file.exists()
+        assert manager.channel_definitions is not None
+
+    def test_save_channel_definitions(self, manager_with_config, temp_config_dir):
+        # Modify config
+        manager_with_config.channel_definitions.max_fluorescence_channels = 7
+        manager_with_config.save_channel_definitions()
+
+        # Reload and verify
+        user_file = temp_config_dir / "channel_definitions.json"
+        with open(user_file) as f:
+            data = json.load(f)
+        assert data["max_fluorescence_channels"] == 7
+
+    def test_get_channel_definitions(self, manager_with_config):
+        definitions = manager_with_config.get_channel_definitions()
+        assert definitions is not None
+        assert isinstance(definitions, ChannelDefinitionsConfig)
+
+    def test_add_channel_definition(self, manager_with_config):
+        initial_count = len(manager_with_config.channel_definitions.channels)
+
+        new_channel = ChannelDefinition(
+            name="New Test Channel",
+            type=ChannelType.FLUORESCENCE,
+            numeric_channel=3,
+        )
+        manager_with_config.add_channel_definition(new_channel)
+
+        assert len(manager_with_config.channel_definitions.channels) == initial_count + 1
+
+    def test_remove_channel_definition(self, manager_with_config):
+        # Add a channel first
+        new_channel = ChannelDefinition(
+            name="Channel To Remove",
+            type=ChannelType.FLUORESCENCE,
+            numeric_channel=3,
+        )
+        manager_with_config.add_channel_definition(new_channel)
+        count_after_add = len(manager_with_config.channel_definitions.channels)
+
+        manager_with_config.remove_channel_definition("Channel To Remove")
+
+        assert len(manager_with_config.channel_definitions.channels) == count_after_add - 1
+        assert manager_with_config.channel_definitions.get_channel_by_name("Channel To Remove") is None
+
+    def test_set_channel_enabled(self, manager_with_config):
+        channel_name = manager_with_config.channel_definitions.channels[0].name
+        manager_with_config.set_channel_enabled(channel_name, False)
+
+        channel = manager_with_config.channel_definitions.get_channel_by_name(channel_name)
+        assert channel.enabled is False
+
+    def test_get_enabled_configurations(self, manager_with_config, temp_config_dir):
+        # Set up profile path
+        profile_path = temp_config_dir / "profiles" / "default"
+        profile_path.mkdir(parents=True)
+        manager_with_config.set_profile_path(profile_path)
+
+        # Disable one channel
+        channel_name = manager_with_config.channel_definitions.channels[0].name
+        manager_with_config.set_channel_enabled(channel_name, False)
+
+        all_configs = manager_with_config.get_configurations("10x")
+        enabled_configs = manager_with_config.get_enabled_configurations("10x")
+
+        assert len(enabled_configs) < len(all_configs)
+
+    def test_channel_id_stability(self, manager_with_config, temp_config_dir):
+        """Test that channel IDs are stable across sessions."""
+        profile_path = temp_config_dir / "profiles" / "default"
+        profile_path.mkdir(parents=True)
+        manager_with_config.set_profile_path(profile_path)
+
+        configs1 = manager_with_config.get_configurations("10x")
+        id_map1 = {c.name: c.id for c in configs1}
+
+        # Create new manager (simulating new session)
+        manager2 = ChannelConfigurationManager(configurations_path=temp_config_dir)
+        manager2.set_profile_path(profile_path)
+
+        configs2 = manager2.get_configurations("10x")
+        id_map2 = {c.name: c.id for c in configs2}
+
+        # IDs should be the same
+        for name in id_map1:
+            assert id_map1[name] == id_map2[name], f"ID mismatch for {name}"
+
+
+class TestChannelDefinitionValidation:
+    """Test validation edge cases."""
+
+    def test_led_matrix_with_null_numeric_channel_is_valid(self):
+        channel = ChannelDefinition(
+            name="Test LED",
+            type=ChannelType.LED_MATRIX,
+            illumination_source=0,
+            numeric_channel=None,
+        )
+        assert channel.numeric_channel is None
+
+    def test_fluorescence_with_null_illumination_source_is_valid(self):
+        channel = ChannelDefinition(
+            name="Test Fluorescence",
+            type=ChannelType.FLUORESCENCE,
+            numeric_channel=1,
+            illumination_source=None,
+        )
+        assert channel.illumination_source is None
