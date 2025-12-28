@@ -409,11 +409,14 @@ class PreferencesDialog(QDialog):
         self.roi_width_spinbox.setRange(0, 10000)
         self.roi_width_spinbox.setSpecialValueText("Auto")
         roi_width = self._get_config_value("CAMERA_CONFIG", "roi_width_default", "None")
-        try:
-            self.roi_width_spinbox.setValue(0 if roi_width == "None" else int(roi_width))
-        except ValueError:
-            self._log.warning(f"Invalid roi_width_default value '{roi_width}', using Auto")
+        if roi_width == "None":
             self.roi_width_spinbox.setValue(0)
+        else:
+            try:
+                self.roi_width_spinbox.setValue(int(roi_width))
+            except ValueError:
+                self._log.warning(f"Invalid roi_width_default value '{roi_width}', using Auto")
+                self.roi_width_spinbox.setValue(0)
         layout.addRow("ROI Width:", self.roi_width_spinbox)
 
         # ROI Height
@@ -421,11 +424,14 @@ class PreferencesDialog(QDialog):
         self.roi_height_spinbox.setRange(0, 10000)
         self.roi_height_spinbox.setSpecialValueText("Auto")
         roi_height = self._get_config_value("CAMERA_CONFIG", "roi_height_default", "None")
-        try:
-            self.roi_height_spinbox.setValue(0 if roi_height == "None" else int(roi_height))
-        except ValueError:
-            self._log.warning(f"Invalid roi_height_default value '{roi_height}', using Auto")
+        if roi_height == "None":
             self.roi_height_spinbox.setValue(0)
+        else:
+            try:
+                self.roi_height_spinbox.setValue(int(roi_height))
+            except ValueError:
+                self._log.warning(f"Invalid roi_height_default value '{roi_height}', using Auto")
+                self.roi_height_spinbox.setValue(0)
         layout.addRow("ROI Height:", self.roi_height_spinbox)
 
         self.tab_widget.addTab(tab, "Camera")
