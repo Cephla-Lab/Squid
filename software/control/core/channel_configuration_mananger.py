@@ -9,7 +9,6 @@ from control.utils_config import (
     ChannelMode,
     ChannelDefinitionsConfig,
     ChannelDefinition,
-    ChannelType,
     ObjectiveChannelSettings,
 )
 import control.utils_config as utils_config
@@ -184,10 +183,23 @@ class ChannelConfigurationManager:
         xml_str = config.to_xml(pretty_print=True, encoding="utf-8")
         save_path.write_bytes(xml_str)
 
+    def _sync_all_configs_from_definitions(self, objective: str) -> None:
+        """Sync all_configs from channel_definitions for legacy XML compatibility"""
+        if not self.channel_definitions:
+            return
+
+        modes = [self._build_channel_mode(ch, objective) for ch in self.channel_definitions.channels]
+        config = ChannelConfig(modes=modes)
+        self.all_configs[self.active_config_type][objective] = config
+
     def save_configurations(self, objective: str) -> None:
         """Save configurations based on spinning disk configuration"""
         # Save per-objective settings (new format)
         self._save_objective_settings(objective)
+
+        # Sync all_configs from new format before saving legacy XML
+        if self.channel_definitions:
+            self._sync_all_configs_from_definitions(objective)
 
         # Also save legacy XML for backward compatibility
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
@@ -212,8 +224,8 @@ class ChannelConfigurationManager:
         else:
             illumination_source = channel_def.illumination_source or 0
 
-        # Generate a stable ID based on channel name (using MD5 for cross-session stability)
-        channel_id = str(int(hashlib.md5(channel_def.name.encode()).hexdigest()[:8], 16) % 100000)
+        # Generate a stable ID based on channel name (using SHA-256 for cross-session stability)
+        channel_id = str(int(hashlib.sha256(channel_def.name.encode()).hexdigest()[:8], 16) % 100000)
 
         return ChannelMode(
             id=channel_id,
@@ -283,7 +295,7 @@ class ChannelConfigurationManager:
         # First check if using new format
         if self.channel_definitions:
             for ch in self.channel_definitions.channels:
-                ch_id = str(int(hashlib.md5(ch.name.encode()).hexdigest()[:8], 16) % 100000)
+                ch_id = str(int(hashlib.sha256(ch.name.encode()).hexdigest()[:8], 16) % 100000)
                 if ch_id == config_id:
                     return ch.name
 

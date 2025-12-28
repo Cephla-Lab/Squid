@@ -12060,6 +12060,28 @@ class ChannelEditorDialog(QDialog):
         if not definitions:
             return
 
+        # Validate channel names before saving
+        names = []
+        for row in range(self.table.rowCount()):
+            name_item = self.table.item(row, 1)
+            if name_item:
+                name = name_item.text().strip()
+                if not name:
+                    QMessageBox.warning(
+                        self,
+                        "Validation Error",
+                        f"Channel name at row {row + 1} cannot be empty.",
+                    )
+                    return
+                if name in names:
+                    QMessageBox.warning(
+                        self,
+                        "Validation Error",
+                        f"Duplicate channel name '{name}' found.",
+                    )
+                    return
+                names.append(name)
+
         for row in range(self.table.rowCount()):
             channel = definitions.channels[row]
 
@@ -12071,7 +12093,7 @@ class ChannelEditorDialog(QDialog):
             # Name
             name_item = self.table.item(row, 1)
             if name_item:
-                channel.name = name_item.text()
+                channel.name = name_item.text().strip()
 
             # Numeric channel (for fluorescence)
             numeric_widget = self.table.cellWidget(row, 3)

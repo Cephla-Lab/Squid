@@ -1,10 +1,9 @@
 from pydantic import BaseModel, field_validator, model_validator
 from pydantic_xml import BaseXmlModel, element, attr
-from typing import List, Optional, Dict, Literal
+from typing import List, Optional, Dict
 from pathlib import Path
 from enum import Enum
 import base64
-import hashlib
 import json
 import numpy as np
 

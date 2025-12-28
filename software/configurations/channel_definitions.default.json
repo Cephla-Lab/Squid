@@ -72,22 +72,12 @@
       "ex_wavelength": null
     },
     {
-      "name": "test test",
-      "type": "fluorescence",
-      "emission_filter_position": 3,
-      "display_color": "#FFFFFF",
-      "enabled": true,
-      "numeric_channel": 3,
-      "illumination_source": null,
-      "ex_wavelength": null
-    },
-    {
       "name": "BF LED matrix low NA",
       "type": "led_matrix",
       "emission_filter_position": 1,
       "display_color": "#FFFFFF",
       "enabled": true,
-      "numeric_channel": 3,
+      "numeric_channel": null,
       "illumination_source": 4,
       "ex_wavelength": null
     },
@@ -97,7 +87,7 @@
       "emission_filter_position": 1,
       "display_color": "#FFFFFF",
       "enabled": false,
-      "numeric_channel": 3,
+      "numeric_channel": null,
       "illumination_source": 1,
       "ex_wavelength": null
     },
@@ -107,7 +97,7 @@
       "emission_filter_position": 1,
       "display_color": "#FFFFFF",
       "enabled": false,
-      "numeric_channel": 3,
+      "numeric_channel": null,
       "illumination_source": 2,
       "ex_wavelength": null
     },
@@ -117,7 +107,7 @@
       "emission_filter_position": 1,
       "display_color": "#FFFFFF",
       "enabled": false,
-      "numeric_channel": 3,
+      "numeric_channel": null,
       "illumination_source": 7,
       "ex_wavelength": null
     },
@@ -127,7 +117,7 @@
       "emission_filter_position": 1,
       "display_color": "#FFFFFF",
       "enabled": false,
-      "numeric_channel": 3,
+      "numeric_channel": null,
       "illumination_source": 8,
       "ex_wavelength": null
     },
@@ -137,7 +127,7 @@
       "emission_filter_position": 1,
       "display_color": "#FF0000",
       "enabled": false,
-      "numeric_channel": 3,
+      "numeric_channel": null,
       "illumination_source": 0,
       "ex_wavelength": null
     },
@@ -147,7 +137,7 @@
       "emission_filter_position": 1,
       "display_color": "#00FF00",
       "enabled": false,
-      "numeric_channel": 3,
+      "numeric_channel": null,
       "illumination_source": 0,
       "ex_wavelength": null
     },
@@ -157,7 +147,7 @@
       "emission_filter_position": 1,
       "display_color": "#0000FF",
       "enabled": false,
-      "numeric_channel": 3,
+      "numeric_channel": null,
       "illumination_source": 0,
       "ex_wavelength": null
     },
@@ -167,7 +157,7 @@
       "emission_filter_position": 1,
       "display_color": "#FFFFFF",
       "enabled": false,
-      "numeric_channel": 3,
+      "numeric_channel": null,
       "illumination_source": 0,
       "ex_wavelength": null
     }
