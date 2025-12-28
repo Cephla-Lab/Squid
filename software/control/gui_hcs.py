@@ -189,7 +189,7 @@ class QtMultiPointController(MultiPointController, QObject):
         live_controller: LiveController,
         autofocus_controller: AutoFocusController,
         objective_store: ObjectiveStore,
-        channel_configuration_manager: ChannelConfigurationManager,
+        channel_configuration_mananger: ChannelConfigurationManager,
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
         fluidics: Optional[Any] = None,
@@ -200,7 +200,7 @@ class QtMultiPointController(MultiPointController, QObject):
             live_controller=live_controller,
             autofocus_controller=autofocus_controller,
             objective_store=objective_store,
-            channel_configuration_manager=channel_configuration_manager,
+            channel_configuration_mananger=channel_configuration_mananger,
             callbacks=MultiPointControllerFunctions(
                 signal_acquisition_start=self._signal_acquisition_start_fn,
                 signal_acquisition_finished=self._signal_acquisition_finished_fn,
@@ -290,9 +290,9 @@ class HighContentScreeningGui(QMainWindow):
         self.fluidics: Optional[Fluidics] = microscope.addons.fluidics
         self.piezo: Optional[PiezoStage] = microscope.addons.piezo_stage
 
-        self.channelConfigurationManager: ChannelConfigurationManager = microscope.channel_configuration_manager
+        self.channelConfigurationManager: ChannelConfigurationManager = microscope.channel_configuration_mananger
         self.laserAFSettingManager: LaserAFSettingManager = microscope.laser_af_settings_manager
-        self.configurationManager: ConfigurationManager = microscope.configuration_manager
+        self.configurationManager: ConfigurationManager = microscope.configuration_mananger
         self.contrastManager: ContrastManager = microscope.contrast_manager
         self.liveController: LiveController = microscope.live_controller
         self.objectiveStore: ObjectiveStore = microscope.objective_store
@@ -428,6 +428,17 @@ class HighContentScreeningGui(QMainWindow):
             led_matrix_action = QAction("LED Matrix", self)
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
             settings_menu.addAction(led_matrix_action)
+
+        # Channel Configuration menu items
+        channel_config_action = QAction("Channel Configuration", self)
+        channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
+        settings_menu.addAction(channel_config_action)
+
+        # Advanced submenu
+        advanced_menu = settings_menu.addMenu("Advanced")
+        channel_mapping_action = QAction("Channel Hardware Mapping", self)
+        channel_mapping_action.triggered.connect(self.openAdvancedChannelMapping)
+        advanced_menu.addAction(channel_mapping_action)
 
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
@@ -1359,6 +1370,25 @@ class HighContentScreeningGui(QMainWindow):
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")
+
+    def openChannelConfigurationEditor(self):
+        """Open the channel configuration editor dialog"""
+        dialog = widgets.ChannelEditorDialog(self.channelConfigurationManager, self)
+        dialog.signal_channels_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openAdvancedChannelMapping(self):
+        """Open the advanced channel hardware mapping dialog"""
+        dialog = widgets.AdvancedChannelMappingDialog(self.channelConfigurationManager, self)
+        dialog.signal_mappings_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def _refresh_channel_lists(self):
+        """Refresh channel lists in all widgets after channel configuration changes"""
+        if self.liveControlWidget:
+            self.liveControlWidget.refresh_mode_list()
+        if self.napariLiveWidget:
+            self.napariLiveWidget.refresh_mode_list()
 
     def onTabChanged(self, index):
         is_flexible_acquisition = (

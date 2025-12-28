@@ -2503,9 +2503,9 @@ class LiveControlWidget(QFrame):
         self.entry_triggerFPS.setValue(self.fps_trigger)
         self.entry_triggerFPS.setDecimals(0)
 
-        # line 2: choose microscope mode / toggle live mode
+        # line 2: choose microscope mode / toggle live mode (only enabled channels)
         self.dropdown_modeSelection = QComboBox()
-        for microscope_configuration in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for microscope_configuration in self.channelConfigurationManager.get_enabled_configurations(
             self.objectiveStore.current_objective
         ):
             self.dropdown_modeSelection.addItems([microscope_configuration.name])
@@ -2690,11 +2690,11 @@ class LiveControlWidget(QFrame):
         self.signal_newExposureTime.emit(self.entry_exposureTime.value())
 
     def refresh_mode_list(self):
-        # Update the mode selection dropdown
+        # Update the mode selection dropdown (only show enabled channels)
         self.dropdown_modeSelection.blockSignals(True)
         self.dropdown_modeSelection.clear()
         first_config = None
-        for microscope_configuration in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for microscope_configuration in self.channelConfigurationManager.get_enabled_configurations(
             self.objectiveStore.current_objective
         ):
             if not first_config:
@@ -8402,9 +8402,9 @@ class NapariLiveWidget(QWidget):
         self.histogram_widget.region.sigRegionChanged.connect(self.on_histogram_region_changed)
         self.histogram_widget.region.sigRegionChangeFinished.connect(self.on_histogram_region_changed)
 
-        # Microscope Configuration
+        # Microscope Configuration (only enabled channels)
         self.dropdown_modeSelection = QComboBox()
-        for config in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for config in self.channelConfigurationManager.get_enabled_configurations(
             self.objectiveStore.current_objective
         ):
             self.dropdown_modeSelection.addItem(config.name)
@@ -8698,6 +8698,23 @@ class NapariLiveWidget(QWidget):
     def update_resolution_scaling(self, value):
         self.streamHandler.set_display_resolution_scaling(value)
         self.liveController.set_display_resolution_scaling(value)
+
+    def refresh_mode_list(self):
+        """Refresh the mode selection dropdown (only show enabled channels)"""
+        self.dropdown_modeSelection.blockSignals(True)
+        self.dropdown_modeSelection.clear()
+        first_config = None
+        for config in self.channelConfigurationManager.get_enabled_configurations(
+            self.objectiveStore.current_objective
+        ):
+            if not first_config:
+                first_config = config
+            self.dropdown_modeSelection.addItem(config.name)
+        self.dropdown_modeSelection.blockSignals(False)
+
+        if self.dropdown_modeSelection.count() > 0 and first_config:
+            self.update_ui_for_mode(first_config)
+            self.liveController.set_microscope_mode(first_config)
 
     def on_trigger_mode_changed(self, index):
         # Get the actual value using user data
@@ -11832,3 +11849,490 @@ class SurfacePlotWidget(QWidget):
         print(f"Clicked Point: x={self.x[idx]:.3f}, y={self.y[idx]:.3f}, z={self.z[idx]:.3f}")
         self.canvas.draw()
         self.signal_point_clicked.emit(self.x[idx], self.y[idx])
+
+
+class ChannelEditorDialog(QDialog):
+    """Dialog for editing channel definitions"""
+
+    signal_channels_updated = Signal()
+
+    def __init__(self, channel_configuration_manager, parent=None):
+        super().__init__(parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.channel_manager = channel_configuration_manager
+        self.setWindowTitle("Channel Configuration Editor")
+        self.setMinimumSize(900, 600)
+        self._setup_ui()
+        self._load_channels()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Table for channel definitions
+        self.table = QTableWidget()
+        self.table.setColumnCount(8)
+        self.table.setHorizontalHeaderLabels([
+            "Enabled", "Name", "Type", "Numeric Ch", "Ex Wavelength",
+            "Illum. Source", "Filter Pos", "Color"
+        ])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        layout.addWidget(self.table)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        self.btn_add = QPushButton("Add Channel")
+        self.btn_add.clicked.connect(self._add_channel)
+        button_layout.addWidget(self.btn_add)
+
+        self.btn_remove = QPushButton("Remove Channel")
+        self.btn_remove.clicked.connect(self._remove_channel)
+        button_layout.addWidget(self.btn_remove)
+
+        self.btn_move_up = QPushButton("Move Up")
+        self.btn_move_up.clicked.connect(self._move_up)
+        button_layout.addWidget(self.btn_move_up)
+
+        self.btn_move_down = QPushButton("Move Down")
+        self.btn_move_down.clicked.connect(self._move_down)
+        button_layout.addWidget(self.btn_move_down)
+
+        button_layout.addStretch()
+
+        self.btn_save = QPushButton("Save")
+        self.btn_save.clicked.connect(self._save_changes)
+        button_layout.addWidget(self.btn_save)
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(self.btn_cancel)
+
+        layout.addLayout(button_layout)
+
+    def _load_channels(self):
+        """Load channel definitions into the table"""
+        definitions = self.channel_manager.get_channel_definitions()
+        if not definitions:
+            return
+
+        self.table.setRowCount(len(definitions.channels))
+
+        for row, channel in enumerate(definitions.channels):
+            # Enabled checkbox
+            enabled_checkbox = QCheckBox()
+            enabled_checkbox.setChecked(channel.enabled)
+            enabled_widget = QWidget()
+            enabled_layout = QHBoxLayout(enabled_widget)
+            enabled_layout.addWidget(enabled_checkbox)
+            enabled_layout.setAlignment(Qt.AlignCenter)
+            enabled_layout.setContentsMargins(0, 0, 0, 0)
+            self.table.setCellWidget(row, 0, enabled_widget)
+
+            # Name (editable for fluorescence only, read-only for LED matrix)
+            name_item = QTableWidgetItem(channel.name)
+            if channel.type.value == "led_matrix":
+                name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+                name_item.setBackground(QColor(240, 240, 240))
+            self.table.setItem(row, 1, name_item)
+
+            # Type (read-only)
+            type_item = QTableWidgetItem(channel.type.value)
+            type_item.setFlags(type_item.flags() & ~Qt.ItemIsEditable)
+            type_item.setBackground(QColor(240, 240, 240))
+            self.table.setItem(row, 2, type_item)
+
+            # Numeric channel (dropdown for fluorescence, N/A for brightfield)
+            if channel.type.value == "fluorescence":
+                numeric_combo = QComboBox()
+                max_channels = definitions.max_fluorescence_channels
+                numeric_combo.addItems([str(i) for i in range(1, max_channels + 1)])
+                if channel.numeric_channel:
+                    numeric_combo.setCurrentText(str(channel.numeric_channel))
+                self.table.setCellWidget(row, 3, numeric_combo)
+            else:
+                na_item = QTableWidgetItem("N/A")
+                na_item.setFlags(na_item.flags() & ~Qt.ItemIsEditable)
+                na_item.setBackground(QColor(240, 240, 240))
+                self.table.setItem(row, 3, na_item)
+
+            # Ex wavelength (display only, from mapping)
+            ex_wavelength = channel.get_ex_wavelength(definitions.numeric_channel_mapping)
+            ex_item = QTableWidgetItem(str(ex_wavelength) if ex_wavelength else "N/A")
+            ex_item.setFlags(ex_item.flags() & ~Qt.ItemIsEditable)
+            ex_item.setBackground(QColor(240, 240, 240))
+            self.table.setItem(row, 4, ex_item)
+
+            # Illumination source (display only)
+            illum_source = channel.get_illumination_source(definitions.numeric_channel_mapping)
+            illum_item = QTableWidgetItem(str(illum_source))
+            illum_item.setFlags(illum_item.flags() & ~Qt.ItemIsEditable)
+            illum_item.setBackground(QColor(240, 240, 240))
+            self.table.setItem(row, 5, illum_item)
+
+            # Filter position (dropdown)
+            filter_combo = QComboBox()
+            filter_combo.addItems([str(i) for i in range(1, 9)])
+            filter_combo.setCurrentText(str(channel.emission_filter_position))
+            self.table.setCellWidget(row, 6, filter_combo)
+
+            # Color (color picker button)
+            color_btn = QPushButton()
+            color_btn.setStyleSheet(f"background-color: {channel.display_color};")
+            color_btn.setProperty("color", channel.display_color)
+            color_btn.clicked.connect(lambda checked, r=row: self._pick_color(r))
+            self.table.setCellWidget(row, 7, color_btn)
+
+    def _pick_color(self, row):
+        """Open color picker for a row"""
+        color_btn = self.table.cellWidget(row, 7)
+        current_color = QColor(color_btn.property("color"))
+        color = QColorDialog.getColor(current_color, self, "Select Channel Color")
+        if color.isValid():
+            color_btn.setStyleSheet(f"background-color: {color.name()};")
+            color_btn.setProperty("color", color.name())
+
+    def _add_channel(self):
+        """Add a new channel"""
+        from control.utils_config import ChannelDefinition, ChannelType
+
+        dialog = AddChannelDialog(self.channel_manager.get_channel_definitions(), self)
+        if dialog.exec_() == QDialog.Accepted:
+            channel_data = dialog.get_channel_data()
+            new_channel = ChannelDefinition(**channel_data)
+            self.channel_manager.add_channel_definition(new_channel)
+            self._load_channels()
+            self.signal_channels_updated.emit()
+
+    def _remove_channel(self):
+        """Remove selected channel (LED matrix channels cannot be removed)"""
+        current_row = self.table.currentRow()
+        if current_row < 0:
+            return
+
+        # Check if it's an LED matrix channel (not removable)
+        type_item = self.table.item(current_row, 2)
+        if type_item and type_item.text() == "led_matrix":
+            QMessageBox.warning(
+                self, "Cannot Remove",
+                "LED matrix channels cannot be removed.",
+                QMessageBox.Ok
+            )
+            return
+
+        name_item = self.table.item(current_row, 1)
+        if name_item:
+            reply = QMessageBox.question(
+                self, "Confirm Removal",
+                f"Remove channel '{name_item.text()}'?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self.channel_manager.remove_channel_definition(name_item.text())
+                self._load_channels()
+                self.signal_channels_updated.emit()
+
+    def _move_up(self):
+        """Move selected channel up"""
+        current_row = self.table.currentRow()
+        if current_row <= 0:
+            return
+
+        definitions = self.channel_manager.get_channel_definitions()
+        if definitions:
+            channels = definitions.channels
+            channels[current_row], channels[current_row - 1] = channels[current_row - 1], channels[current_row]
+            self.channel_manager.save_channel_definitions()
+            self._load_channels()
+            self.table.selectRow(current_row - 1)
+
+    def _move_down(self):
+        """Move selected channel down"""
+        current_row = self.table.currentRow()
+        definitions = self.channel_manager.get_channel_definitions()
+        if not definitions or current_row < 0 or current_row >= len(definitions.channels) - 1:
+            return
+
+        channels = definitions.channels
+        channels[current_row], channels[current_row + 1] = channels[current_row + 1], channels[current_row]
+        self.channel_manager.save_channel_definitions()
+        self._load_channels()
+        self.table.selectRow(current_row + 1)
+
+    def _save_changes(self):
+        """Save all changes to channel definitions"""
+        definitions = self.channel_manager.get_channel_definitions()
+        if not definitions:
+            return
+
+        for row in range(self.table.rowCount()):
+            channel = definitions.channels[row]
+
+            # Enabled
+            enabled_widget = self.table.cellWidget(row, 0)
+            checkbox = enabled_widget.findChild(QCheckBox)
+            channel.enabled = checkbox.isChecked()
+
+            # Name
+            name_item = self.table.item(row, 1)
+            if name_item:
+                channel.name = name_item.text()
+
+            # Numeric channel (for fluorescence)
+            numeric_widget = self.table.cellWidget(row, 3)
+            if isinstance(numeric_widget, QComboBox):
+                channel.numeric_channel = int(numeric_widget.currentText())
+
+            # Filter position
+            filter_widget = self.table.cellWidget(row, 6)
+            if isinstance(filter_widget, QComboBox):
+                channel.emission_filter_position = int(filter_widget.currentText())
+
+            # Color
+            color_btn = self.table.cellWidget(row, 7)
+            if color_btn:
+                channel.display_color = color_btn.property("color")
+
+        self.channel_manager.save_channel_definitions()
+        self.signal_channels_updated.emit()
+        self.accept()
+
+
+class AddChannelDialog(QDialog):
+    """Dialog for adding a new channel"""
+
+    def __init__(self, definitions, parent=None):
+        super().__init__(parent)
+        self.definitions = definitions
+        self.setWindowTitle("Add New Channel")
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QFormLayout(self)
+
+        # Channel type
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(["fluorescence", "led_matrix"])
+        self.type_combo.currentTextChanged.connect(self._on_type_changed)
+        layout.addRow("Type:", self.type_combo)
+
+        # Name
+        self.name_edit = QLineEdit()
+        layout.addRow("Name:", self.name_edit)
+
+        # Numeric channel (for fluorescence)
+        self.numeric_combo = QComboBox()
+        max_channels = self.definitions.max_fluorescence_channels if self.definitions else 5
+        self.numeric_combo.addItems([str(i) for i in range(1, max_channels + 1)])
+        layout.addRow("Numeric Channel:", self.numeric_combo)
+
+        # Illumination source (for brightfield)
+        self.illum_spin = QSpinBox()
+        self.illum_spin.setRange(0, 20)
+        self.illum_spin.setEnabled(False)
+        layout.addRow("Illumination Source:", self.illum_spin)
+
+        # Filter position
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems([str(i) for i in range(1, 9)])
+        layout.addRow("Filter Position:", self.filter_combo)
+
+        # Color
+        self.color_btn = QPushButton()
+        self.color_btn.setStyleSheet("background-color: #FFFFFF;")
+        self.color_btn.setProperty("color", "#FFFFFF")
+        self.color_btn.clicked.connect(self._pick_color)
+        layout.addRow("Display Color:", self.color_btn)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.btn_ok = QPushButton("Add")
+        self.btn_ok.clicked.connect(self._validate_and_accept)
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(self.btn_ok)
+        button_layout.addWidget(self.btn_cancel)
+        layout.addRow(button_layout)
+
+    def _validate_and_accept(self):
+        """Validate input before accepting"""
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Validation Error", "Channel name cannot be empty.")
+            return
+
+        # Check for duplicate names
+        if self.definitions:
+            existing_names = [ch.name for ch in self.definitions.channels]
+            if name in existing_names:
+                QMessageBox.warning(self, "Validation Error", f"Channel '{name}' already exists.")
+                return
+
+        self.accept()
+
+    def _on_type_changed(self, type_str):
+        is_fluorescence = type_str == "fluorescence"
+        self.numeric_combo.setEnabled(is_fluorescence)
+        self.illum_spin.setEnabled(not is_fluorescence)
+
+    def _pick_color(self):
+        current_color = QColor(self.color_btn.property("color"))
+        color = QColorDialog.getColor(current_color, self, "Select Channel Color")
+        if color.isValid():
+            self.color_btn.setStyleSheet(f"background-color: {color.name()};")
+            self.color_btn.setProperty("color", color.name())
+
+    def get_channel_data(self):
+        from control.utils_config import ChannelType
+
+        channel_type = ChannelType(self.type_combo.currentText())
+        data = {
+            "name": self.name_edit.text(),
+            "type": channel_type,
+            "emission_filter_position": int(self.filter_combo.currentText()),
+            "display_color": self.color_btn.property("color"),
+            "enabled": True,
+        }
+
+        if channel_type == ChannelType.FLUORESCENCE:
+            data["numeric_channel"] = int(self.numeric_combo.currentText())
+        else:
+            data["illumination_source"] = self.illum_spin.value()
+
+        return data
+
+
+class AdvancedChannelMappingDialog(QDialog):
+    """Dialog for editing advanced channel hardware mappings"""
+
+    signal_mappings_updated = Signal()
+
+    def __init__(self, channel_configuration_manager, parent=None):
+        super().__init__(parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.channel_manager = channel_configuration_manager
+        self.setWindowTitle("Advanced Channel Hardware Mapping")
+        self.setMinimumSize(600, 400)
+        self._setup_ui()
+        self._load_mappings()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Max fluorescence channels setting
+        max_layout = QHBoxLayout()
+        max_layout.addWidget(QLabel("Max Fluorescence Channels:"))
+        self.max_channels_spin = QSpinBox()
+        self.max_channels_spin.setRange(5, 10)
+        self.max_channels_spin.valueChanged.connect(self._on_max_channels_changed)
+        max_layout.addWidget(self.max_channels_spin)
+        max_layout.addStretch()
+        layout.addLayout(max_layout)
+
+        # Table for numeric channel mappings
+        layout.addWidget(QLabel("Numeric Channel → Illumination Source Mapping:"))
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Numeric Channel", "Illumination Source", "Ex Wavelength (nm)"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.table)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        self.btn_save = QPushButton("Save")
+        self.btn_save.clicked.connect(self._save_changes)
+        button_layout.addWidget(self.btn_save)
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(self.btn_cancel)
+
+        layout.addLayout(button_layout)
+
+    def _on_max_channels_changed(self, new_max):
+        """Handle max channels change - add new mappings and refresh table"""
+        from control.utils_config import NumericChannelMapping
+
+        definitions = self.channel_manager.get_channel_definitions()
+        if not definitions:
+            return
+
+        # Add new mappings if needed
+        for i in range(1, new_max + 1):
+            if str(i) not in definitions.numeric_channel_mapping:
+                definitions.numeric_channel_mapping[str(i)] = NumericChannelMapping(
+                    illumination_source=10 + i, ex_wavelength=400 + i * 50
+                )
+
+        # Update the max value
+        definitions.max_fluorescence_channels = new_max
+
+        # Reload the table to show correct number of rows
+        self._load_mappings()
+
+    def _load_mappings(self):
+        """Load current mappings into the table"""
+        definitions = self.channel_manager.get_channel_definitions()
+        if not definitions:
+            return
+
+        # Block signals to prevent recursion when setting value
+        self.max_channels_spin.blockSignals(True)
+        self.max_channels_spin.setValue(definitions.max_fluorescence_channels)
+        self.max_channels_spin.blockSignals(False)
+
+        # Only show mappings up to max_fluorescence_channels
+        max_channels = definitions.max_fluorescence_channels
+        self.table.setRowCount(max_channels)
+
+        for row in range(max_channels):
+            num_ch = str(row + 1)
+            mapping = definitions.numeric_channel_mapping.get(num_ch)
+
+            # Numeric channel (read-only)
+            num_item = QTableWidgetItem(num_ch)
+            num_item.setFlags(num_item.flags() & ~Qt.ItemIsEditable)
+            num_item.setBackground(QColor(240, 240, 240))
+            self.table.setItem(row, 0, num_item)
+
+            # Illumination source (editable)
+            illum_spin = QSpinBox()
+            illum_spin.setRange(0, 30)
+            illum_spin.setValue(mapping.illumination_source if mapping else 10 + row + 1)
+            self.table.setCellWidget(row, 1, illum_spin)
+
+            # Ex wavelength (editable)
+            wave_spin = QSpinBox()
+            wave_spin.setRange(200, 900)
+            wave_spin.setValue(mapping.ex_wavelength if mapping else 400 + (row + 1) * 50)
+            self.table.setCellWidget(row, 2, wave_spin)
+
+    def _save_changes(self):
+        """Save changes to mappings"""
+        definitions = self.channel_manager.get_channel_definitions()
+        if not definitions:
+            return
+
+        # Update mappings from table values
+        for row in range(self.table.rowCount()):
+            num_item = self.table.item(row, 0)
+            if not num_item:
+                continue
+
+            num_ch = num_item.text()
+            illum_spin = self.table.cellWidget(row, 1)
+            wave_spin = self.table.cellWidget(row, 2)
+
+            if num_ch in definitions.numeric_channel_mapping:
+                definitions.numeric_channel_mapping[num_ch].illumination_source = illum_spin.value()
+                definitions.numeric_channel_mapping[num_ch].ex_wavelength = wave_spin.value()
+
+        self.channel_manager.save_channel_definitions()
+        self.signal_mappings_updated.emit()
+        self.accept()

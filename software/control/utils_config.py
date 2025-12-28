@@ -1,11 +1,15 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from pydantic_xml import BaseXmlModel, element, attr
-from typing import List, Optional
+from typing import List, Optional, Dict, Literal
 from pathlib import Path
+from enum import Enum
 import base64
+import hashlib
+import json
 import numpy as np
 
 import control.utils_channel as utils_channel
+from control._def import CHANNEL_COLORS_MAP
 from control._def import (
     FOCUS_CAMERA_EXPOSURE_TIME_MS,
     FOCUS_CAMERA_ANALOG_GAIN,
@@ -27,6 +31,265 @@ from control._def import (
     LASER_AF_FILTER_SIGMA,
 )
 from control._def import SpotDetectionMode
+
+
+class ChannelType(str, Enum):
+    """Type of imaging channel"""
+    FLUORESCENCE = "fluorescence"
+    LED_MATRIX = "led_matrix"
+
+
+class NumericChannelMapping(BaseModel):
+    """Mapping from numeric channel to illumination source and excitation wavelength"""
+    illumination_source: int
+    ex_wavelength: int
+
+
+class ChannelDefinition(BaseModel):
+    """Definition of a single imaging channel"""
+    name: str
+    type: ChannelType
+    emission_filter_position: int = 1
+    display_color: str = "#FFFFFF"
+    enabled: bool = True
+    # For fluorescence channels: maps to numeric channel (1-N)
+    numeric_channel: Optional[int] = None
+    # For LED matrix channels: direct illumination source
+    illumination_source: Optional[int] = None
+    # Excitation wavelength (for fluorescence, derived from numeric_channel_mapping)
+    ex_wavelength: Optional[int] = None
+
+    @field_validator("display_color", mode="before")
+    @classmethod
+    def convert_color(cls, v):
+        """Convert integer color to hex string if needed"""
+        if isinstance(v, int):
+            return f"#{v:06X}"
+        return v
+
+    @model_validator(mode="after")
+    def validate_channel_type_fields(self):
+        """Validate that required fields are set based on channel type"""
+        if self.type == ChannelType.FLUORESCENCE and self.numeric_channel is None:
+            raise ValueError(f"Fluorescence channel '{self.name}' must have numeric_channel set")
+        if self.type == ChannelType.LED_MATRIX and self.illumination_source is None:
+            raise ValueError(f"LED matrix channel '{self.name}' must have illumination_source set")
+        return self
+
+    def get_illumination_source(self, numeric_channel_mapping: Dict[str, NumericChannelMapping]) -> int:
+        """Get the illumination source for this channel"""
+        if self.type == ChannelType.LED_MATRIX:
+            if self.illumination_source is None:
+                raise ValueError(f"LED matrix channel '{self.name}' has no illumination_source")
+            return self.illumination_source
+        else:
+            # Fluorescence: look up from numeric channel mapping
+            mapping = numeric_channel_mapping.get(str(self.numeric_channel))
+            if mapping:
+                return mapping.illumination_source
+            raise ValueError(f"Fluorescence channel '{self.name}' has no mapping for numeric_channel {self.numeric_channel}")
+
+    def get_ex_wavelength(self, numeric_channel_mapping: Dict[str, NumericChannelMapping]) -> Optional[int]:
+        """Get the excitation wavelength for this channel"""
+        if self.type == ChannelType.LED_MATRIX:
+            return None
+        else:
+            mapping = numeric_channel_mapping.get(str(self.numeric_channel))
+            if mapping:
+                return mapping.ex_wavelength
+            return self.ex_wavelength
+
+
+class ObjectiveChannelSettings(BaseModel):
+    """Per-objective settings for a channel"""
+    exposure_time: float = 25.0
+    analog_gain: float = 0.0
+    illumination_intensity: float = 20.0
+    z_offset: float = 0.0
+
+
+class ChannelDefinitionsConfig(BaseModel):
+    """Root configuration for channel definitions"""
+    max_fluorescence_channels: int = 5
+    channels: List[ChannelDefinition] = []
+    numeric_channel_mapping: Dict[str, NumericChannelMapping] = {}
+
+    def get_enabled_channels(self) -> List[ChannelDefinition]:
+        """Get list of enabled channels only"""
+        return [ch for ch in self.channels if ch.enabled]
+
+    def get_channel_by_name(self, name: str) -> Optional[ChannelDefinition]:
+        """Get a channel by its name"""
+        for ch in self.channels:
+            if ch.name == name:
+                return ch
+        return None
+
+    def save(self, path: Path) -> None:
+        """Save configuration to JSON file"""
+        try:
+            with open(path, "w") as f:
+                json.dump(self.model_dump(), f, indent=2)
+        except (IOError, PermissionError) as e:
+            raise IOError(f"Failed to save channel definitions to {path}: {e}")
+
+    @classmethod
+    def load(cls, path: Path) -> "ChannelDefinitionsConfig":
+        """Load configuration from JSON file"""
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            return cls(**data)
+        except (IOError, json.JSONDecodeError) as e:
+            raise IOError(f"Failed to load channel definitions from {path}: {e}")
+
+    @classmethod
+    def generate_default(cls) -> "ChannelDefinitionsConfig":
+        """Generate default channel definitions"""
+        channels = [
+            ChannelDefinition(
+                name="BF LED matrix full",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=0,
+                emission_filter_position=1,
+                display_color="#FFFFFF",
+                enabled=True,
+            ),
+            ChannelDefinition(
+                name="DF LED matrix",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=3,
+                emission_filter_position=1,
+                display_color="#FFFFFF",
+                enabled=True,
+            ),
+            ChannelDefinition(
+                name="Fluorescence 405 nm Ex",
+                type=ChannelType.FLUORESCENCE,
+                numeric_channel=1,
+                emission_filter_position=1,
+                display_color=f"#{CHANNEL_COLORS_MAP.get('405', {}).get('hex', 0x20ADF8):06X}",
+                enabled=True,
+            ),
+            ChannelDefinition(
+                name="Fluorescence 488 nm Ex",
+                type=ChannelType.FLUORESCENCE,
+                numeric_channel=2,
+                emission_filter_position=1,
+                display_color=f"#{CHANNEL_COLORS_MAP.get('488', {}).get('hex', 0x1FFF00):06X}",
+                enabled=True,
+            ),
+            ChannelDefinition(
+                name="Fluorescence 561 nm Ex",
+                type=ChannelType.FLUORESCENCE,
+                numeric_channel=3,
+                emission_filter_position=1,
+                display_color=f"#{CHANNEL_COLORS_MAP.get('561', {}).get('hex', 0xFFCF00):06X}",
+                enabled=True,
+            ),
+            ChannelDefinition(
+                name="Fluorescence 638 nm Ex",
+                type=ChannelType.FLUORESCENCE,
+                numeric_channel=4,
+                emission_filter_position=1,
+                display_color=f"#{CHANNEL_COLORS_MAP.get('638', {}).get('hex', 0xFF0000):06X}",
+                enabled=True,
+            ),
+            ChannelDefinition(
+                name="Fluorescence 730 nm Ex",
+                type=ChannelType.FLUORESCENCE,
+                numeric_channel=5,
+                emission_filter_position=1,
+                display_color=f"#{CHANNEL_COLORS_MAP.get('730', {}).get('hex', 0x770000):06X}",
+                enabled=True,
+            ),
+            ChannelDefinition(
+                name="BF LED matrix low NA",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=4,
+                emission_filter_position=1,
+                display_color="#FFFFFF",
+                enabled=True,
+            ),
+            ChannelDefinition(
+                name="BF LED matrix left half",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=1,
+                emission_filter_position=1,
+                display_color="#FFFFFF",
+                enabled=False,
+            ),
+            ChannelDefinition(
+                name="BF LED matrix right half",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=2,
+                emission_filter_position=1,
+                display_color="#FFFFFF",
+                enabled=False,
+            ),
+            ChannelDefinition(
+                name="BF LED matrix top half",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=7,
+                emission_filter_position=1,
+                display_color="#FFFFFF",
+                enabled=False,
+            ),
+            ChannelDefinition(
+                name="BF LED matrix bottom half",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=8,
+                emission_filter_position=1,
+                display_color="#FFFFFF",
+                enabled=False,
+            ),
+            ChannelDefinition(
+                name="BF LED matrix full_R",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=0,
+                emission_filter_position=1,
+                display_color="#FF0000",
+                enabled=False,
+            ),
+            ChannelDefinition(
+                name="BF LED matrix full_G",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=0,
+                emission_filter_position=1,
+                display_color="#00FF00",
+                enabled=False,
+            ),
+            ChannelDefinition(
+                name="BF LED matrix full_B",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=0,
+                emission_filter_position=1,
+                display_color="#0000FF",
+                enabled=False,
+            ),
+            ChannelDefinition(
+                name="BF LED matrix full_RGB",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=0,
+                emission_filter_position=1,
+                display_color="#FFFFFF",
+                enabled=False,
+            ),
+        ]
+
+        numeric_channel_mapping = {
+            "1": NumericChannelMapping(illumination_source=11, ex_wavelength=405),
+            "2": NumericChannelMapping(illumination_source=12, ex_wavelength=488),
+            "3": NumericChannelMapping(illumination_source=14, ex_wavelength=561),
+            "4": NumericChannelMapping(illumination_source=13, ex_wavelength=638),
+            "5": NumericChannelMapping(illumination_source=15, ex_wavelength=730),
+        }
+
+        return cls(
+            max_fluorescence_channels=5,
+            channels=channels,
+            numeric_channel_mapping=numeric_channel_mapping,
+        )
 
 
 class LaserAFConfig(BaseModel):

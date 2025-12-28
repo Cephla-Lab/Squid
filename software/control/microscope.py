@@ -1,4 +1,5 @@
 import serial
+from pathlib import Path
 from typing import Optional, TypeVar
 
 import control._def
@@ -319,13 +320,17 @@ class Microscope:
         self._simulated = simulated
 
         self.objective_store: ObjectiveStore = ObjectiveStore()
-        self.channel_configuration_manager: ChannelConfigurationManager = ChannelConfigurationManager()
+        # Pass configurations path for loading global channel definitions
+        configurations_path = Path(__file__).parent.parent / "configurations"
+        self.channel_configuration_mananger: ChannelConfigurationManager = ChannelConfigurationManager(
+            configurations_path=configurations_path
+        )
         self.laser_af_settings_manager: Optional[LaserAFSettingManager] = None
         if control._def.SUPPORT_LASER_AUTOFOCUS:
             self.laser_af_settings_manager = LaserAFSettingManager()
 
-        self.configuration_manager: ConfigurationManager = ConfigurationManager(
-            self.channel_configuration_manager, self.laser_af_settings_manager
+        self.configuration_mananger: ConfigurationManager = ConfigurationManager(
+            self.channel_configuration_mananger, self.laser_af_settings_manager
         )
         self.contrast_manager: ContrastManager = ContrastManager()
         self.stream_handler: StreamHandler = StreamHandler(handler_functions=stream_handler_callbacks)
@@ -483,13 +488,13 @@ class Microscope:
     def set_illumination_intensity(self, channel, intensity, objective=None):
         if objective is None:
             objective = self.objective_store.current_objective
-        channel_config = self.channel_configuration_manager.get_channel_configuration_by_name(objective, channel)
+        channel_config = self.channel_configuration_mananger.get_channel_configuration_by_name(objective, channel)
         channel_config.illumination_intensity = intensity
         self.live_controller.set_microscope_mode(channel_config)
 
     def set_exposure_time(self, channel, exposure_time, objective=None):
         if objective is None:
             objective = self.objective_store.current_objective
-        channel_config = self.channel_configuration_manager.get_channel_configuration_by_name(objective, channel)
+        channel_config = self.channel_configuration_mananger.get_channel_configuration_by_name(objective, channel)
         channel_config.exposure_time = exposure_time
         self.live_controller.set_microscope_mode(channel_config)
