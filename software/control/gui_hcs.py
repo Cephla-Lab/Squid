@@ -1024,7 +1024,9 @@ class HighContentScreeningGui(QMainWindow):
         self.wellSelectionWidget.signal_wellSelectedPos.connect(self.move_to_mm)
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
-            self.objectivesWidget.signal_objective_changed.connect(self.wellplateMultiPointWidget.update_coordinates)
+            self.objectivesWidget.signal_objective_changed.connect(
+                self.wellplateMultiPointWidget.handle_objective_change
+            )
 
         self.profileWidget.signal_profile_changed.connect(
             lambda: self.liveControlWidget.select_new_microscope_mode_by_name(

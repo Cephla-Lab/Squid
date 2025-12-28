@@ -5091,18 +5091,14 @@ class WellplateMultiPointWidget(QFrame):
                     self.coverage_label.setVisible(True)
                     self.entry_well_coverage.setVisible(True)
             elif xy_mode == "Select Wells":
-                # For Select Wells mode, coverage should be enabled
+                # For Select Wells mode, coverage should be enabled (but read-only, derived from scan_size)
                 self.entry_well_coverage.blockSignals(True)
                 self.entry_well_coverage.setRange(1, 999.99)  # Restore normal range
                 self.entry_well_coverage.setSuffix("%")
-
-                # Restore stored coverage value for Select Wells mode
-                if self.stored_xy_params["Select Wells"]["coverage"] is not None:
-                    self.entry_well_coverage.setValue(self.stored_xy_params["Select Wells"]["coverage"])
-                else:
-                    self.entry_well_coverage.setValue(100)  # Set to default if no stored value
-
                 self.entry_well_coverage.blockSignals(False)
+
+                # Derive coverage from current scan_size (scan_size is the source of truth)
+                self.update_coverage_from_scan_size()
 
                 # Enable coverage unless it's glass slide mode
                 if "glass slide" not in self.navigationViewer.sample:
@@ -5541,8 +5537,9 @@ class WellplateMultiPointWidget(QFrame):
         return well_size
 
     def reset_coordinates(self):
+        # Update coverage display from scan_size (scan_size is the source of truth)
         if self.combobox_xy_mode.currentText() == "Select Wells":
-            self.update_scan_size_from_coverage()
+            self.update_coverage_from_scan_size()
         self.update_coordinates()
 
     def update_manual_shape(self, shapes_data_mm):
@@ -5576,11 +5573,20 @@ class WellplateMultiPointWidget(QFrame):
             self._log.debug(f"Coverage: {coverage}")
 
     def update_scan_size_from_coverage(self):
+        if "glass slide" in self.navigationViewer.sample:
+            return  # Glass slide has no well size, skip
         effective_well_size = self.get_effective_well_size()
+        if effective_well_size <= 0:
+            return  # Guard against division issues
         coverage = self.entry_well_coverage.value()
         scan_size = round((coverage / 100) * effective_well_size, 3)
+        # Block signals to prevent cascade: scan_size change -> coverage update -> scan_size change
+        self.entry_scan_size.blockSignals(True)
         self.entry_scan_size.setValue(scan_size)
+        self.entry_scan_size.blockSignals(False)
         self._log.debug(f"Scan size: {scan_size}")
+        # Manually update coordinates since we blocked the signal
+        self.update_coordinates()
 
     def update_dz(self):
         z_min = self.entry_minZ.value()
@@ -5673,6 +5679,23 @@ class WellplateMultiPointWidget(QFrame):
             if self.scanCoordinates.has_regions():
                 self.scanCoordinates.clear_regions()
             self.scanCoordinates.set_well_coordinates(scan_size_mm, overlap_percent, shape)
+
+    def handle_objective_change(self):
+        """Handle objective change - update scan_size to maintain coverage percentage.
+
+        When the objective changes, the FOV size changes, which affects the effective
+        well size for Circle shapes. This method recalculates scan_size from the current
+        coverage to maintain the same coverage percentage with the new effective well size.
+        """
+        if self.tab_widget and self.tab_widget.currentWidget() != self:
+            return
+        if self.combobox_xy_mode.currentText() == "Select Wells":
+            # Recalculate scan_size from coverage to maintain the same coverage percentage
+            # with the new effective well size (which depends on FOV size)
+            # Note: update_scan_size_from_coverage also calls update_coordinates
+            self.update_scan_size_from_coverage()
+        else:
+            self.update_coordinates()
 
     def update_well_coordinates(self, selected):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
