@@ -665,6 +665,10 @@ class PreferencesDialog(QDialog):
         except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
             return default
 
+    def _floats_equal(self, a, b, epsilon=1e-4):
+        """Compare two floats with epsilon tolerance to avoid precision issues."""
+        return abs(a - b) < epsilon
+
     def _browse_saving_path(self):
         path = QFileDialog.getExistingDirectory(self, "Select Default Saving Path", self.saving_path_edit.text())
         if path:
@@ -846,32 +850,32 @@ class PreferencesDialog(QDialog):
         # Advanced - Stage & Motion (require restart)
         old_val = self._get_config_float("GENERAL", "max_velocity_x_mm", 30)
         new_val = self.max_vel_x.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("Max Velocity X", f"{old_val} mm/s", f"{new_val} mm/s", True))
 
         old_val = self._get_config_float("GENERAL", "max_velocity_y_mm", 30)
         new_val = self.max_vel_y.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("Max Velocity Y", f"{old_val} mm/s", f"{new_val} mm/s", True))
 
         old_val = self._get_config_float("GENERAL", "max_velocity_z_mm", 3.8)
         new_val = self.max_vel_z.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("Max Velocity Z", f"{old_val} mm/s", f"{new_val} mm/s", True))
 
         old_val = self._get_config_float("GENERAL", "max_acceleration_x_mm", 500)
         new_val = self.max_accel_x.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("Max Acceleration X", f"{old_val} mm/s2", f"{new_val} mm/s2", True))
 
         old_val = self._get_config_float("GENERAL", "max_acceleration_y_mm", 500)
         new_val = self.max_accel_y.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("Max Acceleration Y", f"{old_val} mm/s2", f"{new_val} mm/s2", True))
 
         old_val = self._get_config_float("GENERAL", "max_acceleration_z_mm", 100)
         new_val = self.max_accel_z.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("Max Acceleration Z", f"{old_val} mm/s2", f"{new_val} mm/s2", True))
 
         old_val = self._get_config_int("GENERAL", "scan_stabilization_time_ms_x", 25)
@@ -892,7 +896,7 @@ class PreferencesDialog(QDialog):
         # Advanced - Autofocus (live update)
         old_val = self._get_config_float("AF", "stop_threshold", 0.85)
         new_val = self.af_stop_threshold.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("AF Stop Threshold", str(old_val), str(new_val), False))
 
         old_val = self._get_config_int("AF", "crop_width", 800)
@@ -919,53 +923,53 @@ class PreferencesDialog(QDialog):
         # LED matrix factors (live update)
         old_val = self._get_config_float("GENERAL", "led_matrix_r_factor", 1.0)
         new_val = self.led_r_factor.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("LED Matrix R Factor", str(old_val), str(new_val), False))
 
         old_val = self._get_config_float("GENERAL", "led_matrix_g_factor", 1.0)
         new_val = self.led_g_factor.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("LED Matrix G Factor", str(old_val), str(new_val), False))
 
         old_val = self._get_config_float("GENERAL", "led_matrix_b_factor", 1.0)
         new_val = self.led_b_factor.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("LED Matrix B Factor", str(old_val), str(new_val), False))
 
         old_val = self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6)
         new_val = self.illumination_factor.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("Illumination Intensity Factor", str(old_val), str(new_val), False))
 
         # Advanced - Position Limits (live update)
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115)
         new_val = self.limit_x_pos.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("X Positive Limit", f"{old_val} mm", f"{new_val} mm", False))
 
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "x_negative", 5)
         new_val = self.limit_x_neg.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("X Negative Limit", f"{old_val} mm", f"{new_val} mm", False))
 
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "y_positive", 76)
         new_val = self.limit_y_pos.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("Y Positive Limit", f"{old_val} mm", f"{new_val} mm", False))
 
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "y_negative", 4)
         new_val = self.limit_y_neg.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("Y Negative Limit", f"{old_val} mm", f"{new_val} mm", False))
 
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "z_positive", 6)
         new_val = self.limit_z_pos.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("Z Positive Limit", f"{old_val} mm", f"{new_val} mm", False))
 
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "z_negative", 0.05)
         new_val = self.limit_z_neg.value()
-        if old_val != new_val:
+        if not self._floats_equal(old_val, new_val):
             changes.append(("Z Negative Limit", f"{old_val} mm", f"{new_val} mm", False))
 
         # Advanced - Tracking (live update)
