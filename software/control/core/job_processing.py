@@ -311,6 +311,21 @@ class DownsampledViewJob(Job):
     z_projection_mode: str = "middle"  # "mip" or "middle"
     skip_saving: bool = False  # Skip TIFF file saving (just generate for display)
 
+    # WARNING: This class uses a mutable class-level accumulator that is only
+    # safe because each JobRunner runs in its own *process* (via multiprocessing).
+    # Reusing this job class in a threaded executor without additional locking
+    # would introduce data races and is not supported.
+    __doc__ = (
+        "DownsampledViewJob accumulates state in a process-local class variable.\n"
+        "The _well_accumulators mapping is a mutable class attribute that is safe\n"
+        "only because JobRunner instances are multiprocessing.Process workers, so\n"
+        "each worker has its own independent copy of this attribute.\n\n"
+        "Do NOT use DownsampledViewJob in a threading context (e.g., with\n"
+        "ThreadPoolExecutor or other in-process thread runners) without adding\n"
+        "proper synchronization or refactoring to avoid shared mutable class\n"
+        "state, as that would lead to race conditions and data corruption."
+    )
+
     # Class-level accumulator storage keyed by well_id.
     # Note: This runs inside JobRunner (a multiprocessing.Process), so each worker
     # process has its own copy of this class variable. It is process-local and

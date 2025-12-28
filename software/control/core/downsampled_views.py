@@ -96,7 +96,7 @@ def downsample_tile(
     Returns:
         Downsampled tile, or original if target <= source
     """
-    factor = int(target_pixel_size_um / source_pixel_size_um)
+    factor = int(round(target_pixel_size_um / source_pixel_size_um))
 
     if factor <= 1:
         return tile
@@ -208,6 +208,29 @@ def parse_well_id(well_id: str) -> Tuple[int, int]:
     col = int(number_part) - 1
 
     return (row, col)
+
+
+def format_well_id(row: int, col: int) -> str:
+    """Format row and column indices to well ID string.
+
+    This is the inverse of parse_well_id.
+
+    Args:
+        row: Row index (0-based, A=0, B=1, ..., Z=25, AA=26, ...)
+        col: Column index (0-based, 1=0, 2=1, ...)
+
+    Returns:
+        Well ID string (e.g., "A1", "B12", "AA1")
+    """
+    if row < 26:
+        letter_part = chr(ord("A") + row)
+    else:
+        # For rows >= 26, use AA, AB, etc.
+        first_letter = chr(ord("A") + (row // 26) - 1)
+        second_letter = chr(ord("A") + (row % 26))
+        letter_part = f"{first_letter}{second_letter}"
+
+    return f"{letter_part}{col + 1}"
 
 
 def ensure_plate_resolution_in_well_resolutions(

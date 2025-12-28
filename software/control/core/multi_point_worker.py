@@ -339,7 +339,7 @@ class MultiPointWorker:
         self._image_callback_idle.set()
 
     def _finish_jobs(self, timeout_s=10):
-        # Drain any results that have already completed
+        # Drain and summarize all currently available job results before waiting for completion
         self._summarize_runner_outputs(drain_all=True)
 
         self._log.info(
@@ -803,13 +803,16 @@ class MultiPointWorker:
 
             # After input queue is empty, the last job may still be running
             # Keep polling for results until we get no new results for a while
+            # Timeout for assuming all jobs are done when no results arrive
+            RESULT_IDLE_TIMEOUT_S = 2.0
+
             last_result_time = time.time()
             while time.time() < timeout_time:
                 result = self._summarize_runner_outputs(drain_all=True)
                 if result.had_results:
                     last_result_time = time.time()
-                # If no results for 2 seconds, assume all jobs are done
-                if time.time() - last_result_time > 2.0:
+                # If no results for RESULT_IDLE_TIMEOUT_S, assume all jobs are done
+                if time.time() - last_result_time > RESULT_IDLE_TIMEOUT_S:
                     break
                 time.sleep(0.1)
 

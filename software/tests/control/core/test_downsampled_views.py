@@ -16,6 +16,7 @@ try:
         downsample_tile,
         stitch_tiles,
         parse_well_id,
+        format_well_id,
         ensure_plate_resolution_in_well_resolutions,
     )
 
@@ -381,6 +382,30 @@ class TestWellIdParsing:
         assert parse_well_id("Ab6") == (27, 5)
         # Single letter mixed case
         assert parse_well_id("b6") == (1, 5)
+
+
+class TestWellIdFormatting:
+    """Tests for well ID formatting."""
+
+    def test_format_well_id_single_letter(self):
+        """Test formatting (0, 0) -> A1, (7, 11) -> H12."""
+        assert format_well_id(0, 0) == "A1"
+        assert format_well_id(0, 11) == "A12"
+        assert format_well_id(7, 0) == "H1"
+        assert format_well_id(7, 11) == "H12"
+
+    def test_format_well_id_double_letter(self):
+        """Test formatting (26, 0) -> AA1 for 1536-well plates."""
+        assert format_well_id(26, 0) == "AA1"
+        assert format_well_id(31, 47) == "AF48"
+
+    def test_format_well_id_inverse_of_parse(self):
+        """Test that format_well_id is the inverse of parse_well_id."""
+        for row in range(32):
+            for col in range(48):
+                well_id = format_well_id(row, col)
+                parsed_row, parsed_col = parse_well_id(well_id)
+                assert (parsed_row, parsed_col) == (row, col), f"Round-trip failed for ({row}, {col}) -> {well_id}"
 
 
 class TestConfigValidation:

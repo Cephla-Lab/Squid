@@ -9,6 +9,7 @@ from typing import Optional
 import squid.logging
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
+from control.core.downsampled_views import format_well_id
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 import control.utils as utils
@@ -8667,9 +8668,12 @@ class NapariPlateViewWidget(QWidget):
         plate_height = num_rows * well_slot_shape[0]
         plate_width = num_cols * well_slot_shape[1]
         if plate_height > 0 and plate_width > 0:
-            # Max zoom: ensure at least 500 pixels visible, capped at 10x for performance
+            # Zoom limit constants
+            MIN_VISIBLE_PIXELS = 500.0  # Minimum pixels visible at max zoom
+            MAX_ZOOM_FACTOR = 10.0  # Cap to prevent performance issues
+            # Max zoom: ensure at least MIN_VISIBLE_PIXELS visible, capped at MAX_ZOOM_FACTOR
             min_plate_dim = min(plate_height, plate_width)
-            self.max_zoom = min(max(1.0, min_plate_dim / 500.0), 10.0)
+            self.max_zoom = min(max(1.0, min_plate_dim / MIN_VISIBLE_PIXELS), MAX_ZOOM_FACTOR)
 
         # Draw plate boundaries
         self._draw_plate_boundaries()
@@ -8845,14 +8849,8 @@ class NapariPlateViewWidget(QWidget):
             print(f"Clicked outside plate bounds: row={well_row}, col={well_col}")
             return
 
-        # Generate well ID (A1, B2, etc.)
-        if well_row < 26:
-            well_id = f"{chr(ord('A') + well_row)}{well_col + 1}"
-        else:
-            # For rows > 26, use AA, AB, etc.
-            first_letter = chr(ord("A") + (well_row // 26) - 1)
-            second_letter = chr(ord("A") + (well_row % 26))
-            well_id = f"{first_letter}{second_letter}{well_col + 1}"
+        # Generate well ID using shared utility (inverse of parse_well_id)
+        well_id = format_well_id(well_row, well_col)
 
         # Calculate FOV within well
         y_in_well = y % self.well_slot_shape[0]
