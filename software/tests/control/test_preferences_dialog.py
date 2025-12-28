@@ -1,9 +1,11 @@
 import os
+import sys
 import tempfile
 from configparser import ConfigParser
-from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
+from qtpy.QtWidgets import QMessageBox
 
 import control.widgets
 
@@ -235,6 +237,7 @@ class TestApplySettings:
         saved_config.read(temp_config_file)
         assert saved_config.has_section("TRACKING")
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod doesn't reliably prevent writes on Windows")
     def test_apply_settings_handles_read_only_file(self, preferences_dialog, temp_config_file):
         os.chmod(temp_config_file, 0o444)
         try:
@@ -242,6 +245,70 @@ class TestApplySettings:
             preferences_dialog._apply_settings()
         finally:
             os.chmod(temp_config_file, 0o644)
+
+    def test_apply_settings_emits_signal(self, qtbot, preferences_dialog):
+        """Verify signal_config_changed is emitted when settings are saved."""
+        with qtbot.waitSignal(preferences_dialog.signal_config_changed, timeout=1000):
+            preferences_dialog._apply_settings()
+
+
+class TestSaveAndCloseWorkflow:
+    """Test the complete save workflow via _save_and_close method."""
+
+    def test_save_and_close_no_changes(self, qtbot, preferences_dialog):
+        """When no changes, should show info dialog and close."""
+        with patch.object(QMessageBox, "information") as mock_info:
+            preferences_dialog._save_and_close()
+            mock_info.assert_called_once()
+            assert "No Changes" in str(mock_info.call_args)
+
+    def test_save_and_close_single_change_no_restart(self, qtbot, preferences_dialog, temp_config_file):
+        """Single change that doesn't require restart should save silently."""
+        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+
+        # Mock accept to track if dialog closes
+        preferences_dialog.accept = MagicMock()
+        preferences_dialog._save_and_close()
+
+        # Should save and close without showing restart message
+        preferences_dialog.accept.assert_called_once()
+
+        # Verify saved
+        saved_config = ConfigParser()
+        saved_config.read(temp_config_file)
+        assert saved_config.get("GENERAL", "file_saving_option") == "MULTI_PAGE_TIFF"
+
+    def test_save_and_close_single_change_requires_restart(self, qtbot, preferences_dialog, temp_config_file):
+        """Single change requiring restart should show restart message."""
+        preferences_dialog.binning_spinbox.setValue(4)
+
+        with patch.object(QMessageBox, "information") as mock_info:
+            preferences_dialog.accept = MagicMock()
+            preferences_dialog._save_and_close()
+
+            # Should show restart message
+            mock_info.assert_called_once()
+            assert "restart" in str(mock_info.call_args).lower()
+            preferences_dialog.accept.assert_called_once()
+
+    def test_save_and_close_multiple_changes_accepted(self, qtbot, preferences_dialog, temp_config_file):
+        """Multiple changes should show confirmation dialog."""
+        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+        preferences_dialog.binning_spinbox.setValue(4)
+
+        # Mock the confirmation dialog to return Accepted
+        with patch("control.widgets.QDialog.exec_", return_value=True):
+            preferences_dialog.accept = MagicMock()
+            preferences_dialog._save_and_close()
+
+            # Should save and close
+            preferences_dialog.accept.assert_called_once()
+
+            # Verify both changes saved
+            saved_config = ConfigParser()
+            saved_config.read(temp_config_file)
+            assert saved_config.get("GENERAL", "file_saving_option") == "MULTI_PAGE_TIFF"
+            assert saved_config.get("CAMERA_CONFIG", "binning_factor_default") == "4"
 
 
 class TestUIInitialization:
