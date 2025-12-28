@@ -10310,7 +10310,7 @@ class LaserAutofocusControlWidget(QFrame):
 
 class WellplateFormatWidget(QWidget):
 
-    signalWellplateSettings = Signal(QVariant, float, float, int, int, float, float, int, int, int)
+    signalWellplateSettings = Signal(str, float, float, int, int, float, float, int, int, int)
 
     def __init__(self, stage: AbstractStage, navigationViewer, streamHandler, liveController):
         super().__init__()
@@ -10365,14 +10365,14 @@ class WellplateFormatWidget(QWidget):
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
             settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
         elif wellplate_format == "glass slide":
-            self.signalWellplateSettings.emit(QVariant("glass slide"), 0, 0, 0, 0, 0, 0, 0, 1, 1)
+            self.signalWellplateSettings.emit("glass slide", 0, 0, 0, 0, 0, 0, 0, 1, 1)
             return
         else:
             print(f"Wellplate format {wellplate_format} not recognized")
             return
 
         self.signalWellplateSettings.emit(
-            QVariant(wellplate_format),
+            wellplate_format,
             settings["a1_x_mm"],
             settings["a1_y_mm"],
             settings["a1_x_pixel"],
