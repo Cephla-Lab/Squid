@@ -1351,9 +1351,10 @@ class HighContentScreeningGui(QMainWindow):
             dialog.exec_()
 
     def openPreferences(self):
+        import os
         from configparser import ConfigParser
 
-        if CACHED_CONFIG_FILE_PATH:
+        if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             config = ConfigParser()
             config.read(CACHED_CONFIG_FILE_PATH)
             dialog = widgets.PreferencesDialog(config, CACHED_CONFIG_FILE_PATH, self)

@@ -412,6 +412,7 @@ class PreferencesDialog(QDialog):
         try:
             self.roi_width_spinbox.setValue(0 if roi_width == "None" else int(roi_width))
         except ValueError:
+            self._log.warning(f"Invalid roi_width_default value '{roi_width}', using Auto")
             self.roi_width_spinbox.setValue(0)
         layout.addRow("ROI Width:", self.roi_width_spinbox)
 
@@ -423,6 +424,7 @@ class PreferencesDialog(QDialog):
         try:
             self.roi_height_spinbox.setValue(0 if roi_height == "None" else int(roi_height))
         except ValueError:
+            self._log.warning(f"Invalid roi_height_default value '{roi_height}', using Auto")
             self.roi_height_spinbox.setValue(0)
         layout.addRow("ROI Height:", self.roi_height_spinbox)
 
@@ -647,8 +649,6 @@ class PreferencesDialog(QDialog):
     def _get_config_bool(self, section, option, default=False):
         try:
             val = self.config.get(section, option)
-            if isinstance(val, bool):
-                return val
             return str(val).strip().lower() in ("true", "1", "yes", "on")
         except (configparser.NoSectionError, configparser.NoOptionError):
             return default
@@ -751,14 +751,18 @@ class PreferencesDialog(QDialog):
             with open(self.config_filepath, "w") as f:
                 self.config.write(f)
             self._log.info(f"Configuration saved to {self.config_filepath}")
-
-            # Update runtime values for settings that can be applied live
-            self._apply_live_settings()
-
-            self.signal_config_changed.emit()
         except OSError as e:
             self._log.exception("Failed to save configuration")
             QMessageBox.warning(self, "Error", f"Failed to save configuration: {e}")
+            return
+
+        # Update runtime values for settings that can be applied live
+        try:
+            self._apply_live_settings()
+        except Exception:
+            self._log.exception("Failed to apply live settings")
+
+        self.signal_config_changed.emit()
 
     def _apply_live_settings(self):
         """Apply settings that can take effect without restart."""
@@ -1002,7 +1006,6 @@ class PreferencesDialog(QDialog):
         changes = self._get_changes()
 
         if not changes:
-            QMessageBox.information(self, "No Changes", "No settings have been changed.")
             self.accept()
             return
 

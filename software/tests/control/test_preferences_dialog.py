@@ -256,11 +256,10 @@ class TestSaveAndCloseWorkflow:
     """Test the complete save workflow via _save_and_close method."""
 
     def test_save_and_close_no_changes(self, qtbot, preferences_dialog):
-        """When no changes, should show info dialog and close."""
-        with patch.object(QMessageBox, "information") as mock_info:
-            preferences_dialog._save_and_close()
-            mock_info.assert_called_once()
-            assert "No Changes" in str(mock_info.call_args)
+        """When no changes, should close silently without dialog."""
+        preferences_dialog.accept = MagicMock()
+        preferences_dialog._save_and_close()
+        preferences_dialog.accept.assert_called_once()
 
     def test_save_and_close_single_change_no_restart(self, qtbot, preferences_dialog, temp_config_file):
         """Single change that doesn't require restart should save silently."""
@@ -288,7 +287,7 @@ class TestSaveAndCloseWorkflow:
 
             # Should show restart message
             mock_info.assert_called_once()
-            assert "restart" in str(mock_info.call_args).lower()
+            assert "restart" in str(mock_info.call_args)
             preferences_dialog.accept.assert_called_once()
 
     def test_save_and_close_multiple_changes_accepted(self, qtbot, preferences_dialog, temp_config_file):
