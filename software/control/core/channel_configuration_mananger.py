@@ -55,20 +55,33 @@ class ChannelConfigurationManager:
         self._load_channel_definitions()
 
     def _load_channel_definitions(self) -> None:
-        """Load global channel definitions from JSON file"""
+        """Load global channel definitions from JSON file
+        
+        Uses a default + user file pattern:
+        - channel_definitions.default.json: tracked in git, provides defaults
+        - channel_definitions.json: gitignored, user edits go here
+        """
         if not self.configurations_path:
             return
 
-        definitions_file = self.configurations_path / "channel_definitions.json"
+        user_file = self.configurations_path / "channel_definitions.json"
+        default_file = self.configurations_path / "channel_definitions.default.json"
 
-        if definitions_file.exists():
-            self.channel_definitions = ChannelDefinitionsConfig.load(definitions_file)
-            self._log.info(f"Loaded channel definitions from {definitions_file}")
-        else:
-            # Generate default and save
-            self.channel_definitions = ChannelDefinitionsConfig.generate_default()
-            self.channel_definitions.save(definitions_file)
-            self._log.info(f"Generated default channel definitions at {definitions_file}")
+        if not user_file.exists():
+            # Copy from default if available, otherwise generate
+            if default_file.exists():
+                import shutil
+                shutil.copy(default_file, user_file)
+                self._log.info(f"Copied default channel definitions to {user_file}")
+            else:
+                # Generate default and save
+                self.channel_definitions = ChannelDefinitionsConfig.generate_default()
+                self.channel_definitions.save(user_file)
+                self._log.info(f"Generated default channel definitions at {user_file}")
+                return
+
+        self.channel_definitions = ChannelDefinitionsConfig.load(user_file)
+        self._log.info(f"Loaded channel definitions from {user_file}")
 
     def save_channel_definitions(self) -> None:
         """Save global channel definitions to JSON file"""

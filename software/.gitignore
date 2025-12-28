@@ -4,3 +4,4 @@
 cache/
 drivers and libraries/daheng camera/
 acquisition_configurations/
+configurations/channel_definitions.json
