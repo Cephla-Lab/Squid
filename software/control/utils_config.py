@@ -35,18 +35,21 @@ from control._def import SpotDetectionMode
 
 class ChannelType(str, Enum):
     """Type of imaging channel"""
+
     FLUORESCENCE = "fluorescence"
     LED_MATRIX = "led_matrix"
 
 
 class NumericChannelMapping(BaseModel):
     """Mapping from numeric channel to illumination source and excitation wavelength"""
+
     illumination_source: int
     ex_wavelength: int
 
 
 class ChannelDefinition(BaseModel):
     """Definition of a single imaging channel"""
+
     name: str
     type: ChannelType
     emission_filter_position: int = 1
@@ -87,7 +90,9 @@ class ChannelDefinition(BaseModel):
             mapping = numeric_channel_mapping.get(str(self.numeric_channel))
             if mapping:
                 return mapping.illumination_source
-            raise ValueError(f"Fluorescence channel '{self.name}' has no mapping for numeric_channel {self.numeric_channel}")
+            raise ValueError(
+                f"Fluorescence channel '{self.name}' has no mapping for numeric_channel {self.numeric_channel}"
+            )
 
     def get_ex_wavelength(self, numeric_channel_mapping: Dict[str, NumericChannelMapping]) -> Optional[int]:
         """Get the excitation wavelength for this channel"""
@@ -102,6 +107,7 @@ class ChannelDefinition(BaseModel):
 
 class ObjectiveChannelSettings(BaseModel):
     """Per-objective settings for a channel"""
+
     exposure_time: float = 25.0
     analog_gain: float = 0.0
     illumination_intensity: float = 20.0
@@ -110,6 +116,7 @@ class ObjectiveChannelSettings(BaseModel):
 
 class ChannelDefinitionsConfig(BaseModel):
     """Root configuration for channel definitions"""
+
     max_fluorescence_channels: int = 5
     channels: List[ChannelDefinition] = []
     numeric_channel_mapping: Dict[str, NumericChannelMapping] = {}

@@ -11871,10 +11871,9 @@ class ChannelEditorDialog(QDialog):
         # Table for channel definitions
         self.table = QTableWidget()
         self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels([
-            "Enabled", "Name", "Type", "Numeric Ch", "Ex Wavelength",
-            "Illum. Source", "Filter Pos", "Color"
-        ])
+        self.table.setHorizontalHeaderLabels(
+            ["Enabled", "Name", "Type", "Numeric Ch", "Ex Wavelength", "Illum. Source", "Filter Pos", "Color"]
+        )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -12015,19 +12014,13 @@ class ChannelEditorDialog(QDialog):
         # Check if it's an LED matrix channel (not removable)
         type_item = self.table.item(current_row, 2)
         if type_item and type_item.text() == "led_matrix":
-            QMessageBox.warning(
-                self, "Cannot Remove",
-                "LED matrix channels cannot be removed.",
-                QMessageBox.Ok
-            )
+            QMessageBox.warning(self, "Cannot Remove", "LED matrix channels cannot be removed.", QMessageBox.Ok)
             return
 
         name_item = self.table.item(current_row, 1)
         if name_item:
             reply = QMessageBox.question(
-                self, "Confirm Removal",
-                f"Remove channel '{name_item.text()}'?",
-                QMessageBox.Yes | QMessageBox.No
+                self, "Confirm Removal", f"Remove channel '{name_item.text()}'?", QMessageBox.Yes | QMessageBox.No
             )
             if reply == QMessageBox.Yes:
                 self.channel_manager.remove_channel_definition(name_item.text())

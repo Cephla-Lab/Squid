@@ -56,7 +56,7 @@ class ChannelConfigurationManager:
 
     def _load_channel_definitions(self) -> None:
         """Load global channel definitions from JSON file
-        
+
         Uses a default + user file pattern:
         - channel_definitions.default.json: tracked in git, provides defaults
         - channel_definitions.json: gitignored, user edits go here
@@ -71,6 +71,7 @@ class ChannelConfigurationManager:
             # Copy from default if available, otherwise generate
             if default_file.exists():
                 import shutil
+
                 shutil.copy(default_file, user_file)
                 self._log.info(f"Copied default channel definitions to {user_file}")
             else:
@@ -203,15 +204,11 @@ class ChannelConfigurationManager:
 
     def _build_channel_mode(self, channel_def: ChannelDefinition, objective: str) -> ChannelMode:
         """Build a ChannelMode from channel definition and objective settings"""
-        settings = self.objective_settings.get(objective, {}).get(
-            channel_def.name, ObjectiveChannelSettings()
-        )
+        settings = self.objective_settings.get(objective, {}).get(channel_def.name, ObjectiveChannelSettings())
 
         # Get illumination source from channel definition
         if self.channel_definitions:
-            illumination_source = channel_def.get_illumination_source(
-                self.channel_definitions.numeric_channel_mapping
-            )
+            illumination_source = channel_def.get_illumination_source(self.channel_definitions.numeric_channel_mapping)
         else:
             illumination_source = channel_def.illumination_source or 0
 
@@ -236,9 +233,7 @@ class ChannelConfigurationManager:
         # If using new format and channel definitions are loaded
         if self.channel_definitions:
             channels = (
-                self.channel_definitions.get_enabled_channels()
-                if enabled_only
-                else self.channel_definitions.channels
+                self.channel_definitions.get_enabled_channels() if enabled_only else self.channel_definitions.channels
             )
             return [self._build_channel_mode(ch, objective) for ch in channels]
 
@@ -369,9 +364,7 @@ class ChannelConfigurationManager:
         if not self.channel_definitions:
             return
 
-        self.channel_definitions.channels = [
-            ch for ch in self.channel_definitions.channels if ch.name != channel_name
-        ]
+        self.channel_definitions.channels = [ch for ch in self.channel_definitions.channels if ch.name != channel_name]
         self.save_channel_definitions()
 
     def set_channel_enabled(self, channel_name: str, enabled: bool) -> None:
