@@ -1,3 +1,4 @@
+import configparser
 import gc
 import os
 import json
@@ -294,7 +295,7 @@ class PreferencesDialog(QDialog):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config = config
         self.config_filepath = config_filepath
-        self.setWindowTitle("Preferences")
+        self.setWindowTitle("Configuration")
         self.setMinimumWidth(500)
         self.setMinimumHeight(600)
         self._init_ui()
@@ -400,7 +401,7 @@ class PreferencesDialog(QDialog):
         self.temperature_spinbox = QSpinBox()
         self.temperature_spinbox.setRange(-20, 40)
         self.temperature_spinbox.setValue(self._get_config_int("CAMERA_CONFIG", "temperature_default", 20))
-        self.temperature_spinbox.setSuffix(" C")
+        self.temperature_spinbox.setSuffix(" °C")
         layout.addRow("Temperature Default:", self.temperature_spinbox)
 
         # ROI Width
@@ -408,7 +409,10 @@ class PreferencesDialog(QDialog):
         self.roi_width_spinbox.setRange(0, 10000)
         self.roi_width_spinbox.setSpecialValueText("Auto")
         roi_width = self._get_config_value("CAMERA_CONFIG", "roi_width_default", "None")
-        self.roi_width_spinbox.setValue(0 if roi_width == "None" else int(roi_width))
+        try:
+            self.roi_width_spinbox.setValue(0 if roi_width == "None" else int(roi_width))
+        except ValueError:
+            self.roi_width_spinbox.setValue(0)
         layout.addRow("ROI Width:", self.roi_width_spinbox)
 
         # ROI Height
@@ -416,7 +420,10 @@ class PreferencesDialog(QDialog):
         self.roi_height_spinbox.setRange(0, 10000)
         self.roi_height_spinbox.setSpecialValueText("Auto")
         roi_height = self._get_config_value("CAMERA_CONFIG", "roi_height_default", "None")
-        self.roi_height_spinbox.setValue(0 if roi_height == "None" else int(roi_height))
+        try:
+            self.roi_height_spinbox.setValue(0 if roi_height == "None" else int(roi_height))
+        except ValueError:
+            self.roi_height_spinbox.setValue(0)
         layout.addRow("ROI Height:", self.roi_height_spinbox)
 
         self.tab_widget.addTab(tab, "Camera")
@@ -634,26 +641,28 @@ class PreferencesDialog(QDialog):
     def _get_config_value(self, section, option, default=""):
         try:
             return self.config.get(section, option)
-        except:
+        except (configparser.NoSectionError, configparser.NoOptionError):
             return default
 
     def _get_config_bool(self, section, option, default=False):
         try:
-            val = self.config.get(section, option).lower()
-            return val == "true"
-        except:
+            val = self.config.get(section, option)
+            if isinstance(val, bool):
+                return val
+            return str(val).strip().lower() in ("true", "1", "yes", "on")
+        except (configparser.NoSectionError, configparser.NoOptionError):
             return default
 
     def _get_config_int(self, section, option, default=0):
         try:
             return int(self.config.get(section, option))
-        except:
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
             return default
 
     def _get_config_float(self, section, option, default=0.0):
         try:
             return float(self.config.get(section, option))
-        except:
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
             return default
 
     def _browse_saving_path(self):
@@ -661,7 +670,16 @@ class PreferencesDialog(QDialog):
         if path:
             self.saving_path_edit.setText(path)
 
+    def _ensure_section(self, section):
+        """Ensure a config section exists, creating it if necessary."""
+        if not self.config.has_section(section):
+            self.config.add_section(section)
+
     def _apply_settings(self):
+        # Ensure all required sections exist
+        for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING"]:
+            self._ensure_section(section)
+
         # General settings
         self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
         self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
@@ -726,8 +744,8 @@ class PreferencesDialog(QDialog):
             self._apply_live_settings()
 
             self.signal_config_changed.emit()
-        except Exception as e:
-            self._log.exception(f"Failed to save configuration: {e}")
+        except OSError as e:
+            self._log.exception("Failed to save configuration")
             QMessageBox.warning(self, "Error", f"Failed to save configuration: {e}")
 
     def _apply_live_settings(self):
@@ -783,13 +801,13 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("File Saving Format", old_val, new_val, False))
 
-        old_val = self._get_config_value("GENERAL", "default_saving_path", "")
+        old_val = self._get_config_value("GENERAL", "default_saving_path", str(Path.home() / "Downloads"))
         new_val = self.saving_path_edit.text()
         if old_val != new_val:
             changes.append(("Default Saving Path", old_val, new_val, False))
 
         # Acquisition settings (live update)
-        old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "")
+        old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "BF LED matrix full")
         new_val = self.autofocus_channel_edit.text()
         if old_val != new_val:
             changes.append(("Autofocus Channel", old_val, new_val, False))
@@ -813,7 +831,7 @@ class PreferencesDialog(QDialog):
         old_val = self._get_config_int("CAMERA_CONFIG", "temperature_default", 20)
         new_val = self.temperature_spinbox.value()
         if old_val != new_val:
-            changes.append(("Temperature Default", f"{old_val} C", f"{new_val} C", True))
+            changes.append(("Temperature Default", f"{old_val} °C", f"{new_val} °C", True))
 
         old_val = self._get_config_value("CAMERA_CONFIG", "roi_width_default", "None")
         new_val = "None" if self.roi_width_spinbox.value() == 0 else str(self.roi_width_spinbox.value())

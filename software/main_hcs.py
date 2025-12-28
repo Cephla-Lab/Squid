@@ -17,7 +17,6 @@ squid.logging.setup_uncaught_exception_logging()
 
 # app specific libraries
 import control.gui_hcs as gui
-from control.widgets import StageUtils
 from control._def import USE_TERMINAL_CONSOLE
 import control.utils
 import control.microscope
