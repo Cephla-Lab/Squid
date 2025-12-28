@@ -5555,6 +5555,7 @@ class WellplateMultiPointWidget(QFrame):
         if self.combobox_xy_mode.currentText() == "Select Wells":
             self.update_scan_size_from_coverage()
         else:
+            # Other modes (Current Position, Manual, Load Coordinates) don't use coverage
             self.update_coordinates()
 
     def update_manual_shape(self, shapes_data_mm):
