@@ -290,6 +290,7 @@ class MultiPointWorker:
             next(iter(grid_sizes)),
         )
         return True
+
     def run(self):
         this_image_callback_id = None
         try:
@@ -778,30 +779,39 @@ class MultiPointWorker:
         height, width = image.shape[:2]
         pixel_size_um = self._pixel_size_um or 1.0
 
-        # Try to compute step size from FOV positions
-        # Need to find both X and Y step sizes by examining all FOV pairs
+        # Find step size from FOV coordinates by grouping FOVs into rows
         dx_mm = 0.0
         dy_mm = 0.0
 
         try:
-            # Try to get from first region with multiple FOVs
-            for region_id, coords in self.scan_region_fov_coords_mm.items():
-                if len(coords) >= 2:
-                    # Examine all pairs to find non-zero X and Y steps
-                    for i in range(len(coords)):
-                        for j in range(i + 1, len(coords)):
-                            step_x = abs(coords[j][0] - coords[i][0])
-                            step_y = abs(coords[j][1] - coords[i][1])
-                            # Update dx if we found a non-zero X step that's smaller than current
-                            # (we want the minimum non-zero step)
-                            if step_x > 0.001:  # > 1 micron threshold
-                                if dx_mm == 0 or step_x < dx_mm:
-                                    dx_mm = step_x
-                            if step_y > 0.001:
-                                if dy_mm == 0 or step_y < dy_mm:
-                                    dy_mm = step_y
-                    if dx_mm > 0 or dy_mm > 0:
+            for coords in self.scan_region_fov_coords_mm.values():
+                if len(coords) < 2:
+                    continue
+
+                # Group FOVs by Y coordinate to find rows
+                rows: Dict[float, List[float]] = {}
+                for coord in coords:
+                    x, y = coord[0], coord[1]
+                    y_key = round(y, 4)  # Round to avoid float precision issues
+                    if y_key not in rows:
+                        rows[y_key] = []
+                    rows[y_key].append(x)
+
+                # Find X step from first row with 2+ FOVs
+                for y_key in sorted(rows.keys()):
+                    x_coords = rows[y_key]
+                    if len(x_coords) >= 2:
+                        x_sorted = sorted(x_coords)
+                        dx_mm = x_sorted[1] - x_sorted[0]
                         break
+
+                # Find Y step from two adjacent rows
+                y_keys = sorted(rows.keys())
+                if len(y_keys) >= 2:
+                    dy_mm = y_keys[1] - y_keys[0]
+
+                if dx_mm > 0 or dy_mm > 0:
+                    break
         except Exception as e:
             self._log.warning(f"Could not calculate step size from coordinates: {e}")
             dx_mm = 0

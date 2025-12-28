@@ -30,7 +30,6 @@ from . import utils_ome_tiff_writer as ome_tiff_writer
 from .downsampled_views import (
     crop_overlap,
     downsample_tile,
-    stitch_tiles,
     WellTileAccumulator,
 )
 
@@ -301,7 +300,7 @@ class DownsampledViewJob(Job):
     total_channels: int = 1
     channel_name: str = ""
     fov_position_in_well: Tuple[float, float] = (0.0, 0.0)  # (x_mm, y_mm) relative to well origin
-    overlap_pixels: Tuple[int, int, int, int] = (0, 0, 0, 0)  # (top, bottom, left, right)
+    overlap_pixels: Tuple[int, int, int, int] = field(default=(0, 0, 0, 0))  # (top, bottom, left, right)
     pixel_size_um: float = 1.0
     target_resolutions_um: List[float] = field(default_factory=lambda: [5.0, 10.0, 20.0])
     plate_resolution_um: float = 10.0
@@ -440,7 +439,7 @@ class DownsampledViewJob(Job):
             log.exception(f"Error processing well {self.well_id}: {e}")
             # Clean up accumulator on error
             self._well_accumulators.pop(self.well_id, None)
-            raise type(e)(f"Error processing well {self.well_id}: {e}") from e
+            raise
 
 
 class JobRunner(multiprocessing.Process):
