@@ -18,10 +18,13 @@ class TestScanSizeCoverageLogic:
     These tests verify the mathematical relationships without requiring Qt widgets.
     """
 
-    def get_effective_well_size(self, well_size_mm, fov_size_mm, shape):
+    def get_effective_well_size(self, well_size_mm, fov_size_mm, shape, is_round_well=True):
         """Calculate effective well size (mirrors widget logic)."""
         if shape == "Circle":
             return well_size_mm + fov_size_mm * (1 + math.sqrt(2))
+        elif shape == "Square" and is_round_well:
+            # For square scan in round well, inscribe the square inside the circle
+            return well_size_mm / math.sqrt(2)
         return well_size_mm
 
     def update_coverage_from_scan_size(self, scan_size, effective_well_size):
@@ -123,16 +126,31 @@ class TestScanSizeCoverageLogic:
                 f"Round-trip failed: {initial_coverage}% -> {scan_size}mm -> {final_coverage}%"
             )
 
-    def test_square_shape_no_fov_adjustment(self):
-        """Square shape should not include FOV adjustment in effective well size."""
-        well_size_mm = 3.3  # 384 well plate
+    def test_square_shape_on_square_well_no_adjustment(self):
+        """Square shape on square well (384/1536) should equal well size."""
+        well_size_mm = 3.3  # 384 well plate (square wells)
         fov_size_mm = 0.5
         shape = "Square"
 
-        effective_well_size = self.get_effective_well_size(well_size_mm, fov_size_mm, shape)
+        # 384/1536 plates have square wells
+        effective_well_size = self.get_effective_well_size(well_size_mm, fov_size_mm, shape, is_round_well=False)
 
-        # For Square, effective well size equals well size (no FOV adjustment)
+        # For Square on square well, effective well size equals well size
         assert effective_well_size == well_size_mm
+
+    def test_square_shape_on_round_well_inscribed(self):
+        """Square shape on round well should be inscribed (side = diameter / sqrt(2))."""
+        well_size_mm = 6.21  # 96 well plate (round wells)
+        fov_size_mm = 0.5
+        shape = "Square"
+
+        # 96 well plate has round wells
+        effective_well_size = self.get_effective_well_size(well_size_mm, fov_size_mm, shape, is_round_well=True)
+
+        # For Square on round well, square is inscribed: side = diameter / sqrt(2)
+        expected = well_size_mm / math.sqrt(2)
+        assert abs(effective_well_size - expected) < 0.001
+        assert effective_well_size < well_size_mm  # Must be smaller than diameter
 
     def test_circle_shape_includes_fov_adjustment(self):
         """Circle shape should include FOV adjustment in effective well size."""
@@ -172,18 +190,24 @@ class TestWellplateSizes:
         "1536": 1.53,
     }
 
-    def get_effective_well_size(self, well_size_mm, fov_size_mm, shape):
+    # 384 and 1536 have square wells, others have round wells
+    SQUARE_WELL_PLATES = ["384", "1536"]
+
+    def get_effective_well_size(self, well_size_mm, fov_size_mm, shape, is_round_well):
         if shape == "Circle":
             return well_size_mm + fov_size_mm * (1 + math.sqrt(2))
+        elif shape == "Square" and is_round_well:
+            return well_size_mm / math.sqrt(2)
         return well_size_mm
 
     @pytest.mark.parametrize("plate,well_size", WELLPLATE_SIZES.items())
     def test_100_percent_coverage_matches_effective_well_size(self, plate, well_size):
         """100% coverage should result in scan_size equal to effective well size."""
         fov_size_mm = 0.5  # 20x objective
-        shape = "Circle" if plate not in ["384", "1536"] else "Square"
+        is_round_well = plate not in self.SQUARE_WELL_PLATES
+        shape = "Circle" if is_round_well else "Square"
 
-        effective = self.get_effective_well_size(well_size, fov_size_mm, shape)
+        effective = self.get_effective_well_size(well_size, fov_size_mm, shape, is_round_well)
         scan_size = round((100 / 100) * effective, 3)
 
         assert abs(scan_size - effective) < 0.001, f"Failed for {plate} well plate"
@@ -192,9 +216,10 @@ class TestWellplateSizes:
     def test_scan_size_preserved_across_operations(self, plate, well_size):
         """User-set scan_size should be preserved after simulated reset_coordinates."""
         fov_size_mm = 0.5
-        shape = "Circle" if plate not in ["384", "1536"] else "Square"
+        is_round_well = plate not in self.SQUARE_WELL_PLATES
+        shape = "Circle" if is_round_well else "Square"
 
-        effective = self.get_effective_well_size(well_size, fov_size_mm, shape)
+        effective = self.get_effective_well_size(well_size, fov_size_mm, shape, is_round_well)
 
         # User sets a specific scan_size (e.g., 75% of effective)
         user_scan_size = round(effective * 0.75, 3)

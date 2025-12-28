@@ -5531,9 +5531,16 @@ class WellplateMultiPointWidget(QFrame):
 
     def get_effective_well_size(self):
         well_size = self.scanCoordinates.well_size_mm
-        if self.combobox_shape.currentText() == "Circle":
+        shape = self.combobox_shape.currentText()
+        is_round_well = self.scanCoordinates.format not in ["384 well plate", "1536 well plate"]
+
+        if shape == "Circle":
             fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
             return well_size + fov_size_mm * (1 + math.sqrt(2))
+        elif shape == "Square" and is_round_well:
+            # For square scan in round well, inscribe the square inside the circle
+            # Inscribed square side length = diameter / sqrt(2)
+            return well_size / math.sqrt(2)
         return well_size
 
     def reset_coordinates(self):
