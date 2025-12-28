@@ -27,6 +27,13 @@ jobs:
           swap-storage: true
       - name: Checkout the Squid repo
         uses: actions/checkout@v4
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/setup_22.04.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
       - name: Run the setup script for Ubuntu 22.04
         run: ./setup_22.04.sh -r=${{ github.workspace }}
         working-directory: ./software
