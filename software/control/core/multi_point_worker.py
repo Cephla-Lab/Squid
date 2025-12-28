@@ -822,10 +822,17 @@ class MultiPointWorker:
             self._log.info(f"Calculated overlap pixels: {self._overlap_pixels} (dx={dx_mm}mm, dy={dy_mm}mm)")
 
     def _wait_for_downsampled_view_jobs(self, timeout_s: float = 30.0) -> None:
-        """Wait for all pending downsampled view jobs to complete and process results."""
+        """Wait for all pending downsampled view jobs to complete and process results.
+
+        Args:
+            timeout_s: Maximum time to wait for jobs to complete. Default 30s is sufficient
+                      for typical acquisitions. For very large plates (1536-well) with many
+                      channels, consider increasing this value.
+        """
         from control.core.job_processing import DownsampledViewJob
 
         timeout_time = time.time() + timeout_s
+        timed_out = False
 
         for job_class, job_runner in self._job_runners:
             if job_runner is None or job_class != DownsampledViewJob:
@@ -835,9 +842,16 @@ class MultiPointWorker:
             while job_runner.has_pending():
                 self._summarize_runner_outputs(drain_all=True)
                 if time.time() > timeout_time:
-                    self._log.warning("Timeout waiting for downsampled view jobs to complete")
+                    self._log.warning(
+                        f"Timeout ({timeout_s}s) waiting for downsampled view jobs - "
+                        f"some wells may not appear in plate view"
+                    )
+                    timed_out = True
                     break
                 time.sleep(0.1)
+
+            if timed_out:
+                break
 
             # After input queue is empty, the last job may still be running
             # Keep polling for results until we get no new results for a while

@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover - platform without fcntl
     fcntl = None
 
 from dataclasses import dataclass, field
-from typing import ClassVar, Tuple
+from typing import ClassVar, Dict, List, Optional, Tuple
 
 import imageio as iio
 import numpy as np
@@ -439,7 +439,7 @@ class DownsampledViewJob(Job):
             log.exception(f"Error processing well {self.well_id}: {e}")
             # Clean up accumulator on error
             self._well_accumulators.pop(self.well_id, None)
-            raise
+            raise type(e)(f"Error processing well {self.well_id}: {e}") from e
 
 
 class JobRunner(multiprocessing.Process):
