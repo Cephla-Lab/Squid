@@ -1840,6 +1840,14 @@ class SpinningDiskConfocalWidget(QWidget):
         self.xlight.set_filter_slider(position)
         self.enable_all_buttons(True)
 
+    def get_confocal_mode(self) -> bool:
+        """Get current confocal mode state.
+
+        Returns:
+            True if in confocal mode, False if in widefield mode.
+        """
+        return bool(self.disk_position_state)
+
 
 class DragonflyConfocalWidget(QWidget):
 
@@ -2030,6 +2038,14 @@ class DragonflyConfocalWidget(QWidget):
             print(f"Error setting port 1 field aperture: {e}")
         finally:
             self.enable_all_buttons(True)
+
+    def get_confocal_mode(self) -> bool:
+        """Get current confocal mode state.
+
+        Returns:
+            True if in confocal mode, False if in widefield mode.
+        """
+        return self.confocal_mode
 
 
 class ObjectivesWidget(QWidget):

@@ -328,6 +328,10 @@ class Microscope:
         # Migrate all profiles/objectives from XML to JSON at startup
         self.channel_configuration_mananger.migrate_all_profiles(control._def.ACQUISITION_CONFIGURATIONS_PATH)
 
+        # Sync confocal mode from hardware (works in both GUI and headless modes)
+        if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
+            self._sync_confocal_mode_from_hardware()
+
         self.laser_af_settings_manager: Optional[LaserAFSettingManager] = None
         if control._def.SUPPORT_LASER_AUTOFOCUS:
             self.laser_af_settings_manager = LaserAFSettingManager()
@@ -366,6 +370,65 @@ class Microscope:
         if self.addons.camera_focus:
             self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
             self.addons.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+
+    def _sync_confocal_mode_from_hardware(self) -> None:
+        """Sync confocal mode state from spinning disk hardware.
+
+        Queries the actual hardware state (XLight disk position or Dragonfly modality)
+        and updates the channel configuration manager accordingly.
+        This ensures correct channel settings are used in both GUI and headless modes.
+        """
+        confocal_mode = False
+
+        if self.addons.dragonfly is not None:
+            try:
+                modality = self.addons.dragonfly.get_modality()
+                confocal_mode = modality == "CONFOCAL" if modality else False
+            except Exception as e:
+                self._log.warning(f"Could not query Dragonfly modality: {e}")
+        elif self.addons.xlight is not None:
+            try:
+                # XLight returns 0 for widefield, 1 for confocal
+                disk_position = self.addons.xlight.get_disk_position()
+                confocal_mode = bool(disk_position)
+            except Exception as e:
+                self._log.warning(f"Could not query XLight disk position: {e}")
+
+        self.channel_configuration_mananger.sync_confocal_mode_from_hardware(confocal_mode)
+
+    def set_confocal_mode(self, confocal: bool) -> None:
+        """Set confocal/widefield mode and move the spinning disk.
+
+        This is the preferred method for headless scripts to switch imaging modes.
+        It updates both the hardware and the channel configuration manager.
+
+        Args:
+            confocal: True for confocal mode, False for widefield mode.
+
+        Raises:
+            RuntimeError: If spinning disk confocal is not enabled or hardware unavailable.
+        """
+        if not control._def.ENABLE_SPINNING_DISK_CONFOCAL:
+            raise RuntimeError("Spinning disk confocal is not enabled in configuration")
+
+        if self.addons.dragonfly is not None:
+            modality = "CONFOCAL" if confocal else "BF"
+            self.addons.dragonfly.set_modality(modality)
+        elif self.addons.xlight is not None:
+            # XLight: 1 for confocal, 0 for widefield
+            self.addons.xlight.set_disk_position(1 if confocal else 0)
+        else:
+            raise RuntimeError("No spinning disk hardware available")
+
+        self.channel_configuration_mananger.toggle_confocal_widefield(confocal)
+
+    def is_confocal_mode(self) -> bool:
+        """Check if currently in confocal mode.
+
+        Returns:
+            True if in confocal mode, False if in widefield mode.
+        """
+        return self.channel_configuration_mananger.is_confocal_mode()
 
     def update_camera_functions(self, functions: StreamHandlerFunctions):
         self.stream_handler.set_functions(functions)

@@ -1114,6 +1114,11 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveControlWidget.currentConfiguration.name
                 )
             )
+            # Sync initial confocal state from hardware after signal connections are established
+            # This ensures the manager state matches the actual hardware state at startup
+            self.channelConfigurationManager.sync_confocal_mode_from_hardware(
+                self.spinningDiskConfocalWidget.get_confocal_mode()
+            )
 
         # Connect to plot xyz data when coordinates are saved
         self.multipointController.signal_coordinates.connect(self.zPlotWidget.add_point)

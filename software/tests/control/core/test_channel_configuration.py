@@ -14,6 +14,7 @@ from control.utils_config import (
     ChannelDefinition,
     ObjectiveChannelSettings,
     ChannelDefinitionsConfig,
+    ConfocalOverrides,
 )
 from control.core.channel_configuration_mananger import (
     ChannelConfigurationManager,
@@ -131,6 +132,33 @@ class TestChannelDefinition:
         assert channel.get_ex_wavelength({}) is None
 
 
+class TestConfocalOverrides:
+    """Test ConfocalOverrides model."""
+
+    def test_default_values_are_none(self):
+        overrides = ConfocalOverrides()
+        assert overrides.exposure_time is None
+        assert overrides.analog_gain is None
+        assert overrides.illumination_intensity is None
+        assert overrides.z_offset is None
+
+    def test_partial_overrides(self):
+        overrides = ConfocalOverrides(
+            exposure_time=100.0,
+            illumination_intensity=50.0,
+        )
+        assert overrides.exposure_time == 100.0
+        assert overrides.analog_gain is None
+        assert overrides.illumination_intensity == 50.0
+        assert overrides.z_offset is None
+
+    def test_serialization(self):
+        overrides = ConfocalOverrides(exposure_time=100.0)
+        data = overrides.model_dump()
+        assert data["exposure_time"] == 100.0
+        assert data["analog_gain"] is None
+
+
 class TestObjectiveChannelSettings:
     """Test ObjectiveChannelSettings model."""
 
@@ -140,6 +168,7 @@ class TestObjectiveChannelSettings:
         assert settings.analog_gain == 0.0
         assert settings.illumination_intensity == 20.0
         assert settings.z_offset == 0.0
+        assert settings.confocal is None
 
     def test_custom_values(self):
         settings = ObjectiveChannelSettings(
@@ -150,6 +179,70 @@ class TestObjectiveChannelSettings:
         )
         assert settings.exposure_time == 100.0
         assert settings.analog_gain == 5.0
+
+    def test_with_confocal_overrides(self):
+        settings = ObjectiveChannelSettings(
+            exposure_time=25.0,
+            analog_gain=0.0,
+            confocal=ConfocalOverrides(
+                exposure_time=100.0,
+                illumination_intensity=50.0,
+            ),
+        )
+        assert settings.confocal is not None
+        assert settings.confocal.exposure_time == 100.0
+        assert settings.confocal.analog_gain is None
+
+    def test_get_effective_settings_widefield_mode(self):
+        """Test that widefield mode returns base settings."""
+        settings = ObjectiveChannelSettings(
+            exposure_time=25.0,
+            analog_gain=5.0,
+            confocal=ConfocalOverrides(
+                exposure_time=100.0,
+            ),
+        )
+        effective = settings.get_effective_settings(confocal_mode=False)
+        assert effective.exposure_time == 25.0
+        assert effective.analog_gain == 5.0
+
+    def test_get_effective_settings_confocal_mode(self):
+        """Test that confocal mode applies overrides."""
+        settings = ObjectiveChannelSettings(
+            exposure_time=25.0,
+            analog_gain=5.0,
+            illumination_intensity=20.0,
+            confocal=ConfocalOverrides(
+                exposure_time=100.0,
+                illumination_intensity=50.0,
+            ),
+        )
+        effective = settings.get_effective_settings(confocal_mode=True)
+        # Overridden values
+        assert effective.exposure_time == 100.0
+        assert effective.illumination_intensity == 50.0
+        # Non-overridden values (inherit from base)
+        assert effective.analog_gain == 5.0
+
+    def test_get_effective_settings_confocal_mode_no_overrides(self):
+        """Test confocal mode with no overrides returns base settings."""
+        settings = ObjectiveChannelSettings(
+            exposure_time=25.0,
+            analog_gain=5.0,
+        )
+        effective = settings.get_effective_settings(confocal_mode=True)
+        assert effective.exposure_time == 25.0
+        assert effective.analog_gain == 5.0
+
+    def test_serialization_with_confocal(self):
+        """Test that confocal overrides serialize correctly."""
+        settings = ObjectiveChannelSettings(
+            exposure_time=25.0,
+            confocal=ConfocalOverrides(exposure_time=100.0),
+        )
+        data = settings.model_dump()
+        assert data["confocal"]["exposure_time"] == 100.0
+        assert data["confocal"]["analog_gain"] is None
 
 
 class TestChannelDefinitionsConfig:
@@ -353,6 +446,117 @@ class TestChannelConfigurationManager:
         # IDs should be the same
         for name in id_map1:
             assert id_map1[name] == id_map2[name], f"ID mismatch for {name}"
+
+    def test_confocal_mode_default_is_false(self, manager_with_config):
+        """Test that confocal mode defaults to False."""
+        assert manager_with_config.confocal_mode is False
+        assert manager_with_config.is_confocal_mode() is False
+
+    def test_toggle_confocal_widefield(self, manager_with_config):
+        """Test toggling between confocal and widefield modes."""
+        assert manager_with_config.confocal_mode is False
+
+        manager_with_config.toggle_confocal_widefield(True)
+        assert manager_with_config.confocal_mode is True
+        assert manager_with_config.is_confocal_mode() is True
+        assert manager_with_config.active_config_type == ConfigType.CONFOCAL
+
+        manager_with_config.toggle_confocal_widefield(False)
+        assert manager_with_config.confocal_mode is False
+        assert manager_with_config.is_confocal_mode() is False
+        assert manager_with_config.active_config_type == ConfigType.WIDEFIELD
+
+    def test_confocal_mode_affects_channel_settings(self, manager_with_config, temp_config_dir):
+        """Test that confocal mode uses confocal overrides for channel settings."""
+        profile_path = temp_config_dir / "profiles" / "default"
+        objective_path = profile_path / "10x"
+        objective_path.mkdir(parents=True)
+        manager_with_config.set_profile_path(profile_path)
+
+        # Create settings with confocal overrides
+        channel_name = manager_with_config.channel_definitions.channels[0].name
+        settings_with_confocal = {
+            channel_name: {
+                "exposure_time": 25.0,
+                "analog_gain": 5.0,
+                "illumination_intensity": 20.0,
+                "z_offset": 0.0,
+                "confocal": {
+                    "exposure_time": 100.0,
+                    "illumination_intensity": 50.0,
+                },
+            }
+        }
+        settings_file = objective_path / "channel_settings.json"
+        settings_file.write_text(json.dumps(settings_with_confocal))
+
+        # Load configurations
+        manager_with_config.load_configurations("10x")
+
+        # Get configurations in widefield mode
+        manager_with_config.toggle_confocal_widefield(False)
+        widefield_configs = manager_with_config.get_configurations("10x")
+        widefield_channel = next(c for c in widefield_configs if c.name == channel_name)
+        assert widefield_channel.exposure_time == 25.0
+        assert widefield_channel.illumination_intensity == 20.0
+
+        # Get configurations in confocal mode
+        manager_with_config.toggle_confocal_widefield(True)
+        confocal_configs = manager_with_config.get_configurations("10x")
+        confocal_channel = next(c for c in confocal_configs if c.name == channel_name)
+        assert confocal_channel.exposure_time == 100.0
+        assert confocal_channel.illumination_intensity == 50.0
+        # Non-overridden value should inherit from base
+        assert confocal_channel.analog_gain == 5.0
+
+    def test_update_configuration_in_confocal_mode(self, manager_with_config, temp_config_dir):
+        """Test that updates in confocal mode go to confocal overrides."""
+        profile_path = temp_config_dir / "profiles" / "default"
+        objective_path = profile_path / "10x"
+        objective_path.mkdir(parents=True)
+        manager_with_config.set_profile_path(profile_path)
+
+        # Initialize settings
+        channel_name = manager_with_config.channel_definitions.channels[0].name
+        manager_with_config.objective_settings["10x"] = {channel_name: ObjectiveChannelSettings(exposure_time=25.0)}
+
+        # Get channel ID
+        configs = manager_with_config.get_configurations("10x")
+        channel = next(c for c in configs if c.name == channel_name)
+
+        # Update in confocal mode
+        manager_with_config.toggle_confocal_widefield(True)
+        manager_with_config.update_configuration("10x", channel.id, "ExposureTime", 100.0)
+
+        # Verify the update went to confocal overrides
+        settings = manager_with_config.objective_settings["10x"][channel_name]
+        assert settings.exposure_time == 25.0  # Base unchanged
+        assert settings.confocal is not None
+        assert settings.confocal.exposure_time == 100.0
+
+    def test_update_configuration_in_widefield_mode(self, manager_with_config, temp_config_dir):
+        """Test that updates in widefield mode go to base settings."""
+        profile_path = temp_config_dir / "profiles" / "default"
+        objective_path = profile_path / "10x"
+        objective_path.mkdir(parents=True)
+        manager_with_config.set_profile_path(profile_path)
+
+        # Initialize settings
+        channel_name = manager_with_config.channel_definitions.channels[0].name
+        manager_with_config.objective_settings["10x"] = {channel_name: ObjectiveChannelSettings(exposure_time=25.0)}
+
+        # Get channel ID
+        configs = manager_with_config.get_configurations("10x")
+        channel = next(c for c in configs if c.name == channel_name)
+
+        # Update in widefield mode
+        manager_with_config.toggle_confocal_widefield(False)
+        manager_with_config.update_configuration("10x", channel.id, "ExposureTime", 50.0)
+
+        # Verify the update went to base settings
+        settings = manager_with_config.objective_settings["10x"][channel_name]
+        assert settings.exposure_time == 50.0  # Base changed
+        assert settings.confocal is None  # No confocal overrides created
 
 
 class TestChannelDefinitionValidation:

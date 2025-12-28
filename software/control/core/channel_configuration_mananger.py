@@ -10,6 +10,7 @@ from control.utils_config import (
     ChannelDefinitionsConfig,
     ChannelDefinition,
     ObjectiveChannelSettings,
+    ConfocalOverrides,
 )
 import control.utils_config as utils_config
 import control._def
@@ -33,6 +34,11 @@ class ChannelConfigurationManager:
 
         # Per-objective settings: {objective: {channel_name: ObjectiveChannelSettings}}
         self.objective_settings: Dict[str, Dict[str, ObjectiveChannelSettings]] = {}
+
+        # Confocal mode flag - when True, use confocal overrides from ObjectiveChannelSettings
+        # Default to False (widefield). For systems with spinning disk confocal, the actual state
+        # is synced from hardware via sync_confocal_mode_from_hardware() after GUI initialization.
+        self.confocal_mode: bool = False
 
         # Legacy format support (kept for backward compatibility)
         self.all_configs: Dict[ConfigType, Dict[str, ChannelConfig]] = {
@@ -237,8 +243,15 @@ class ChannelConfigurationManager:
         path.write_bytes(xml_str)
 
     def _build_channel_mode(self, channel_def: ChannelDefinition, objective: str) -> ChannelMode:
-        """Build a ChannelMode from channel definition and objective settings"""
-        settings = self.objective_settings.get(objective, {}).get(channel_def.name, ObjectiveChannelSettings())
+        """Build a ChannelMode from channel definition and objective settings.
+
+        Uses effective settings based on current confocal_mode - if confocal mode is active
+        and the channel has confocal overrides, those values are used instead of base settings.
+        """
+        base_settings = self.objective_settings.get(objective, {}).get(channel_def.name, ObjectiveChannelSettings())
+
+        # Get effective settings based on current mode (applies confocal overrides if applicable)
+        settings = base_settings.get_effective_settings(self.confocal_mode)
 
         # Get illumination source from channel definition
         if self.channel_definitions:
@@ -282,7 +295,11 @@ class ChannelConfigurationManager:
         return self.get_configurations(objective, enabled_only=True)
 
     def update_configuration(self, objective: str, config_id: str, attr_name: str, value: Any) -> None:
-        """Update a specific configuration in current active type"""
+        """Update a specific configuration in current active type.
+
+        When in confocal mode, updates are stored in confocal overrides.
+        When in widefield mode (or confocal disabled), updates go to base settings.
+        """
         # Update in per-objective settings (new format)
         channel_name = self._get_channel_name_by_id(objective, config_id)
         if channel_name:
@@ -298,7 +315,17 @@ class ChannelConfigurationManager:
                 "ZOffset": "z_offset",
             }
             if attr_name in attr_mapping:
-                setattr(self.objective_settings[objective][channel_name], attr_mapping[attr_name], value)
+                settings = self.objective_settings[objective][channel_name]
+                pydantic_attr = attr_mapping[attr_name]
+
+                if self.confocal_mode:
+                    # In confocal mode, store in confocal overrides
+                    if settings.confocal is None:
+                        settings.confocal = ConfocalOverrides()
+                    setattr(settings.confocal, pydantic_attr, value)
+                else:
+                    # In widefield mode, store in base settings
+                    setattr(settings, pydantic_attr, value)
             else:
                 self._log.warning(f"Unknown attribute '{attr_name}' for channel '{channel_name}', ignoring")
 
@@ -363,9 +390,36 @@ class ChannelConfigurationManager:
         """Get Configuration object by name"""
         return next((mode for mode in self.get_configurations(objective) if mode.name == name), None)
 
-    def toggle_confocal_widefield(self, confocal: bool) -> None:
-        """Toggle between confocal and widefield configurations"""
-        self.active_config_type = ConfigType.CONFOCAL if confocal else ConfigType.WIDEFIELD
+    def toggle_confocal_widefield(self, confocal) -> None:
+        """Toggle between confocal and widefield configurations.
+
+        This sets both:
+        - confocal_mode: Used by new JSON format to apply confocal overrides
+        - active_config_type: Used by legacy XML format for backward compatibility
+
+        Args:
+            confocal: Whether to enable confocal mode. Accepts bool or int (0=widefield, 1=confocal)
+                      for compatibility with hardware APIs that return int.
+        """
+        # Convert to bool for type safety (XLight returns int 0/1, Dragonfly returns bool)
+        self.confocal_mode = bool(confocal)
+        self.active_config_type = ConfigType.CONFOCAL if self.confocal_mode else ConfigType.WIDEFIELD
+        self._log.info(f"Imaging mode set to: {'confocal' if self.confocal_mode else 'widefield'}")
+
+    def is_confocal_mode(self) -> bool:
+        """Check if currently in confocal mode."""
+        return self.confocal_mode
+
+    def sync_confocal_mode_from_hardware(self, confocal) -> None:
+        """Sync confocal mode state from hardware.
+
+        Call this after signal connections are established to ensure
+        the manager state matches the actual hardware state.
+
+        Args:
+            confocal: Current hardware state. Accepts bool or int (0=widefield, 1=confocal).
+        """
+        self.toggle_confocal_widefield(confocal)
 
     def get_channel_definitions(self) -> Optional[ChannelDefinitionsConfig]:
         """Get the global channel definitions"""

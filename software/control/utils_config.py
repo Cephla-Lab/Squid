@@ -104,13 +104,66 @@ class ChannelDefinition(BaseModel):
             return self.ex_wavelength
 
 
+class ConfocalOverrides(BaseModel):
+    """Optional overrides for confocal mode.
+
+    Only specify values that differ from widefield defaults.
+    None values inherit from base settings.
+    """
+
+    exposure_time: Optional[float] = None
+    analog_gain: Optional[float] = None
+    illumination_intensity: Optional[float] = None
+    z_offset: Optional[float] = None
+
+
 class ObjectiveChannelSettings(BaseModel):
-    """Per-objective settings for a channel"""
+    """Per-objective settings for a channel.
+
+    Base settings are used for widefield mode (or when confocal is not enabled).
+    Optional confocal overrides specify only values that differ in confocal mode.
+    """
 
     exposure_time: float = 25.0
     analog_gain: float = 0.0
     illumination_intensity: float = 20.0
     z_offset: float = 0.0
+
+    # Optional confocal-specific overrides (only store differences)
+    confocal: Optional[ConfocalOverrides] = None
+
+    def get_effective_settings(self, confocal_mode: bool = False) -> "ObjectiveChannelSettings":
+        """Get effective settings with confocal overrides applied if applicable.
+
+        Args:
+            confocal_mode: Whether the system is in confocal mode
+
+        Returns:
+            A new ObjectiveChannelSettings with effective values
+        """
+        if not confocal_mode or self.confocal is None:
+            return ObjectiveChannelSettings(
+                exposure_time=self.exposure_time,
+                analog_gain=self.analog_gain,
+                illumination_intensity=self.illumination_intensity,
+                z_offset=self.z_offset,
+                confocal=self.confocal,
+            )
+
+        # Apply confocal overrides (use override if set, otherwise use base)
+        return ObjectiveChannelSettings(
+            exposure_time=(
+                self.confocal.exposure_time if self.confocal.exposure_time is not None else self.exposure_time
+            ),
+            analog_gain=self.confocal.analog_gain if self.confocal.analog_gain is not None else self.analog_gain,
+            illumination_intensity=(
+                self.confocal.illumination_intensity
+                if self.confocal.illumination_intensity is not None
+                else self.illumination_intensity
+            ),
+            z_offset=self.confocal.z_offset if self.confocal.z_offset is not None else self.z_offset,
+            confocal=self.confocal,
+        )
 
 
 class ChannelDefinitionsConfig(BaseModel):
