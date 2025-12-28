@@ -302,6 +302,27 @@ class FocusMeasureOperator(Enum):
             raise ValueError(f"Invalid focus measure operator: {option}")
 
 
+class ZProjectionMode(Enum):
+    """Z-projection mode for downsampled view generation.
+
+    MIP: Max intensity projection - uses running maximum across all z-levels
+    MIDDLE: Middle layer - uses only the middle z-level (z = NZ // 2)
+    """
+
+    MIP = "mip"
+    MIDDLE = "middle"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZProjectionMode"]) -> "ZProjectionMode":
+        """Convert string or enum to ZProjectionMode enum."""
+        if isinstance(option, ZProjectionMode):
+            return option
+        try:
+            return ZProjectionMode(option.lower())
+        except ValueError:
+            raise ValueError(f"Invalid z-projection mode: '{option}'. Expected 'mip' or 'middle'.")
+
+
 PRINT_CAMERA_FPS = True
 
 ###########################################################
@@ -698,7 +719,7 @@ MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 GENERATE_DOWNSAMPLED_VIEWS = True
 DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
 DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
-DOWNSAMPLED_Z_PROJECTION = "mip"  # "mip" (max intensity projection) or "middle" (middle z-layer)
+DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
 
 # Controller SN (needed when using multiple teensy-based connections)
 CONTROLLER_SN = None

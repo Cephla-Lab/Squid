@@ -9,12 +9,13 @@ adjacent with no empty space between them.
 """
 
 import os
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Union
 
 import cv2
 import numpy as np
 import tifffile
 
+from control._def import ZProjectionMode
 import squid.logging
 
 
@@ -388,7 +389,7 @@ class WellTileAccumulator:
         pixel_size_um: float,
         channel_names: Optional[List[str]] = None,
         total_z_levels: int = 1,
-        z_projection_mode: str = "middle",
+        z_projection_mode: Union[ZProjectionMode, str] = ZProjectionMode.MIP,
     ):
         """Initialize accumulator for a well.
 
@@ -399,7 +400,7 @@ class WellTileAccumulator:
             pixel_size_um: Pixel size in micrometers
             channel_names: Optional list of channel names for metadata
             total_z_levels: Total number of z-levels in the stack
-            z_projection_mode: "mip" or "middle"
+            z_projection_mode: ZProjectionMode enum or string ("mip" or "middle")
         """
         self.well_id = well_id
         self.total_fovs = total_fovs
@@ -407,7 +408,9 @@ class WellTileAccumulator:
         self.pixel_size_um = pixel_size_um
         self.channel_names = channel_names or [f"Channel_{i}" for i in range(total_channels)]
         self.total_z_levels = total_z_levels
-        self.z_projection_mode = z_projection_mode.lower()
+
+        # Convert and validate z_projection_mode
+        self.z_projection_mode = ZProjectionMode.convert_to_enum(z_projection_mode)
         self.middle_z = total_z_levels // 2
 
         # For "middle" mode: Dict mapping channel_idx -> list of (tile, position) tuples
@@ -435,7 +438,7 @@ class WellTileAccumulator:
             fov_idx: FOV index within the well (0-based)
             z_index: Z-level index (0-based)
         """
-        if self.z_projection_mode == "middle":
+        if self.z_projection_mode == ZProjectionMode.MIDDLE:
             # Only accept tiles from the middle z-level
             if z_index != self.middle_z:
                 return
@@ -443,7 +446,7 @@ class WellTileAccumulator:
                 self.tiles_by_channel[channel_idx] = []
             self.tiles_by_channel[channel_idx].append((tile, position_mm))
 
-        elif self.z_projection_mode == "mip":
+        elif self.z_projection_mode == ZProjectionMode.MIP:
             # Running maximum intensity projection
             key = (channel_idx, fov_idx)
             if key not in self.mip_tiles:
@@ -462,12 +465,12 @@ class WellTileAccumulator:
 
     def is_complete(self) -> bool:
         """Check if all FOVs for all channels have been received."""
-        if self.z_projection_mode == "middle":
+        if self.z_projection_mode == ZProjectionMode.MIDDLE:
             # For middle mode: need all FOVs for all channels (only middle z)
             if len(self.tiles_by_channel) < self.total_channels:
                 return False
             return all(len(tiles) >= self.total_fovs for tiles in self.tiles_by_channel.values())
-        elif self.z_projection_mode == "mip":
+        elif self.z_projection_mode == ZProjectionMode.MIP:
             # For MIP: need all FOVs * channels * z-levels
             expected_keys = self.total_fovs * self.total_channels
             if len(self.z_counts) < expected_keys:
@@ -483,12 +486,12 @@ class WellTileAccumulator:
         """
         result = {}
 
-        if self.z_projection_mode == "middle":
+        if self.z_projection_mode == ZProjectionMode.MIDDLE:
             # Middle mode: tiles are already in tiles_by_channel
             for channel_idx, tiles in self.tiles_by_channel.items():
                 if tiles:
                     result[channel_idx] = stitch_tiles(tiles, self.pixel_size_um)
-        elif self.z_projection_mode == "mip":
+        elif self.z_projection_mode == ZProjectionMode.MIP:
             # MIP mode: convert mip_tiles to list format for stitching
             tiles_by_channel: Dict[int, List[Tuple[np.ndarray, Tuple[float, float]]]] = {}
             for (channel_idx, fov_idx), (tile, position) in self.mip_tiles.items():
@@ -511,12 +514,12 @@ class WellTileAccumulator:
         Returns:
             Stitched image for that channel, or None if no tiles
         """
-        if self.z_projection_mode == "middle":
+        if self.z_projection_mode == ZProjectionMode.MIDDLE:
             tiles = self.tiles_by_channel.get(channel_idx, [])
             if not tiles:
                 return None
             return stitch_tiles(tiles, self.pixel_size_um)
-        elif self.z_projection_mode == "mip":
+        elif self.z_projection_mode == ZProjectionMode.MIP:
             # Collect tiles for this channel from mip_tiles
             tiles = []
             for (ch_idx, fov_idx), (tile, position) in self.mip_tiles.items():
@@ -529,13 +532,13 @@ class WellTileAccumulator:
 
     def get_channel_count(self) -> int:
         """Get the number of channels with tiles."""
-        if self.z_projection_mode == "mip":
+        if self.z_projection_mode == ZProjectionMode.MIP:
             return len(set(ch_idx for ch_idx, _ in self.mip_tiles.keys()))
         return len(self.tiles_by_channel)
 
     def get_fov_count(self, channel_idx: int) -> int:
         """Get the number of FOVs received for a channel."""
-        if self.z_projection_mode == "mip":
+        if self.z_projection_mode == ZProjectionMode.MIP:
             return sum(1 for ch_idx, _ in self.mip_tiles.keys() if ch_idx == channel_idx)
         return len(self.tiles_by_channel.get(channel_idx, []))
 

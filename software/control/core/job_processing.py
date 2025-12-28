@@ -15,13 +15,14 @@ except ImportError:  # pragma: no cover - platform without fcntl
     fcntl = None
 
 from dataclasses import dataclass, field
-from typing import ClassVar, Dict, List, Optional, Tuple
+from typing import ClassVar, Dict, List, Optional, Tuple, Union
 
 import imageio as iio
 import numpy as np
 import tifffile
 
 from control import _def, utils_acquisition
+from control._def import ZProjectionMode
 import squid.abc
 import squid.logging
 from control.utils_config import ChannelMode
@@ -308,7 +309,7 @@ class DownsampledViewJob(Job):
     channel_names: List[str] = field(default_factory=list)
     z_index: int = 0
     total_z_levels: int = 1
-    z_projection_mode: str = "mip"  # "mip" or "middle" (matches _def.DOWNSAMPLED_Z_PROJECTION default)
+    z_projection_mode: Union[ZProjectionMode, str] = ZProjectionMode.MIP
     skip_saving: bool = False  # Skip TIFF file saving (just generate for display)
 
     # WARNING: This class uses a mutable class-level accumulator that is only
