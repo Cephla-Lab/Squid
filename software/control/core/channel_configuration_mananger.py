@@ -392,13 +392,49 @@ class ChannelConfigurationManager:
         self.channel_definitions.channels.append(channel)
         self.save_channel_definitions()
 
-    def remove_channel_definition(self, channel_name: str) -> None:
-        """Remove a channel definition"""
+    def remove_channel_definition(self, channel_name: str, base_config_path: Path = None) -> None:
+        """Remove a channel definition and clean up orphaned settings.
+
+        Args:
+            channel_name: Name of the channel to remove
+            base_config_path: Path to acquisition_configurations folder for cleanup.
+                              If None, only removes from definitions without cleanup.
+        """
         if not self.channel_definitions:
             return
 
         self.channel_definitions.channels = [ch for ch in self.channel_definitions.channels if ch.name != channel_name]
         self.save_channel_definitions()
+
+        # Clean up orphaned settings from all profile/objective channel_settings.json files
+        if base_config_path and base_config_path.exists():
+            self._cleanup_orphaned_settings(base_config_path, channel_name)
+
+    def _cleanup_orphaned_settings(self, base_config_path: Path, channel_name: str) -> None:
+        """Remove orphaned channel settings from all profiles and objectives."""
+        for profile_dir in base_config_path.iterdir():
+            if not profile_dir.is_dir():
+                continue
+
+            for objective_dir in profile_dir.iterdir():
+                if not objective_dir.is_dir():
+                    continue
+
+                settings_file = objective_dir / "channel_settings.json"
+                if not settings_file.exists():
+                    continue
+
+                try:
+                    with open(settings_file, "r") as f:
+                        data = json.load(f)
+
+                    if channel_name in data:
+                        del data[channel_name]
+                        with open(settings_file, "w") as f:
+                            json.dump(data, f, indent=2)
+                        self._log.info(f"Removed orphaned settings for '{channel_name}' from {settings_file}")
+                except Exception as e:
+                    self._log.warning(f"Failed to clean up {settings_file}: {e}")
 
     def set_channel_enabled(self, channel_name: str, enabled: bool) -> None:
         """Enable or disable a channel"""
