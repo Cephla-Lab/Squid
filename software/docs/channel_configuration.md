@@ -11,6 +11,14 @@ The channel configuration system uses a **two-tier architecture**:
 
 This eliminates duplication - you define each channel once, and only the settings that vary by objective are stored separately.
 
+### Confocal/Widefield Support
+
+For microscopes with spinning disk confocal (XLight, Dragonfly), the system supports **separate settings for confocal and widefield modes**:
+
+- **Widefield settings** are the base/default values
+- **Confocal overrides** only store values that differ from widefield
+- The system automatically detects which mode the hardware is in at startup
+
 ## File Locations
 
 ```
@@ -110,18 +118,39 @@ This allows you to change hardware assignments without modifying every channel d
 
 Stores settings that vary by objective. Automatically created when you change settings.
 
-**Structure:**
+**Basic Structure (Widefield Only):**
 ```json
 {
   "Fluorescence 488 nm Ex": {
-    "exposure_time": 100.0,
+    "exposure_time": 25.0,
     "analog_gain": 0.0,
-    "illumination_intensity": 50.0,
+    "illumination_intensity": 20.0,
     "z_offset": 0.0
-  },
-  ...
+  }
 }
 ```
+
+**With Confocal Overrides:**
+```json
+{
+  "Fluorescence 488 nm Ex": {
+    "exposure_time": 25.0,
+    "analog_gain": 0.0,
+    "illumination_intensity": 20.0,
+    "z_offset": 0.0,
+    "confocal": {
+      "exposure_time": 100.0,
+      "illumination_intensity": 50.0
+    }
+  }
+}
+```
+
+In this example:
+- **Widefield mode:** exposure=25ms, intensity=20%
+- **Confocal mode:** exposure=100ms, intensity=50%, other values inherited from widefield
+
+The `confocal` block only needs to store values that differ from the base settings. Missing values are inherited from widefield.
 
 ## Channel Types
 
@@ -157,26 +186,102 @@ Stores settings that vary by objective. Automatically created when you change se
 
 ## How It Works
 
+### Hardware Mapping Flow
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Channel Definition                        │
+│                    Channel Definition                       │
 │  name: "Fluorescence 488 nm Ex"                             │
-│  type: fluorescence                                          │
+│  type: fluorescence                                         │
 │  numeric_channel: 2  ─────────┐                             │
 └─────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                 Numeric Channel Mapping                      │
+│                 Numeric Channel Mapping                     │
 │  "2": { illumination_source: 12, ex_wavelength: 488 }       │
 └─────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                      Hardware                                │
+│                      Hardware                               │
 │  Illumination source 12 = 488nm laser                       │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Settings Resolution Flow (with Confocal Support)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 Per-Objective Settings                      │
+│  Base:     exposure=25ms,  intensity=20%                    │
+│  Confocal: exposure=100ms, intensity=50%                    │
+└─────────────────────────────────────────────────────────────┘
+                                │
+                      ┌─────────┴─────────┐
+                      │  confocal_mode?   │
+                      └─────────┬─────────┘
+               ┌────────────────┼────────────────┐
+               │                │                │
+           [false]                           [true]
+               │                                 │
+               ▼                                 ▼
+┌─────────────────────────────┐   ┌─────────────────────────────┐
+│    Effective Settings       │   │    Effective Settings       │
+│  exposure=25ms              │   │  exposure=100ms             │
+│  intensity=20%              │   │  intensity=50%              │
+└─────────────────────────────┘   └─────────────────────────────┘
+```
+
+## Confocal/Widefield Mode
+
+### How Mode is Determined
+
+The system queries the spinning disk hardware at startup:
+
+- **XLight:** `get_disk_position()` returns 0 (widefield) or 1 (confocal)
+- **Dragonfly:** `get_modality()` returns "BF" (widefield) or "CONFOCAL"
+
+This works in both GUI and headless modes.
+
+### GUI Mode
+
+Use the spinning disk widget (Settings tab → Confocal) to toggle:
+- Click "Switch to Confocal" / "Switch to Widefield"
+- Channel settings automatically switch to the appropriate values
+- Edits are saved to the correct settings (base or confocal override)
+
+### Headless Mode
+
+```python
+from control.microscope import Microscope
+
+# Initialize microscope (auto-syncs confocal mode from hardware)
+microscope = Microscope(...)
+
+# Check current mode
+if microscope.is_confocal_mode():
+    print("In confocal mode")
+
+# Switch modes programmatically (moves hardware + updates settings)
+microscope.set_confocal_mode(True)   # Switch to confocal
+microscope.set_confocal_mode(False)  # Switch to widefield
+```
+
+### Acquisition Metadata
+
+The imaging mode is saved to `acquisition parameters.json` in the experiment folder:
+
+```json
+{
+  "dx(mm)": 0.5,
+  "Nx": 1,
+  ...
+  "confocal_mode": true
+}
+```
+
+This ensures reproducibility - you can verify which mode was used for each acquisition.
 
 ## Updating Defaults
 
@@ -202,7 +307,21 @@ Or manually merge changes from the default file.
 - Ensure you click "Save" in the dialog
 - Check file permissions in the configurations folder
 
+### Confocal settings not applied
+- Verify the spinning disk is in confocal position (check the confocal widget)
+- Check that `confocal` overrides exist in `channel_settings.json`
+- In headless mode, ensure `microscope.set_confocal_mode(True)` was called
+
+### Different settings in GUI vs headless
+- The system auto-syncs from hardware at startup
+- If you manually moved the disk, call `microscope.set_confocal_mode()` to sync
+
 ### Reset to defaults
 1. Close the application
 2. Delete `software/configurations/channel_definitions.json`
 3. Restart - defaults will be restored
+
+### Reset per-objective settings
+1. Close the application
+2. Delete `software/acquisition_configurations/<profile>/<objective>/channel_settings.json`
+3. Restart - settings will be initialized from defaults
