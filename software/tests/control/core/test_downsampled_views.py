@@ -399,6 +399,19 @@ class TestWellIdFormatting:
         assert format_well_id(26, 0) == "AA1"
         assert format_well_id(31, 47) == "AF48"
 
+    def test_format_well_id_boundary_rows(self):
+        """Test boundary cases at single/double letter transition."""
+        # Last single-letter row
+        assert format_well_id(25, 0) == "Z1"
+        # First double-letter row
+        assert format_well_id(26, 0) == "AA1"
+        # Second double-letter row
+        assert format_well_id(27, 0) == "AB1"
+        # Last row of first double-letter series (AZ)
+        assert format_well_id(51, 0) == "AZ1"
+        # First row of second double-letter series (BA)
+        assert format_well_id(52, 0) == "BA1"
+
     def test_format_well_id_inverse_of_parse(self):
         """Test that format_well_id is the inverse of parse_well_id."""
         for row in range(32):
