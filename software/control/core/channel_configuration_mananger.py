@@ -147,6 +147,35 @@ class ChannelConfigurationManager:
 
             self._save_objective_settings(objective)
 
+    def migrate_all_profiles(self, base_config_path: Path) -> None:
+        """Migrate all profiles and objectives from XML to JSON at once.
+
+        Should be called once at app startup to ensure all existing
+        XML configs are migrated to the new JSON format.
+        """
+        if not base_config_path.exists():
+            return
+
+        for profile_dir in base_config_path.iterdir():
+            if not profile_dir.is_dir():
+                continue
+
+            for objective_dir in profile_dir.iterdir():
+                if not objective_dir.is_dir():
+                    continue
+
+                objective = objective_dir.name
+                json_file = objective_dir / "channel_settings.json"
+                xml_file = objective_dir / "channel_configurations.xml"
+
+                # Only migrate if JSON doesn't exist but XML does
+                if not json_file.exists() and xml_file.exists():
+                    self._log.info(f"Migrating {profile_dir.name}/{objective}")
+                    old_root = self.config_root
+                    self.config_root = profile_dir
+                    self._migrate_from_xml_if_needed(objective)
+                    self.config_root = old_root
+
     def _load_xml_config(self, objective: str, config_type: ConfigType) -> None:
         """Load XML configuration for a specific config type, generating default if needed"""
         config_file = self.config_root / objective / f"{config_type.value}_configurations.xml"

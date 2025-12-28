@@ -325,6 +325,9 @@ class Microscope:
         self.channel_configuration_mananger: ChannelConfigurationManager = ChannelConfigurationManager(
             configurations_path=configurations_path
         )
+        # Migrate all profiles/objectives from XML to JSON at startup
+        self.channel_configuration_mananger.migrate_all_profiles(Path("acquisition_configurations"))
+
         self.laser_af_settings_manager: Optional[LaserAFSettingManager] = None
         if control._def.SUPPORT_LASER_AUTOFOCUS:
             self.laser_af_settings_manager = LaserAFSettingManager()
