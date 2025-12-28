@@ -623,7 +623,8 @@ class MultiPointWorker:
             well_row, well_col = parse_well_id(region_id)
         except (ValueError, IndexError):
             # Region ID is not a valid well ID (e.g., "R0", "manual")
-            # Use region index as a fallback
+            # Region ID is not a valid well ID (e.g., "R0", "manual", custom names).
+            # Use region index as a fallback. This is expected for non-plate acquisitions.
             self._log.debug(f"Region {region_id} is not a well ID, using fallback positioning")
             if not self._plate_num_rows or not self._plate_num_cols:
                 self._log.warning(

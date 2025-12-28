@@ -381,13 +381,14 @@ class TestSignalEmissionTiming:
 
     def test_signal_emission_in_thread(self):
         """Simulate signal emission from worker thread."""
-        from PySide6.QtCore import QObject, Signal, QThread, QCoreApplication
+        from qtpy.QtCore import QObject, Signal, QThread
+        from qtpy.QtWidgets import QApplication
         import sys
 
         # Need QApplication for signals to work
-        app = QCoreApplication.instance()
+        app = QApplication.instance()
         if app is None:
-            app = QCoreApplication(sys.argv)
+            app = QApplication(sys.argv)
 
         signal_emit_times = []
         signal_receive_times = []

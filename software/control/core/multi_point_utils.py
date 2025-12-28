@@ -110,7 +110,7 @@ class MultiPointControllerFunctions:
     signal_current_fov: Callable[[float, float], None]
     signal_overall_progress: Callable[[OverallProgressUpdate], None]
     signal_region_progress: Callable[[RegionProgressUpdate], None]
-    # Optional plate view callbacks - use no-op lambda as default to avoid None checks at call sites.
-    # This is safe because lambdas are immutable and don't have mutable default argument issues.
+    # Optional plate view callbacks. Default no-op lambdas avoid None checks at every call site.
+    # Unlike mutable defaults (lists/dicts), lambdas are safe as defaults since they're not modified.
     signal_plate_view_init: Callable[[PlateViewInit], None] = lambda *a, **kw: None
     signal_plate_view_update: Callable[[PlateViewUpdate], None] = lambda *a, **kw: None

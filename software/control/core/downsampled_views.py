@@ -233,10 +233,11 @@ def parse_well_id(well_id: str) -> Tuple[int, int]:
 def format_well_id(row: int, col: int) -> str:
     """Format row and column indices to well ID string.
 
-    This is the inverse of parse_well_id.
+    This is the inverse of parse_well_id. Supports rows 0-701 (A through ZZ).
+    Standard plates only use up to row 31 (AF for 1536-well plates).
 
     Args:
-        row: Row index (0-based, A=0, B=1, ..., Z=25, AA=26, ...)
+        row: Row index (0-based, A=0, B=1, ..., Z=25, AA=26, ..., ZZ=701)
         col: Column index (0-based, 1=0, 2=1, ...)
 
     Returns:
