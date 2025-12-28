@@ -624,6 +624,10 @@ class MultiPointController:
             if format_settings:
                 plate_num_rows = format_settings.get("rows", 8)
                 plate_num_cols = format_settings.get("cols", 12)
+            else:
+                self._log.debug(
+                    f"Unknown wellplate format '{self.scanCoordinates.format}', using default 96-well dimensions"
+                )
 
         return AcquisitionParameters(
             experiment_ID=self.experiment_ID,

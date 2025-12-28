@@ -57,6 +57,10 @@ from control.core.downsampled_views import (
 )
 from squid.config import CameraPixelFormat
 
+# Timeout (seconds) for assuming all jobs are done when no new results arrive
+# Used in _wait_for_downsampled_view_jobs to detect job completion
+RESULT_IDLE_TIMEOUT_S = 2.0
+
 
 class MultiPointWorker:
     def __init__(
@@ -230,10 +234,9 @@ class MultiPointWorker:
         if not self.scan_region_names:
             return False
 
-        # Check all region names are valid well IDs
+        # Check all region names are valid well IDs using parse_well_id
         for region_id in self.scan_region_names:
-            # Must have both letters and digits (e.g., "A1", "B12", "AA1")
-            if not region_id or not any(c.isalpha() for c in region_id) or not any(c.isdigit() for c in region_id):
+            if not region_id:
                 return False
             try:
                 parse_well_id(region_id)
@@ -803,9 +806,6 @@ class MultiPointWorker:
 
             # After input queue is empty, the last job may still be running
             # Keep polling for results until we get no new results for a while
-            # Timeout for assuming all jobs are done when no results arrive
-            RESULT_IDLE_TIMEOUT_S = 2.0
-
             last_result_time = time.time()
             while time.time() < timeout_time:
                 result = self._summarize_runner_outputs(drain_all=True)

@@ -179,7 +179,7 @@ class QtMultiPointController(MultiPointController, QObject):
     signal_register_current_fov = Signal(float, float)
     napari_layers_init = Signal(int, int, object)
     napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
-    signal_set_display_tabs = Signal(list, int, str)  # configs, Nz, xy_mode
+    signal_set_display_tabs = Signal(list, int, str)  # configs: list, Nz: int, xy_mode: str
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
     signal_coordinates = Signal(float, float, float, int)  # x, y, z, region
@@ -1357,7 +1357,7 @@ class HighContentScreeningGui(QMainWindow):
         self.signal_performance_mode_changed.emit(self.performance_mode)
         print(f"Performance mode {'enabled' if self.performance_mode else 'disabled'}")
 
-    def setAcquisitionDisplayTabs(self, selected_configurations, Nz, xy_mode=""):
+    def setAcquisitionDisplayTabs(self, selected_configurations, Nz, xy_mode=None):
         if self.performance_mode:
             self.imageDisplayTabs.setCurrentIndex(0)
         elif not self.live_only_mode:
@@ -1365,7 +1365,7 @@ class HighContentScreeningGui(QMainWindow):
             print(configs)
             if USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
                 # For well-based acquisitions (Select Wells or Load Coordinates), use Plate View
-                is_well_based = xy_mode in ("Select Wells", "Load Coordinates")
+                is_well_based = xy_mode is not None and xy_mode in ("Select Wells", "Load Coordinates")
                 if is_well_based and hasattr(self, "napariPlateViewWidget") and control._def.GENERATE_DOWNSAMPLED_VIEWS:
                     self.imageDisplayTabs.setCurrentWidget(self.napariPlateViewWidget)
                 else:

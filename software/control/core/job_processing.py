@@ -308,7 +308,7 @@ class DownsampledViewJob(Job):
     channel_names: List[str] = field(default_factory=list)
     z_index: int = 0
     total_z_levels: int = 1
-    z_projection_mode: str = "middle"  # "mip" or "middle"
+    z_projection_mode: str = "mip"  # "mip" or "middle" (matches _def.DOWNSAMPLED_Z_PROJECTION default)
     skip_saving: bool = False  # Skip TIFF file saving (just generate for display)
 
     # WARNING: This class uses a mutable class-level accumulator that is only
