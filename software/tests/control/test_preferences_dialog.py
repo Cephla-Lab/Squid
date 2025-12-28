@@ -241,8 +241,10 @@ class TestApplySettings:
     def test_apply_settings_handles_read_only_file(self, preferences_dialog, temp_config_file):
         os.chmod(temp_config_file, 0o444)
         try:
-            # Should not raise, but show error dialog
-            preferences_dialog._apply_settings()
+            # Should not raise, but show error dialog (which we mock to avoid blocking)
+            with patch.object(QMessageBox, "warning") as mock_warning:
+                preferences_dialog._apply_settings()
+                mock_warning.assert_called_once()
         finally:
             os.chmod(temp_config_file, 0o644)
 
