@@ -5,14 +5,6 @@ import time
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Type
 from datetime import datetime
 
-
-class SummarizeResult(NamedTuple):
-    """Result from processing job output queues."""
-
-    none_failed: bool  # True if no jobs failed (or no results to process)
-    had_results: bool  # True if any results were pulled from queue
-
-
 import imageio as iio
 import numpy as np
 import pandas as pd
@@ -57,9 +49,12 @@ from control.core.downsampled_views import (
 )
 from squid.config import CameraPixelFormat
 
-# Timeout (seconds) for assuming all jobs are done when no new results arrive
-# Used in _wait_for_downsampled_view_jobs to detect job completion
-RESULT_IDLE_TIMEOUT_S = 2.0
+
+class SummarizeResult(NamedTuple):
+    """Result from processing job output queues."""
+
+    none_failed: bool  # True if no jobs failed (or no results to process)
+    had_results: bool  # True if any results were pulled from queue
 
 
 class MultiPointWorker:
@@ -789,10 +784,12 @@ class MultiPointWorker:
                     continue
 
                 # Group FOVs by Y coordinate to find rows
+                # Rounding to 4 decimal places (0.1 µm precision) assumes stage positioning
+                # is accurate to within 0.1 µm, which is typical for microscope stages.
                 rows: Dict[float, List[float]] = {}
                 for coord in coords:
                     x, y = coord[0], coord[1]
-                    y_key = round(y, 4)  # Round to avoid float precision issues
+                    y_key = round(y, 4)
                     if y_key not in rows:
                         rows[y_key] = []
                     rows[y_key].append(x)
@@ -831,16 +828,17 @@ class MultiPointWorker:
             self._overlap_pixels = calculate_overlap_pixels(width, height, dx_mm, dy_mm, pixel_size_um)
             self._log.info(f"Calculated overlap pixels: {self._overlap_pixels} (dx={dx_mm}mm, dy={dy_mm}mm)")
 
-    def _wait_for_downsampled_view_jobs(self, timeout_s: float = 30.0) -> None:
+    def _wait_for_downsampled_view_jobs(self, timeout_s: Optional[float] = None) -> None:
         """Wait for all pending downsampled view jobs to complete and process results.
 
         Args:
-            timeout_s: Maximum time to wait for jobs to complete. Default 30s is sufficient
-                      for typical acquisitions. For very large plates (1536-well) with many
-                      channels, consider increasing this value.
+            timeout_s: Maximum time to wait for jobs to complete. If None, uses
+                      DOWNSAMPLED_VIEW_JOB_TIMEOUT_S from _def.py.
         """
         from control.core.job_processing import DownsampledViewJob
 
+        if timeout_s is None:
+            timeout_s = DOWNSAMPLED_VIEW_JOB_TIMEOUT_S
         timeout_time = time.time() + timeout_s
         timed_out = False
 
@@ -870,8 +868,8 @@ class MultiPointWorker:
                 result = self._summarize_runner_outputs(drain_all=True)
                 if result.had_results:
                     last_result_time = time.time()
-                # If no results for RESULT_IDLE_TIMEOUT_S, assume all jobs are done
-                if time.time() - last_result_time > RESULT_IDLE_TIMEOUT_S:
+                # If no results for DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S, assume all jobs are done
+                if time.time() - last_result_time > DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S:
                     break
                 time.sleep(0.1)
 

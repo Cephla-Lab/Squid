@@ -325,6 +325,14 @@ class DownsampledViewManager:
             col: 0-based column index
             well_images: Dict mapping channel_idx -> downsampled well image
         """
+        # Validate row/col bounds
+        if row < 0 or row >= self.num_rows:
+            self._log.warning(f"Well row {row} out of bounds (0-{self.num_rows - 1}), skipping update")
+            return
+        if col < 0 or col >= self.num_cols:
+            self._log.warning(f"Well col {col} out of bounds (0-{self.num_cols - 1}), skipping update")
+            return
+
         y_start = row * self.well_slot_shape[0]
         x_start = col * self.well_slot_shape[1]
 

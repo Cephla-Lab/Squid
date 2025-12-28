@@ -8638,6 +8638,8 @@ class NapariPlateViewWidget(QWidget):
         # Zoom limits (updated in initPlateLayout based on plate size)
         self.min_zoom = 0.1  # Prevent zooming out too far
         self.max_zoom = None  # No max limit until plate size is known
+        # Flag to prevent recursive zoom clamping. Thread-safe because Qt signals
+        # are delivered on the main GUI thread where all widget operations occur.
         self._clamping_zoom = False
 
         # Override wheel event on vispy canvas to enforce zoom limits
@@ -8800,8 +8802,11 @@ class NapariPlateViewWidget(QWidget):
 
         if channel_name not in self.viewer.layers:
             # Create layer with appropriate colormap
-            channel_info = CHANNEL_COLORS_MAP.get(
-                self.extractWavelength(channel_name), {"hex": 0xFFFFFF, "name": "gray"}
+            wavelength = self.extractWavelength(channel_name)
+            channel_info = (
+                CHANNEL_COLORS_MAP.get(wavelength, {"hex": 0xFFFFFF, "name": "gray"})
+                if wavelength is not None
+                else {"hex": 0xFFFFFF, "name": "gray"}
             )
             if channel_info["name"] in AVAILABLE_COLORMAPS:
                 color = AVAILABLE_COLORMAPS[channel_info["name"]]

@@ -419,9 +419,6 @@ class DownsampledViewJob(Job):
                     )
                     log.debug(f"Saved {filepath} with shape {stacked.shape} ({len(downsampled_stack)} channels)")
 
-            # Clear accumulator
-            del self._well_accumulators[self.well_id]
-
             return DownsampledViewResult(
                 well_id=self.well_id,
                 well_row=self.well_row,
@@ -432,9 +429,10 @@ class DownsampledViewJob(Job):
 
         except Exception as e:
             log.exception(f"Error processing well {self.well_id}: {e}")
-            # Clean up accumulator on error
-            self._well_accumulators.pop(self.well_id, None)
             raise
+        finally:
+            # Ensure accumulator is always cleaned up after processing a complete well
+            self._well_accumulators.pop(self.well_id, None)
 
 
 class JobRunner(multiprocessing.Process):

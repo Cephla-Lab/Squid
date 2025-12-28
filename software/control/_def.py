@@ -721,6 +721,22 @@ DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
 DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
 DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
 
+# Downsampled view job timeouts
+# DOWNSAMPLED_VIEW_JOB_TIMEOUT_S: Maximum time (seconds) to wait for all downsampled view
+# jobs to complete at end of each timepoint. This timeout ensures acquisition doesn't hang
+# indefinitely if a job gets stuck. For typical 96-well plates with 1-4 channels, 30 seconds
+# is sufficient. For larger plates (384-well, 1536-well) with many channels, increase this
+# value proportionally. As a rough guide: ~0.5s per well for processing, so 1536 wells
+# could need up to ~800 seconds in worst case, though parallel processing makes it faster.
+DOWNSAMPLED_VIEW_JOB_TIMEOUT_S = 30.0
+
+# DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S: Time (seconds) to wait after the last job result before
+# assuming all jobs are complete. When the job input queue is empty but the last job may
+# still be processing, we poll for results. If no new results arrive within this timeout,
+# we assume all jobs have finished. 2 seconds is conservative - most jobs complete in
+# <100ms, so this handles occasional slow jobs without adding unnecessary delay.
+DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S = 2.0
+
 # Controller SN (needed when using multiple teensy-based connections)
 CONTROLLER_SN = None
 
