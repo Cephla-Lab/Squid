@@ -690,7 +690,11 @@ class PreferencesDialog(QDialog):
 
         # Acquisition settings
         self.config.set("GENERAL", "multipoint_autofocus_channel", self.autofocus_channel_edit.text())
-        self.config.set("GENERAL", "enable_flexible_multipoint", str(self.flexible_multipoint_checkbox.isChecked()))
+        self.config.set(
+            "GENERAL",
+            "enable_flexible_multipoint",
+            "true" if self.flexible_multipoint_checkbox.isChecked() else "false",
+        )
 
         # Camera settings
         self.config.set("CAMERA_CONFIG", "binning_factor_default", str(self.binning_spinbox.value()))
@@ -719,7 +723,11 @@ class PreferencesDialog(QDialog):
 
         # Advanced - Hardware
         self.config.set("GENERAL", "z_motor_config", self.z_motor_combo.currentText())
-        self.config.set("GENERAL", "enable_spinning_disk_confocal", str(self.spinning_disk_checkbox.isChecked()))
+        self.config.set(
+            "GENERAL",
+            "enable_spinning_disk_confocal",
+            "true" if self.spinning_disk_checkbox.isChecked() else "false",
+        )
         self.config.set("GENERAL", "led_matrix_r_factor", str(self.led_r_factor.value()))
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
@@ -734,7 +742,7 @@ class PreferencesDialog(QDialog):
         self.config.set("SOFTWARE_POS_LIMIT", "z_negative", str(self.limit_z_neg.value()))
 
         # Advanced - Tracking
-        self.config.set("GENERAL", "enable_tracking", str(self.enable_tracking_checkbox.isChecked()))
+        self.config.set("GENERAL", "enable_tracking", "true" if self.enable_tracking_checkbox.isChecked() else "false")
         self.config.set("TRACKING", "default_tracker", self.default_tracker_combo.currentText())
         self.config.set("TRACKING", "search_area_ratio", str(self.search_area_ratio.value()))
 

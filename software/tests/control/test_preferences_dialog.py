@@ -310,6 +310,25 @@ class TestSaveAndCloseWorkflow:
             assert saved_config.get("GENERAL", "file_saving_option") == "MULTI_PAGE_TIFF"
             assert saved_config.get("CAMERA_CONFIG", "binning_factor_default") == "4"
 
+    def test_save_and_close_multiple_changes_cancelled(self, qtbot, preferences_dialog, temp_config_file):
+        """When user cancels confirmation dialog, settings should not be saved."""
+        preferences_dialog.file_saving_combo.setCurrentText("MULTI_PAGE_TIFF")
+        preferences_dialog.binning_spinbox.setValue(4)
+
+        # Mock the confirmation dialog to return Rejected (cancelled)
+        with patch("control.widgets.QDialog.exec_", return_value=False):
+            preferences_dialog.accept = MagicMock()
+            preferences_dialog._save_and_close()
+
+            # Should NOT save or close
+            preferences_dialog.accept.assert_not_called()
+
+            # Verify original values preserved in file
+            saved_config = ConfigParser()
+            saved_config.read(temp_config_file)
+            assert saved_config.get("GENERAL", "file_saving_option") == "OME_TIFF"
+            assert saved_config.get("CAMERA_CONFIG", "binning_factor_default") == "2"
+
 
 class TestUIInitialization:
     """Test UI is properly initialized from config."""
