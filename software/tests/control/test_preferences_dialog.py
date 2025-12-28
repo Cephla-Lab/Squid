@@ -296,7 +296,7 @@ class TestSaveAndCloseWorkflow:
         preferences_dialog.binning_spinbox.setValue(4)
 
         # Mock the confirmation dialog to return Accepted
-        with patch("control.widgets.QDialog.exec_", return_value=True):
+        with patch("qtpy.QtWidgets.QDialog.exec_", return_value=True):
             preferences_dialog.accept = MagicMock()
             preferences_dialog._save_and_close()
 
@@ -315,7 +315,7 @@ class TestSaveAndCloseWorkflow:
         preferences_dialog.binning_spinbox.setValue(4)
 
         # Mock the confirmation dialog to return Rejected (cancelled)
-        with patch("control.widgets.QDialog.exec_", return_value=False):
+        with patch("qtpy.QtWidgets.QDialog.exec_", return_value=False):
             preferences_dialog.accept = MagicMock()
             preferences_dialog._save_and_close()
 

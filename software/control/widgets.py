@@ -672,7 +672,10 @@ class PreferencesDialog(QDialog):
     def _browse_saving_path(self):
         path = QFileDialog.getExistingDirectory(self, "Select Default Saving Path", self.saving_path_edit.text())
         if path:
-            self.saving_path_edit.setText(path)
+            if os.access(path, os.W_OK):
+                self.saving_path_edit.setText(path)
+            else:
+                QMessageBox.warning(self, "Invalid Path", f"The selected directory is not writable:\n{path}")
 
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
@@ -753,7 +756,19 @@ class PreferencesDialog(QDialog):
             self._log.info(f"Configuration saved to {self.config_filepath}")
         except OSError as e:
             self._log.exception("Failed to save configuration")
-            QMessageBox.warning(self, "Error", f"Failed to save configuration: {e}")
+            QMessageBox.warning(
+                self,
+                "Error",
+                (
+                    f"Failed to save configuration to:\n"
+                    f"{self.config_filepath}\n\n"
+                    "Please check that:\n"
+                    "- You have write permission to this location.\n"
+                    "- The file is not open in another application.\n"
+                    "- The disk is not full or write-protected.\n\n"
+                    f"System error: {e}"
+                ),
+            )
             return
 
         # Update runtime values for settings that can be applied live
@@ -766,6 +781,7 @@ class PreferencesDialog(QDialog):
 
     def _apply_live_settings(self):
         """Apply settings that can take effect without restart."""
+        # Local import to get the module reference for updating runtime values
         import control._def as _def
 
         # File saving option
@@ -1026,6 +1042,8 @@ class PreferencesDialog(QDialog):
         dialog = QDialog(self)
         dialog.setWindowTitle("Confirm Changes")
         dialog.setMinimumWidth(450)
+        if self.isModal():
+            dialog.setModal(True)
         layout = QVBoxLayout(dialog)
 
         label = QLabel("The following settings will be changed:")
@@ -8340,7 +8358,8 @@ class NapariLiveWidget(QWidget):
         #     self.viewer.window._status_bar.hide()
 
         # Disable napari's native menu bar so it doesn't take over macOS global menu bar
-        self.viewer.window.main_menu.setNativeMenuBar(False)
+        if sys.platform == "darwin":
+            self.viewer.window.main_menu.setNativeMenuBar(False)
         self.viewer.window.main_menu.hide()
 
         # Hide the layer buttons
@@ -8859,7 +8878,8 @@ class NapariMultiChannelWidget(QWidget):
         #     self.viewer.window._status_bar.hide()
 
         # Disable napari's native menu bar so it doesn't take over macOS global menu bar
-        self.viewer.window.main_menu.setNativeMenuBar(False)
+        if sys.platform == "darwin":
+            self.viewer.window.main_menu.setNativeMenuBar(False)
         self.viewer.window.main_menu.hide()
 
         # Hide the layer buttons
@@ -9036,7 +9056,8 @@ class NapariMosaicDisplayWidget(QWidget):
         #     self.viewer.window._status_bar.hide()
 
         # Disable napari's native menu bar so it doesn't take over macOS global menu bar
-        self.viewer.window.main_menu.setNativeMenuBar(False)
+        if sys.platform == "darwin":
+            self.viewer.window.main_menu.setNativeMenuBar(False)
         self.viewer.window.main_menu.hide()
 
         self.viewer.bind_key("D", self.toggle_draw_mode)

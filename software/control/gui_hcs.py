@@ -1,5 +1,6 @@
 # set QT_API environment variable
 import os
+from configparser import ConfigParser
 
 from control.core.auto_focus_controller import AutoFocusController
 from control.core.job_processing import CaptureInfo
@@ -1351,9 +1352,6 @@ class HighContentScreeningGui(QMainWindow):
             dialog.exec_()
 
     def openPreferences(self):
-        import os
-        from configparser import ConfigParser
-
         if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             config = ConfigParser()
             config.read(CACHED_CONFIG_FILE_PATH)
