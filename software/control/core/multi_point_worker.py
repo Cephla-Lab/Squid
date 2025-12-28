@@ -232,29 +232,64 @@ class MultiPointWorker:
         - All regions have the same FOV grid pattern (same distinct X and Y counts)
         """
         if not self.scan_region_names:
+            self._log.debug(
+                "_is_well_based_acquisition: no scan_region_names defined; treating as non well-based acquisition"
+            )
             return False
 
         # Check all region names are valid well IDs using parse_well_id
         for region_id in self.scan_region_names:
             if not region_id:
+                self._log.debug(
+                    "_is_well_based_acquisition: encountered empty region_id in scan_region_names; "
+                    "treating as invalid well-based acquisition"
+                )
                 return False
             try:
                 parse_well_id(region_id)
-            except ValueError:
+            except ValueError as exc:
+                self._log.debug(
+                    "_is_well_based_acquisition: region_id '%s' is not a valid well ID: %s; "
+                    "treating as invalid well-based acquisition",
+                    region_id,
+                    exc,
+                )
                 return False
 
         # Check all wells have same grid size
         grid_sizes = set()
         for region_id, coords in self.scan_region_fov_coords_mm.items():
             if not coords:
+                self._log.debug(
+                    "_is_well_based_acquisition: region '%s' has no FOV coordinates; skipping in grid-size check",
+                    region_id,
+                )
                 continue
             x_positions = set(round(c[0], 4) for c in coords)  # Round to avoid float precision issues
             y_positions = set(round(c[1], 4) for c in coords)
             grid_sizes.add((len(x_positions), len(y_positions)))
 
         # All wells should have the same grid pattern
-        return len(grid_sizes) == 1
+        if not grid_sizes:
+            self._log.debug(
+                "_is_well_based_acquisition: no valid FOV coordinates found for any region; "
+                "treating as non well-based acquisition"
+            )
+            return False
 
+        if len(grid_sizes) > 1:
+            self._log.debug(
+                "_is_well_based_acquisition: inconsistent FOV grid sizes detected across wells: %s; "
+                "treating as non well-based acquisition",
+                grid_sizes,
+            )
+            return False
+
+        self._log.debug(
+            "_is_well_based_acquisition: valid well-based acquisition detected with grid size %s",
+            next(iter(grid_sizes)),
+        )
+        return True
     def run(self):
         this_image_callback_id = None
         try:
