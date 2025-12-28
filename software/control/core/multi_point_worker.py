@@ -636,6 +636,13 @@ class MultiPointWorker:
                 region_idx = self.scan_region_names.index(region_id) if region_id in self.scan_region_names else 0
                 well_row = region_idx // self._plate_num_cols
                 well_col = region_idx % self._plate_num_cols
+                # Warn if region index exceeds plate capacity (data will be overwritten)
+                max_slots = self._plate_num_rows * self._plate_num_cols
+                if region_idx >= max_slots:
+                    self._log.warning(
+                        f"Region index {region_idx} exceeds plate capacity ({max_slots} slots); "
+                        f"well position will be clamped and may overwrite existing data"
+                    )
                 # Clamp to plate bounds
                 well_row = min(well_row, self._plate_num_rows - 1)
                 well_col = min(well_col, self._plate_num_cols - 1)

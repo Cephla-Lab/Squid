@@ -8638,8 +8638,9 @@ class NapariPlateViewWidget(QWidget):
         # Zoom limits (updated in initPlateLayout based on plate size)
         self.min_zoom = 0.1  # Prevent zooming out too far
         self.max_zoom = None  # No max limit until plate size is known
-        # Flag to prevent recursive zoom clamping. This is safe as long as it is
-        # only accessed from Qt/napari callbacks on the main thread.
+        # Flag to prevent recursive zoom clamping. This is safe because Qt's event
+        # loop processes events sequentially on the main thread - _custom_wheel_event
+        # and _on_zoom_changed cannot run concurrently, so no lock is needed.
         self._clamping_zoom = False
 
         # Override wheel event on vispy canvas to enforce zoom limits
@@ -8670,12 +8671,12 @@ class NapariPlateViewWidget(QWidget):
         plate_height = num_rows * well_slot_shape[0]
         plate_width = num_cols * well_slot_shape[1]
         if plate_height > 0 and plate_width > 0:
-            # Zoom limit constants
-            MIN_VISIBLE_PIXELS = 500.0  # Minimum pixels visible at max zoom
-            MAX_ZOOM_FACTOR = 10.0  # Cap to prevent performance issues
             # Max zoom: ensure at least MIN_VISIBLE_PIXELS visible, capped at MAX_ZOOM_FACTOR
             min_plate_dim = min(plate_height, plate_width)
-            self.max_zoom = min(max(1.0, min_plate_dim / MIN_VISIBLE_PIXELS), MAX_ZOOM_FACTOR)
+            self.max_zoom = min(
+                max(1.0, min_plate_dim / PLATE_VIEW_MIN_VISIBLE_PIXELS),
+                PLATE_VIEW_MAX_ZOOM_FACTOR,
+            )
 
         # Draw plate boundaries
         self._draw_plate_boundaries()

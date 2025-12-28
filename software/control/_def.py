@@ -737,6 +737,14 @@ DOWNSAMPLED_VIEW_JOB_TIMEOUT_S = 30.0
 # <100ms, so this handles occasional slow jobs without adding unnecessary delay.
 DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S = 2.0
 
+# Plate view zoom limits
+# MIN_VISIBLE_PIXELS: At maximum zoom, ensure at least this many pixels are visible
+# in the smallest dimension. 500 pixels allows inspecting cellular-level details.
+PLATE_VIEW_MIN_VISIBLE_PIXELS = 500.0
+# MAX_ZOOM_FACTOR: Cap zoom to prevent performance issues with large texture rendering.
+# 10x is sufficient for most inspection tasks while maintaining smooth interaction.
+PLATE_VIEW_MAX_ZOOM_FACTOR = 10.0
+
 # Controller SN (needed when using multiple teensy-based connections)
 CONTROLLER_SN = None
 
