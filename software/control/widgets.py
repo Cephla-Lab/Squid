@@ -5537,10 +5537,15 @@ class WellplateMultiPointWidget(QFrame):
         if shape == "Circle":
             fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
             return well_size + fov_size_mm * (1 + math.sqrt(2))
-        elif shape in ["Square", "Rectangle"] and is_round_well:
-            # For square/rectangle scan in round well, inscribe inside the circle
+        elif shape == "Square" and is_round_well:
+            # For square scan in round well, inscribe inside the circle
             # Inscribed square side length = diameter / sqrt(2)
             return well_size / math.sqrt(2)
+        elif shape == "Rectangle" and is_round_well:
+            # Rectangle uses height as scan_size with width = 0.6 * height
+            # For diagonal to fit in circle: sqrt(h² + (0.6h)²) = diameter
+            # h = diameter / sqrt(1 + 0.6²) = diameter / sqrt(1.36)
+            return well_size / math.sqrt(1.36)
         return well_size
 
     def reset_coordinates(self):

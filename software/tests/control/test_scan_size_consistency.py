@@ -22,9 +22,13 @@ class TestScanSizeCoverageLogic:
         """Calculate effective well size (mirrors widget logic)."""
         if shape == "Circle":
             return well_size_mm + fov_size_mm * (1 + math.sqrt(2))
-        elif shape in ["Square", "Rectangle"] and is_round_well:
-            # For square/rectangle scan in round well, inscribe inside the circle
+        elif shape == "Square" and is_round_well:
+            # For square scan in round well, inscribe inside the circle
             return well_size_mm / math.sqrt(2)
+        elif shape == "Rectangle" and is_round_well:
+            # Rectangle: height = scan_size, width = 0.6 * height
+            # Diagonal must fit: h = diameter / sqrt(1 + 0.6²)
+            return well_size_mm / math.sqrt(1.36)
         return well_size_mm
 
     def update_coverage_from_scan_size(self, scan_size, effective_well_size):
@@ -153,7 +157,7 @@ class TestScanSizeCoverageLogic:
         assert effective_well_size < well_size_mm  # Must be smaller than diameter
 
     def test_rectangle_shape_on_round_well_inscribed(self):
-        """Rectangle shape on round well should be inscribed (same as square)."""
+        """Rectangle shape on round well should be inscribed based on its aspect ratio."""
         well_size_mm = 6.21  # 96 well plate (round wells)
         fov_size_mm = 0.5
         shape = "Rectangle"
@@ -161,10 +165,12 @@ class TestScanSizeCoverageLogic:
         # 96 well plate has round wells
         effective_well_size = self.get_effective_well_size(well_size_mm, fov_size_mm, shape, is_round_well=True)
 
-        # For Rectangle on round well, inscribed: side = diameter / sqrt(2)
-        expected = well_size_mm / math.sqrt(2)
+        # Rectangle has aspect ratio 0.6 (width = 0.6 * height)
+        # For diagonal to fit: h = diameter / sqrt(1 + 0.6²) = diameter / sqrt(1.36)
+        expected = well_size_mm / math.sqrt(1.36)
         assert abs(effective_well_size - expected) < 0.001
         assert effective_well_size < well_size_mm  # Must be smaller than diameter
+        assert effective_well_size > well_size_mm / math.sqrt(2)  # Larger than inscribed square
 
     def test_circle_shape_includes_fov_adjustment(self):
         """Circle shape should include FOV adjustment in effective well size."""
@@ -210,8 +216,10 @@ class TestWellplateSizes:
     def get_effective_well_size(self, well_size_mm, fov_size_mm, shape, is_round_well):
         if shape == "Circle":
             return well_size_mm + fov_size_mm * (1 + math.sqrt(2))
-        elif shape in ["Square", "Rectangle"] and is_round_well:
+        elif shape == "Square" and is_round_well:
             return well_size_mm / math.sqrt(2)
+        elif shape == "Rectangle" and is_round_well:
+            return well_size_mm / math.sqrt(1.36)
         return well_size_mm
 
     @pytest.mark.parametrize("plate,well_size", WELLPLATE_SIZES.items())
