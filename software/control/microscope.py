@@ -1,9 +1,10 @@
 import serial
+from pathlib import Path
 from typing import Optional, TypeVar
 
 import control._def
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.configuration_mananger import ConfigurationManager
+from control.core.channel_configuration_manager import ChannelConfigurationManager
+from control.core.configuration_manager import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
 from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController
@@ -319,7 +320,11 @@ class Microscope:
         self._simulated = simulated
 
         self.objective_store: ObjectiveStore = ObjectiveStore()
-        self.channel_configuration_manager: ChannelConfigurationManager = ChannelConfigurationManager()
+        # Pass configurations path for loading global channel definitions
+        configurations_path = Path(__file__).parent.parent / "configurations"
+        self.channel_configuration_manager: ChannelConfigurationManager = ChannelConfigurationManager(
+            configurations_path=configurations_path
+        )
         self.laser_af_settings_manager: Optional[LaserAFSettingManager] = None
         if control._def.SUPPORT_LASER_AUTOFOCUS:
             self.laser_af_settings_manager = LaserAFSettingManager()

@@ -15,7 +15,7 @@ import pandas as pd
 from control import utils, utils_acquisition
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
+from control.core.channel_configuration_manager import ChannelConfigurationManager
 from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
@@ -596,7 +596,7 @@ class MultiPointController:
                 auto_focus_controller=self.autofocusController,
                 laser_auto_focus_controller=self.laserAutoFocusController,
                 objective_store=self.objectiveStore,
-                channel_configuration_mananger=self.channelConfigurationManager,
+                channel_configuration_manager=self.channelConfigurationManager,
                 acquisition_parameters=acquisition_params,
                 callbacks=updated_callbacks,
                 abort_requested_fn=lambda: self.abort_acqusition_requested,

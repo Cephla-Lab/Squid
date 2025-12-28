@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
+from control.core.channel_configuration_manager import ChannelConfigurationManager
 from control.core.laser_af_settings_manager import LaserAFSettingManager
 import control._def
 

@@ -28,8 +28,8 @@ from control._def import *
 
 # app specific libraries
 from control.NL5Widget import NL5Widget
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.configuration_mananger import ConfigurationManager
+from control.core.channel_configuration_manager import ChannelConfigurationManager
+from control.core.configuration_manager import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
 from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController
@@ -428,6 +428,17 @@ class HighContentScreeningGui(QMainWindow):
             led_matrix_action = QAction("LED Matrix", self)
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
             settings_menu.addAction(led_matrix_action)
+
+        # Channel Configuration menu items
+        channel_config_action = QAction("Channel Configuration", self)
+        channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
+        settings_menu.addAction(channel_config_action)
+
+        # Advanced submenu
+        advanced_menu = settings_menu.addMenu("Advanced")
+        channel_mapping_action = QAction("Channel Hardware Mapping", self)
+        channel_mapping_action.triggered.connect(self.openAdvancedChannelMapping)
+        advanced_menu.addAction(channel_mapping_action)
 
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
@@ -1359,6 +1370,25 @@ class HighContentScreeningGui(QMainWindow):
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")
+
+    def openChannelConfigurationEditor(self):
+        """Open the channel configuration editor dialog"""
+        dialog = widgets.ChannelEditorDialog(self.channelConfigurationManager, self)
+        dialog.signal_channels_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openAdvancedChannelMapping(self):
+        """Open the advanced channel hardware mapping dialog"""
+        dialog = widgets.AdvancedChannelMappingDialog(self.channelConfigurationManager, self)
+        dialog.signal_mappings_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def _refresh_channel_lists(self):
+        """Refresh channel lists in all widgets after channel configuration changes"""
+        if self.liveControlWidget:
+            self.liveControlWidget.refresh_mode_list()
+        if self.napariLiveWidget:
+            self.napariLiveWidget.refresh_mode_list()
 
     def onTabChanged(self, index):
         is_flexible_acquisition = (

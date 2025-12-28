@@ -13,8 +13,8 @@ from qtpy.QtGui import *
 
 from control._def import *
 from control.core import job_processing
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
-from control.core.configuration_mananger import ConfigurationManager
+from control.core.channel_configuration_manager import ChannelConfigurationManager
+from control.core.configuration_manager import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
 from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController

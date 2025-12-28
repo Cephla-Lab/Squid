@@ -12,7 +12,7 @@ import pandas as pd
 from control._def import *
 from control import utils
 from control.core.auto_focus_controller import AutoFocusController
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
+from control.core.channel_configuration_manager import ChannelConfigurationManager
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
 from control.core.multi_point_utils import (
@@ -41,7 +41,7 @@ class MultiPointWorker:
         auto_focus_controller: Optional[AutoFocusController],
         laser_auto_focus_controller: Optional[LaserAutofocusController],
         objective_store: ObjectiveStore,
-        channel_configuration_mananger: ChannelConfigurationManager,
+        channel_configuration_manager: ChannelConfigurationManager,
         acquisition_parameters: AcquisitionParameters,
         callbacks: MultiPointControllerFunctions,
         abort_requested_fn: Callable[[], bool],
@@ -60,7 +60,7 @@ class MultiPointWorker:
         self.autofocusController: Optional[AutoFocusController] = auto_focus_controller
         self.laser_auto_focus_controller: Optional[LaserAutofocusController] = laser_auto_focus_controller
         self.objectiveStore: ObjectiveStore = objective_store
-        self.channelConfigurationManager: ChannelConfigurationManager = channel_configuration_mananger
+        self.channelConfigurationManager: ChannelConfigurationManager = channel_configuration_manager
         self.fluidics = scope.addons.fluidics
         self.use_fluidics = acquisition_parameters.use_fluidics
 
