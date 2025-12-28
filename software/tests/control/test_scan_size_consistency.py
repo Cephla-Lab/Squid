@@ -14,7 +14,7 @@ import pytest
 
 class TestScanSizeCoverageLogic:
     """Unit tests for the scan size/coverage calculation logic.
-    
+
     These tests verify the mathematical relationships without requiring Qt widgets.
     """
 
@@ -126,9 +126,9 @@ class TestScanSizeCoverageLogic:
             final_coverage = self.update_coverage_from_scan_size(scan_size, effective_well_size)
 
             # Should be within rounding tolerance
-            assert abs(final_coverage - initial_coverage) < 0.1, (
-                f"Round-trip failed: {initial_coverage}% -> {scan_size}mm -> {final_coverage}%"
-            )
+            assert (
+                abs(final_coverage - initial_coverage) < 0.1
+            ), f"Round-trip failed: {initial_coverage}% -> {scan_size}mm -> {final_coverage}%"
 
     def test_square_shape_on_square_well_no_adjustment(self):
         """Square shape on square well (384/1536) should equal well size."""
