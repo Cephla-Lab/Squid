@@ -619,11 +619,11 @@ class MultiPointController:
         # Determine plate dimensions from wellplate format if available
         plate_num_rows = 8  # Default for 96-well
         plate_num_cols = 12
-        if hasattr(self.scanCoordinates, 'format') and self.scanCoordinates.format:
+        if hasattr(self.scanCoordinates, "format") and self.scanCoordinates.format:
             format_settings = control._def.get_wellplate_settings(self.scanCoordinates.format)
             if format_settings:
-                plate_num_rows = format_settings.get('rows', 8)
-                plate_num_cols = format_settings.get('cols', 12)
+                plate_num_rows = format_settings.get("rows", 8)
+                plate_num_cols = format_settings.get("cols", 12)
 
         return AcquisitionParameters(
             experiment_ID=self.experiment_ID,
@@ -713,7 +713,7 @@ class MultiPointController:
 
     def get_plate_view(self) -> np.ndarray:
         """Get the current plate view array from the acquisition.
-        
+
         Returns:
             Copy of the plate view array, or None if not available.
         """

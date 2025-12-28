@@ -173,7 +173,7 @@ def stitch_tiles(
         y_end = min(y_pixel + h, canvas_height)
         x_end = min(x_pixel + w, canvas_width)
 
-        canvas[y_pixel:y_end, x_pixel:x_end] = tile[:y_end - y_pixel, :x_end - x_pixel]
+        canvas[y_pixel:y_end, x_pixel:x_end] = tile[: y_end - y_pixel, : x_end - x_pixel]
 
     return canvas
 
@@ -201,7 +201,7 @@ def parse_well_id(well_id: str) -> Tuple[int, int]:
     # Convert letter part to row index (A=0, B=1, ..., Z=25, AA=26, AB=27, ...)
     row = 0
     for char in letter_part:
-        row = row * 26 + (ord(char) - ord('A') + 1)
+        row = row * 26 + (ord(char) - ord("A") + 1)
     row -= 1  # Convert to 0-based
 
     # Convert number part to column index (1=0, 2=1, ...)
@@ -298,9 +298,11 @@ class DownsampledViewManager:
             y_end = min(y_end, self.plate_view.shape[1])
             x_end = min(x_end, self.plate_view.shape[2])
 
-            self.plate_view[ch_idx, y_start:y_end, x_start:x_end] = well_image[:y_end - y_start, :x_end - x_start]
+            self.plate_view[ch_idx, y_start:y_end, x_start:x_end] = well_image[: y_end - y_start, : x_end - x_start]
 
-        self._log.debug(f"Updated well ({row}, {col}) at position ({y_start}, {x_start}) for {len(well_images)} channels")
+        self._log.debug(
+            f"Updated well ({row}, {col}) at position ({y_start}, {x_start}) for {len(well_images)} channels"
+        )
 
     def save_plate_view(self, path: str) -> None:
         """Save plate view to disk as multi-channel TIFF.
@@ -314,7 +316,7 @@ class DownsampledViewManager:
             self.plate_view,
             metadata={
                 "axes": "CYX",
-                "Channel": {"Name": self.channel_names[:self.num_channels]},
+                "Channel": {"Name": self.channel_names[: self.num_channels]},
             },
         )
         self._log.info(f"Saved plate view to {path} with {self.num_channels} channels")
@@ -349,7 +351,7 @@ class WellTileAccumulator:
     This class is used within the job process to collect tiles
     until all FOVs for a well are received (for all channels), then stitches them.
     Supports multi-channel acquisitions and z-stack projections.
-    
+
     Z-projection modes:
     - "middle": Only uses the middle z-layer (z_index == total_z // 2)
     - "mip": Maximum intensity projection across all z-layers (memory efficient - running max)
@@ -384,11 +386,11 @@ class WellTileAccumulator:
         self.total_z_levels = total_z_levels
         self.z_projection_mode = z_projection_mode.lower()
         self.middle_z = total_z_levels // 2
-        
+
         # For "middle" mode: Dict mapping channel_idx -> list of (tile, position) tuples
         # For "mip" mode: Dict mapping (channel_idx, fov_idx) -> (running_max_tile, position)
         self.tiles_by_channel: Dict[int, List[Tuple[np.ndarray, Tuple[float, float]]]] = {}
-        
+
         # For MIP: track z-levels received per (channel, fov) to know when complete
         self.mip_tiles: Dict[Tuple[int, int], Tuple[np.ndarray, Tuple[float, float]]] = {}
         self.z_counts: Dict[Tuple[int, int], int] = {}
@@ -417,7 +419,7 @@ class WellTileAccumulator:
             if channel_idx not in self.tiles_by_channel:
                 self.tiles_by_channel[channel_idx] = []
             self.tiles_by_channel[channel_idx].append((tile, position_mm))
-            
+
         elif self.z_projection_mode == "mip":
             # Running maximum intensity projection
             key = (channel_idx, fov_idx)
@@ -437,10 +439,7 @@ class WellTileAccumulator:
             # For middle mode: need all FOVs for all channels (only middle z)
             if len(self.tiles_by_channel) < self.total_channels:
                 return False
-            return all(
-                len(tiles) >= self.total_fovs
-                for tiles in self.tiles_by_channel.values()
-            )
+            return all(len(tiles) >= self.total_fovs for tiles in self.tiles_by_channel.values())
         elif self.z_projection_mode == "mip":
             # For MIP: need all FOVs * channels * z-levels
             expected_keys = self.total_fovs * self.total_channels
@@ -456,7 +455,7 @@ class WellTileAccumulator:
             Dict mapping channel_idx -> stitched image
         """
         result = {}
-        
+
         if self.z_projection_mode == "middle":
             # Middle mode: tiles are already in tiles_by_channel
             for channel_idx, tiles in self.tiles_by_channel.items():
@@ -469,11 +468,11 @@ class WellTileAccumulator:
                 if channel_idx not in tiles_by_channel:
                     tiles_by_channel[channel_idx] = []
                 tiles_by_channel[channel_idx].append((tile, position))
-            
+
             for channel_idx, tiles in tiles_by_channel.items():
                 if tiles:
                     result[channel_idx] = stitch_tiles(tiles, self.pixel_size_um)
-        
+
         return result
 
     def stitch_channel(self, channel_idx: int) -> Optional[np.ndarray]:

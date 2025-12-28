@@ -1366,7 +1366,7 @@ class HighContentScreeningGui(QMainWindow):
             if USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
                 # For well-based acquisitions (Select Wells or Load Coordinates), use Plate View
                 is_well_based = xy_mode in ("Select Wells", "Load Coordinates")
-                if is_well_based and hasattr(self, 'napariPlateViewWidget') and control._def.GENERATE_DOWNSAMPLED_VIEWS:
+                if is_well_based and hasattr(self, "napariPlateViewWidget") and control._def.GENERATE_DOWNSAMPLED_VIEWS:
                     self.imageDisplayTabs.setCurrentWidget(self.napariPlateViewWidget)
                 else:
                     self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)

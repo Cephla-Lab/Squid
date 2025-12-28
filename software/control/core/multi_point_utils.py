@@ -83,6 +83,7 @@ class RegionProgressUpdate:
 @dataclass
 class PlateViewUpdate:
     """Data for plate view channel update."""
+
     channel_idx: int
     channel_name: str
     plate_image: "np.ndarray"  # Forward reference
@@ -91,6 +92,7 @@ class PlateViewUpdate:
 @dataclass
 class PlateViewInit:
     """Data for plate view initialization."""
+
     num_rows: int
     num_cols: int
     well_slot_shape: Tuple[int, int]

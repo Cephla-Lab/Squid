@@ -21,6 +21,7 @@ try:
     )
     from control.core.downsampled_views import DownsampledViewManager
     import squid.abc
+
     MODULE_AVAILABLE = True
 except ImportError:
     MODULE_AVAILABLE = False
@@ -38,7 +39,7 @@ def make_test_capture_info(
 ) -> CaptureInfo:
     """Create a CaptureInfo for testing."""
     from control.utils_config import ChannelMode
-    
+
     return CaptureInfo(
         position=squid.abc.Pos(x_mm=x_mm, y_mm=y_mm, z_mm=z_mm, theta_rad=None),
         z_index=0,
@@ -168,6 +169,7 @@ class TestDownsampledViewJob:
 
             # Verify multipage TIFF structure
             import tifffile
+
             with tifffile.TiffFile(os.path.join(output_dir, "wells", "A1_10um.tiff")) as tif:
                 assert len(tif.pages) == 1  # 1 channel
                 assert tif.pages[0].shape == (20, 20)
@@ -275,9 +277,10 @@ class TestDownsampledViewJob:
 
             # Verify multipage TIFF
             import tifffile
+
             tiff_path = os.path.join(output_dir, "wells", "A1_10um.tiff")
             assert os.path.exists(tiff_path)
-            
+
             with tifffile.TiffFile(tiff_path) as tif:
                 data = tif.asarray()
                 assert data.shape == (2, 10, 10)  # 2 channels, 100/10 = 10
@@ -471,7 +474,7 @@ class TestJobRunnerIntegration:
                 # Verify plate view was updated correctly (channel 0)
                 y_start = 1 * 10
                 x_start = 1 * 10
-                well_region = manager.plate_view[0, y_start:y_start+10, x_start:x_start+10]
+                well_region = manager.plate_view[0, y_start : y_start + 10, x_start : x_start + 10]
                 assert np.isclose(well_region.mean(), 7777, rtol=0.01)
             finally:
                 runner.shutdown(timeout_s=5.0)

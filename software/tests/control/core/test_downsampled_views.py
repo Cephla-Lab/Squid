@@ -20,6 +20,7 @@ try:
         parse_well_id,
         ensure_plate_resolution_in_well_resolutions,
     )
+
     MODULE_AVAILABLE = True
 except ImportError:
     MODULE_AVAILABLE = False
@@ -74,8 +75,8 @@ class TestOverlapCalculation:
         # Y overlap = 1.536 - 1.4 = 0.136 mm = 136 pixels, half = 68
         assert overlap[2] == 124  # left
         assert overlap[3] == 124  # right
-        assert overlap[0] == 68   # top
-        assert overlap[1] == 68   # bottom
+        assert overlap[0] == 68  # top
+        assert overlap[1] == 68  # bottom
 
 
 class TestCropOverlap:
@@ -168,7 +169,7 @@ class TestDownsampleTile:
     def test_downsample_preserves_dtype(self):
         """Test downsampling preserves image dtype."""
         tile = np.ones((100, 100), dtype=np.uint16) * 30000
-        
+
         downsampled = downsample_tile(tile, 1.0, 2.0)
 
         assert downsampled.dtype == np.uint16
@@ -176,7 +177,7 @@ class TestDownsampleTile:
     def test_downsample_non_divisible_dimensions(self):
         """Test downsampling with non-divisible dimensions."""
         tile = np.random.randint(0, 65535, (103, 97), dtype=np.uint16)
-        
+
         downsampled = downsample_tile(tile, 1.0, 2.0)
 
         # cv2.resize handles non-divisible dimensions
@@ -209,20 +210,20 @@ class TestStitchTiles:
         step_mm = 0.1  # 100 um = 100 pixels at 1 um/pixel
 
         tiles = [
-            (tile1, (0.0, 0.0)),        # top-left
-            (tile2, (step_mm, 0.0)),    # top-right
-            (tile3, (0.0, step_mm)),    # bottom-left
-            (tile4, (step_mm, step_mm)) # bottom-right
+            (tile1, (0.0, 0.0)),  # top-left
+            (tile2, (step_mm, 0.0)),  # top-right
+            (tile3, (0.0, step_mm)),  # bottom-left
+            (tile4, (step_mm, step_mm)),  # bottom-right
         ]
 
         stitched = stitch_tiles(tiles, pixel_size_um)
 
         assert stitched.shape == (200, 200)
         # Check each quadrant has correct value
-        assert np.all(stitched[0:100, 0:100] == 1000)    # top-left
+        assert np.all(stitched[0:100, 0:100] == 1000)  # top-left
         assert np.all(stitched[0:100, 100:200] == 2000)  # top-right
         assert np.all(stitched[100:200, 0:100] == 3000)  # bottom-left
-        assert np.all(stitched[100:200, 100:200] == 4000) # bottom-right
+        assert np.all(stitched[100:200, 100:200] == 4000)  # bottom-right
 
     def test_stitch_tiles_respects_positions(self):
         """Test tiles placed at correct positions based on coordinates."""
@@ -282,10 +283,10 @@ class TestPlateViewManager:
         # Check image placed at correct position (channel 0)
         y_start = 1 * 100
         x_start = 2 * 100
-        assert np.all(manager.plate_view[0, y_start:y_start+80, x_start:x_start+80] == 5000)
+        assert np.all(manager.plate_view[0, y_start : y_start + 80, x_start : x_start + 80] == 5000)
         # Check surrounding area is still zero
         assert manager.plate_view[0, 0, 0] == 0
-        assert manager.plate_view[0, y_start-1, x_start] == 0
+        assert manager.plate_view[0, y_start - 1, x_start] == 0
 
     def test_plate_view_compact_layout(self):
         """Test wells are immediately adjacent (no gaps)."""
@@ -298,10 +299,10 @@ class TestPlateViewManager:
         manager.update_well(1, 1, {0: np.ones((100, 100), dtype=np.uint16) * 4000})
 
         # Check wells are adjacent - no gaps between them (channel 0)
-        assert manager.plate_view[0, 99, 99] == 1000   # Bottom-right of A1
+        assert manager.plate_view[0, 99, 99] == 1000  # Bottom-right of A1
         assert manager.plate_view[0, 99, 100] == 2000  # Bottom-left of A2 (immediately adjacent)
         assert manager.plate_view[0, 100, 99] == 3000  # Top-right of B1 (immediately adjacent)
-        assert manager.plate_view[0, 100, 100] == 4000 # Top-left of B2
+        assert manager.plate_view[0, 100, 100] == 4000  # Top-left of B2
 
     def test_plate_view_save(self):
         """Test plate view can be saved to disk."""
@@ -315,6 +316,7 @@ class TestPlateViewManager:
             assert os.path.exists(path)
             # Verify we can read it back
             import tifffile
+
             loaded = tifffile.imread(path)
             # Shape is (C, H, W) with 1 channel
             assert loaded.shape == (1, 100, 100)
@@ -338,10 +340,14 @@ class TestPlateViewManager:
         manager = DownsampledViewManager(2, 2, (50, 50), num_channels=2, channel_names=["Ch0", "Ch1"])
 
         # Update well A1 with different values for each channel
-        manager.update_well(0, 0, {
-            0: np.ones((50, 50), dtype=np.uint16) * 1000,
-            1: np.ones((50, 50), dtype=np.uint16) * 2000,
-        })
+        manager.update_well(
+            0,
+            0,
+            {
+                0: np.ones((50, 50), dtype=np.uint16) * 1000,
+                1: np.ones((50, 50), dtype=np.uint16) * 2000,
+            },
+        )
 
         # Check each channel has correct values
         assert np.all(manager.plate_view[0, 0:50, 0:50] == 1000)
@@ -424,7 +430,7 @@ class TestCircularScanInSquareSlot:
         center = (50, 50)
         radius = 40
         y, x = np.ogrid[:100, :100]
-        mask = (x - center[0])**2 + (y - center[1])**2 <= radius**2
+        mask = (x - center[0]) ** 2 + (y - center[1]) ** 2 <= radius**2
         well_image[mask] = 5000
 
         manager.update_well(0, 0, {0: well_image})
@@ -452,10 +458,10 @@ class TestWellTileAccumulatorZProjection:
             total_z_levels=1,
             z_projection_mode="middle",
         )
-        
+
         tile = np.ones((100, 100), dtype=np.uint16) * 1000
         accumulator.add_tile(tile, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=0)
-        
+
         assert accumulator.is_complete()
         stitched = accumulator.stitch_all_channels()
         assert 0 in stitched
@@ -471,21 +477,21 @@ class TestWellTileAccumulatorZProjection:
             total_z_levels=3,
             z_projection_mode="middle",
         )
-        
+
         # Add z=0 (should be ignored)
         tile_z0 = np.ones((100, 100), dtype=np.uint16) * 100
         accumulator.add_tile(tile_z0, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=0)
         assert not accumulator.is_complete()
-        
+
         # Add z=1 (middle, should be accepted)
         tile_z1 = np.ones((100, 100), dtype=np.uint16) * 500
         accumulator.add_tile(tile_z1, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=1)
         assert accumulator.is_complete()
-        
+
         # Add z=2 (should be ignored)
         tile_z2 = np.ones((100, 100), dtype=np.uint16) * 900
         accumulator.add_tile(tile_z2, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=2)
-        
+
         stitched = accumulator.stitch_all_channels()
         assert np.all(stitched[0] == 500)  # Only middle z value
 
@@ -499,10 +505,10 @@ class TestWellTileAccumulatorZProjection:
             total_z_levels=1,
             z_projection_mode="mip",
         )
-        
+
         tile = np.ones((100, 100), dtype=np.uint16) * 1000
         accumulator.add_tile(tile, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=0)
-        
+
         assert accumulator.is_complete()
         stitched = accumulator.stitch_all_channels()
         assert np.all(stitched[0] == 1000)
@@ -517,22 +523,22 @@ class TestWellTileAccumulatorZProjection:
             total_z_levels=3,
             z_projection_mode="mip",
         )
-        
+
         # z=0: low values
         tile_z0 = np.ones((100, 100), dtype=np.uint16) * 100
         accumulator.add_tile(tile_z0, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=0)
         assert not accumulator.is_complete()
-        
+
         # z=1: high values
         tile_z1 = np.ones((100, 100), dtype=np.uint16) * 900
         accumulator.add_tile(tile_z1, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=1)
         assert not accumulator.is_complete()
-        
+
         # z=2: medium values
         tile_z2 = np.ones((100, 100), dtype=np.uint16) * 500
         accumulator.add_tile(tile_z2, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=2)
         assert accumulator.is_complete()
-        
+
         stitched = accumulator.stitch_all_channels()
         assert np.all(stitched[0] == 900)  # Maximum across z-levels
 
@@ -546,20 +552,20 @@ class TestWellTileAccumulatorZProjection:
             total_z_levels=2,
             z_projection_mode="mip",
         )
-        
+
         # z=0: high in top-left, low elsewhere
         tile_z0 = np.zeros((100, 100), dtype=np.uint16)
         tile_z0[:50, :50] = 1000
         accumulator.add_tile(tile_z0, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=0)
-        
+
         # z=1: high in bottom-right, low elsewhere
         tile_z1 = np.zeros((100, 100), dtype=np.uint16)
         tile_z1[50:, 50:] = 2000
         accumulator.add_tile(tile_z1, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=1)
-        
+
         assert accumulator.is_complete()
         stitched = accumulator.stitch_all_channels()
-        
+
         # Top-left should be 1000 (max from z=0)
         assert np.all(stitched[0][:50, :50] == 1000)
         # Bottom-right should be 2000 (max from z=1)
@@ -578,32 +584,20 @@ class TestWellTileAccumulatorZProjection:
             total_z_levels=2,
             z_projection_mode="mip",
         )
-        
+
         # FOV 0: z=0 and z=1
-        accumulator.add_tile(
-            np.ones((50, 50), dtype=np.uint16) * 100,
-            (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=0
-        )
-        accumulator.add_tile(
-            np.ones((50, 50), dtype=np.uint16) * 200,
-            (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=1
-        )
-        
+        accumulator.add_tile(np.ones((50, 50), dtype=np.uint16) * 100, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=0)
+        accumulator.add_tile(np.ones((50, 50), dtype=np.uint16) * 200, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=1)
+
         assert not accumulator.is_complete()  # Still need FOV 1
-        
+
         # FOV 1: z=0 and z=1
-        accumulator.add_tile(
-            np.ones((50, 50), dtype=np.uint16) * 300,
-            (0.05, 0.0), channel_idx=0, fov_idx=1, z_index=0
-        )
-        accumulator.add_tile(
-            np.ones((50, 50), dtype=np.uint16) * 400,
-            (0.05, 0.0), channel_idx=0, fov_idx=1, z_index=1
-        )
-        
+        accumulator.add_tile(np.ones((50, 50), dtype=np.uint16) * 300, (0.05, 0.0), channel_idx=0, fov_idx=1, z_index=0)
+        accumulator.add_tile(np.ones((50, 50), dtype=np.uint16) * 400, (0.05, 0.0), channel_idx=0, fov_idx=1, z_index=1)
+
         assert accumulator.is_complete()
         stitched = accumulator.stitch_all_channels()
-        
+
         # FOV 0 max is 200, FOV 1 max is 400
         assert stitched[0][25, 25] == 200  # FOV 0 region
         assert stitched[0][25, 75] == 400  # FOV 1 region
@@ -618,30 +612,18 @@ class TestWellTileAccumulatorZProjection:
             total_z_levels=2,
             z_projection_mode="mip",
         )
-        
+
         # Channel 0
-        accumulator.add_tile(
-            np.ones((50, 50), dtype=np.uint16) * 100,
-            (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=0
-        )
-        accumulator.add_tile(
-            np.ones((50, 50), dtype=np.uint16) * 500,
-            (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=1
-        )
-        
+        accumulator.add_tile(np.ones((50, 50), dtype=np.uint16) * 100, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=0)
+        accumulator.add_tile(np.ones((50, 50), dtype=np.uint16) * 500, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=1)
+
         # Channel 1
-        accumulator.add_tile(
-            np.ones((50, 50), dtype=np.uint16) * 800,
-            (0.0, 0.0), channel_idx=1, fov_idx=0, z_index=0
-        )
-        accumulator.add_tile(
-            np.ones((50, 50), dtype=np.uint16) * 200,
-            (0.0, 0.0), channel_idx=1, fov_idx=0, z_index=1
-        )
-        
+        accumulator.add_tile(np.ones((50, 50), dtype=np.uint16) * 800, (0.0, 0.0), channel_idx=1, fov_idx=0, z_index=0)
+        accumulator.add_tile(np.ones((50, 50), dtype=np.uint16) * 200, (0.0, 0.0), channel_idx=1, fov_idx=0, z_index=1)
+
         assert accumulator.is_complete()
         stitched = accumulator.stitch_all_channels()
-        
+
         assert np.all(stitched[0] == 500)  # Channel 0 max
         assert np.all(stitched[1] == 800)  # Channel 1 max
 
@@ -655,14 +637,14 @@ class TestWellTileAccumulatorZProjection:
             total_z_levels=100,  # Many z-levels
             z_projection_mode="mip",
         )
-        
+
         for z in range(100):
             tile = np.ones((100, 100), dtype=np.uint16) * z
             accumulator.add_tile(tile, (0.0, 0.0), channel_idx=0, fov_idx=0, z_index=z)
-        
+
         # Should only have 1 tile stored (the running max), not 100
         assert len(accumulator.mip_tiles) == 1
         assert accumulator.is_complete()
-        
+
         stitched = accumulator.stitch_all_channels()
         assert np.all(stitched[0] == 99)  # Max of 0..99
