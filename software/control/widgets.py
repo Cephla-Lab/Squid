@@ -4652,7 +4652,7 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_scan_size.valueChanged.connect(self.update_coordinates)
         self.entry_scan_size.valueChanged.connect(self.update_coverage_from_scan_size)
         self.entry_well_coverage.valueChanged.connect(self.update_scan_size_from_coverage)
-        self.combobox_shape.currentTextChanged.connect(self.reset_coordinates)
+        self.combobox_shape.currentTextChanged.connect(self.on_shape_changed)
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
         self.checkbox_genAFMap.toggled.connect(self.multipointController.set_gen_focus_map_flag)
@@ -5544,10 +5544,18 @@ class WellplateMultiPointWidget(QFrame):
         return well_size
 
     def reset_coordinates(self):
-        # Update coverage display from scan_size (scan_size is the source of truth)
+        # Called after acquisition - preserve scan_size, update coverage display
         if self.combobox_xy_mode.currentText() == "Select Wells":
             self.update_coverage_from_scan_size()
         self.update_coordinates()
+
+    def on_shape_changed(self):
+        # Called when scan shape changes - keep coverage constant, update scan_size
+        # This ensures the scan area adapts to fit the new shape within the well
+        if self.combobox_xy_mode.currentText() == "Select Wells":
+            self.update_scan_size_from_coverage()
+        else:
+            self.update_coordinates()
 
     def update_manual_shape(self, shapes_data_mm):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
