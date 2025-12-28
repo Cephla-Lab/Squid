@@ -8861,8 +8861,9 @@ class NapariPlateViewWidget(QWidget):
             fov_height = self.well_slot_shape[0] // fov_ny
             fov_width = self.well_slot_shape[1] // fov_nx
             if fov_height > 0 and fov_width > 0:
-                fov_row = y_in_well // fov_height
-                fov_col = x_in_well // fov_width
+                # Clamp to valid range to handle clicks at edge of well slot
+                fov_row = min(y_in_well // fov_height, fov_ny - 1)
+                fov_col = min(x_in_well // fov_width, fov_nx - 1)
                 fov_index = fov_row * fov_nx + fov_col
             else:
                 fov_index = 0

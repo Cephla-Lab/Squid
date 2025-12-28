@@ -288,6 +288,16 @@ class DownsampledViewJob(Job):
     2. Accumulates tiles for the well (using class-level storage per process)
     3. When all FOVs for all channels are received, stitches and saves as multipage TIFF
     4. Returns the first channel 10um image via queue for plate view update in main process
+
+    Warning:
+        This class uses a mutable class-level accumulator (_well_accumulators) that is
+        only safe because each JobRunner runs in its own *process* (via multiprocessing).
+        Each worker has its own independent copy of this attribute.
+
+        Do NOT use DownsampledViewJob in a threading context (e.g., with
+        ThreadPoolExecutor or other in-process thread runners) without adding
+        proper synchronization or refactoring to avoid shared mutable class
+        state, as that would lead to race conditions and data corruption.
     """
 
     # All fields must have defaults because parent class Job has job_id with default
@@ -310,21 +320,6 @@ class DownsampledViewJob(Job):
     total_z_levels: int = 1
     z_projection_mode: Union[ZProjectionMode, str] = ZProjectionMode.MIP
     skip_saving: bool = False  # Skip TIFF file saving (just generate for display)
-
-    # WARNING: This class uses a mutable class-level accumulator that is only
-    # safe because each JobRunner runs in its own *process* (via multiprocessing).
-    # Reusing this job class in a threaded executor without additional locking
-    # would introduce data races and is not supported.
-    __doc__ = (
-        "DownsampledViewJob accumulates state in a process-local class variable.\n"
-        "The _well_accumulators mapping is a mutable class attribute that is safe\n"
-        "only because JobRunner instances are multiprocessing.Process workers, so\n"
-        "each worker has its own independent copy of this attribute.\n\n"
-        "Do NOT use DownsampledViewJob in a threading context (e.g., with\n"
-        "ThreadPoolExecutor or other in-process thread runners) without adding\n"
-        "proper synchronization or refactoring to avoid shared mutable class\n"
-        "state, as that would lead to race conditions and data corruption."
-    )
 
     # Class-level accumulator storage keyed by well_id.
     # Note: This runs inside JobRunner (a multiprocessing.Process), so each worker

@@ -187,7 +187,14 @@ def parse_well_id(well_id: str) -> Tuple[int, int]:
 
     Returns:
         Tuple of (row_index, col_index), 0-based
+
+    Raises:
+        ValueError: If well_id is empty, missing letters, missing numbers,
+                   or contains invalid characters in the number part.
     """
+    if not well_id:
+        raise ValueError("Well ID cannot be empty")
+
     well_id = well_id.upper()
 
     # Find where letters end and numbers begin
@@ -199,6 +206,12 @@ def parse_well_id(well_id: str) -> Tuple[int, int]:
         else:
             number_part += char
 
+    # Validate parts
+    if not letter_part:
+        raise ValueError(f"Well ID '{well_id}' missing row letter(s) (e.g., 'A', 'B', 'AA')")
+    if not number_part:
+        raise ValueError(f"Well ID '{well_id}' missing column number (e.g., '1', '12')")
+
     # Convert letter part to row index (A=0, B=1, ..., Z=25, AA=26, AB=27, ...)
     row = 0
     for char in letter_part:
@@ -206,7 +219,13 @@ def parse_well_id(well_id: str) -> Tuple[int, int]:
     row -= 1  # Convert to 0-based
 
     # Convert number part to column index (1=0, 2=1, ...)
-    col = int(number_part) - 1
+    try:
+        col = int(number_part) - 1
+    except ValueError:
+        raise ValueError(f"Well ID '{well_id}' has invalid column number '{number_part}'")
+
+    if col < 0:
+        raise ValueError(f"Well ID '{well_id}' has invalid column number '{number_part}' (must be >= 1)")
 
     return (row, col)
 

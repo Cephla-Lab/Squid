@@ -716,7 +716,7 @@ LIVE_ONLY_MODE = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 
 # Downsampled view generation (for Select Well Mode)
-GENERATE_DOWNSAMPLED_VIEWS = True
+GENERATE_DOWNSAMPLED_VIEWS = False  # Set to True to enable plate view generation
 DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
 DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
 DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
