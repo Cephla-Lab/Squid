@@ -428,8 +428,8 @@ class PreferencesDialog(QDialog):
         scroll_content = QWidget()
         layout = QVBoxLayout(scroll_content)
 
-        # Stage & Motion section
-        stage_group = CollapsibleGroupBox("Stage && Motion")
+        # Stage & Motion section (requires restart)
+        stage_group = CollapsibleGroupBox("Stage && Motion *")
         stage_layout = QFormLayout()
 
         self.max_vel_x = QDoubleSpinBox()
@@ -521,11 +521,11 @@ class PreferencesDialog(QDialog):
         self.z_motor_combo = QComboBox()
         self.z_motor_combo.addItems(["STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"])
         self.z_motor_combo.setCurrentText(self._get_config_value("GENERAL", "z_motor_config", "STEPPER"))
-        hw_layout.addRow("Z Motor Config:", self.z_motor_combo)
+        hw_layout.addRow("Z Motor Config *:", self.z_motor_combo)
 
         self.spinning_disk_checkbox = QCheckBox()
         self.spinning_disk_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False))
-        hw_layout.addRow("Enable Spinning Disk:", self.spinning_disk_checkbox)
+        hw_layout.addRow("Enable Spinning Disk *:", self.spinning_disk_checkbox)
 
         self.led_r_factor = QDoubleSpinBox()
         self.led_r_factor.setRange(0.0, 1.0)
@@ -618,6 +618,11 @@ class PreferencesDialog(QDialog):
 
         tracking_group.content.addLayout(tracking_layout)
         layout.addWidget(tracking_group)
+
+        # Legend for restart indicator
+        legend_label = QLabel("* Requires software restart to take effect")
+        legend_label.setStyleSheet("color: #666; font-style: italic;")
+        layout.addWidget(legend_label)
 
         layout.addStretch()
         scroll.setWidget(scroll_content)
@@ -721,9 +726,6 @@ class PreferencesDialog(QDialog):
             self._apply_live_settings()
 
             self.signal_config_changed.emit()
-            QMessageBox.information(
-                self, "Settings Saved", "Settings have been saved. Some settings require a restart to take effect."
-            )
         except Exception as e:
             self._log.exception(f"Failed to save configuration: {e}")
             QMessageBox.warning(self, "Error", f"Failed to save configuration: {e}")
@@ -771,196 +773,198 @@ class PreferencesDialog(QDialog):
         _def.Tracking.SEARCH_AREA_RATIO = self.search_area_ratio.value()
 
     def _get_changes(self):
-        """Get list of settings that have changed from current config. Returns list of (name, old, new) tuples."""
+        """Get list of settings that have changed from current config.
+        Returns list of (name, old, new, requires_restart) tuples."""
         changes = []
 
-        # General settings
+        # General settings (live update)
         old_val = self._get_config_value("GENERAL", "file_saving_option", "OME_TIFF")
         new_val = self.file_saving_combo.currentText()
         if old_val != new_val:
-            changes.append(("File Saving Format", old_val, new_val))
+            changes.append(("File Saving Format", old_val, new_val, False))
 
         old_val = self._get_config_value("GENERAL", "default_saving_path", "")
         new_val = self.saving_path_edit.text()
         if old_val != new_val:
-            changes.append(("Default Saving Path", old_val, new_val))
+            changes.append(("Default Saving Path", old_val, new_val, False))
 
-        # Acquisition settings
+        # Acquisition settings (live update)
         old_val = self._get_config_value("GENERAL", "multipoint_autofocus_channel", "")
         new_val = self.autofocus_channel_edit.text()
         if old_val != new_val:
-            changes.append(("Autofocus Channel", old_val, new_val))
+            changes.append(("Autofocus Channel", old_val, new_val, False))
 
         old_val = self._get_config_bool("GENERAL", "enable_flexible_multipoint", True)
         new_val = self.flexible_multipoint_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Enable Flexible Multipoint", str(old_val), str(new_val)))
+            changes.append(("Enable Flexible Multipoint", str(old_val), str(new_val), False))
 
-        # Camera settings
+        # Camera settings (require restart)
         old_val = self._get_config_int("CAMERA_CONFIG", "binning_factor_default", 2)
         new_val = self.binning_spinbox.value()
         if old_val != new_val:
-            changes.append(("Default Binning Factor", str(old_val), str(new_val)))
+            changes.append(("Default Binning Factor", str(old_val), str(new_val), True))
 
         old_val = self._get_config_value("CAMERA_CONFIG", "flip_image", "None")
         new_val = self.flip_combo.currentText()
         if old_val != new_val:
-            changes.append(("Image Flip", old_val, new_val))
+            changes.append(("Image Flip", old_val, new_val, True))
 
         old_val = self._get_config_int("CAMERA_CONFIG", "temperature_default", 20)
         new_val = self.temperature_spinbox.value()
         if old_val != new_val:
-            changes.append(("Temperature Default", f"{old_val} C", f"{new_val} C"))
+            changes.append(("Temperature Default", f"{old_val} C", f"{new_val} C", True))
 
         old_val = self._get_config_value("CAMERA_CONFIG", "roi_width_default", "None")
         new_val = "None" if self.roi_width_spinbox.value() == 0 else str(self.roi_width_spinbox.value())
         if old_val != new_val:
-            changes.append(("ROI Width", old_val, new_val))
+            changes.append(("ROI Width", old_val, new_val, True))
 
         old_val = self._get_config_value("CAMERA_CONFIG", "roi_height_default", "None")
         new_val = "None" if self.roi_height_spinbox.value() == 0 else str(self.roi_height_spinbox.value())
         if old_val != new_val:
-            changes.append(("ROI Height", old_val, new_val))
+            changes.append(("ROI Height", old_val, new_val, True))
 
-        # Advanced - Stage & Motion
+        # Advanced - Stage & Motion (require restart)
         old_val = self._get_config_float("GENERAL", "max_velocity_x_mm", 30)
         new_val = self.max_vel_x.value()
         if old_val != new_val:
-            changes.append(("Max Velocity X", f"{old_val} mm/s", f"{new_val} mm/s"))
+            changes.append(("Max Velocity X", f"{old_val} mm/s", f"{new_val} mm/s", True))
 
         old_val = self._get_config_float("GENERAL", "max_velocity_y_mm", 30)
         new_val = self.max_vel_y.value()
         if old_val != new_val:
-            changes.append(("Max Velocity Y", f"{old_val} mm/s", f"{new_val} mm/s"))
+            changes.append(("Max Velocity Y", f"{old_val} mm/s", f"{new_val} mm/s", True))
 
         old_val = self._get_config_float("GENERAL", "max_velocity_z_mm", 3.8)
         new_val = self.max_vel_z.value()
         if old_val != new_val:
-            changes.append(("Max Velocity Z", f"{old_val} mm/s", f"{new_val} mm/s"))
+            changes.append(("Max Velocity Z", f"{old_val} mm/s", f"{new_val} mm/s", True))
 
         old_val = self._get_config_float("GENERAL", "max_acceleration_x_mm", 500)
         new_val = self.max_accel_x.value()
         if old_val != new_val:
-            changes.append(("Max Acceleration X", f"{old_val} mm/s2", f"{new_val} mm/s2"))
+            changes.append(("Max Acceleration X", f"{old_val} mm/s2", f"{new_val} mm/s2", True))
 
         old_val = self._get_config_float("GENERAL", "max_acceleration_y_mm", 500)
         new_val = self.max_accel_y.value()
         if old_val != new_val:
-            changes.append(("Max Acceleration Y", f"{old_val} mm/s2", f"{new_val} mm/s2"))
+            changes.append(("Max Acceleration Y", f"{old_val} mm/s2", f"{new_val} mm/s2", True))
 
         old_val = self._get_config_float("GENERAL", "max_acceleration_z_mm", 100)
         new_val = self.max_accel_z.value()
         if old_val != new_val:
-            changes.append(("Max Acceleration Z", f"{old_val} mm/s2", f"{new_val} mm/s2"))
+            changes.append(("Max Acceleration Z", f"{old_val} mm/s2", f"{new_val} mm/s2", True))
 
         old_val = self._get_config_int("GENERAL", "scan_stabilization_time_ms_x", 25)
         new_val = self.scan_stab_x.value()
         if old_val != new_val:
-            changes.append(("Scan Stabilization X", f"{old_val} ms", f"{new_val} ms"))
+            changes.append(("Scan Stabilization X", f"{old_val} ms", f"{new_val} ms", True))
 
         old_val = self._get_config_int("GENERAL", "scan_stabilization_time_ms_y", 25)
         new_val = self.scan_stab_y.value()
         if old_val != new_val:
-            changes.append(("Scan Stabilization Y", f"{old_val} ms", f"{new_val} ms"))
+            changes.append(("Scan Stabilization Y", f"{old_val} ms", f"{new_val} ms", True))
 
         old_val = self._get_config_int("GENERAL", "scan_stabilization_time_ms_z", 20)
         new_val = self.scan_stab_z.value()
         if old_val != new_val:
-            changes.append(("Scan Stabilization Z", f"{old_val} ms", f"{new_val} ms"))
+            changes.append(("Scan Stabilization Z", f"{old_val} ms", f"{new_val} ms", True))
 
-        # Advanced - Autofocus
+        # Advanced - Autofocus (live update)
         old_val = self._get_config_float("AF", "stop_threshold", 0.85)
         new_val = self.af_stop_threshold.value()
         if old_val != new_val:
-            changes.append(("AF Stop Threshold", str(old_val), str(new_val)))
+            changes.append(("AF Stop Threshold", str(old_val), str(new_val), False))
 
         old_val = self._get_config_int("AF", "crop_width", 800)
         new_val = self.af_crop_width.value()
         if old_val != new_val:
-            changes.append(("AF Crop Width", f"{old_val} px", f"{new_val} px"))
+            changes.append(("AF Crop Width", f"{old_val} px", f"{new_val} px", False))
 
         old_val = self._get_config_int("AF", "crop_height", 800)
         new_val = self.af_crop_height.value()
         if old_val != new_val:
-            changes.append(("AF Crop Height", f"{old_val} px", f"{new_val} px"))
+            changes.append(("AF Crop Height", f"{old_val} px", f"{new_val} px", False))
 
-        # Advanced - Hardware
+        # Advanced - Hardware (require restart)
         old_val = self._get_config_value("GENERAL", "z_motor_config", "STEPPER")
         new_val = self.z_motor_combo.currentText()
         if old_val != new_val:
-            changes.append(("Z Motor Config", old_val, new_val))
+            changes.append(("Z Motor Config", old_val, new_val, True))
 
         old_val = self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False)
         new_val = self.spinning_disk_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Enable Spinning Disk", str(old_val), str(new_val)))
+            changes.append(("Enable Spinning Disk", str(old_val), str(new_val), True))
 
+        # LED matrix factors (live update)
         old_val = self._get_config_float("GENERAL", "led_matrix_r_factor", 1.0)
         new_val = self.led_r_factor.value()
         if old_val != new_val:
-            changes.append(("LED Matrix R Factor", str(old_val), str(new_val)))
+            changes.append(("LED Matrix R Factor", str(old_val), str(new_val), False))
 
         old_val = self._get_config_float("GENERAL", "led_matrix_g_factor", 1.0)
         new_val = self.led_g_factor.value()
         if old_val != new_val:
-            changes.append(("LED Matrix G Factor", str(old_val), str(new_val)))
+            changes.append(("LED Matrix G Factor", str(old_val), str(new_val), False))
 
         old_val = self._get_config_float("GENERAL", "led_matrix_b_factor", 1.0)
         new_val = self.led_b_factor.value()
         if old_val != new_val:
-            changes.append(("LED Matrix B Factor", str(old_val), str(new_val)))
+            changes.append(("LED Matrix B Factor", str(old_val), str(new_val), False))
 
         old_val = self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6)
         new_val = self.illumination_factor.value()
         if old_val != new_val:
-            changes.append(("Illumination Intensity Factor", str(old_val), str(new_val)))
+            changes.append(("Illumination Intensity Factor", str(old_val), str(new_val), False))
 
-        # Advanced - Position Limits
+        # Advanced - Position Limits (live update)
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115)
         new_val = self.limit_x_pos.value()
         if old_val != new_val:
-            changes.append(("X Positive Limit", f"{old_val} mm", f"{new_val} mm"))
+            changes.append(("X Positive Limit", f"{old_val} mm", f"{new_val} mm", False))
 
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "x_negative", 5)
         new_val = self.limit_x_neg.value()
         if old_val != new_val:
-            changes.append(("X Negative Limit", f"{old_val} mm", f"{new_val} mm"))
+            changes.append(("X Negative Limit", f"{old_val} mm", f"{new_val} mm", False))
 
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "y_positive", 76)
         new_val = self.limit_y_pos.value()
         if old_val != new_val:
-            changes.append(("Y Positive Limit", f"{old_val} mm", f"{new_val} mm"))
+            changes.append(("Y Positive Limit", f"{old_val} mm", f"{new_val} mm", False))
 
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "y_negative", 4)
         new_val = self.limit_y_neg.value()
         if old_val != new_val:
-            changes.append(("Y Negative Limit", f"{old_val} mm", f"{new_val} mm"))
+            changes.append(("Y Negative Limit", f"{old_val} mm", f"{new_val} mm", False))
 
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "z_positive", 6)
         new_val = self.limit_z_pos.value()
         if old_val != new_val:
-            changes.append(("Z Positive Limit", f"{old_val} mm", f"{new_val} mm"))
+            changes.append(("Z Positive Limit", f"{old_val} mm", f"{new_val} mm", False))
 
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "z_negative", 0.05)
         new_val = self.limit_z_neg.value()
         if old_val != new_val:
-            changes.append(("Z Negative Limit", f"{old_val} mm", f"{new_val} mm"))
+            changes.append(("Z Negative Limit", f"{old_val} mm", f"{new_val} mm", False))
 
-        # Advanced - Tracking
+        # Advanced - Tracking (live update)
         old_val = self._get_config_bool("GENERAL", "enable_tracking", False)
         new_val = self.enable_tracking_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Enable Tracking", str(old_val), str(new_val)))
+            changes.append(("Enable Tracking", str(old_val), str(new_val), False))
 
         old_val = self._get_config_value("TRACKING", "default_tracker", "csrt")
         new_val = self.default_tracker_combo.currentText()
         if old_val != new_val:
-            changes.append(("Default Tracker", old_val, new_val))
+            changes.append(("Default Tracker", old_val, new_val, False))
 
         old_val = self._get_config_int("TRACKING", "search_area_ratio", 10)
         new_val = self.search_area_ratio.value()
         if old_val != new_val:
-            changes.append(("Search Area Ratio", str(old_val), str(new_val)))
+            changes.append(("Search Area Ratio", str(old_val), str(new_val), False))
 
         return changes
 
@@ -972,9 +976,16 @@ class PreferencesDialog(QDialog):
             self.accept()
             return
 
+        # Check if any changes require restart
+        requires_restart = any(change[3] for change in changes)
+
         # For single change, save directly without confirmation
         if len(changes) == 1:
             self._apply_settings()
+            if requires_restart:
+                QMessageBox.information(
+                    self, "Settings Saved", "Settings have been saved. This change requires a restart to take effect."
+                )
             self.accept()
             return
 
@@ -991,15 +1002,21 @@ class PreferencesDialog(QDialog):
         changes_text = QTextEdit()
         changes_text.setReadOnly(True)
         changes_lines = []
-        for name, old_val, new_val in changes:
-            changes_lines.append(f"{name}:\n  Before: {old_val}\n  After:  {new_val}")
+        for name, old_val, new_val, needs_restart in changes:
+            restart_note = " [restart required]" if needs_restart else ""
+            changes_lines.append(f"{name}{restart_note}:\n  Before: {old_val}\n  After:  {new_val}")
         changes_text.setPlainText("\n\n".join(changes_lines))
         changes_text.setMinimumHeight(200)
         layout.addWidget(changes_text)
 
-        note_label = QLabel("Note: Some settings require a restart to take effect.")
-        note_label.setStyleSheet("color: #666; font-style: italic;")
-        layout.addWidget(note_label)
+        # Only show restart warning if at least one change requires restart
+        if requires_restart:
+            note_label = QLabel(
+                "Note: Settings marked [restart required] will only take effect after restarting the software."
+            )
+            note_label.setStyleSheet("color: #666; font-style: italic;")
+            note_label.setWordWrap(True)
+            layout.addWidget(note_label)
 
         # Buttons
         button_layout = QHBoxLayout()
