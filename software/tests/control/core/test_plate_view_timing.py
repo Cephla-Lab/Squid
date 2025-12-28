@@ -4,9 +4,6 @@ import tempfile
 import os
 import time
 import queue
-from dataclasses import dataclass
-from typing import List, Dict, Tuple
-from unittest.mock import Mock, MagicMock
 import threading
 
 import numpy as np
@@ -20,7 +17,6 @@ try:
         CaptureInfo,
         JobImage,
     )
-    from control.core.downsampled_views import DownsampledViewManager
 
     MODULE_AVAILABLE = True
 except ImportError:
@@ -78,7 +74,7 @@ class TestPlateViewTiming:
                 dispatch_time = time.time()
                 runner.dispatch(job)
 
-                result = runner.output_queue().get(timeout=30.0)
+                runner.output_queue().get(timeout=30.0)
                 complete_time = time.time()
 
                 elapsed_ms = (complete_time - dispatch_time) * 1000
@@ -136,7 +132,7 @@ class TestPlateViewTiming:
                         runner.dispatch(job)
 
                     # Wait for this well to complete
-                    result = runner.output_queue().get(timeout=30.0)
+                    runner.output_queue().get(timeout=30.0)
                     well_complete = time.time()
 
                     elapsed_ms = (well_complete - well_start) * 1000
@@ -246,8 +242,6 @@ class TestPlateViewTiming:
             tile_size = 128
 
             try:
-                submit_start = time.time()
-
                 for well_idx in range(num_wells):
                     well_id = f"{chr(ord('A') + well_idx)}1"
                     tile = np.random.randint(0, 65535, (tile_size, tile_size), dtype=np.uint16)
@@ -284,6 +278,7 @@ class TestPlateViewTiming:
                         mock_callback(result.result)
                         received += 1
                     except queue.Empty:
+                        # No result available yet; continue polling
                         pass
 
                     if time.time() - poll_start > 30:

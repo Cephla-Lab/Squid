@@ -551,7 +551,10 @@ class MultiPointWorker:
                     )
                 )
         except Exception as e:
-            self._log.exception(f"Failed to update plate view for well {result.well_id}: {e}")
+            self._log.exception(
+                f"Failed to update plate view for well {result.well_id} "
+                f"at ({result.well_row}, {result.well_col}): {e}"
+            )
 
     def _create_job(self, job_class: Type[Job], info: CaptureInfo, image: np.ndarray) -> Optional[Job]:
         """Create a job instance for the given job class.
@@ -587,9 +590,19 @@ class MultiPointWorker:
             # Region ID is not a valid well ID (e.g., "R0", "manual")
             # Use region index as a fallback
             self._log.debug(f"Region {region_id} is not a well ID, using fallback positioning")
-            region_idx = self.scan_region_names.index(region_id) if region_id in self.scan_region_names else 0
-            well_row = region_idx // self._plate_num_cols
-            well_col = region_idx % self._plate_num_cols
+            if not self._plate_num_rows or not self._plate_num_cols:
+                self._log.warning(
+                    f"Plate dimensions not set (rows={self._plate_num_rows}, cols={self._plate_num_cols}); "
+                    "using (0, 0) for well position"
+                )
+                well_row, well_col = 0, 0
+            else:
+                region_idx = self.scan_region_names.index(region_id) if region_id in self.scan_region_names else 0
+                well_row = region_idx // self._plate_num_cols
+                well_col = region_idx % self._plate_num_cols
+                # Clamp to plate bounds
+                well_row = min(well_row, self._plate_num_rows - 1)
+                well_col = min(well_col, self._plate_num_cols - 1)
 
         # Get FOV position within well
         total_fovs = self._region_fov_counts.get(region_id, 1)

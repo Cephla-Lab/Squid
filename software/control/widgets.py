@@ -8667,9 +8667,9 @@ class NapariPlateViewWidget(QWidget):
         plate_height = num_rows * well_slot_shape[0]
         plate_width = num_cols * well_slot_shape[1]
         if plate_height > 0 and plate_width > 0:
-            # Max zoom: ensure at least 500 pixels visible in each dimension
+            # Max zoom: ensure at least 500 pixels visible, capped at 10x for performance
             min_plate_dim = min(plate_height, plate_width)
-            self.max_zoom = max(1.0, min_plate_dim / 500.0)
+            self.max_zoom = min(max(1.0, min_plate_dim / 500.0), 10.0)
 
         # Draw plate boundaries
         self._draw_plate_boundaries()

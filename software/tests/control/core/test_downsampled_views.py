@@ -1,9 +1,7 @@
 """Tests for downsampled well and plate view generation."""
 
-import pickle
 import tempfile
 import os
-from typing import Tuple, List
 
 import numpy as np
 import pytest

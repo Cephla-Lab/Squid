@@ -311,7 +311,10 @@ class DownsampledViewJob(Job):
     z_projection_mode: str = "middle"  # "mip" or "middle"
     skip_saving: bool = False  # Skip TIFF file saving (just generate for display)
 
-    # Class-level accumulator storage (per-process, keyed by well_id)
+    # Class-level accumulator storage keyed by well_id.
+    # Note: This runs inside JobRunner (a multiprocessing.Process), so each worker
+    # process has its own copy of this class variable. It is process-local and
+    # safe to mutate without cross-process synchronization.
     _well_accumulators: ClassVar[Dict[str, WellTileAccumulator]] = {}
 
     def run(self) -> Optional[DownsampledViewResult]:

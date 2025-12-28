@@ -649,7 +649,7 @@ class MultiPointController:
             skip_saving=self.skip_saving,
             # Downsampled view generation parameters
             generate_downsampled_views=control._def.GENERATE_DOWNSAMPLED_VIEWS,
-            downsampled_well_resolutions_um=list(control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM),
+            downsampled_well_resolutions_um=control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
             downsampled_plate_resolution_um=control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
             downsampled_z_projection=control._def.DOWNSAMPLED_Z_PROJECTION,
             plate_num_rows=plate_num_rows,

@@ -430,6 +430,10 @@ class WellTileAccumulator:
             else:
                 # Update running maximum
                 current_tile, pos = self.mip_tiles[key]
+                if current_tile.shape != tile.shape:
+                    raise ValueError(
+                        f"Incompatible tile shapes for MIP at {key}: " f"current={current_tile.shape}, new={tile.shape}"
+                    )
                 np.maximum(current_tile, tile, out=current_tile)  # In-place to save memory
                 self.z_counts[key] += 1
 
