@@ -193,20 +193,12 @@ class ChannelConfigurationManager:
         self.all_configs[self.active_config_type][objective] = config
 
     def save_configurations(self, objective: str) -> None:
-        """Save configurations based on spinning disk configuration"""
-        # Save per-objective settings (new format)
+        """Save per-objective channel settings to JSON.
+
+        Note: XML is no longer written here. XML is only written at acquisition
+        start via write_configuration_selected() to the experiment folder.
+        """
         self._save_objective_settings(objective)
-
-        # Sync all_configs from new format before saving legacy XML
-        if self.channel_definitions:
-            self._sync_all_configs_from_definitions(objective)
-
-        # Also save legacy XML for backward compatibility
-        if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
-            self._save_xml_config(objective, ConfigType.CONFOCAL)
-            self._save_xml_config(objective, ConfigType.WIDEFIELD)
-        else:
-            self._save_xml_config(objective, ConfigType.CHANNEL)
 
     def save_current_configuration_to_path(self, objective: str, path: Path) -> None:
         """Only used in TrackingController. Might be temporary."""
