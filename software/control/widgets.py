@@ -12024,7 +12024,7 @@ class ChannelEditorDialog(QDialog):
             )
             if reply == QMessageBox.Yes:
                 self.channel_manager.remove_channel_definition(
-                    name_item.text(), base_config_path=Path("acquisition_configurations")
+                    name_item.text(), base_config_path=control._def.ACQUISITION_CONFIGURATIONS_PATH
                 )
                 self._load_channels()
                 self.signal_channels_updated.emit()

@@ -375,3 +375,136 @@ class TestChannelDefinitionValidation:
             illumination_source=None,
         )
         assert channel.illumination_source is None
+
+
+class TestMigrationAndCleanup:
+    """Test migration and cleanup functions."""
+
+    @pytest.fixture
+    def temp_config_dir(self):
+        """Create a temporary directory for configurations."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def temp_acquisition_configs(self):
+        """Create a temporary acquisition_configurations structure with XML files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = Path(tmpdir)
+
+            # Create profile/objective structure with XML files
+            for profile in ["default_profile", "profile2"]:
+                for objective in ["10x", "20x"]:
+                    obj_dir = base_path / profile / objective
+                    obj_dir.mkdir(parents=True)
+
+                    # Create a mock XML config file
+                    xml_content = """<?xml version="1.0" encoding="utf-8"?>
+<modes>
+    <mode ID="1" Name="Test Channel" ExposureTime="50.0" AnalogGain="2.0"
+          IlluminationSource="11" IlluminationIntensity="30.0" CameraSN=""
+          ZOffset="0.5" EmissionFilterPosition="1" Selected="false"/>
+</modes>"""
+                    (obj_dir / "channel_configurations.xml").write_text(xml_content)
+
+            yield base_path
+
+    @pytest.fixture
+    def manager_for_migration(self, temp_config_dir):
+        """Create a manager for migration testing."""
+        default_config = ChannelDefinitionsConfig.generate_default()
+        default_file = temp_config_dir / "channel_definitions.default.json"
+        default_config.save(default_file)
+
+        manager = ChannelConfigurationManager(configurations_path=temp_config_dir)
+        return manager
+
+    def test_migrate_all_profiles(self, manager_for_migration, temp_acquisition_configs):
+        """Test that migrate_all_profiles creates JSON files from XML."""
+        # Verify no JSON files and no marker file exist initially
+        for profile_dir in temp_acquisition_configs.iterdir():
+            if not profile_dir.is_dir():
+                continue
+            for obj_dir in profile_dir.iterdir():
+                if not obj_dir.is_dir():
+                    continue
+                assert not (obj_dir / "channel_settings.json").exists()
+                assert (obj_dir / "channel_configurations.xml").exists()
+
+        # Run migration
+        manager_for_migration.migrate_all_profiles(temp_acquisition_configs)
+
+        # Verify JSON files now exist
+        for profile_dir in temp_acquisition_configs.iterdir():
+            if not profile_dir.is_dir():
+                continue
+            for obj_dir in profile_dir.iterdir():
+                if not obj_dir.is_dir():
+                    continue
+                json_file = obj_dir / "channel_settings.json"
+                assert json_file.exists(), f"JSON file not created: {json_file}"
+
+        # Verify marker file was created
+        assert (temp_acquisition_configs / ".migration_complete").exists()
+
+    def test_migrate_all_profiles_skips_existing_json(self, manager_for_migration, temp_acquisition_configs):
+        """Test that migration doesn't overwrite existing JSON files."""
+        # Create a JSON file with custom content
+        obj_dir = temp_acquisition_configs / "default_profile" / "10x"
+        json_file = obj_dir / "channel_settings.json"
+        json_file.write_text('{"Custom Channel": {"exposure_time": 999.0}}')
+
+        # Run migration
+        manager_for_migration.migrate_all_profiles(temp_acquisition_configs)
+
+        # Verify custom content is preserved
+        content = json.loads(json_file.read_text())
+        assert "Custom Channel" in content
+        assert content["Custom Channel"]["exposure_time"] == 999.0
+
+    def test_migrate_all_profiles_handles_errors(self, manager_for_migration, temp_acquisition_configs):
+        """Test that migration continues after encountering errors."""
+        # Create an invalid XML file
+        bad_xml = temp_acquisition_configs / "default_profile" / "10x" / "channel_configurations.xml"
+        bad_xml.write_text("not valid xml <><>")
+
+        # Migration should not raise, just log warning
+        manager_for_migration.migrate_all_profiles(temp_acquisition_configs)
+
+        # Other profiles should still be migrated
+        good_json = temp_acquisition_configs / "profile2" / "10x" / "channel_settings.json"
+        assert good_json.exists()
+
+    def test_cleanup_orphaned_settings(self, manager_for_migration, temp_acquisition_configs):
+        """Test that orphaned settings are cleaned up when channel is deleted."""
+        # First, create JSON settings files with a channel
+        for profile_dir in temp_acquisition_configs.iterdir():
+            if not profile_dir.is_dir():
+                continue
+            for obj_dir in profile_dir.iterdir():
+                if not obj_dir.is_dir():
+                    continue
+                settings = {
+                    "Channel To Delete": {"exposure_time": 100.0, "analog_gain": 1.0},
+                    "Channel To Keep": {"exposure_time": 50.0, "analog_gain": 0.5},
+                }
+                (obj_dir / "channel_settings.json").write_text(json.dumps(settings))
+
+        # Add channel to definitions so we can remove it
+        manager_for_migration.channel_definitions.channels.append(
+            ChannelDefinition(name="Channel To Delete", type=ChannelType.FLUORESCENCE, numeric_channel=1)
+        )
+
+        # Remove channel with cleanup
+        manager_for_migration.remove_channel_definition("Channel To Delete", base_config_path=temp_acquisition_configs)
+
+        # Verify orphaned settings are removed
+        for profile_dir in temp_acquisition_configs.iterdir():
+            if not profile_dir.is_dir():
+                continue
+            for obj_dir in profile_dir.iterdir():
+                if not obj_dir.is_dir():
+                    continue
+                settings = json.loads((obj_dir / "channel_settings.json").read_text())
+                assert "Channel To Delete" not in settings
+                assert "Channel To Keep" in settings

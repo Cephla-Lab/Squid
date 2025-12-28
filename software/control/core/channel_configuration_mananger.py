@@ -137,6 +137,10 @@ class ChannelConfigurationManager:
             xml_content = xml_file.read_bytes()
             legacy_config = ChannelConfig.from_xml(xml_content)
 
+            # Initialize objective settings dict if needed
+            if objective not in self.objective_settings:
+                self.objective_settings[objective] = {}
+
             for mode in legacy_config.modes:
                 self.objective_settings[objective][mode.name] = ObjectiveChannelSettings(
                     exposure_time=mode.exposure_time,
@@ -151,11 +155,18 @@ class ChannelConfigurationManager:
         """Migrate all profiles and objectives from XML to JSON at once.
 
         Should be called once at app startup to ensure all existing
-        XML configs are migrated to the new JSON format.
+        XML configs are migrated to the new JSON format. Uses a marker
+        file to skip scanning on subsequent runs.
         """
         if not base_config_path.exists():
             return
 
+        # Check for migration complete marker
+        marker_file = base_config_path / ".migration_complete"
+        if marker_file.exists():
+            return
+
+        migrated_any = False
         for profile_dir in base_config_path.iterdir():
             if not profile_dir.is_dir():
                 continue
@@ -170,11 +181,24 @@ class ChannelConfigurationManager:
 
                 # Only migrate if JSON doesn't exist but XML does
                 if not json_file.exists() and xml_file.exists():
-                    self._log.info(f"Migrating {profile_dir.name}/{objective}")
                     old_root = self.config_root
-                    self.config_root = profile_dir
-                    self._migrate_from_xml_if_needed(objective)
-                    self.config_root = old_root
+                    try:
+                        self._log.info(f"Migrating {profile_dir.name}/{objective}")
+                        self.config_root = profile_dir
+                        self._migrate_from_xml_if_needed(objective)
+                        migrated_any = True
+                    except Exception as e:
+                        self._log.warning(f"Failed to migrate {profile_dir.name}/{objective}: {e}")
+                    finally:
+                        self.config_root = old_root
+
+        # Create marker file to skip scanning on future runs
+        try:
+            marker_file.touch()
+            if migrated_any:
+                self._log.info("Migration complete, marker file created")
+        except Exception as e:
+            self._log.warning(f"Failed to create migration marker: {e}")
 
     def _load_xml_config(self, objective: str, config_type: ConfigType) -> None:
         """Load XML configuration for a specific config type, generating default if needed"""
@@ -197,29 +221,6 @@ class ChannelConfigurationManager:
             self._load_xml_config(objective, ConfigType.WIDEFIELD)
         else:
             self._load_xml_config(objective, ConfigType.CHANNEL)
-
-    def _save_xml_config(self, objective: str, config_type: ConfigType) -> None:
-        """Save XML configuration for a specific config type"""
-        if objective not in self.all_configs[config_type]:
-            return
-
-        config = self.all_configs[config_type][objective]
-        save_path = self.config_root / objective / f"{config_type.value}_configurations.xml"
-
-        if not save_path.parent.exists():
-            save_path.parent.mkdir(parents=True)
-
-        xml_str = config.to_xml(pretty_print=True, encoding="utf-8")
-        save_path.write_bytes(xml_str)
-
-    def _sync_all_configs_from_definitions(self, objective: str) -> None:
-        """Sync all_configs from channel_definitions for legacy XML compatibility"""
-        if not self.channel_definitions:
-            return
-
-        modes = [self._build_channel_mode(ch, objective) for ch in self.channel_definitions.channels]
-        config = ChannelConfig(modes=modes)
-        self.all_configs[self.active_config_type][objective] = config
 
     def save_configurations(self, objective: str) -> None:
         """Save per-objective channel settings to JSON.
