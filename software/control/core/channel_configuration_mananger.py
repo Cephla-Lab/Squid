@@ -194,7 +194,7 @@ class ChannelConfigurationManager:
                         self._migrate_from_xml_if_needed(objective)
                         migrated_any = True
                     except Exception as e:
-                        self._log.warning(f"Failed to migrate {profile_dir.name}/{objective}: {e}")
+                        self._log.warning(f"Failed to migrate {profile_dir.name}/{objective}: {type(e).__name__}: {e}")
                     finally:
                         self.config_root = old_root
 
@@ -259,8 +259,8 @@ class ChannelConfigurationManager:
         else:
             illumination_source = channel_def.illumination_source or 0
 
-        # Generate a stable ID based on channel name (using SHA-256 for cross-session stability)
-        channel_id = str(int(hashlib.sha256(channel_def.name.encode()).hexdigest()[:8], 16) % 100000)
+        # Generate a stable ID based on channel name using full SHA-256 hex digest for uniqueness
+        channel_id = hashlib.sha256(channel_def.name.encode()).hexdigest()
 
         return ChannelMode(
             id=channel_id,
@@ -344,7 +344,7 @@ class ChannelConfigurationManager:
         # First check if using new format
         if self.channel_definitions:
             for ch in self.channel_definitions.channels:
-                ch_id = str(int(hashlib.sha256(ch.name.encode()).hexdigest()[:8], 16) % 100000)
+                ch_id = hashlib.sha256(ch.name.encode()).hexdigest()
                 if ch_id == config_id:
                     return ch.name
 
@@ -383,7 +383,18 @@ class ChannelConfigurationManager:
         filename.write_bytes(xml_str)
 
     def get_channel_configurations_for_objective(self, objective: str) -> List[ChannelMode]:
-        """Get Configuration objects for current active type (alias for get_configurations)"""
+        """Backward-compatible alias for :meth:`get_configurations`.
+
+        This method exists to support legacy code that expects the name
+        `get_channel_configurations_for_objective`. New code should call
+        :meth:`get_configurations` directly. The behavior is identical.
+
+        Args:
+            objective: The objective name (e.g., "10x", "20x")
+
+        Returns:
+            List of ChannelMode objects for the objective
+        """
         return self.get_configurations(objective)
 
     def get_channel_configuration_by_name(self, objective: str, name: str) -> Optional[ChannelMode]:

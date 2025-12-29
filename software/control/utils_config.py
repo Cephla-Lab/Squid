@@ -90,7 +90,9 @@ class ChannelDefinition(BaseModel):
             if mapping:
                 return mapping.illumination_source
             raise ValueError(
-                f"Fluorescence channel '{self.name}' has no mapping for numeric_channel {self.numeric_channel}"
+                f"Fluorescence channel '{self.name}' has no numeric_channel_mapping entry "
+                f"for numeric_channel {self.numeric_channel}. "
+                f"Check your numeric_channel_mapping configuration and add a mapping for this channel."
             )
 
     def get_ex_wavelength(self, numeric_channel_mapping: Dict[str, NumericChannelMapping]) -> Optional[int]:

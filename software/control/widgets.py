@@ -11997,7 +11997,7 @@ class ChannelEditorDialog(QDialog):
             color_btn = QPushButton()
             color_btn.setStyleSheet(f"background-color: {channel.display_color};")
             color_btn.setProperty("color", channel.display_color)
-            color_btn.clicked.connect(lambda checked, r=row: self._pick_color(r))
+            color_btn.clicked.connect(lambda _checked, r=row: self._pick_color(r))
             self.table.setCellWidget(row, 7, color_btn)
 
     def _pick_color(self, row):
@@ -12194,6 +12194,24 @@ class AddChannelDialog(QDialog):
         name = self.name_edit.text().strip()
         if not name:
             QMessageBox.warning(self, "Validation Error", "Channel name cannot be empty.")
+            return
+
+        # Validate name length for filesystem safety
+        max_length = 64
+        if len(name) > max_length:
+            QMessageBox.warning(
+                self, "Validation Error", f"Channel name is too long (maximum {max_length} characters)."
+            )
+            return
+
+        # Validate name format for filesystem safety (no special characters)
+        invalid_chars = r'<>:"/\|?*'
+        if any(c in name for c in invalid_chars):
+            QMessageBox.warning(
+                self,
+                "Validation Error",
+                f"Channel name contains invalid characters. Avoid: {invalid_chars}",
+            )
             return
 
         # Check for duplicate names

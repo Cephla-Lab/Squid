@@ -371,14 +371,18 @@ class Microscope:
             self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
             self.addons.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
-    def _sync_confocal_mode_from_hardware(self) -> None:
+    def _sync_confocal_mode_from_hardware(self) -> bool:
         """Sync confocal mode state from spinning disk hardware.
 
         Queries the actual hardware state (XLight disk position or Dragonfly modality)
         and updates the channel configuration manager accordingly.
         This ensures correct channel settings are used in both GUI and headless modes.
+
+        Returns:
+            True if sync was successful, False if hardware query failed.
         """
         confocal_mode = False
+        sync_successful = True
 
         if self.addons.dragonfly is not None:
             try:
@@ -386,6 +390,7 @@ class Microscope:
                 confocal_mode = modality == "CONFOCAL" if modality else False
             except Exception as e:
                 self._log.warning(f"Could not query Dragonfly modality: {e}")
+                sync_successful = False
         elif self.addons.xlight is not None:
             try:
                 # XLight returns 0 for widefield, 1 for confocal
@@ -393,8 +398,10 @@ class Microscope:
                 confocal_mode = bool(disk_position)
             except Exception as e:
                 self._log.warning(f"Could not query XLight disk position: {e}")
+                sync_successful = False
 
         self.channel_configuration_mananger.sync_confocal_mode_from_hardware(confocal_mode)
+        return sync_successful
 
     def set_confocal_mode(self, confocal: bool) -> None:
         """Set confocal/widefield mode and move the spinning disk.
