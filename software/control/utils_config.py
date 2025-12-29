@@ -46,6 +46,11 @@ class NumericChannelMapping(BaseModel):
     ex_wavelength: int
 
 
+# Channel name constraints (also enforced in UI, but validated here for direct JSON edits)
+CHANNEL_NAME_MAX_LENGTH = 64
+CHANNEL_NAME_INVALID_CHARS = '<>:"/\\|?*\0'
+
+
 class ChannelDefinition(BaseModel):
     """Definition of a single imaging channel"""
 
@@ -60,6 +65,19 @@ class ChannelDefinition(BaseModel):
     illumination_source: Optional[int] = None
     # Excitation wavelength (for fluorescence, derived from numeric_channel_mapping)
     ex_wavelength: Optional[int] = None
+
+    @field_validator("name", mode="after")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        """Validate channel name constraints"""
+        if not v or not v.strip():
+            raise ValueError("Channel name cannot be empty")
+        if len(v) > CHANNEL_NAME_MAX_LENGTH:
+            raise ValueError(f"Channel name exceeds maximum length of {CHANNEL_NAME_MAX_LENGTH} characters")
+        invalid_found = [c for c in CHANNEL_NAME_INVALID_CHARS if c in v]
+        if invalid_found:
+            raise ValueError(f"Channel name contains invalid characters: {invalid_found}")
+        return v
 
     @field_validator("display_color", mode="before")
     @classmethod
@@ -219,8 +237,20 @@ class ChannelDefinitionsConfig(BaseModel):
             with open(path, "r") as f:
                 data = json.load(f)
             return cls(**data)
-        except (IOError, json.JSONDecodeError) as e:
-            raise IOError(f"Failed to load channel definitions from {path}: {e}")
+        except FileNotFoundError:
+            raise IOError(
+                f"Channel definitions file not found: {path}. "
+                f"Delete any partial config files and restart to regenerate defaults."
+            )
+        except json.JSONDecodeError as e:
+            raise IOError(
+                f"Invalid JSON in channel definitions file {path}: {e}. "
+                f"Check the file for syntax errors or restore from channel_definitions.default.json."
+            )
+        except PermissionError:
+            raise IOError(
+                f"Permission denied reading {path}. " "Check file permissions and ensure the file is not locked."
+            )
 
     @classmethod
     def generate_default(cls) -> "ChannelDefinitionsConfig":

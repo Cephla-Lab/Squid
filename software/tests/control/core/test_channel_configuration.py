@@ -131,6 +131,47 @@ class TestChannelDefinition:
         )
         assert channel.get_ex_wavelength({}) is None
 
+    def test_name_validation_empty_name_rejected(self):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            ChannelDefinition(
+                name="",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=0,
+            )
+
+    def test_name_validation_whitespace_only_rejected(self):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            ChannelDefinition(
+                name="   ",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=0,
+            )
+
+    def test_name_validation_too_long_rejected(self):
+        long_name = "A" * 65  # exceeds 64 char limit
+        with pytest.raises(ValueError, match="exceeds maximum length"):
+            ChannelDefinition(
+                name=long_name,
+                type=ChannelType.LED_MATRIX,
+                illumination_source=0,
+            )
+
+    def test_name_validation_invalid_chars_rejected(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            ChannelDefinition(
+                name="Test<Channel>",
+                type=ChannelType.LED_MATRIX,
+                illumination_source=0,
+            )
+
+    def test_name_validation_valid_name_accepted(self):
+        channel = ChannelDefinition(
+            name="Fluorescence 488 nm Ex",
+            type=ChannelType.FLUORESCENCE,
+            numeric_channel=1,
+        )
+        assert channel.name == "Fluorescence 488 nm Ex"
+
 
 class TestConfocalOverrides:
     """Test ConfocalOverrides model."""

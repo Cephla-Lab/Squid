@@ -2519,7 +2519,6 @@ class LiveControlWidget(QFrame):
         self.entry_triggerFPS.setValue(self.fps_trigger)
         self.entry_triggerFPS.setDecimals(0)
 
-        # line 2: choose microscope mode / toggle live mode (only enabled channels)
         self.dropdown_modeSelection = QComboBox()
         for microscope_configuration in self.channelConfigurationManager.get_enabled_configurations(
             self.objectiveStore.current_objective
@@ -11872,10 +11871,12 @@ class ChannelEditorDialog(QDialog):
 
     signal_channels_updated = Signal()
 
-    def __init__(self, channel_configuration_manager, parent=None):
+    def __init__(self, channel_configuration_manager, parent=None, base_config_path=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.channel_manager = channel_configuration_manager
+        # Allow injection of base_config_path for testability; default to global config
+        self.base_config_path = base_config_path or control._def.ACQUISITION_CONFIGURATIONS_PATH
         self.setWindowTitle("Channel Configuration Editor")
         self.setMinimumSize(900, 600)
         self._setup_ui()
@@ -12039,9 +12040,7 @@ class ChannelEditorDialog(QDialog):
                 self, "Confirm Removal", f"Remove channel '{name_item.text()}'?", QMessageBox.Yes | QMessageBox.No
             )
             if reply == QMessageBox.Yes:
-                self.channel_manager.remove_channel_definition(
-                    name_item.text(), base_config_path=control._def.ACQUISITION_CONFIGURATIONS_PATH
-                )
+                self.channel_manager.remove_channel_definition(name_item.text(), base_config_path=self.base_config_path)
                 self._load_channels()
                 self.signal_channels_updated.emit()
 
@@ -12191,23 +12190,23 @@ class AddChannelDialog(QDialog):
 
     def _validate_and_accept(self):
         """Validate input before accepting"""
+        from control.utils_config import CHANNEL_NAME_MAX_LENGTH, CHANNEL_NAME_INVALID_CHARS
+
         name = self.name_edit.text().strip()
         if not name:
             QMessageBox.warning(self, "Validation Error", "Channel name cannot be empty.")
             return
 
         # Validate name length for filesystem safety
-        max_length = 64
-        if len(name) > max_length:
+        if len(name) > CHANNEL_NAME_MAX_LENGTH:
             QMessageBox.warning(
-                self, "Validation Error", f"Channel name is too long (maximum {max_length} characters)."
+                self, "Validation Error", f"Channel name is too long (maximum {CHANNEL_NAME_MAX_LENGTH} characters)."
             )
             return
 
         # Validate name format for filesystem safety (no special characters)
         # Use strictest set that covers both Windows and Unix restrictions
-        invalid_chars = '<>:"/\\|?*\0'
-        if any(c in name for c in invalid_chars):
+        if any(c in name for c in CHANNEL_NAME_INVALID_CHARS):
             QMessageBox.warning(
                 self,
                 "Validation Error",

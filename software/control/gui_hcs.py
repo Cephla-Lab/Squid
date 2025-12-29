@@ -1114,9 +1114,11 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveControlWidget.currentConfiguration.name
                 )
             )
-            # Note: Initial confocal state sync is handled in Microscope.__init__ by querying
-            # hardware directly. No need to sync here again - the signal connection above
-            # will handle any subsequent toggles by the user.
+            # INITIALIZATION ORDER: Confocal state sync happens in Microscope.__init__ BEFORE
+            # this GUI code runs. The microscope queries hardware state and calls
+            # channel_configuration_mananger.sync_confocal_mode_from_hardware() during init.
+            # The signal connection above handles subsequent user-initiated toggles only.
+            # See Microscope._sync_confocal_mode_from_hardware() for the initial sync logic.
 
         # Connect to plot xyz data when coordinates are saved
         self.multipointController.signal_coordinates.connect(self.zPlotWidget.add_point)

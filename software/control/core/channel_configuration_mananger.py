@@ -246,6 +246,10 @@ class ChannelConfigurationManager:
 
         Uses effective settings based on current confocal_mode - if confocal mode is active
         and the channel has confocal overrides, those values are used instead of base settings.
+
+        Note: Settings are lazily initialized with defaults when not found. These in-memory
+        defaults are NOT persisted to disk until the user explicitly changes a value.
+        This avoids creating files for channels the user hasn't configured yet.
         """
         base_settings = self.objective_settings.get(objective, {}).get(channel_def.name, ObjectiveChannelSettings())
 
@@ -397,7 +401,16 @@ class ChannelConfigurationManager:
         return self.get_configurations(objective)
 
     def get_channel_configuration_by_name(self, objective: str, name: str) -> Optional[ChannelMode]:
-        """Get Configuration object by name"""
+        """Get a channel configuration by its name.
+
+        Args:
+            objective: The objective name (e.g., "10x", "20x")
+            name: The channel name to look up (e.g., "Fluorescence 488 nm Ex")
+
+        Returns:
+            The ChannelMode if found, or None if no channel with that name exists.
+            Callers should handle the None case appropriately.
+        """
         return next((mode for mode in self.get_configurations(objective) if mode.name == name), None)
 
     def toggle_confocal_widefield(self, confocal) -> None:
@@ -457,26 +470,43 @@ class ChannelConfigurationManager:
         self.channel_definitions.channels.append(channel)
         self.save_channel_definitions()
 
-    def remove_channel_definition(self, channel_name: str, base_config_path: Path = None) -> None:
+    def remove_channel_definition(self, channel_name: str, base_config_path: Path = None) -> List[str]:
         """Remove a channel definition and clean up orphaned settings.
 
         Args:
             channel_name: Name of the channel to remove
             base_config_path: Path to acquisition_configurations folder for cleanup.
                               If None, only removes from definitions without cleanup.
+
+        Returns:
+            List of error messages from cleanup. Empty if no cleanup was performed
+            or all cleanups succeeded. Errors are also logged individually.
         """
         if not self.channel_definitions:
-            return
+            return []
 
         self.channel_definitions.channels = [ch for ch in self.channel_definitions.channels if ch.name != channel_name]
         self.save_channel_definitions()
 
         # Clean up orphaned settings from all profile/objective channel_settings.json files
         if base_config_path and base_config_path.exists():
-            self._cleanup_orphaned_settings(base_config_path, channel_name)
+            return self._cleanup_orphaned_settings(base_config_path, channel_name)
+        return []
 
-    def _cleanup_orphaned_settings(self, base_config_path: Path, channel_name: str) -> None:
-        """Remove orphaned channel settings from all profiles and objectives."""
+    def _cleanup_orphaned_settings(self, base_config_path: Path, channel_name: str) -> List[str]:
+        """Remove orphaned channel settings from all profiles and objectives.
+
+        Args:
+            base_config_path: Path to acquisition_configurations folder
+            channel_name: Name of the channel to remove
+
+        Returns:
+            List of error messages for any files that failed to clean up.
+            Empty list if all cleanups succeeded.
+        """
+        errors = []
+        cleaned_count = 0
+
         for profile_dir in base_config_path.iterdir():
             if not profile_dir.is_dir():
                 continue
@@ -497,16 +527,27 @@ class ChannelConfigurationManager:
                         del data[channel_name]
                         with open(settings_file, "w") as f:
                             json.dump(data, f, indent=2)
-                        self._log.info(f"Removed orphaned settings for '{channel_name}' from {settings_file}")
+                        cleaned_count += 1
                 except json.JSONDecodeError as e:
-                    self._log.error(
-                        f"Failed to parse JSON in {settings_file} while cleaning up settings for "
-                        f"'{channel_name}': {e}"
-                    )
+                    error_msg = f"{settings_file}: Invalid JSON - {e}"
+                    errors.append(error_msg)
+                    self._log.error(f"Failed to parse JSON in {settings_file}: {e}")
                 except PermissionError as e:
+                    error_msg = f"{settings_file}: Permission denied"
+                    errors.append(error_msg)
                     self._log.error(f"Permission denied accessing {settings_file}: {e}")
                 except Exception as e:
+                    error_msg = f"{settings_file}: {type(e).__name__}: {e}"
+                    errors.append(error_msg)
                     self._log.warning(f"Failed to clean up {settings_file}: {type(e).__name__}: {e}")
+
+        if cleaned_count > 0:
+            self._log.info(f"Cleaned up orphaned settings for '{channel_name}' from {cleaned_count} file(s)")
+
+        if errors:
+            self._log.warning(f"Cleanup completed with {len(errors)} error(s) for channel '{channel_name}'")
+
+        return errors
 
     def set_channel_enabled(self, channel_name: str, enabled: bool) -> None:
         """Enable or disable a channel"""
