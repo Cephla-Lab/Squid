@@ -11876,7 +11876,7 @@ class ChannelEditorDialog(QDialog):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.channel_manager = channel_configuration_manager
         # Allow injection of base_config_path for testability; default to global config
-        self.base_config_path = base_config_path or control._def.ACQUISITION_CONFIGURATIONS_PATH
+        self.base_config_path = base_config_path or ACQUISITION_CONFIGURATIONS_PATH
         self.setWindowTitle("Channel Configuration Editor")
         self.setMinimumSize(900, 600)
         self._setup_ui()
