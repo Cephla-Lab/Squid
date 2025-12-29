@@ -351,7 +351,6 @@ class HighContentScreeningGui(QMainWindow):
         self.objectivesWidget: Optional[widgets.ObjectivesWidget] = None
         self.filterControllerWidget: Optional[widgets.FilterControllerWidget] = None
         self.squidFilterWidget: Optional[widgets.SquidFilterWidget] = None
-        self.recordingControlWidget: Optional[widgets.RecordingWidget] = None
         self.wellplateFormatWidget: Optional[widgets.WellplateFormatWidget] = None
         self.wellSelectionWidget: Optional[widgets.WellSelectionWidget] = None
         self.focusMapWidget: Optional[widgets.FocusMapWidget] = None
@@ -602,7 +601,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.emission_filter_wheel, self.liveController
             )
 
-        self.recordingControlWidget = widgets.RecordingWidget(self.streamHandler, self.imageSaver)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
             self.stage, self.navigationViewer, self.streamHandler, self.liveController
         )
@@ -799,10 +797,6 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.addTab(self.templateMultiPointWidget, "Template Multipoint")
         if RUN_FLUIDICS:
             self.recordTabWidget.addTab(self.multiPointWithFluidicsWidget, "Multipoint with Fluidics")
-        if ENABLE_TRACKING:
-            self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
-        if ENABLE_RECORDING:
-            self.recordTabWidget.addTab(self.recordingControlWidget, "Simple Recording")
         self.recordTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.recordTabWidget))
         self.resizeCurrentTab(self.recordTabWidget)
 

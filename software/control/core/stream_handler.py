@@ -3,7 +3,6 @@ import time
 from typing import Callable
 
 import numpy as np
-import cv2
 
 from control import utils
 import control._def
