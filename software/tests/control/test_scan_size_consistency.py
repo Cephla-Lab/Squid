@@ -7,7 +7,6 @@ point counting) rather than an exact geometric area calculation.
 """
 
 import math
-import pytest
 
 from control.core.geometry_utils import (
     get_effective_well_size,

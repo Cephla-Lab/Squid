@@ -5181,18 +5181,16 @@ class WellplateMultiPointWidget(QFrame):
         self._log.debug(f"Time acquisition {'enabled' if checked else 'disabled'}")
 
     def store_xy_mode_parameters(self, mode):
-        """Store current scan size, coverage, and shape parameters for the given XY mode"""
+        """Store current scan size and shape parameters for the given XY mode.
+
+        Coverage is not stored as it is derived from scan_size, FOV, and overlap.
+        """
         if mode in self.stored_xy_params:
-            # Always store scan size and scan shape
             self.stored_xy_params[mode]["scan_size"] = self.entry_scan_size.value()
             self.stored_xy_params[mode]["scan_shape"] = self.combobox_shape.currentText()
 
-            # Only store coverage for Select Wells mode (Current Position uses N/A)
-            if mode == "Select Wells":
-                self.stored_xy_params[mode]["coverage"] = self.entry_well_coverage.value()
-
     def restore_xy_mode_parameters(self, mode):
-        """Restore stored scan size, coverage, and shape parameters for the given XY mode"""
+        """Restore stored scan size and shape parameters for the given XY mode."""
         if mode in self.stored_xy_params:
             # Restore scan size for both Current Position and Select Wells modes
             if self.stored_xy_params[mode]["scan_size"] is not None:
@@ -5498,14 +5496,11 @@ class WellplateMultiPointWidget(QFrame):
             self.combobox_shape.blockSignals(False)
             self.entry_scan_size.blockSignals(False)
         else:
-            # update stored settings for "Select Wells" mode for use later
-            coverage = 100
-            self.stored_xy_params["Select Wells"]["coverage"] = coverage
-
-            # Calculate scan size from well size and coverage
+            # Update stored settings for "Select Wells" mode for use later.
+            # Coverage is derived from scan_size, so we only store scan_size and shape.
             if "glass slide" not in self.navigationViewer.sample:
                 effective_well_size = self.get_effective_well_size()
-                scan_size = round((coverage / 100) * effective_well_size, 3)
+                scan_size = round(effective_well_size, 3)
                 self.stored_xy_params["Select Wells"]["scan_size"] = scan_size
             else:
                 # For glass slide, use default scan size
