@@ -715,8 +715,9 @@ USE_NAPARI_FOR_LIVE_CONTROL = False
 LIVE_ONLY_MODE = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 
-# Downsampled view generation (for Select Well Mode)
-GENERATE_DOWNSAMPLED_VIEWS = False  # Set to True to enable plate view generation
+# Downsampled well image generation (for Select Well Mode)
+GENERATE_DOWNSAMPLED_WELL_IMAGES = False  # Set to True to generate downsampled well TIFFs
+DISPLAY_PLATE_VIEW = False  # Set to True to show plate view tab during acquisition
 DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
 DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
 DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP

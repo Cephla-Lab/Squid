@@ -17,19 +17,25 @@ This is useful for monitoring acquisition progress and quickly identifying wells
 In your `_def.py` configuration file:
 
 ```python
-# Enable downsampled view generation
-GENERATE_DOWNSAMPLED_VIEWS = True
+# Enable downsampled well image generation (saves TIFF files)
+GENERATE_DOWNSAMPLED_WELL_IMAGES = True
+
+# Enable plate view display during acquisition
+DISPLAY_PLATE_VIEW = True
 ```
 
-The feature is disabled by default to avoid surprises for existing users.
+Both features are disabled by default to avoid surprises for existing users.
 
 ## Configuration Options
 
 All configuration options are in `control/_def.py`:
 
 ```python
-# Enable/disable the feature
-GENERATE_DOWNSAMPLED_VIEWS = False  # Set to True to enable
+# Enable/disable downsampled well TIFF generation
+GENERATE_DOWNSAMPLED_WELL_IMAGES = False  # Set to True to save well TIFFs
+
+# Enable/disable plate view tab in GUI
+DISPLAY_PLATE_VIEW = False  # Set to True to show plate view during acquisition
 
 # Per-well image resolutions (µm/pixel)
 DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
@@ -111,7 +117,7 @@ When the feature is enabled and you're running a well-based acquisition without 
 ### When is Plate View Available?
 
 The Plate View tab appears when:
-1. `GENERATE_DOWNSAMPLED_VIEWS = True`
+1. `DISPLAY_PLATE_VIEW = True`
 2. Acquisition mode is "Select Wells" OR "Load Coordinates" with well-based regions
 3. No z-stacking (NZ = 1)
 
@@ -235,7 +241,7 @@ The JobRunner subprocess needs ~600ms to initialize (Python module imports). Thi
 ## Troubleshooting
 
 ### Plate view not appearing
-- Check `GENERATE_DOWNSAMPLED_VIEWS = True` in `_def.py`
+- Check `DISPLAY_PLATE_VIEW = True` in `_def.py`
 - Verify acquisition mode is "Select Wells" or well-based "Load Coordinates"
 - Ensure NZ = 1 (no z-stacking)
 
@@ -260,7 +266,8 @@ The JobRunner subprocess needs ~600ms to initialize (Python module imports). Thi
 
 | Constant | Type | Default | Description |
 |----------|------|---------|-------------|
-| `GENERATE_DOWNSAMPLED_VIEWS` | bool | False | Enable feature |
+| `GENERATE_DOWNSAMPLED_WELL_IMAGES` | bool | False | Enable well TIFF generation |
+| `DISPLAY_PLATE_VIEW` | bool | False | Show plate view tab in GUI |
 | `DOWNSAMPLED_WELL_RESOLUTIONS_UM` | List[float] | [5, 10, 20] | Per-well image resolutions |
 | `DOWNSAMPLED_PLATE_RESOLUTION_UM` | float | 10.0 | Plate view resolution |
 | `DOWNSAMPLED_Z_PROJECTION` | ZProjectionMode | MIP | Z-projection mode |
