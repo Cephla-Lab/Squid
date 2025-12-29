@@ -31,4 +31,5 @@
 - **setuptools:** Project packaging and distribution
 - **pytest:** Testing framework (with `pytest-qt` and `pytest-xvfb`)
 - **black:** Code formatting
+- **pydantic:** Data validation and centralized state management
 - **pydantic_xml:** XML serialization/deserialization for configurations

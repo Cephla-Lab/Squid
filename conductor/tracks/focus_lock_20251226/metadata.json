@@ -1,0 +1,8 @@
+{
+  "track_id": "focus_lock_20251226",
+  "type": "feature",
+  "status": "new",
+  "created_at": "2025-12-26T15:35:00Z",
+  "updated_at": "2025-12-26T15:35:00Z",
+  "description": "Implement a feature for continuous laser-based AF, which runs continuously in closed-loop mode except when doing an acquisition of an FOV."
+}

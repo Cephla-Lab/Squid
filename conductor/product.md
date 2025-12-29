@@ -25,3 +25,4 @@ The primary goal of the Squid software is to provide a robust and flexible platf
 ## Focus Areas
 - **Stability and Performance:** Ensuring robust operation for long-duration automated acquisitions.
 - **UX/UI Enhancement:** Continual improvement of the user interface for better usability and accessibility across all user types.
+- **Architectural Modularity:** Transitioning to a decoupled, event-driven architecture to improve maintainability and performance.
