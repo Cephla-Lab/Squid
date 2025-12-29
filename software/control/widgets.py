@@ -4649,9 +4649,10 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_dt.valueChanged.connect(self.multipointController.set_deltat)
         self.entry_Nt.valueChanged.connect(self.multipointController.set_Nt)
         self.entry_overlap.valueChanged.connect(self.update_coordinates)
+        self.entry_overlap.valueChanged.connect(self.update_coverage_from_scan_size)
         self.entry_scan_size.valueChanged.connect(self.update_coordinates)
         self.entry_scan_size.valueChanged.connect(self.update_coverage_from_scan_size)
-        self.entry_well_coverage.valueChanged.connect(self.update_scan_size_from_coverage)
+        # Coverage is read-only, derived from scan_size, FOV, and overlap
         self.combobox_shape.currentTextChanged.connect(self.on_shape_changed)
         self.checkbox_withAutofocus.toggled.connect(self.multipointController.set_af_flag)
         self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
@@ -5091,20 +5092,18 @@ class WellplateMultiPointWidget(QFrame):
                     self.coverage_label.setVisible(True)
                     self.entry_well_coverage.setVisible(True)
             elif xy_mode == "Select Wells":
-                # For Select Wells mode, coverage should be enabled (but read-only, derived from scan_size)
+                # For Select Wells mode, coverage is read-only (derived from scan_size, FOV, overlap)
                 self.entry_well_coverage.blockSignals(True)
-                self.entry_well_coverage.setRange(1, 999.99)  # Restore normal range
+                self.entry_well_coverage.setRange(0, 999.99)  # Allow any display value
                 self.entry_well_coverage.setSuffix("%")
+                self.entry_well_coverage.setReadOnly(True)
                 self.entry_well_coverage.blockSignals(False)
 
                 # Derive coverage from current scan_size (scan_size is the source of truth)
                 self.update_coverage_from_scan_size()
 
-                # Enable coverage unless it's glass slide mode
-                if "glass slide" not in self.navigationViewer.sample:
-                    self.entry_well_coverage.setEnabled(True)
-                else:
-                    self.entry_well_coverage.setEnabled(False)
+                # Coverage is always read-only but visually enabled for display
+                self.entry_well_coverage.setEnabled(True)
 
                 # show the row of scan shape, scan size and coverage
                 self.scan_shape_label.setVisible(True)
@@ -5477,7 +5476,6 @@ class WellplateMultiPointWidget(QFrame):
         if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Select Wells":
             self._log.debug(f"Sample Format: {self.navigationViewer.sample}")
             self.combobox_shape.blockSignals(True)
-            self.entry_well_coverage.blockSignals(True)
             self.entry_scan_size.blockSignals(True)
 
             self.set_default_shape()
@@ -5487,17 +5485,16 @@ class WellplateMultiPointWidget(QFrame):
                     0.1
                 )  # init to 0.1mm when switching to 'glass slide' (for imaging a single FOV by default)
                 self.entry_scan_size.setEnabled(True)
-                self.entry_well_coverage.setEnabled(False)
             else:
-                self.entry_well_coverage.setEnabled(True)
-                # entry_well_coverage.valueChanged signal will not emit coverage = 100 already
-                self.entry_well_coverage.setValue(100)
-                self.update_scan_size_from_coverage()
+                # Set scan_size to effective well size (100% coverage)
+                effective_well_size = self.get_effective_well_size()
+                self.entry_scan_size.setValue(round(effective_well_size, 3))
 
+            # Coverage is read-only, derive it from scan_size
+            self.update_coverage_from_scan_size()
             self.update_coordinates()
 
             self.combobox_shape.blockSignals(False)
-            self.entry_well_coverage.blockSignals(False)
             self.entry_scan_size.blockSignals(False)
         else:
             # update stored settings for "Select Wells" mode for use later
@@ -5555,13 +5552,11 @@ class WellplateMultiPointWidget(QFrame):
         self.update_coordinates()
 
     def on_shape_changed(self):
-        # Called when scan shape changes - keep coverage constant, update scan_size
-        # This ensures the scan area adapts to fit the new shape within the well
+        # Called when scan shape changes - scan_size stays constant, coverage updates
+        # (coverage is read-only, derived from scan_size and effective_well_size)
         if self.combobox_xy_mode.currentText() == "Select Wells":
-            self.update_scan_size_from_coverage()
-        else:
-            # Other modes (Current Position, Manual, Load Coordinates) don't use coverage
-            self.update_coordinates()
+            self.update_coverage_from_scan_size()
+        self.update_coordinates()
 
     def update_manual_shape(self, shapes_data_mm):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
@@ -5585,29 +5580,101 @@ class WellplateMultiPointWidget(QFrame):
 
     def update_coverage_from_scan_size(self):
         if "glass slide" not in self.navigationViewer.sample:
-            effective_well_size = self.get_effective_well_size()
+            well_size_mm = self.scanCoordinates.well_size_mm
             scan_size = self.entry_scan_size.value()
-            coverage = round((scan_size / effective_well_size) * 100, 2)
+            overlap_percent = self.entry_overlap.value()
+            fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
+            shape = self.combobox_shape.currentText()
+            is_round_well = self.scanCoordinates.format not in ["384 well plate", "1536 well plate"]
+
+            # Calculate coverage = (well area covered by tiles) / well_area × 100
+            coverage = self._calculate_well_coverage(scan_size, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well)
+
             self.entry_well_coverage.blockSignals(True)
             self.entry_well_coverage.setValue(coverage)
             self.entry_well_coverage.blockSignals(False)
-            self._log.debug(f"Coverage: {coverage}")
+            self._log.debug(f"Coverage: {coverage}%")
 
-    def update_scan_size_from_coverage(self):
-        if "glass slide" in self.navigationViewer.sample:
-            return  # Glass slide has no well size, skip
-        effective_well_size = self.get_effective_well_size()
-        if effective_well_size <= 0:
-            return  # Guard against division issues
-        coverage = self.entry_well_coverage.value()
-        scan_size = round((coverage / 100) * effective_well_size, 3)
-        # Block signals to prevent cascade: scan_size change -> coverage update -> scan_size change
-        self.entry_scan_size.blockSignals(True)
-        self.entry_scan_size.setValue(scan_size)
-        self.entry_scan_size.blockSignals(False)
-        self._log.debug(f"Scan size: {scan_size}")
-        # Manually update coordinates since we blocked the signal
-        self.update_coordinates()
+    def _calculate_well_coverage(self, scan_size_mm, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well):
+        """Calculate what fraction of the well is actually covered by FOV tiles."""
+        step_size = fov_size_mm * (1 - overlap_percent / 100)
+        if step_size <= 0 or scan_size_mm <= 0 or well_size_mm <= 0:
+            return 0
+
+        # Get tile positions
+        tiles = self._get_tile_positions(scan_size_mm, fov_size_mm, overlap_percent, shape)
+        if not tiles:
+            return 0
+
+        well_radius = well_size_mm / 2
+        fov_half = fov_size_mm / 2
+
+        # Grid sampling to calculate coverage
+        resolution = 100  # Sample points per dimension
+        covered = 0
+        total = 0
+
+        for i in range(resolution):
+            for j in range(resolution):
+                x = -well_radius + (2 * well_radius * i / resolution)
+                y = -well_radius + (2 * well_radius * j / resolution)
+
+                # Check if point is inside well
+                if is_round_well:
+                    if x * x + y * y > well_radius * well_radius:
+                        continue
+                else:
+                    if abs(x) > well_radius or abs(y) > well_radius:
+                        continue
+
+                total += 1
+
+                # Check if covered by any tile
+                for tx, ty in tiles:
+                    if abs(x - tx) <= fov_half and abs(y - ty) <= fov_half:
+                        covered += 1
+                        break
+
+        return round((covered / total) * 100, 2) if total > 0 else 0
+
+    def _get_tile_positions(self, scan_size_mm, fov_size_mm, overlap_percent, shape):
+        """Get tile center positions matching scan_coordinates.py logic."""
+        step_size = fov_size_mm * (1 - overlap_percent / 100)
+        if step_size <= 0 or scan_size_mm <= 0:
+            return [(0, 0)]
+
+        steps = math.floor(scan_size_mm / step_size)
+
+        if shape == "Circle":
+            tile_diagonal = math.sqrt(2) * fov_size_mm
+            if steps % 2 == 1:
+                actual = (steps - 1) * step_size + tile_diagonal
+            else:
+                actual = math.sqrt(((steps - 1) * step_size + fov_size_mm) ** 2 + (step_size + fov_size_mm) ** 2)
+            if actual > scan_size_mm and steps > 1:
+                steps -= 1
+
+        steps = max(1, steps)
+        half_steps = (steps - 1) / 2
+        scan_radius_sq = (scan_size_mm / 2) ** 2
+        fov_half = fov_size_mm / 2
+
+        tiles = []
+        for i in range(steps):
+            y = (i - half_steps) * step_size
+            for j in range(steps):
+                x = (j - half_steps) * step_size
+                if shape == "Circle":
+                    corners_in = all(
+                        (x + dx) ** 2 + (y + dy) ** 2 <= scan_radius_sq
+                        for dx, dy in [(-fov_half, -fov_half), (fov_half, -fov_half), (-fov_half, fov_half), (fov_half, fov_half)]
+                    )
+                    if corners_in:
+                        tiles.append((x, y))
+                else:
+                    tiles.append((x, y))
+
+        return tiles if tiles else [(0, 0)]
 
     def update_dz(self):
         z_min = self.entry_minZ.value()
@@ -5702,21 +5769,18 @@ class WellplateMultiPointWidget(QFrame):
             self.scanCoordinates.set_well_coordinates(scan_size_mm, overlap_percent, shape)
 
     def handle_objective_change(self):
-        """Handle objective change - update scan_size to maintain coverage percentage.
+        """Handle objective change - update coverage display.
 
-        When the objective changes, the FOV size changes, which affects the effective
-        well size for Circle shapes. This method recalculates scan_size from the current
-        coverage to maintain the same coverage percentage with the new effective well size.
+        When the objective changes, the FOV size changes, which affects both the
+        effective well size (for Circle shapes) and the coverage calculation.
+        Scan_size stays constant; coverage is recalculated.
         """
         if self.tab_widget and self.tab_widget.currentWidget() != self:
             return
         if self.combobox_xy_mode.currentText() == "Select Wells":
-            # Recalculate scan_size from coverage to maintain the same coverage percentage
-            # with the new effective well size (which depends on FOV size)
-            # Note: update_scan_size_from_coverage also calls update_coordinates
-            self.update_scan_size_from_coverage()
-        else:
-            self.update_coordinates()
+            # Coverage is read-only, derived from scan_size and FOV
+            self.update_coverage_from_scan_size()
+        self.update_coordinates()
 
     def update_well_coordinates(self, selected):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
