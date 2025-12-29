@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, List, Dict, Optional
 import hashlib
 import json
+import shutil
 
 from control.utils_config import (
     ChannelConfig,
@@ -75,8 +76,6 @@ class ChannelConfigurationManager:
         if not user_file.exists():
             # Copy from default if available, otherwise generate
             if default_file.exists():
-                import shutil
-
                 shutil.copy(default_file, user_file)
                 self._log.info(f"Copied default channel definitions to {user_file}")
             else:
