@@ -25,7 +25,7 @@ from control.core.multi_point_worker import MultiPointWorker
 from control.core.objective_store import ObjectiveStore
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
-from squid.abc import CameraFrame, AbstractCamera, AbstractStage
+from squid.abc import AbstractCamera, AbstractStage
 import squid.logging
 
 

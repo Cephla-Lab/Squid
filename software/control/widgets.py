@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 import squid.logging
-from control.core.core import LiveController
+from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
@@ -34,13 +34,10 @@ from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
 import re
 import cv2
 import math
-import locale
 import time
 from datetime import datetime
 import itertools
 import numpy as np
-from scipy.spatial import Delaunay
-import shutil
 from control._def import *
 from PIL import Image, ImageDraw, ImageFont
 

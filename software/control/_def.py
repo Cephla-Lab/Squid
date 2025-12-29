@@ -7,7 +7,7 @@ from typing import Union
 import json
 import csv
 import squid.logging
-from enum import Enum, auto
+from enum import Enum
 
 log = squid.logging.get_logger(__name__)
 

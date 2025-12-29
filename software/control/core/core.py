@@ -1,7 +1,5 @@
 # set QT_API environment variable
 import os
-import sys
-import tempfile
 
 # qt libraries
 os.environ["QT_API"] = "pyqt5"
@@ -18,19 +16,14 @@ from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
 from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController
-from control.core.multi_point_worker import MultiPointWorker
 from control.core.objective_store import ObjectiveStore
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.stream_handler import StreamHandlerFunctions, StreamHandler
 from control.microcontroller import Microcontroller
-from control.piezo import PiezoStage
-from squid.abc import AbstractStage, AbstractCamera, CameraAcquisitionMode, CameraFrame
+from squid.abc import AbstractStage, AbstractCamera, CameraFrame
 import control._def
 import control.serial_peripherals as serial_peripherals
 import control.utils as utils
-import control.utils_acquisition as utils_acquisition
-import control.utils_channel as utils_channel
-import control.utils_config as utils_config
 import squid.logging
 
 
@@ -39,14 +32,11 @@ from queue import Queue
 from threading import Thread, Lock
 from pathlib import Path
 from datetime import datetime
-from enum import Enum
-from control.utils_config import ChannelConfig, ChannelMode, LaserAFConfig
+from control.utils_config import ChannelConfig, ChannelMode
 import time
-import itertools
 import json
 import math
 import numpy as np
-import pandas as pd
 import cv2
 import imageio as iio
 import squid.abc

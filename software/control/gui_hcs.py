@@ -14,7 +14,6 @@ from control.core.scan_coordinates import (
 )
 
 os.environ["QT_API"] = "pyqt5"
-import serial
 import time
 from typing import Any, Optional
 import numpy as np
@@ -42,12 +41,10 @@ from control.core.multi_point_utils import (
 )
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
-from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.utils_config import ChannelMode
-from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
-import control.lighting
+from squid.abc import AbstractCamera, AbstractStage
 import control.microscope
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
@@ -59,10 +56,6 @@ import squid.stage.utils
 
 log = squid.logging.get_logger(__name__)
 
-if USE_PRIOR_STAGE:
-    import squid.stage.prior
-else:
-    import squid.stage.cephla
 from control.piezo import PiezoStage
 
 if USE_XERYON:

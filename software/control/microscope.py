@@ -1,4 +1,3 @@
-import serial
 from typing import Optional, TypeVar
 
 import control._def
@@ -15,7 +14,6 @@ from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.serial_peripherals import SciMicroscopyLEDArray
 from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
-from squid.stage.utils import move_z_axis_to_safety_position
 from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
 import control.celesta
@@ -26,7 +24,6 @@ import squid.camera.utils
 import squid.config
 import squid.filter_wheel_controller.utils
 import squid.logging
-import squid.stage.cephla
 import squid.stage.utils
 
 if control._def.USE_XERYON:
