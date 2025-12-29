@@ -41,7 +41,12 @@ class TestWellCoverage:
                 if shape == "Circle":
                     corners_in = all(
                         (x + dx) ** 2 + (y + dy) ** 2 <= scan_radius_sq
-                        for dx, dy in [(-fov_half, -fov_half), (fov_half, -fov_half), (-fov_half, fov_half), (fov_half, fov_half)]
+                        for dx, dy in [
+                            (-fov_half, -fov_half),
+                            (fov_half, -fov_half),
+                            (-fov_half, fov_half),
+                            (fov_half, fov_half),
+                        ]
                     )
                     if corners_in:
                         tiles.append((x, y))
@@ -50,10 +55,12 @@ class TestWellCoverage:
 
         return tiles if tiles else [(0, 0)]
 
-    def calculate_well_coverage(self, scan_size_mm, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well=True):
+    def calculate_well_coverage(
+        self, scan_size_mm, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well=True
+    ):
         """Calculate what fraction of the well is actually covered by FOV tiles."""
         tiles = self.get_tile_positions(scan_size_mm, fov_size_mm, overlap_percent, shape)
-        
+
         well_radius = well_size_mm / 2
         fov_half = fov_size_mm / 2
 
@@ -87,7 +94,7 @@ class TestWellCoverage:
         well_size = 15.54
         fov = 3.9
         overlap = 10
-        
+
         coverage = self.calculate_well_coverage(15.0, fov, overlap, "Circle", well_size)
         assert coverage < 100, f"15mm scan should have partial coverage, got {coverage}%"
         assert coverage > 0, "Should have some coverage"
@@ -97,10 +104,10 @@ class TestWellCoverage:
         well_size = 15.54
         fov = 3.9
         overlap = 10
-        
+
         cov_15 = self.calculate_well_coverage(15.0, fov, overlap, "Circle", well_size)
         cov_16 = self.calculate_well_coverage(16.0, fov, overlap, "Circle", well_size)
-        
+
         assert cov_16 > cov_15, f"16mm should cover more than 15mm: {cov_16}% vs {cov_15}%"
 
     def test_coverage_capped_at_100(self):
@@ -108,7 +115,7 @@ class TestWellCoverage:
         well_size = 15.54
         fov = 3.9
         overlap = 10
-        
+
         # Even with large scan, coverage of well cannot exceed 100%
         coverage = self.calculate_well_coverage(30.0, fov, overlap, "Circle", well_size)
         assert coverage <= 100, f"Coverage should not exceed 100%, got {coverage}%"

@@ -5588,7 +5588,9 @@ class WellplateMultiPointWidget(QFrame):
             is_round_well = self.scanCoordinates.format not in ["384 well plate", "1536 well plate"]
 
             # Calculate coverage = (well area covered by tiles) / well_area × 100
-            coverage = self._calculate_well_coverage(scan_size, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well)
+            coverage = self._calculate_well_coverage(
+                scan_size, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well
+            )
 
             self.entry_well_coverage.blockSignals(True)
             self.entry_well_coverage.setValue(coverage)
@@ -5667,7 +5669,12 @@ class WellplateMultiPointWidget(QFrame):
                 if shape == "Circle":
                     corners_in = all(
                         (x + dx) ** 2 + (y + dy) ** 2 <= scan_radius_sq
-                        for dx, dy in [(-fov_half, -fov_half), (fov_half, -fov_half), (-fov_half, fov_half), (fov_half, fov_half)]
+                        for dx, dy in [
+                            (-fov_half, -fov_half),
+                            (fov_half, -fov_half),
+                            (-fov_half, fov_half),
+                            (fov_half, fov_half),
+                        ]
                     )
                     if corners_in:
                         tiles.append((x, y))
