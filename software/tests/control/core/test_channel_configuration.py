@@ -580,6 +580,39 @@ class TestChannelDefinitionValidation:
         )
         assert channel.illumination_source is None
 
+    def test_invalid_numeric_channel_mapping_raises_at_load(self):
+        """Test that invalid numeric_channel mapping is caught at config load time."""
+        from pydantic import ValidationError
+
+        # Create config with fluorescence channel referencing non-existent mapping
+        with pytest.raises(ValidationError) as exc_info:
+            ChannelDefinitionsConfig(
+                channels=[
+                    ChannelDefinition(
+                        name="Test Fluorescence",
+                        type=ChannelType.FLUORESCENCE,
+                        numeric_channel=99,  # No mapping for this
+                    )
+                ],
+                numeric_channel_mapping={"1": {"illumination_source": 11, "ex_wavelength": 488}},
+            )
+        assert "numeric_channel 99" in str(exc_info.value)
+        assert "no mapping exists" in str(exc_info.value)
+
+    def test_valid_numeric_channel_mapping_passes(self):
+        """Test that valid numeric_channel mapping passes validation."""
+        config = ChannelDefinitionsConfig(
+            channels=[
+                ChannelDefinition(
+                    name="Test Fluorescence",
+                    type=ChannelType.FLUORESCENCE,
+                    numeric_channel=1,
+                )
+            ],
+            numeric_channel_mapping={"1": {"illumination_source": 11, "ex_wavelength": 488}},
+        )
+        assert len(config.channels) == 1
+
 
 class TestMigrationAndCleanup:
     """Test migration and cleanup functions."""

@@ -175,6 +175,24 @@ class ChannelDefinitionsConfig(BaseModel):
     channels: List[ChannelDefinition] = []
     numeric_channel_mapping: Dict[str, NumericChannelMapping] = {}
 
+    @model_validator(mode="after")
+    def validate_channel_mappings(self):
+        """Validate that all fluorescence channels have valid numeric_channel mappings.
+
+        This catches configuration errors at startup rather than during use.
+        """
+        for channel in self.channels:
+            if channel.type == ChannelType.FLUORESCENCE and channel.numeric_channel is not None:
+                if str(channel.numeric_channel) not in self.numeric_channel_mapping:
+                    available = list(self.numeric_channel_mapping.keys()) or ["(none defined)"]
+                    raise ValueError(
+                        f"Fluorescence channel '{channel.name}' references numeric_channel "
+                        f"{channel.numeric_channel}, but no mapping exists for it. "
+                        f"Available mappings: {available}. "
+                        f"Add a mapping for '{channel.numeric_channel}' in numeric_channel_mapping."
+                    )
+        return self
+
     def get_enabled_channels(self) -> List[ChannelDefinition]:
         """Get list of enabled channels only"""
         return [ch for ch in self.channels if ch.enabled]
