@@ -1114,11 +1114,9 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveControlWidget.currentConfiguration.name
                 )
             )
-            # Sync initial confocal state from hardware after signal connections are established
-            # This ensures the manager state matches the actual hardware state at startup
-            self.channelConfigurationManager.sync_confocal_mode_from_hardware(
-                self.spinningDiskConfocalWidget.get_confocal_mode()
-            )
+            # Note: Initial confocal state sync is handled in Microscope.__init__ by querying
+            # hardware directly. No need to sync here again - the signal connection above
+            # will handle any subsequent toggles by the user.
 
         # Connect to plot xyz data when coordinates are saved
         self.multipointController.signal_coordinates.connect(self.zPlotWidget.add_point)
