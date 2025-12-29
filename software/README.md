@@ -11,32 +11,6 @@ Reboot the computer to finish the installation.
 ## Optional or Hardware-specific dependencies
 
 <details>
-<summary>image stitching dependencies (optional)</summary>
-For optional image stitching using ImageJ, additionally run the following:
-
-```
-sudo apt-get update
-sudo apt-get install openjdk-11-jdk
-sudo apt-get install maven
-pip3 install pyimagej
-pip3 instlal scyjava
-pip3 install tifffile
-pip3 install imagecodecs
-```
-
-Then, add the following line to the top of `/etc/environment` (needs to be edited with `sudo [your text editor]`):
-```
-JAVA_HOME=/usr/lib/jvm/default-java
-```
-Then, add the following lines to the top of `~/.bashrc` (or whichever file your terminal sources upon startup):
-```
-source /etc/environment
-export JAVA_HOME = $JAVA_HOME
-export PATH=$JAVA_HOME/bin:$PATH
-```
-</details>
-
-<details>
 <summary>Installing drivers and libraries for FLIR camera support</summary>
 Go to FLIR's page for downloading their Spinnaker SDK (https://www.flir.com/support/products/spinnaker-sdk/) and register.
 

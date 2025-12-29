@@ -14,7 +14,6 @@ from control.core.scan_coordinates import (
 )
 
 os.environ["QT_API"] = "pyqt5"
-import serial
 import time
 from typing import Any, Optional
 import numpy as np
@@ -42,12 +41,10 @@ from control.core.multi_point_utils import (
 )
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
-from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.utils_config import ChannelMode
-from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
-import control.lighting
+from squid.abc import AbstractCamera, AbstractStage
 import control.microscope
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
@@ -59,10 +56,6 @@ import squid.stage.utils
 
 log = squid.logging.get_logger(__name__)
 
-if USE_PRIOR_STAGE:
-    import squid.stage.prior
-else:
-    import squid.stage.cephla
 from control.piezo import PiezoStage
 
 if USE_XERYON:
@@ -75,8 +68,6 @@ import control.core.core as core
 import control.microcontroller as microcontroller
 import control.serial_peripherals as serial_peripherals
 
-if SUPPORT_LASER_AUTOFOCUS:
-    import control.core_displacement_measurement as core_displacement_measurement
 
 SINGLE_WINDOW = True  # set to False if use separate windows for display and control
 
@@ -300,9 +291,6 @@ class HighContentScreeningGui(QMainWindow):
         self.liveController_focus_camera: Optional[AbstractCamera] = None
         self.streamHandler_focus_camera: Optional[StreamHandler] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
-        self.displacementMeasurementController: Optional[
-            core_displacement_measurement.DisplacementMeasurementController
-        ] = None
         self.laserAutofocusController: Optional[LaserAutofocusController] = None
 
         if SUPPORT_LASER_AUTOFOCUS:
@@ -311,7 +299,6 @@ class HighContentScreeningGui(QMainWindow):
                 accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live
             )
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(show_LUT=False, autoLevels=False)
-            self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
             self.laserAutofocusController = LaserAutofocusController(
                 self.microcontroller,
                 self.camera_focus,
@@ -334,7 +321,6 @@ class HighContentScreeningGui(QMainWindow):
         self.autofocusController: AutoFocusController = None
         self.imageSaver: core.ImageSaver = core.ImageSaver()
         self.imageDisplay: core.ImageDisplay = core.ImageDisplay()
-        self.trackingController: core.TrackingController = None
         self.navigationViewer: core.NavigationViewer = None
         self.scanCoordinates: Optional[ScanCoordinates] = None
         self.load_objects(is_simulation=is_simulation)
@@ -357,14 +343,11 @@ class HighContentScreeningGui(QMainWindow):
         self.objectivesWidget: Optional[widgets.ObjectivesWidget] = None
         self.filterControllerWidget: Optional[widgets.FilterControllerWidget] = None
         self.squidFilterWidget: Optional[widgets.SquidFilterWidget] = None
-        self.recordingControlWidget: Optional[widgets.RecordingWidget] = None
         self.wellplateFormatWidget: Optional[widgets.WellplateFormatWidget] = None
         self.wellSelectionWidget: Optional[widgets.WellSelectionWidget] = None
         self.focusMapWidget: Optional[widgets.FocusMapWidget] = None
         self.cameraSettingWidget_focus_camera: Optional[widgets.CameraSettingsWidget] = None
         self.laserAutofocusSettingWidget: Optional[widgets.LaserAutofocusSettingWidget] = None
-        self.waveformDisplay: Optional[widgets.WaveformDisplay] = None
-        self.displacementMeasurementWidget: Optional[widgets.DisplacementMeasurementWidget] = None
         self.laserAutofocusControlWidget: Optional[widgets.LaserAutofocusControlWidget] = None
         self.fluidicsWidget: Optional[widgets.FluidicsWidget] = None
         self.flexibleMultiPointWidget: Optional[widgets.FlexibleMultiPointWidget] = None
@@ -372,12 +355,10 @@ class HighContentScreeningGui(QMainWindow):
         self.templateMultiPointWidget: Optional[TemplateMultiPointWidget] = None
         self.multiPointWithFluidicsWidget: Optional[widgets.MultiPointWithFluidicsWidget] = None
         self.sampleSettingsWidget: Optional[widgets.SampleSettingsWidget] = None
-        self.trackingControlWidget: Optional[widgets.TrackingControllerWidget] = None
         self.napariLiveWidget: Optional[widgets.NapariLiveWidget] = None
         self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
         self.napariMultiChannelWidget: Optional[widgets.NapariMultiChannelWidget] = None
-        self.imageArrayDisplayWindow: Optional[core.ImageArrayDisplayWindow] = None
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
 
         self.recordTabWidget: QTabWidget = QTabWidget()
@@ -446,17 +427,6 @@ class HighContentScreeningGui(QMainWindow):
         self.autofocusController = QtAutoFocusController(
             self.camera, self.stage, self.liveController, self.microcontroller, self.nl5
         )
-        if ENABLE_TRACKING:
-            self.trackingController = core.TrackingController(
-                self.camera,
-                self.microcontroller,
-                self.stage,
-                self.objectiveStore,
-                self.channelConfigurationManager,
-                self.liveController,
-                self.autofocusController,
-                self.imageDisplayWindow,
-            )
         if WELLPLATE_FORMAT == "glass slide" and IS_HCS:
             self.navigationViewer = core.NavigationViewer(self.objectiveStore, self.camera, sample="4 glass slide")
         else:
@@ -610,7 +580,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.emission_filter_wheel, self.liveController
             )
 
-        self.recordingControlWidget = widgets.RecordingWidget(self.streamHandler, self.imageSaver)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
             self.stage, self.navigationViewer, self.streamHandler, self.liveController
         )
@@ -644,10 +613,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.laserAutofocusController,
                 stretch=False,
             )  # ,show_display_options=True)
-            self.waveformDisplay = widgets.WaveformDisplay(N=1000, include_x=True, include_y=False)
-            self.displacementMeasurementWidget = widgets.DisplacementMeasurementWidget(
-                self.displacementMeasurementController, self.waveformDisplay
-            )
             self.laserAutofocusControlWidget: widgets.LaserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(
                 self.laserAutofocusController, self.liveController
             )
@@ -658,13 +623,9 @@ class HighContentScreeningGui(QMainWindow):
 
         self.imageDisplayTabs = QTabWidget(parent=self)
         if self.live_only_mode:
-            if ENABLE_TRACKING:
-                self.imageDisplayWindow = core.ImageDisplayWindow(self.liveController, self.contrastManager)
-                self.imageDisplayWindow.show_ROI_selector()
-            else:
-                self.imageDisplayWindow = core.ImageDisplayWindow(
-                    self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
-                )
+            self.imageDisplayWindow = core.ImageDisplayWindow(
+                self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
+            )
             self.imageDisplayTabs = self.imageDisplayWindow.widget
             self.napariMosaicDisplayWidget = None
         else:
@@ -715,14 +676,6 @@ class HighContentScreeningGui(QMainWindow):
         )
         self.sampleSettingsWidget = widgets.SampleSettingsWidget(self.objectivesWidget, self.wellplateFormatWidget)
 
-        if ENABLE_TRACKING:
-            self.trackingControlWidget = widgets.TrackingControllerWidget(
-                self.trackingController,
-                self.objectiveStore,
-                self.channelConfigurationManager,
-                show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
-            )
-
         self.setupRecordTabWidget()
         self.setupCameraTabWidget()
 
@@ -739,24 +692,16 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.imageDisplayTabs.addTab(self.napariLiveWidget, "Live View")
         else:
-            if ENABLE_TRACKING:
-                self.imageDisplayWindow = core.ImageDisplayWindow(self.liveController, self.contrastManager)
-                self.imageDisplayWindow.show_ROI_selector()
-            else:
-                self.imageDisplayWindow = core.ImageDisplayWindow(
-                    self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
-                )
+            self.imageDisplayWindow = core.ImageDisplayWindow(
+                self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
+            )
             self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
 
         if not self.live_only_mode:
-            if USE_NAPARI_FOR_MULTIPOINT:
-                self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
-                    self.objectiveStore, self.camera, self.contrastManager
-                )
-                self.imageDisplayTabs.addTab(self.napariMultiChannelWidget, "Multichannel Acquisition")
-            else:
-                self.imageArrayDisplayWindow = core.ImageArrayDisplayWindow()
-                self.imageDisplayTabs.addTab(self.imageArrayDisplayWindow.widget, "Multichannel Acquisition")
+            self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
+                self.objectiveStore, self.camera, self.contrastManager
+            )
+            self.imageDisplayTabs.addTab(self.napariMultiChannelWidget, "Multichannel Acquisition")
 
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
@@ -791,25 +736,11 @@ class HighContentScreeningGui(QMainWindow):
             dock_laserfocus_liveController.setStretch(x=100, y=100)
             dock_laserfocus_liveController.setFixedWidth(self.laserAutofocusSettingWidget.minimumSizeHint().width())
 
-            dock_waveform = dock.Dock("Displacement Measurement", autoOrientation=False)
-            dock_waveform.showTitleBar()
-            dock_waveform.addWidget(self.waveformDisplay)
-            dock_waveform.setStretch(x=100, y=40)
-
-            dock_displayMeasurement = dock.Dock("Displacement Measurement Control", autoOrientation=False)
-            dock_displayMeasurement.showTitleBar()
-            dock_displayMeasurement.addWidget(self.displacementMeasurementWidget)
-            dock_displayMeasurement.setStretch(x=100, y=40)
-            dock_displayMeasurement.setFixedWidth(self.displacementMeasurementWidget.minimumSizeHint().width())
-
             laserfocus_dockArea = dock.DockArea()
             laserfocus_dockArea.addDock(dock_laserfocus_image_display)
             laserfocus_dockArea.addDock(
                 dock_laserfocus_liveController, "right", relativeTo=dock_laserfocus_image_display
             )
-            if SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS:
-                laserfocus_dockArea.addDock(dock_waveform, "bottom", relativeTo=dock_laserfocus_liveController)
-                laserfocus_dockArea.addDock(dock_displayMeasurement, "bottom", relativeTo=dock_waveform)
 
             self.imageDisplayTabs.addTab(laserfocus_dockArea, self.LASER_BASED_FOCUS_TAB_NAME)
 
@@ -825,10 +756,6 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.addTab(self.templateMultiPointWidget, "Template Multipoint")
         if RUN_FLUIDICS:
             self.recordTabWidget.addTab(self.multiPointWithFluidicsWidget, "Multipoint with Fluidics")
-        if ENABLE_TRACKING:
-            self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
-        if ENABLE_RECORDING:
-            self.recordTabWidget.addTab(self.recordingControlWidget, "Simple Recording")
         self.recordTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.recordTabWidget))
         self.resizeCurrentTab(self.recordTabWidget)
 
@@ -1081,13 +1008,6 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.streamHandler_focus_camera.image_to_display.connect(self.imageDisplayWindow_focus.display_image)
 
-            self.streamHandler_focus_camera.image_to_display.connect(
-                self.displacementMeasurementController.update_measurement
-            )
-            self.displacementMeasurementController.signal_plots.connect(self.waveformDisplay.plot)
-            self.displacementMeasurementController.signal_readings.connect(
-                self.displacementMeasurementWidget.display_readings
-            )
             self.laserAutofocusController.image_to_display.connect(self.imageDisplayWindow_focus.display_image)
 
             # Add connection for piezo position updates
@@ -1182,54 +1102,51 @@ class HighContentScreeningGui(QMainWindow):
 
         if not self.live_only_mode:
             # Setup multichannel widget connections
-            if USE_NAPARI_FOR_MULTIPOINT:
-                self.napari_connections["napariMultiChannelWidget"] = [
-                    (self.multipointController.napari_layers_init, self.napariMultiChannelWidget.initLayers),
-                    (self.multipointController.napari_layers_update, self.napariMultiChannelWidget.updateLayers),
-                ]
+            self.napari_connections["napariMultiChannelWidget"] = [
+                (self.multipointController.napari_layers_init, self.napariMultiChannelWidget.initLayers),
+                (self.multipointController.napari_layers_update, self.napariMultiChannelWidget.updateLayers),
+            ]
 
-                if ENABLE_FLEXIBLE_MULTIPOINT:
-                    self.napari_connections["napariMultiChannelWidget"].extend(
-                        [
-                            (
-                                self.flexibleMultiPointWidget.signal_acquisition_channels,
-                                self.napariMultiChannelWidget.initChannels,
-                            ),
-                            (
-                                self.flexibleMultiPointWidget.signal_acquisition_shape,
-                                self.napariMultiChannelWidget.initLayersShape,
-                            ),
-                        ]
-                    )
+            if ENABLE_FLEXIBLE_MULTIPOINT:
+                self.napari_connections["napariMultiChannelWidget"].extend(
+                    [
+                        (
+                            self.flexibleMultiPointWidget.signal_acquisition_channels,
+                            self.napariMultiChannelWidget.initChannels,
+                        ),
+                        (
+                            self.flexibleMultiPointWidget.signal_acquisition_shape,
+                            self.napariMultiChannelWidget.initLayersShape,
+                        ),
+                    ]
+                )
 
-                if ENABLE_WELLPLATE_MULTIPOINT:
-                    self.napari_connections["napariMultiChannelWidget"].extend(
-                        [
-                            (
-                                self.wellplateMultiPointWidget.signal_acquisition_channels,
-                                self.napariMultiChannelWidget.initChannels,
-                            ),
-                            (
-                                self.wellplateMultiPointWidget.signal_acquisition_shape,
-                                self.napariMultiChannelWidget.initLayersShape,
-                            ),
-                        ]
-                    )
-                if RUN_FLUIDICS:
-                    self.napari_connections["napariMultiChannelWidget"].extend(
-                        [
-                            (
-                                self.multiPointWithFluidicsWidget.signal_acquisition_channels,
-                                self.napariMultiChannelWidget.initChannels,
-                            ),
-                            (
-                                self.multiPointWithFluidicsWidget.signal_acquisition_shape,
-                                self.napariMultiChannelWidget.initLayersShape,
-                            ),
-                        ]
-                    )
-            else:
-                self.multipointController.image_to_display_multi.connect(self.imageArrayDisplayWindow.display_image)
+            if ENABLE_WELLPLATE_MULTIPOINT:
+                self.napari_connections["napariMultiChannelWidget"].extend(
+                    [
+                        (
+                            self.wellplateMultiPointWidget.signal_acquisition_channels,
+                            self.napariMultiChannelWidget.initChannels,
+                        ),
+                        (
+                            self.wellplateMultiPointWidget.signal_acquisition_shape,
+                            self.napariMultiChannelWidget.initLayersShape,
+                        ),
+                    ]
+                )
+            if RUN_FLUIDICS:
+                self.napari_connections["napariMultiChannelWidget"].extend(
+                    [
+                        (
+                            self.multiPointWithFluidicsWidget.signal_acquisition_channels,
+                            self.napariMultiChannelWidget.initChannels,
+                        ),
+                        (
+                            self.multiPointWithFluidicsWidget.signal_acquisition_shape,
+                            self.napariMultiChannelWidget.initLayersShape,
+                        ),
+                    ]
+                )
 
             # Setup mosaic display widget connections
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
@@ -1342,11 +1259,8 @@ class HighContentScreeningGui(QMainWindow):
             print(configs)
             if USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
                 self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
-
-            elif USE_NAPARI_FOR_MULTIPOINT:
-                self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
             else:
-                self.imageDisplayTabs.setCurrentIndex(0)
+                self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
 
     def openLedMatrixSettings(self):
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
@@ -1646,7 +1560,6 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplay.close()
         if not SINGLE_WINDOW:
             self.imageDisplayWindow.close()
-            self.imageArrayDisplayWindow.close()
             self.tabbedImageDisplayWindow.close()
 
         self.microcontroller.close()

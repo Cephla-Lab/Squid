@@ -75,12 +75,6 @@ class ChannelConfigurationManager:
             # Save only channel configurations
             self._save_xml_config(objective, ConfigType.CHANNEL)
 
-    def save_current_configuration_to_path(self, objective: str, path: Path) -> None:
-        """Only used in TrackingController. Might be temporary."""
-        config = self.all_configs[self.active_config_type][objective]
-        xml_str = config.to_xml(pretty_print=True, encoding="utf-8")
-        path.write_bytes(xml_str)
-
     def get_configurations(self, objective: str) -> List[ChannelMode]:
         """Get channel modes for current active type"""
         config = self.all_configs[self.active_config_type].get(objective)

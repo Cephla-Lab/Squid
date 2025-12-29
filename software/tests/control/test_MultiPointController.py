@@ -204,7 +204,7 @@ def test_multi_point_controller_mosaic_ram_disabled():
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = original_use_napari
 
 
-class TestAcquisitionTracker:
+class AcquisitionTracker:
     def __init__(self):
         self.started_event = threading.Event()
         self.finished_event = threading.Event()
@@ -270,7 +270,7 @@ def select_some_configs(mpc: MultiPointController, objective: str):
 def test_multi_point_controller_basic_acquisition():
     control._def.MERGE_CHANNELS = False
     scope = control.microscope.Microscope.build_from_global_config(True)
-    tt = TestAcquisitionTracker()
+    tt = AcquisitionTracker()
     mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
 
     add_some_coordinates(mpc)
@@ -294,7 +294,7 @@ def test_multi_point_with_laser_af():
     control._def.MERGE_CHANNELS = False
     control._def.SUPPORT_LASER_AUTOFOCUS = True
     scope = control.microscope.Microscope.build_from_global_config(True)
-    tt = TestAcquisitionTracker()
+    tt = AcquisitionTracker()
 
     mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
 
@@ -324,7 +324,7 @@ def test_multi_point_with_contrast_af():
     control._def.MERGE_CHANNELS = False
 
     scope = control.microscope.Microscope.build_from_global_config(True)
-    tt = TestAcquisitionTracker()
+    tt = AcquisitionTracker()
 
     mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
 
