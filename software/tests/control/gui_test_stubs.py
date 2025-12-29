@@ -15,17 +15,17 @@ from tests.tools import get_repo_root
 import tests.control.test_stubs as ts
 
 
-def get_test_configuration_manager_path() -> pathlib.Path:
+def get_test_configuration_mananger_path() -> pathlib.Path:
     return get_repo_root() / "acquisition_configurations"
 
 
-def get_test_configuration_manager() -> ConfigurationManager:
+def get_test_configuration_mananger() -> ConfigurationManager:
     channel_manager = ChannelConfigurationManager()
     laser_af_manager = LaserAFSettingManager()
     return ConfigurationManager(
         channel_manager=channel_manager,
         laser_af_manager=laser_af_manager,
-        base_config_path=get_test_configuration_manager_path(),
+        base_config_path=get_test_configuration_mananger_path(),
     )
 
 
@@ -54,7 +54,7 @@ def get_test_qt_multi_point_controller(microscope: Microscope) -> QtMultiPointCo
         autofocus_controller=ts.get_test_autofocus_controller(
             microscope.camera, microscope.stage, live_controller, microscope.low_level_drivers.microcontroller
         ),
-        channel_configuration_manager=microscope.channel_configuration_manager,
+        channel_configuration_mananger=microscope.channel_configuration_mananger,
         scan_coordinates=ts.get_test_scan_coordinates(microscope.objective_store, microscope.stage, microscope.camera),
         objective_store=microscope.objective_store,
         laser_autofocus_controller=ts.get_test_laser_autofocus_controller(microscope),

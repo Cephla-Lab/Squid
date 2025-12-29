@@ -108,7 +108,7 @@ def plot_calibration_test(data: pd.DataFrame, wavelength: int, output_dir: Path)
 
 def main():
     # Parameters
-    WAVELENGTHS = [405, 470, 638]  # Wavelengths to test
+    WAVELENGTHS = [405, 470, 555, 638, 730]  # Wavelengths to test
     POWER_PERCENTAGES = np.arange(0, 101, 5)  # Test every 5% from 0 to 100%
     NUM_MEASUREMENTS = 5  # Number of measurements to average at each power level
     DELAY = 0.1  # Delay between measurements
@@ -126,7 +126,7 @@ def main():
 
     # Initialize illumination controller
     mcu = microcontroller.Microcontroller(
-        serial_device=microcontroller.get_microcontroller_serial_device(version=CONTROLLER_VERSION, sn="12770310")
+        serial_device=microcontroller.get_microcontroller_serial_device(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)
     )
     controller = IlluminationController(
         mcu,
@@ -148,7 +148,7 @@ def main():
         print(f"Saved test data to {output_file}")
 
         # Generate and save test plot
-        plot_calibration_test(test_data, wavelength, output_dir)
+        # plot_calibration_test(test_data, wavelength, output_dir)
 
     print("\nCalibration testing complete!")
 

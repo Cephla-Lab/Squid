@@ -190,10 +190,10 @@ class TucsenCamera(AbstractCamera):
     def _get_model_properties(camera_model: TucsenCameraModel) -> TucsenModelProperties:
         if camera_model == TucsenCameraModel.DHYANA_400BSI_V3:
             binning_to_resolution = {
-                0: (2048, 2048),
+                (1, 1): (2048, 2048),
                 # 1: (2048, 2048),  # Code 1 is enhance mode, which will modify pixel values. We don't use it.
-                2: (1024, 1024),
-                3: (512, 512),
+                (2, 2): (1024, 1024),
+                (4, 4): (512, 512),
             }
             binning_to_set_value = {
                 (1, 1): 0,
@@ -210,8 +210,14 @@ class TucsenCamera(AbstractCamera):
             is_genicam = False
         elif camera_model == TucsenCameraModel.FL26_BW:
             # TODO: Support binning for FL26BW model
-            binning_to_resolution = {}
-            binning_to_set_value = {}
+            binning_to_resolution = {
+                (1, 1): (6240, 4168),
+                (2, 2): (3120, 2084),
+            }
+            binning_to_set_value = {
+                (1, 1): 0,
+                (2, 2): 1,
+            }
             mode_to_line_rate_us = {
                 ModeFL26BW.STANDARD: 34.67,
                 ModeFL26BW.LOW_NOISE: 69.3,
@@ -570,7 +576,7 @@ class TucsenCamera(AbstractCamera):
                 != TUCAMRET.TUCAMRET_SUCCESS
             ):
                 raise CameraError("Failed to get resolution")
-            return self._model_properties.binning_to_resolution[idx.value]
+            return self._model_properties.binning_to_resolution[self._binning]
 
     def get_pixel_size_unbinned_um(self) -> float:
         return self._model_properties.pixel_size_um

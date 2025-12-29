@@ -205,3 +205,53 @@ def add_file_logging(log_filename, replace_existing=False):
         new_handler.doRollover()
 
     return True
+
+
+def add_file_handler(log_filename, replace_existing=False, level=py_logging.DEBUG) -> Optional[py_logging.Handler]:
+    """
+    Attach a plain FileHandler to the squid root logger and return it, so callers can later remove/close it.
+    This uses the same baseline formatting + thread_id injection as squid's other logs.
+    """
+    root_logger = get_logger()
+    abs_path = os.path.abspath(log_filename)
+
+    # If a handler already exists for this exact path, optionally replace it.
+    for handler in list(root_logger.handlers):
+        if isinstance(handler, (logging.FileHandler, logging.handlers.BaseRotatingHandler)):
+            if getattr(handler, "baseFilename", None) == abs_path:
+                if not replace_existing:
+                    return None
+                root_logger.removeHandler(handler)
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+
+    new_handler = logging.FileHandler(abs_path, encoding="utf-8", errors="replace")
+    new_handler.setLevel(level)
+    new_handler.setFormatter(py_logging.Formatter(fmt=_baseline_log_format, datefmt=_baseline_log_dateformat))
+    new_handler.addFilter(_thread_id_filter)
+
+    log.info(f"Adding new file handler writing to file '{abs_path}'")
+    root_logger.addHandler(new_handler)
+    return new_handler
+
+
+def remove_handler(handler: py_logging.Handler) -> None:
+    """
+    Remove the given handler from the squid root logger and close it.
+    Safe to call even if the handler was already removed.
+    """
+    root_logger = get_logger()
+    try:
+        root_logger.removeHandler(handler)
+    except Exception:
+        # If it wasn't attached (or remove failed), still try to close it.
+        pass
+    finally:
+        try:
+            handler.close()
+        except Exception:
+            pass

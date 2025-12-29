@@ -1,8 +1,9 @@
 import math
-from typing import Optional
+from typing import Optional, Callable
 
 import control.microcontroller
 import control._def as _def
+import control.utils as utils
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig, AxisConfig
 
@@ -21,6 +22,8 @@ class CephlaStage(AbstractStage):
     def __init__(self, microcontroller: control.microcontroller.Microcontroller, stage_config: StageConfig):
         super().__init__(stage_config)
         self._microcontroller = microcontroller
+        self._homing_done = False
+        self._scanning_position_z_mm = None
 
         # TODO(imo): configure theta here?  Do we ever have theta?
         self._configure_axis(_def.AXIS.X, stage_config.X_AXIS)

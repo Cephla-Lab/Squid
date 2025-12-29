@@ -159,58 +159,13 @@ class LiveController:
 
         if self.microscope.addons.emission_filter_wheel and self.enable_channel_auto_filter_switching:
             try:
-                if (
-                    self.currentConfiguration.emission_filter_position
-                    != self.microscope.addons.emission_filter_wheel.current_index
-                ):
-                    if ZABER_EMISSION_FILTER_WHEEL_BLOCKING_CALL:
-                        self.microscope.addons.emission_filter_wheel.set_emission_filter(
-                            self.currentConfiguration.emission_filter_position, blocking=True
-                        )
-                    else:
-                        self.microscope.addons.emission_filter_wheel.set_emission_filter(
-                            self.currentConfiguration.emission_filter_position, blocking=False
-                        )
-                        if self.trigger_mode == TriggerMode.SOFTWARE:
-                            time.sleep(ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000)
-                        else:
-                            time.sleep(
-                                max(
-                                    0,
-                                    ZABER_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.get_strobe_time() / 1e3,
-                                )
-                            )
-            except Exception as e:
-                print("not setting emission filter position due to " + str(e))
-
-        if (
-            USE_OPTOSPIN_EMISSION_FILTER_WHEEL
-            and self.enable_channel_auto_filter_switching
-            and OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER == False
-        ):
-            try:
-                if (
-                    self.currentConfiguration.emission_filter_position
-                    != self.microscope.addons.emission_filter_wheel.current_index
-                ):
-                    self.microscope.addons.emission_filter_wheel.set_emission_filter(
-                        self.currentConfiguration.emission_filter_position
-                    )
-                    if self.trigger_mode == TriggerMode.SOFTWARE:
-                        time.sleep(OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000)
-                    elif self.trigger_mode == TriggerMode.HARDWARE:
-                        time.sleep(
-                            max(
-                                0,
-                                OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS / 1000 - self.camera.get_strobe_time() / 1e3,
-                            )
-                        )
-            except Exception as e:
-                print("not setting emission filter position due to " + str(e))
-
-        if self.microscope.addons.filter_wheel and self.enable_channel_auto_filter_switching:
-            try:
-                self.microscope.addons.filter_wheel.set_emission(self.currentConfiguration.emission_filter_position)
+                if self.trigger_mode == TriggerMode.SOFTWARE:
+                    self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(0)
+                elif self.trigger_mode == TriggerMode.HARDWARE:
+                    self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(-self.camera.get_strobe_time())
+                self.microscope.addons.emission_filter_wheel.set_filter_wheel_position(
+                    {1: self.currentConfiguration.emission_filter_position}
+                )
             except Exception as e:
                 print("not setting emission filter position due to " + str(e))
 

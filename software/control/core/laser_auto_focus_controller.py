@@ -5,8 +5,7 @@ import cv2
 from datetime import datetime
 import math
 import numpy as np
-from PyQt5.QtCore import QObject
-from qtpy.QtCore import Signal
+from qtpy.QtCore import QObject, Signal
 
 from control import utils
 import control._def
@@ -366,6 +365,10 @@ class LaserAutofocusController(QObject):
         Returns:
             bool: True if reference was set successfully, False if spot detection failed
         """
+        if not self.is_initialized:
+            self._log.error("Laser autofocus is not initialized, cannot set reference")
+            return False
+
         # turn on the laser
         try:
             self.microcontroller.turn_on_AF_laser()
