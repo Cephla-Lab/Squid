@@ -1,12 +1,41 @@
-## Getting started
+# Firmware
 
-### set up the Arduino IDE to support Arduino Due
-You need to make sure you have Arduino Due support in your IDE - follow instructions on https://www.arduino.cc/en/Guide/ArduinoDue
+## Directory Structure
 
-### install the used Arduino libraries
-Follow instructions on https://www.arduino.cc/en/guide/libraries
+```
+firmware/
+├── controller/          # Main motion controller (Teensy 4.1)
+├── joystick/            # Joystick/control panel (Teensy LC)
+└── legacy/              # Archived firmware versions
+```
 
-The libraries used are TMCStepper, AccelStepper, DueTimer
+## Controller
 
-### use the right USB port
-Make sure you use the native USB port (for both programming and running the Arduino): https://www.arduino.cc/en/uploads/Guide/DueSerialPorts.jpg 
+The main motion controller firmware for Teensy 4.1. Handles:
+- XYZ stage motion control (TMC4361A + TMC2660 drivers)
+- Illumination control (lasers and LED matrix)
+- Camera triggering
+- Serial communication with host software
+
+### Building
+
+1. Install [Teensyduino](https://www.pjrc.com/teensy/teensyduino.html)
+2. Open `controller/main_controller_teensy41.ino` in Arduino IDE
+3. Select Board: "Teensy 4.1"
+4. Select the appropriate `def_*.h` configuration in the .ino file
+5. Upload to Teensy
+
+## Joystick
+
+Control panel firmware for Teensy LC. Handles joystick input and button states.
+
+### Building
+
+1. Install [Teensyduino](https://www.pjrc.com/teensy/teensyduino.html)
+2. Open `joystick/control_panel_teensyLC.ino` in Arduino IDE
+3. Select Board: "Teensy LC"
+4. Upload to Teensy
+
+## Legacy
+
+Archived firmware versions kept for reference. Not actively maintained.
