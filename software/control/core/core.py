@@ -792,13 +792,6 @@ class ImageDisplayWindow(QMainWindow):
             self.first_image = False
             self.btn_line_profiler.setEnabled(True)
 
-        if ENABLE_TRACKING:
-            image = np.copy(image)
-            self.image_height, self.image_width = image.shape[:2]
-            if self.draw_rectangle:
-                cv2.rectangle(image, self.ptRect1, self.ptRect2, (255, 255, 255), 4)
-                self.draw_rectangle = False
-
         info = np.iinfo(image.dtype) if np.issubdtype(image.dtype, np.integer) else np.finfo(image.dtype)
         min_val, max_val = info.min, info.max
 

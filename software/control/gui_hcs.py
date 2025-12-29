@@ -328,7 +328,6 @@ class HighContentScreeningGui(QMainWindow):
         self.autofocusController: AutoFocusController = None
         self.imageSaver: core.ImageSaver = core.ImageSaver()
         self.imageDisplay: core.ImageDisplay = core.ImageDisplay()
-        self.trackingController: core.TrackingController = None
         self.navigationViewer: core.NavigationViewer = None
         self.scanCoordinates: Optional[ScanCoordinates] = None
         self.load_objects(is_simulation=is_simulation)
@@ -363,7 +362,6 @@ class HighContentScreeningGui(QMainWindow):
         self.templateMultiPointWidget: Optional[TemplateMultiPointWidget] = None
         self.multiPointWithFluidicsWidget: Optional[widgets.MultiPointWithFluidicsWidget] = None
         self.sampleSettingsWidget: Optional[widgets.SampleSettingsWidget] = None
-        self.trackingControlWidget: Optional[widgets.TrackingControllerWidget] = None
         self.napariLiveWidget: Optional[widgets.NapariLiveWidget] = None
         self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
@@ -436,17 +434,6 @@ class HighContentScreeningGui(QMainWindow):
         self.autofocusController = QtAutoFocusController(
             self.camera, self.stage, self.liveController, self.microcontroller, self.nl5
         )
-        if ENABLE_TRACKING:
-            self.trackingController = core.TrackingController(
-                self.camera,
-                self.microcontroller,
-                self.stage,
-                self.objectiveStore,
-                self.channelConfigurationManager,
-                self.liveController,
-                self.autofocusController,
-                self.imageDisplayWindow,
-            )
         if WELLPLATE_FORMAT == "glass slide" and IS_HCS:
             self.navigationViewer = core.NavigationViewer(self.objectiveStore, self.camera, sample="4 glass slide")
         else:
@@ -643,13 +630,9 @@ class HighContentScreeningGui(QMainWindow):
 
         self.imageDisplayTabs = QTabWidget(parent=self)
         if self.live_only_mode:
-            if ENABLE_TRACKING:
-                self.imageDisplayWindow = core.ImageDisplayWindow(self.liveController, self.contrastManager)
-                self.imageDisplayWindow.show_ROI_selector()
-            else:
-                self.imageDisplayWindow = core.ImageDisplayWindow(
-                    self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
-                )
+            self.imageDisplayWindow = core.ImageDisplayWindow(
+                self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
+            )
             self.imageDisplayTabs = self.imageDisplayWindow.widget
             self.napariMosaicDisplayWidget = None
         else:
@@ -700,14 +683,6 @@ class HighContentScreeningGui(QMainWindow):
         )
         self.sampleSettingsWidget = widgets.SampleSettingsWidget(self.objectivesWidget, self.wellplateFormatWidget)
 
-        if ENABLE_TRACKING:
-            self.trackingControlWidget = widgets.TrackingControllerWidget(
-                self.trackingController,
-                self.objectiveStore,
-                self.channelConfigurationManager,
-                show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
-            )
-
         self.setupRecordTabWidget()
         self.setupCameraTabWidget()
 
@@ -724,13 +699,9 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.imageDisplayTabs.addTab(self.napariLiveWidget, "Live View")
         else:
-            if ENABLE_TRACKING:
-                self.imageDisplayWindow = core.ImageDisplayWindow(self.liveController, self.contrastManager)
-                self.imageDisplayWindow.show_ROI_selector()
-            else:
-                self.imageDisplayWindow = core.ImageDisplayWindow(
-                    self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
-                )
+            self.imageDisplayWindow = core.ImageDisplayWindow(
+                self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
+            )
             self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
 
         if not self.live_only_mode:

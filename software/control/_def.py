@@ -454,11 +454,6 @@ CAMERA_PIXEL_SIZE_UM = {
 
 TUBE_LENS_MM = 50
 CAMERA_SENSOR = "IMX226"
-TRACKERS = ["csrt", "kcf", "mil", "tld", "medianflow", "mosse", "daSiamRPN"]
-DEFAULT_TRACKER = "csrt"
-
-ENABLE_TRACKING = False
-TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS = False  # set to true when doing multimodal acquisition
 
 
 class CAMERA_CONFIG:
@@ -484,15 +479,6 @@ class AF:
     STOP_THRESHOLD = 0.85
     CROP_WIDTH = 800
     CROP_HEIGHT = 800
-
-
-class Tracking:
-    SEARCH_AREA_RATIO = 10  # @@@ check
-    CROPPED_IMG_RATIO = 10  # @@@ check
-    BBOX_SCALE_FACTOR = 1.2
-    DEFAULT_TRACKER = "csrt"
-    INIT_METHODS = ["roi"]
-    DEFAULT_INIT_METHOD = "roi"
 
 
 SHOW_DAC_CONTROL = False

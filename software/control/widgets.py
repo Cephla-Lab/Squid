@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 import squid.logging
-from control.core.core import TrackingController, LiveController
+from control.core.core import LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
@@ -113,20 +113,6 @@ def check_ram_available_with_error_dialog(
         error_dialog(error_message, title="Not Enough RAM")
         return False
     return True
-
-
-class WrapperWindow(QMainWindow):
-    def __init__(self, content_widget, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.setCentralWidget(content_widget)
-        self.hide()
-
-    def closeEvent(self, event):
-        self.hide()
-        event.ignore()
-
-    def closeForReal(self, event):
-        super().closeEvent(event)
 
 
 class CollapsibleGroupBox(QGroupBox):
@@ -613,27 +599,6 @@ class PreferencesDialog(QDialog):
         limits_group.content.addLayout(limits_layout)
         layout.addWidget(limits_group)
 
-        # Tracking section
-        tracking_group = CollapsibleGroupBox("Tracking")
-        tracking_layout = QFormLayout()
-
-        self.enable_tracking_checkbox = QCheckBox()
-        self.enable_tracking_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_tracking", False))
-        tracking_layout.addRow("Enable Tracking:", self.enable_tracking_checkbox)
-
-        self.default_tracker_combo = QComboBox()
-        self.default_tracker_combo.addItems(["csrt", "kcf", "mil", "tld", "medianflow", "mosse", "daSiamRPN"])
-        self.default_tracker_combo.setCurrentText(self._get_config_value("TRACKING", "default_tracker", "csrt"))
-        tracking_layout.addRow("Default Tracker:", self.default_tracker_combo)
-
-        self.search_area_ratio = QSpinBox()
-        self.search_area_ratio.setRange(1, 50)
-        self.search_area_ratio.setValue(self._get_config_int("TRACKING", "search_area_ratio", 10))
-        tracking_layout.addRow("Search Area Ratio:", self.search_area_ratio)
-
-        tracking_group.content.addLayout(tracking_layout)
-        layout.addWidget(tracking_group)
-
         # Legend for restart indicator
         legend_label = QLabel("* Requires software restart to take effect")
         legend_label.setStyleSheet("color: #666; font-style: italic;")
@@ -750,11 +715,6 @@ class PreferencesDialog(QDialog):
         self.config.set("SOFTWARE_POS_LIMIT", "z_positive", str(self.limit_z_pos.value()))
         self.config.set("SOFTWARE_POS_LIMIT", "z_negative", str(self.limit_z_neg.value()))
 
-        # Advanced - Tracking
-        self.config.set("GENERAL", "enable_tracking", "true" if self.enable_tracking_checkbox.isChecked() else "false")
-        self.config.set("TRACKING", "default_tracker", self.default_tracker_combo.currentText())
-        self.config.set("TRACKING", "search_area_ratio", str(self.search_area_ratio.value()))
-
         # Save to file
         try:
             with open(self.config_filepath, "w") as f:
@@ -822,11 +782,6 @@ class PreferencesDialog(QDialog):
         _def.SOFTWARE_POS_LIMIT.Y_NEGATIVE = self.limit_y_neg.value()
         _def.SOFTWARE_POS_LIMIT.Z_POSITIVE = self.limit_z_pos.value()
         _def.SOFTWARE_POS_LIMIT.Z_NEGATIVE = self.limit_z_neg.value()
-
-        # Tracking settings
-        _def.ENABLE_TRACKING = self.enable_tracking_checkbox.isChecked()
-        _def.Tracking.DEFAULT_TRACKER = self.default_tracker_combo.currentText()
-        _def.Tracking.SEARCH_AREA_RATIO = self.search_area_ratio.value()
 
     def _get_changes(self):
         """Get list of settings that have changed from current config.
@@ -1005,22 +960,6 @@ class PreferencesDialog(QDialog):
         new_val = self.limit_z_neg.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Z Negative Limit", f"{old_val} mm", f"{new_val} mm", False))
-
-        # Advanced - Tracking (live update)
-        old_val = self._get_config_bool("GENERAL", "enable_tracking", False)
-        new_val = self.enable_tracking_checkbox.isChecked()
-        if old_val != new_val:
-            changes.append(("Enable Tracking", str(old_val), str(new_val), False))
-
-        old_val = self._get_config_value("TRACKING", "default_tracker", "csrt")
-        new_val = self.default_tracker_combo.currentText()
-        if old_val != new_val:
-            changes.append(("Default Tracker", old_val, new_val, False))
-
-        old_val = self._get_config_int("TRACKING", "search_area_ratio", 10)
-        new_val = self.search_area_ratio.value()
-        if old_val != new_val:
-            changes.append(("Search Area Ratio", str(old_val), str(new_val), False))
 
         return changes
 
@@ -3307,39 +3246,6 @@ class FilterControllerWidget(QFrame):
             self.liveController.enable_channel_auto_filter_switching = False
         else:
             self.liveController.enable_channel_auto_filter_switching = True
-
-
-class StatsDisplayWidget(QFrame):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.initUI()
-        self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-
-    def initUI(self):
-        self.layout = QVBoxLayout()
-        self.table_widget = QTableWidget()
-        self.table_widget.setColumnCount(2)
-        self.table_widget.verticalHeader().hide()
-        self.table_widget.horizontalHeader().hide()
-        self.table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.layout.addWidget(self.table_widget)
-        self.setLayout(self.layout)
-
-    def display_stats(self, stats):
-        print("displaying parasite stats")
-        locale.setlocale(locale.LC_ALL, "")
-        self.table_widget.setRowCount(len(stats))
-        row = 0
-        for key, value in stats.items():
-            key_item = QTableWidgetItem(str(key))
-            value_item = None
-            try:
-                value_item = QTableWidgetItem(f"{value:n}")
-            except:
-                value_item = QTableWidgetItem(str(value))
-            self.table_widget.setItem(row, 0, key_item)
-            self.table_widget.setItem(row, 1, value_item)
-            row += 1
 
 
 class WellSelectionWidget(QTableWidget):
