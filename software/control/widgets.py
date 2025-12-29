@@ -313,6 +313,7 @@ class PreferencesDialog(QDialog):
         self._create_general_tab()
         self._create_acquisition_tab()
         self._create_camera_tab()
+        self._create_views_tab()
         self._create_advanced_tab()
 
         # Buttons
@@ -648,6 +649,63 @@ class PreferencesDialog(QDialog):
         tab_layout.addWidget(scroll)
         self.tab_widget.addTab(tab, "Advanced")
 
+    def _create_views_tab(self):
+        tab = QWidget()
+        layout = QFormLayout(tab)
+        layout.setSpacing(10)
+
+        # Description label
+        desc_label = QLabel("Settings for downsampled well/plate views during acquisition.")
+        desc_label.setStyleSheet("color: #666; font-style: italic;")
+        desc_label.setWordWrap(True)
+        layout.addRow(desc_label)
+
+        # Generate Downsampled Well Images
+        self.generate_downsampled_checkbox = QCheckBox()
+        self.generate_downsampled_checkbox.setChecked(
+            self._get_config_bool("VIEWS", "generate_downsampled_well_images", False)
+        )
+        layout.addRow("Generate Downsampled Well Images:", self.generate_downsampled_checkbox)
+
+        # Display Plate View
+        self.display_plate_view_checkbox = QCheckBox()
+        self.display_plate_view_checkbox.setChecked(self._get_config_bool("VIEWS", "display_plate_view", False))
+        layout.addRow("Display Plate View:", self.display_plate_view_checkbox)
+
+        # Well Resolutions (comma-separated)
+        self.well_resolutions_edit = QLineEdit()
+        default_resolutions = self._get_config_value("VIEWS", "downsampled_well_resolutions_um", "5.0, 10.0, 20.0")
+        self.well_resolutions_edit.setText(default_resolutions)
+        self.well_resolutions_edit.setToolTip("Comma-separated list of resolution values in micrometers")
+        layout.addRow("Well Resolutions (μm):", self.well_resolutions_edit)
+
+        # Plate Resolution
+        self.plate_resolution_spinbox = QDoubleSpinBox()
+        self.plate_resolution_spinbox.setRange(1.0, 100.0)
+        self.plate_resolution_spinbox.setSingleStep(1.0)
+        self.plate_resolution_spinbox.setValue(self._get_config_float("VIEWS", "downsampled_plate_resolution_um", 10.0))
+        self.plate_resolution_spinbox.setSuffix(" μm")
+        layout.addRow("Plate Resolution:", self.plate_resolution_spinbox)
+
+        # Z-Projection Mode
+        self.z_projection_combo = QComboBox()
+        self.z_projection_combo.addItems(["mip", "middle"])
+        current_projection = self._get_config_value("VIEWS", "downsampled_z_projection", "mip")
+        self.z_projection_combo.setCurrentText(current_projection)
+        layout.addRow("Z-Projection Mode:", self.z_projection_combo)
+
+        # Mosaic Target Pixel Size
+        self.mosaic_pixel_size_spinbox = QDoubleSpinBox()
+        self.mosaic_pixel_size_spinbox.setRange(0.5, 20.0)
+        self.mosaic_pixel_size_spinbox.setSingleStep(0.5)
+        self.mosaic_pixel_size_spinbox.setValue(
+            self._get_config_float("VIEWS", "mosaic_view_target_pixel_size_um", 2.0)
+        )
+        self.mosaic_pixel_size_spinbox.setSuffix(" μm")
+        layout.addRow("Mosaic Target Pixel Size:", self.mosaic_pixel_size_spinbox)
+
+        self.tab_widget.addTab(tab, "Views")
+
     def _get_config_value(self, section, option, default=""):
         try:
             return self.config.get(section, option)
@@ -692,7 +750,7 @@ class PreferencesDialog(QDialog):
 
     def _apply_settings(self):
         # Ensure all required sections exist
-        for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING"]:
+        for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS"]:
             self._ensure_section(section)
 
         # General settings
@@ -756,6 +814,22 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "enable_tracking", "true" if self.enable_tracking_checkbox.isChecked() else "false")
         self.config.set("TRACKING", "default_tracker", self.default_tracker_combo.currentText())
         self.config.set("TRACKING", "search_area_ratio", str(self.search_area_ratio.value()))
+
+        # Views settings
+        self.config.set(
+            "VIEWS",
+            "generate_downsampled_well_images",
+            "true" if self.generate_downsampled_checkbox.isChecked() else "false",
+        )
+        self.config.set(
+            "VIEWS",
+            "display_plate_view",
+            "true" if self.display_plate_view_checkbox.isChecked() else "false",
+        )
+        self.config.set("VIEWS", "downsampled_well_resolutions_um", self.well_resolutions_edit.text())
+        self.config.set("VIEWS", "downsampled_plate_resolution_um", str(self.plate_resolution_spinbox.value()))
+        self.config.set("VIEWS", "downsampled_z_projection", self.z_projection_combo.currentText())
+        self.config.set("VIEWS", "mosaic_view_target_pixel_size_um", str(self.mosaic_pixel_size_spinbox.value()))
 
         # Save to file
         try:
@@ -829,6 +903,19 @@ class PreferencesDialog(QDialog):
         _def.ENABLE_TRACKING = self.enable_tracking_checkbox.isChecked()
         _def.Tracking.DEFAULT_TRACKER = self.default_tracker_combo.currentText()
         _def.Tracking.SEARCH_AREA_RATIO = self.search_area_ratio.value()
+
+        # Views settings
+        _def.GENERATE_DOWNSAMPLED_WELL_IMAGES = self.generate_downsampled_checkbox.isChecked()
+        _def.DISPLAY_PLATE_VIEW = self.display_plate_view_checkbox.isChecked()
+        # Parse comma-separated resolutions
+        resolutions_str = self.well_resolutions_edit.text()
+        try:
+            _def.DOWNSAMPLED_WELL_RESOLUTIONS_UM = [float(x.strip()) for x in resolutions_str.split(",") if x.strip()]
+        except ValueError:
+            self._log.warning(f"Invalid well resolutions format: {resolutions_str}")
+        _def.DOWNSAMPLED_PLATE_RESOLUTION_UM = self.plate_resolution_spinbox.value()
+        _def.DOWNSAMPLED_Z_PROJECTION = _def.ZProjectionMode.convert_to_enum(self.z_projection_combo.currentText())
+        _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
 
     def _get_changes(self):
         """Get list of settings that have changed from current config.

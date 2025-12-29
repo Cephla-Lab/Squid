@@ -39,6 +39,14 @@ def sample_config():
     config.set("TRACKING", "default_tracker", "csrt")
     config.set("TRACKING", "search_area_ratio", "10")
 
+    config.add_section("VIEWS")
+    config.set("VIEWS", "generate_downsampled_well_images", "false")
+    config.set("VIEWS", "display_plate_view", "true")
+    config.set("VIEWS", "downsampled_well_resolutions_um", "5.0, 10.0, 20.0")
+    config.set("VIEWS", "downsampled_plate_resolution_um", "10.0")
+    config.set("VIEWS", "downsampled_z_projection", "mip")
+    config.set("VIEWS", "mosaic_view_target_pixel_size_um", "2.0")
+
     return config
 
 
@@ -351,3 +359,66 @@ class TestUIInitialization:
 
     def test_af_threshold_initialized(self, preferences_dialog):
         assert preferences_dialog.af_stop_threshold.value() == 0.85
+
+
+class TestViewsTab:
+    """Test Views tab functionality."""
+
+    def test_views_tab_exists(self, preferences_dialog):
+        tab_names = [preferences_dialog.tab_widget.tabText(i) for i in range(preferences_dialog.tab_widget.count())]
+        assert "Views" in tab_names
+
+    def test_generate_downsampled_checkbox_initialized(self, preferences_dialog):
+        assert preferences_dialog.generate_downsampled_checkbox.isChecked() is False
+
+    def test_display_plate_view_checkbox_initialized(self, preferences_dialog):
+        assert preferences_dialog.display_plate_view_checkbox.isChecked() is True
+
+    def test_well_resolutions_initialized(self, preferences_dialog):
+        assert preferences_dialog.well_resolutions_edit.text() == "5.0, 10.0, 20.0"
+
+    def test_plate_resolution_initialized(self, preferences_dialog):
+        assert preferences_dialog.plate_resolution_spinbox.value() == 10.0
+
+    def test_z_projection_initialized(self, preferences_dialog):
+        assert preferences_dialog.z_projection_combo.currentText() == "mip"
+
+    def test_mosaic_pixel_size_initialized(self, preferences_dialog):
+        assert preferences_dialog.mosaic_pixel_size_spinbox.value() == 2.0
+
+    def test_views_settings_saved_to_file(self, preferences_dialog, temp_config_file):
+        preferences_dialog.generate_downsampled_checkbox.setChecked(True)
+        preferences_dialog.display_plate_view_checkbox.setChecked(False)
+        preferences_dialog.well_resolutions_edit.setText("2.5, 5.0")
+        preferences_dialog.plate_resolution_spinbox.setValue(15.0)
+        preferences_dialog.z_projection_combo.setCurrentText("middle")
+        preferences_dialog.mosaic_pixel_size_spinbox.setValue(3.0)
+
+        preferences_dialog._apply_settings()
+
+        from configparser import ConfigParser
+
+        saved_config = ConfigParser()
+        saved_config.read(temp_config_file)
+
+        assert saved_config.get("VIEWS", "generate_downsampled_well_images") == "true"
+        assert saved_config.get("VIEWS", "display_plate_view") == "false"
+        assert saved_config.get("VIEWS", "downsampled_well_resolutions_um") == "2.5, 5.0"
+        assert saved_config.get("VIEWS", "downsampled_plate_resolution_um") == "15.0"
+        assert saved_config.get("VIEWS", "downsampled_z_projection") == "middle"
+        assert saved_config.get("VIEWS", "mosaic_view_target_pixel_size_um") == "3.0"
+
+    def test_views_settings_applied_to_def(self, preferences_dialog):
+        import control._def as _def
+
+        preferences_dialog.generate_downsampled_checkbox.setChecked(True)
+        preferences_dialog.display_plate_view_checkbox.setChecked(True)
+        preferences_dialog.plate_resolution_spinbox.setValue(20.0)
+        preferences_dialog.mosaic_pixel_size_spinbox.setValue(4.0)
+
+        preferences_dialog._apply_live_settings()
+
+        assert _def.GENERATE_DOWNSAMPLED_WELL_IMAGES is True
+        assert _def.DISPLAY_PLATE_VIEW is True
+        assert _def.DOWNSAMPLED_PLATE_RESOLUTION_UM == 20.0
+        assert _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM == 4.0
