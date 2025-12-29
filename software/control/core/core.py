@@ -20,7 +20,7 @@ from control.core.objective_store import ObjectiveStore
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.stream_handler import StreamHandlerFunctions, StreamHandler
 from control.microcontroller import Microcontroller
-from squid.abc import AbstractStage, AbstractCamera, CameraFrame
+from squid.abc import CameraFrame
 import control._def
 import control.serial_peripherals as serial_peripherals
 import control.utils as utils
