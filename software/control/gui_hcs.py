@@ -368,7 +368,6 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
         self.napariMultiChannelWidget: Optional[widgets.NapariMultiChannelWidget] = None
-        self.imageArrayDisplayWindow: Optional[core.ImageArrayDisplayWindow] = None
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
 
         self.recordTabWidget: QTabWidget = QTabWidget()
@@ -735,14 +734,10 @@ class HighContentScreeningGui(QMainWindow):
             self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
 
         if not self.live_only_mode:
-            if USE_NAPARI_FOR_MULTIPOINT:
-                self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
-                    self.objectiveStore, self.camera, self.contrastManager
-                )
-                self.imageDisplayTabs.addTab(self.napariMultiChannelWidget, "Multichannel Acquisition")
-            else:
-                self.imageArrayDisplayWindow = core.ImageArrayDisplayWindow()
-                self.imageDisplayTabs.addTab(self.imageArrayDisplayWindow.widget, "Multichannel Acquisition")
+            self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
+                self.objectiveStore, self.camera, self.contrastManager
+            )
+            self.imageDisplayTabs.addTab(self.napariMultiChannelWidget, "Multichannel Acquisition")
 
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
@@ -1141,54 +1136,51 @@ class HighContentScreeningGui(QMainWindow):
 
         if not self.live_only_mode:
             # Setup multichannel widget connections
-            if USE_NAPARI_FOR_MULTIPOINT:
-                self.napari_connections["napariMultiChannelWidget"] = [
-                    (self.multipointController.napari_layers_init, self.napariMultiChannelWidget.initLayers),
-                    (self.multipointController.napari_layers_update, self.napariMultiChannelWidget.updateLayers),
-                ]
+            self.napari_connections["napariMultiChannelWidget"] = [
+                (self.multipointController.napari_layers_init, self.napariMultiChannelWidget.initLayers),
+                (self.multipointController.napari_layers_update, self.napariMultiChannelWidget.updateLayers),
+            ]
 
-                if ENABLE_FLEXIBLE_MULTIPOINT:
-                    self.napari_connections["napariMultiChannelWidget"].extend(
-                        [
-                            (
-                                self.flexibleMultiPointWidget.signal_acquisition_channels,
-                                self.napariMultiChannelWidget.initChannels,
-                            ),
-                            (
-                                self.flexibleMultiPointWidget.signal_acquisition_shape,
-                                self.napariMultiChannelWidget.initLayersShape,
-                            ),
-                        ]
-                    )
+            if ENABLE_FLEXIBLE_MULTIPOINT:
+                self.napari_connections["napariMultiChannelWidget"].extend(
+                    [
+                        (
+                            self.flexibleMultiPointWidget.signal_acquisition_channels,
+                            self.napariMultiChannelWidget.initChannels,
+                        ),
+                        (
+                            self.flexibleMultiPointWidget.signal_acquisition_shape,
+                            self.napariMultiChannelWidget.initLayersShape,
+                        ),
+                    ]
+                )
 
-                if ENABLE_WELLPLATE_MULTIPOINT:
-                    self.napari_connections["napariMultiChannelWidget"].extend(
-                        [
-                            (
-                                self.wellplateMultiPointWidget.signal_acquisition_channels,
-                                self.napariMultiChannelWidget.initChannels,
-                            ),
-                            (
-                                self.wellplateMultiPointWidget.signal_acquisition_shape,
-                                self.napariMultiChannelWidget.initLayersShape,
-                            ),
-                        ]
-                    )
-                if RUN_FLUIDICS:
-                    self.napari_connections["napariMultiChannelWidget"].extend(
-                        [
-                            (
-                                self.multiPointWithFluidicsWidget.signal_acquisition_channels,
-                                self.napariMultiChannelWidget.initChannels,
-                            ),
-                            (
-                                self.multiPointWithFluidicsWidget.signal_acquisition_shape,
-                                self.napariMultiChannelWidget.initLayersShape,
-                            ),
-                        ]
-                    )
-            else:
-                self.multipointController.image_to_display_multi.connect(self.imageArrayDisplayWindow.display_image)
+            if ENABLE_WELLPLATE_MULTIPOINT:
+                self.napari_connections["napariMultiChannelWidget"].extend(
+                    [
+                        (
+                            self.wellplateMultiPointWidget.signal_acquisition_channels,
+                            self.napariMultiChannelWidget.initChannels,
+                        ),
+                        (
+                            self.wellplateMultiPointWidget.signal_acquisition_shape,
+                            self.napariMultiChannelWidget.initLayersShape,
+                        ),
+                    ]
+                )
+            if RUN_FLUIDICS:
+                self.napari_connections["napariMultiChannelWidget"].extend(
+                    [
+                        (
+                            self.multiPointWithFluidicsWidget.signal_acquisition_channels,
+                            self.napariMultiChannelWidget.initChannels,
+                        ),
+                        (
+                            self.multiPointWithFluidicsWidget.signal_acquisition_shape,
+                            self.napariMultiChannelWidget.initLayersShape,
+                        ),
+                    ]
+                )
 
             # Setup mosaic display widget connections
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
@@ -1301,11 +1293,8 @@ class HighContentScreeningGui(QMainWindow):
             print(configs)
             if USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
                 self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
-
-            elif USE_NAPARI_FOR_MULTIPOINT:
-                self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
             else:
-                self.imageDisplayTabs.setCurrentIndex(0)
+                self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
 
     def openLedMatrixSettings(self):
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
@@ -1605,7 +1594,6 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplay.close()
         if not SINGLE_WINDOW:
             self.imageDisplayWindow.close()
-            self.imageArrayDisplayWindow.close()
             self.tabbedImageDisplayWindow.close()
 
         self.microcontroller.close()
