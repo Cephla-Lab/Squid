@@ -1,6 +1,6 @@
 from enum import Enum
 from pathlib import Path
-from typing import Any, List, Dict, Optional
+from typing import Any, List, Dict, Optional, Union
 import hashlib
 import json
 import shutil
@@ -419,7 +419,7 @@ class ChannelConfigurationManager:
         """
         return next((mode for mode in self.get_configurations(objective) if mode.name == name), None)
 
-    def toggle_confocal_widefield(self, confocal) -> None:
+    def toggle_confocal_widefield(self, confocal: Union[bool, int]) -> None:
         """Toggle between confocal and widefield configurations.
 
         This sets both:
@@ -439,7 +439,7 @@ class ChannelConfigurationManager:
         """Check if currently in confocal mode."""
         return self.confocal_mode
 
-    def sync_confocal_mode_from_hardware(self, confocal) -> None:
+    def sync_confocal_mode_from_hardware(self, confocal: Union[bool, int]) -> None:
         """Sync confocal mode state from hardware.
 
         Call this after signal connections are established to ensure
