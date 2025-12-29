@@ -294,7 +294,29 @@ To incorporate new defaults:
 
 Or manually merge changes from the default file.
 
+## Validation
+
+### Startup Validation
+
+The system validates channel configurations when the application starts:
+
+- **Numeric channel mapping validation:** All fluorescence channels must reference valid entries in `numeric_channel_mapping`. If a channel references a non-existent mapping (e.g., `numeric_channel: 3` but only mappings for 1 and 2 exist), the application will fail to start with a clear error message.
+
+This "fail fast" approach catches configuration errors immediately rather than during an acquisition.
+
+### Channel Name Constraints
+
+When creating or renaming channels:
+
+- **Maximum length:** 64 characters
+- **Invalid characters:** `< > : " / \ | ? *` and null characters are not allowed (these cause issues on various file systems)
+
 ## Troubleshooting
+
+### Configuration validation error at startup
+- Check the error message for which channel has an invalid `numeric_channel` value
+- Ensure the referenced numeric channel exists in `numeric_channel_mapping`
+- Example: If channel has `"numeric_channel": 3`, verify `"3"` exists in the mapping
 
 ### Channel not appearing in dropdown
 - Check if the channel is enabled in Settings → Channel Configuration
