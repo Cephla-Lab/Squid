@@ -9,6 +9,7 @@ from typing import Optional
 import squid.logging
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
+from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 import control.utils as utils
@@ -5530,20 +5531,8 @@ class WellplateMultiPointWidget(QFrame):
         well_size = self.scanCoordinates.well_size_mm
         shape = self.combobox_shape.currentText()
         is_round_well = self.scanCoordinates.format not in ["384 well plate", "1536 well plate"]
-
-        if shape == "Circle":
-            fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
-            return well_size + fov_size_mm * (1 + math.sqrt(2))
-        elif shape == "Square" and is_round_well:
-            # For square scan in round well, inscribe inside the circle
-            # Inscribed square side length = diameter / sqrt(2)
-            return well_size / math.sqrt(2)
-        elif shape == "Rectangle" and is_round_well:
-            # Rectangle uses height as scan_size with width = 0.6 * height
-            # For diagonal to fit in circle: sqrt(h² + (0.6h)²) = diameter
-            # h = diameter / sqrt(1 + 0.6²) = diameter / sqrt(1.36)
-            return well_size / math.sqrt(1.36)
-        return well_size
+        fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
+        return get_effective_well_size(well_size, fov_size_mm, shape, is_round_well)
 
     def reset_coordinates(self):
         # Called after acquisition - preserve scan_size, update coverage display
@@ -5587,8 +5576,7 @@ class WellplateMultiPointWidget(QFrame):
             shape = self.combobox_shape.currentText()
             is_round_well = self.scanCoordinates.format not in ["384 well plate", "1536 well plate"]
 
-            # Calculate coverage = (well area covered by tiles) / well_area × 100
-            coverage = self._calculate_well_coverage(
+            coverage = calculate_well_coverage(
                 scan_size, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well
             )
 
@@ -5596,92 +5584,6 @@ class WellplateMultiPointWidget(QFrame):
             self.entry_well_coverage.setValue(coverage)
             self.entry_well_coverage.blockSignals(False)
             self._log.debug(f"Coverage: {coverage}%")
-
-    def _calculate_well_coverage(self, scan_size_mm, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well):
-        """Calculate what fraction of the well is actually covered by FOV tiles."""
-        step_size = fov_size_mm * (1 - overlap_percent / 100)
-        if step_size <= 0 or scan_size_mm <= 0 or well_size_mm <= 0:
-            return 0
-
-        # Get tile positions
-        tiles = self._get_tile_positions(scan_size_mm, fov_size_mm, overlap_percent, shape)
-        if not tiles:
-            return 0
-
-        well_radius = well_size_mm / 2
-        fov_half = fov_size_mm / 2
-
-        # Grid sampling to calculate coverage
-        resolution = 100  # Sample points per dimension
-        covered = 0
-        total = 0
-
-        for i in range(resolution):
-            for j in range(resolution):
-                x = -well_radius + (2 * well_radius * i / resolution)
-                y = -well_radius + (2 * well_radius * j / resolution)
-
-                # Check if point is inside well
-                if is_round_well:
-                    if x * x + y * y > well_radius * well_radius:
-                        continue
-                else:
-                    if abs(x) > well_radius or abs(y) > well_radius:
-                        continue
-
-                total += 1
-
-                # Check if covered by any tile
-                for tx, ty in tiles:
-                    if abs(x - tx) <= fov_half and abs(y - ty) <= fov_half:
-                        covered += 1
-                        break
-
-        return round((covered / total) * 100, 2) if total > 0 else 0
-
-    def _get_tile_positions(self, scan_size_mm, fov_size_mm, overlap_percent, shape):
-        """Get tile center positions matching scan_coordinates.py logic."""
-        step_size = fov_size_mm * (1 - overlap_percent / 100)
-        if step_size <= 0 or scan_size_mm <= 0:
-            return [(0, 0)]
-
-        steps = math.floor(scan_size_mm / step_size)
-
-        if shape == "Circle":
-            tile_diagonal = math.sqrt(2) * fov_size_mm
-            if steps % 2 == 1:
-                actual = (steps - 1) * step_size + tile_diagonal
-            else:
-                actual = math.sqrt(((steps - 1) * step_size + fov_size_mm) ** 2 + (step_size + fov_size_mm) ** 2)
-            if actual > scan_size_mm and steps > 1:
-                steps -= 1
-
-        steps = max(1, steps)
-        half_steps = (steps - 1) / 2
-        scan_radius_sq = (scan_size_mm / 2) ** 2
-        fov_half = fov_size_mm / 2
-
-        tiles = []
-        for i in range(steps):
-            y = (i - half_steps) * step_size
-            for j in range(steps):
-                x = (j - half_steps) * step_size
-                if shape == "Circle":
-                    corners_in = all(
-                        (x + dx) ** 2 + (y + dy) ** 2 <= scan_radius_sq
-                        for dx, dy in [
-                            (-fov_half, -fov_half),
-                            (fov_half, -fov_half),
-                            (-fov_half, fov_half),
-                            (fov_half, fov_half),
-                        ]
-                    )
-                    if corners_in:
-                        tiles.append((x, y))
-                else:
-                    tiles.append((x, y))
-
-        return tiles if tiles else [(0, 0)]
 
     def update_dz(self):
         z_min = self.entry_minZ.value()
