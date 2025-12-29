@@ -117,11 +117,12 @@ def calculate_well_coverage(scan_size_mm, fov_size_mm, overlap_percent, shape, w
     resolution = 100
     covered = 0
     total = 0
+    step = 2 * well_radius / (resolution - 1) if resolution > 1 else 0
 
     for i in range(resolution):
         for j in range(resolution):
-            x = -well_radius + (2 * well_radius * i / resolution)
-            y = -well_radius + (2 * well_radius * j / resolution)
+            x = -well_radius + step * i
+            y = -well_radius + step * j
 
             # Check if point is inside well
             if is_round_well:

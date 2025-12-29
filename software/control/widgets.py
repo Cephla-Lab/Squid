@@ -5678,11 +5678,12 @@ class WellplateMultiPointWidget(QFrame):
             self.scanCoordinates.set_well_coordinates(scan_size_mm, overlap_percent, shape)
 
     def handle_objective_change(self):
-        """Handle objective change - update coverage display.
+        """Handle objective change - update coverage and coordinates.
 
         When the objective changes, the FOV size changes, which affects both the
         effective well size (for Circle shapes) and the coverage calculation.
-        Scan_size stays constant; coverage is recalculated.
+        Scan_size stays constant; coverage is recalculated and coordinates are
+        updated to reflect the new tile positions.
         """
         if self.tab_widget and self.tab_widget.currentWidget() != self:
             return

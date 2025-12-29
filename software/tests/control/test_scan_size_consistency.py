@@ -48,6 +48,26 @@ class TestWellCoverage:
         coverage = calculate_well_coverage(30.0, fov, overlap, "Circle", well_size)
         assert coverage <= 100, f"Coverage should not exceed 100%, got {coverage}%"
 
+    def test_square_well_coverage(self):
+        """Test coverage calculation for square wells (384/1536 well plates)."""
+        well_size = 3.21  # 384 well plate
+        fov = 0.5
+        overlap = 10
+
+        coverage = calculate_well_coverage(well_size, fov, overlap, "Square", well_size, is_round_well=False)
+        assert coverage > 0, "Should have some coverage"
+        assert coverage <= 100, "Coverage should not exceed 100%"
+
+    def test_rectangle_shape_coverage(self):
+        """Test coverage calculation for Rectangle scan shape."""
+        well_size = 6.21
+        fov = 1.0
+        overlap = 10
+
+        coverage = calculate_well_coverage(well_size, fov, overlap, "Rectangle", well_size)
+        assert coverage > 0, "Rectangle scan should have some coverage"
+        assert coverage <= 100, "Coverage should not exceed 100%"
+
 
 class TestEffectiveWellSize:
     """Tests for effective well size calculations (used for scan_size defaults)."""
