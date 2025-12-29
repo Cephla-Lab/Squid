@@ -32,7 +32,6 @@ from queue import Queue
 from threading import Thread, Lock
 from pathlib import Path
 from datetime import datetime
-from control.utils_config import ChannelConfig, ChannelMode
 import time
 import json
 import math
