@@ -262,8 +262,14 @@ class ChannelConfigurationManager:
         else:
             illumination_source = channel_def.illumination_source or 0
 
-        # Generate a stable ID based on channel name using full SHA-256 hex digest for uniqueness
-        channel_id = hashlib.sha256(channel_def.name.encode()).hexdigest()
+        # Generate ID from channel name using first 16 chars of SHA-256 for readability.
+        #
+        # KNOWN LIMITATION: ID changes if channel is renamed, which breaks references in saved
+        # acquisition configurations. A future enhancement could add a stable UUID to
+        # ChannelDefinition that persists across renames. For now, users should prefer
+        # disabling unused channels rather than renaming (documented in channel_configuration.md).
+        # TODO(future): Consider adding stable UUID field to ChannelDefinition for rename-safe IDs.
+        channel_id = hashlib.sha256(channel_def.name.encode()).hexdigest()[:16]
 
         return ChannelMode(
             id=channel_id,
@@ -347,7 +353,7 @@ class ChannelConfigurationManager:
         # First check if using new format
         if self.channel_definitions:
             for ch in self.channel_definitions.channels:
-                ch_id = hashlib.sha256(ch.name.encode()).hexdigest()
+                ch_id = hashlib.sha256(ch.name.encode()).hexdigest()[:16]
                 if ch_id == config_id:
                     return ch.name
 
@@ -496,13 +502,17 @@ class ChannelConfigurationManager:
     def _cleanup_orphaned_settings(self, base_config_path: Path, channel_name: str) -> List[str]:
         """Remove orphaned channel settings from all profiles and objectives.
 
+        Uses best-effort strategy: continues processing remaining files even if some fail.
+        All errors are logged individually and collected for the caller.
+
         Args:
             base_config_path: Path to acquisition_configurations folder
             channel_name: Name of the channel to remove
 
         Returns:
             List of error messages for any files that failed to clean up.
-            Empty list if all cleanups succeeded.
+            Empty list if all cleanups succeeded. Callers can check the list
+            to decide whether to warn the user about partial cleanup.
         """
         errors = []
         cleaned_count = 0
@@ -539,7 +549,8 @@ class ChannelConfigurationManager:
                 except Exception as e:
                     error_msg = f"{settings_file}: {type(e).__name__}: {e}"
                     errors.append(error_msg)
-                    self._log.warning(f"Failed to clean up {settings_file}: {type(e).__name__}: {e}")
+                    # Use exception() to capture full stack trace for debugging unexpected errors
+                    self._log.exception(f"Unexpected error cleaning up {settings_file}")
 
         if cleaned_count > 0:
             self._log.info(f"Cleaned up orphaned settings for '{channel_name}' from {cleaned_count} file(s)")
