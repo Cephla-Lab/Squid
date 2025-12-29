@@ -5568,6 +5568,7 @@ class WellplateMultiPointWidget(QFrame):
         return mm_coords
 
     def update_coverage_from_scan_size(self):
+        self.entry_well_coverage.blockSignals(True)
         if "glass slide" not in self.navigationViewer.sample:
             well_size_mm = self.scanCoordinates.well_size_mm
             scan_size = self.entry_scan_size.value()
@@ -5580,10 +5581,12 @@ class WellplateMultiPointWidget(QFrame):
                 scan_size, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well
             )
 
-            self.entry_well_coverage.blockSignals(True)
             self.entry_well_coverage.setValue(coverage)
-            self.entry_well_coverage.blockSignals(False)
             self._log.debug(f"Coverage: {coverage}%")
+        else:
+            # Glass slide mode - coverage not applicable
+            self.entry_well_coverage.setValue(0)
+        self.entry_well_coverage.blockSignals(False)
 
     def update_dz(self):
         z_min = self.entry_minZ.value()

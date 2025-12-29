@@ -50,10 +50,16 @@ def get_tile_positions(scan_size_mm, fov_size_mm, overlap_percent, shape):
     steps = math.floor(scan_size_mm / step_size)
 
     if shape == "Circle":
+        # For Circle shape, reduce steps if the tile corners would exceed the scan circle.
+        # This matches the logic in scan_coordinates.py.
         tile_diagonal = math.sqrt(2) * fov_size_mm
         if steps % 2 == 1:
+            # Odd steps: center tile at origin. Max extent is from outermost tile center
+            # to its diagonal corner: (steps-1)*step_size/2 + tile_diagonal/2 on each side
             actual = (steps - 1) * step_size + tile_diagonal
         else:
+            # Even steps: no tile at center. Max extent is diagonal from origin to
+            # the corner of an outer tile, computed via Pythagorean theorem.
             actual = math.sqrt(((steps - 1) * step_size + fov_size_mm) ** 2 + (step_size + fov_size_mm) ** 2)
         if actual > scan_size_mm and steps > 1:
             steps -= 1

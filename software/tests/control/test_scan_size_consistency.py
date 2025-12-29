@@ -1,7 +1,9 @@
 """
 Tests for scan size and coverage consistency.
 
-Coverage = (area of well actually covered by tiles) / well_area × 100
+Conceptually, coverage = (area of well actually covered by tiles) / well_area × 100.
+In the implementation under test, this is approximated via grid sampling (discrete
+point counting) rather than an exact geometric area calculation.
 """
 
 import math
@@ -49,14 +51,18 @@ class TestWellCoverage:
         assert coverage <= 100, f"Coverage should not exceed 100%, got {coverage}%"
 
     def test_square_well_coverage(self):
-        """Test coverage calculation for square wells (384/1536 well plates)."""
+        """Test coverage calculation for square wells (384/1536 well plates).
+
+        Uses scan_size smaller than well_size to verify partial coverage calculation.
+        """
         well_size = 3.21  # 384 well plate
         fov = 0.5
         overlap = 10
+        scan_size = 2.0  # Smaller than well to test partial coverage
 
-        coverage = calculate_well_coverage(well_size, fov, overlap, "Square", well_size, is_round_well=False)
+        coverage = calculate_well_coverage(scan_size, fov, overlap, "Square", well_size, is_round_well=False)
         assert coverage > 0, "Should have some coverage"
-        assert coverage <= 100, "Coverage should not exceed 100%"
+        assert coverage < 100, "Partial scan should give partial coverage"
 
     def test_rectangle_shape_coverage(self):
         """Test coverage calculation for Rectangle scan shape."""
