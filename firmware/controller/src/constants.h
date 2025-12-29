@@ -1,7 +1,7 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
-#include "def/def_octopi_80120.h"
+#include "def/def_v1.h"
 
 #include "tmc/TMC4361A_TMC2660_Utils.h"
 

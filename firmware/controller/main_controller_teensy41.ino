@@ -2,12 +2,7 @@
 #include "src/operations.h"
 #include "src/serial_communication.h"
 
-//#include "def_octopi.h"
-#include "src/def/def_octopi_80120.h"
-//#include "def_gravitymachine.h"
-//#include "def_squid.h"
-//#include "def_platereader.h"
-//#include "def_squid_vertical.h"
+#include "src/def/def_v1.h"
 
 void setup() {
   init_serial_communication();
