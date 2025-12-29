@@ -1307,9 +1307,12 @@ class HighContentScreeningGui(QMainWindow):
                     )
 
                 # Setup plate view widget connections
+                # Use Qt.QueuedConnection explicitly for thread safety since these signals
+                # are emitted from the acquisition worker thread and received on the main thread.
+                # This ensures the slot is invoked in the receiver's thread event loop.
                 self.napari_connections["napariPlateViewWidget"] = [
-                    (self.multipointController.plate_view_init, self.napariPlateViewWidget.initPlateLayout),
-                    (self.multipointController.plate_view_update, self.napariPlateViewWidget.updatePlateView),
+                    (self.multipointController.plate_view_init, self.napariPlateViewWidget.initPlateLayout, Qt.QueuedConnection),
+                    (self.multipointController.plate_view_update, self.napariPlateViewWidget.updatePlateView, Qt.QueuedConnection),
                 ]
 
             # Make initial connections
@@ -1317,11 +1320,17 @@ class HighContentScreeningGui(QMainWindow):
 
     def updateNapariConnections(self):
         # Update Napari connections based on performance mode. Live widget connections are preserved
+        # Connection tuples can be:
+        #   (signal, slot) - uses default Qt.AutoConnection
+        #   (signal, slot, connection_type) - uses specified connection type (e.g., Qt.QueuedConnection)
         for widget_name, connections in self.napari_connections.items():
             if widget_name != "napariLiveWidget":  # Always keep the live widget connected
                 widget = getattr(self, widget_name, None)
                 if widget:
-                    for signal, slot in connections:
+                    for conn in connections:
+                        signal = conn[0]
+                        slot = conn[1]
+                        connection_type = conn[2] if len(conn) > 2 else None
                         if self.performance_mode:
                             try:
                                 signal.disconnect(slot)
@@ -1330,7 +1339,10 @@ class HighContentScreeningGui(QMainWindow):
                                 pass
                         else:
                             try:
-                                signal.connect(slot)
+                                if connection_type is not None:
+                                    signal.connect(slot, connection_type)
+                                else:
+                                    signal.connect(slot)
                             except TypeError:
                                 # Connection might already exist, which is fine
                                 pass

@@ -326,6 +326,38 @@ class DownsampledViewJob(Job):
     # process has its own copy of this class variable. It is process-local and
     # safe to mutate without cross-process synchronization.
     _well_accumulators: ClassVar[Dict[str, WellTileAccumulator]] = {}
+    # Track wells that encountered errors during processing
+    _failed_wells: ClassVar[Dict[str, str]] = {}  # well_id -> error message
+
+    @classmethod
+    def clear_accumulators(cls) -> None:
+        """Clear all accumulated well data and error tracking.
+
+        Call this at the start of a new acquisition to ensure no stale state
+        from previous (potentially aborted) acquisitions remains.
+
+        This method is safe to call even if no accumulators exist.
+        Performance: O(1) - just clears the dictionaries.
+        """
+        cls._well_accumulators.clear()
+        cls._failed_wells.clear()
+
+    @classmethod
+    def get_accumulator_count(cls) -> int:
+        """Get the number of wells currently being accumulated.
+
+        Useful for monitoring memory pressure during acquisition.
+        """
+        return len(cls._well_accumulators)
+
+    @classmethod
+    def get_failed_wells(cls) -> Dict[str, str]:
+        """Get a copy of the failed wells dictionary.
+
+        Returns:
+            Dict mapping well_id to error message for wells that failed processing.
+        """
+        return cls._failed_wells.copy()
 
     def run(self) -> Optional[DownsampledViewResult]:
         log = squid.logging.get_logger(self.__class__.__name__)
@@ -429,6 +461,8 @@ class DownsampledViewJob(Job):
 
         except Exception as e:
             log.exception(f"Error processing well {self.well_id}: {e}")
+            # Track failed well for reporting
+            self._failed_wells[self.well_id] = str(e)
             raise
         finally:
             # Ensure accumulator is always cleaned up after processing a complete well

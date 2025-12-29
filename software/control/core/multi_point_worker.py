@@ -698,46 +698,53 @@ class MultiPointWorker:
         height, width = image.shape[:2]
         pixel_size_um = self._pixel_size_um or 1.0
 
-        # Calculate downsample factor
-        downsample_factor = int(self._downsampled_plate_resolution_um / pixel_size_um)
+        # Calculate downsample factor (must match downsample_tile's rounding)
+        downsample_factor = int(round(self._downsampled_plate_resolution_um / pixel_size_um))
         if downsample_factor < 1:
             downsample_factor = 1
 
-        # Calculate expected stitched well size based on FOV grid
-        # Find a region with FOVs to determine the grid extent
+        # Calculate cropped tile dimensions (after overlap removal)
+        # This matches what stitch_tiles receives
+        if self._overlap_pixels:
+            top, bottom, left, right = self._overlap_pixels
+            cropped_width = width - left - right
+            cropped_height = height - top - bottom
+        else:
+            cropped_width = width
+            cropped_height = height
+
+        cropped_tile_width_mm = cropped_width * pixel_size_um / 1000.0
+        cropped_tile_height_mm = cropped_height * pixel_size_um / 1000.0
+
+        # Calculate expected stitched well size using same logic as stitch_tiles:
+        # canvas_size = (max_coord - min_coord) + tile_size
         well_extent_x_mm = 0.0
         well_extent_y_mm = 0.0
-        fov_width_mm = width * pixel_size_um / 1000.0
-        fov_height_mm = height * pixel_size_um / 1000.0
 
         for region_id, coords in self.scan_region_fov_coords_mm.items():
             if len(coords) >= 1:
                 # Find extent of FOV positions within this well
                 x_coords = [c[0] for c in coords]
                 y_coords = [c[1] for c in coords]
-                extent_x = max(x_coords) - min(x_coords) + fov_width_mm
-                extent_y = max(y_coords) - min(y_coords) + fov_height_mm
+                # Match stitch_tiles logic: extent = (max - min) + cropped_tile_size
+                extent_x = max(x_coords) - min(x_coords) + cropped_tile_width_mm
+                extent_y = max(y_coords) - min(y_coords) + cropped_tile_height_mm
                 well_extent_x_mm = max(well_extent_x_mm, extent_x)
                 well_extent_y_mm = max(well_extent_y_mm, extent_y)
 
-        # Account for overlap cropping
-        if self._overlap_pixels:
-            top, bottom, left, right = self._overlap_pixels
-            crop_x_mm = (left + right) * pixel_size_um / 1000.0
-            crop_y_mm = (top + bottom) * pixel_size_um / 1000.0
-            # Each tile loses overlap, but stitching recovers some
-            # Approximate: total crop is roughly one tile's worth of overlap
-            well_extent_x_mm -= crop_x_mm * 0.5
-            well_extent_y_mm -= crop_y_mm * 0.5
+        # Convert to pixels at native resolution (matching stitch_tiles)
+        well_width_pixels = int(round(well_extent_x_mm * 1000.0 / pixel_size_um))
+        well_height_pixels = int(round(well_extent_y_mm * 1000.0 / pixel_size_um))
 
-        # Convert to pixels at plate resolution
-        well_slot_width = int(well_extent_x_mm * 1000.0 / self._downsampled_plate_resolution_um)
-        well_slot_height = int(well_extent_y_mm * 1000.0 / self._downsampled_plate_resolution_um)
+        # Apply downsampling to get final slot size (matching downsample_tile)
+        well_slot_width = well_width_pixels // downsample_factor
+        well_slot_height = well_height_pixels // downsample_factor
 
-        # Ensure minimum size (single FOV)
-        min_slot_size = max(width, height) // downsample_factor
-        well_slot_width = max(well_slot_width, min_slot_size)
-        well_slot_height = max(well_slot_height, min_slot_size)
+        # Ensure minimum size (single cropped FOV downsampled)
+        min_slot_width = cropped_width // downsample_factor
+        min_slot_height = cropped_height // downsample_factor
+        well_slot_width = max(well_slot_width, min_slot_width)
+        well_slot_height = max(well_slot_height, min_slot_height)
 
         # Get channel info
         num_channels = len(self.selected_configurations)
