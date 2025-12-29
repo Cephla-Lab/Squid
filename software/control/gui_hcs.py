@@ -75,8 +75,6 @@ import control.core.core as core
 import control.microcontroller as microcontroller
 import control.serial_peripherals as serial_peripherals
 
-if SUPPORT_LASER_AUTOFOCUS:
-    import control.core_displacement_measurement as core_displacement_measurement
 
 SINGLE_WINDOW = True  # set to False if use separate windows for display and control
 
@@ -300,9 +298,6 @@ class HighContentScreeningGui(QMainWindow):
         self.liveController_focus_camera: Optional[AbstractCamera] = None
         self.streamHandler_focus_camera: Optional[StreamHandler] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
-        self.displacementMeasurementController: Optional[
-            core_displacement_measurement.DisplacementMeasurementController
-        ] = None
         self.laserAutofocusController: Optional[LaserAutofocusController] = None
 
         if SUPPORT_LASER_AUTOFOCUS:
@@ -311,7 +306,6 @@ class HighContentScreeningGui(QMainWindow):
                 accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live
             )
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(show_LUT=False, autoLevels=False)
-            self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
             self.laserAutofocusController = LaserAutofocusController(
                 self.microcontroller,
                 self.camera_focus,
@@ -363,8 +357,6 @@ class HighContentScreeningGui(QMainWindow):
         self.focusMapWidget: Optional[widgets.FocusMapWidget] = None
         self.cameraSettingWidget_focus_camera: Optional[widgets.CameraSettingsWidget] = None
         self.laserAutofocusSettingWidget: Optional[widgets.LaserAutofocusSettingWidget] = None
-        self.waveformDisplay: Optional[widgets.WaveformDisplay] = None
-        self.displacementMeasurementWidget: Optional[widgets.DisplacementMeasurementWidget] = None
         self.laserAutofocusControlWidget: Optional[widgets.LaserAutofocusControlWidget] = None
         self.fluidicsWidget: Optional[widgets.FluidicsWidget] = None
         self.flexibleMultiPointWidget: Optional[widgets.FlexibleMultiPointWidget] = None
@@ -644,10 +636,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.laserAutofocusController,
                 stretch=False,
             )  # ,show_display_options=True)
-            self.waveformDisplay = widgets.WaveformDisplay(N=1000, include_x=True, include_y=False)
-            self.displacementMeasurementWidget = widgets.DisplacementMeasurementWidget(
-                self.displacementMeasurementController, self.waveformDisplay
-            )
             self.laserAutofocusControlWidget: widgets.LaserAutofocusControlWidget = widgets.LaserAutofocusControlWidget(
                 self.laserAutofocusController, self.liveController
             )
@@ -791,25 +779,11 @@ class HighContentScreeningGui(QMainWindow):
             dock_laserfocus_liveController.setStretch(x=100, y=100)
             dock_laserfocus_liveController.setFixedWidth(self.laserAutofocusSettingWidget.minimumSizeHint().width())
 
-            dock_waveform = dock.Dock("Displacement Measurement", autoOrientation=False)
-            dock_waveform.showTitleBar()
-            dock_waveform.addWidget(self.waveformDisplay)
-            dock_waveform.setStretch(x=100, y=40)
-
-            dock_displayMeasurement = dock.Dock("Displacement Measurement Control", autoOrientation=False)
-            dock_displayMeasurement.showTitleBar()
-            dock_displayMeasurement.addWidget(self.displacementMeasurementWidget)
-            dock_displayMeasurement.setStretch(x=100, y=40)
-            dock_displayMeasurement.setFixedWidth(self.displacementMeasurementWidget.minimumSizeHint().width())
-
             laserfocus_dockArea = dock.DockArea()
             laserfocus_dockArea.addDock(dock_laserfocus_image_display)
             laserfocus_dockArea.addDock(
                 dock_laserfocus_liveController, "right", relativeTo=dock_laserfocus_image_display
             )
-            if SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS:
-                laserfocus_dockArea.addDock(dock_waveform, "bottom", relativeTo=dock_laserfocus_liveController)
-                laserfocus_dockArea.addDock(dock_displayMeasurement, "bottom", relativeTo=dock_waveform)
 
             self.imageDisplayTabs.addTab(laserfocus_dockArea, self.LASER_BASED_FOCUS_TAB_NAME)
 
@@ -1079,13 +1053,6 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.streamHandler_focus_camera.image_to_display.connect(self.imageDisplayWindow_focus.display_image)
 
-            self.streamHandler_focus_camera.image_to_display.connect(
-                self.displacementMeasurementController.update_measurement
-            )
-            self.displacementMeasurementController.signal_plots.connect(self.waveformDisplay.plot)
-            self.displacementMeasurementController.signal_readings.connect(
-                self.displacementMeasurementWidget.display_readings
-            )
             self.laserAutofocusController.image_to_display.connect(self.imageDisplayWindow_focus.display_image)
 
             # Add connection for piezo position updates

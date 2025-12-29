@@ -27,7 +27,6 @@ from control.piezo import PiezoStage
 from squid.abc import AbstractStage, AbstractCamera, CameraAcquisitionMode, CameraFrame
 import control._def
 import control.serial_peripherals as serial_peripherals
-import control.tracking as tracking
 import control.utils as utils
 import control.utils_acquisition as utils_acquisition
 import control.utils_channel as utils_channel

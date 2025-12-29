@@ -20,7 +20,6 @@ class LiveController:
         camera: AbstractCamera,
         control_illumination: bool = True,
         use_internal_timer_for_hardware_trigger: bool = True,
-        for_displacement_measurement: bool = False,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope = microscope
@@ -33,7 +32,6 @@ class LiveController:
         self.use_internal_timer_for_hardware_trigger = (
             use_internal_timer_for_hardware_trigger  # use Timer vs timer in the MCU
         )
-        self.for_displacement_measurement = for_displacement_measurement
 
         self.fps_trigger = 1
         self.timer_trigger_interval = (1.0 / self.fps_trigger) * 1000
@@ -177,9 +175,6 @@ class LiveController:
         ):
             self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
             self._start_triggerred_acquisition()
-        # if controlling the laser displacement measurement camera
-        if self.for_displacement_measurement:
-            self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
 
     def stop_live(self):
         if self.is_live:
@@ -194,9 +189,6 @@ class LiveController:
                 self._stop_triggerred_acquisition()
             if self.control_illumination:
                 self.turn_off_illumination()
-            # if controlling the laser displacement measurement camera
-            if self.for_displacement_measurement:
-                self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
 
     def _trigger_acquisition_timer_fn(self):
         if self.trigger_acquisition():
