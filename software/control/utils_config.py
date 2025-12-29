@@ -48,7 +48,7 @@ class NumericChannelMapping(BaseModel):
 
 # Channel name constraints (also enforced in UI, but validated here for direct JSON edits)
 CHANNEL_NAME_MAX_LENGTH = 64
-CHANNEL_NAME_INVALID_CHARS = '<>:"/\\|?*\0'
+CHANNEL_NAME_INVALID_CHARS = r'<>:"/\|?*' + "\0"
 
 
 class ChannelDefinition(BaseModel):

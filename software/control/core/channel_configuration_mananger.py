@@ -457,6 +457,7 @@ class ChannelConfigurationManager:
     def update_channel_definition(self, channel_name: str, **kwargs) -> None:
         """Update a channel definition"""
         if not self.channel_definitions:
+            self._log.warning("update_channel_definition called but channel_definitions not initialized")
             return
 
         for ch in self.channel_definitions.channels:
@@ -471,6 +472,7 @@ class ChannelConfigurationManager:
     def add_channel_definition(self, channel: ChannelDefinition) -> None:
         """Add a new channel definition"""
         if not self.channel_definitions:
+            self._log.warning("add_channel_definition called but channel_definitions not initialized")
             return
 
         self.channel_definitions.channels.append(channel)
@@ -489,6 +491,7 @@ class ChannelConfigurationManager:
             or all cleanups succeeded. Errors are also logged individually.
         """
         if not self.channel_definitions:
+            self._log.warning("remove_channel_definition called but channel_definitions not initialized")
             return []
 
         self.channel_definitions.channels = [ch for ch in self.channel_definitions.channels if ch.name != channel_name]
