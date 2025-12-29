@@ -30,11 +30,10 @@ software/
 └── acquisition_configurations/
     └── <profile>/                          # e.g., "default_profile"
         └── <objective>/                    # e.g., "10x", "20x", "40x"
-            ├── channel_settings.json       # Per-objective settings (not tracked)
-            └── channel_configurations.xml  # Legacy format (auto-generated)
+            └── channel_settings.json       # Per-objective settings (not tracked)
 ```
 
-**Note:** The `channel_configurations.xml` files are automatically generated for backward compatibility with acquisition scripts. You don't need to edit them directly.
+**Note:** Legacy `channel_configurations.xml` files are only generated in the **experiment folder** when an acquisition starts (via `write_configuration_selected()`). They are not kept in sync with JSON settings in the profile folders. The JSON format is the source of truth.
 
 ## Configuration Files
 
@@ -325,3 +324,10 @@ Or manually merge changes from the default file.
 1. Close the application
 2. Delete `software/acquisition_configurations/<profile>/<objective>/channel_settings.json`
 3. Restart - settings will be initialized from defaults
+
+### Channel IDs and renaming
+Channel IDs are generated from the channel name using a hash. **If you rename a channel, its ID will change.** This means:
+- References to the old ID in saved acquisition configurations will no longer match
+- The channel will appear as a "new" channel from the perspective of ID-based lookups
+
+To avoid issues, prefer disabling unused channels rather than renaming them if you have existing acquisition configurations that reference them.

@@ -499,8 +499,15 @@ class ChannelConfigurationManager:
                         with open(settings_file, "w") as f:
                             json.dump(data, f, indent=2)
                         self._log.info(f"Removed orphaned settings for '{channel_name}' from {settings_file}")
+                except json.JSONDecodeError as e:
+                    self._log.error(
+                        f"Failed to parse JSON in {settings_file} while cleaning up settings for "
+                        f"'{channel_name}': {e}"
+                    )
+                except PermissionError as e:
+                    self._log.error(f"Permission denied accessing {settings_file}: {e}")
                 except Exception as e:
-                    self._log.warning(f"Failed to clean up {settings_file}: {e}")
+                    self._log.warning(f"Failed to clean up {settings_file}: {type(e).__name__}: {e}")
 
     def set_channel_enabled(self, channel_name: str, enabled: bool) -> None:
         """Enable or disable a channel"""

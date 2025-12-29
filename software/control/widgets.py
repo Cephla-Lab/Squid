@@ -12205,12 +12205,13 @@ class AddChannelDialog(QDialog):
             return
 
         # Validate name format for filesystem safety (no special characters)
-        invalid_chars = r'<>:"/\|?*'
+        # Use strictest set that covers both Windows and Unix restrictions
+        invalid_chars = '<>:"/\\|?*\0'
         if any(c in name for c in invalid_chars):
             QMessageBox.warning(
                 self,
                 "Validation Error",
-                f"Channel name contains invalid characters. Avoid: {invalid_chars}",
+                "Channel name contains invalid characters. " 'Avoid: < > : " / \\ | ? *',
             )
             return
 

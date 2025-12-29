@@ -325,8 +325,10 @@ class Microscope:
         self.channel_configuration_mananger: ChannelConfigurationManager = ChannelConfigurationManager(
             configurations_path=configurations_path
         )
-        # Migrate all profiles/objectives from XML to JSON at startup
-        self.channel_configuration_mananger.migrate_all_profiles(control._def.ACQUISITION_CONFIGURATIONS_PATH)
+        # Migrate all profiles/objectives from XML to JSON (one-time operation)
+        migration_marker = control._def.ACQUISITION_CONFIGURATIONS_PATH / ".migration_complete"
+        if not migration_marker.exists():
+            self.channel_configuration_mananger.migrate_all_profiles(control._def.ACQUISITION_CONFIGURATIONS_PATH)
 
         # Sync confocal mode from hardware (works in both GUI and headless modes)
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
@@ -400,7 +402,13 @@ class Microscope:
                 self._log.warning(f"Could not query XLight disk position: {e}")
                 sync_successful = False
 
-        self.channel_configuration_mananger.sync_confocal_mode_from_hardware(confocal_mode)
+        if sync_successful:
+            self.channel_configuration_mananger.sync_confocal_mode_from_hardware(confocal_mode)
+        else:
+            self._log.warning(
+                "Confocal mode could not be synchronized from hardware; "
+                "keeping existing channel configuration manager state."
+            )
         return sync_successful
 
     def set_confocal_mode(self, confocal: bool) -> None:
