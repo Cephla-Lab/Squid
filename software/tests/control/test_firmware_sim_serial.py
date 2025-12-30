@@ -295,6 +295,39 @@ class TestFirmwareSimSerialBehavior:
 
         assert response[1] == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
 
+    def test_w_axis_not_in_response(self):
+        """Test that W axis position is tracked but NOT included in response.
+
+        Per firmware protocol specification, the response packet only includes
+        X, Y, Z, and Theta positions. W axis is intentionally excluded.
+        """
+        sim = FirmwareSimSerial()
+        crc = CrcCalculator(Crc8.CCITT, table_based=True)
+
+        # Get response with W at default (0)
+        cmd = bytearray(MicrocontrollerDef.CMD_LENGTH)
+        cmd[0] = 1
+        cmd[1] = CMD_SET.TURN_ON_ILLUMINATION
+        cmd[7] = crc.calculate_checksum(cmd[:-1])
+        sim.write(cmd)
+        response_before = sim.read(MicrocontrollerDef.MSG_LENGTH)
+
+        # Change W axis position
+        sim.w = 12345
+
+        # Get another response - should be identical since W is not in response
+        cmd[0] = 2  # Different cmd_id
+        cmd[7] = crc.calculate_checksum(cmd[:-1])
+        sim.write(cmd)
+        response_after = sim.read(MicrocontrollerDef.MSG_LENGTH)
+
+        # Responses should differ only in cmd_id (byte 0) and CRC (byte 23)
+        # All position bytes (2-17) should be identical
+        assert response_before[2:18] == response_after[2:18]
+
+        # Verify W is actually tracked internally
+        assert sim.w == 12345
+
 
 class TestFirmwareSimSerialWithMicrocontroller:
     """Test FirmwareSimSerial as drop-in replacement with Microcontroller class."""

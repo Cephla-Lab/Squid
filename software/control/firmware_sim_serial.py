@@ -197,20 +197,25 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         # Validate axis parameter for commands that use it
         if len(cmd) >= 3:
             cmd_code = cmd[1]
+            # Filter out None values to prevent false matches if constants are missing
             axis_commands = [
-                self.fw.get("HOME_OR_ZERO"),
-                self.fw.get("SET_LIM"),
-                self.fw.get("SET_LIM_SWITCH_POLARITY"),
-                self.fw.get("CONFIGURE_STEPPER_DRIVER"),
-                self.fw.get("SET_MAX_VELOCITY_ACCELERATION"),
-                self.fw.get("SET_LEAD_SCREW_PITCH"),
-                self.fw.get("SET_OFFSET_VELOCITY"),
-                self.fw.get("CONFIGURE_STAGE_PID"),
-                self.fw.get("ENABLE_STAGE_PID"),
-                self.fw.get("DISABLE_STAGE_PID"),
-                self.fw.get("SET_HOME_SAFETY_MERGIN"),
-                self.fw.get("SET_PID_ARGUMENTS"),
-                self.fw.get("SET_AXIS_DISABLE_ENABLE"),
+                cmd_id
+                for cmd_id in [
+                    self.fw.get("HOME_OR_ZERO"),
+                    self.fw.get("SET_LIM"),
+                    self.fw.get("SET_LIM_SWITCH_POLARITY"),
+                    self.fw.get("CONFIGURE_STEPPER_DRIVER"),
+                    self.fw.get("SET_MAX_VELOCITY_ACCELERATION"),
+                    self.fw.get("SET_LEAD_SCREW_PITCH"),
+                    self.fw.get("SET_OFFSET_VELOCITY"),
+                    self.fw.get("CONFIGURE_STAGE_PID"),
+                    self.fw.get("ENABLE_STAGE_PID"),
+                    self.fw.get("DISABLE_STAGE_PID"),
+                    self.fw.get("SET_HOME_SAFETY_MERGIN"),
+                    self.fw.get("SET_PID_ARGUMENTS"),
+                    self.fw.get("SET_AXIS_DISABLE_ENABLE"),
+                ]
+                if cmd_id is not None
             ]
             if cmd_code in axis_commands:
                 axis = cmd[2]
@@ -240,8 +245,11 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             if self.strict:
                 raise FirmwareProtocolError("\n".join(errors))
             else:
-                for err in errors:
-                    self._log.warning(f"Firmware validation: {err}")
+                # Defensive: _log is initialized by AbstractCephlaMicroSerial.__init__()
+                log = getattr(self, "_log", None)
+                if log is not None:
+                    for err in errors:
+                        log.warning(f"Firmware validation: {err}")
 
         self.commands_validated += 1
 
@@ -286,12 +294,15 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             )
         )
 
-        # Pad to MSG_LENGTH - 1 (leaving room for CRC)
-        while len(response) < msg_length - 1:
+        # Ensure response is exactly MSG_LENGTH - 1 bytes (leaving room for CRC).
+        # The struct.pack above produces 23 bytes which matches MSG_LENGTH-1=23 for
+        # the default MSG_LENGTH=24. This padding/truncation is defensive programming
+        # in case MSG_LENGTH changes relative to the struct format.
+        expected_payload_len = msg_length - 1
+        while len(response) < expected_payload_len:
             response.append(0)
-
-        # Truncate if too long
-        response = response[: msg_length - 1]
+        if len(response) > expected_payload_len:
+            response = response[:expected_payload_len]
 
         # Add CRC
         response.append(self.crc_calculator.calculate_checksum(response))
