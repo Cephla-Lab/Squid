@@ -11,7 +11,6 @@ These tests verify that the firmware and software agree on:
 - Illumination source codes
 """
 
-import os
 import re
 from pathlib import Path
 
@@ -49,8 +48,8 @@ def parse_firmware_constants(file_path: Path) -> dict:
     with open(file_path, "r") as f:
         content = f.read()
 
-    # Match patterns like: static const int MOVE_X = 0;
-    pattern = r"static\s+const\s+int\s+(\w+)\s*=\s*(\d+)\s*;"
+    # Match patterns like: static const int MOVE_X = 0; (also handles negative values)
+    pattern = r"static\s+const\s+int\s+(\w+)\s*=\s*(-?\d+)\s*;"
     matches = re.findall(pattern, content)
 
     for name, value in matches:
@@ -294,8 +293,20 @@ class TestProtocolConsistency:
             if fw_name not in python_illumination:
                 missing_in_software.append(f"{fw_name} = {fw_value}")
 
+        # Find codes in software but not in firmware
+        missing_in_firmware = []
+        for py_name, py_value in python_illumination.items():
+            if py_name not in firmware_illumination:
+                missing_in_firmware.append(f"{py_name} = {py_value}")
+
+        errors = []
         if missing_in_software:
-            pytest.fail(f"Firmware has illumination codes not in software:\n" + "\n".join(missing_in_software))
+            errors.append("Firmware has illumination codes not in software:\n" + "\n".join(missing_in_software))
+        if missing_in_firmware:
+            errors.append("Software has illumination codes not in firmware:\n" + "\n".join(missing_in_firmware))
+
+        if errors:
+            pytest.fail("\n\n".join(errors))
 
 
 class TestCRCCompatibility:

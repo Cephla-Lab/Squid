@@ -9,7 +9,7 @@ These tests verify that:
 """
 
 import struct
-import pytest
+
 from crc import CrcCalculator, Crc8
 
 from control._def import (

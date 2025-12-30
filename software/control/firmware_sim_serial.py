@@ -158,8 +158,15 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self.switch = False
 
         # Validation tracking
+        # Note: validation_errors accumulates across commands for debugging.
+        # Call clear_validation_errors() to reset between test runs if needed.
         self.commands_validated = 0
         self.validation_errors = []
+
+    def clear_validation_errors(self) -> None:
+        """Clear accumulated validation errors. Call between test runs if needed."""
+        self.validation_errors = []
+        self.commands_validated = 0
 
     def _validate_command(self, cmd: bytearray) -> None:
         """
@@ -252,13 +259,16 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         - byte[18]: buttons/switches
         - bytes[19-22]: reserved
         - byte[23]: CRC
+
+        Note: W axis position is tracked internally (self.w) but is NOT included
+        in the response packet per the firmware protocol specification.
         """
         msg_length = self.fw.get("MSG_LENGTH", 24)
 
         # Build response using struct for proper byte packing
         button_state = (1 if self.joystick_button else 0) << self.fw.get("BIT_POS_JOYSTICK_BUTTON", 0)
-        # Note: BIT_POS_SWITCH might not be in constants.h, default to 1
-        button_state |= (1 if self.switch else 0) << 1
+        # BIT_POS_SWITCH may not be in constants.h; default to bit position 1
+        button_state |= (1 if self.switch else 0) << self.fw.get("BIT_POS_SWITCH", 1)
 
         reserved = 0
 
@@ -318,7 +328,8 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             self.w = get_position()
         elif cmd_code == self.fw.get("HOME_OR_ZERO"):
             axis = cmd[2]
-            home_type = cmd[3]
+            # home_type at cmd[3] indicates HOME_NEGATIVE, HOME_POSITIVE, or ZERO
+            # In simulation, all variants simply zero the position
             # Zero or home sets position to 0
             if axis == self.fw.get("AXIS_X", 0):
                 self.x = 0
