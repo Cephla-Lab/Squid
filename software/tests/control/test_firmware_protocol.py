@@ -30,11 +30,11 @@ from control._def import (
 
 
 def get_firmware_constants_path() -> Path:
-    """Get path to firmware constants.h file."""
-    # Navigate from software/tests/control/ to firmware/controller/src/constants.h
+    """Get path to firmware constants_protocol.h file."""
+    # Navigate from software/tests/control/ to firmware/controller/src/constants_protocol.h
     tests_dir = Path(__file__).parent
     repo_root = tests_dir.parent.parent.parent
-    constants_path = repo_root / "firmware" / "controller" / "src" / "constants.h"
+    constants_path = repo_root / "firmware" / "controller" / "src" / "constants_protocol.h"
     return constants_path
 
 

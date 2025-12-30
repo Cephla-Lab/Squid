@@ -3,7 +3,7 @@ Firmware-validating serial simulator.
 
 This module provides FirmwareSimSerial, a serial simulator that validates
 commands against actual firmware source code. Unlike SimSerial (which is
-a Python-only mock), this class parses firmware constants.h to ensure
+a Python-only mock), this class parses firmware constants_protocol.h to ensure
 the Python software sends commands that firmware will correctly understand.
 
 Use this for integration testing to catch protocol drift between
@@ -31,7 +31,7 @@ class FirmwareConstants:
     """
     Parses and holds constants from firmware source code.
 
-    This class reads the actual firmware constants.h file to extract
+    This class reads the actual firmware constants_protocol.h file to extract
     command IDs, message lengths, axis definitions, etc.
     """
 
@@ -39,7 +39,7 @@ class FirmwareConstants:
         if firmware_path is None:
             # Default path relative to this file
             this_file = Path(__file__).parent
-            firmware_path = this_file.parent.parent / "firmware" / "controller" / "src" / "constants.h"
+            firmware_path = this_file.parent.parent / "firmware" / "controller" / "src" / "constants_protocol.h"
 
         self.firmware_path = firmware_path
         self._constants = {}
@@ -132,7 +132,7 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         Initialize the firmware simulator.
 
         Args:
-            firmware_path: Path to firmware constants.h. If None, uses default.
+            firmware_path: Path to firmware constants_protocol.h. If None, uses default.
             strict: If True, raise FirmwareProtocolError on any mismatch.
                    If False, log warnings but continue.
         """
@@ -282,7 +282,7 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
 
         # Build response using struct for proper byte packing
         button_state = (1 if self.joystick_button else 0) << self.fw.get("BIT_POS_JOYSTICK_BUTTON", 0)
-        # BIT_POS_SWITCH may not be in constants.h; default to bit position 1
+        # BIT_POS_SWITCH may not be in constants_protocol.h; default to bit position 1
         button_state |= (1 if self.switch else 0) << self.fw.get("BIT_POS_SWITCH", 1)
 
         reserved = 0
