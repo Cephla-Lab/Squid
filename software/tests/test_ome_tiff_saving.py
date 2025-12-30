@@ -269,3 +269,29 @@ def test_stale_metadata_cleanup() -> None:
         # Clean up in case the test fails before cleanup runs
         if os.path.exists(old_metadata_path):
             os.remove(old_metadata_path)
+
+
+def test_job_runner_cleanup_flag() -> None:
+    """Test that JobRunner only runs cleanup when cleanup_stale_ome_files=True."""
+    from unittest.mock import patch
+    from control.core.job_processing import JobRunner, AcquisitionInfo
+
+    acquisition_info = AcquisitionInfo(
+        total_time_points=1,
+        total_z_levels=1,
+        total_channels=1,
+        channel_names=["DAPI"],
+    )
+
+    # Test that cleanup is NOT called when flag is False (default)
+    with patch("control.core.job_processing.ome_tiff_writer.cleanup_stale_metadata_files") as mock_cleanup:
+        runner = JobRunner(acquisition_info=acquisition_info, cleanup_stale_ome_files=False)
+        mock_cleanup.assert_not_called()
+        runner._shutdown_event.set()
+
+    # Test that cleanup IS called when flag is True
+    with patch("control.core.job_processing.ome_tiff_writer.cleanup_stale_metadata_files") as mock_cleanup:
+        mock_cleanup.return_value = []
+        runner = JobRunner(acquisition_info=acquisition_info, cleanup_stale_ome_files=True)
+        mock_cleanup.assert_called_once()
+        runner._shutdown_event.set()

@@ -209,11 +209,8 @@ class SaveOMETiffJob(Job):
                 expected_shape = tuple(metadata[ome_tiff_writer.SHAPE_KEY])
                 if expected_shape[-2:] != image.shape[-2:]:
                     raise ValueError("Image dimensions do not match existing OME memmap stack")
-                if (
-                    not metadata.get(ome_tiff_writer.CHANNEL_NAMES_KEY)
-                    and self.acquisition_info
-                    and self.acquisition_info.channel_names
-                ):
+                # acquisition_info is guaranteed non-None here (validated in run())
+                if not metadata.get(ome_tiff_writer.CHANNEL_NAMES_KEY) and self.acquisition_info.channel_names:
                     metadata[ome_tiff_writer.CHANNEL_NAMES_KEY] = self.acquisition_info.channel_names
 
             target_dtype = np.dtype(metadata[ome_tiff_writer.DTYPE_KEY])
@@ -279,7 +276,11 @@ class ThrowImmediatelyJob(Job):
 
 
 class JobRunner(multiprocessing.Process):
-    def __init__(self, acquisition_info: Optional[AcquisitionInfo] = None):
+    def __init__(
+        self,
+        acquisition_info: Optional[AcquisitionInfo] = None,
+        cleanup_stale_ome_files: bool = False,
+    ):
         super().__init__()
         self._log = squid.logging.get_logger(__class__.__name__)
         self._acquisition_info = acquisition_info
@@ -290,7 +291,8 @@ class JobRunner(multiprocessing.Process):
         self._shutdown_event: multiprocessing.Event = multiprocessing.Event()
 
         # Clean up stale metadata files from previous crashed acquisitions
-        if acquisition_info is not None:
+        # Only run when explicitly requested (i.e., when OME-TIFF saving is being used)
+        if cleanup_stale_ome_files:
             removed = ome_tiff_writer.cleanup_stale_metadata_files()
             if removed:
                 self._log.info(f"Cleaned up {len(removed)} stale OME-TIFF metadata files")

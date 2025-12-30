@@ -158,7 +158,8 @@ class MultiPointWorker:
         self._current_round_images = {}
 
         job_classes = []
-        if FILE_SAVING_OPTION == FileSavingOption.OME_TIFF:
+        use_ome_tiff = FILE_SAVING_OPTION == FileSavingOption.OME_TIFF
+        if use_ome_tiff:
             job_classes.append(SaveOMETiffJob)
         else:
             job_classes.append(SaveImageJob)
@@ -173,7 +174,10 @@ class MultiPointWorker:
         for job_class in job_classes:
             self._log.info(f"Creating job runner for {job_class.__name__} jobs")
             job_runner = (
-                control.core.job_processing.JobRunner(self.acquisition_info)
+                control.core.job_processing.JobRunner(
+                    self.acquisition_info,
+                    cleanup_stale_ome_files=use_ome_tiff,
+                )
                 if Acquisition.USE_MULTIPROCESSING
                 else None
             )
