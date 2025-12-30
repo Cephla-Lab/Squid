@@ -48,7 +48,8 @@ def ome_output_folder(acq_info: "AcquisitionInfo", info: "CaptureInfo") -> str:
 def metadata_temp_path(acq_info: "AcquisitionInfo", info: "CaptureInfo", base_name: str) -> str:
     base_identifier = acq_info.experiment_path or info.save_directory
     key = f"{base_identifier}:{base_name}"
-    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+    # SHA-256 for generating unique filenames (non-cryptographic use)
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
     # Use squid_ome_ prefix to avoid conflicts with other OME-TIFF applications
     return os.path.join(tempfile.gettempdir(), f"squid_ome_{digest}_metadata.json")
 

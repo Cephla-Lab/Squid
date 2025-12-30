@@ -256,7 +256,8 @@ class SaveOMETiffJob(Job):
                 tifffile.tiffcomment(output_path, ome_xml.encode("utf-8"))
                 if os.path.exists(metadata_path):
                     os.remove(metadata_path)
-                # Note: lock file cleanup is handled by filelock library
+                # Note: filelock does not remove lock files; stale lock/metadata files are cleaned up
+                # by ome_tiff_writer.cleanup_stale_metadata_files() on JobRunner initialization.
 
 
 # These are debugging jobs - they should not be used in normal usage!
