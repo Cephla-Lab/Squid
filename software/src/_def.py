@@ -14,6 +14,7 @@ log = squid.core.logging.get_logger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CACHE_DIR = PROJECT_ROOT / "cache"
 FORMATS_DIR = PROJECT_ROOT / "assets" / "objective_and_sample_formats"
+SQUID_ICON_PATH = PROJECT_ROOT / "assets" / "icon" / "cephla_logo.ico"
 
 
 def conf_attribute_reader(string_value):
@@ -334,6 +335,29 @@ class FocusMeasureOperator(Enum):
             raise ValueError(f"Invalid focus measure operator: {option}")
 
 
+class ZProjectionMode(Enum):
+    """Z-projection mode for downsampled views when acquiring z-stacks.
+
+    MIP: Maximum Intensity Projection - takes brightest pixel at each position
+         across all z-levels. Best for fluorescence imaging.
+    MIDDLE: Uses the middle z-slice only (z = NZ // 2). Best for transmitted
+            light when middle plane is representative.
+    """
+
+    MIP = "mip"
+    MIDDLE = "middle"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZProjectionMode"]) -> "ZProjectionMode":
+        """Convert string or enum to ZProjectionMode enum."""
+        if isinstance(option, ZProjectionMode):
+            return option
+        try:
+            return ZProjectionMode(option.lower())
+        except ValueError:
+            raise ValueError(f"Invalid z projection mode: {option}")
+
+
 PRINT_CAMERA_FPS = True
 
 ###########################################################
@@ -597,6 +621,10 @@ ENABLE_RECORDING = False
 
 RESUME_LIVE_AFTER_ACQUISITION = True
 
+# When enabled, each multipoint acquisition will write a second log file scoped to that acquisition at:
+#   <base_path>/<experiment_ID>/acquisition.log
+ENABLE_PER_ACQUISITION_LOG = False
+
 CAMERA_SN = {
     "ch 1": "SN1",
     "ch 2": "SN2",
@@ -738,6 +766,26 @@ USE_NAPARI_WELL_SELECTION = False
 USE_NAPARI_FOR_LIVE_CONTROL = False
 LIVE_ONLY_MODE = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
+
+# Downsampled plate view settings
+# Enable/disable downsampled well TIFF generation (saves per-well TIFFs)
+GENERATE_DOWNSAMPLED_WELL_IMAGES = False
+# Enable/disable plate view tab in GUI during acquisition
+DISPLAY_PLATE_VIEW = False
+# Per-well image resolutions in um/pixel (e.g., [5.0, 10.0, 20.0])
+DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
+# Resolution for the plate view grid (um/pixel)
+DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0
+# Z-projection mode for z-stacks: ZProjectionMode.MIP or ZProjectionMode.MIDDLE
+DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
+# Maximum time (seconds) to wait for all downsampled view jobs to complete
+# Increase for large plates (e.g., 60-120s for 384-well, 300-800s for 1536-well)
+DOWNSAMPLED_VIEW_JOB_TIMEOUT_S = 30.0
+# Time (seconds) to wait after last job result before assuming completion
+DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S = 2.0
+# Plate view zoom limits
+PLATE_VIEW_MIN_VISIBLE_PIXELS = 500.0
+PLATE_VIEW_MAX_ZOOM_FACTOR = 10.0
 
 # Controller SN (needed when using multiple teensy-based connections)
 CONTROLLER_SN = None

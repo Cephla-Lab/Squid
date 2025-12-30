@@ -28,6 +28,7 @@ from squid.ui.widgets import ConfigEditorBackwardsCompatible
 from _def import CACHED_CONFIG_FILE_PATH
 from _def import PROJECT_ROOT
 from _def import USE_TERMINAL_CONSOLE
+from _def import SQUID_ICON_PATH
 import squid.core.utils.hardware_utils
 from squid.application import ApplicationContext
 
@@ -89,6 +90,7 @@ if __name__ == "__main__":
         legacy_config = True
     app = QApplication([])
     app.setStyle("Fusion")
+    app.setWindowIcon(QIcon(str(SQUID_ICON_PATH)))
     # This allows shutdown via ctrl+C even after the gui has popped up.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 

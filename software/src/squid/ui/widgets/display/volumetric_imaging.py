@@ -179,10 +179,11 @@ class ImageArrayDisplayWindow(QMainWindow):
         self.setCentralWidget(self.widget)
 
         # set window size
-        desktopWidget = QDesktopWidget()
-        width = min(desktopWidget.height() * 0.9, 1000)  # @@@TO MOVE@@@#
+        screen = QApplication.primaryScreen()
+        screen_geometry = screen.availableGeometry()
+        width = min(screen_geometry.height() * 0.9, 1000)  # @@@TO MOVE@@@#
         height = width
-        self.setFixedSize(width, height)
+        self.setFixedSize(int(width), int(height))
 
     def display_image(self, image: np.ndarray, i: int) -> None:
         if i < 9:

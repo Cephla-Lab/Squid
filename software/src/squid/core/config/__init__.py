@@ -6,6 +6,14 @@ import pydantic
 
 import _def as _def
 from squid.core.utils.hardware_utils import FlipVariant
+from squid.core.config.channel_definitions import (
+    ChannelType,
+    NumericChannelMapping,
+    ChannelDefinition,
+    ConfocalOverrides,
+    ObjectiveChannelSettings,
+    ChannelDefinitionsConfig,
+)
 
 
 class FilterWheelControllerVariant(enum.Enum):

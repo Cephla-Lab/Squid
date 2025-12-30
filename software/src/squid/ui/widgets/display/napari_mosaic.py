@@ -1,5 +1,6 @@
 # Napari mosaic display widget
 from __future__ import annotations
+import gc
 import math
 import numpy as np
 from dataclasses import dataclass
@@ -11,9 +12,10 @@ import napari
 from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
 
 from qtpy.QtCore import QObject, QThread, QTimer, Signal, Slot
+from qtpy.QtGui import QIcon
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QPushButton
 
-from _def import CHANNEL_COLORS_MAP, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM
+from _def import CHANNEL_COLORS_MAP, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM, SQUID_ICON_PATH
 from squid.backend.managers import ContrastManager
 from squid.backend.controllers.multipoint.job_processing import CaptureInfo
 from squid.core.events import (
@@ -407,6 +409,13 @@ class NapariMosaicDisplayWidget(QWidget):
             )
 
     def customizeViewer(self) -> None:
+        # Set Squid/Cephla branding on napari viewer
+        self.viewer.window._qt_window.setWindowIcon(QIcon(str(SQUID_ICON_PATH)))
+        self.viewer.window._qt_window.setWindowTitle("Squid Microscope - Mosaic")
+
+        # Hide the napari menu bar (clear it for macOS global menu bar)
+        self.viewer.window.main_menu.clear()
+
         self.viewer.bind_key("D", self.toggle_draw_mode)
 
     def _has_mosaic_image_layers(self) -> bool:
@@ -480,10 +489,12 @@ class NapariMosaicDisplayWidget(QWidget):
 
     def on_shape_change(self, event: Optional[Any] = None) -> None:
         if self.shape_layer is not None and len(self.shape_layer.data) > 0:
-            # convert shapes to mm coordinates
-            self.shapes_mm = [
-                self.convert_shape_to_mm(shape) for shape in self.shape_layer.data
-            ]
+            # Only convert shapes to mm if mosaic is initialized (has valid coordinate system)
+            if self.layers_initialized and self.top_left_coordinate is not None:
+                self.shapes_mm = [
+                    self.convert_shape_to_mm(shape) for shape in self.shape_layer.data
+                ]
+            # else: keep existing shapes_mm (they're already in mm from before clear)
         else:
             self.shapes_mm = []
         self.signal_shape_drawn.emit(self.shapes_mm)
@@ -923,35 +934,20 @@ class NapariMosaicDisplayWidget(QWidget):
         self._pending_updates.clear()
         self._compositor.clear()
 
-        # Reset widget state
+        # Remove all layers except Manual ROI to free memory and allow proper reinitialization
+        layers_to_remove = [layer for layer in self.viewer.layers if layer.name != "Manual ROI"]
+        for layer in layers_to_remove:
+            self.viewer.layers.remove(layer)
+
+        # Reset mosaic-related state so reinitialization logic can run cleanly
+        self.channels = set()
+        self.viewer_extents = None
         self.layers_initialized = False
-        self.viewer_extents = []
         self.top_left_coordinate = None
         self.mosaic_dtype = None
-        self.channels = set()
 
-        # Keep the Manual ROI layer and clear the content of all other layers
-        for layer in self.viewer.layers:
-            if layer.name == "Manual ROI":
-                continue
-
-            if hasattr(layer, "data") and hasattr(layer.data, "shape"):
-                # Create an empty array matching the layer's dimensions
-                if len(layer.data.shape) == 3 and layer.data.shape[2] == 3:  # RGB
-                    empty_data = np.zeros(
-                        (layer.data.shape[0], layer.data.shape[1], 3),
-                        dtype=layer.data.dtype,
-                    )
-                else:  # Grayscale
-                    empty_data = np.zeros(
-                        (layer.data.shape[0], layer.data.shape[1]),
-                        dtype=layer.data.dtype,
-                    )
-
-                layer.data = empty_data
-
-        for layer in self.viewer.layers:
-            layer.refresh()
+        # Force garbage collection to return memory to OS
+        gc.collect()
 
         self.signal_clear_viewer.emit()
 

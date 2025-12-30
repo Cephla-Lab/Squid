@@ -1,0 +1,187 @@
+{
+  "max_fluorescence_channels": 5,
+  "channels": [
+    {
+      "name": "BF LED matrix full",
+      "type": "led_matrix",
+      "emission_filter_position": 1,
+      "display_color": "#FFFFFF",
+      "enabled": true,
+      "numeric_channel": null,
+      "illumination_source": 0,
+      "ex_wavelength": null
+    },
+    {
+      "name": "DF LED matrix",
+      "type": "led_matrix",
+      "emission_filter_position": 1,
+      "display_color": "#FFFFFF",
+      "enabled": true,
+      "numeric_channel": null,
+      "illumination_source": 3,
+      "ex_wavelength": null
+    },
+    {
+      "name": "Fluorescence 405 nm Ex",
+      "type": "fluorescence",
+      "emission_filter_position": 1,
+      "display_color": "#20ADF8",
+      "enabled": true,
+      "numeric_channel": 1,
+      "illumination_source": null,
+      "ex_wavelength": null
+    },
+    {
+      "name": "Fluorescence 488 nm Ex",
+      "type": "fluorescence",
+      "emission_filter_position": 1,
+      "display_color": "#1FFF00",
+      "enabled": true,
+      "numeric_channel": 2,
+      "illumination_source": null,
+      "ex_wavelength": null
+    },
+    {
+      "name": "Fluorescence 561 nm Ex",
+      "type": "fluorescence",
+      "emission_filter_position": 1,
+      "display_color": "#FFCF00",
+      "enabled": true,
+      "numeric_channel": 3,
+      "illumination_source": null,
+      "ex_wavelength": null
+    },
+    {
+      "name": "Fluorescence 638 nm Ex",
+      "type": "fluorescence",
+      "emission_filter_position": 1,
+      "display_color": "#FF0000",
+      "enabled": true,
+      "numeric_channel": 4,
+      "illumination_source": null,
+      "ex_wavelength": null
+    },
+    {
+      "name": "Fluorescence 730 nm Ex",
+      "type": "fluorescence",
+      "emission_filter_position": 1,
+      "display_color": "#770000",
+      "enabled": true,
+      "numeric_channel": 5,
+      "illumination_source": null,
+      "ex_wavelength": null
+    },
+    {
+      "name": "BF LED matrix low NA",
+      "type": "led_matrix",
+      "emission_filter_position": 1,
+      "display_color": "#FFFFFF",
+      "enabled": true,
+      "numeric_channel": null,
+      "illumination_source": 4,
+      "ex_wavelength": null
+    },
+    {
+      "name": "BF LED matrix left half",
+      "type": "led_matrix",
+      "emission_filter_position": 1,
+      "display_color": "#FFFFFF",
+      "enabled": false,
+      "numeric_channel": null,
+      "illumination_source": 1,
+      "ex_wavelength": null
+    },
+    {
+      "name": "BF LED matrix right half",
+      "type": "led_matrix",
+      "emission_filter_position": 1,
+      "display_color": "#FFFFFF",
+      "enabled": false,
+      "numeric_channel": null,
+      "illumination_source": 2,
+      "ex_wavelength": null
+    },
+    {
+      "name": "BF LED matrix top half",
+      "type": "led_matrix",
+      "emission_filter_position": 1,
+      "display_color": "#FFFFFF",
+      "enabled": false,
+      "numeric_channel": null,
+      "illumination_source": 7,
+      "ex_wavelength": null
+    },
+    {
+      "name": "BF LED matrix bottom half",
+      "type": "led_matrix",
+      "emission_filter_position": 1,
+      "display_color": "#FFFFFF",
+      "enabled": false,
+      "numeric_channel": null,
+      "illumination_source": 8,
+      "ex_wavelength": null
+    },
+    {
+      "name": "BF LED matrix full_R",
+      "type": "led_matrix",
+      "emission_filter_position": 1,
+      "display_color": "#FF0000",
+      "enabled": false,
+      "numeric_channel": null,
+      "illumination_source": 0,
+      "ex_wavelength": null
+    },
+    {
+      "name": "BF LED matrix full_G",
+      "type": "led_matrix",
+      "emission_filter_position": 1,
+      "display_color": "#00FF00",
+      "enabled": false,
+      "numeric_channel": null,
+      "illumination_source": 0,
+      "ex_wavelength": null
+    },
+    {
+      "name": "BF LED matrix full_B",
+      "type": "led_matrix",
+      "emission_filter_position": 1,
+      "display_color": "#0000FF",
+      "enabled": false,
+      "numeric_channel": null,
+      "illumination_source": 0,
+      "ex_wavelength": null
+    },
+    {
+      "name": "BF LED matrix full_RGB",
+      "type": "led_matrix",
+      "emission_filter_position": 1,
+      "display_color": "#FFFFFF",
+      "enabled": false,
+      "numeric_channel": null,
+      "illumination_source": 0,
+      "ex_wavelength": null
+    }
+  ],
+  "numeric_channel_mapping": {
+    "1": {
+      "illumination_source": 11,
+      "ex_wavelength": 405
+    },
+    "2": {
+      "illumination_source": 12,
+      "ex_wavelength": 488
+    },
+    "3": {
+      "illumination_source": 14,
+      "ex_wavelength": 561
+    },
+    "4": {
+      "illumination_source": 13,
+      "ex_wavelength": 638
+    },
+    "5": {
+      "illumination_source": 15,
+      "ex_wavelength": 730
+    }
+  }
+}

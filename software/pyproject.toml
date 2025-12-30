@@ -47,6 +47,7 @@ dependencies = [
     "pydantic_xml",
     "pyvisa",
     "hidapi",
+    "psutil",
 ]
 
 [project.optional-dependencies]

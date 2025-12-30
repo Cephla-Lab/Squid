@@ -195,7 +195,8 @@ class MultiPointWorker:
         self._last_error: Optional[Exception] = None
         self._last_stack_trace: Optional[str] = None
 
-        job_classes = [SaveImageJob]
+        self.skip_saving = acquisition_parameters.skip_saving
+        job_classes = [] if self.skip_saving else [SaveImageJob]
         if extra_job_classes:
             job_classes.extend(extra_job_classes)
 

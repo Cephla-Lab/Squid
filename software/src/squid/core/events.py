@@ -954,6 +954,7 @@ class SetAcquisitionParametersCommand(Event):
     z_range: Optional[Tuple[float, float]] = None
     focus_map: Optional[Any] = None
     use_fluidics: Optional[bool] = None
+    skip_saving: Optional[bool] = None
 
 
 @dataclass

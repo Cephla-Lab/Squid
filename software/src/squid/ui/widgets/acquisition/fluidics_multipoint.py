@@ -23,6 +23,7 @@ from squid.core.events import (
     LoadScanCoordinatesCommand,
     ActiveAcquisitionTabChanged,
     FluidicsInitialized,
+    ScanCoordinatesUpdated,
 )
 
 from qtpy.QtCore import QTimer
@@ -81,6 +82,10 @@ class MultiPointWithFluidicsWidget(QFrame):
         self._acquisition_is_aborting = False
         self._active_experiment_id: Optional[str] = None
 
+        # Cached scan coordinates state from events
+        self._total_regions = 0
+        self._total_fovs = 0
+
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
@@ -92,6 +97,7 @@ class MultiPointWithFluidicsWidget(QFrame):
         self._event_bus.subscribe(ScanningPositionReached, self._on_scanning_position_reached)
         self._event_bus.subscribe(FluidicsInitialized, lambda _e: self.init_fluidics())
         self._event_bus.subscribe(ActiveAcquisitionTabChanged, self._on_active_tab_changed)
+        self._event_bus.subscribe(ScanCoordinatesUpdated, self._on_scan_coordinates_updated)
 
     def _on_active_tab_changed(self, event: ActiveAcquisitionTabChanged) -> None:
         self._is_active_tab = event.active_tab == "fluidics"
@@ -290,6 +296,31 @@ class MultiPointWithFluidicsWidget(QFrame):
                 QMessageBox.warning(
                     self, "Warning", "Please enter valid round numbers (1-24)"
                 )
+                return
+
+            # Validate that coordinates are loaded
+            if self._total_fovs <= 0:
+                self.btn_startAcquisition.setChecked(False)
+                QMessageBox.warning(self, "Warning", "Please load coordinates first")
+                return
+
+            # Show confirmation dialog with acquisition summary
+            msg = (
+                f"About to start acquisition with:\n\n"
+                f"- Regions: {self._total_regions}\n"
+                f"- FOVs: {self._total_fovs}\n"
+                f"- Rounds: {len(rounds)}\n\n"
+                f"Continue?"
+            )
+            reply = QMessageBox.question(
+                self,
+                "Confirm Acquisition",
+                msg,
+                QMessageBox.Ok | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            if reply != QMessageBox.Ok:
+                self.btn_startAcquisition.setChecked(False)
                 return
 
             self.setEnabled_all(False)
@@ -656,6 +687,11 @@ class MultiPointWithFluidicsWidget(QFrame):
         if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
             return
         self.update_region_progress(event.current_region, event.total_regions)
+
+    def _on_scan_coordinates_updated(self, event: ScanCoordinatesUpdated) -> None:
+        """Handle scan coordinates updates from EventBus."""
+        self._total_regions = event.total_regions
+        self._total_fovs = event.total_fovs
 
     # =========================================================================
     # UI Event Handlers (publish commands)

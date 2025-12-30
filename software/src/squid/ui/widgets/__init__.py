@@ -20,6 +20,7 @@ __all__ = [
     # config
     "ConfigEditor",
     "ConfigEditorBackwardsCompatible",
+    "PreferencesDialog",
     "ProfileWidget",
     # camera
     "CameraSettingsWidget",
@@ -89,6 +90,7 @@ _LAZY_IMPORTS: Final[dict[str, tuple[str, str]]] = {
     # config
     "ConfigEditor": ("squid.ui.widgets.config", "ConfigEditor"),
     "ConfigEditorBackwardsCompatible": ("squid.ui.widgets.config", "ConfigEditorBackwardsCompatible"),
+    "PreferencesDialog": ("squid.ui.widgets.config", "PreferencesDialog"),
     "ProfileWidget": ("squid.ui.widgets.config", "ProfileWidget"),
     # camera
     "CameraSettingsWidget": ("squid.ui.widgets.camera", "CameraSettingsWidget"),

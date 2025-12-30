@@ -397,7 +397,7 @@ class Microscope:
         # These are always created by Microscope (simple data managers)
         self.objective_store: ObjectiveStore = ObjectiveStore()
         self.channel_configuration_manager: ChannelConfigurationManager = (
-            ChannelConfigurationManager()
+            ChannelConfigurationManager(configurations_path=_def.PROJECT_ROOT / "configurations")
         )
         self.laser_af_settings_manager: Optional[LaserAFSettingManager] = None
         if _def.SUPPORT_LASER_AUTOFOCUS:

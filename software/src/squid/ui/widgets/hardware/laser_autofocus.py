@@ -633,7 +633,7 @@ class LaserAutofocusSettingWidget(QWidget):
         calibration_timestamp = self._laser_af_properties.get("calibration_timestamp", "")
         self.calibration_label: QLabel = QLabel()
         self.calibration_label.setText(
-            f"Calibration Result: {pixel_to_um:.3f} pixels/um\nPerformed at {calibration_timestamp}"
+            f"Calibration Result: {pixel_to_um:.3f} um/pixel\nPerformed at {calibration_timestamp}"
         )
         layout = self.layout()
         if layout is not None:
