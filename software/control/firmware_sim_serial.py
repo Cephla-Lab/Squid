@@ -232,7 +232,8 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
                     ]
                     if axis_id is not None
                 ]
-                # Also check limit codes for SET_LIM
+                # SET_LIM uses limit codes (not axis IDs) for the axis parameter,
+                # so we replace valid_axes with the valid limit codes
                 if cmd_code == self.fw.get("SET_LIM"):
                     valid_axes = [
                         lim_code
@@ -300,15 +301,17 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             )
         )
 
-        # Ensure response is exactly MSG_LENGTH - 1 bytes (leaving room for CRC).
-        # The struct.pack above produces 23 bytes which matches MSG_LENGTH-1=23 for
-        # the default MSG_LENGTH=24. This padding/truncation is defensive programming
-        # in case MSG_LENGTH changes relative to the struct format.
+        # Verify response payload matches firmware MSG_LENGTH - 1 (leaving room for CRC).
+        # The struct format ">BBiiiiBi" produces 23 bytes, matching MSG_LENGTH-1 when
+        # MSG_LENGTH == 24. If firmware changes MSG_LENGTH, this assertion will fail
+        # and the struct format must be updated to match the new protocol.
         expected_payload_len = msg_length - 1
-        while len(response) < expected_payload_len:
-            response.append(0)
-        if len(response) > expected_payload_len:
-            response = response[:expected_payload_len]
+        if len(response) != expected_payload_len:
+            raise FirmwareProtocolError(
+                f"Response payload size ({len(response)}) does not match "
+                f"MSG_LENGTH-1 ({expected_payload_len}). Update struct format in "
+                f"FirmwareSimSerial._build_response to match firmware protocol."
+            )
 
         # Add CRC
         response.append(self.crc_calculator.calculate_checksum(response))

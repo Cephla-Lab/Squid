@@ -30,6 +30,7 @@ static const int SET_OFFSET_VELOCITY = 24;
 static const int CONFIGURE_STAGE_PID = 25;
 static const int ENABLE_STAGE_PID = 26;
 static const int DISABLE_STAGE_PID = 27;
+// Note: "MERGIN" is intentionally misspelled to match firmware constant SET_HOME_SAFETY_MERGIN
 static const int SET_HOME_SAFETY_MERGIN = 28;
 static const int SET_PID_ARGUMENTS = 29;
 static const int SEND_HARDWARE_TRIGGER = 30;
