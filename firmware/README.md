@@ -129,6 +129,16 @@ Hardware-specific settings are in `src/def/def_v1.h`. This includes:
 - Joystick sensitivity
 - Limit switch polarity
 
+### Build Options
+
+**Disable Laser Safety Interlock:**
+
+By default, the firmware includes laser safety interlock detection. To disable it:
+
+```bash
+PLATFORMIO_BUILD_FLAGS="-DDISABLE_LASER_INTERLOCK" pio run -e teensy41 -t upload
+```
+
 ### Source Structure
 
 ```

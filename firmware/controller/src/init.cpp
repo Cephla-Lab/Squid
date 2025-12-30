@@ -14,8 +14,10 @@ void init_serial_communication()
 }
 
 void init_lasers_and_led_driver() {
+#ifndef DISABLE_LASER_INTERLOCK
   // laser safety interlock
   pinMode(LASER_INTERLOCK, INPUT_PULLUP);
+#endif
 
   // enable pins
   pinMode(LASER_405nm, OUTPUT);
