@@ -6,6 +6,8 @@ These tests verify that the firmware and software agree on:
 - Message lengths
 - CRC calculation
 - Axis definitions
+- Command execution status codes
+- Limit switch codes and polarity
 """
 
 import os
@@ -15,7 +17,15 @@ from pathlib import Path
 import pytest
 from crc import CrcCalculator, Crc8
 
-from control._def import CMD_SET, MicrocontrollerDef, AXIS, HOME_OR_ZERO, LIMIT_CODE
+from control._def import (
+    CMD_SET,
+    MicrocontrollerDef,
+    AXIS,
+    HOME_OR_ZERO,
+    LIMIT_CODE,
+    LIMIT_SWITCH_POLARITY,
+    CMD_EXECUTION_STATUS,
+)
 
 
 def get_firmware_constants_path() -> Path:
@@ -169,6 +179,74 @@ class TestProtocolConsistency:
         assert firmware_constants.get('HOME_NEGATIVE') == HOME_OR_ZERO.HOME_NEGATIVE
         assert firmware_constants.get('HOME_POSITIVE') == HOME_OR_ZERO.HOME_POSITIVE
         assert firmware_constants.get('HOME_OR_ZERO_ZERO') == HOME_OR_ZERO.ZERO
+
+    def test_execution_status_values_match(self, firmware_constants):
+        """Verify command execution status values match."""
+        status_mapping = {
+            'COMPLETED_WITHOUT_ERRORS': CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS,
+            'IN_PROGRESS': CMD_EXECUTION_STATUS.IN_PROGRESS,
+            'CMD_CHECKSUM_ERROR': CMD_EXECUTION_STATUS.CMD_CHECKSUM_ERROR,
+            'CMD_INVALID': CMD_EXECUTION_STATUS.CMD_INVALID,
+            'CMD_EXECUTION_ERROR': CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR,
+        }
+
+        mismatches = []
+        for fw_name, py_value in status_mapping.items():
+            if fw_name in firmware_constants:
+                fw_value = firmware_constants[fw_name]
+                if fw_value != py_value:
+                    mismatches.append(
+                        f"{fw_name}: firmware={fw_value}, software={py_value}"
+                    )
+            else:
+                mismatches.append(f"{fw_name}: not found in firmware")
+
+        assert len(mismatches) == 0, f"Execution status mismatches:\n" + "\n".join(mismatches)
+
+    def test_limit_codes_match(self, firmware_constants):
+        """Verify limit switch codes match."""
+        limit_mapping = {
+            'LIM_CODE_X_POSITIVE': LIMIT_CODE.X_POSITIVE,
+            'LIM_CODE_X_NEGATIVE': LIMIT_CODE.X_NEGATIVE,
+            'LIM_CODE_Y_POSITIVE': LIMIT_CODE.Y_POSITIVE,
+            'LIM_CODE_Y_NEGATIVE': LIMIT_CODE.Y_NEGATIVE,
+            'LIM_CODE_Z_POSITIVE': LIMIT_CODE.Z_POSITIVE,
+            'LIM_CODE_Z_NEGATIVE': LIMIT_CODE.Z_NEGATIVE,
+        }
+
+        mismatches = []
+        for fw_name, py_value in limit_mapping.items():
+            if fw_name in firmware_constants:
+                fw_value = firmware_constants[fw_name]
+                if fw_value != py_value:
+                    mismatches.append(
+                        f"{fw_name}: firmware={fw_value}, software={py_value}"
+                    )
+            else:
+                mismatches.append(f"{fw_name}: not found in firmware")
+
+        assert len(mismatches) == 0, f"Limit code mismatches:\n" + "\n".join(mismatches)
+
+    def test_limit_switch_polarity_values_match(self, firmware_constants):
+        """Verify limit switch polarity values match."""
+        polarity_mapping = {
+            'ACTIVE_LOW': LIMIT_SWITCH_POLARITY.ACTIVE_LOW,
+            'ACTIVE_HIGH': LIMIT_SWITCH_POLARITY.ACTIVE_HIGH,
+            'DISABLED': LIMIT_SWITCH_POLARITY.DISABLED,
+        }
+
+        mismatches = []
+        for fw_name, py_value in polarity_mapping.items():
+            if fw_name in firmware_constants:
+                fw_value = firmware_constants[fw_name]
+                if fw_value != py_value:
+                    mismatches.append(
+                        f"{fw_name}: firmware={fw_value}, software={py_value}"
+                    )
+            else:
+                mismatches.append(f"{fw_name}: not found in firmware")
+
+        assert len(mismatches) == 0, f"Limit switch polarity mismatches:\n" + "\n".join(mismatches)
 
 
 class TestCRCCompatibility:
