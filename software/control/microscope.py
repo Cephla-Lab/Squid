@@ -494,8 +494,10 @@ class Microscope:
         Raises:
             RuntimeError: If the camera fails to return a frame.
         """
+        using_software_trigger = self.live_controller.trigger_mode == control._def.TriggerMode.SOFTWARE
+
         # turn on illumination and send trigger
-        if self.live_controller.trigger_mode == control._def.TriggerMode.SOFTWARE:
+        if using_software_trigger:
             self.live_controller.turn_on_illumination()
             self._wait_for_microcontroller()
             self.camera.send_trigger()
@@ -504,17 +506,17 @@ class Microscope:
                 control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
             )
 
-        # read a frame from camera
-        image = self.camera.read_frame()
-        if image is None:
-            self._log.error("camera.read_frame() returned None")
-            raise RuntimeError("Failed to acquire image: camera.read_frame() returned None")
-
-        # turn off the illumination if using software trigger
-        if self.live_controller.trigger_mode == control._def.TriggerMode.SOFTWARE:
-            self.live_controller.turn_off_illumination()
-
-        return image
+        try:
+            # read a frame from camera
+            image = self.camera.read_frame()
+            if image is None:
+                self._log.error("camera.read_frame() returned None")
+                raise RuntimeError("Failed to acquire image: camera.read_frame() returned None")
+            return image
+        finally:
+            # always turn off illumination when using software trigger
+            if using_software_trigger:
+                self.live_controller.turn_off_illumination()
 
     def home_xyz(self) -> None:
         """Home the X, Y, and Z axes based on configuration settings.
