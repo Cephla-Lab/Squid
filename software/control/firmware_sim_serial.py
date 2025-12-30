@@ -247,7 +247,9 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
                         ]
                         if lim_code is not None
                     ]
-                if axis not in valid_axes:
+                # Skip validation if no valid axes/codes defined (missing firmware constants)
+                # rather than incorrectly flagging all values as invalid
+                if valid_axes and axis not in valid_axes:
                     errors.append(f"Invalid axis {axis} for command {cmd_code}")
 
         if errors:
@@ -287,6 +289,16 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
 
         reserved = 0
 
+        # Struct format ">BBiiiiBi" byte breakdown:
+        #   B: cmd_id       (1 byte)
+        #   B: status       (1 byte)
+        #   i: x            (4 bytes)
+        #   i: y            (4 bytes)
+        #   i: z            (4 bytes)
+        #   i: theta        (4 bytes)
+        #   B: button_state (1 byte)
+        #   i: reserved     (4 bytes)
+        #   Total: 1+1+4+4+4+4+1+4 = 23 bytes (+ 1 byte CRC = 24 = MSG_LENGTH)
         response = bytearray(
             struct.pack(
                 ">BBiiiiBi",
