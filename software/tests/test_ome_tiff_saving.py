@@ -177,3 +177,90 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
             assert all(not path.name.endswith("_tczyx.dat") for path in ome_dir_contents)
     finally:
         _def.FILE_SAVING_OPTION = original_option
+
+
+def test_job_runner_injects_acquisition_info() -> None:
+    """Test that JobRunner.dispatch() properly injects acquisition_info into SaveOMETiffJob."""
+    from control.core.job_processing import SaveOMETiffJob, CaptureInfo, JobImage, AcquisitionInfo, JobRunner
+    from control.utils_config import ChannelMode
+    import squid.abc
+
+    # Create test data
+    acquisition_info = AcquisitionInfo(
+        total_time_points=1,
+        total_z_levels=1,
+        total_channels=1,
+        channel_names=["DAPI"],
+        experiment_path="/tmp/test",
+        time_increment_s=1.0,
+        physical_size_z_um=1.0,
+        physical_size_x_um=0.5,
+        physical_size_y_um=0.5,
+    )
+
+    channel = ChannelMode(
+        id="1",
+        name="DAPI",
+        exposure_time=10.0,
+        analog_gain=1.0,
+        illumination_source=1,
+        illumination_intensity=5.0,
+        z_offset=0.0,
+    )
+
+    capture_info = CaptureInfo(
+        position=squid.abc.Pos(x_mm=0.0, y_mm=0.0, z_mm=0.0, theta_rad=None),
+        z_index=0,
+        capture_time=time.time(),
+        configuration=channel,
+        save_directory="/tmp/test",
+        file_id="test_0_0_0",
+        region_id=1,
+        fov=0,
+        configuration_idx=0,
+        z_piezo_um=0.0,
+        time_point=0,
+    )
+
+    image = np.zeros((32, 32), dtype=np.uint16)
+    job = SaveOMETiffJob(
+        capture_info=capture_info,
+        capture_image=JobImage(image_array=image),
+    )
+
+    # Verify acquisition_info is None before dispatch
+    assert job.acquisition_info is None
+
+    # Create JobRunner with acquisition_info and dispatch
+    runner = JobRunner(acquisition_info=acquisition_info)
+    runner.dispatch(job)
+
+    # Verify acquisition_info was injected
+    assert job.acquisition_info is not None
+    assert job.acquisition_info.total_time_points == 1
+    assert job.acquisition_info.channel_names == ["DAPI"]
+
+    # Clean up - don't actually start the runner process
+    runner._shutdown_event.set()
+
+
+def test_stale_metadata_cleanup() -> None:
+    """Test that cleanup_stale_metadata_files removes old metadata files."""
+    from control.core import utils_ome_tiff_writer as ome_tiff_writer
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Create a fake stale metadata file
+        old_metadata_path = os.path.join(tempfile.gettempdir(), "ome_teststale123_metadata.json")
+        with open(old_metadata_path, "w") as f:
+            f.write("{}")
+
+        # Set the file's modification time to 2 days ago
+        old_time = time.time() - (2 * 24 * 60 * 60)
+        os.utime(old_metadata_path, (old_time, old_time))
+
+        # Run cleanup with 1 day threshold
+        removed = ome_tiff_writer.cleanup_stale_metadata_files(max_age_seconds=24 * 60 * 60)
+
+        # Verify the file was removed
+        assert old_metadata_path in removed
+        assert not os.path.exists(old_metadata_path)

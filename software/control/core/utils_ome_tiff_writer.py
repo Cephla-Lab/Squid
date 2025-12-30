@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 import tempfile
+import glob
+import time
 from datetime import datetime
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import numpy as np
 import tifffile
@@ -63,23 +65,21 @@ def write_metadata(metadata_path: str, metadata: Dict[str, Any]) -> None:
 
 
 def ome_base_name(info: "CaptureInfo") -> str:
+    # Import here to avoid circular dependency: _def -> utils_ome_tiff_writer -> _def
     from control import _def
 
     return f"{info.region_id}_{info.fov:0{_def.FILE_ID_PADDING}}"
 
 
 def validate_capture_info(info: "CaptureInfo", acq_info: "AcquisitionInfo", image: np.ndarray) -> None:
+    """Validate that capture info and acquisition info have required fields for OME-TIFF saving.
+
+    Note: The caller (SaveOMETiffJob.run) is responsible for checking that acq_info is not None.
+    The acq_info fields total_time_points, total_z_levels, and total_channels are required (non-Optional)
+    per the AcquisitionInfo dataclass definition.
+    """
     if info.time_point is None:
         raise ValueError("CaptureInfo.time_point is required for OME-TIFF saving")
-    if acq_info is None:
-        raise ValueError("AcquisitionInfo is required for OME-TIFF saving")
-
-    if acq_info.total_time_points is None:
-        raise ValueError("AcquisitionInfo.total_time_points is required for OME-TIFF saving")
-    if acq_info.total_z_levels is None:
-        raise ValueError("AcquisitionInfo.total_z_levels is required for OME-TIFF saving")
-    if acq_info.total_channels is None:
-        raise ValueError("AcquisitionInfo.total_channels is required for OME-TIFF saving")
     if image.ndim != 2:
         raise NotImplementedError("OME-TIFF saving currently supports 2D grayscale images only")
 
@@ -143,7 +143,7 @@ def update_plane_metadata(metadata: Dict[str, Any], info: "CaptureInfo") -> Dict
     if info.position is not None and getattr(info.position, "z_mm", None) is not None:
         stepper_z_um = float(info.position.z_mm) * 1000.0
 
-    piezo_z_um = float(info.z_piezo_um) if info.z_piezo_um is not None else None
+    piezo_z_um: Optional[float] = float(info.z_piezo_um) if info.z_piezo_um is not None else None
     if metadata.get(START_TIME_KEY) is not None and info.capture_time is not None:
         plane_data["DeltaT"] = float(info.capture_time - metadata[START_TIME_KEY])
     metadata.setdefault(PLANES_KEY, {})[plane_key] = plane_data
@@ -177,6 +177,7 @@ def metadata_for_imwrite(metadata: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def build_base_ome_xml(metadata: Dict[str, Any]) -> str:
+    # Lazy import: xml.etree.ElementTree only needed for XML generation functions
     import xml.etree.ElementTree as ET
 
     ns = "http://www.openmicroscopy.org/Schemas/OME/2016-06"
@@ -240,6 +241,7 @@ def build_base_ome_xml(metadata: Dict[str, Any]) -> str:
 
 
 def augment_ome_xml(existing_xml: Optional[str], metadata: Dict[str, Any]) -> str:
+    # Lazy import: xml.etree.ElementTree only needed for XML generation functions
     import xml.etree.ElementTree as ET
 
     if existing_xml:
@@ -323,3 +325,45 @@ def augment_ome_xml(existing_xml: Optional[str], metadata: Dict[str, Any]) -> st
 
 def ensure_output_directory(path: str) -> None:
     utils.ensure_directory_exists(path)
+
+
+# Default threshold for considering metadata files stale (24 hours)
+STALE_METADATA_THRESHOLD_SECONDS = 24 * 60 * 60
+
+
+def cleanup_stale_metadata_files(max_age_seconds: float = STALE_METADATA_THRESHOLD_SECONDS) -> List[str]:
+    """Remove stale OME-TIFF metadata files from the temp directory.
+
+    This function cleans up metadata JSON files that were left behind due to
+    crashes or incomplete acquisitions. Files older than max_age_seconds are removed.
+
+    Args:
+        max_age_seconds: Maximum age in seconds before a file is considered stale.
+            Defaults to 24 hours.
+
+    Returns:
+        List of paths that were successfully removed.
+    """
+    removed: List[str] = []
+    temp_dir = tempfile.gettempdir()
+    pattern = os.path.join(temp_dir, "ome_*_metadata.json")
+    current_time = time.time()
+
+    for metadata_path in glob.glob(pattern):
+        try:
+            file_mtime = os.path.getmtime(metadata_path)
+            if current_time - file_mtime > max_age_seconds:
+                os.remove(metadata_path)
+                removed.append(metadata_path)
+                # Also try to remove associated lock file
+                lock_path = metadata_path + ".lock"
+                if os.path.exists(lock_path):
+                    try:
+                        os.remove(lock_path)
+                        removed.append(lock_path)
+                    except OSError:
+                        pass  # Lock file may be held by another process
+        except OSError:
+            pass  # File may have been removed by another process
+
+    return removed

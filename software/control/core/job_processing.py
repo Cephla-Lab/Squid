@@ -10,7 +10,7 @@ from typing import Optional, Generic, TypeVar, List, Dict, Any
 from uuid import uuid4
 
 from dataclasses import dataclass, field
-from filelock import FileLock
+from filelock import FileLock, Timeout as FileLockTimeout
 
 import imageio as iio
 import numpy as np
@@ -93,8 +93,13 @@ def _metadata_lock_path(metadata_path: str) -> str:
 @contextmanager
 def _acquire_file_lock(lock_path: str):
     lock = FileLock(lock_path, timeout=10)
-    with lock:
-        yield
+    try:
+        with lock:
+            yield
+    except FileLockTimeout:
+        raise TimeoutError(
+            f"Failed to acquire file lock '{lock_path}' within 10 seconds. Another process may be holding the lock."
+        )
 
 
 class SaveImageJob(Job):
@@ -158,8 +163,14 @@ class SaveImageJob(Job):
         return True
 
 
+@dataclass
 class SaveOMETiffJob(Job):
-    acquisition_info: Optional[AcquisitionInfo] = None  # Injected by JobRunner
+    """Job for saving images to OME-TIFF format.
+
+    The acquisition_info field is injected by JobRunner.dispatch() before the job runs.
+    """
+
+    acquisition_info: Optional[AcquisitionInfo] = field(default=None)
 
     def run(self) -> bool:
         if self.acquisition_info is None:
@@ -183,30 +194,34 @@ class SaveOMETiffJob(Job):
             metadata = ome_tiff_writer.load_metadata(metadata_path)
             if metadata is None:
                 metadata = ome_tiff_writer.initialize_metadata(self.acquisition_info, info, image)
-                target_dtype = np.dtype(metadata["dtype"])
+                target_dtype = np.dtype(metadata[ome_tiff_writer.DTYPE_KEY])
                 if os.path.exists(output_path):
                     os.remove(output_path)
                 tifffile.imwrite(
                     output_path,
-                    shape=tuple(metadata["shape"]),
+                    shape=tuple(metadata[ome_tiff_writer.SHAPE_KEY]),
                     dtype=target_dtype,
                     metadata=ome_tiff_writer.metadata_for_imwrite(metadata),
                     ome=True,
                 )
             else:
-                expected_shape = tuple(metadata["shape"])
+                expected_shape = tuple(metadata[ome_tiff_writer.SHAPE_KEY])
                 if expected_shape[-2:] != image.shape[-2:]:
                     raise ValueError("Image dimensions do not match existing OME memmap stack")
-                if not metadata.get("channel_names") and self.acquisition_info.channel_names:
-                    metadata["channel_names"] = self.acquisition_info.channel_names
+                if (
+                    not metadata.get(ome_tiff_writer.CHANNEL_NAMES_KEY)
+                    and self.acquisition_info
+                    and self.acquisition_info.channel_names
+                ):
+                    metadata[ome_tiff_writer.CHANNEL_NAMES_KEY] = self.acquisition_info.channel_names
 
-            target_dtype = np.dtype(metadata["dtype"])
+            target_dtype = np.dtype(metadata[ome_tiff_writer.DTYPE_KEY])
             image_to_store = image if image.dtype == target_dtype else image.astype(target_dtype)
 
             time_point = int(info.time_point)
             z_index = int(info.z_index)
             channel_index = int(info.configuration_idx)
-            shape = tuple(metadata["shape"])
+            shape = tuple(metadata[ome_tiff_writer.SHAPE_KEY])
             if not (0 <= time_point < shape[0]):
                 raise ValueError("Time point index out of range for OME stack")
             if not (0 <= z_index < shape[1]):
@@ -225,14 +240,14 @@ class SaveOMETiffJob(Job):
 
             metadata = ome_tiff_writer.update_plane_metadata(metadata, info)
             index_key = f"{time_point}-{channel_index}-{z_index}"
-            if index_key not in metadata["written_indices"]:
-                metadata["written_indices"].append(index_key)
-                metadata["saved_count"] = len(metadata["written_indices"])
+            if index_key not in metadata[ome_tiff_writer.WRITTEN_INDICES_KEY]:
+                metadata[ome_tiff_writer.WRITTEN_INDICES_KEY].append(index_key)
+                metadata[ome_tiff_writer.SAVED_COUNT_KEY] = len(metadata[ome_tiff_writer.WRITTEN_INDICES_KEY])
 
             ome_tiff_writer.write_metadata(metadata_path, metadata)
 
-            if metadata["saved_count"] >= metadata["expected_count"]:
-                metadata["completed"] = True
+            if metadata[ome_tiff_writer.SAVED_COUNT_KEY] >= metadata[ome_tiff_writer.EXPECTED_COUNT_KEY]:
+                metadata[ome_tiff_writer.COMPLETED_KEY] = True
                 ome_tiff_writer.write_metadata(metadata_path, metadata)
                 with tifffile.TiffFile(output_path) as tif:
                     current_xml = tif.ome_metadata
@@ -240,9 +255,7 @@ class SaveOMETiffJob(Job):
                 tifffile.tiffcomment(output_path, ome_xml.encode("utf-8"))
                 if os.path.exists(metadata_path):
                     os.remove(metadata_path)
-
-        if os.path.exists(lock_path):
-            os.remove(lock_path)
+                # Note: lock file cleanup is handled by filelock library
 
 
 # These are debugging jobs - they should not be used in normal usage!
@@ -273,6 +286,12 @@ class JobRunner(multiprocessing.Process):
         self._input_timeout = 1.0
         self._output_queue: multiprocessing.Queue = multiprocessing.Queue()
         self._shutdown_event: multiprocessing.Event = multiprocessing.Event()
+
+        # Clean up stale metadata files from previous crashed acquisitions
+        if acquisition_info is not None:
+            removed = ome_tiff_writer.cleanup_stale_metadata_files()
+            if removed:
+                self._log.info(f"Cleaned up {len(removed)} stale OME-TIFF metadata files")
 
     def dispatch(self, job: Job):
         # Inject acquisition_info into SaveOMETiffJob instances

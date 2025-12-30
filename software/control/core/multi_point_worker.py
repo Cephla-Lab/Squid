@@ -157,8 +157,6 @@ class MultiPointWorker:
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
 
-        self._current_round_images = {}
-
         job_classes = []
         if FILE_SAVING_OPTION == FileSavingOption.OME_TIFF:
             job_classes.append(SaveOMETiffJob)
