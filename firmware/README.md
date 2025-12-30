@@ -139,6 +139,8 @@ By default, the firmware includes laser safety interlock detection. To disable i
 PLATFORMIO_BUILD_FLAGS="-DDISABLE_LASER_INTERLOCK" pio run -e teensy41 -t upload
 ```
 
+> **WARNING:** Only use this flag for systems without lasers installed. Disabling the interlock removes laser safety protection.
+
 ### Source Structure
 
 ```

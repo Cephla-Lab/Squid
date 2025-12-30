@@ -16,9 +16,8 @@ void setup() {
 
 void loop() {
 
-#ifndef DISABLE_LASER_INTERLOCK
-  // laser safety interlock
-  if (digitalRead(LASER_INTERLOCK) == HIGH)
+  // laser safety interlock - turn off all lasers if interlock is triggered
+  if (!INTERLOCK_OK())
   {
     digitalWrite(LASER_405nm,LOW);
     digitalWrite(LASER_488nm,LOW);
@@ -26,7 +25,6 @@ void loop() {
     digitalWrite(LASER_638nm,LOW);
     digitalWrite(LASER_730nm,LOW);
   }
-#endif
 
   joystick_packetSerial.update();
 

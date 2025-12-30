@@ -1,12 +1,5 @@
 #include "functions.h"
 
-// Laser safety interlock check macro
-#ifdef DISABLE_LASER_INTERLOCK
-#define INTERLOCK_OK() true
-#else
-#define INTERLOCK_OK() (digitalRead(LASER_INTERLOCK) == LOW)
-#endif
-
 void set_DAC8050x_gain(uint8_t div, uint8_t gains) 
 {
   uint16_t value = 0;

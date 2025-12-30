@@ -30,6 +30,14 @@ static const int LASER_561nm = 22;   // to rename
 static const int LASER_638nm = 3;  // to rename
 static const int LASER_730nm = 23;  // to rename
 static const int LASER_INTERLOCK = 2;
+
+// Laser safety interlock check
+#ifdef DISABLE_LASER_INTERLOCK
+static inline bool INTERLOCK_OK() { return true; }
+#else
+static inline bool INTERLOCK_OK() { return digitalRead(LASER_INTERLOCK) == LOW; }
+#endif
+
 // PWM6 2
 // PWM7 1
 // PWM8 0
