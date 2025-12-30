@@ -99,7 +99,7 @@ def _acquire_file_lock(lock_path: str):
             yield
     except FileLockTimeout as exc:
         raise TimeoutError(
-            f"Failed to acquire file lock '{lock_path}' within 10 seconds. " "Another process may be holding the lock."
+            f"Failed to acquire file lock '{lock_path}' within 10 seconds. Another process may be holding the lock."
         ) from exc
 
 
