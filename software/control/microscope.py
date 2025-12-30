@@ -580,12 +580,27 @@ class Microscope:
         self.stage.move_y_to(position, blocking=blocking)
 
     def get_x(self) -> float:
+        """Get the current X position of the stage.
+
+        Returns:
+            Current X position in mm.
+        """
         return self.stage.get_pos().x_mm
 
     def get_y(self) -> float:
+        """Get the current Y position of the stage.
+
+        Returns:
+            Current Y position in mm.
+        """
         return self.stage.get_pos().y_mm
 
     def get_z(self) -> float:
+        """Get the current Z position of the stage.
+
+        Returns:
+            Current Z position in mm.
+        """
         return self.stage.get_pos().z_mm
 
     def move_z_to(self, z_mm: float, blocking: bool = True) -> None:
