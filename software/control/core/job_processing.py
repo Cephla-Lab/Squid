@@ -92,14 +92,15 @@ def _metadata_lock_path(metadata_path: str) -> str:
 
 @contextmanager
 def _acquire_file_lock(lock_path: str):
+    """Acquire a file lock with timeout, providing a clear error message on failure."""
     lock = FileLock(lock_path, timeout=10)
     try:
         with lock:
             yield
-    except FileLockTimeout:
+    except FileLockTimeout as exc:
         raise TimeoutError(
-            f"Failed to acquire file lock '{lock_path}' within 10 seconds. Another process may be holding the lock."
-        )
+            f"Failed to acquire file lock '{lock_path}' within 10 seconds. " "Another process may be holding the lock."
+        ) from exc
 
 
 class SaveImageJob(Job):

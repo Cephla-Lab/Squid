@@ -248,9 +248,10 @@ def test_stale_metadata_cleanup() -> None:
     """Test that cleanup_stale_metadata_files removes old metadata files."""
     from control.core import utils_ome_tiff_writer as ome_tiff_writer
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        # Create a fake stale metadata file
-        old_metadata_path = os.path.join(tempfile.gettempdir(), "ome_teststale123_metadata.json")
+    # Create a fake stale metadata file in the system temp directory
+    # (cleanup_stale_metadata_files looks in tempfile.gettempdir())
+    old_metadata_path = os.path.join(tempfile.gettempdir(), "ome_teststale123_metadata.json")
+    try:
         with open(old_metadata_path, "w") as f:
             f.write("{}")
 
@@ -264,3 +265,7 @@ def test_stale_metadata_cleanup() -> None:
         # Verify the file was removed
         assert old_metadata_path in removed
         assert not os.path.exists(old_metadata_path)
+    finally:
+        # Clean up in case the test fails before cleanup runs
+        if os.path.exists(old_metadata_path):
+            os.remove(old_metadata_path)
