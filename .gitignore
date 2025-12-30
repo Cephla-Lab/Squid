@@ -1,5 +1,8 @@
 .DS_Store
-*.pyc 
+*.pyc
 *.xml
 **/.idea/
 .migration_complete
+
+# PlatformIO
+.pio/

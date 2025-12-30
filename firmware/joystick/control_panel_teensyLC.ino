@@ -2,6 +2,10 @@
 #include <Wire.h>
 #include "TM1650.h"
 
+// Forward declarations
+static inline int sgn(int val);
+uint32_t twos_complement(long signedLong, int N);
+
 PacketSerial packetSerial;
 TM1650 d;
 
