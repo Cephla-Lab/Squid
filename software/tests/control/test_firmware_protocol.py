@@ -8,6 +8,7 @@ These tests verify that the firmware and software agree on:
 - Axis definitions
 - Command execution status codes
 - Limit switch codes and polarity
+- Illumination source codes
 """
 
 import os
@@ -25,6 +26,7 @@ from control._def import (
     LIMIT_CODE,
     LIMIT_SWITCH_POLARITY,
     CMD_EXECUTION_STATUS,
+    ILLUMINATION_CODE,
 )
 
 
@@ -247,6 +249,64 @@ class TestProtocolConsistency:
                 mismatches.append(f"{fw_name}: not found in firmware")
 
         assert len(mismatches) == 0, f"Limit switch polarity mismatches:\n" + "\n".join(mismatches)
+
+    def test_illumination_source_codes_match(self, firmware_constants):
+        """Verify illumination source codes match."""
+        illumination_mapping = {
+            'ILLUMINATION_SOURCE_LED_ARRAY_FULL': ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_FULL,
+            'ILLUMINATION_SOURCE_LED_ARRAY_LEFT_HALF': ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_LEFT_HALF,
+            'ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_HALF': ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_HALF,
+            'ILLUMINATION_SOURCE_LED_ARRAY_LEFTB_RIGHTR': ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_LEFTB_RIGHTR,
+            'ILLUMINATION_SOURCE_LED_ARRAY_LOW_NA': ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_LOW_NA,
+            'ILLUMINATION_SOURCE_LED_ARRAY_LEFT_DOT': ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_LEFT_DOT,
+            'ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_DOT': ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_DOT,
+            'ILLUMINATION_SOURCE_LED_EXTERNAL_FET': ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_EXTERNAL_FET,
+            'ILLUMINATION_SOURCE_405NM': ILLUMINATION_CODE.ILLUMINATION_SOURCE_405NM,
+            'ILLUMINATION_SOURCE_488NM': ILLUMINATION_CODE.ILLUMINATION_SOURCE_488NM,
+            'ILLUMINATION_SOURCE_638NM': ILLUMINATION_CODE.ILLUMINATION_SOURCE_638NM,
+            'ILLUMINATION_SOURCE_561NM': ILLUMINATION_CODE.ILLUMINATION_SOURCE_561NM,
+            'ILLUMINATION_SOURCE_730NM': ILLUMINATION_CODE.ILLUMINATION_SOURCE_730NM,
+        }
+
+        mismatches = []
+        for fw_name, py_value in illumination_mapping.items():
+            if fw_name in firmware_constants:
+                fw_value = firmware_constants[fw_name]
+                if fw_value != py_value:
+                    mismatches.append(
+                        f"{fw_name}: firmware={fw_value}, software={py_value}"
+                    )
+            else:
+                mismatches.append(f"{fw_name}: not found in firmware")
+
+        assert len(mismatches) == 0, f"Illumination source code mismatches:\n" + "\n".join(mismatches)
+
+    def test_firmware_illumination_codes_in_software(self, firmware_constants):
+        """Check if firmware has illumination codes not present in software."""
+        # Get all ILLUMINATION_SOURCE_* constants from firmware
+        firmware_illumination = {
+            name: value for name, value in firmware_constants.items()
+            if name.startswith('ILLUMINATION_SOURCE_')
+        }
+
+        # Get all attributes from Python ILLUMINATION_CODE class
+        python_illumination = {
+            name: getattr(ILLUMINATION_CODE, name)
+            for name in dir(ILLUMINATION_CODE)
+            if name.startswith('ILLUMINATION_SOURCE_')
+        }
+
+        # Find codes in firmware but not in software
+        missing_in_software = []
+        for fw_name, fw_value in firmware_illumination.items():
+            if fw_name not in python_illumination:
+                missing_in_software.append(f"{fw_name} = {fw_value}")
+
+        if missing_in_software:
+            pytest.fail(
+                f"Firmware has illumination codes not in software:\n" +
+                "\n".join(missing_in_software)
+            )
 
 
 class TestCRCCompatibility:
