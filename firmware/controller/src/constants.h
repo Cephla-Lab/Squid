@@ -29,7 +29,7 @@ static const int LASER_488nm = 4;   // to rename
 static const int LASER_561nm = 22;   // to rename
 static const int LASER_638nm = 3;  // to rename
 static const int LASER_730nm = 23;  // to rename
-static const int LASER_INTERLOCK = 1;
+static const int LASER_INTERLOCK = 2;
 // PWM6 2
 // PWM7 1
 // PWM8 0
@@ -38,8 +38,8 @@ static const int LASER_INTERLOCK = 1;
 //static const int digitial_output_pins = {2,1,6,7,8,9,10,15,24,25} // PWM 6-7, 9-16
 //static const int num_digital_pins = 10;
 // pin 7,8 (PWM 10, 11) may be used for UART, pin 24,25 (PWM 15, 16) may be used for UART
-static const int num_digital_pins = 6;
-static const int digitial_output_pins[num_digital_pins] = {2, 1, 6, 9, 10, 15}; // PWM 6-7, 9, 12-14
+static const int num_digital_pins = 4;
+static const int digitial_output_pins[num_digital_pins] = {6, 9, 10, 15}; // PWM 9, 12-14
 
 // camera trigger
 static const int camera_trigger_pins[] = {29, 30, 31, 32, 16, 28}; // trigger 1-6
