@@ -2,6 +2,10 @@
 #include <Wire.h>
 #include "TM1650.h"
 
+// Forward declarations
+static inline int sgn(int val);
+uint32_t twos_complement(long signedLong, int N);
+
 PacketSerial packetSerial;
 TM1650 d;
 
@@ -56,16 +60,16 @@ int i_testing = 0;
 // other settings
 int focus_encoder_sensitivity_division = 4;
 
-void setup()
+void setup() 
 {
 
   // I2C for seven segment display
-  Wire.begin();
+  Wire.begin(); 
   delay(200);
   d.init();
   display_str[2] = '0' + 10;
   display_str[3] = '0' + 10;
-
+    
   // pin init.
   for(int i=0;i<6;i++)
   {
@@ -78,40 +82,40 @@ void setup()
   pinMode(pin_encoder_2_B,INPUT_PULLUP);
   pinMode(pin_encoder_3_A,INPUT_PULLUP);
   pinMode(pin_encoder_3_B,INPUT_PULLUP);
-
+  
   pinMode(pin_joystick_btn,INPUT_PULLUP);
 
   // encoder interrupt
   attachInterrupt(digitalPinToInterrupt(pin_encoder_1_A), ISR_encoder_1_A, CHANGE);
   attachInterrupt(digitalPinToInterrupt(pin_encoder_1_B), ISR_encoder_1_B, CHANGE);
 
-  // set up the packet serial
+  // set up the packet serial 
   Serial1.begin(115200);
   packetSerial.setStream(&Serial1);
   packetSerial.setPacketHandler(&onPacketReceived);
 
-  // for debugging
+  // for debugging 
   Serial.begin(20000000);
 
   // get joystick offset
   delayMicroseconds(5000);
   joystick_offset_x = analogRead(pin_joystick_x);
   joystick_offset_y = analogRead(pin_joystick_y);
-
+  
 }
 
-void loop()
+void loop() 
 {
-
+  
   // update input sensitivity
   input_sensitivity_xy = (1023-analogRead(pin_pot2))/100; // sensitivity 0-10;
   if(input_sensitivity_xy>9)
     input_sensitivity_xy = 9;
-
+  
   input_sensitivity_z = (1023-analogRead(pin_pot1))/100; // sensitivity 0-10;
   if(input_sensitivity_z>8)
     input_sensitivity_z = 8;
-
+    
   encoder_step_size = min(pow(2,input_sensitivity_z),256); // cap the max z_step_size
 
   // display input sensitivity
@@ -134,15 +138,15 @@ void loop()
   encoder_pos = encoder_pos;
   int32_t encoder_pos_ = encoder_pos/4; // artificially descrease the resolution to make it less sensitive
   encoder_pos_ = (encoder_pos_/16)*16;  // make the number integer multiple of 16 (16 microstepping)
-  tmp_uint32 = twos_complement(encoder_pos_,4);
+  tmp_uint32 = twos_complement(encoder_pos_,4); 
   packet[0] = byte(tmp_uint32>>24);
   packet[1] = byte((tmp_uint32>>16)%256);
   packet[2] = byte((tmp_uint32>>8)%256);
   packet[3] = byte(tmp_uint32%256);
-  tmp_uint16 = twos_complement(joystick_delta_x,2);
+  tmp_uint16 = twos_complement(joystick_delta_x,2); 
   packet[4] = byte((tmp_uint16>>8)%256);
   packet[5] = byte(tmp_uint16%256);
-  tmp_uint16 = twos_complement(joystick_delta_y,2);
+  tmp_uint16 = twos_complement(joystick_delta_y,2); 
   packet[6] = byte((tmp_uint16>>8)%256);
   packet[7] = byte(tmp_uint16%256);
   packet[8] = byte(digitalRead(pin_joystick_btn)); // for testing only, to be replaced with joystick_button_pressed
@@ -151,7 +155,7 @@ void loop()
   //  packet[8] = i_testing++;
   //  if(i_testing==255)
   //    i_testing = 0;
-
+  
   // CRC to be added
   packet[9] = 0;
   packetSerial.send(packet, JOYSTICK_MSG_LENGTH);
@@ -175,13 +179,13 @@ void loop()
   Serial.println("\t");
   // uint64_t tmp = pow(256,4); print does not work
   // Serial.println( tmp );
-
+  
 }
 
 // handling packest from the controller
 void onPacketReceived(const uint8_t* buffer, size_t size)
 {
-
+  
 }
 
 // interrupts

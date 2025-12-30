@@ -2,12 +2,7 @@
 #include "src/operations.h"
 #include "src/serial_communication.h"
 
-//#include "def_octopi.h"
-#include "src/def/def_octopi_80120.h"
-//#include "def_gravitymachine.h"
-//#include "def_squid.h"
-//#include "def_platereader.h"
-//#include "def_squid_vertical.h"
+#include "src/def/def_v1.h"
 
 void setup() {
   init_serial_communication();
@@ -20,6 +15,16 @@ void setup() {
 }
 
 void loop() {
+
+  // laser safety interlock - turn off all lasers if interlock is triggered
+  if (!INTERLOCK_OK())
+  {
+    digitalWrite(LASER_405nm,LOW);
+    digitalWrite(LASER_488nm,LOW);
+    digitalWrite(LASER_561nm,LOW);
+    digitalWrite(LASER_638nm,LOW);
+    digitalWrite(LASER_730nm,LOW);
+  }
 
   joystick_packetSerial.update();
 

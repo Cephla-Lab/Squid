@@ -1,13 +1,13 @@
 /** ============================================
  * 7 segment display driver for JY-MCU module based on TM1650 chip
  * Copyright (c) 2015 Anatoli Arkhipenko
- *
- *
+ * 
+ * 
  * Changelog:
  *	v1.0.0:
- *		2015-02-24 - Initial release
+ *		2015-02-24 - Initial release 
  *
- *	v1.0.1:
+ *	v1.0.1:  
  *		2015-04-27 - Added support of program memery (PROGMEM) to store the ASCII to Segment Code table
  *
  *	v1.0.2:
@@ -38,7 +38,7 @@
     #endif
 #endif
 
-#define TM1650_DISPLAY_BASE 0x34 // Address of the left-most digit
+#define TM1650_DISPLAY_BASE 0x34 // Address of the left-most digit 
 #define TM1650_DCTRL_BASE   0x24 // Address of the control register of the left-most digit
 #define TM1650_NUM_DIGITS   16 // max number of digits
 #define TM1650_MAX_STRING   128 // number of digits
@@ -63,7 +63,7 @@ const PROGMEM byte TM1650_CDigits[128] {
   0x00, 0x82, 0x21, 0x00, 0x00, 0x00, 0x00, 0x02, 0x39, 0x0F, 0x00, 0x00, 0x00, 0x40, 0x80, 0x00, // 0x20
   ~0x3F, ~0x06, ~0x5B, ~0x4F, ~0x66, ~0x6D, ~0x7D, ~0x07, ~0x7f, ~0x6f, 0x7f, 0x00, 0x00, 0x48, 0x00, 0x53, // 0x30
   0x00, 0x77, 0x7C, 0x39, 0x5E, 0x79, 0x71, 0x6F, 0x76, 0x06, 0x1E, 0x00, 0x38, 0x00, 0x54, 0x3F, // 0x40
-  0x73, 0x67, 0x50, 0x6D, 0x78, 0x3E, 0x00, 0x00, 0x00, 0x6E, 0x00, 0x39, 0x00, 0x0F, 0x00, 0x08, // 0x50
+  0x73, 0x67, 0x50, 0x6D, 0x78, 0x3E, 0x00, 0x00, 0x00, 0x6E, 0x00, 0x39, 0x00, 0x0F, 0x00, 0x08, // 0x50 
   0x63, 0x5F, 0x7C, 0x58, 0x5E, 0x7B, 0x71, 0x6F, 0x74, 0x02, 0x1E, 0x00, 0x06, 0x00, 0x54, 0x5C, // 0x60
   0x73, 0x67, 0x50, 0x6D, 0x78, 0x1C, 0x00, 0x00, 0x00, 0x6E, 0x00, 0x39, 0x30, 0x0F, 0x00, 0x00  // 0x70
 };
@@ -71,7 +71,7 @@ const PROGMEM byte TM1650_CDigits[128] {
 class TM1650 {
     public:
         TM1650(unsigned int aNumDigits = 4);
-
+        
 	void	init();
 	void	clear();
 	void	displayOn();
@@ -157,7 +157,7 @@ void TM1650::clear()
   }
 }
 
-/** Display string on the display
+/** Display string on the display 
  * aString = character array to be displayed
  *
  * Internal buffer is updated as well
@@ -170,7 +170,7 @@ void TM1650::displayString(char *aString)
 	for (int i=0; i<iNumDigits; i++) {
 	  byte a = ((byte) aString[i]) & 0b01111111;
 	  byte dot = ((byte) aString[i]) & 0b10000000;
-#ifndef TM1650_USE_PROGMEM
+#ifndef TM1650_USE_PROGMEM	  
 	  iBuffer[i] = TM1650_CDigits[a];
 #else
 	  iBuffer[i] = pgm_read_byte_near(TM1650_CDigits + a);
@@ -187,7 +187,7 @@ void TM1650::displayString(char *aString)
     Wire.beginTransmission(TM1650_DISPLAY_BASE+i);
     Wire.write(iBuffer[i] | dot);
     Wire.endTransmission();
-
+    	    
 	}
 }
 

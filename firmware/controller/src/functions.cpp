@@ -238,23 +238,23 @@ void turn_on_illumination()
     case ILLUMINATION_SOURCE_LED_EXTERNAL_FET:
       break;
     case ILLUMINATION_SOURCE_405NM:
-      if(digitalRead(LASER_INTERLOCK) == LOW)
+      if(INTERLOCK_OK())
         digitalWrite(LASER_405nm, HIGH);
       break;
     case ILLUMINATION_SOURCE_488NM:
-      if(digitalRead(LASER_INTERLOCK) == LOW)
+      if(INTERLOCK_OK())
         digitalWrite(LASER_488nm, HIGH);
       break;
     case ILLUMINATION_SOURCE_638NM:
-      if(digitalRead(LASER_INTERLOCK) == LOW)
+      if(INTERLOCK_OK())
         digitalWrite(LASER_638nm, HIGH);
       break;
     case ILLUMINATION_SOURCE_561NM:
-      if(digitalRead(LASER_INTERLOCK) == LOW)
+      if(INTERLOCK_OK())
         digitalWrite(LASER_561nm, HIGH);
       break;
     case ILLUMINATION_SOURCE_730NM:
-      if(digitalRead(LASER_INTERLOCK) == LOW)
+      if(INTERLOCK_OK())
         digitalWrite(LASER_730nm, HIGH);
       break;
   }

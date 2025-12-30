@@ -1,6 +1,6 @@
 #include "global_defs.h"
 
-#include "def/def_octopi_80120.h"
+#include "def/def_v1.h"
 
 float SCREW_PITCH_X_MM = 2.54;
 float SCREW_PITCH_Y_MM = 2.54;
