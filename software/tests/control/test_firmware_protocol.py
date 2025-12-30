@@ -273,8 +273,8 @@ class TestProtocolConsistency:
 
         assert len(mismatches) == 0, f"Illumination source code mismatches:\n" + "\n".join(mismatches)
 
-    def test_firmware_illumination_codes_in_software(self, firmware_constants):
-        """Check if firmware has illumination codes not present in software."""
+    def test_illumination_codes_consistency(self, firmware_constants):
+        """Check bidirectional consistency of illumination codes between firmware and software."""
         # Get all ILLUMINATION_SOURCE_* constants from firmware
         firmware_illumination = {
             name: value for name, value in firmware_constants.items() if name.startswith("ILLUMINATION_SOURCE_")

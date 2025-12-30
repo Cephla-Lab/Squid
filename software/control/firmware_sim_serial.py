@@ -219,23 +219,32 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             ]
             if cmd_code in axis_commands:
                 axis = cmd[2]
+                # Filter None to avoid false positives if constants are missing
                 valid_axes = [
-                    self.fw.get("AXIS_X", 0),
-                    self.fw.get("AXIS_Y", 1),
-                    self.fw.get("AXIS_Z", 2),
-                    self.fw.get("AXIS_THETA", 3),
-                    self.fw.get("AXES_XY", 4),
-                    self.fw.get("AXIS_W", 5),
+                    axis_id
+                    for axis_id in [
+                        self.fw.get("AXIS_X"),
+                        self.fw.get("AXIS_Y"),
+                        self.fw.get("AXIS_Z"),
+                        self.fw.get("AXIS_THETA"),
+                        self.fw.get("AXES_XY"),
+                        self.fw.get("AXIS_W"),
+                    ]
+                    if axis_id is not None
                 ]
                 # Also check limit codes for SET_LIM
                 if cmd_code == self.fw.get("SET_LIM"):
                     valid_axes = [
-                        self.fw.get("LIM_CODE_X_POSITIVE", 0),
-                        self.fw.get("LIM_CODE_X_NEGATIVE", 1),
-                        self.fw.get("LIM_CODE_Y_POSITIVE", 2),
-                        self.fw.get("LIM_CODE_Y_NEGATIVE", 3),
-                        self.fw.get("LIM_CODE_Z_POSITIVE", 4),
-                        self.fw.get("LIM_CODE_Z_NEGATIVE", 5),
+                        lim_code
+                        for lim_code in [
+                            self.fw.get("LIM_CODE_X_POSITIVE"),
+                            self.fw.get("LIM_CODE_X_NEGATIVE"),
+                            self.fw.get("LIM_CODE_Y_POSITIVE"),
+                            self.fw.get("LIM_CODE_Y_NEGATIVE"),
+                            self.fw.get("LIM_CODE_Z_POSITIVE"),
+                            self.fw.get("LIM_CODE_Z_NEGATIVE"),
+                        ]
+                        if lim_code is not None
                     ]
                 if axis not in valid_axes:
                     errors.append(f"Invalid axis {axis} for command {cmd_code}")
@@ -245,11 +254,8 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             if self.strict:
                 raise FirmwareProtocolError("\n".join(errors))
             else:
-                # Defensive: _log is initialized by AbstractCephlaMicroSerial.__init__()
-                log = getattr(self, "_log", None)
-                if log is not None:
-                    for err in errors:
-                        log.warning(f"Firmware validation: {err}")
+                for err in errors:
+                    self._log.warning(f"Firmware validation: {err}")
 
         self.commands_validated += 1
 
