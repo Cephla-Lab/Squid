@@ -249,8 +249,8 @@ def test_stale_metadata_cleanup() -> None:
     from control.core import utils_ome_tiff_writer as ome_tiff_writer
 
     # Create a fake stale metadata file in the system temp directory
-    # (cleanup_stale_metadata_files looks in tempfile.gettempdir())
-    old_metadata_path = os.path.join(tempfile.gettempdir(), "ome_teststale123_metadata.json")
+    # (cleanup_stale_metadata_files looks in tempfile.gettempdir() for squid_ome_* files)
+    old_metadata_path = os.path.join(tempfile.gettempdir(), "squid_ome_teststale123_metadata.json")
     try:
         with open(old_metadata_path, "w") as f:
             f.write("{}")

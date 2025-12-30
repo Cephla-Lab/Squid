@@ -49,7 +49,8 @@ def metadata_temp_path(acq_info: "AcquisitionInfo", info: "CaptureInfo", base_na
     base_identifier = acq_info.experiment_path or info.save_directory
     key = f"{base_identifier}:{base_name}"
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
-    return os.path.join(tempfile.gettempdir(), f"ome_{digest}_metadata.json")
+    # Use squid_ome_ prefix to avoid conflicts with other OME-TIFF applications
+    return os.path.join(tempfile.gettempdir(), f"squid_ome_{digest}_metadata.json")
 
 
 def load_metadata(metadata_path: str) -> Optional[Dict[str, Any]]:
@@ -346,7 +347,8 @@ def cleanup_stale_metadata_files(max_age_seconds: float = STALE_METADATA_THRESHO
     """
     removed: List[str] = []
     temp_dir = tempfile.gettempdir()
-    pattern = os.path.join(temp_dir, "ome_*_metadata.json")
+    # Use squid_ome_ prefix pattern to only match Squid's metadata files
+    pattern = os.path.join(temp_dir, "squid_ome_*_metadata.json")
     current_time = time.time()
 
     for metadata_path in glob.glob(pattern):
