@@ -44,6 +44,27 @@ pio run
 | `pio run -t clean` | Clean build artifacts |
 | `pio device monitor` | Open serial monitor |
 | `pio run -t upload && pio device monitor` | Upload and monitor |
+| `pio test -e native` | Run unit tests (no hardware required) |
+
+### Running Tests
+
+Unit tests run on your host machine without needing hardware:
+
+```bash
+cd firmware/controller
+pio test -e native
+```
+
+**Example output:**
+```
+test_crc8:      test_crc8_empty_data           [PASSED]
+test_crc8:      test_crc8_single_byte_zero     [PASSED]
+test_protocol:  test_command_ids_are_unique    [PASSED]
+...
+================= 11 test cases: 11 succeeded =================
+```
+
+Tests are located in `controller/test/` and use the [Unity](https://github.com/ThrowTheSwitch/Unity) test framework.
 
 ### Build Output
 
@@ -108,6 +129,9 @@ Hardware-specific settings are in `src/def/def_v1.h`. This includes:
 controller/
 ├── main_controller_teensy41.ino    # Entry point
 ├── platformio.ini                   # PlatformIO config
+├── test/                            # Unit tests (run with pio test -e native)
+│   ├── test_crc8/                  # CRC8 checksum tests
+│   └── test_protocol/              # Protocol/command ID tests
 └── src/
     ├── commands/                    # Command handlers
     │   ├── commands.cpp/h          # General commands

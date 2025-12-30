@@ -1,6 +1,7 @@
 #ifndef CRC8_H_
 #define CRC8_H_
-#include<Arduino.h>
+
+#include <stdint.h>
 
 uint8_t crc8ccitt(const void *data, uint8_t n);
 
