@@ -329,6 +329,9 @@ class FlexibleMultiPointWidget(QFrame):
         self.checkbox_stitchOutput = QCheckBox("Stitch Scans")
         self.checkbox_stitchOutput.setChecked(False)
 
+        self.checkbox_skipSaving = QCheckBox("Skip Saving")
+        self.checkbox_skipSaving.setChecked(False)
+
         self.checkbox_set_z_range = QCheckBox("Set Z-range")
         self.checkbox_set_z_range.toggled.connect(self.toggle_z_range_controls)
 
@@ -518,6 +521,7 @@ class FlexibleMultiPointWidget(QFrame):
         grid_af.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
             grid_af.addWidget(self.checkbox_usePiezo)
+        grid_af.addWidget(self.checkbox_skipSaving)
         grid_af.addWidget(self.checkbox_set_z_range)
 
         grid_config = QHBoxLayout()
@@ -591,6 +595,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.checkbox_withAutofocus.toggled.connect(self._on_autofocus_toggled)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._on_reflection_af_toggled)
         self.checkbox_usePiezo.toggled.connect(self._on_use_piezo_toggled)
+        self.checkbox_skipSaving.toggled.connect(self._on_skip_saving_toggled)
         self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         # Note: acquisition_finished, signal_acquisition_progress, signal_region_progress
@@ -942,6 +947,7 @@ class FlexibleMultiPointWidget(QFrame):
                 use_autofocus=self.checkbox_withAutofocus.isChecked(),
                 use_reflection_af=self.checkbox_withReflectionAutofocus.isChecked(),
                 use_fluidics=False,
+                skip_saving=self.checkbox_skipSaving.isChecked(),
                 z_range=z_range,
                 focus_map=focus_map,
             ))
@@ -1451,6 +1457,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.checkbox_withAutofocus.setEnabled(enabled)
         self.checkbox_withReflectionAutofocus.setEnabled(enabled)
         self.checkbox_stitchOutput.setEnabled(enabled)
+        self.checkbox_skipSaving.setEnabled(enabled)
         self.checkbox_set_z_range.setEnabled(enabled)
 
         if exclude_btn_startAcquisition is not True:
@@ -1566,3 +1573,7 @@ class FlexibleMultiPointWidget(QFrame):
     def _on_use_piezo_toggled(self, checked: bool) -> None:
         """Handle use piezo checkbox toggle - publish event."""
         self._event_bus.publish(SetAcquisitionParametersCommand(use_piezo=checked))
+
+    def _on_skip_saving_toggled(self, checked: bool) -> None:
+        """Handle skip saving checkbox toggle - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(skip_saving=checked))

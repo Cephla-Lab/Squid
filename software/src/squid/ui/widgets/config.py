@@ -404,7 +404,7 @@ class PreferencesDialog(QDialog):
         self.temperature_spinbox = QSpinBox()
         self.temperature_spinbox.setRange(-20, 40)
         self.temperature_spinbox.setValue(self._get_config_int("CAMERA_CONFIG", "temperature_default", 20))
-        self.temperature_spinbox.setSuffix(" C")
+        self.temperature_spinbox.setSuffix(" °C")
         layout.addRow("Temperature Default:", self.temperature_spinbox)
 
         # ROI Width
