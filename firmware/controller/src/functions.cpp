@@ -1,5 +1,12 @@
 #include "functions.h"
 
+// Laser safety interlock check macro
+#ifdef DISABLE_LASER_INTERLOCK
+#define INTERLOCK_OK() true
+#else
+#define INTERLOCK_OK() (digitalRead(LASER_INTERLOCK) == LOW)
+#endif
+
 void set_DAC8050x_gain(uint8_t div, uint8_t gains) 
 {
   uint16_t value = 0;
@@ -238,33 +245,23 @@ void turn_on_illumination()
     case ILLUMINATION_SOURCE_LED_EXTERNAL_FET:
       break;
     case ILLUMINATION_SOURCE_405NM:
-#ifndef DISABLE_LASER_INTERLOCK
-      if(digitalRead(LASER_INTERLOCK) == LOW)
-#endif
+      if(INTERLOCK_OK())
         digitalWrite(LASER_405nm, HIGH);
       break;
     case ILLUMINATION_SOURCE_488NM:
-#ifndef DISABLE_LASER_INTERLOCK
-      if(digitalRead(LASER_INTERLOCK) == LOW)
-#endif
+      if(INTERLOCK_OK())
         digitalWrite(LASER_488nm, HIGH);
       break;
     case ILLUMINATION_SOURCE_638NM:
-#ifndef DISABLE_LASER_INTERLOCK
-      if(digitalRead(LASER_INTERLOCK) == LOW)
-#endif
+      if(INTERLOCK_OK())
         digitalWrite(LASER_638nm, HIGH);
       break;
     case ILLUMINATION_SOURCE_561NM:
-#ifndef DISABLE_LASER_INTERLOCK
-      if(digitalRead(LASER_INTERLOCK) == LOW)
-#endif
+      if(INTERLOCK_OK())
         digitalWrite(LASER_561nm, HIGH);
       break;
     case ILLUMINATION_SOURCE_730NM:
-#ifndef DISABLE_LASER_INTERLOCK
-      if(digitalRead(LASER_INTERLOCK) == LOW)
-#endif
+      if(INTERLOCK_OK())
         digitalWrite(LASER_730nm, HIGH);
       break;
   }
