@@ -2001,6 +2001,10 @@ class WellplateMultiPointWidget(QFrame):
             # if XY is not checked, use current position
             if not self.checkbox_xy.isChecked():
                 self.set_coordinates_to_current_position()
+            else:
+                # Ensure coordinates are up-to-date before starting acquisition
+                # This handles cases where coordinates weren't updated after selecting wells
+                self.update_coordinates(force=True)
 
             self._event_bus.publish(SortScanCoordinatesCommand())
 
@@ -2060,8 +2064,9 @@ class WellplateMultiPointWidget(QFrame):
             self.btn_startAcquisition.setText("Stop\n Acquisition ")
 
             # Start acquisition via event
-            self._log.info("toggle_acquisition: about to publish StartAcquisitionCommand")
-            self._event_bus.publish(StartAcquisitionCommand())
+            xy_mode = self.combobox_xy_mode.currentText()
+            self._log.info(f"toggle_acquisition: about to publish StartAcquisitionCommand with xy_mode={xy_mode}")
+            self._event_bus.publish(StartAcquisitionCommand(xy_mode=xy_mode))
             self._log.info("toggle_acquisition: published StartAcquisitionCommand, returning")
 
         else:
@@ -2176,7 +2181,7 @@ class WellplateMultiPointWidget(QFrame):
         experiment_id = "snapped images" + self.lineEdit_experimentID.text()
         self._active_experiment_id = experiment_id.strip() or None
         self._event_bus.publish(StartNewExperimentCommand(experiment_id=experiment_id))
-        self._event_bus.publish(StartAcquisitionCommand(acquire_current_fov=True))
+        self._event_bus.publish(StartAcquisitionCommand(acquire_current_fov=True, xy_mode="Current Position"))
 
     def set_deltaZ(self, value):
         if self.checkbox_usePiezo.isChecked():

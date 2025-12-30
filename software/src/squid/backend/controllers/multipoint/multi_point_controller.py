@@ -180,6 +180,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self.base_path: Optional[str] = None
         self.use_fluidics: bool = False
         self.skip_saving: bool = False
+        self.xy_mode: str = "Current Position"
 
         self.focus_map: Optional[Any] = None
         self.gen_focus_map: bool = False
@@ -360,6 +361,19 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
     def set_skip_saving(self, skip_saving: bool) -> None:
         self.skip_saving = skip_saving
+
+    def set_xy_mode(self, xy_mode: str) -> None:
+        self.xy_mode = xy_mode
+
+    def get_plate_view(self) -> Optional[np.ndarray]:
+        """Get the current plate view array from the acquisition.
+
+        Returns:
+            Copy of the plate view array, or None if not available.
+        """
+        if self.multiPointWorker is not None:
+            return self.multiPointWorker.get_plate_view()
+        return None
 
     def start_new_experiment(
         self, experiment_ID: str
@@ -934,6 +948,25 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
     def build_params(
         self, scan_position_information: ScanPositionInformation
     ) -> AcquisitionParameters:
+        # Determine plate dimensions from wellplate format if available
+        plate_num_rows = 8  # Default for 96-well
+        plate_num_cols = 12
+        wellplate_format = getattr(self.scanCoordinates, "format", None)
+        self._log.info(f"build_params: wellplate format = {wellplate_format}")
+        if wellplate_format:
+            from _def import get_wellplate_settings
+            format_settings = get_wellplate_settings(wellplate_format)
+            self._log.info(f"build_params: format_settings = {format_settings}")
+            if format_settings:
+                plate_num_rows = format_settings.get("rows", 8)
+                plate_num_cols = format_settings.get("cols", 12)
+            else:
+                self._log.warning(
+                    f"Unknown wellplate format '{wellplate_format}', "
+                    f"using default 96-well dimensions"
+                )
+        self._log.info(f"build_params: plate dimensions = {plate_num_rows}x{plate_num_cols}")
+
         return AcquisitionParameters(
             experiment_ID=self.experiment_ID,
             base_path=self.base_path,
@@ -956,6 +989,14 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             z_range=self.z_range,
             use_fluidics=self.use_fluidics,
             skip_saving=self.skip_saving,
+            # Downsampled view generation parameters
+            generate_downsampled_views=_def.GENERATE_DOWNSAMPLED_WELL_IMAGES or _def.DISPLAY_PLATE_VIEW,
+            downsampled_well_resolutions_um=_def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
+            downsampled_plate_resolution_um=_def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
+            downsampled_z_projection=_def.DOWNSAMPLED_Z_PROJECTION,
+            plate_num_rows=plate_num_rows,
+            plate_num_cols=plate_num_cols,
+            xy_mode=self.xy_mode,
         )
 
     def _on_acquisition_completed(self, success: bool = True) -> None:
@@ -1131,6 +1172,18 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
     def _on_start_acquisition(self, cmd: StartAcquisitionCommand) -> None:
         """Handle StartAcquisitionCommand from EventBus."""
+        self._log.info(f"_on_start_acquisition: received command with xy_mode={cmd.xy_mode}")
+        # Log current scan coordinates state
+        if self.scanCoordinates:
+            num_regions = len(self.scanCoordinates.region_centers)
+            num_fovs = sum(len(c) for c in self.scanCoordinates.region_fov_coordinates.values())
+            self._log.info(f"_on_start_acquisition: scanCoordinates has {num_regions} regions, {num_fovs} FOVs")
+            if num_regions > 0:
+                self._log.info(f"_on_start_acquisition: region_ids={list(self.scanCoordinates.region_centers.keys())[:5]}...")
+        else:
+            self._log.warning("_on_start_acquisition: scanCoordinates is None!")
+        # Set xy_mode from command before building acquisition params
+        self.set_xy_mode(cmd.xy_mode)
         # Ensure an experiment ID exists before running; auto-create if none exists.
         self._ensure_experiment_ready(cmd.experiment_id)
         self.run_acquisition(acquire_current_fov=cmd.acquire_current_fov)

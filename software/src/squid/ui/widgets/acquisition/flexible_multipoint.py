@@ -969,7 +969,7 @@ class FlexibleMultiPointWidget(QFrame):
             self.setEnabled_all(False)
 
             # Start coordinate-based acquisition via event
-            self._event_bus.publish(StartAcquisitionCommand())
+            self._event_bus.publish(StartAcquisitionCommand(xy_mode="Current Position"))
         else:
             # This must eventually propagate through and call out acquisition_finished.
             self._event_bus.publish(StopAcquisitionCommand())
@@ -1407,7 +1407,7 @@ class FlexibleMultiPointWidget(QFrame):
         experiment_id = "snapped images" + self.lineEdit_experimentID.text()
         self._active_experiment_id = experiment_id.strip() or None
         self._event_bus.publish(StartNewExperimentCommand(experiment_id=experiment_id))
-        self._event_bus.publish(StartAcquisitionCommand(acquire_current_fov=True))
+        self._event_bus.publish(StartAcquisitionCommand(acquire_current_fov=True, xy_mode="Current Position"))
 
     def acquisition_is_finished(self):
         self._log.debug(

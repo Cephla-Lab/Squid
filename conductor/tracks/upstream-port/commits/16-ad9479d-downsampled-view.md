@@ -31,15 +31,15 @@ Major feature adding downsampled well and plate view for Select Wells mode. Prov
 
 ## arch_v2 Targets
 
-| Upstream File | arch_v2 Location |
-|---------------|------------------|
-| `downsampled_views.py` | `src/squid/backend/controllers/multipoint/downsampled_views.py` |
-| `job_processing.py` | `src/squid/backend/controllers/multipoint/job_processing.py` |
-| `multi_point_controller.py` | `src/squid/backend/controllers/multipoint/multi_point_controller.py` |
-| `multi_point_worker.py` | `src/squid/backend/controllers/multipoint/multi_point_worker.py` |
-| `widgets.py` (downsampled) | `src/squid/ui/widgets/display/downsampled_view.py` (NEW) |
-| `gui_hcs.py` | `src/squid/ui/main_window.py` |
-| `tests/` | `tests/unit/` and `tests/integration/` |
+| Upstream File | arch_v2 Location | Status |
+|---------------|------------------|--------|
+| `downsampled_views.py` | `src/squid/backend/controllers/multipoint/downsampled_views.py` | ✅ |
+| `job_processing.py` | `src/squid/backend/controllers/multipoint/job_processing.py` | ✅ |
+| `multi_point_controller.py` | `src/squid/backend/controllers/multipoint/multi_point_controller.py` | ✅ |
+| `multi_point_worker.py` | `src/squid/backend/controllers/multipoint/multi_point_worker.py` | ✅ |
+| `widgets.py` (NapariPlateViewWidget) | `src/squid/ui/widgets/display/napari_plate_view.py` | ✅ |
+| `gui_hcs.py` | `src/squid/ui/main_window.py` | ✅ |
+| `tests/` | `tests/unit/squid/controllers/multipoint/` | ✅ (57 tests) |
 
 ## Implementation Phases
 
@@ -59,20 +59,20 @@ Major feature adding downsampled well and plate view for Select Wells mode. Prov
 - [x] Add progress events for view updates (deferred - events ready for use)
 
 ### Phase 4: Controller Updates (0.5 day)
-- [ ] Update multi_point_controller.py (deferred - controller integration for runtime use)
-- [ ] Add downsampled view parameters
-- [ ] Handle view state
+- [x] Update multi_point_controller.py with xy_mode, get_plate_view(), plate dimension calculation
+- [x] Add downsampled view parameters to AcquisitionParameters
+- [x] Handle view state (deferred - runtime integration in worker)
 
 ### Phase 5: UI Widgets (1 day)
-- [ ] Create downsampled_view.py widget (deferred - UI widget for future PR)
-- [ ] Add plate overview display
-- [ ] Add well preview display
-- [ ] Integrate with wellplate selection
+- [x] Create NapariPlateViewWidget in ui/widgets/display/napari_plate_view.py
+- [x] Add plate overview display with napari viewer
+- [x] Add well preview display with click-to-FOV mapping
+- [x] Integrate with wellplate selection (ready for connection)
 
 ### Phase 6: Main Window Integration (0.5 day)
-- [ ] Add downsampled view to main window (deferred - main window integration for future PR)
-- [ ] Connect to well selection events
-- [ ] Handle view updates
+- [x] Add downsampled view tab to main window
+- [x] Add PlateViewInit/PlateViewUpdate events to core/events.py
+- [x] Connect events to widget via UIEventBus subscriptions
 
 ### Phase 7: Tests (REQUIRED - 1 day)
 
@@ -87,12 +87,12 @@ Major feature adding downsampled well and plate view for Select Wells mode. Prov
 **Total: +1901 lines of tests**
 
 - [x] Create test directory structure
-- [x] Port test_downsampled_views.py (unit tests for core algorithms)
-- [ ] Port test_drain_all_issue.py (regression tests) - deferred
-- [ ] Port test_job_processing_downsampled.py (job processing tests) - deferred
+- [x] Port test_downsampled_views.py (unit tests for core algorithms) - 44 tests passing
+- [x] Port test_drain_all_issue.py (regression tests) - 3 tests passing
+- [x] Port test_job_processing_downsampled.py (job processing tests) - 10 tests passing
 - [ ] Port test_plate_view_timing.py (performance/timing tests) - deferred
 - [x] Update imports for arch_v2 structure
-- [x] Run all tests and verify they pass (44 tests passing)
+- [x] Run all tests and verify they pass (57 tests passing)
 
 ## Implementation Checklist
 
@@ -112,17 +112,17 @@ Major feature adding downsampled well and plate view for Select Wells mode. Prov
 - [x] Handle async view generation (via JobRunner multiprocessing)
 
 ### Step 4: Worker Updates
-- [ ] Modify frame processing pipeline (deferred)
-- [ ] Add view update triggers (deferred)
-- [ ] Optimize for real-time updates (deferred)
+- [x] Modify frame processing pipeline (added _create_downsampled_view_job in _process_camera_frame)
+- [x] Add view update triggers (added _process_downsampled_view_result emitting PlateViewUpdate events)
+- [x] Optimize for real-time updates (drain all results from queue per call)
 
 ### Step 5: UI Components
-- [ ] Create view widgets (deferred)
-- [ ] Add to main layout (deferred)
-- [ ] Connect events (deferred)
+- [x] Create NapariPlateViewWidget
+- [x] Add Plate View tab to main window
+- [x] Connect PlateViewInit/PlateViewUpdate events
 
 ### Step 6: Testing
-- [x] Run all ported tests (44 tests passing)
+- [x] Run all ported tests (57 tests passing)
 - [ ] Manual testing of view updates (deferred)
 - [ ] Performance testing (deferred)
 

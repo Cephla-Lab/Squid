@@ -18,7 +18,6 @@ from qtpy.QtWidgets import (
     QPushButton,
     QCheckBox,
 )
-from qtpy.QtGui import QColor
 
 from _def import SpotDetectionMode
 import squid.core.utils.hardware_utils as utils
@@ -118,14 +117,6 @@ class LaserAutofocusSettingWidget(QWidget):
         # Set initial trigger/display FPS via EventBus
         self._event_bus.publish(SetTriggerFPSCommand(camera="focus", fps=10))
         self.streamHandler.set_display_fps(10)
-
-        # Enable background filling
-        self.setAutoFillBackground(True)
-
-        # Create and set background color
-        palette = self.palette()
-        palette.setColor(self.backgroundRole(), QColor(240, 240, 240))
-        self.setPalette(palette)
 
         self.init_ui()
         self.update_calibration_label()

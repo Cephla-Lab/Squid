@@ -501,6 +501,15 @@ class HighContentScreeningGui(QMainWindow):
                     self.napariMosaicDisplayWidget, "Mosaic View"
                 )
 
+            # Plate view for well-based acquisitions (only if enabled)
+            if DISPLAY_PLATE_VIEW:
+                self.napariPlateViewWidget = widgets.NapariPlateViewWidget(
+                    contrastManager=self.contrastManager,
+                )
+                self.imageDisplayTabs.addTab(
+                    self.napariPlateViewWidget, "Plate View"
+                )
+
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()
             dock_surface_plot = dock.Dock("Z Plot", autoOrientation=False)
@@ -638,6 +647,7 @@ class HighContentScreeningGui(QMainWindow):
         self.makeNapariConnections()
         self._connect_tab_signals()
         self._connect_plot_signals()
+        self._connect_plate_view_signals()
         self._connect_well_selector_button()
         self._connect_laser_autofocus_signals()
         # Confocal widgets publish commands/events directly.
@@ -667,6 +677,28 @@ class HighContentScreeningGui(QMainWindow):
         self._ui_event_bus.subscribe(
             AcquisitionWorkerFinished,
             lambda _e: self.zPlotWidget.plot(),
+        )
+
+    def _connect_plate_view_signals(self) -> None:
+        """Connect PlateViewInit and PlateViewUpdate events to the plate view widget."""
+        if self._ui_event_bus is None:
+            return
+        if not getattr(self, "napariPlateViewWidget", None):
+            return
+
+        from squid.core.events import PlateViewInit, PlateViewUpdate
+
+        self._ui_event_bus.subscribe(
+            PlateViewInit,
+            lambda e: self.napariPlateViewWidget.initPlateLayout(
+                e.num_rows, e.num_cols, e.well_slot_shape, e.fov_grid_shape, e.channel_names
+            ),
+        )
+        self._ui_event_bus.subscribe(
+            PlateViewUpdate,
+            lambda e: self.napariPlateViewWidget.updatePlateView(
+                e.channel_idx, e.channel_name, e.plate_image
+            ),
         )
 
     def _connect_well_selector_button(self) -> None:

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Optional, Callable, TYPE_CHECKING
 import time
 
@@ -6,6 +6,7 @@ from squid.backend.controllers.multipoint.job_processing import CaptureInfo
 from squid.backend.managers import ScanCoordinates
 from squid.core.utils.config_utils import ChannelMode
 from squid.core.abc import CameraFrame
+from _def import ZProjectionMode
 
 
 
@@ -54,6 +55,15 @@ class AcquisitionParameters:
 
     use_fluidics: bool
     skip_saving: bool = False
+
+    # Downsampled view generation parameters
+    generate_downsampled_views: bool = False
+    downsampled_well_resolutions_um: List[float] = field(default_factory=list)
+    downsampled_plate_resolution_um: float = 10.0
+    downsampled_z_projection: ZProjectionMode = ZProjectionMode.MIP
+    plate_num_rows: int = 8  # Default for 96-well
+    plate_num_cols: int = 12
+    xy_mode: str = "Current Position"
 
 
 @dataclass

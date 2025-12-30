@@ -347,7 +347,7 @@ class MultiPointWithFluidicsWidget(QFrame):
             self._active_experiment_id = requested_id or None
 
             # Start acquisition via event
-            self._event_bus.publish(StartAcquisitionCommand())
+            self._event_bus.publish(StartAcquisitionCommand(xy_mode="Current Position"))
         else:
             self._event_bus.publish(StopAcquisitionCommand())
 

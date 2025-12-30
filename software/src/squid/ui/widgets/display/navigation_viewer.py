@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 import cv2
 import numpy as np
 import pyqtgraph as pg
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import QFrame, QPushButton, QVBoxLayout
 
 from _def import (
@@ -117,6 +117,12 @@ class NavigationViewer(QFrame):
         self._completed_fovs: List[FovCenter] = []  # Completed FOV positions (blue)
         self._base_line_thickness: int = 1  # Base thickness at 1:1 zoom
         self._current_thickness: int = 1  # Track current thickness to avoid unnecessary redraws
+        # Debounce timer for batching FOV registration redraws
+        self._redraw_timer: QTimer = QTimer(self)
+        self._redraw_timer.setSingleShot(True)
+        self._redraw_timer.setInterval(50)  # 50ms debounce
+        self._redraw_timer.timeout.connect(self._redraw_scan_overlay)
+        self._redraw_pending: bool = False
         self.image_height: int = 0
         self.image_width: int = 0
         self.rows: int = 0
@@ -327,9 +333,20 @@ class NavigationViewer(QFrame):
             self.mm_per_pixel = 0.0
             return
 
-        # mm_per_pixel is the scale factor: A1 at (a1_x_mm, a1_y_mm) maps to pixel (a1_x_pixel, a1_y_pixel)
-        # Using X dimension for scale (assumes square pixels and consistent scaling)
-        self.mm_per_pixel = self.a1_x_mm / max(1.0, float(self.a1_x_pixel))
+        # Calculate mm_per_pixel from physical plate dimensions and image size.
+        # SBS standard plate footprint is 127.76mm x 85.48mm for all microplates.
+        # The wellplate images represent this footprint.
+        SBS_PLATE_WIDTH_MM = 127.76
+        SBS_PLATE_HEIGHT_MM = 85.48
+
+        if self.image_width > 0 and self.image_height > 0:
+            # Use average of X and Y scale factors for mm_per_pixel
+            mm_per_pixel_x = SBS_PLATE_WIDTH_MM / self.image_width
+            mm_per_pixel_y = SBS_PLATE_HEIGHT_MM / self.image_height
+            self.mm_per_pixel = (mm_per_pixel_x + mm_per_pixel_y) / 2.0
+        else:
+            # Fallback to old calculation if image dimensions unknown
+            self.mm_per_pixel = self.a1_x_mm / max(1.0, float(self.a1_x_pixel))
 
         self.origin_x_pixel = float(self.a1_x_pixel)
         self.origin_y_pixel = float(self.a1_y_pixel)
@@ -421,8 +438,17 @@ class NavigationViewer(QFrame):
             return self._base_line_thickness
 
     def register_fovs_to_image(self, fov_centers: List[FovCenter]) -> None:
+        """Register multiple FOVs at once, using debounced redraw to batch rapid updates."""
+        if not fov_centers:
+            return
+        # Add all FOVs first without redrawing
         for center in fov_centers:
-            self.register_fov_to_image(center)
+            self._pending_fovs.append(center)
+        self._log.debug(
+            f"Registered {len(fov_centers)} pending FOVs, total pending={len(self._pending_fovs)}"
+        )
+        # Schedule debounced redraw - coalesces rapid region updates into single redraw
+        self._schedule_redraw()
 
     def register_fov_to_image(self, fov: FovCenter) -> None:
         """Add a pending FOV position (drawn in red)."""
@@ -437,7 +463,7 @@ class NavigationViewer(QFrame):
         # Only remove from pending - completed FOVs stay visible until explicitly cleared
         to_remove = {(c.x_mm, c.y_mm) for c in fov_centers}
         self._pending_fovs = [f for f in self._pending_fovs if (f.x_mm, f.y_mm) not in to_remove]
-        self._redraw_scan_overlay()
+        self._schedule_redraw()
 
     def draw_fov_current_location(self, pos: Pos) -> None:
         if self.current_location_item is None or self.scan_overlay is None:
@@ -472,6 +498,11 @@ class NavigationViewer(QFrame):
         top_left = (x_px - half_w, y_px - half_h)
         bottom_right = (x_px + half_w, y_px + half_h)
         cv2.rectangle(overlay, top_left, bottom_right, color, thickness=thickness)
+
+    def _schedule_redraw(self) -> None:
+        """Schedule a debounced redraw. Multiple calls within 50ms are coalesced."""
+        # Restart the timer on each call to batch rapid updates
+        self._redraw_timer.start()
 
     def _redraw_scan_overlay(self) -> None:
         if self.scan_overlay is None or self.scan_overlay_item is None:
