@@ -39,7 +39,7 @@ pio run -t upload
 ```bash
 pio device list
 ```
-If multiple devices appear, disconnect extras before uploading. The upload tool may not warn you and could flash the wrong board.
+If multiple devices appear, disconnect the extras before uploading. The upload tool may not warn you and could flash the wrong board.
 
 ### Common Commands
 
