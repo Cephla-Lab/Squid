@@ -147,6 +147,9 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self._closed = False
 
         # Position state (in microsteps)
+        # Note: These are Python ints (unbounded), unlike firmware's int32.
+        # For simulation purposes this is acceptable; real firmware would
+        # overflow at INT32_MIN/MAX (-2147483648 to 2147483647).
         self.x = 0
         self.y = 0
         self.z = 0
@@ -250,7 +253,7 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
                 # Skip validation if no valid axes/codes defined (missing firmware constants)
                 # rather than incorrectly flagging all values as invalid
                 if valid_axes and axis not in valid_axes:
-                    errors.append(f"Invalid axis {axis} for command {cmd_code}")
+                    errors.append(f"Invalid axis {axis} for command {cmd_code}. Valid: {valid_axes}")
 
         if errors:
             self.validation_errors.extend(errors)

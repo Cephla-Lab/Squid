@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 import control.microcontroller
+from control.firmware_sim_serial import FirmwareSimSerial
 
 logger = logging.getLogger(__name__)
 
@@ -53,3 +54,29 @@ def cleanup_microcontrollers():
                     micro.close()
         except Exception as e:
             logger.warning(f"Failed to close Microcontroller in test cleanup: {e}")
+
+
+@pytest.fixture
+def firmware_sim():
+    """
+    Provide a FirmwareSimSerial instance with automatic cleanup.
+
+    Validation errors and command counts are cleared before each test
+    to ensure test isolation.
+    """
+    sim = FirmwareSimSerial(strict=True)
+    yield sim
+    sim.close()
+
+
+@pytest.fixture
+def firmware_sim_nonstrict():
+    """
+    Provide a non-strict FirmwareSimSerial instance for negative testing.
+
+    In non-strict mode, invalid commands log warnings instead of raising
+    FirmwareProtocolError, useful for testing error handling paths.
+    """
+    sim = FirmwareSimSerial(strict=False)
+    yield sim
+    sim.close()
