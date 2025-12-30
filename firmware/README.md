@@ -26,14 +26,20 @@ brew install platformio
 ### Quick Start
 
 ```bash
-# Build controller firmware
+# Build and upload controller firmware
 cd firmware/controller
-pio run
+pio run -t upload
 
-# Build joystick firmware
+# Build and upload joystick firmware
 cd firmware/joystick
-pio run
+pio run -t upload
 ```
+
+**Important:** Before uploading, verify only one Teensy is connected:
+```bash
+pio device list
+```
+If multiple devices appear, disconnect extras before uploading. The upload tool may not warn you and could flash the wrong board.
 
 ### Common Commands
 
@@ -76,8 +82,8 @@ After successful compilation, the firmware binary is located at:
 
 **Device not found during upload:**
 - Ensure Teensy is connected via USB
-- Press the button on Teensy to enter bootloader mode
 - Check that no other application is using the serial port
+- If firmware is unresponsive, press the button on Teensy to enter bootloader mode
 
 **Permission denied (Linux):**
 ```bash
