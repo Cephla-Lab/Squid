@@ -33,11 +33,15 @@ class MicroscopeControlServer:
         microscope,  # control.microscope.Microscope
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
+        multipoint_controller=None,  # Optional: GUI's multipoint controller for acquisitions
+        scan_coordinates=None,  # Optional: GUI's scan coordinates
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope = microscope
         self.host = host
         self.port = port
+        self.multipoint_controller = multipoint_controller
+        self.scan_coordinates = scan_coordinates
         self._server_socket: Optional[socket.socket] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -64,6 +68,9 @@ class MicroscopeControlServer:
             "get_status": self._cmd_get_status,
             "autofocus": self._cmd_autofocus,
             "acquire_laser_af_image": self._cmd_acquire_laser_af_image,
+            "run_acquisition": self._cmd_run_acquisition,
+            "get_acquisition_status": self._cmd_get_acquisition_status,
+            "abort_acquisition": self._cmd_abort_acquisition,
         }
 
     def start(self):
@@ -411,6 +418,207 @@ class MicroscopeControlServer:
             result["dtype"] = str(image.dtype)
 
         return result
+
+    def _cmd_run_acquisition(
+        self,
+        wells: str,
+        channels: list,
+        nx: int = 2,
+        ny: int = 2,
+        experiment_id: Optional[str] = None,
+        base_path: Optional[str] = None,
+        wellplate_format: str = "96 well plate",
+    ) -> Dict[str, Any]:
+        """Run a multi-point acquisition using the microscope object directly.
+
+        Args:
+            wells: Well selection string, e.g., "A1:B3" or "A1,A2,B1"
+            channels: List of channel names to acquire
+            nx: Number of sites in X per well (default: 2)
+            ny: Number of sites in Y per well (default: 2)
+            experiment_id: Optional experiment ID (auto-generated if not provided)
+            base_path: Optional base path for saving
+            wellplate_format: Wellplate format (default: "96 well plate")
+        """
+        import os
+        import control._def
+        from datetime import datetime
+
+        # Check if acquisition already running
+        if hasattr(self, '_acquisition_running') and self._acquisition_running:
+            return {"error": "Acquisition already in progress"}
+
+        # Parse well coordinates
+        wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
+        well_coords = self._parse_wells(wells, wellplate_settings)
+
+        if not well_coords:
+            return {"error": f"Could not parse wells: {wells}"}
+
+        # Set up paths
+        if not base_path:
+            base_path = "/tmp/squid_acquisitions"
+        if not experiment_id:
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            experiment_id = f"acquisition_{timestamp}"
+
+        save_dir = os.path.join(base_path, experiment_id)
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Calculate site offsets (simple grid within well)
+        fov_size_mm = (
+            self.microscope.objective_store.get_pixel_size_factor()
+            * self.microscope.camera.get_fov_size_mm()
+        )
+        step_size_mm = fov_size_mm * 0.9  # 10% overlap
+
+        # Run acquisition in background thread
+        def run_acquisition():
+            import tifffile
+            self._acquisition_running = True
+            self._acquisition_progress = {"completed": 0, "total": len(well_coords) * nx * ny * len(channels)}
+
+            try:
+                self.microscope.camera.start_streaming()
+                image_count = 0
+
+                for well_id, (well_x, well_y) in well_coords.items():
+                    well_dir = os.path.join(save_dir, well_id)
+                    os.makedirs(well_dir, exist_ok=True)
+
+                    for site_y in range(ny):
+                        for site_x in range(nx):
+                            # Calculate site position (centered grid)
+                            offset_x = (site_x - (nx - 1) / 2) * step_size_mm
+                            offset_y = (site_y - (ny - 1) / 2) * step_size_mm
+                            pos_x = well_x + offset_x
+                            pos_y = well_y + offset_y
+
+                            # Move to position
+                            self.microscope.move_x_to(pos_x, blocking=True)
+                            self.microscope.move_y_to(pos_y, blocking=True)
+
+                            site_id = site_y * nx + site_x
+
+                            for channel in channels:
+                                # Set channel
+                                objective = self.microscope.objective_store.current_objective
+                                channel_config = self.microscope.channel_configuration_mananger.get_channel_configuration_by_name(
+                                    objective, channel
+                                )
+                                if channel_config:
+                                    self.microscope.live_controller.set_microscope_mode(channel_config)
+
+                                # Acquire image
+                                image = self.microscope.acquire_image()
+
+                                if image is not None:
+                                    # Save image
+                                    filename = f"{well_id}_s{site_id:02d}_{channel.replace(' ', '_')}.tiff"
+                                    filepath = os.path.join(well_dir, filename)
+                                    tifffile.imwrite(filepath, image)
+
+                                image_count += 1
+                                self._acquisition_progress["completed"] = image_count
+
+                self.microscope.camera.stop_streaming()
+                self._acquisition_progress["status"] = "completed"
+
+            except Exception as e:
+                self._acquisition_progress["status"] = f"error: {str(e)}"
+            finally:
+                self._acquisition_running = False
+
+        # Start in background thread
+        acq_thread = threading.Thread(target=run_acquisition, daemon=True)
+        acq_thread.start()
+
+        return {
+            "started": True,
+            "wells": wells,
+            "well_count": len(well_coords),
+            "channels": channels,
+            "sites_per_well": nx * ny,
+            "total_images": len(well_coords) * nx * ny * len(channels),
+            "experiment_id": experiment_id,
+            "save_dir": save_dir,
+        }
+
+    def _parse_wells(self, wells: str, wellplate_settings: dict) -> Dict[str, tuple]:
+        """Parse well string like 'A1:B3' or 'A1,A2,B1' into coordinates."""
+        import re
+
+        def row_to_index(row: str) -> int:
+            index = 0
+            for char in row.upper():
+                index = index * 26 + (ord(char) - ord('A') + 1)
+            return index - 1
+
+        def index_to_row(index: int) -> str:
+            index += 1
+            row = ""
+            while index > 0:
+                index -= 1
+                row = chr(index % 26 + ord('A')) + row
+                index //= 26
+            return row
+
+        a1_x = wellplate_settings.get("a1_x_mm", 0)
+        a1_y = wellplate_settings.get("a1_y_mm", 0)
+        spacing = wellplate_settings.get("well_spacing_mm", 9)
+
+        well_coords = {}
+        pattern = r"([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)"
+
+        for desc in wells.split(","):
+            match = re.match(pattern, desc.strip())
+            if not match:
+                continue
+
+            start_row, start_col, end_row, end_col = match.groups()
+            start_row_idx = row_to_index(start_row)
+            start_col_idx = int(start_col) - 1
+
+            if end_row and end_col:
+                # Range like A1:B3
+                end_row_idx = row_to_index(end_row)
+                end_col_idx = int(end_col) - 1
+
+                for row_idx in range(start_row_idx, end_row_idx + 1):
+                    for col_idx in range(start_col_idx, end_col_idx + 1):
+                        well_id = index_to_row(row_idx) + str(col_idx + 1)
+                        x_mm = a1_x + col_idx * spacing
+                        y_mm = a1_y + row_idx * spacing
+                        well_coords[well_id] = (x_mm, y_mm)
+            else:
+                # Single well like A1
+                well_id = start_row.upper() + start_col
+                x_mm = a1_x + start_col_idx * spacing
+                y_mm = a1_y + start_row_idx * spacing
+                well_coords[well_id] = (x_mm, y_mm)
+
+        return well_coords
+
+    def _cmd_get_acquisition_status(self) -> Dict[str, Any]:
+        """Get the status of the current acquisition."""
+        in_progress = getattr(self, '_acquisition_running', False)
+        progress = getattr(self, '_acquisition_progress', {})
+
+        return {
+            "in_progress": in_progress,
+            "completed": progress.get("completed", 0),
+            "total": progress.get("total", 0),
+            "status": progress.get("status", "running" if in_progress else "idle"),
+        }
+
+    def _cmd_abort_acquisition(self) -> Dict[str, Any]:
+        """Abort the current acquisition."""
+        if not getattr(self, '_acquisition_running', False):
+            return {"error": "No acquisition in progress"}
+
+        # Signal abort (acquisition loop checks this)
+        self._acquisition_running = False
+        return {"aborted": True}
 
 
 def send_command(

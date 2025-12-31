@@ -79,6 +79,8 @@ if __name__ == "__main__":
             microscope=microscope,
             host=CONTROL_SERVER_HOST,
             port=CONTROL_SERVER_PORT,
+            multipoint_controller=win.multipointController,
+            scan_coordinates=win.scanCoordinates,
         )
         control_server.start()
         log.info(f"MCP control server started on {CONTROL_SERVER_HOST}:{CONTROL_SERVER_PORT}")
