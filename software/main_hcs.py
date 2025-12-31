@@ -27,6 +27,8 @@ if USE_TERMINAL_CONSOLE:
 
 if ENABLE_CONTROL_SERVER:
     from control.microscope_control_server import MicroscopeControlServer
+    import subprocess
+    import shutil
 
 
 if __name__ == "__main__":
@@ -123,5 +125,75 @@ if __name__ == "__main__":
 
             python_exec_action.toggled.connect(on_python_exec_toggled)
             settings_menu.addAction(python_exec_action)
+
+            # Add Launch Claude Code action
+            def launch_claude_code():
+                # Get the directory containing .mcp.json
+                working_dir = os.path.dirname(os.path.abspath(__file__))
+
+                # Check if claude is installed
+                if not shutil.which("claude"):
+                    QMessageBox.warning(
+                        win,
+                        "Claude Code Not Found",
+                        "Claude Code CLI is not installed or not in PATH.\n\n"
+                        "Install it from: https://claude.ai/download",
+                    )
+                    return
+
+                try:
+                    if sys.platform == "darwin":  # macOS
+                        script = f"""
+                        tell application "Terminal"
+                            activate
+                            do script "cd '{working_dir}' && claude"
+                        end tell
+                        """
+                        subprocess.Popen(["osascript", "-e", script])
+
+                    elif sys.platform == "win32":  # Windows
+                        subprocess.Popen(
+                            f'start cmd /k "cd /d {working_dir} && claude"',
+                            shell=True,
+                        )
+
+                    else:  # Linux
+                        terminals = [
+                            ["gnome-terminal", "--", "bash", "-c", f'cd "{working_dir}" && claude; exec bash'],
+                            ["konsole", "-e", "bash", "-c", f'cd "{working_dir}" && claude; exec bash'],
+                            ["xfce4-terminal", "-e", f'bash -c "cd \\"{working_dir}\\" && claude; exec bash"'],
+                            ["xterm", "-e", f'bash -c "cd {working_dir} && claude; exec bash"'],
+                        ]
+                        launched = False
+                        for cmd in terminals:
+                            try:
+                                subprocess.Popen(cmd)
+                                launched = True
+                                break
+                            except FileNotFoundError:
+                                continue
+
+                        if not launched:
+                            QMessageBox.warning(
+                                win,
+                                "Terminal Not Found",
+                                "Could not find a supported terminal emulator.\n\n"
+                                "Supported: gnome-terminal, konsole, xfce4-terminal, xterm",
+                            )
+
+                    log.info("Launched Claude Code")
+
+                except Exception as e:
+                    log.error(f"Failed to launch Claude Code: {e}")
+                    QMessageBox.warning(
+                        win,
+                        "Launch Failed",
+                        f"Failed to launch Claude Code:\n\n{str(e)}",
+                    )
+
+            launch_claude_action = QAction("Launch Claude Code", win)
+            launch_claude_action.setToolTip("Open Claude Code CLI in a terminal with MCP connection")
+            launch_claude_action.triggered.connect(launch_claude_code)
+            settings_menu.addAction(launch_claude_action)
 
     sys.exit(app.exec_())
