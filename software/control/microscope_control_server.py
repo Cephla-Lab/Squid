@@ -63,6 +63,7 @@ class MicroscopeControlServer:
             "turn_off_illumination": self._cmd_turn_off_illumination,
             "get_status": self._cmd_get_status,
             "autofocus": self._cmd_autofocus,
+            "acquire_laser_af_image": self._cmd_acquire_laser_af_image,
         }
 
     def start(self):
@@ -365,6 +366,37 @@ class MicroscopeControlServer:
         # This would need to be implemented based on the autofocus controller
         # For now, return not implemented
         return {"error": "Autofocus via control server not yet implemented"}
+
+    def _cmd_acquire_laser_af_image(self, save_path: Optional[str] = None) -> Dict[str, Any]:
+        """Acquire an image from the laser autofocus camera."""
+        if not self.microscope.addons.camera_focus:
+            return {"error": "Laser AF camera not available"}
+
+        camera_focus = self.microscope.addons.camera_focus
+
+        # Send trigger and read frame
+        camera_focus.send_trigger()
+        image = camera_focus.read_frame()
+
+        result = {
+            "acquired": image is not None,
+        }
+
+        if image is not None and save_path:
+            try:
+                import tifffile
+                tifffile.imwrite(save_path, image)
+                result["saved_to"] = save_path
+            except ImportError:
+                import numpy as np
+                np.save(save_path, image)
+                result["saved_to"] = save_path + ".npy"
+
+        if image is not None:
+            result["shape"] = list(image.shape)
+            result["dtype"] = str(image.dtype)
+
+        return result
 
 
 def send_command(
