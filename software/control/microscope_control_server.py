@@ -35,6 +35,7 @@ class MicroscopeControlServer:
         port: int = DEFAULT_PORT,
         multipoint_controller=None,  # Optional: GUI's multipoint controller for acquisitions
         scan_coordinates=None,  # Optional: GUI's scan coordinates
+        gui=None,  # Optional: GUI reference for performance mode toggle
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope = microscope
@@ -42,6 +43,7 @@ class MicroscopeControlServer:
         self.port = port
         self.multipoint_controller = multipoint_controller
         self.scan_coordinates = scan_coordinates
+        self.gui = gui
         self._server_socket: Optional[socket.socket] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -71,6 +73,8 @@ class MicroscopeControlServer:
             "run_acquisition": self._cmd_run_acquisition,
             "get_acquisition_status": self._cmd_get_acquisition_status,
             "abort_acquisition": self._cmd_abort_acquisition,
+            "set_performance_mode": self._cmd_set_performance_mode,
+            "get_performance_mode": self._cmd_get_performance_mode,
         }
 
     def start(self):
@@ -110,11 +114,7 @@ class MicroscopeControlServer:
                     client_socket, address = self._server_socket.accept()
                     self._log.debug(f"Connection from {address}")
                     # Handle each client in a separate thread
-                    client_thread = threading.Thread(
-                        target=self._handle_client,
-                        args=(client_socket,),
-                        daemon=True
-                    )
+                    client_thread = threading.Thread(target=self._handle_client, args=(client_socket,), daemon=True)
                     client_thread.start()
                 except socket.timeout:
                     continue
@@ -211,9 +211,7 @@ class MicroscopeControlServer:
             self.microscope.move_z_to(z_mm, blocking=blocking)
 
         pos = self.microscope.stage.get_pos()
-        return {
-            "moved_to": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}
-        }
+        return {"moved_to": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
 
     def _cmd_move_relative(
         self,
@@ -231,19 +229,14 @@ class MicroscopeControlServer:
             self.microscope.stage.move_z(dz_mm, blocking=blocking)
 
         pos = self.microscope.stage.get_pos()
-        return {
-            "new_position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}
-        }
+        return {"new_position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
 
     def _cmd_home(self, x: bool = True, y: bool = True, z: bool = True) -> Dict[str, Any]:
         """Home the stage axes."""
         if x or y or z:
             self.microscope.home_xyz()
         pos = self.microscope.stage.get_pos()
-        return {
-            "homed": True,
-            "position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}
-        }
+        return {"homed": True, "position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
 
     def _cmd_start_live(self) -> Dict[str, Any]:
         """Start live imaging."""
@@ -265,9 +258,11 @@ class MicroscopeControlServer:
 
         if image is not None and save_path:
             import numpy as np
+
             try:
                 # Try to save as TIFF
                 import tifffile
+
                 tifffile.imwrite(save_path, image)
                 result["saved_to"] = save_path
             except ImportError:
@@ -297,10 +292,7 @@ class MicroscopeControlServer:
         """Get available channels for current objective."""
         objective = self.microscope.objective_store.current_objective
         channels = self.microscope.channel_configuration_mananger.get_channel_configurations_for_objective(objective)
-        return {
-            "objective": objective,
-            "channels": [ch.name for ch in channels] if channels else []
-        }
+        return {"objective": objective, "channels": [ch.name for ch in channels] if channels else []}
 
     def _cmd_set_exposure(self, exposure_ms: float, channel: Optional[str] = None) -> Dict[str, Any]:
         """Set camera exposure time."""
@@ -311,9 +303,7 @@ class MicroscopeControlServer:
             self.microscope.camera.set_exposure_time(exposure_ms)
         return {"exposure_ms": exposure_ms}
 
-    def _cmd_set_illumination_intensity(
-        self, channel: str, intensity: float
-    ) -> Dict[str, Any]:
+    def _cmd_set_illumination_intensity(self, channel: str, intensity: float) -> Dict[str, Any]:
         """Set illumination intensity for a channel."""
         self.microscope.set_illumination_intensity(channel, intensity)
         return {"channel": channel, "intensity": intensity}
@@ -322,10 +312,7 @@ class MicroscopeControlServer:
         """Get available objectives."""
         objectives = list(self.microscope.objective_store.objectives_dict.keys())
         current = self.microscope.objective_store.current_objective
-        return {
-            "objectives": objectives,
-            "current": current
-        }
+        return {"objectives": objectives, "current": current}
 
     def _cmd_set_objective(self, objective_name: str) -> Dict[str, Any]:
         """Set the current objective."""
@@ -362,8 +349,12 @@ class MicroscopeControlServer:
                 "exposure_ms": self.microscope.camera.get_exposure_time(),
             },
             "live_controller": {
-                "is_live": self.microscope.live_controller.is_live if hasattr(self.microscope.live_controller, 'is_live') else None,
-            }
+                "is_live": (
+                    self.microscope.live_controller.is_live
+                    if hasattr(self.microscope.live_controller, "is_live")
+                    else None
+                ),
+            },
         }
 
         return status
@@ -374,7 +365,9 @@ class MicroscopeControlServer:
         # For now, return not implemented
         return {"error": "Autofocus via control server not yet implemented"}
 
-    def _cmd_acquire_laser_af_image(self, save_path: Optional[str] = None, use_last_frame: bool = True) -> Dict[str, Any]:
+    def _cmd_acquire_laser_af_image(
+        self, save_path: Optional[str] = None, use_last_frame: bool = True
+    ) -> Dict[str, Any]:
         """Acquire an image from the laser autofocus camera.
 
         Args:
@@ -389,9 +382,10 @@ class MicroscopeControlServer:
 
         if use_last_frame:
             # Get the last captured frame from the camera's buffer
-            current_frame = getattr(camera_focus, '_current_frame', None)
+            current_frame = getattr(camera_focus, "_current_frame", None)
             if current_frame is not None:
                 import numpy as np
+
                 image = np.squeeze(current_frame.frame)
         else:
             # Trigger a new capture
@@ -406,10 +400,12 @@ class MicroscopeControlServer:
         if image is not None and save_path:
             try:
                 import tifffile
+
                 tifffile.imwrite(save_path, image)
                 result["saved_to"] = save_path
             except ImportError:
                 import numpy as np
+
                 np.save(save_path, image)
                 result["saved_to"] = save_path + ".npy"
 
@@ -428,8 +424,12 @@ class MicroscopeControlServer:
         experiment_id: Optional[str] = None,
         base_path: Optional[str] = None,
         wellplate_format: str = "96 well plate",
+        overlap_percent: float = 10.0,
     ) -> Dict[str, Any]:
-        """Run a multi-point acquisition using the microscope object directly.
+        """Run a multi-point acquisition using the existing MultiPointController.
+
+        This method uses the GUI's MultiPointController infrastructure for acquisitions,
+        which handles image display, saving, autofocus, and other features automatically.
 
         Args:
             wells: Well selection string, e.g., "A1:B3" or "A1,A2,B1"
@@ -439,13 +439,21 @@ class MicroscopeControlServer:
             experiment_id: Optional experiment ID (auto-generated if not provided)
             base_path: Optional base path for saving
             wellplate_format: Wellplate format (default: "96 well plate")
+            overlap_percent: Overlap between FOVs (default: 10%)
         """
-        import os
         import control._def
-        from datetime import datetime
+
+        # Check requirements
+        if not self.multipoint_controller:
+            return {
+                "error": "MultiPointController not available. Make sure the GUI is running with control server enabled."
+            }
+
+        if not self.scan_coordinates:
+            return {"error": "ScanCoordinates not available. Make sure the GUI is running with control server enabled."}
 
         # Check if acquisition already running
-        if hasattr(self, '_acquisition_running') and self._acquisition_running:
+        if self.multipoint_controller.acquisition_in_progress():
             return {"error": "Acquisition already in progress"}
 
         # Parse well coordinates
@@ -455,94 +463,88 @@ class MicroscopeControlServer:
         if not well_coords:
             return {"error": f"Could not parse wells: {wells}"}
 
+        # Validate channels exist
+        objective = self.microscope.objective_store.current_objective
+        available_channels = self.microscope.channel_configuration_mananger.get_channel_configurations_for_objective(
+            objective
+        )
+        available_channel_names = [ch.name for ch in available_channels] if available_channels else []
+
+        invalid_channels = [ch for ch in channels if ch not in available_channel_names]
+        if invalid_channels:
+            return {"error": f"Invalid channels: {invalid_channels}. Available: {available_channel_names}"}
+
         # Set up paths
         if not base_path:
-            base_path = "/tmp/squid_acquisitions"
+            base_path = (
+                control._def.DEFAULT_SAVING_PATH
+                if hasattr(control._def, "DEFAULT_SAVING_PATH")
+                else "/tmp/squid_acquisitions"
+            )
         if not experiment_id:
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            experiment_id = f"acquisition_{timestamp}"
+            experiment_id = "MCP_acquisition"
 
-        save_dir = os.path.join(base_path, experiment_id)
-        os.makedirs(save_dir, exist_ok=True)
+        # Configure the MultiPointController
+        try:
+            # Clear existing regions and set up new wells
+            self.scan_coordinates.clear_regions()
 
-        # Calculate site offsets (simple grid within well)
-        fov_size_mm = (
-            self.microscope.objective_store.get_pixel_size_factor()
-            * self.microscope.camera.get_fov_size_mm()
-        )
-        step_size_mm = fov_size_mm * 0.9  # 10% overlap
+            # Get current Z position for the regions
+            current_z = self.microscope.stage.get_pos().z_mm
 
-        # Run acquisition in background thread
-        def run_acquisition():
-            import tifffile
-            self._acquisition_running = True
-            self._acquisition_progress = {"completed": 0, "total": len(well_coords) * nx * ny * len(channels)}
+            # Add each well as a flexible region with NX x NY grid
+            for well_id, (well_x, well_y) in well_coords.items():
+                self.scan_coordinates.add_flexible_region(
+                    region_id=well_id,
+                    center_x=well_x,
+                    center_y=well_y,
+                    center_z=current_z,
+                    Nx=nx,
+                    Ny=ny,
+                    overlap_percent=overlap_percent,
+                )
 
-            try:
-                self.microscope.camera.start_streaming()
-                image_count = 0
+            # Sort coordinates for efficient scanning pattern
+            self.scan_coordinates.sort_coordinates()
 
-                for well_id, (well_x, well_y) in well_coords.items():
-                    well_dir = os.path.join(save_dir, well_id)
-                    os.makedirs(well_dir, exist_ok=True)
+            # Set acquisition parameters on the controller
+            self.multipoint_controller.set_NX(1)  # Already handled by flexible regions
+            self.multipoint_controller.set_NY(1)
+            self.multipoint_controller.set_NZ(1)  # No Z-stack for now
+            self.multipoint_controller.set_Nt(1)  # Single timepoint
 
-                    for site_y in range(ny):
-                        for site_x in range(nx):
-                            # Calculate site position (centered grid)
-                            offset_x = (site_x - (nx - 1) / 2) * step_size_mm
-                            offset_y = (site_y - (ny - 1) / 2) * step_size_mm
-                            pos_x = well_x + offset_x
-                            pos_y = well_y + offset_y
+            # Set the selected channels
+            self.multipoint_controller.set_selected_configurations(channels)
 
-                            # Move to position
-                            self.microscope.move_x_to(pos_x, blocking=True)
-                            self.microscope.move_y_to(pos_y, blocking=True)
+            # Set the base path and start new experiment
+            self.multipoint_controller.set_base_path(base_path)
+            self.multipoint_controller.start_new_experiment(experiment_id)
 
-                            site_id = site_y * nx + site_x
+            # Calculate total FOVs for status reporting
+            total_fovs = sum(len(coords) for coords in self.scan_coordinates.region_fov_coordinates.values())
+            total_images = total_fovs * len(channels)
 
-                            for channel in channels:
-                                # Set channel
-                                objective = self.microscope.objective_store.current_objective
-                                channel_config = self.microscope.channel_configuration_mananger.get_channel_configuration_by_name(
-                                    objective, channel
-                                )
-                                if channel_config:
-                                    self.microscope.live_controller.set_microscope_mode(channel_config)
+            # Run the acquisition (non-blocking - runs in worker thread)
+            self.multipoint_controller.run_acquisition()
 
-                                # Acquire image
-                                image = self.microscope.acquire_image()
+            return {
+                "started": True,
+                "wells": wells,
+                "well_count": len(well_coords),
+                "channels": channels,
+                "sites_per_well": nx * ny,
+                "total_fovs": total_fovs,
+                "total_images": total_images,
+                "experiment_id": self.multipoint_controller.experiment_ID,
+                "save_dir": f"{base_path}/{self.multipoint_controller.experiment_ID}",
+            }
 
-                                if image is not None:
-                                    # Save image
-                                    filename = f"{well_id}_s{site_id:02d}_{channel.replace(' ', '_')}.tiff"
-                                    filepath = os.path.join(well_dir, filename)
-                                    tifffile.imwrite(filepath, image)
+        except Exception as e:
+            self._log.error(f"Failed to start acquisition: {e}")
+            import traceback
 
-                                image_count += 1
-                                self._acquisition_progress["completed"] = image_count
-
-                self.microscope.camera.stop_streaming()
-                self._acquisition_progress["status"] = "completed"
-
-            except Exception as e:
-                self._acquisition_progress["status"] = f"error: {str(e)}"
-            finally:
-                self._acquisition_running = False
-
-        # Start in background thread
-        acq_thread = threading.Thread(target=run_acquisition, daemon=True)
-        acq_thread.start()
-
-        return {
-            "started": True,
-            "wells": wells,
-            "well_count": len(well_coords),
-            "channels": channels,
-            "sites_per_well": nx * ny,
-            "total_images": len(well_coords) * nx * ny * len(channels),
-            "experiment_id": experiment_id,
-            "save_dir": save_dir,
-        }
+            self._log.error(traceback.format_exc())
+            return {"error": f"Failed to start acquisition: {str(e)}"}
 
     def _parse_wells(self, wells: str, wellplate_settings: dict) -> Dict[str, tuple]:
         """Parse well string like 'A1:B3' or 'A1,A2,B1' into coordinates."""
@@ -551,7 +553,7 @@ class MicroscopeControlServer:
         def row_to_index(row: str) -> int:
             index = 0
             for char in row.upper():
-                index = index * 26 + (ord(char) - ord('A') + 1)
+                index = index * 26 + (ord(char) - ord("A") + 1)
             return index - 1
 
         def index_to_row(index: int) -> str:
@@ -559,7 +561,7 @@ class MicroscopeControlServer:
             row = ""
             while index > 0:
                 index -= 1
-                row = chr(index % 26 + ord('A')) + row
+                row = chr(index % 26 + ord("A")) + row
                 index //= 26
             return row
 
@@ -601,24 +603,71 @@ class MicroscopeControlServer:
 
     def _cmd_get_acquisition_status(self) -> Dict[str, Any]:
         """Get the status of the current acquisition."""
-        in_progress = getattr(self, '_acquisition_running', False)
-        progress = getattr(self, '_acquisition_progress', {})
+        if not self.multipoint_controller:
+            return {"error": "MultiPointController not available"}
 
-        return {
+        in_progress = self.multipoint_controller.acquisition_in_progress()
+
+        result = {
             "in_progress": in_progress,
-            "completed": progress.get("completed", 0),
-            "total": progress.get("total", 0),
-            "status": progress.get("status", "running" if in_progress else "idle"),
+            "status": "running" if in_progress else "idle",
         }
+
+        # Add worker progress if available
+        if self.multipoint_controller.multiPointWorker:
+            worker = self.multipoint_controller.multiPointWorker
+            # The worker may have progress attributes we can check
+            if hasattr(worker, "current_fov_index"):
+                result["current_fov"] = worker.current_fov_index
+            if hasattr(worker, "total_fovs"):
+                result["total_fovs"] = worker.total_fovs
+
+        # Add experiment info if available
+        if self.multipoint_controller.experiment_ID:
+            result["experiment_id"] = self.multipoint_controller.experiment_ID
+        if self.multipoint_controller.base_path:
+            result["base_path"] = self.multipoint_controller.base_path
+
+        return result
 
     def _cmd_abort_acquisition(self) -> Dict[str, Any]:
         """Abort the current acquisition."""
-        if not getattr(self, '_acquisition_running', False):
+        if not self.multipoint_controller:
+            return {"error": "MultiPointController not available"}
+
+        if not self.multipoint_controller.acquisition_in_progress():
             return {"error": "No acquisition in progress"}
 
-        # Signal abort (acquisition loop checks this)
-        self._acquisition_running = False
+        # Use the controller's abort mechanism
+        self.multipoint_controller.request_abort_aquisition()
         return {"aborted": True}
+
+    def _cmd_set_performance_mode(self, enabled: bool) -> Dict[str, Any]:
+        """Enable or disable performance mode.
+
+        Performance mode disables the mosaic view during acquisitions to save RAM.
+        """
+        if not self.gui:
+            return {"error": "GUI reference not available"}
+
+        if not hasattr(self.gui, "performanceModeToggle"):
+            return {"error": "Performance mode toggle not available in GUI"}
+
+        # Toggle the button which triggers the mode change
+        self.gui.performanceModeToggle.setChecked(enabled)
+        self.gui.togglePerformanceMode()
+
+        return {
+            "performance_mode": self.gui.performance_mode,
+            "message": f"Performance mode {'enabled' if enabled else 'disabled'}",
+        }
+
+    def _cmd_get_performance_mode(self) -> Dict[str, Any]:
+        """Get the current performance mode state."""
+        if not self.gui:
+            return {"error": "GUI reference not available"}
+
+        return {"performance_mode": getattr(self.gui, "performance_mode", False)}
 
 
 def send_command(

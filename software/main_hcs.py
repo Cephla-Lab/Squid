@@ -81,6 +81,7 @@ if __name__ == "__main__":
             port=CONTROL_SERVER_PORT,
             multipoint_controller=win.multipointController,
             scan_coordinates=win.scanCoordinates,
+            gui=win,
         )
         control_server.start()
         log.info(f"MCP control server started on {CONTROL_SERVER_HOST}:{CONTROL_SERVER_PORT}")
