@@ -947,6 +947,12 @@ MULTIPOINT_PIEZO_UPDATE_DISPLAY = True
 USE_TERMINAL_CONSOLE = False
 USE_JUPYTER_CONSOLE = False
 
+# MCP Control Server - allows external tools (like Claude Code) to control the microscope
+# When enabled, a TCP server runs on CONTROL_SERVER_PORT accepting JSON commands
+ENABLE_CONTROL_SERVER = True
+CONTROL_SERVER_HOST = "127.0.0.1"
+CONTROL_SERVER_PORT = 5050
+
 try:
     with open("cache/config_file_path.txt", "r") as file:
         for line in file:

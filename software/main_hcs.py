@@ -17,13 +17,16 @@ squid.logging.setup_uncaught_exception_logging()
 
 # app specific libraries
 import control.gui_hcs as gui
-from control._def import USE_TERMINAL_CONSOLE
+from control._def import USE_TERMINAL_CONSOLE, ENABLE_CONTROL_SERVER, CONTROL_SERVER_HOST, CONTROL_SERVER_PORT
 import control.utils
 import control.microscope
 
 
 if USE_TERMINAL_CONSOLE:
     from control.console import ConsoleThread
+
+if ENABLE_CONTROL_SERVER:
+    from control.microscope_control_server import MicroscopeControlServer
 
 
 if __name__ == "__main__":
@@ -70,5 +73,14 @@ if __name__ == "__main__":
         console_locals = {"microscope": win.microscope}
         console_thread = ConsoleThread(console_locals)
         console_thread.start()
+
+    if ENABLE_CONTROL_SERVER:
+        control_server = MicroscopeControlServer(
+            microscope=microscope,
+            host=CONTROL_SERVER_HOST,
+            port=CONTROL_SERVER_PORT,
+        )
+        control_server.start()
+        log.info(f"MCP control server started on {CONTROL_SERVER_HOST}:{CONTROL_SERVER_PORT}")
 
     sys.exit(app.exec_())
