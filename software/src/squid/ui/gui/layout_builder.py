@@ -15,7 +15,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QSplitter,
     QPushButton,
-    QDesktopWidget,
+    QApplication,
     QMainWindow,
 )
 import pyqtgraph.dockarea as dock
@@ -75,11 +75,11 @@ def setup_control_panel_layout(gui: "HighContentScreeningGui") -> None:
 
 def get_main_window_minimum_size() -> tuple[int, int]:
     """Get minimum window size based on primary screen."""
-    desktop_info = QDesktopWidget()
-    primary_screen_size = desktop_info.screen(desktop_info.primaryScreen()).size()
+    screen = QApplication.primaryScreen()
+    screen_geometry = screen.availableGeometry()
 
-    height_min = int(0.9 * primary_screen_size.height())
-    width_min = int(0.96 * primary_screen_size.width())
+    height_min = int(0.9 * screen_geometry.height())
+    width_min = int(0.96 * screen_geometry.width())
 
     return (width_min, height_min)
 

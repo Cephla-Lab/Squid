@@ -20,6 +20,7 @@ __all__ = [
     # config
     "ConfigEditor",
     "ConfigEditorBackwardsCompatible",
+    "PreferencesDialog",
     "ProfileWidget",
     # camera
     "CameraSettingsWidget",
@@ -41,6 +42,7 @@ __all__ = [
     "NapariLiveWidget",
     "NapariMultiChannelWidget",
     "NapariMosaicDisplayWidget",
+    "NapariPlateViewWidget",
     "WaveformDisplay",
     "PlotWidget",
     "SurfacePlotWidget",
@@ -89,6 +91,7 @@ _LAZY_IMPORTS: Final[dict[str, tuple[str, str]]] = {
     # config
     "ConfigEditor": ("squid.ui.widgets.config", "ConfigEditor"),
     "ConfigEditorBackwardsCompatible": ("squid.ui.widgets.config", "ConfigEditorBackwardsCompatible"),
+    "PreferencesDialog": ("squid.ui.widgets.config", "PreferencesDialog"),
     "ProfileWidget": ("squid.ui.widgets.config", "ProfileWidget"),
     # camera
     "CameraSettingsWidget": ("squid.ui.widgets.camera", "CameraSettingsWidget"),
@@ -110,6 +113,7 @@ _LAZY_IMPORTS: Final[dict[str, tuple[str, str]]] = {
     "NapariLiveWidget": ("squid.ui.widgets.display", "NapariLiveWidget"),
     "NapariMultiChannelWidget": ("squid.ui.widgets.display", "NapariMultiChannelWidget"),
     "NapariMosaicDisplayWidget": ("squid.ui.widgets.display", "NapariMosaicDisplayWidget"),
+    "NapariPlateViewWidget": ("squid.ui.widgets.display", "NapariPlateViewWidget"),
     "WaveformDisplay": ("squid.ui.widgets.display", "WaveformDisplay"),
     "PlotWidget": ("squid.ui.widgets.display", "PlotWidget"),
     "SurfacePlotWidget": ("squid.ui.widgets.display", "SurfacePlotWidget"),

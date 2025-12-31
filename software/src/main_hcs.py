@@ -3,7 +3,6 @@ import argparse
 import faulthandler
 import logging
 import os
-from pathlib import Path
 
 os.environ["QT_API"] = "pyqt5"
 import signal
@@ -23,22 +22,14 @@ squid.core.logging.setup_uncaught_exception_logging()
 
 # app specific libraries
 import squid.ui.main_window as gui
-from configparser import ConfigParser
-from squid.ui.widgets import ConfigEditorBackwardsCompatible
-from _def import CACHED_CONFIG_FILE_PATH
-from _def import PROJECT_ROOT
 from _def import USE_TERMINAL_CONSOLE
+from _def import SQUID_ICON_PATH
 import squid.core.utils.hardware_utils
 from squid.application import ApplicationContext
 
 
 if USE_TERMINAL_CONSOLE:
     from squid.ui.console import ConsoleThread
-
-
-def show_config(cfp, configpath, main_gui):
-    config_widget = ConfigEditorBackwardsCompatible(cfp, configpath, main_gui)
-    config_widget.exec_()
 
 
 if __name__ == "__main__":
@@ -75,20 +66,9 @@ if __name__ == "__main__":
         f"Squid Repository State: {squid.core.utils.hardware_utils.get_squid_repo_state_description()}"
     )
 
-    legacy_config = False
-    cf_editor_parser = ConfigParser()
-    config_files = [str(p) for p in Path.cwd().glob("configuration*.ini")]
-    if not config_files:
-        config_files = [str(p) for p in PROJECT_ROOT.glob("configuration*.ini")]
-    if config_files:
-        cf_editor_parser.read(CACHED_CONFIG_FILE_PATH)
-    else:
-        log.error(
-            "configuration*.ini file not found, defaulting to legacy configuration"
-        )
-        legacy_config = True
     app = QApplication([])
     app.setStyle("Fusion")
+    app.setWindowIcon(QIcon(str(SQUID_ICON_PATH)))
     # This allows shutdown via ctrl+C even after the gui has popped up.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
@@ -114,13 +94,6 @@ if __name__ == "__main__":
     )
 
     file_menu = QMenu("File", win)
-
-    if not legacy_config:
-        config_action = QAction("Microscope Settings", win)
-        config_action.triggered.connect(
-            lambda: show_config(cf_editor_parser, config_files[0], win)
-        )
-        file_menu.addAction(config_action)
 
     microscope_utils_menu = QMenu("Utils", win)
 

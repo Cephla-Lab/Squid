@@ -46,11 +46,7 @@ Fluidics acquisition SOP: [link](https://cephla.notion.site/User-manual-for-flui
 New version coming soon!
 
 ### Firmware
-Usually firmware should be already uploaded to the controller. If you do need to re-upload firmware, you may follow the instructions in this [post](https://forum.squid-imaging.org/t/setting-up-arduino-teensyduino-ide-for-uploading-firmware/36).
-
-- Latest firmware for main controller: https://github.com/Cephla-Lab/Squid/tree/master/firmware/octopi_firmware_v2/main_controller_teensy41
-
-- Latest firmware for joystick controller: https://github.com/Cephla-Lab/Squid/tree/master/firmware/octopi_firmware_v2/control_panel_teensyLC
+Usually firmware should be already uploaded to the controller. If you do need to re-upload firmware, see the [firmware README](firmware/README.md) for instructions.
 
 ## Open-source Assets for the original Squid
 ![alt text](https://i.imgur.com/Gjwh02y.png)

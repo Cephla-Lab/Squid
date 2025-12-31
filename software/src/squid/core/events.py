@@ -954,6 +954,7 @@ class SetAcquisitionParametersCommand(Event):
     z_range: Optional[Tuple[float, float]] = None
     focus_map: Optional[Any] = None
     use_fluidics: Optional[bool] = None
+    skip_saving: Optional[bool] = None
 
 
 @dataclass
@@ -983,6 +984,7 @@ class StartAcquisitionCommand(Event):
 
     experiment_id: Optional[str] = None
     acquire_current_fov: bool = False
+    xy_mode: str = "Current Position"  # "Current Position", "Select Wells", "Manual", "Load Coordinates"
 
 
 @dataclass
@@ -1945,3 +1947,34 @@ class ClickToMoveEnabledChanged(Event):
     """State event: click-to-move feature enabled/disabled."""
 
     enabled: bool
+
+
+# ============================================================================
+# Plate View Events (for downsampled well/plate display)
+# ============================================================================
+
+
+@dataclass
+class PlateViewInit(Event):
+    """Initialize plate view with layout parameters.
+
+    Sent at start of well-based acquisition to configure the plate view widget.
+    """
+
+    num_rows: int
+    num_cols: int
+    well_slot_shape: Tuple[int, int]  # (height, width) in pixels
+    fov_grid_shape: Tuple[int, int]  # (ny, nx) FOVs per well
+    channel_names: List[str]
+
+
+@dataclass
+class PlateViewUpdate(Event):
+    """Update plate view with a new channel image.
+
+    Sent when a well's downsampled view is complete for a channel.
+    """
+
+    channel_idx: int
+    channel_name: str
+    plate_image: np.ndarray  # Full plate view for this channel

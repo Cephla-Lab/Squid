@@ -11,6 +11,4 @@ cd ..
 cd pvcam-sdk
 bash pvcam-sdk__install_helper-Ubuntu.sh
 cd ../..
-git clone https://github.com/Photometrics/PyVCAM.git
-cd PyVCAM
-pip install .
+pip install PyVCAM

@@ -5,3 +5,5 @@ cache/
 drivers and libraries/daheng camera/
 squid_microscope.egg-info/
 acquisition_configurations/
+# User channel definitions (channel_definitions.default.json is tracked)
+channel_definitions.json

@@ -11,6 +11,7 @@ from napari.layers import Layer
 from napari.utils.events import Event
 
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QIcon
 from qtpy.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -29,6 +30,7 @@ from _def import (
     TriggerMode,
     USE_NAPARI_FOR_LIVE_CONTROL,
     USE_NAPARI_WELL_SELECTION,
+    SQUID_ICON_PATH,
 )
 
 from squid.core.utils.config_utils import ChannelMode as ChannelConfiguration
@@ -128,6 +130,13 @@ class NapariLiveWidget(QWidget):
         self.customizeViewer()
 
     def customizeViewer(self) -> None:
+        # Set Squid/Cephla branding on napari viewer
+        self.viewer.window._qt_window.setWindowIcon(QIcon(str(SQUID_ICON_PATH)))
+        self.viewer.window._qt_window.setWindowTitle("Squid Microscope")
+
+        # Hide the napari menu bar (clear it for macOS global menu bar)
+        self.viewer.window.main_menu.clear()
+
         # Hide the layer buttons
         if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
             self.viewer.window._qt_viewer.layerButtons.hide()

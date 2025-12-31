@@ -207,14 +207,18 @@ class ScanCoordinates:
 
         assert isinstance(event, SelectedWellsChanged)
         self._selected_well_cells = tuple(event.selected_cells)
+        self._log.info(f"_on_selected_wells_changed: {len(self._selected_well_cells)} wells selected")
         # If we already have scan settings, recompute immediately.
         if self._well_selection_scan_size_mm > 0:
             self._apply_well_selection_coordinates()
+        else:
+            self._log.info("_on_selected_wells_changed: scan_size_mm=0, not applying coordinates yet")
 
     def _on_set_well_selection_scan_coordinates(self, cmd: Event) -> None:
         from squid.core.events import SetWellSelectionScanCoordinatesCommand
 
         assert isinstance(cmd, SetWellSelectionScanCoordinatesCommand)
+        self._log.info(f"_on_set_well_selection_scan_coordinates: scan_size={cmd.scan_size_mm}mm, overlap={cmd.overlap_percent}%, shape={cmd.shape}")
         self._well_selection_scan_size_mm = float(cmd.scan_size_mm)
         self._well_selection_overlap_percent = float(cmd.overlap_percent)
         self._well_selection_shape = str(cmd.shape)
@@ -222,7 +226,9 @@ class ScanCoordinates:
 
     def _apply_well_selection_coordinates(self) -> None:
         # Only applies to wellplate selection mode; empty selection clears.
+        self._log.info(f"_apply_well_selection_coordinates: {len(self._selected_well_cells)} selected cells, scan_size={self._well_selection_scan_size_mm}mm")
         if not self._selected_well_cells:
+            self._log.info("_apply_well_selection_coordinates: no cells selected, clearing regions")
             self.clear_regions()
             return
         self.set_well_coordinates_from_selected_cells(

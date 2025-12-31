@@ -9,9 +9,10 @@ import napari
 from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
 from napari.utils.events import Event
 
+from qtpy.QtGui import QIcon
 from qtpy.QtWidgets import QWidget, QVBoxLayout
 
-from _def import CHANNEL_COLORS_MAP, USE_NAPARI_FOR_LIVE_VIEW
+from _def import CHANNEL_COLORS_MAP, USE_NAPARI_FOR_LIVE_VIEW, SQUID_ICON_PATH
 
 from squid.backend.managers import ContrastManager
 from squid.core.events import (
@@ -126,6 +127,13 @@ class NapariMultiChannelWidget(QWidget):
         self.customizeViewer()
 
     def customizeViewer(self) -> None:
+        # Set Squid/Cephla branding on napari viewer
+        self.viewer.window._qt_window.setWindowIcon(QIcon(str(SQUID_ICON_PATH)))
+        self.viewer.window._qt_window.setWindowTitle("Squid Microscope")
+
+        # Hide the napari menu bar (clear it for macOS global menu bar)
+        self.viewer.window.main_menu.clear()
+
         # Hide the layer buttons
         if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
             self.viewer.window._qt_viewer.layerButtons.hide()

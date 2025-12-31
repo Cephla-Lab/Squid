@@ -314,8 +314,18 @@ class HighContentScreeningGui(QMainWindow):
             self.flexibleMultiPointWidget.init_z()
 
         # Create the menu bar
+        # On macOS, disable native menu bar so it appears in the window
+        # (native macOS menu bars can be unreliable with PyQt5)
         menubar = self.menuBar()
+        menubar.setNativeMenuBar(False)
         settings_menu = menubar.addMenu("Settings")
+
+        # Configuration action
+        config_action = QAction("Configuration...", self)
+        config_action.setMenuRole(QAction.NoRole)
+        config_action.triggered.connect(self.openPreferences)
+        settings_menu.addAction(config_action)
+
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             led_matrix_action = QAction("LED Matrix", self)
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
@@ -491,6 +501,15 @@ class HighContentScreeningGui(QMainWindow):
                     self.napariMosaicDisplayWidget, "Mosaic View"
                 )
 
+            # Plate view for well-based acquisitions (only if enabled)
+            if DISPLAY_PLATE_VIEW:
+                self.napariPlateViewWidget = widgets.NapariPlateViewWidget(
+                    contrastManager=self.contrastManager,
+                )
+                self.imageDisplayTabs.addTab(
+                    self.napariPlateViewWidget, "Plate View"
+                )
+
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()
             dock_surface_plot = dock.Dock("Z Plot", autoOrientation=False)
@@ -628,6 +647,7 @@ class HighContentScreeningGui(QMainWindow):
         self.makeNapariConnections()
         self._connect_tab_signals()
         self._connect_plot_signals()
+        self._connect_plate_view_signals()
         self._connect_well_selector_button()
         self._connect_laser_autofocus_signals()
         # Confocal widgets publish commands/events directly.
@@ -657,6 +677,28 @@ class HighContentScreeningGui(QMainWindow):
         self._ui_event_bus.subscribe(
             AcquisitionWorkerFinished,
             lambda _e: self.zPlotWidget.plot(),
+        )
+
+    def _connect_plate_view_signals(self) -> None:
+        """Connect PlateViewInit and PlateViewUpdate events to the plate view widget."""
+        if self._ui_event_bus is None:
+            return
+        if not getattr(self, "napariPlateViewWidget", None):
+            return
+
+        from squid.core.events import PlateViewInit, PlateViewUpdate
+
+        self._ui_event_bus.subscribe(
+            PlateViewInit,
+            lambda e: self.napariPlateViewWidget.initPlateLayout(
+                e.num_rows, e.num_cols, e.well_slot_shape, e.fov_grid_shape, e.channel_names
+            ),
+        )
+        self._ui_event_bus.subscribe(
+            PlateViewUpdate,
+            lambda e: self.napariPlateViewWidget.updatePlateView(
+                e.channel_idx, e.channel_name, e.plate_image
+            ),
         )
 
     def _connect_well_selector_button(self) -> None:
@@ -863,6 +905,19 @@ class HighContentScreeningGui(QMainWindow):
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             dialog = widgets.LedMatrixSettingsDialog(self.liveController.led_array)
             dialog.exec_()
+
+    def openPreferences(self) -> None:
+        from configparser import ConfigParser
+        from _def import CACHED_CONFIG_FILE_PATH
+        import os
+
+        if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
+            config = ConfigParser()
+            config.read(CACHED_CONFIG_FILE_PATH)
+            dialog = widgets.PreferencesDialog(config, CACHED_CONFIG_FILE_PATH, self)
+            dialog.exec_()
+        else:
+            self.log.warning("No configuration file found")
 
     def onTabChanged(self, index: int) -> None:
         is_flexible_acquisition = (

@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 import squid.core.logging
+from squid.core.utils.geometry_utils import get_effective_well_size, calculate_well_coverage
 from squid.core.events import (
     EventBus,
     StagePositionChanged,
@@ -304,7 +305,7 @@ class WellplateMultiPointWidget(QFrame):
         if self._acquisition_in_progress:
             return
         if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() != "Load Coordinates":
-            self.update_coordinates(force=True)
+            self.handle_objective_change()
 
     def _on_channel_configs_changed(self, event: ChannelConfigurationsChanged) -> None:
         """Update channel list when configurations change for current objective."""
@@ -443,7 +444,6 @@ class WellplateMultiPointWidget(QFrame):
         self.combobox_shape = QComboBox()
         self.combobox_shape.addItems(["Square", "Circle", "Rectangle"])
         self.combobox_shape.setFixedWidth(btn_width)
-        # self.combobox_shape.currentTextChanged.connect(self.on_shape_changed)
 
         self.btn_save_scan_coordinates = QPushButton("Save Coordinates")
         self.btn_load_scan_coordinates = QPushButton("Load New Coords")
@@ -482,6 +482,9 @@ class WellplateMultiPointWidget(QFrame):
 
         self.checkbox_stitchOutput = QCheckBox("Stitch Scans")
         self.checkbox_stitchOutput.setChecked(False)
+
+        self.checkbox_skipSaving = QCheckBox("Skip Saving")
+        self.checkbox_skipSaving.setChecked(False)
 
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
@@ -716,6 +719,7 @@ class WellplateMultiPointWidget(QFrame):
         options_layout.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
+        options_layout.addWidget(self.checkbox_skipSaving)
 
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
@@ -775,18 +779,18 @@ class WellplateMultiPointWidget(QFrame):
         self.entry_dt.valueChanged.connect(self._on_dt_changed)
         self.entry_Nt.valueChanged.connect(self._on_nt_changed)
         self.entry_overlap.valueChanged.connect(self.update_coordinates)
+        self.entry_overlap.valueChanged.connect(self.update_coverage_from_scan_size)
         self.entry_scan_size.valueChanged.connect(self.update_coordinates)
         self.entry_scan_size.valueChanged.connect(self.update_coverage_from_scan_size)
-        self.entry_well_coverage.valueChanged.connect(
-            self.update_scan_size_from_coverage
-        )
-        self.combobox_shape.currentTextChanged.connect(self.reset_coordinates)
+        # Coverage is read-only, derived from scan_size, FOV, and overlap
+        self.combobox_shape.currentTextChanged.connect(self.on_shape_changed)
         self.checkbox_withAutofocus.toggled.connect(self._on_autofocus_toggled)
         self.checkbox_withReflectionAutofocus.toggled.connect(self._on_reflection_af_toggled)
         self.checkbox_genAFMap.toggled.connect(self._on_gen_af_map_toggled)
         self.checkbox_useFocusMap.toggled.connect(self.focusMapWidget.setEnabled)
         self.checkbox_useFocusMap.toggled.connect(self._on_use_focus_map_toggled)
         self.checkbox_usePiezo.toggled.connect(self._on_use_piezo_toggled)
+        self.checkbox_skipSaving.toggled.connect(self._on_skip_saving_toggled)
         self.list_configurations.itemSelectionChanged.connect(
             self.emit_selected_channels
         )
@@ -1263,28 +1267,18 @@ class WellplateMultiPointWidget(QFrame):
                     self.coverage_label.setVisible(True)
                     self.entry_well_coverage.setVisible(True)
             elif xy_mode == "Select Wells":
-                # For Select Wells mode, coverage should be enabled
+                # For Select Wells mode, coverage is read-only (derived from scan_size, FOV, overlap)
                 self.entry_well_coverage.blockSignals(True)
-                self.entry_well_coverage.setRange(1, 999.99)  # Restore normal range
+                self.entry_well_coverage.setRange(0, 999.99)  # Allow any display value
                 self.entry_well_coverage.setSuffix("%")
-
-                # Restore stored coverage value for Select Wells mode
-                if self.stored_xy_params["Select Wells"]["coverage"] is not None:
-                    self.entry_well_coverage.setValue(
-                        self.stored_xy_params["Select Wells"]["coverage"]
-                    )
-                else:
-                    self.entry_well_coverage.setValue(
-                        100
-                    )  # Set to default if no stored value
-
+                self.entry_well_coverage.setReadOnly(True)
                 self.entry_well_coverage.blockSignals(False)
 
-                # Enable coverage unless it's glass slide mode
-                if self._wellplate_format != "glass slide":
-                    self.entry_well_coverage.setEnabled(True)
-                else:
-                    self.entry_well_coverage.setEnabled(False)
+                # Derive coverage from current scan_size (scan_size is the source of truth)
+                self.update_coverage_from_scan_size()
+
+                # Coverage is always read-only but visually enabled for display
+                self.entry_well_coverage.setEnabled(True)
 
                 # show the row of scan shape, scan size and coverage
                 self.scan_shape_label.setVisible(True)
@@ -1365,22 +1359,18 @@ class WellplateMultiPointWidget(QFrame):
         self._log.debug(f"Time acquisition {'enabled' if checked else 'disabled'}")
 
     def store_xy_mode_parameters(self, mode):
-        """Store current scan size, coverage, and shape parameters for the given XY mode"""
+        """Store current scan size and shape parameters for the given XY mode.
+
+        Coverage is not stored as it is derived from scan_size, FOV, and overlap.
+        """
         if mode in self.stored_xy_params:
-            # Always store scan size and scan shape
             self.stored_xy_params[mode]["scan_size"] = self.entry_scan_size.value()
             self.stored_xy_params[mode]["scan_shape"] = (
                 self.combobox_shape.currentText()
             )
 
-            # Only store coverage for Select Wells mode (Current Position uses N/A)
-            if mode == "Select Wells":
-                self.stored_xy_params[mode]["coverage"] = (
-                    self.entry_well_coverage.value()
-                )
-
     def restore_xy_mode_parameters(self, mode):
-        """Restore stored scan size, coverage, and shape parameters for the given XY mode"""
+        """Restore stored scan size and shape parameters for the given XY mode."""
         if mode in self.stored_xy_params:
             # Restore scan size for both Current Position and Select Wells modes
             if self.stored_xy_params[mode]["scan_size"] is not None:
@@ -1677,8 +1667,8 @@ class WellplateMultiPointWidget(QFrame):
             self.checkbox_xy.isChecked()
             and self.combobox_xy_mode.currentText() == "Select Wells"
         ):
+            self._log.debug(f"Sample Format: {self._wellplate_format}")
             self.combobox_shape.blockSignals(True)
-            self.entry_well_coverage.blockSignals(True)
             self.entry_scan_size.blockSignals(True)
 
             self.set_default_shape()
@@ -1688,27 +1678,23 @@ class WellplateMultiPointWidget(QFrame):
                     0.1
                 )  # init to 0.1mm when switching to 'glass slide' (for imaging a single FOV by default)
                 self.entry_scan_size.setEnabled(True)
-                self.entry_well_coverage.setEnabled(False)
             else:
-                self.entry_well_coverage.setEnabled(True)
-                # entry_well_coverage.valueChanged signal will not emit coverage = 100 already
-                self.entry_well_coverage.setValue(100)
-                self.update_scan_size_from_coverage()
+                # Set scan_size to effective well size (100% coverage)
+                effective_well_size = self._get_effective_well_size()
+                self.entry_scan_size.setValue(round(effective_well_size, 3))
 
+            # Coverage is read-only, derive it from scan_size
+            self.update_coverage_from_scan_size()
             self.update_coordinates(force=True)
 
             self.combobox_shape.blockSignals(False)
-            self.entry_well_coverage.blockSignals(False)
             self.entry_scan_size.blockSignals(False)
         else:
-            # update stored settings for "Select Wells" mode for use later
-            coverage = 100
-            self.stored_xy_params["Select Wells"]["coverage"] = coverage
-
-            # Calculate scan size from well size and coverage
+            # Update stored settings for "Select Wells" mode for use later.
+            # Coverage is derived from scan_size, so we only store scan_size and shape.
             if self._wellplate_format != "glass slide":
-                effective_well_size = self.get_effective_well_size()
-                scan_size = round((coverage / 100) * effective_well_size, 3)
+                effective_well_size = self._get_effective_well_size()
+                scan_size = round(effective_well_size, 3)
                 self.stored_xy_params["Select Wells"]["scan_size"] = scan_size
             else:
                 # For glass slide, use default scan size
@@ -1735,16 +1721,39 @@ class WellplateMultiPointWidget(QFrame):
         elif self._wellplate_format != 0:
             self.combobox_shape.setCurrentText("Circle")
 
-    def get_effective_well_size(self):
+    def _get_effective_well_size(self):
         well_size = self._well_size_mm
-        if self.combobox_shape.currentText() == "Circle":
-            fov_size_mm = self._camera_fov_size_mm * self._pixel_size_factor
-            return well_size + fov_size_mm * (1 + math.sqrt(2))
-        return well_size
+        shape = self.combobox_shape.currentText()
+        is_round_well = self._wellplate_format not in ["384 well plate", "1536 well plate"]
+        fov_size_mm = self._camera_fov_size_mm * self._pixel_size_factor
+        return get_effective_well_size(well_size, fov_size_mm, shape, is_round_well)
 
     def reset_coordinates(self):
+        # Called after acquisition - preserve scan_size, update coverage display
         if self.combobox_xy_mode.currentText() == "Select Wells":
-            self.update_scan_size_from_coverage()
+            self.update_coverage_from_scan_size()
+        self.update_coordinates()
+
+    def on_shape_changed(self):
+        # Called when scan shape changes - scan_size stays constant, coverage updates
+        # (coverage is read-only, derived from scan_size and effective_well_size)
+        if self.combobox_xy_mode.currentText() == "Select Wells":
+            self.update_coverage_from_scan_size()
+        self.update_coordinates()
+
+    def handle_objective_change(self):
+        """Handle objective change - update coverage and coordinates.
+
+        When the objective changes, the FOV size changes, which affects both the
+        effective well size (for Circle shapes) and the coverage calculation.
+        Scan_size stays constant; coverage is recalculated and coordinates are
+        updated to reflect the new tile positions.
+        """
+        if not self._is_active_tab:
+            return
+        if self.combobox_xy_mode.currentText() == "Select Wells":
+            # Coverage is read-only, derived from scan_size and FOV
+            self.update_coverage_from_scan_size()
         self.update_coordinates()
 
     def update_manual_shape(self, shapes_data_mm):
@@ -1759,25 +1768,25 @@ class WellplateMultiPointWidget(QFrame):
         self.update_coordinates(force=True)
 
     def update_coverage_from_scan_size(self):
+        self.entry_well_coverage.blockSignals(True)
         if self._wellplate_format != "glass slide":
-            effective_well_size = self.get_effective_well_size()
-            if effective_well_size <= 0:
-                return
+            well_size_mm = self._well_size_mm
             scan_size = self.entry_scan_size.value()
-            coverage = round((scan_size / effective_well_size) * 100, 2)
-            self.entry_well_coverage.blockSignals(True)
-            self.entry_well_coverage.setValue(coverage)
-            self.entry_well_coverage.blockSignals(False)
-            self._log.debug(f"Coverage: {coverage}")
+            overlap_percent = self.entry_overlap.value()
+            fov_size_mm = self._camera_fov_size_mm * self._pixel_size_factor
+            shape = self.combobox_shape.currentText()
+            is_round_well = self._wellplate_format not in ["384 well plate", "1536 well plate"]
 
-    def update_scan_size_from_coverage(self):
-        effective_well_size = self.get_effective_well_size()
-        if effective_well_size <= 0:
-            return
-        coverage = self.entry_well_coverage.value()
-        scan_size = round((coverage / 100) * effective_well_size, 3)
-        self.entry_scan_size.setValue(scan_size)
-        self._log.debug(f"Scan size: {scan_size}")
+            coverage = calculate_well_coverage(
+                scan_size, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well
+            )
+
+            self.entry_well_coverage.setValue(coverage)
+            self._log.debug(f"Coverage: {coverage}%")
+        else:
+            # Glass slide mode - coverage not applicable
+            self.entry_well_coverage.setValue(0)
+        self.entry_well_coverage.blockSignals(False)
 
     def _request_scan_coordinates_snapshot(
         self, timeout_ms: int = 2000
@@ -1992,6 +2001,10 @@ class WellplateMultiPointWidget(QFrame):
             # if XY is not checked, use current position
             if not self.checkbox_xy.isChecked():
                 self.set_coordinates_to_current_position()
+            else:
+                # Ensure coordinates are up-to-date before starting acquisition
+                # This handles cases where coordinates weren't updated after selecting wells
+                self.update_coordinates(force=True)
 
             self._event_bus.publish(SortScanCoordinatesCommand())
 
@@ -2030,6 +2043,7 @@ class WellplateMultiPointWidget(QFrame):
                 use_autofocus=self.checkbox_withAutofocus.isChecked(),
                 use_reflection_af=self.checkbox_withReflectionAutofocus.isChecked(),
                 use_fluidics=False,
+                skip_saving=self.checkbox_skipSaving.isChecked(),
                 z_range=z_range,
                 focus_map=focus_map,
             ))
@@ -2050,8 +2064,9 @@ class WellplateMultiPointWidget(QFrame):
             self.btn_startAcquisition.setText("Stop\n Acquisition ")
 
             # Start acquisition via event
-            self._log.info("toggle_acquisition: about to publish StartAcquisitionCommand")
-            self._event_bus.publish(StartAcquisitionCommand())
+            xy_mode = self.combobox_xy_mode.currentText()
+            self._log.info(f"toggle_acquisition: about to publish StartAcquisitionCommand with xy_mode={xy_mode}")
+            self._event_bus.publish(StartAcquisitionCommand(xy_mode=xy_mode))
             self._log.info("toggle_acquisition: published StartAcquisitionCommand, returning")
 
         else:
@@ -2166,7 +2181,7 @@ class WellplateMultiPointWidget(QFrame):
         experiment_id = "snapped images" + self.lineEdit_experimentID.text()
         self._active_experiment_id = experiment_id.strip() or None
         self._event_bus.publish(StartNewExperimentCommand(experiment_id=experiment_id))
-        self._event_bus.publish(StartAcquisitionCommand(acquire_current_fov=True))
+        self._event_bus.publish(StartAcquisitionCommand(acquire_current_fov=True, xy_mode="Current Position"))
 
     def set_deltaZ(self, value):
         if self.checkbox_usePiezo.isChecked():
@@ -2485,3 +2500,7 @@ class WellplateMultiPointWidget(QFrame):
     def _on_use_piezo_toggled(self, checked: bool) -> None:
         """Handle use piezo checkbox toggle - publish event."""
         self._event_bus.publish(SetAcquisitionParametersCommand(use_piezo=checked))
+
+    def _on_skip_saving_toggled(self, checked: bool) -> None:
+        """Handle skip saving checkbox toggle - publish event."""
+        self._event_bus.publish(SetAcquisitionParametersCommand(skip_saving=checked))

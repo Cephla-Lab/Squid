@@ -16,11 +16,14 @@ Usage:
         assert frame is not None
 """
 
-import pytest
+import logging
 from typing import Generator
+from unittest.mock import patch
 import sys
 import importlib.util
 import pathlib
+
+import pytest
 
 # Add src/ to Python path for imports
 _repo_root = pathlib.Path(__file__).resolve().parent.parent
@@ -43,6 +46,58 @@ for _mod_name in ["napari", "pyqtgraph"]:
 
 import squid.core.config
 from squid.core.events import EventBus
+
+logger = logging.getLogger(__name__)
+
+
+def _make_tracking_init(original_init, instances_list):
+    """Create a wrapper that tracks Microcontroller instances."""
+
+    def _tracking_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        instances_list.append(self)
+
+    return _tracking_init
+
+
+@pytest.fixture(autouse=True)
+def cleanup_microcontrollers():
+    """
+    Fixture that automatically cleans up all Microcontroller instances after each test.
+
+    This prevents background threads from causing segfaults when subsequent tests run,
+    especially those involving Qt event loops. The Microcontroller.read_received_packet
+    method runs in a background thread that must be stopped via close().
+    """
+    # Import at fixture runtime to avoid module load errors when optional deps missing
+    try:
+        from squid.backend.microcontroller import Microcontroller
+    except ImportError:
+        # If microcontroller module can't be imported, skip cleanup
+        yield
+        return
+
+    # Track instances created during this test (scoped to this fixture invocation)
+    active_microcontrollers = []
+
+    # Capture original __init__ at fixture runtime, not module load time
+    original_init = Microcontroller.__init__
+
+    with patch.object(
+        Microcontroller,
+        "__init__",
+        _make_tracking_init(original_init, active_microcontrollers),
+    ):
+        yield
+
+    # Clean up all tracked instances
+    for micro in active_microcontrollers:
+        try:
+            if hasattr(micro, "terminate_reading_received_packet_thread"):
+                if not micro.terminate_reading_received_packet_thread:
+                    micro.close()
+        except Exception as e:
+            logger.warning(f"Failed to close Microcontroller in test cleanup: {e}")
 
 
 # ============================================================================
@@ -405,10 +460,10 @@ def simulated_piezo_stage(simulated_microcontroller) -> Generator:
     import _def
 
     config = {
-        "OBJECTIVE_PIEZO_HOME_UM": control._def.OBJECTIVE_PIEZO_HOME_UM,
-        "OBJECTIVE_PIEZO_RANGE_UM": control._def.OBJECTIVE_PIEZO_RANGE_UM,
-        "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE": control._def.OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE,
-        "OBJECTIVE_PIEZO_FLIP_DIR": control._def.OBJECTIVE_PIEZO_FLIP_DIR,
+        "OBJECTIVE_PIEZO_HOME_UM": _def.OBJECTIVE_PIEZO_HOME_UM,
+        "OBJECTIVE_PIEZO_RANGE_UM": _def.OBJECTIVE_PIEZO_RANGE_UM,
+        "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE": _def.OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE,
+        "OBJECTIVE_PIEZO_FLIP_DIR": _def.OBJECTIVE_PIEZO_FLIP_DIR,
     }
     piezo = PiezoStage(microcontroller=simulated_microcontroller, config=config)
     yield piezo

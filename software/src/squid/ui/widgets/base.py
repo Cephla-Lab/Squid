@@ -278,6 +278,49 @@ def check_space_available_with_error_dialog(
     return True
 
 
+def check_ram_available_with_error_dialog(
+    multi_point_controller: "MultiPointController",
+    logger: logging.Logger,
+    factor_of_safety: float = 1.15,
+    performance_mode: bool = False,
+) -> bool:
+    """Check if enough RAM is available for mosaic view.
+
+    Args:
+        multi_point_controller: The MultiPointController with acquisition settings.
+        logger: Logger for logging messages.
+        factor_of_safety: Safety factor to apply to the RAM estimate (default 1.15).
+        performance_mode: If True, skip the check (mosaic view is disabled).
+
+    Returns:
+        True if sufficient RAM is available or check is skipped, False otherwise.
+    """
+    import psutil
+
+    # Skip check if performance mode is enabled (mosaic view is disabled)
+    if performance_mode:
+        logger.info("Performance mode enabled, skipping RAM check for mosaic view")
+        return True
+
+    ram_required = factor_of_safety * multi_point_controller.get_estimated_mosaic_ram_bytes()
+    available_ram = psutil.virtual_memory().available
+
+    logger.info(f"Checking RAM available: {ram_required=}, {available_ram=}")
+
+    if ram_required > available_ram:
+        mb_required = int(ram_required / 1024 / 1024)
+        mb_available = int(available_ram / 1024 / 1024)
+        error_message = (
+            f"This acquisition's mosaic view will require approximately {mb_required:,} MB RAM, "
+            f"but only {mb_available:,} MB is currently available.\n\n"
+            f"Consider enabling Performance Mode to disable mosaic view during acquisition."
+        )
+        logger.error(error_message)
+        error_dialog(error_message, title="Not Enough RAM")
+        return False
+    return True
+
+
 class WrapperWindow(QMainWindow):
     def __init__(self, content_widget: QWidget, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)

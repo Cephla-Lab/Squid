@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import math
 import os
 import pathlib
 import tempfile
@@ -178,6 +179,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self.use_manual_focus_map: bool = False
         self.base_path: Optional[str] = None
         self.use_fluidics: bool = False
+        self.skip_saving: bool = False
+        self.xy_mode: str = "Current Position"
 
         self.focus_map: Optional[Any] = None
         self.gen_focus_map: bool = False
@@ -192,6 +195,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self.z_stacking_config: str = _def.Z_STACKING_CONFIG
 
         self._start_position: Optional[squid.core.abc.Pos] = None
+        self._per_acq_log_handler: Optional[Any] = None
 
         # Subscribe to EventBus commands
         if self._event_bus:
@@ -211,6 +215,43 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         # Worker event handlers
         self._event_bus.subscribe(AcquisitionWorkerFinished, self._on_worker_finished)
         self._event_bus.subscribe(AcquisitionWorkerProgress, self._on_worker_progress)
+
+    def _start_per_acquisition_log(self) -> None:
+        """Start per-acquisition logging if enabled.
+
+        Creates a log file in the acquisition folder that captures all log messages
+        during this acquisition. This is useful for debugging and audit trail purposes.
+        """
+        if not _def.ENABLE_PER_ACQUISITION_LOG:
+            return
+        if self._per_acq_log_handler is not None:
+            return
+        if not self.base_path or not self.experiment_ID:
+            return
+
+        acq_dir = os.path.join(self.base_path, self.experiment_ID)
+        log_path = os.path.join(acq_dir, "acquisition.log")
+        try:
+            self._per_acq_log_handler = squid.core.logging.add_file_handler(
+                log_path, replace_existing=True, level=squid.core.logging.py_logging.DEBUG
+            )
+        except Exception:
+            self._log.exception("Failed to start per-acquisition logging")
+            self._per_acq_log_handler = None
+
+    def _stop_per_acquisition_log(self) -> None:
+        """Stop per-acquisition logging and close the handler.
+
+        Safe to call even if logging was never started or already stopped.
+        """
+        if self._per_acq_log_handler is None:
+            return
+        try:
+            squid.core.logging.remove_handler(self._per_acq_log_handler)
+        except Exception:
+            self._log.exception("Failed to stop per-acquisition logging")
+        finally:
+            self._per_acq_log_handler = None
 
     def _publish_state_changed(
         self, old_state: AcquisitionControllerState, new_state: AcquisitionControllerState
@@ -317,6 +358,22 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
     def set_use_fluidics(self, use_fluidics: bool) -> None:
         self.use_fluidics = use_fluidics
+
+    def set_skip_saving(self, skip_saving: bool) -> None:
+        self.skip_saving = skip_saving
+
+    def set_xy_mode(self, xy_mode: str) -> None:
+        self.xy_mode = xy_mode
+
+    def get_plate_view(self) -> Optional[np.ndarray]:
+        """Get the current plate view array from the acquisition.
+
+        Returns:
+            Copy of the plate view array, or None if not available.
+        """
+        if self.multiPointWorker is not None:
+            return self.multiPointWorker.get_plate_view()
+        return None
 
     def start_new_experiment(
         self, experiment_ID: str
@@ -522,6 +579,80 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
         return size_per_image * self.get_acquisition_image_count() + non_image_file_size
 
+    def get_estimated_mosaic_ram_bytes(self) -> int:
+        """
+        Estimate the RAM (in bytes) required to hold the mosaic view in memory.
+
+        The estimate is based on:
+
+        * The mosaic scan bounds in stage space (mm) derived from ``self.scanCoordinates``.
+        * The effective camera pixel size at the sample, computed from the objective
+          magnification factor and the binned camera pixel size in microns.
+        * A downsampling factor chosen so that the effective mosaic pixel size is at
+          least ``_def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM`` (in um). The scan
+          extents are divided by this downsampled pixel size to obtain the mosaic width
+          and height in pixels.
+
+        Assumptions:
+
+        * Each mosaic pixel is stored as a 16-bit unsigned integer (2 bytes per pixel).
+        * The returned value includes memory for all mosaic channel layers, by
+          multiplying by ``len(self.selected_configurations)``.
+        * The estimate only applies when ``_def.USE_NAPARI_FOR_MOSAIC_DISPLAY``
+          is enabled and when valid scan coordinates with regions are available;
+          otherwise, it returns 0.
+        """
+        if not _def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
+            return 0
+
+        if not self.scanCoordinates or not self.scanCoordinates.has_regions():
+            return 0
+
+        bounds = self.scanCoordinates.get_scan_bounds()
+        if not bounds:
+            return 0
+
+        # Calculate scan extents in mm
+        width_mm = bounds["x"][1] - bounds["x"][0]
+        height_mm = bounds["y"][1] - bounds["y"][0]
+
+        # Get effective pixel size (with downsampling)
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self._camera_service.get_pixel_size_binned_um()
+        downsample_factor = max(1, int(_def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um))
+        viewer_pixel_size_mm = (pixel_size_um * downsample_factor) / 1000
+
+        # Calculate mosaic dimensions in pixels
+        mosaic_width = int(math.ceil(width_mm / viewer_pixel_size_mm))
+        mosaic_height = int(math.ceil(height_mm / viewer_pixel_size_mm))
+
+        # Assume 2 bytes per pixel component (uint16), adjust for color and multiply by number of channels
+        bytes_per_pixel = 2
+
+        # If the camera provides color images (e.g. RGB), account for multiple components per pixel.
+        # Mirror the logic used in get_estimated_acquisition_disk_storage to keep estimates consistent.
+        try:
+            # Common patterns: a boolean property or a zero-arg method named "is_color"
+            is_color_attr = getattr(self._camera_service, "is_color", None)
+            if callable(is_color_attr):
+                if is_color_attr():
+                    bytes_per_pixel *= 3
+            elif isinstance(is_color_attr, bool) and is_color_attr:
+                bytes_per_pixel *= 3
+        except Exception:
+            # If color information isn't available, fall back to the monochrome assumption.
+            pass
+
+        num_channels = len(self.selected_configurations)
+        if num_channels == 0:
+            # No channels selected; this is likely an invalid acquisition state.
+            # Log a warning (similar to disk storage estimation) and return 0 as a sentinel.
+            self._log.warning(
+                "Estimated mosaic RAM is 0 because no channel configurations are selected."
+            )
+            return 0
+
+        return mosaic_width * mosaic_height * bytes_per_pixel * num_channels
+
     def run_acquisition(self, acquire_current_fov: bool = False) -> None:
         import time as _time
         self._log.info("run_acquisition: ENTER")
@@ -541,6 +672,9 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
             # Ensure we have an experiment ID before publishing any acquisition events
             self._require_experiment_id()
+
+            # Start per-acquisition logging if enabled
+            self._start_per_acquisition_log()
 
             self._log.info(f"run_acquisition: passed state check ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
 
@@ -788,6 +922,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self._log.info(f"run_acquisition: worker thread started, returning ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
         except Exception:
             self._log.exception("Failed to start acquisition")
+            # Stop per-acquisition logging if it was started
+            self._stop_per_acquisition_log()
             # Always try to notify listeners that we're no longer running
             self._publish_acquisition_state(in_progress=False, allow_missing_experiment_id=True)
             if self._mode_gate:
@@ -812,6 +948,25 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
     def build_params(
         self, scan_position_information: ScanPositionInformation
     ) -> AcquisitionParameters:
+        # Determine plate dimensions from wellplate format if available
+        plate_num_rows = 8  # Default for 96-well
+        plate_num_cols = 12
+        wellplate_format = getattr(self.scanCoordinates, "format", None)
+        self._log.info(f"build_params: wellplate format = {wellplate_format}")
+        if wellplate_format:
+            from _def import get_wellplate_settings
+            format_settings = get_wellplate_settings(wellplate_format)
+            self._log.info(f"build_params: format_settings = {format_settings}")
+            if format_settings:
+                plate_num_rows = format_settings.get("rows", 8)
+                plate_num_cols = format_settings.get("cols", 12)
+            else:
+                self._log.warning(
+                    f"Unknown wellplate format '{wellplate_format}', "
+                    f"using default 96-well dimensions"
+                )
+        self._log.info(f"build_params: plate dimensions = {plate_num_rows}x{plate_num_cols}")
+
         return AcquisitionParameters(
             experiment_ID=self.experiment_ID,
             base_path=self.base_path,
@@ -833,6 +988,15 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             z_stacking_config=self.z_stacking_config,
             z_range=self.z_range,
             use_fluidics=self.use_fluidics,
+            skip_saving=self.skip_saving,
+            # Downsampled view generation parameters
+            generate_downsampled_views=_def.GENERATE_DOWNSAMPLED_WELL_IMAGES or _def.DISPLAY_PLATE_VIEW,
+            downsampled_well_resolutions_um=_def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
+            downsampled_plate_resolution_um=_def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
+            downsampled_z_projection=_def.DOWNSAMPLED_Z_PROJECTION,
+            plate_num_rows=plate_num_rows,
+            plate_num_cols=plate_num_cols,
+            xy_mode=self.xy_mode,
         )
 
     def _on_acquisition_completed(self, success: bool = True) -> None:
@@ -894,6 +1058,9 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             # Never let cleanup errors block UI re-enabling
             self._log.exception("Error during acquisition cleanup")
         finally:
+            # Stop per-acquisition logging
+            self._stop_per_acquisition_log()
+
             # Publish acquisition finished state even if cleanup fails
             self._publish_acquisition_state(in_progress=False)
 
@@ -988,6 +1155,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self.set_focus_map(cmd.focus_map)
         if cmd.use_fluidics is not None:
             self.set_use_fluidics(cmd.use_fluidics)
+        if cmd.skip_saving is not None:
+            self.set_skip_saving(cmd.skip_saving)
 
     def _on_set_acquisition_path(self, cmd: SetAcquisitionPathCommand) -> None:
         """Handle SetAcquisitionPathCommand from EventBus."""
@@ -1003,6 +1172,18 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
     def _on_start_acquisition(self, cmd: StartAcquisitionCommand) -> None:
         """Handle StartAcquisitionCommand from EventBus."""
+        self._log.info(f"_on_start_acquisition: received command with xy_mode={cmd.xy_mode}")
+        # Log current scan coordinates state
+        if self.scanCoordinates:
+            num_regions = len(self.scanCoordinates.region_centers)
+            num_fovs = sum(len(c) for c in self.scanCoordinates.region_fov_coordinates.values())
+            self._log.info(f"_on_start_acquisition: scanCoordinates has {num_regions} regions, {num_fovs} FOVs")
+            if num_regions > 0:
+                self._log.info(f"_on_start_acquisition: region_ids={list(self.scanCoordinates.region_centers.keys())[:5]}...")
+        else:
+            self._log.warning("_on_start_acquisition: scanCoordinates is None!")
+        # Set xy_mode from command before building acquisition params
+        self.set_xy_mode(cmd.xy_mode)
         # Ensure an experiment ID exists before running; auto-create if none exists.
         self._ensure_experiment_ready(cmd.experiment_id)
         self.run_acquisition(acquire_current_fov=cmd.acquire_current_fov)
