@@ -38,7 +38,6 @@ class AcquisitionInfo:
     physical_size_y_um: Optional[float] = None
 
 
-from . import utils_ome_tiff_writer as ome_tiff_writer
 from .downsampled_views import (
     crop_overlap,
     downsample_tile,
@@ -96,20 +95,31 @@ class JobResult(Generic[T]):
     exception: Optional[Exception]
 
 
+# Timeout in seconds for acquiring file locks during OME-TIFF writing
+FILE_LOCK_TIMEOUT_SECONDS = 10
+
+
 def _metadata_lock_path(metadata_path: str) -> str:
     return metadata_path + ".lock"
 
 
 @contextmanager
-def _acquire_file_lock(lock_path: str):
-    """Acquire a file lock with timeout, providing a clear error message on failure."""
-    lock = FileLock(lock_path, timeout=10)
+def _acquire_file_lock(lock_path: str, context: str = ""):
+    """Acquire a file lock with timeout, providing a clear error message on failure.
+
+    Args:
+        lock_path: Path to the lock file.
+        context: Optional context string (e.g., output file path) included in error messages.
+    """
+    lock = FileLock(lock_path, timeout=FILE_LOCK_TIMEOUT_SECONDS)
     try:
         with lock:
             yield
     except FileLockTimeout as exc:
+        context_msg = f" (writing to: {context})" if context else ""
         raise TimeoutError(
-            f"Failed to acquire file lock '{lock_path}' within 10 seconds. Another process may be holding the lock."
+            f"Failed to acquire file lock '{lock_path}' within {FILE_LOCK_TIMEOUT_SECONDS} seconds{context_msg}. "
+            f"Another process may be holding the lock."
         ) from exc
 
 
@@ -201,7 +211,7 @@ class SaveOMETiffJob(Job):
         metadata_path = ome_tiff_writer.metadata_temp_path(self.acquisition_info, info, base_name)
         lock_path = _metadata_lock_path(metadata_path)
 
-        with _acquire_file_lock(lock_path):
+        with _acquire_file_lock(lock_path, context=output_path):
             metadata = ome_tiff_writer.load_metadata(metadata_path)
             if metadata is None:
                 metadata = ome_tiff_writer.initialize_metadata(self.acquisition_info, info, image)
@@ -263,8 +273,17 @@ class SaveOMETiffJob(Job):
                 tifffile.tiffcomment(output_path, ome_xml.encode("utf-8"))
                 if os.path.exists(metadata_path):
                     os.remove(metadata_path)
-                # Note: filelock does not remove lock files; stale lock/metadata files are cleaned up
-                # by ome_tiff_writer.cleanup_stale_metadata_files() on JobRunner initialization.
+                # Clean up lock file after successful completion.
+                # Note: This runs inside the lock context, so the lock is still held.
+                # The lock file will be released when we exit the context manager.
+                # We schedule cleanup outside the lock by storing the path.
+        # Clean up lock file after successful acquisition completion
+        # (only when all images are saved and metadata is finalized)
+        if os.path.exists(lock_path) and not os.path.exists(metadata_path):
+            try:
+                os.remove(lock_path)
+            except OSError:
+                pass  # Lock file may be held by another process or already removed
 
 
 # These are debugging jobs - they should not be used in normal usage!

@@ -353,22 +353,31 @@ def cleanup_stale_metadata_files(max_age_seconds: float = STALE_METADATA_THRESHO
 
     for metadata_path in glob.glob(pattern):
         try:
-            file_mtime = os.path.getmtime(metadata_path)
-            if current_time - file_mtime > max_age_seconds:
-                os.remove(metadata_path)
-                removed.append(metadata_path)
-                # Also try to remove associated lock file
-                lock_path = metadata_path + ".lock"
-                try:
-                    os.remove(lock_path)
-                    removed.append(lock_path)
-                except FileNotFoundError:
-                    pass  # Lock file may have been removed by another process
-                except OSError:
-                    pass  # Lock file may be held by another process
+            # Get file stats atomically and check age
+            file_stat = os.stat(metadata_path)
+            file_mtime = file_stat.st_mtime
+            if current_time - file_mtime <= max_age_seconds:
+                continue  # File is not stale, skip it
+
+            # File is stale, attempt removal
+            os.remove(metadata_path)
+            removed.append(metadata_path)
+
+            # Also try to remove associated lock file
+            lock_path = metadata_path + ".lock"
+            try:
+                os.remove(lock_path)
+                removed.append(lock_path)
+            except FileNotFoundError:
+                pass  # Lock file may have been removed by another process
+            except OSError:
+                pass  # Lock file may be held by another process
+
         except FileNotFoundError:
-            pass  # Metadata file may have been removed by another process
+            # File was removed between glob and stat/remove - this is fine
+            pass
         except OSError:
-            pass  # Other OS errors (permissions, etc.)
+            # Other OS errors (permissions, file in use, etc.) - skip this file
+            pass
 
     return removed

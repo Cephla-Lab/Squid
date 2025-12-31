@@ -178,10 +178,11 @@ class MultiPointWorker:
         self.skip_saving = acquisition_parameters.skip_saving
         job_classes = []
         use_ome_tiff = FILE_SAVING_OPTION == FileSavingOption.OME_TIFF
-        if use_ome_tiff:
-            job_classes.append(SaveOMETiffJob)
-        else:
-            job_classes.append(SaveImageJob)
+        if not self.skip_saving:
+            if use_ome_tiff:
+                job_classes.append(SaveOMETiffJob)
+            else:
+                job_classes.append(SaveImageJob)
 
         if extra_job_classes:
             job_classes.extend(extra_job_classes)
