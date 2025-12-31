@@ -7,7 +7,6 @@ import json
 import os
 import tempfile
 import glob
-import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -328,56 +327,52 @@ def ensure_output_directory(path: str) -> None:
     utils.ensure_directory_exists(path)
 
 
-# Default threshold for considering metadata files stale (24 hours)
-STALE_METADATA_THRESHOLD_SECONDS = 24 * 60 * 60
+def cleanup_stale_metadata_files() -> List[str]:
+    """Remove orphaned OME-TIFF metadata files from the temp directory.
 
+    Uses lock-based detection instead of time-based: attempts to acquire each
+    file's lock with zero timeout. If the lock can be acquired, no active
+    process is using the file, so it's safe to remove as orphaned.
 
-def cleanup_stale_metadata_files(max_age_seconds: float = STALE_METADATA_THRESHOLD_SECONDS) -> List[str]:
-    """Remove stale OME-TIFF metadata files from the temp directory.
-
-    This function cleans up metadata JSON files that were left behind due to
-    crashes or incomplete acquisitions. Files older than max_age_seconds are removed.
-
-    Args:
-        max_age_seconds: Maximum age in seconds before a file is considered stale.
-            Defaults to 24 hours.
+    This approach is robust for any acquisition duration (even multi-week
+    time-lapses) and any interval between image saves.
 
     Returns:
         List of paths that were successfully removed.
     """
+    from filelock import FileLock, Timeout as FileLockTimeout
+
     removed: List[str] = []
     temp_dir = tempfile.gettempdir()
-    # Use squid_ome_ prefix pattern to only match Squid's metadata files
     pattern = os.path.join(temp_dir, "squid_ome_*_metadata.json")
-    current_time = time.time()
 
     for metadata_path in glob.glob(pattern):
+        lock_path = metadata_path + ".lock"
+        lock = FileLock(lock_path, timeout=0)  # Non-blocking attempt
+
+        metadata_removed = False
         try:
-            # Get file stats atomically and check age
-            file_stat = os.stat(metadata_path)
-            file_mtime = file_stat.st_mtime
-            if current_time - file_mtime <= max_age_seconds:
-                continue  # File is not stale, skip it
+            with lock:
+                # Lock acquired - no active process is using this file
+                try:
+                    os.remove(metadata_path)
+                    removed.append(metadata_path)
+                    metadata_removed = True
+                except FileNotFoundError:
+                    pass  # Already removed
+        except FileLockTimeout:
+            # Lock is held by another process - file is in active use, skip
+            continue
+        except OSError:
+            # Other errors (permissions, etc.) - skip this file
+            pass
 
-            # File is stale, attempt removal
-            os.remove(metadata_path)
-            removed.append(metadata_path)
-
-            # Also try to remove associated lock file
-            lock_path = metadata_path + ".lock"
+        # Clean up lock file after releasing the lock
+        if metadata_removed:
             try:
                 os.remove(lock_path)
                 removed.append(lock_path)
-            except FileNotFoundError:
-                pass  # Lock file may have been removed by another process
             except OSError:
-                pass  # Lock file may be held by another process
-
-        except FileNotFoundError:
-            # File was removed between glob and stat/remove - this is fine
-            pass
-        except OSError:
-            # Other OS errors (permissions, file in use, etc.) - skip this file
-            pass
+                pass  # Lock file may already be removed or held
 
     return removed

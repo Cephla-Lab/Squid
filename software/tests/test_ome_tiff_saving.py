@@ -245,30 +245,26 @@ def test_job_runner_injects_acquisition_info() -> None:
 
 
 def test_stale_metadata_cleanup() -> None:
-    """Test that cleanup_stale_metadata_files removes old metadata files."""
+    """Test that cleanup_stale_metadata_files removes orphaned (unlocked) metadata files."""
     from control.core import utils_ome_tiff_writer as ome_tiff_writer
 
-    # Create a fake stale metadata file in the system temp directory
+    # Create a fake orphaned metadata file in the system temp directory
     # (cleanup_stale_metadata_files looks in tempfile.gettempdir() for squid_ome_* files)
-    old_metadata_path = os.path.join(tempfile.gettempdir(), "squid_ome_teststale123_metadata.json")
+    orphaned_metadata_path = os.path.join(tempfile.gettempdir(), "squid_ome_teststale123_metadata.json")
     try:
-        with open(old_metadata_path, "w") as f:
+        with open(orphaned_metadata_path, "w") as f:
             f.write("{}")
 
-        # Set the file's modification time to 2 days ago
-        old_time = time.time() - (2 * 24 * 60 * 60)
-        os.utime(old_metadata_path, (old_time, old_time))
-
-        # Run cleanup with 1 day threshold
-        removed = ome_tiff_writer.cleanup_stale_metadata_files(max_age_seconds=24 * 60 * 60)
+        # Run cleanup - file should be removed since it's not locked
+        removed = ome_tiff_writer.cleanup_stale_metadata_files()
 
         # Verify the file was removed
-        assert old_metadata_path in removed
-        assert not os.path.exists(old_metadata_path)
+        assert orphaned_metadata_path in removed
+        assert not os.path.exists(orphaned_metadata_path)
     finally:
         # Clean up in case the test fails before cleanup runs
-        if os.path.exists(old_metadata_path):
-            os.remove(old_metadata_path)
+        if os.path.exists(orphaned_metadata_path):
+            os.remove(orphaned_metadata_path)
 
 
 def test_job_runner_cleanup_flag() -> None:
