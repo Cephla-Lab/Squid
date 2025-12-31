@@ -6,7 +6,7 @@ import time
 import json
 from datetime import datetime
 from contextlib import contextmanager
-from typing import Any, ClassVar, Dict, Generic, List, Optional, Tuple, TypeVar, Union
+from typing import ClassVar, Dict, Generic, List, Optional, Tuple, TypeVar, Union
 from uuid import uuid4
 
 from dataclasses import dataclass, field
@@ -303,13 +303,17 @@ class SaveOMETiffJob(Job):
                 if os.path.exists(metadata_path):
                     os.remove(metadata_path)
 
-        # Clean up lock file after lock is released (only when acquisition completed)
-        # Uses try-except to handle race conditions with other processes
+        # Clean up lock file after lock is released (only when acquisition completed).
+        # Race condition note: Between releasing the lock and this cleanup, another process
+        # could theoretically acquire the same lock path. However:
+        # 1. We only attempt removal if metadata_path is gone (acquisition completed)
+        # 2. If another process holds the lock, os.remove fails with OSError (caught below)
+        # 3. This is best-effort cleanup; stale locks are also cleaned by cleanup_stale_metadata_files
         try:
             if not os.path.exists(metadata_path):
                 os.remove(lock_path)
         except OSError:
-            pass  # Lock file may be held by another process, already removed, or recreated
+            pass  # Lock held by another process, already removed, or platform-specific issue
 
 
 # These are debugging jobs - they should not be used in normal usage!

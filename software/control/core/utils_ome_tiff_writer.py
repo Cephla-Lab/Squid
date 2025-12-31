@@ -373,6 +373,9 @@ def cleanup_stale_metadata_files() -> List[str]:
                 os.remove(lock_path)
                 removed.append(lock_path)
             except OSError:
-                pass  # Lock file may already be removed or held
+                # On some platforms (notably Windows), filelock may still hold a handle
+                # briefly after the context manager exits, causing os.remove to fail.
+                # This is a best-effort cleanup, so such errors are safe to ignore.
+                pass
 
     return removed
