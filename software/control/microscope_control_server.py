@@ -8,16 +8,139 @@ while the GUI is running.
 The server accepts JSON commands and returns JSON responses.
 """
 
+import functools
+import inspect
 import json
 import socket
 import threading
 import traceback
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, get_type_hints
 
 import squid.logging
 
+try:
+    from pydantic import Field
+    from pydantic.fields import FieldInfo
+
+    PYDANTIC_AVAILABLE = True
+except ImportError:
+    PYDANTIC_AVAILABLE = False
+
+    # Fallback Field implementation when pydantic is not available
+    def Field(
+        default=...,
+        description: str = "",
+        ge: float = None,
+        le: float = None,
+        **kwargs,
+    ):
+        """Fallback Field function when pydantic is not installed."""
+        return {"default": default, "description": description, "ge": ge, "le": le}
+
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5050
+
+
+def schema_method(func: Callable) -> Callable:
+    """
+    Decorator that marks a method as a schema-documented command.
+
+    This decorator extracts parameter information from type hints and Field
+    annotations to generate JSON schema for the command. This enables:
+    - Automatic documentation generation
+    - Parameter validation
+    - MCP tool schema generation for AI agents
+
+    Usage:
+        @schema_method
+        def my_command(
+            self,
+            param1: str = Field(..., description="Required string parameter"),
+            param2: float = Field(0.0, description="Optional float", ge=0, le=100),
+        ) -> Dict[str, Any]:
+            ...
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    # Extract schema information from function signature
+    sig = inspect.signature(func)
+    hints = get_type_hints(func) if hasattr(func, "__annotations__") else {}
+
+    schema = {
+        "name": func.__name__.replace("_cmd_", ""),
+        "description": func.__doc__.strip().split("\n")[0] if func.__doc__ else "",
+        "parameters": {},
+        "required": [],
+    }
+
+    for param_name, param in sig.parameters.items():
+        if param_name == "self":
+            continue
+
+        param_info = {"type": "string"}  # default type
+
+        # Get type hint
+        if param_name in hints:
+            hint = hints[param_name]
+            if hint == float:
+                param_info["type"] = "number"
+            elif hint == int:
+                param_info["type"] = "integer"
+            elif hint == bool:
+                param_info["type"] = "boolean"
+            elif hint == str:
+                param_info["type"] = "string"
+            elif hasattr(hint, "__origin__"):  # List, Dict, etc.
+                if hint.__origin__ == list:
+                    param_info["type"] = "array"
+                elif hint.__origin__ == dict:
+                    param_info["type"] = "object"
+
+        # Get Field information
+        default = param.default
+        if PYDANTIC_AVAILABLE and isinstance(default, FieldInfo):
+            if default.description:
+                param_info["description"] = default.description
+            # Pydantic v2 stores constraints in metadata
+            for meta in default.metadata:
+                if hasattr(meta, "ge") and meta.ge is not None:
+                    param_info["minimum"] = meta.ge
+                if hasattr(meta, "le") and meta.le is not None:
+                    param_info["maximum"] = meta.le
+            # Check if field is required (default is PydanticUndefined or Ellipsis)
+            field_default = default.default
+            is_required = field_default is ... or (
+                hasattr(field_default, "__class__") and "PydanticUndefinedType" in field_default.__class__.__name__
+            )
+            if is_required:
+                schema["required"].append(param_name)
+            elif field_default is not None:
+                param_info["default"] = field_default
+        elif isinstance(default, dict) and "description" in default:
+            # Fallback Field dict
+            if default.get("description"):
+                param_info["description"] = default["description"]
+            if default.get("ge") is not None:
+                param_info["minimum"] = default["ge"]
+            if default.get("le") is not None:
+                param_info["maximum"] = default["le"]
+            if default.get("default") not in (None, ...):
+                param_info["default"] = default["default"]
+            else:
+                schema["required"].append(param_name)
+        elif default is inspect.Parameter.empty:
+            schema["required"].append(param_name)
+        elif default is not None:
+            param_info["default"] = default
+
+        schema["parameters"][param_name] = param_info
+
+    wrapper._schema = schema
+    return wrapper
 
 
 class MicroscopeControlServer:
@@ -75,6 +198,7 @@ class MicroscopeControlServer:
             "abort_acquisition": self._cmd_abort_acquisition,
             "set_performance_mode": self._cmd_set_performance_mode,
             "get_performance_mode": self._cmd_get_performance_mode,
+            "get_schemas": self._cmd_get_schemas,
         }
 
     def start(self):
@@ -182,12 +306,14 @@ class MicroscopeControlServer:
     # Command implementations
     # ==========================================================================
 
+    @schema_method
     def _cmd_ping(self) -> Dict[str, Any]:
-        """Health check."""
+        """Check if the microscope control server is running and responsive."""
         return {"status": "ok", "message": "Microscope control server is running"}
 
+    @schema_method
     def _cmd_get_position(self) -> Dict[str, float]:
-        """Get current stage position."""
+        """Get current XYZ stage position in millimeters."""
         pos = self.microscope.stage.get_pos()
         return {
             "x_mm": pos.x_mm,
@@ -195,14 +321,15 @@ class MicroscopeControlServer:
             "z_mm": pos.z_mm,
         }
 
+    @schema_method
     def _cmd_move_to(
         self,
-        x_mm: Optional[float] = None,
-        y_mm: Optional[float] = None,
-        z_mm: Optional[float] = None,
-        blocking: bool = True,
+        x_mm: Optional[float] = Field(None, description="Target X position in millimeters"),
+        y_mm: Optional[float] = Field(None, description="Target Y position in millimeters"),
+        z_mm: Optional[float] = Field(None, description="Target Z position in millimeters"),
+        blocking: bool = Field(True, description="Wait for move to complete before returning"),
     ) -> Dict[str, Any]:
-        """Move stage to absolute position."""
+        """Move stage to absolute XYZ position in millimeters."""
         if x_mm is not None:
             self.microscope.move_x_to(x_mm, blocking=blocking)
         if y_mm is not None:
@@ -213,14 +340,15 @@ class MicroscopeControlServer:
         pos = self.microscope.stage.get_pos()
         return {"moved_to": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
 
+    @schema_method
     def _cmd_move_relative(
         self,
-        dx_mm: float = 0,
-        dy_mm: float = 0,
-        dz_mm: float = 0,
-        blocking: bool = True,
+        dx_mm: float = Field(0, description="Relative X movement in millimeters"),
+        dy_mm: float = Field(0, description="Relative Y movement in millimeters"),
+        dz_mm: float = Field(0, description="Relative Z movement in millimeters"),
+        blocking: bool = Field(True, description="Wait for move to complete before returning"),
     ) -> Dict[str, Any]:
-        """Move stage by relative amount."""
+        """Move stage by relative amount in millimeters."""
         if dx_mm != 0:
             self.microscope.move_x(dx_mm, blocking=blocking)
         if dy_mm != 0:
@@ -231,25 +359,37 @@ class MicroscopeControlServer:
         pos = self.microscope.stage.get_pos()
         return {"new_position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
 
-    def _cmd_home(self, x: bool = True, y: bool = True, z: bool = True) -> Dict[str, Any]:
-        """Home the stage axes."""
+    @schema_method
+    def _cmd_home(
+        self,
+        x: bool = Field(True, description="Home X axis"),
+        y: bool = Field(True, description="Home Y axis"),
+        z: bool = Field(True, description="Home Z axis"),
+    ) -> Dict[str, Any]:
+        """Home the stage axes to their reference positions."""
         if x or y or z:
             self.microscope.home_xyz()
         pos = self.microscope.stage.get_pos()
         return {"homed": True, "position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
 
+    @schema_method
     def _cmd_start_live(self) -> Dict[str, Any]:
-        """Start live imaging."""
+        """Start live imaging mode with continuous camera streaming."""
         self.microscope.start_live()
         return {"live": True}
 
+    @schema_method
     def _cmd_stop_live(self) -> Dict[str, Any]:
-        """Stop live imaging."""
+        """Stop live imaging mode."""
         self.microscope.stop_live()
         return {"live": False}
 
-    def _cmd_acquire_image(self, save_path: Optional[str] = None) -> Dict[str, Any]:
-        """Acquire a single image."""
+    @schema_method
+    def _cmd_acquire_image(
+        self,
+        save_path: Optional[str] = Field(None, description="File path to save the image (TIFF format)"),
+    ) -> Dict[str, Any]:
+        """Acquire a single image from the camera, optionally saving to disk."""
         image = self.microscope.acquire_image()
 
         result = {
@@ -276,8 +416,14 @@ class MicroscopeControlServer:
 
         return result
 
-    def _cmd_set_channel(self, channel_name: str) -> Dict[str, Any]:
-        """Set the current imaging channel/mode."""
+    @schema_method
+    def _cmd_set_channel(
+        self,
+        channel_name: str = Field(
+            ..., description="Name of the channel to activate (e.g., 'BF LED matrix full', 'Fluorescence 488 nm Ex')"
+        ),
+    ) -> Dict[str, Any]:
+        """Set the current imaging channel/illumination mode."""
         objective = self.microscope.objective_store.current_objective
         channel_config = self.microscope.channel_configuration_mananger.get_channel_configuration_by_name(
             objective, channel_name
@@ -288,14 +434,22 @@ class MicroscopeControlServer:
         else:
             raise ValueError(f"Channel '{channel_name}' not found for objective '{objective}'")
 
+    @schema_method
     def _cmd_get_channels(self) -> Dict[str, Any]:
-        """Get available channels for current objective."""
+        """Get list of available imaging channels for the current objective."""
         objective = self.microscope.objective_store.current_objective
         channels = self.microscope.channel_configuration_mananger.get_channel_configurations_for_objective(objective)
         return {"objective": objective, "channels": [ch.name for ch in channels] if channels else []}
 
-    def _cmd_set_exposure(self, exposure_ms: float, channel: Optional[str] = None) -> Dict[str, Any]:
-        """Set camera exposure time."""
+    @schema_method
+    def _cmd_set_exposure(
+        self,
+        exposure_ms: float = Field(..., description="Exposure time in milliseconds", ge=0.1, le=10000),
+        channel: Optional[str] = Field(
+            None, description="Channel to set exposure for (applies to current if not specified)"
+        ),
+    ) -> Dict[str, Any]:
+        """Set camera exposure time in milliseconds."""
         if channel:
             objective = self.microscope.objective_store.current_objective
             self.microscope.set_exposure_time(channel, exposure_ms, objective)
@@ -303,38 +457,54 @@ class MicroscopeControlServer:
             self.microscope.camera.set_exposure_time(exposure_ms)
         return {"exposure_ms": exposure_ms}
 
-    def _cmd_set_illumination_intensity(self, channel: str, intensity: float) -> Dict[str, Any]:
-        """Set illumination intensity for a channel."""
+    @schema_method
+    def _cmd_set_illumination_intensity(
+        self,
+        channel: str = Field(..., description="Channel name (e.g., 'Fluorescence 488 nm Ex')"),
+        intensity: float = Field(..., description="Intensity value (0-100%)", ge=0, le=100),
+    ) -> Dict[str, Any]:
+        """Set illumination/laser intensity for a specific channel (0-100%)."""
         self.microscope.set_illumination_intensity(channel, intensity)
         return {"channel": channel, "intensity": intensity}
 
+    @schema_method
     def _cmd_get_objectives(self) -> Dict[str, Any]:
-        """Get available objectives."""
+        """Get list of available objectives and the currently selected one."""
         objectives = list(self.microscope.objective_store.objectives_dict.keys())
         current = self.microscope.objective_store.current_objective
         return {"objectives": objectives, "current": current}
 
-    def _cmd_set_objective(self, objective_name: str) -> Dict[str, Any]:
-        """Set the current objective."""
+    @schema_method
+    def _cmd_set_objective(
+        self,
+        objective_name: str = Field(
+            ..., description="Name of the objective to select (e.g., '4x', '10x', '20x', '40x')"
+        ),
+    ) -> Dict[str, Any]:
+        """Set the current objective lens."""
         self.microscope.set_objective(objective_name)
         return {"objective": objective_name}
 
+    @schema_method
     def _cmd_get_current_objective(self) -> Dict[str, Any]:
         """Get the current objective."""
         return {"objective": self.microscope.objective_store.current_objective}
 
+    @schema_method
     def _cmd_turn_on_illumination(self) -> Dict[str, Any]:
-        """Turn on illumination."""
+        """Turn on the illumination for the current channel."""
         self.microscope.live_controller.turn_on_illumination()
         return {"illumination": "on"}
 
+    @schema_method
     def _cmd_turn_off_illumination(self) -> Dict[str, Any]:
-        """Turn off illumination."""
+        """Turn off all illumination."""
         self.microscope.live_controller.turn_off_illumination()
         return {"illumination": "off"}
 
+    @schema_method
     def _cmd_get_status(self) -> Dict[str, Any]:
-        """Get comprehensive microscope status."""
+        """Get comprehensive microscope status including position, objective, and camera settings."""
         pos = self.microscope.stage.get_pos()
         objective = self.microscope.objective_store.current_objective
 
@@ -359,21 +529,20 @@ class MicroscopeControlServer:
 
         return status
 
+    @schema_method
     def _cmd_autofocus(self) -> Dict[str, Any]:
-        """Run autofocus (if available)."""
+        """Run autofocus routine (not yet implemented)."""
         # This would need to be implemented based on the autofocus controller
         # For now, return not implemented
         return {"error": "Autofocus via control server not yet implemented"}
 
+    @schema_method
     def _cmd_acquire_laser_af_image(
-        self, save_path: Optional[str] = None, use_last_frame: bool = True
+        self,
+        save_path: Optional[str] = Field(None, description="File path to save the image"),
+        use_last_frame: bool = Field(True, description="Use last captured frame instead of triggering new capture"),
     ) -> Dict[str, Any]:
-        """Acquire an image from the laser autofocus camera.
-
-        Args:
-            save_path: Optional path to save the image
-            use_last_frame: If True, get the last captured frame. If False, trigger a new capture.
-        """
+        """Acquire an image from the laser autofocus camera."""
         if not self.microscope.addons.camera_focus:
             return {"error": "Laser AF camera not available"}
 
@@ -415,32 +584,24 @@ class MicroscopeControlServer:
 
         return result
 
+    @schema_method
     def _cmd_run_acquisition(
         self,
-        wells: str,
-        channels: list,
-        nx: int = 2,
-        ny: int = 2,
-        experiment_id: Optional[str] = None,
-        base_path: Optional[str] = None,
-        wellplate_format: str = "96 well plate",
-        overlap_percent: float = 10.0,
+        wells: str = Field(..., description="Well selection string (e.g., 'A1:B3' for range or 'A1,A2,B1' for list)"),
+        channels: List[str] = Field(
+            ...,
+            description="List of channel names to acquire (e.g., ['Fluorescence 488 nm Ex', 'Fluorescence 561 nm Ex'])",
+        ),
+        nx: int = Field(2, description="Number of sites in X per well", ge=1, le=100),
+        ny: int = Field(2, description="Number of sites in Y per well", ge=1, le=100),
+        experiment_id: Optional[str] = Field(None, description="Experiment ID (auto-generated if not provided)"),
+        base_path: Optional[str] = Field(None, description="Base path for saving images"),
+        wellplate_format: str = Field(
+            "96 well plate", description="Wellplate format (e.g., '6 well plate', '96 well plate', '384 well plate')"
+        ),
+        overlap_percent: float = Field(10.0, description="Overlap between FOVs in percent", ge=0, le=50),
     ) -> Dict[str, Any]:
-        """Run a multi-point acquisition using the existing MultiPointController.
-
-        This method uses the GUI's MultiPointController infrastructure for acquisitions,
-        which handles image display, saving, autofocus, and other features automatically.
-
-        Args:
-            wells: Well selection string, e.g., "A1:B3" or "A1,A2,B1"
-            channels: List of channel names to acquire
-            nx: Number of sites in X per well (default: 2)
-            ny: Number of sites in Y per well (default: 2)
-            experiment_id: Optional experiment ID (auto-generated if not provided)
-            base_path: Optional base path for saving
-            wellplate_format: Wellplate format (default: "96 well plate")
-            overlap_percent: Overlap between FOVs (default: 10%)
-        """
+        """Run a multi-point acquisition across wells using the MultiPointController."""
         import control._def
 
         # Check requirements
@@ -601,8 +762,9 @@ class MicroscopeControlServer:
 
         return well_coords
 
+    @schema_method
     def _cmd_get_acquisition_status(self) -> Dict[str, Any]:
-        """Get the status of the current acquisition."""
+        """Get the status of the current acquisition including progress information."""
         if not self.multipoint_controller:
             return {"error": "MultiPointController not available"}
 
@@ -630,8 +792,9 @@ class MicroscopeControlServer:
 
         return result
 
+    @schema_method
     def _cmd_abort_acquisition(self) -> Dict[str, Any]:
-        """Abort the current acquisition."""
+        """Abort the current running acquisition."""
         if not self.multipoint_controller:
             return {"error": "MultiPointController not available"}
 
@@ -642,11 +805,12 @@ class MicroscopeControlServer:
         self.multipoint_controller.request_abort_aquisition()
         return {"aborted": True}
 
-    def _cmd_set_performance_mode(self, enabled: bool) -> Dict[str, Any]:
-        """Enable or disable performance mode.
-
-        Performance mode disables the mosaic view during acquisitions to save RAM.
-        """
+    @schema_method
+    def _cmd_set_performance_mode(
+        self,
+        enabled: bool = Field(..., description="Enable (true) or disable (false) performance mode"),
+    ) -> Dict[str, Any]:
+        """Enable or disable performance mode (disables mosaic view to save RAM, ~14% faster)."""
         if not self.gui:
             return {"error": "GUI reference not available"}
 
@@ -662,12 +826,30 @@ class MicroscopeControlServer:
             "message": f"Performance mode {'enabled' if enabled else 'disabled'}",
         }
 
+    @schema_method
     def _cmd_get_performance_mode(self) -> Dict[str, Any]:
         """Get the current performance mode state."""
         if not self.gui:
             return {"error": "GUI reference not available"}
 
         return {"performance_mode": getattr(self.gui, "performance_mode", False)}
+
+    @schema_method
+    def _cmd_get_schemas(self) -> Dict[str, Any]:
+        """Get JSON schemas for all available commands (useful for AI agents)."""
+        schemas = {}
+        for cmd_name, cmd_func in self._commands.items():
+            if hasattr(cmd_func, "_schema"):
+                schemas[cmd_name] = cmd_func._schema
+            else:
+                # Basic schema for non-decorated methods
+                schemas[cmd_name] = {
+                    "name": cmd_name,
+                    "description": cmd_func.__doc__.strip().split("\n")[0] if cmd_func.__doc__ else "",
+                    "parameters": {},
+                    "required": [],
+                }
+        return {"schemas": schemas}
 
 
 def send_command(
