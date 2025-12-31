@@ -249,27 +249,27 @@ class MicroscopeControlServer:
 
     def _cmd_acquire_image(self, save_path: Optional[str] = None) -> Dict[str, Any]:
         """Acquire a single image."""
-        frame = self.microscope.acquire_image()
+        image = self.microscope.acquire_image()
 
         result = {
-            "acquired": frame is not None,
+            "acquired": image is not None,
         }
 
-        if frame is not None and save_path:
+        if image is not None and save_path:
             import numpy as np
             try:
                 # Try to save as TIFF
                 import tifffile
-                tifffile.imwrite(save_path, frame.image)
+                tifffile.imwrite(save_path, image)
                 result["saved_to"] = save_path
             except ImportError:
                 # Fallback to numpy
-                np.save(save_path, frame.image)
+                np.save(save_path, image)
                 result["saved_to"] = save_path + ".npy"
 
-        if frame is not None:
-            result["shape"] = list(frame.image.shape)
-            result["dtype"] = str(frame.image.dtype)
+        if image is not None:
+            result["shape"] = list(image.shape)
+            result["dtype"] = str(image.dtype)
 
         return result
 
