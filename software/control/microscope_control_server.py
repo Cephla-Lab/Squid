@@ -312,10 +312,10 @@ class MicroscopeControlServer:
 
     def _cmd_get_objectives(self) -> Dict[str, Any]:
         """Get available objectives."""
-        objectives = self.microscope.objective_store.get_all_objectives()
+        objectives = list(self.microscope.objective_store.objectives_dict.keys())
         current = self.microscope.objective_store.current_objective
         return {
-            "objectives": [obj.name for obj in objectives],
+            "objectives": objectives,
             "current": current
         }
 
