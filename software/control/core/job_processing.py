@@ -6,12 +6,11 @@ import time
 import json
 from datetime import datetime
 from contextlib import contextmanager
-from typing import Optional, Generic, TypeVar, List, Dict, Any
+from typing import Any, ClassVar, Dict, Generic, List, Optional, Tuple, TypeVar, Union
 from uuid import uuid4
 
 from dataclasses import dataclass, field
 from filelock import FileLock, Timeout as FileLockTimeout
-from typing import ClassVar, Dict, List, Optional, Tuple, Union
 
 import imageio as iio
 import numpy as np
@@ -27,6 +26,27 @@ from control.core import utils_ome_tiff_writer as ome_tiff_writer
 
 @dataclass
 class AcquisitionInfo:
+    """Acquisition-wide metadata for OME-TIFF file generation.
+
+    This class holds metadata that remains constant across all images in a
+    multi-dimensional acquisition (time, z, channel). It is separate from
+    CaptureInfo, which holds per-image metadata (position, timestamp, etc.).
+
+    AcquisitionInfo is created once at acquisition start and injected into
+    SaveOMETiffJob instances by JobRunner.dispatch() before job execution.
+
+    Attributes:
+        total_time_points: Number of time points in the acquisition.
+        total_z_levels: Number of z-slices per stack.
+        total_channels: Number of imaging channels.
+        channel_names: List of channel names for OME-XML metadata.
+        experiment_path: Base directory for the experiment output.
+        time_increment_s: Time between timepoints in seconds (for OME-XML).
+        physical_size_z_um: Z step size in micrometers (for OME-XML).
+        physical_size_x_um: Pixel size in X in micrometers (for OME-XML).
+        physical_size_y_um: Pixel size in Y in micrometers (for OME-XML).
+    """
+
     total_time_points: int
     total_z_levels: int
     total_channels: int
@@ -195,7 +215,11 @@ class SaveOMETiffJob(Job):
 
     def run(self) -> bool:
         if self.acquisition_info is None:
-            raise ValueError("SaveOMETiffJob requires acquisition_info to be set by JobRunner")
+            raise ValueError(
+                "SaveOMETiffJob.run() requires acquisition_info but it is None. "
+                "This job must be dispatched via JobRunner.dispatch(), which injects acquisition_info. "
+                "If running directly, set job.acquisition_info before calling run()."
+            )
         self._save_ome_tiff(self.image_array(), self.capture_info)
         return True
 
@@ -262,28 +286,30 @@ class SaveOMETiffJob(Job):
                 metadata[ome_tiff_writer.WRITTEN_INDICES_KEY].append(index_key)
                 metadata[ome_tiff_writer.SAVED_COUNT_KEY] = len(metadata[ome_tiff_writer.WRITTEN_INDICES_KEY])
 
+            # Check if all images have been saved
+            is_complete = metadata[ome_tiff_writer.SAVED_COUNT_KEY] >= metadata[ome_tiff_writer.EXPECTED_COUNT_KEY]
+            if is_complete:
+                metadata[ome_tiff_writer.COMPLETED_KEY] = True
+
+            # Write metadata (includes completed flag if acquisition is done)
             ome_tiff_writer.write_metadata(metadata_path, metadata)
 
-            if metadata[ome_tiff_writer.SAVED_COUNT_KEY] >= metadata[ome_tiff_writer.EXPECTED_COUNT_KEY]:
-                metadata[ome_tiff_writer.COMPLETED_KEY] = True
-                ome_tiff_writer.write_metadata(metadata_path, metadata)
+            if is_complete:
+                # Finalize OME-XML and clean up temporary files
                 with tifffile.TiffFile(output_path) as tif:
                     current_xml = tif.ome_metadata
                 ome_xml = ome_tiff_writer.augment_ome_xml(current_xml, metadata)
                 tifffile.tiffcomment(output_path, ome_xml.encode("utf-8"))
                 if os.path.exists(metadata_path):
                     os.remove(metadata_path)
-                # Clean up lock file after successful completion.
-                # Note: This runs inside the lock context, so the lock is still held.
-                # The lock file will be released when we exit the context manager.
-                # We schedule cleanup outside the lock by storing the path.
-        # Clean up lock file after successful acquisition completion
-        # (only when all images are saved and metadata is finalized)
-        if os.path.exists(lock_path) and not os.path.exists(metadata_path):
-            try:
+
+        # Clean up lock file after lock is released (only when acquisition completed)
+        # Uses try-except to handle race conditions with other processes
+        try:
+            if not os.path.exists(metadata_path):
                 os.remove(lock_path)
-            except OSError:
-                pass  # Lock file may be held by another process or already removed
+        except OSError:
+            pass  # Lock file may be held by another process, already removed, or recreated
 
 
 # These are debugging jobs - they should not be used in normal usage!
@@ -532,7 +558,10 @@ class JobRunner(multiprocessing.Process):
         # The job object is pickled when placed in the queue, so injection must happen here.
         if isinstance(job, SaveOMETiffJob):
             if self._acquisition_info is None:
-                raise ValueError("Cannot dispatch SaveOMETiffJob: JobRunner was initialized without acquisition_info.")
+                raise ValueError(
+                    "Cannot dispatch SaveOMETiffJob: JobRunner was initialized without acquisition_info. "
+                    "When using OME-TIFF saving, initialize JobRunner with an AcquisitionInfo instance."
+                )
             job.acquisition_info = self._acquisition_info
 
         self._input_queue.put_nowait(job)
