@@ -217,6 +217,8 @@ class ILLUMINATION_CODE:
     ILLUMINATION_SOURCE_LED_ARRAY_LOW_NA = 4
     ILLUMINATION_SOURCE_LED_ARRAY_LEFT_DOT = 5
     ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_DOT = 6
+    ILLUMINATION_SOURCE_LED_ARRAY_TOP_HALF = 7
+    ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF = 8
     ILLUMINATION_SOURCE_LED_EXTERNAL_FET = 20
     ILLUMINATION_SOURCE_405NM = 11
     ILLUMINATION_SOURCE_488NM = 12
@@ -300,6 +302,27 @@ class FocusMeasureOperator(Enum):
             return FocusMeasureOperator[option.upper()]
         except KeyError:
             raise ValueError(f"Invalid focus measure operator: {option}")
+
+
+class ZProjectionMode(Enum):
+    """Z-projection mode for downsampled view generation.
+
+    MIP: Max intensity projection - uses running maximum across all z-levels
+    MIDDLE: Middle layer - uses only the middle z-level (z = NZ // 2)
+    """
+
+    MIP = "mip"
+    MIDDLE = "middle"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZProjectionMode"]) -> "ZProjectionMode":
+        """Convert string or enum to ZProjectionMode enum."""
+        if isinstance(option, ZProjectionMode):
+            return option
+        try:
+            return ZProjectionMode(option.lower())
+        except ValueError:
+            raise ValueError(f"Invalid z-projection mode: '{option}'. Expected 'mip' or 'middle'.")
 
 
 PRINT_CAMERA_FPS = True
@@ -440,6 +463,7 @@ LED_MATRIX_G_FACTOR = 0
 LED_MATRIX_B_FACTOR = 1
 
 DEFAULT_SAVING_PATH = str(Path.home()) + "/Downloads"
+ACQUISITION_CONFIGURATIONS_PATH = Path("acquisition_configurations")
 FILE_ID_PADDING = 0
 
 
@@ -562,6 +586,10 @@ ENABLE_WELLPLATE_MULTIPOINT = True
 ENABLE_RECORDING = False
 
 RESUME_LIVE_AFTER_ACQUISITION = True
+
+# When enabled, each multipoint acquisition will write a second log file scoped to that acquisition at:
+#   <base_path>/<experiment_ID>/acquisition.log
+ENABLE_PER_ACQUISITION_LOG = False
 
 CAMERA_SN = {"ch 1": "SN1", "ch 2": "SN2"}  # for multiple cameras, to be overwritten in the configuration file
 
@@ -690,6 +718,37 @@ USE_NAPARI_FOR_LIVE_CONTROL = False
 LIVE_ONLY_MODE = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 
+# Downsampled well image generation (for Select Well Mode)
+GENERATE_DOWNSAMPLED_WELL_IMAGES = False  # Set to True to generate downsampled well TIFFs
+DISPLAY_PLATE_VIEW = False  # Set to True to show plate view tab during acquisition
+DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
+DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
+DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
+
+# Downsampled view job timeouts
+# DOWNSAMPLED_VIEW_JOB_TIMEOUT_S: Maximum time (seconds) to wait for all downsampled view
+# jobs to complete at end of each timepoint. This timeout ensures acquisition doesn't hang
+# indefinitely if a job gets stuck. For typical 96-well plates with 1-4 channels, 30 seconds
+# is sufficient. For larger plates (384-well, 1536-well) with many channels, increase this
+# value proportionally. As a rough guide: ~0.5s per well for processing, so 1536 wells
+# could need up to ~800 seconds in worst case, though parallel processing makes it faster.
+DOWNSAMPLED_VIEW_JOB_TIMEOUT_S = 30.0
+
+# DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S: Time (seconds) to wait after the last job result before
+# assuming all jobs are complete. When the job input queue is empty but the last job may
+# still be processing, we poll for results. If no new results arrive within this timeout,
+# we assume all jobs have finished. 2 seconds is conservative - most jobs complete in
+# <100ms, so this handles occasional slow jobs without adding unnecessary delay.
+DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S = 2.0
+
+# Plate view zoom limits
+# MIN_VISIBLE_PIXELS: At maximum zoom, ensure at least this many pixels are visible
+# in the smallest dimension. 500 pixels allows inspecting cellular-level details.
+PLATE_VIEW_MIN_VISIBLE_PIXELS = 500.0
+# MAX_ZOOM_FACTOR: Cap zoom to prevent performance issues with large texture rendering.
+# 10x is sufficient for most inspection tasks while maintaining smooth interaction.
+PLATE_VIEW_MAX_ZOOM_FACTOR = 10.0
+
 # Controller SN (needed when using multiple teensy-based connections)
 CONTROLLER_SN = None
 
@@ -724,16 +783,18 @@ SAVE_IN_PSEUDO_COLOR = False
 MERGE_CHANNELS = False
 
 # Emission filter wheel
-USE_ZABER_EMISSION_FILTER_WHEEL = False
+USE_EMISSION_FILTER_WHEEL = False
+EMISSION_FILTER_WHEEL_TYPE = "SQUID"  # "SQUID", "ZABER", "OPTOSPIN"
+EMISSION_FILTER_WHEEL_INDICES = [1]
+# ZABER specific settings
 ZABER_EMISSION_FILTER_WHEEL_DELAY_MS = 70
 ZABER_EMISSION_FILTER_WHEEL_BLOCKING_CALL = False
-USE_OPTOSPIN_EMISSION_FILTER_WHEEL = False
-FILTER_CONTROLLER_SERIAL_NUMBER = "A10NG007"
+# OPTOSPIN specific settings
+FILTER_CONTROLLER_SERIAL_NUMBER = "A10NG007"  # used for both Zaber and Optospin for now
 OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ = 50
 OPTOSPIN_EMISSION_FILTER_WHEEL_DELAY_MS = 70
 OPTOSPIN_EMISSION_FILTER_WHEEL_TTL_TRIGGER = False
-
-USE_SQUID_FILTERWHEEL = False
+# SQUID specific settings
 SQUID_FILTERWHEEL_MAX_INDEX = 8
 SQUID_FILTERWHEEL_MIN_INDEX = 1
 SQUID_FILTERWHEEL_OFFSET = 0.008
@@ -842,7 +903,14 @@ Z_HOME_SWITCH_POLARITY = LIMIT_SWITCH_POLARITY.Z_HOME
 # home safety margin with (um) unit
 X_HOME_SAFETY_MARGIN_UM = 50
 Y_HOME_SAFETY_MARGIN_UM = 50
-Z_HOME_SAFETY_MARGIN_UM = 600
+Z_HOME_SAFETY_MARGIN_UM = 100
+
+# safety homing point (um) unit
+# after homing process, move axis to the
+# safety point
+X_HOME_SAFETY_POINT = 0
+Y_HOME_SAFETY_POINT = 0
+Z_HOME_SAFETY_POINT = 1200
 
 USE_XERYON = False
 XERYON_SERIAL_NUMBER = "95130303033351E02050"

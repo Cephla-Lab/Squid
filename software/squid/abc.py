@@ -1,11 +1,10 @@
 import dataclasses
 from contextlib import contextmanager
 from abc import ABC, abstractmethod
-from typing import Callable, Optional, Tuple, Sequence, List
+from typing import Callable, Optional, Tuple, Sequence, List, Dict
 import abc
 import enum
 import time
-import threading
 
 import pydantic
 import numpy as np
@@ -15,6 +14,111 @@ import squid.logging
 from squid.config import AxisConfig, StageConfig, CameraConfig, CameraPixelFormat
 from squid.exceptions import SquidTimeout
 import control.utils
+
+
+@dataclass
+class FilterWheelInfo:
+    """Information about a single filter wheel."""
+
+    index: int
+    number_of_slots: int
+    slot_names: List[str]
+
+
+class FilterControllerError(Exception):
+    """Custom exception for FilterController errors."""
+
+    pass
+
+
+class AbstractFilterWheelController(ABC):
+    """Abstract base class defining the interface for different filter wheels controllers. A filter wheel controller may control one ormultiple filter wheels."""
+
+    @abstractmethod
+    def __init__(self):
+        """Initialize the filter wheel and establish communication."""
+        pass
+
+    @abstractmethod
+    def initialize(self, filter_wheel_indices: List[int]):
+        """
+        Initialize the settings of the filter wheel.
+
+        Args:
+            filter_wheel_indices: List of filter wheel indices to initialize.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def available_filter_wheels(self) -> List[int]:
+        """List of available filter wheel indices (e.g., [1, 2, 3, 4] for Optospin).
+
+        Returns:
+            List of integer indices for available wheels.
+        """
+        pass
+
+    @abstractmethod
+    def get_filter_wheel_info(self, index: int) -> FilterWheelInfo:
+        """Get information about a specific filter wheel.
+
+        Args:
+            index: Filter wheel index.
+
+        Returns:
+            FilterWheelInfo containing slots and names.
+        """
+        pass
+
+    @abstractmethod
+    def home(self, index: int = None):
+        """Home the filter wheel with the given index. If index is None, home all filter wheels."""
+        pass
+
+    @abstractmethod
+    def set_filter_wheel_position(self, positions: Dict[int, int]):
+        """
+        Set the filter wheels to the given positions.
+
+        Args:
+            positions: A dictionary of filter wheel index to target position. For example, {1: 1, 2: 2} means set the first filter wheel to position 1 and the second filter wheel to position 2.
+        """
+        pass
+
+    @abstractmethod
+    def get_filter_wheel_position(self) -> Dict[int, int]:
+        """Get the current filter wheel positions.
+
+        Returns:
+            A dictionary of filter wheel index to current position.
+        """
+        pass
+
+    @abstractmethod
+    def set_delay_offset_ms(self, delay_offset_ms: float):
+        """Set the delay offset for the filter wheel."""
+        pass
+
+    @abstractmethod
+    def get_delay_offset_ms(self) -> Optional[float]:
+        """Get the delay offset for the filter wheel."""
+        pass
+
+    @abstractmethod
+    def set_delay_ms(self, delay_ms: float):
+        """Set the delay for the filter wheel."""
+        pass
+
+    @abstractmethod
+    def get_delay_ms(self) -> Optional[float]:
+        """Get the delay for the filter wheel."""
+        pass
+
+    @abstractmethod
+    def close(self):
+        """Close the filter wheel connection."""
+        pass
 
 
 class LightSource(ABC):

@@ -14,7 +14,7 @@ class ConfigurationManager:
         self,
         channel_manager: ChannelConfigurationManager,
         laser_af_manager: Optional[LaserAFSettingManager] = None,
-        base_config_path: Path = Path("acquisition_configurations"),
+        base_config_path: Path = control._def.ACQUISITION_CONFIGURATIONS_PATH,
         profile: str = "default_profile",
     ):
         super().__init__()

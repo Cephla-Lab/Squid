@@ -15,7 +15,7 @@ def get_test_live_controller(microscope: Microscope, starting_objective) -> Live
     controller = LiveController(microscope=microscope, camera=microscope.camera)
 
     controller.set_microscope_mode(
-        microscope.configuration_manager.channel_manager.get_configurations(objective=starting_objective)[0]
+        microscope.configuration_mananger.channel_manager.get_configurations(objective=starting_objective)[0]
     )
     return controller
 
@@ -78,7 +78,7 @@ def get_test_multi_point_controller(
             live_controller,
             microscope.low_level_drivers.microcontroller,
         ),
-        channel_configuration_manager=microscope.channel_configuration_manager,
+        channel_configuration_mananger=microscope.channel_configuration_mananger,
         scan_coordinates=get_test_scan_coordinates(
             objective_store=microscope.objective_store, stage=microscope.stage, camera=microscope.camera
         ),

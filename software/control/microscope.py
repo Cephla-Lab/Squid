@@ -1,4 +1,5 @@
 import serial
+from pathlib import Path
 from typing import Optional, TypeVar
 
 import control._def
@@ -9,22 +10,22 @@ from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
-from control.filterwheel import SquidFilterWheelWrapper
 
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.serial_peripherals import SciMicroscopyLEDArray
-from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage
+from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
+from squid.stage.utils import move_z_axis_to_safety_position
 from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
 import control.celesta
 import control.illumination_andor
-import control.filterwheel as filterwheel
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
 import squid.camera.utils
 import squid.config
+import squid.filter_wheel_controller.utils
 import squid.logging
 import squid.stage.cephla
 import squid.stage.utils
@@ -85,27 +86,10 @@ class MicroscopeAddons:
             )
 
         emission_filter_wheel = None
-        if control._def.USE_ZABER_EMISSION_FILTER_WHEEL:
-            emission_filter_wheel = (
-                serial_peripherals.FilterController(
-                    control._def.FILTER_CONTROLLER_SERIAL_NUMBER, 115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE
-                )
-                if not simulated
-                else serial_peripherals.FilterController_Simulation(115200, 8, serial.PARITY_NONE, serial.STOPBITS_ONE)
-            )
-        elif control._def.USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-            emission_filter_wheel = (
-                serial_peripherals.Optospin(SN=control._def.FILTER_CONTROLLER_SERIAL_NUMBER)
-                if not simulated
-                else serial_peripherals.Optospin_Simulation(SN=None)
-            )
-
-        squid_filter_wheel = None
-        if control._def.USE_SQUID_FILTERWHEEL:
-            squid_filter_wheel = (
-                filterwheel.SquidFilterWheelWrapper(microcontroller=micro)
-                if not simulated
-                else filterwheel.SquidFilterWheelWrapper_Simulation(None)
+        fw_config = squid.config.get_filter_wheel_config()
+        if fw_config:
+            emission_filter_wheel = squid.filter_wheel_controller.utils.get_filter_wheel_controller(
+                fw_config, microcontroller=micro, simulated=simulated
             )
 
         objective_changer = None
@@ -156,7 +140,6 @@ class MicroscopeAddons:
             nl5,
             cellx,
             emission_filter_wheel,
-            squid_filter_wheel,
             objective_changer,
             camera_focus,
             fluidics,
@@ -170,8 +153,7 @@ class MicroscopeAddons:
         dragonfly: Optional[serial_peripherals.Dragonfly] = None,
         nl5: Optional[NL5] = None,
         cellx: Optional[serial_peripherals.CellX] = None,
-        emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterController] = None,
-        filter_wheel: Optional[SquidFilterWheelWrapper] = None,
+        emission_filter_wheel: Optional[AbstractFilterWheelController] = None,
         objective_changer: Optional[ObjectiveChanger2PosController] = None,
         camera_focus: Optional[AbstractCamera] = None,
         fluidics: Optional[Fluidics] = None,
@@ -183,7 +165,6 @@ class MicroscopeAddons:
         self.nl5: Optional[NL5] = nl5
         self.cellx: Optional[serial_peripherals.CellX] = cellx
         self.emission_filter_wheel = emission_filter_wheel
-        self.filter_wheel = filter_wheel
         self.objective_changer = objective_changer
         self.camera_focus: Optional[AbstractCamera] = camera_focus
         self.fluidics = fluidics
@@ -193,15 +174,11 @@ class MicroscopeAddons:
     def prepare_for_use(self):
         """
         Prepare all the addon hardware for immediate use.
-
-        NOTE(imo): The emission_filter wheel is confusing - there's no base class but it can be multiple
-        different variants with different methods.  For now leave as is just to make progress, but
-        we need to fix this.
         """
-        if control._def.USE_ZABER_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.start_homing()
-        if control._def.USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.set_speed(control._def.OPTOSPIN_EMISSION_FILTER_WHEEL_SPEED_HZ)
+        if self.emission_filter_wheel:
+            fw_config = squid.config.get_filter_wheel_config()
+            self.emission_filter_wheel.initialize(fw_config.indices)
+            self.emission_filter_wheel.home()
         if self.piezo_stage:
             self.piezo_stage.home()
 
@@ -343,13 +320,26 @@ class Microscope:
         self._simulated = simulated
 
         self.objective_store: ObjectiveStore = ObjectiveStore()
-        self.channel_configuration_manager: ChannelConfigurationManager = ChannelConfigurationManager()
+        # Pass configurations path for loading global channel definitions
+        configurations_path = Path(__file__).parent.parent / "configurations"
+        self.channel_configuration_mananger: ChannelConfigurationManager = ChannelConfigurationManager(
+            configurations_path=configurations_path
+        )
+        # Migrate all profiles/objectives from XML to JSON (one-time operation)
+        migration_marker = control._def.ACQUISITION_CONFIGURATIONS_PATH / ".migration_complete"
+        if not migration_marker.exists():
+            self.channel_configuration_mananger.migrate_all_profiles(control._def.ACQUISITION_CONFIGURATIONS_PATH)
+
+        # Sync confocal mode from hardware (works in both GUI and headless modes)
+        if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
+            self._sync_confocal_mode_from_hardware()
+
         self.laser_af_settings_manager: Optional[LaserAFSettingManager] = None
         if control._def.SUPPORT_LASER_AUTOFOCUS:
             self.laser_af_settings_manager = LaserAFSettingManager()
 
-        self.configuration_manager: ConfigurationManager = ConfigurationManager(
-            self.channel_configuration_manager, self.laser_af_settings_manager
+        self.configuration_mananger: ConfigurationManager = ConfigurationManager(
+            self.channel_configuration_mananger, self.laser_af_settings_manager
         )
         self.contrast_manager: ContrastManager = ContrastManager()
         self.stream_handler: StreamHandler = StreamHandler(handler_functions=stream_handler_callbacks)
@@ -382,6 +372,78 @@ class Microscope:
         if self.addons.camera_focus:
             self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
             self.addons.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+
+    def _sync_confocal_mode_from_hardware(self) -> bool:
+        """Sync confocal mode state from spinning disk hardware.
+
+        Queries the actual hardware state (XLight disk position or Dragonfly modality)
+        and updates the channel configuration manager accordingly.
+        This ensures correct channel settings are used in both GUI and headless modes.
+
+        Returns:
+            True if sync was successful, False if hardware query failed.
+        """
+        confocal_mode = False
+        sync_successful = True
+
+        if self.addons.dragonfly is not None:
+            try:
+                modality = self.addons.dragonfly.get_modality()
+                confocal_mode = modality == "CONFOCAL" if modality else False
+            except Exception as e:
+                self._log.warning(f"Could not query Dragonfly modality: {e}")
+                sync_successful = False
+        elif self.addons.xlight is not None:
+            try:
+                # XLight returns 0 for widefield, 1 for confocal
+                disk_position = self.addons.xlight.get_disk_position()
+                confocal_mode = bool(disk_position)
+            except Exception as e:
+                self._log.warning(f"Could not query XLight disk position: {e}")
+                sync_successful = False
+
+        if sync_successful:
+            self.channel_configuration_mananger.sync_confocal_mode_from_hardware(confocal_mode)
+        else:
+            self._log.warning(
+                "Confocal mode could not be synchronized from hardware; "
+                "keeping existing channel configuration manager state."
+            )
+        return sync_successful
+
+    def set_confocal_mode(self, confocal: bool) -> None:
+        """Set confocal/widefield mode and move the spinning disk.
+
+        This is the preferred method for headless scripts to switch imaging modes.
+        It updates both the hardware and the channel configuration manager.
+
+        Args:
+            confocal: True for confocal mode, False for widefield mode.
+
+        Raises:
+            RuntimeError: If spinning disk confocal is not enabled or hardware unavailable.
+        """
+        if not control._def.ENABLE_SPINNING_DISK_CONFOCAL:
+            raise RuntimeError("Spinning disk confocal is not enabled in configuration")
+
+        if self.addons.dragonfly is not None:
+            modality = "CONFOCAL" if confocal else "BF"
+            self.addons.dragonfly.set_modality(modality)
+        elif self.addons.xlight is not None:
+            # XLight: 1 for confocal, 0 for widefield
+            self.addons.xlight.set_disk_position(1 if confocal else 0)
+        else:
+            raise RuntimeError("No spinning disk hardware available")
+
+        self.channel_configuration_mananger.toggle_confocal_widefield(confocal)
+
+    def is_confocal_mode(self) -> bool:
+        """Check if currently in confocal mode.
+
+        Returns:
+            True if in confocal mode, False if in widefield mode.
+        """
+        return self.channel_configuration_mananger.is_confocal_mode()
 
     def update_camera_functions(self, functions: StreamHandlerFunctions):
         self.stream_handler.set_functions(functions)
@@ -507,13 +569,13 @@ class Microscope:
     def set_illumination_intensity(self, channel, intensity, objective=None):
         if objective is None:
             objective = self.objective_store.current_objective
-        channel_config = self.channel_configuration_manager.get_channel_configuration_by_name(objective, channel)
+        channel_config = self.channel_configuration_mananger.get_channel_configuration_by_name(objective, channel)
         channel_config.illumination_intensity = intensity
         self.live_controller.set_microscope_mode(channel_config)
 
     def set_exposure_time(self, channel, exposure_time, objective=None):
         if objective is None:
             objective = self.objective_store.current_objective
-        channel_config = self.channel_configuration_manager.get_channel_configuration_by_name(objective, channel)
+        channel_config = self.channel_configuration_mananger.get_channel_configuration_by_name(objective, channel)
         channel_config.exposure_time = exposure_time
         self.live_controller.set_microscope_mode(channel_config)

@@ -1,5 +1,6 @@
 # set QT_API environment variable
 import os
+from configparser import ConfigParser
 
 from control.core.auto_focus_controller import AutoFocusController
 from control.core.job_processing import CaptureInfo
@@ -38,15 +39,16 @@ from control.core.multi_point_utils import (
     AcquisitionParameters,
     OverallProgressUpdate,
     RegionProgressUpdate,
+    PlateViewInit,
+    PlateViewUpdate,
 )
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler
-from control.filterwheel import SquidFilterWheelWrapper
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.utils_config import ChannelMode
-from squid.abc import AbstractCamera, AbstractStage
+from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 import control.lighting
 import control.microscope
 import control.widgets as widgets
@@ -58,8 +60,6 @@ import squid.logging
 import squid.stage.utils
 
 log = squid.logging.get_logger(__name__)
-
-import control.filterwheel as filterwheel
 
 if USE_PRIOR_STAGE:
     import squid.stage.prior
@@ -180,10 +180,13 @@ class QtMultiPointController(MultiPointController, QObject):
     signal_register_current_fov = Signal(float, float)
     napari_layers_init = Signal(int, int, object)
     napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
-    signal_set_display_tabs = Signal(list, int)
+    signal_set_display_tabs = Signal(list, int, str)  # configs: list, Nz: int, xy_mode: str
     signal_acquisition_progress = Signal(int, int, int)
     signal_region_progress = Signal(int, int)
     signal_coordinates = Signal(float, float, float, int)  # x, y, z, region
+    # Plate view signals
+    plate_view_init = Signal(int, int, tuple, tuple, list)  # rows, cols, well_slot_shape, fov_grid_shape, channel_names
+    plate_view_update = Signal(int, str, np.ndarray)  # channel_idx, channel_name, plate_image
 
     def __init__(
         self,
@@ -191,7 +194,7 @@ class QtMultiPointController(MultiPointController, QObject):
         live_controller: LiveController,
         autofocus_controller: AutoFocusController,
         objective_store: ObjectiveStore,
-        channel_configuration_manager: ChannelConfigurationManager,
+        channel_configuration_mananger: ChannelConfigurationManager,
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
         fluidics: Optional[Any] = None,
@@ -202,7 +205,7 @@ class QtMultiPointController(MultiPointController, QObject):
             live_controller=live_controller,
             autofocus_controller=autofocus_controller,
             objective_store=objective_store,
-            channel_configuration_manager=channel_configuration_manager,
+            channel_configuration_mananger=channel_configuration_mananger,
             callbacks=MultiPointControllerFunctions(
                 signal_acquisition_start=self._signal_acquisition_start_fn,
                 signal_acquisition_finished=self._signal_acquisition_finished_fn,
@@ -211,6 +214,8 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_current_fov=self._signal_current_fov_fn,
                 signal_overall_progress=self._signal_overall_progress_fn,
                 signal_region_progress=self._signal_region_progress_fn,
+                signal_plate_view_init=self._signal_plate_view_init_fn,
+                signal_plate_view_update=self._signal_plate_view_update_fn,
             ),
             scan_coordinates=scan_coordinates,
             laser_autofocus_controller=laser_autofocus_controller,
@@ -223,9 +228,9 @@ class QtMultiPointController(MultiPointController, QObject):
         # TODO mpc napari signals
         self._napari_inited_for_this_acquisition = False
         if not self.run_acquisition_current_fov:
-            self.signal_set_display_tabs.emit(self.selected_configurations, self.NZ)
+            self.signal_set_display_tabs.emit(self.selected_configurations, self.NZ, self.xy_mode)
         else:
-            self.signal_set_display_tabs.emit(self.selected_configurations, 2)
+            self.signal_set_display_tabs.emit(self.selected_configurations, 2, self.xy_mode)
         self.signal_acquisition_start.emit()
 
     def _signal_acquisition_finished_fn(self):
@@ -262,10 +267,27 @@ class QtMultiPointController(MultiPointController, QObject):
     def _signal_region_progress_fn(self, region_progress: RegionProgressUpdate):
         self.signal_region_progress.emit(region_progress.current_fov, region_progress.region_fovs)
 
+    def _signal_plate_view_init_fn(self, plate_view_init: PlateViewInit):
+        self.plate_view_init.emit(
+            plate_view_init.num_rows,
+            plate_view_init.num_cols,
+            plate_view_init.well_slot_shape,
+            plate_view_init.fov_grid_shape,
+            plate_view_init.channel_names,
+        )
+
+    def _signal_plate_view_update_fn(self, plate_view_update: PlateViewUpdate):
+        self.plate_view_update.emit(
+            plate_view_update.channel_idx,
+            plate_view_update.channel_name,
+            plate_view_update.plate_image,
+        )
+
 
 class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
+    signal_performance_mode_changed = Signal(bool)
 
     def __init__(
         self, microscope: control.microscope.Microscope, is_simulation=False, live_only_mode=False, *args, **kwargs
@@ -286,15 +308,14 @@ class HighContentScreeningGui(QMainWindow):
         self.emission_filter_wheel: Optional[serial_peripherals.Optospin | serial_peripherals.FilterController] = (
             microscope.addons.emission_filter_wheel
         )
-        self.squid_filter_wheel: Optional[SquidFilterWheelWrapper] = microscope.addons.filter_wheel
         self.objective_changer: Optional[Any] = microscope.addons.objective_changer
         self.camera_focus: Optional[AbstractCamera] = microscope.addons.camera_focus
         self.fluidics: Optional[Fluidics] = microscope.addons.fluidics
         self.piezo: Optional[PiezoStage] = microscope.addons.piezo_stage
 
-        self.channelConfigurationManager: ChannelConfigurationManager = microscope.channel_configuration_manager
+        self.channelConfigurationManager: ChannelConfigurationManager = microscope.channel_configuration_mananger
         self.laserAFSettingManager: LaserAFSettingManager = microscope.laser_af_settings_manager
-        self.configurationManager: ConfigurationManager = microscope.configuration_manager
+        self.configurationManager: ConfigurationManager = microscope.configuration_mananger
         self.contrastManager: ContrastManager = microscope.contrast_manager
         self.liveController: LiveController = microscope.live_controller
         self.objectiveStore: ObjectiveStore = microscope.objective_store
@@ -388,6 +409,9 @@ class HighContentScreeningGui(QMainWindow):
         self.setup_layout()
         self.make_connections()
 
+        # Emit initial performance mode state to sync widgets
+        self.signal_performance_mode_changed.emit(self.performance_mode)
+
         # Initialize live scan grid state
         self.wellplateMultiPointWidget.initialize_live_scan_grid_state()
 
@@ -399,7 +423,15 @@ class HighContentScreeningGui(QMainWindow):
                 )
                 self.stage.move_x_to(cached_pos.x_mm)
                 self.stage.move_y_to(cached_pos.y_mm)
-                self.stage.move_z_to(cached_pos.z_mm)
+
+                if (int(Z_HOME_SAFETY_POINT) / 1000.0) < cached_pos.z_mm:
+                    self.stage.move_z_to(cached_pos.z_mm)
+                else:
+                    self.log.info(f"Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT")
+                    self.stage.move_z_to(int(Z_HOME_SAFETY_POINT) / 1000.0)
+            else:
+                self.log.info(f"Cache position is not exists.  Moving Z axis to safety position")
+                squid.stage.utils.move_z_axis_to_safety_position(self.stage)
 
             if ENABLE_WELLPLATE_MULTIPOINT:
                 self.wellplateMultiPointWidget.init_z()
@@ -408,10 +440,28 @@ class HighContentScreeningGui(QMainWindow):
         # Create the menu bar
         menubar = self.menuBar()
         settings_menu = menubar.addMenu("Settings")
+
+        # Configuration action
+        config_action = QAction("Configuration...", self)
+        config_action.setMenuRole(QAction.NoRole)
+        config_action.triggered.connect(self.openPreferences)
+        settings_menu.addAction(config_action)
+
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             led_matrix_action = QAction("LED Matrix", self)
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
             settings_menu.addAction(led_matrix_action)
+
+        # Channel Configuration menu items
+        channel_config_action = QAction("Channel Configuration", self)
+        channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
+        settings_menu.addAction(channel_config_action)
+
+        # Advanced submenu
+        advanced_menu = settings_menu.addMenu("Advanced")
+        channel_mapping_action = QAction("Channel Hardware Mapping", self)
+        channel_mapping_action.triggered.connect(self.openAdvancedChannelMapping)
+        advanced_menu.addAction(channel_mapping_action)
 
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
@@ -500,9 +550,6 @@ class HighContentScreeningGui(QMainWindow):
 
             self.microscope.home_xyz()
 
-            if USE_ZABER_EMISSION_FILTER_WHEEL:
-                self.emission_filter_wheel.wait_for_homing_complete()
-
         except TimeoutError as e:
             # If we can't recover from a timeout, at least do our best to make sure the system is left in a safe
             # and restartable state.
@@ -524,10 +571,6 @@ class HighContentScreeningGui(QMainWindow):
             self.camera_focus.add_frame_callback(self.streamHandler_focus_camera.get_frame_callback())
             self.camera_focus.enable_callbacks(enabled=True)
             self.camera_focus.start_streaming()
-
-        if self.squid_filter_wheel:
-            if SQUID_FILTERWHEEL_HOMING_ENABLED:
-                self.squid_filter_wheel.homing()
 
         if self.objective_changer:
             self.objective_changer.home()
@@ -596,13 +639,10 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore)
 
-        if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
+        if self.emission_filter_wheel:
             self.filterControllerWidget = widgets.FilterControllerWidget(
                 self.emission_filter_wheel, self.liveController
             )
-
-        if USE_SQUID_FILTERWHEEL:
-            self.squidFilterWidget = widgets.SquidFilterWidget(self)
 
         self.recordingControlWidget = widgets.RecordingWidget(self.streamHandler, self.imageSaver)
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
@@ -611,7 +651,7 @@ class HighContentScreeningGui(QMainWindow):
         if WELLPLATE_FORMAT != "1536 well plate":
             self.wellSelectionWidget = widgets.WellSelectionWidget(WELLPLATE_FORMAT, self.wellplateFormatWidget)
         else:
-            self.wellSelectionWidget = widgets.Well1536SelectionWidget()
+            self.wellSelectionWidget = widgets.Well1536SelectionWidget(self.wellplateFormatWidget)
         self.scanCoordinates.add_well_selector(self.wellSelectionWidget)
         self.focusMapWidget = widgets.FocusMapWidget(
             self.stage, self.navigationViewer, self.scanCoordinates, core.FocusMap()
@@ -672,6 +712,7 @@ class HighContentScreeningGui(QMainWindow):
             self.channelConfigurationManager,
             self.scanCoordinates,
             self.focusMapWidget,
+            self.napariMosaicDisplayWidget,
         )
         self.wellplateMultiPointWidget = widgets.WellplateMultiPointWidget(
             self.stage,
@@ -757,6 +798,11 @@ class HighContentScreeningGui(QMainWindow):
                 )
                 self.imageDisplayTabs.addTab(self.napariMosaicDisplayWidget, "Mosaic View")
 
+                # Plate view for well-based acquisitions (only if enabled)
+                if control._def.DISPLAY_PLATE_VIEW:
+                    self.napariPlateViewWidget = widgets.NapariPlateViewWidget(self.contrastManager)
+                    self.imageDisplayTabs.addTab(self.napariPlateViewWidget, "Plate View")
+
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()
             dock_surface_plot = dock.Dock("Z Plot", autoOrientation=False)
@@ -834,10 +880,8 @@ class HighContentScreeningGui(QMainWindow):
             self.cameraTabWidget.addTab(self.nl5Wdiget, "NL5")
         if ENABLE_SPINNING_DISK_CONFOCAL:
             self.cameraTabWidget.addTab(self.spinningDiskConfocalWidget, "Confocal")
-        if USE_ZABER_EMISSION_FILTER_WHEEL or USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
+        if self.emission_filter_wheel:
             self.cameraTabWidget.addTab(self.filterControllerWidget, "Emission Filter")
-        if USE_SQUID_FILTERWHEEL:
-            self.cameraTabWidget.addTab(self.squidFilterWidget, "Squid Filter")
         self.cameraTabWidget.addTab(self.cameraSettingWidget, "Camera")
         self.cameraTabWidget.addTab(self.autofocusWidget, "Contrast AF")
         if SUPPORT_LASER_AUTOFOCUS:
@@ -950,14 +994,17 @@ class HighContentScreeningGui(QMainWindow):
 
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.flexibleMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+            self.signal_performance_mode_changed.connect(self.flexibleMultiPointWidget.set_performance_mode)
 
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellplateMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.wellplateMultiPointWidget.signal_toggle_live_scan_grid.connect(self.toggle_live_scan_grid)
+            self.signal_performance_mode_changed.connect(self.wellplateMultiPointWidget.set_performance_mode)
 
         if RUN_FLUIDICS:
             self.multiPointWithFluidicsWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.fluidicsWidget.fluidics_initialized_signal.connect(self.multiPointWithFluidicsWidget.init_fluidics)
+            self.signal_performance_mode_changed.connect(self.multiPointWithFluidicsWidget.set_performance_mode)
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
 
@@ -1024,7 +1071,9 @@ class HighContentScreeningGui(QMainWindow):
         self.wellSelectionWidget.signal_wellSelectedPos.connect(self.move_to_mm)
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.wellSelectionWidget.signal_wellSelected.connect(self.wellplateMultiPointWidget.update_well_coordinates)
-            self.objectivesWidget.signal_objective_changed.connect(self.wellplateMultiPointWidget.update_coordinates)
+            self.objectivesWidget.signal_objective_changed.connect(
+                self.wellplateMultiPointWidget.handle_objective_change
+            )
 
         self.profileWidget.signal_profile_changed.connect(
             lambda: self.liveControlWidget.select_new_microscope_mode_by_name(
@@ -1095,6 +1144,11 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveControlWidget.currentConfiguration.name
                 )
             )
+            # INITIALIZATION ORDER: Confocal state sync happens in Microscope.__init__ BEFORE
+            # this GUI code runs. The microscope queries hardware state and calls
+            # channel_configuration_mananger.sync_confocal_mode_from_hardware() during init.
+            # The signal connection above handles subsequent user-initiated toggles only.
+            # See Microscope._sync_confocal_mode_from_hardware() for the initial sync logic.
 
         # Connect to plot xyz data when coordinates are saved
         self.multipointController.signal_coordinates.connect(self.zPlotWidget.add_point)
@@ -1279,16 +1333,40 @@ class HighContentScreeningGui(QMainWindow):
                         ]
                     )
 
+                # Setup plate view widget connections (only if plate view is enabled)
+                # Use Qt.QueuedConnection explicitly for thread safety since these signals
+                # are emitted from the acquisition worker thread and received on the main thread.
+                # This ensures the slot is invoked in the receiver's thread event loop.
+                if control._def.DISPLAY_PLATE_VIEW and hasattr(self, "napariPlateViewWidget"):
+                    self.napari_connections["napariPlateViewWidget"] = [
+                        (
+                            self.multipointController.plate_view_init,
+                            self.napariPlateViewWidget.initPlateLayout,
+                            Qt.QueuedConnection,
+                        ),
+                        (
+                            self.multipointController.plate_view_update,
+                            self.napariPlateViewWidget.updatePlateView,
+                            Qt.QueuedConnection,
+                        ),
+                    ]
+
             # Make initial connections
             self.updateNapariConnections()
 
     def updateNapariConnections(self):
         # Update Napari connections based on performance mode. Live widget connections are preserved
+        # Connection tuples can be:
+        #   (signal, slot) - uses default Qt.AutoConnection
+        #   (signal, slot, connection_type) - uses specified connection type (e.g., Qt.QueuedConnection)
         for widget_name, connections in self.napari_connections.items():
             if widget_name != "napariLiveWidget":  # Always keep the live widget connected
                 widget = getattr(self, widget_name, None)
                 if widget:
-                    for signal, slot in connections:
+                    for conn in connections:
+                        signal = conn[0]
+                        slot = conn[1]
+                        connection_type = conn[2] if len(conn) > 2 else None
                         if self.performance_mode:
                             try:
                                 signal.disconnect(slot)
@@ -1297,7 +1375,10 @@ class HighContentScreeningGui(QMainWindow):
                                 pass
                         else:
                             try:
-                                signal.connect(slot)
+                                if connection_type is not None:
+                                    signal.connect(slot, connection_type)
+                                else:
+                                    signal.connect(slot)
                             except TypeError:
                                 # Connection might already exist, which is fine
                                 pass
@@ -1321,16 +1402,22 @@ class HighContentScreeningGui(QMainWindow):
         self.performanceModeToggle.setText(button_txt + " Performance Mode")
         self.updateNapariConnections()
         self.toggleNapariTabs()
+        self.signal_performance_mode_changed.emit(self.performance_mode)
         print(f"Performance mode {'enabled' if self.performance_mode else 'disabled'}")
 
-    def setAcquisitionDisplayTabs(self, selected_configurations, Nz):
+    def setAcquisitionDisplayTabs(self, selected_configurations, Nz, xy_mode=None):
         if self.performance_mode:
             self.imageDisplayTabs.setCurrentIndex(0)
         elif not self.live_only_mode:
             configs = [config.name for config in selected_configurations]
             print(configs)
             if USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
-                self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
+                # For well-based acquisitions (Select Wells or Load Coordinates), use Plate View
+                is_well_based = xy_mode is not None and xy_mode in ("Select Wells", "Load Coordinates")
+                if is_well_based and hasattr(self, "napariPlateViewWidget") and control._def.DISPLAY_PLATE_VIEW:
+                    self.imageDisplayTabs.setCurrentWidget(self.napariPlateViewWidget)
+                else:
+                    self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
 
             elif USE_NAPARI_FOR_MULTIPOINT:
                 self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
@@ -1341,6 +1428,34 @@ class HighContentScreeningGui(QMainWindow):
         if SUPPORT_SCIMICROSCOPY_LED_ARRAY:
             dialog = widgets.LedMatrixSettingsDialog(self.liveController.led_array)
             dialog.exec_()
+
+    def openPreferences(self):
+        if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
+            config = ConfigParser()
+            config.read(CACHED_CONFIG_FILE_PATH)
+            dialog = widgets.PreferencesDialog(config, CACHED_CONFIG_FILE_PATH, self)
+            dialog.exec_()
+        else:
+            self.log.warning("No configuration file found")
+
+    def openChannelConfigurationEditor(self):
+        """Open the channel configuration editor dialog"""
+        dialog = widgets.ChannelEditorDialog(self.channelConfigurationManager, self)
+        dialog.signal_channels_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openAdvancedChannelMapping(self):
+        """Open the advanced channel hardware mapping dialog"""
+        dialog = widgets.AdvancedChannelMappingDialog(self.channelConfigurationManager, self)
+        dialog.signal_mappings_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def _refresh_channel_lists(self):
+        """Refresh channel lists in all widgets after channel configuration changes"""
+        if self.liveControlWidget:
+            self.liveControlWidget.refresh_mode_list()
+        if self.napariLiveWidget:
+            self.napariLiveWidget.refresh_mode_list()
 
     def onTabChanged(self, index):
         is_flexible_acquisition = (
@@ -1415,7 +1530,7 @@ class HighContentScreeningGui(QMainWindow):
 
             # replace and reconnect new well selector
             if format_ == "1536 well plate":
-                self.replaceWellSelectionWidget(widgets.Well1536SelectionWidget())
+                self.replaceWellSelectionWidget(widgets.Well1536SelectionWidget(self.wellplateFormatWidget))
                 self.connectWellSelectionWidget()
             elif isinstance(self.wellSelectionWidget, widgets.Well1536SelectionWidget):
                 self.replaceWellSelectionWidget(widgets.WellSelectionWidget(format_, self.wellplateFormatWidget))
@@ -1594,10 +1709,8 @@ class HighContentScreeningGui(QMainWindow):
             self.log.error(f"Couldn't cache position while closing.  Ignoring and continuing. Error is: {e}")
         self.movement_update_timer.stop()
 
-        if USE_ZABER_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.set_emission_filter(1)
-        if USE_OPTOSPIN_EMISSION_FILTER_WHEEL:
-            self.emission_filter_wheel.set_emission_filter(1)
+        if self.emission_filter_wheel:
+            self.emission_filter_wheel.set_filter_wheel_position({1: 1})
             self.emission_filter_wheel.close()
         if SUPPORT_LASER_AUTOFOCUS:
             self.liveController_focus_camera.stop_live()

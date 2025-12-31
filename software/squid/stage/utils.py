@@ -155,3 +155,7 @@ def move_to_scanning_position(
         return control.utils.threaded_operation_helper(
             _move_to_scanning_position_impl, callback, stage=stage, is_wellplate=is_wellplate
         )
+
+
+def move_z_axis_to_safety_position(stage: AbstractStage):
+    stage.move_z_to(int(_def.Z_HOME_SAFETY_POINT) / 1000.0)

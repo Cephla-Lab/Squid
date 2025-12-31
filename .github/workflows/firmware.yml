@@ -1,0 +1,40 @@
+name: Firmware Build and Test
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'firmware/**'
+      - '.github/workflows/firmware.yml'
+  pull_request:
+    paths:
+      - 'firmware/**'
+      - '.github/workflows/firmware.yml'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build controller firmware (Teensy 4.1)
+        run: pio run -e teensy41
+        working-directory: ./firmware/controller
+
+      - name: Build joystick firmware (Teensy LC)
+        run: pio run -e teensyLC
+        working-directory: ./firmware/joystick
+
+      - name: Run unit tests
+        run: pio test -e native
+        working-directory: ./firmware/controller
