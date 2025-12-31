@@ -6,16 +6,11 @@ import time
 import json
 from datetime import datetime
 from contextlib import contextmanager
-from typing import Optional, Generic, TypeVar, List, Dict, Any
+from typing import ClassVar, Dict, Generic, List, Optional, Tuple, TypeVar, Union
 from uuid import uuid4
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - platform without fcntl
-    fcntl = None
-
 from dataclasses import dataclass, field
-from typing import ClassVar, Dict, List, Optional, Tuple, Union
+from filelock import FileLock, Timeout as FileLockTimeout
 
 import imageio as iio
 import numpy as np
@@ -26,7 +21,43 @@ from control._def import ZProjectionMode
 import squid.abc
 import squid.logging
 from control.utils_config import ChannelMode
-from . import utils_ome_tiff_writer as ome_tiff_writer
+from control.core import utils_ome_tiff_writer as ome_tiff_writer
+
+
+@dataclass
+class AcquisitionInfo:
+    """Acquisition-wide metadata for OME-TIFF file generation.
+
+    This class holds metadata that remains constant across all images in a
+    multi-dimensional acquisition (time, z, channel). It is separate from
+    CaptureInfo, which holds per-image metadata (position, timestamp, etc.).
+
+    AcquisitionInfo is created once at acquisition start and injected into
+    SaveOMETiffJob instances by JobRunner.dispatch() before job execution.
+
+    Attributes:
+        total_time_points: Number of time points in the acquisition.
+        total_z_levels: Number of z-slices per stack.
+        total_channels: Number of imaging channels.
+        channel_names: List of channel names for OME-XML metadata.
+        experiment_path: Base directory for the experiment output.
+        time_increment_s: Time between timepoints in seconds (for OME-XML).
+        physical_size_z_um: Z step size in micrometers (for OME-XML).
+        physical_size_x_um: Pixel size in X in micrometers (for OME-XML).
+        physical_size_y_um: Pixel size in Y in micrometers (for OME-XML).
+    """
+
+    total_time_points: int
+    total_z_levels: int
+    total_channels: int
+    channel_names: List[str]
+    experiment_path: Optional[str] = None
+    time_increment_s: Optional[float] = None
+    physical_size_z_um: Optional[float] = None
+    physical_size_x_um: Optional[float] = None
+    physical_size_y_um: Optional[float] = None
+
+
 from .downsampled_views import (
     crop_overlap,
     downsample_tile,
@@ -49,15 +80,6 @@ class CaptureInfo:
     configuration_idx: int
     z_piezo_um: Optional[float] = None
     time_point: Optional[int] = None
-    total_time_points: Optional[int] = None
-    total_z_levels: Optional[int] = None
-    total_channels: Optional[int] = None
-    channel_names: Optional[List[str]] = None
-    experiment_path: Optional[str] = None
-    time_increment_s: Optional[float] = None
-    physical_size_z_um: Optional[float] = None
-    physical_size_x_um: Optional[float] = None
-    physical_size_y_um: Optional[float] = None
 
 
 @dataclass()
@@ -93,21 +115,32 @@ class JobResult(Generic[T]):
     exception: Optional[Exception]
 
 
+# Timeout in seconds for acquiring file locks during OME-TIFF writing
+FILE_LOCK_TIMEOUT_SECONDS = 10
+
+
 def _metadata_lock_path(metadata_path: str) -> str:
     return metadata_path + ".lock"
 
 
 @contextmanager
-def _acquire_file_lock(lock_path: str):
-    lock_file = open(lock_path, "w")
+def _acquire_file_lock(lock_path: str, context: str = ""):
+    """Acquire a file lock with timeout, providing a clear error message on failure.
+
+    Args:
+        lock_path: Path to the lock file.
+        context: Optional context string (e.g., output file path) included in error messages.
+    """
+    lock = FileLock(lock_path, timeout=FILE_LOCK_TIMEOUT_SECONDS)
     try:
-        if fcntl is not None:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
-        yield
-    finally:
-        if fcntl is not None:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
-        lock_file.close()
+        with lock:
+            yield
+    except FileLockTimeout as exc:
+        context_msg = f" (writing to: {context})" if context else ""
+        raise TimeoutError(
+            f"Failed to acquire file lock '{lock_path}' within {FILE_LOCK_TIMEOUT_SECONDS} seconds{context_msg}. "
+            f"Another process may be holding the lock."
+        ) from exc
 
 
 class SaveImageJob(Job):
@@ -155,8 +188,6 @@ class SaveImageJob(Job):
                     description=description,
                     extratags=extratags,
                 )
-        elif _def.FILE_SAVING_OPTION == _def.FileSavingOption.OME_TIFF:
-            self._save_ome_tiff(image, info)
         else:
             saved_image = utils_acquisition.save_image(
                 image=image,
@@ -172,46 +203,67 @@ class SaveImageJob(Job):
 
         return True
 
+
+@dataclass
+class SaveOMETiffJob(Job):
+    """Job for saving images to OME-TIFF format.
+
+    The acquisition_info field is injected by JobRunner.dispatch() before the job runs.
+    """
+
+    acquisition_info: Optional[AcquisitionInfo] = field(default=None)
+
+    def run(self) -> bool:
+        if self.acquisition_info is None:
+            raise ValueError(
+                "SaveOMETiffJob.run() requires acquisition_info but it is None. "
+                "This job must be dispatched via JobRunner.dispatch(), which injects acquisition_info. "
+                "If running directly, set job.acquisition_info before calling run()."
+            )
+        self._save_ome_tiff(self.image_array(), self.capture_info)
+        return True
+
     def _save_ome_tiff(self, image: np.ndarray, info: CaptureInfo) -> None:
         # with reference to Talley's https://github.com/pymmcore-plus/pymmcore-plus/blob/main/src/pymmcore_plus/mda/handlers/_ome_tiff_writer.py and Christoph's https://forum.image.sc/t/how-to-create-an-image-series-ome-tiff-from-python/42730/7
-        ome_tiff_writer.validate_capture_info(info, image)
+        ome_tiff_writer.validate_capture_info(info, self.acquisition_info, image)
 
-        ome_folder = ome_tiff_writer.ome_output_folder(info)
+        ome_folder = ome_tiff_writer.ome_output_folder(self.acquisition_info, info)
         ome_tiff_writer.ensure_output_directory(ome_folder)
 
         base_name = ome_tiff_writer.ome_base_name(info)
         output_path = os.path.join(ome_folder, base_name + ".ome.tiff")
-        metadata_path = ome_tiff_writer.metadata_temp_path(info, base_name)
+        metadata_path = ome_tiff_writer.metadata_temp_path(self.acquisition_info, info, base_name)
         lock_path = _metadata_lock_path(metadata_path)
 
-        with _acquire_file_lock(lock_path):
+        with _acquire_file_lock(lock_path, context=output_path):
             metadata = ome_tiff_writer.load_metadata(metadata_path)
             if metadata is None:
-                metadata = ome_tiff_writer.initialize_metadata(info, image)
-                target_dtype = np.dtype(metadata["dtype"])
+                metadata = ome_tiff_writer.initialize_metadata(self.acquisition_info, info, image)
+                target_dtype = np.dtype(metadata[ome_tiff_writer.DTYPE_KEY])
                 if os.path.exists(output_path):
                     os.remove(output_path)
                 tifffile.imwrite(
                     output_path,
-                    shape=tuple(metadata["shape"]),
+                    shape=tuple(metadata[ome_tiff_writer.SHAPE_KEY]),
                     dtype=target_dtype,
                     metadata=ome_tiff_writer.metadata_for_imwrite(metadata),
                     ome=True,
                 )
             else:
-                expected_shape = tuple(metadata["shape"])
+                expected_shape = tuple(metadata[ome_tiff_writer.SHAPE_KEY])
                 if expected_shape[-2:] != image.shape[-2:]:
                     raise ValueError("Image dimensions do not match existing OME memmap stack")
-                if not metadata.get("channel_names") and info.channel_names:
-                    metadata["channel_names"] = info.channel_names
+                # acquisition_info is guaranteed non-None here (validated in run())
+                if not metadata.get(ome_tiff_writer.CHANNEL_NAMES_KEY) and self.acquisition_info.channel_names:
+                    metadata[ome_tiff_writer.CHANNEL_NAMES_KEY] = self.acquisition_info.channel_names
 
-            target_dtype = np.dtype(metadata["dtype"])
+            target_dtype = np.dtype(metadata[ome_tiff_writer.DTYPE_KEY])
             image_to_store = image if image.dtype == target_dtype else image.astype(target_dtype)
 
             time_point = int(info.time_point)
             z_index = int(info.z_index)
             channel_index = int(info.configuration_idx)
-            shape = tuple(metadata["shape"])
+            shape = tuple(metadata[ome_tiff_writer.SHAPE_KEY])
             if not (0 <= time_point < shape[0]):
                 raise ValueError("Time point index out of range for OME stack")
             if not (0 <= z_index < shape[1]):
@@ -230,15 +282,20 @@ class SaveImageJob(Job):
 
             metadata = ome_tiff_writer.update_plane_metadata(metadata, info)
             index_key = f"{time_point}-{channel_index}-{z_index}"
-            if index_key not in metadata["written_indices"]:
-                metadata["written_indices"].append(index_key)
-                metadata["saved_count"] = len(metadata["written_indices"])
+            if index_key not in metadata[ome_tiff_writer.WRITTEN_INDICES_KEY]:
+                metadata[ome_tiff_writer.WRITTEN_INDICES_KEY].append(index_key)
+                metadata[ome_tiff_writer.SAVED_COUNT_KEY] = len(metadata[ome_tiff_writer.WRITTEN_INDICES_KEY])
 
+            # Check if all images have been saved
+            is_complete = metadata[ome_tiff_writer.SAVED_COUNT_KEY] >= metadata[ome_tiff_writer.EXPECTED_COUNT_KEY]
+            if is_complete:
+                metadata[ome_tiff_writer.COMPLETED_KEY] = True
+
+            # Write metadata (includes completed flag if acquisition is done)
             ome_tiff_writer.write_metadata(metadata_path, metadata)
 
-            if metadata["saved_count"] >= metadata["expected_count"]:
-                metadata["completed"] = True
-                ome_tiff_writer.write_metadata(metadata_path, metadata)
+            if is_complete:
+                # Finalize OME-XML and clean up temporary files
                 with tifffile.TiffFile(output_path) as tif:
                     current_xml = tif.ome_metadata
                 ome_xml = ome_tiff_writer.augment_ome_xml(current_xml, metadata)
@@ -246,8 +303,17 @@ class SaveImageJob(Job):
                 if os.path.exists(metadata_path):
                     os.remove(metadata_path)
 
-        if os.path.exists(lock_path):
-            os.remove(lock_path)
+        # Clean up lock file after lock is released (only when acquisition completed).
+        # Race condition note: Between releasing the lock and this cleanup, another process
+        # could theoretically acquire the same lock path. However:
+        # 1. We only attempt removal if metadata_path is gone (acquisition completed)
+        # 2. If another process holds the lock, os.remove fails with OSError (caught below)
+        # 3. This is best-effort cleanup; stale locks are also cleaned by cleanup_stale_metadata_files
+        try:
+            if not os.path.exists(metadata_path):
+                os.remove(lock_path)
+        except OSError:
+            pass  # Lock held by another process, already removed, or platform-specific issue
 
 
 # These are debugging jobs - they should not be used in normal usage!
@@ -470,16 +536,38 @@ class DownsampledViewJob(Job):
 
 
 class JobRunner(multiprocessing.Process):
-    def __init__(self):
+    def __init__(
+        self,
+        acquisition_info: Optional[AcquisitionInfo] = None,
+        cleanup_stale_ome_files: bool = False,
+    ):
         super().__init__()
         self._log = squid.logging.get_logger(__class__.__name__)
+        self._acquisition_info = acquisition_info
 
         self._input_queue: multiprocessing.Queue = multiprocessing.Queue()
         self._input_timeout = 1.0
         self._output_queue: multiprocessing.Queue = multiprocessing.Queue()
         self._shutdown_event: multiprocessing.Event = multiprocessing.Event()
 
+        # Clean up stale metadata files from previous crashed acquisitions
+        # Only run when explicitly requested (i.e., when OME-TIFF saving is being used)
+        if cleanup_stale_ome_files:
+            removed = ome_tiff_writer.cleanup_stale_metadata_files()
+            if removed:
+                self._log.info(f"Cleaned up {len(removed)} stale OME-TIFF metadata files")
+
     def dispatch(self, job: Job):
+        # Inject acquisition_info into SaveOMETiffJob instances before serialization.
+        # The job object is pickled when placed in the queue, so injection must happen here.
+        if isinstance(job, SaveOMETiffJob):
+            if self._acquisition_info is None:
+                raise ValueError(
+                    "Cannot dispatch SaveOMETiffJob: JobRunner was initialized without acquisition_info. "
+                    "When using OME-TIFF saving, initialize JobRunner with an AcquisitionInfo instance."
+                )
+            job.acquisition_info = self._acquisition_info
+
         self._input_queue.put_nowait(job)
 
         return True

@@ -8,7 +8,6 @@ PIEZO_STEP_UM = 10.0
 import os
 import sys
 import tempfile
-import types
 import warnings
 import xml.etree.ElementTree as ET
 import time
@@ -25,40 +24,12 @@ if str(PROJECT_ROOT) not in sys.path:
 os.chdir(PROJECT_ROOT)
 
 
-def _ensure_dependency_stubs() -> None:
-    """Provide minimal substitutes for optional runtime dependencies."""
-
-    if "cv2" not in sys.modules:
-        cv2_stub = types.ModuleType("cv2")
-        cv2_stub.COLOR_RGB2GRAY = 0
-
-        def _cvt_color(image: np.ndarray, _: int) -> np.ndarray:
-            if image.ndim == 3:
-                return image.mean(axis=-1).astype(image.dtype)
-            return image
-
-        cv2_stub.cvtColor = _cvt_color  # type: ignore[attr-defined]
-        sys.modules["cv2"] = cv2_stub
-
-    if "git" not in sys.modules:
-        git_stub = types.ModuleType("git")
-
-        class _Repo:
-            def __init__(self, *args, **kwargs):
-                raise RuntimeError("gitpython not available in test stub")
-
-        git_stub.Repo = _Repo  # type: ignore[attr-defined]
-        sys.modules["git"] = git_stub
-
-
 @pytest.mark.parametrize("shape", [(64, 48), (32, 32)])
 def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
-    _ensure_dependency_stubs()
-
     # Imports that rely on the stubs and project path
     import control._def as _def
     from control._def import FileSavingOption
-    from control.core.job_processing import SaveImageJob, CaptureInfo, JobImage
+    from control.core.job_processing import SaveOMETiffJob, CaptureInfo, JobImage, AcquisitionInfo
     from control.utils_config import ChannelMode
     import squid.abc
 
@@ -95,6 +66,19 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
             pos_iter = iter(positions)
 
             channel_names = [channel.name for channel in channels]
+
+            acquisition_info = AcquisitionInfo(
+                total_time_points=total_timepoints,
+                total_z_levels=total_z,
+                total_channels=total_channels,
+                channel_names=channel_names,
+                experiment_path=str(experiment_dir),
+                time_increment_s=1.5,
+                physical_size_z_um=4.5,
+                physical_size_x_um=0.75,
+                physical_size_y_um=0.8,
+            )
+
             for t in range(total_timepoints):
                 time_point_dir = experiment_dir / f"{t:03d}"
                 time_point_dir.mkdir(parents=True, exist_ok=True)
@@ -113,20 +97,13 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
                             configuration_idx=c,
                             z_piezo_um=float(z) * PIEZO_STEP_UM,
                             time_point=t,
-                            total_time_points=total_timepoints,
-                            total_z_levels=total_z,
-                            total_channels=total_channels,
-                            channel_names=channel_names,
-                            experiment_path=str(experiment_dir),
-                            time_increment_s=1.5,
-                            physical_size_z_um=4.5,
-                            physical_size_x_um=0.75,
-                            physical_size_y_um=0.8,
                         )
-                        job = SaveImageJob(
+                        job = SaveOMETiffJob(
                             capture_info=capture_info,
                             capture_image=JobImage(image_array=image),
                         )
+                        # Manually inject acquisition_info (normally done by JobRunner)
+                        job.acquisition_info = acquisition_info
                         assert job.run()
 
             output_path = experiment_dir / "ome_tiff" / "1_0.ome.tiff"
@@ -200,3 +177,124 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
             assert all(not path.name.endswith("_tczyx.dat") for path in ome_dir_contents)
     finally:
         _def.FILE_SAVING_OPTION = original_option
+
+
+def test_job_runner_injects_acquisition_info() -> None:
+    """Test that JobRunner.dispatch() properly injects acquisition_info into SaveOMETiffJob."""
+    from control.core.job_processing import SaveOMETiffJob, CaptureInfo, JobImage, AcquisitionInfo, JobRunner
+    from control.utils_config import ChannelMode
+    import squid.abc
+
+    # Create test data
+    acquisition_info = AcquisitionInfo(
+        total_time_points=1,
+        total_z_levels=1,
+        total_channels=1,
+        channel_names=["DAPI"],
+        experiment_path=os.path.join(tempfile.gettempdir(), "test"),
+        time_increment_s=1.0,
+        physical_size_z_um=1.0,
+        physical_size_x_um=0.5,
+        physical_size_y_um=0.5,
+    )
+
+    channel = ChannelMode(
+        id="1",
+        name="DAPI",
+        exposure_time=10.0,
+        analog_gain=1.0,
+        illumination_source=1,
+        illumination_intensity=5.0,
+        z_offset=0.0,
+    )
+
+    capture_info = CaptureInfo(
+        position=squid.abc.Pos(x_mm=0.0, y_mm=0.0, z_mm=0.0, theta_rad=None),
+        z_index=0,
+        capture_time=time.time(),
+        configuration=channel,
+        save_directory=os.path.join(tempfile.gettempdir(), "test"),
+        file_id="test_0_0_0",
+        region_id=1,
+        fov=0,
+        configuration_idx=0,
+        z_piezo_um=0.0,
+        time_point=0,
+    )
+
+    image = np.zeros((32, 32), dtype=np.uint16)
+    job = SaveOMETiffJob(
+        capture_info=capture_info,
+        capture_image=JobImage(image_array=image),
+    )
+
+    # Verify acquisition_info is None before dispatch
+    assert job.acquisition_info is None
+
+    # Create JobRunner with acquisition_info and dispatch
+    runner = JobRunner(acquisition_info=acquisition_info)
+    try:
+        runner.dispatch(job)
+
+        # Verify acquisition_info was injected
+        assert job.acquisition_info is not None
+        assert job.acquisition_info.total_time_points == 1
+        assert job.acquisition_info.channel_names == ["DAPI"]
+    finally:
+        # Clean up - signal shutdown (don't call shutdown() since process wasn't started)
+        runner._shutdown_event.set()
+
+
+def test_stale_metadata_cleanup() -> None:
+    """Test that cleanup_stale_metadata_files removes orphaned (unlocked) metadata files."""
+    from control.core import utils_ome_tiff_writer as ome_tiff_writer
+
+    # Create a fake orphaned metadata file in the system temp directory
+    # (cleanup_stale_metadata_files looks in tempfile.gettempdir() for squid_ome_* files)
+    orphaned_metadata_path = os.path.join(tempfile.gettempdir(), "squid_ome_teststale123_metadata.json")
+    try:
+        with open(orphaned_metadata_path, "w") as f:
+            f.write("{}")
+
+        # Run cleanup - file should be removed since it's not locked
+        removed = ome_tiff_writer.cleanup_stale_metadata_files()
+
+        # Verify the file was removed
+        assert orphaned_metadata_path in removed
+        assert not os.path.exists(orphaned_metadata_path)
+    finally:
+        # Clean up in case the test fails before cleanup runs
+        if os.path.exists(orphaned_metadata_path):
+            os.remove(orphaned_metadata_path)
+
+
+def test_job_runner_cleanup_flag() -> None:
+    """Test that JobRunner only runs cleanup when cleanup_stale_ome_files=True."""
+    from unittest.mock import patch
+    from control.core.job_processing import JobRunner, AcquisitionInfo
+
+    acquisition_info = AcquisitionInfo(
+        total_time_points=1,
+        total_z_levels=1,
+        total_channels=1,
+        channel_names=["DAPI"],
+    )
+
+    # Test that cleanup is NOT called when flag is False (default)
+    with patch("control.core.job_processing.ome_tiff_writer.cleanup_stale_metadata_files") as mock_cleanup:
+        runner = JobRunner(acquisition_info=acquisition_info, cleanup_stale_ome_files=False)
+        try:
+            mock_cleanup.assert_not_called()
+        finally:
+            # Signal shutdown (don't call shutdown() since process wasn't started)
+            runner._shutdown_event.set()
+
+    # Test that cleanup IS called when flag is True
+    with patch("control.core.job_processing.ome_tiff_writer.cleanup_stale_metadata_files") as mock_cleanup:
+        mock_cleanup.return_value = []
+        runner = JobRunner(acquisition_info=acquisition_info, cleanup_stale_ome_files=True)
+        try:
+            mock_cleanup.assert_called_once()
+        finally:
+            # Signal shutdown (don't call shutdown() since process wasn't started)
+            runner._shutdown_event.set()
