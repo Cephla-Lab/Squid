@@ -298,8 +298,11 @@ class JobRunner(multiprocessing.Process):
                 self._log.info(f"Cleaned up {len(removed)} stale OME-TIFF metadata files")
 
     def dispatch(self, job: Job):
-        # Inject acquisition_info into SaveOMETiffJob instances
-        if isinstance(job, SaveOMETiffJob) and self._acquisition_info is not None:
+        # Inject acquisition_info into SaveOMETiffJob instances before serialization.
+        # The job object is pickled when placed in the queue, so injection must happen here.
+        if isinstance(job, SaveOMETiffJob):
+            if self._acquisition_info is None:
+                raise ValueError("Cannot dispatch SaveOMETiffJob: JobRunner was initialized without acquisition_info.")
             job.acquisition_info = self._acquisition_info
 
         self._input_queue.put_nowait(job)

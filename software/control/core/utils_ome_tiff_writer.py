@@ -359,13 +359,16 @@ def cleanup_stale_metadata_files(max_age_seconds: float = STALE_METADATA_THRESHO
                 removed.append(metadata_path)
                 # Also try to remove associated lock file
                 lock_path = metadata_path + ".lock"
-                if os.path.exists(lock_path):
-                    try:
-                        os.remove(lock_path)
-                        removed.append(lock_path)
-                    except OSError:
-                        pass  # Lock file may be held by another process
+                try:
+                    os.remove(lock_path)
+                    removed.append(lock_path)
+                except FileNotFoundError:
+                    pass  # Lock file may have been removed by another process
+                except OSError:
+                    pass  # Lock file may be held by another process
+        except FileNotFoundError:
+            pass  # Metadata file may have been removed by another process
         except OSError:
-            pass  # File may have been removed by another process
+            pass  # Other OS errors (permissions, etc.)
 
     return removed
