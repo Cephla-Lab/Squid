@@ -367,19 +367,33 @@ class MicroscopeControlServer:
         # For now, return not implemented
         return {"error": "Autofocus via control server not yet implemented"}
 
-    def _cmd_acquire_laser_af_image(self, save_path: Optional[str] = None) -> Dict[str, Any]:
-        """Acquire an image from the laser autofocus camera."""
+    def _cmd_acquire_laser_af_image(self, save_path: Optional[str] = None, use_last_frame: bool = True) -> Dict[str, Any]:
+        """Acquire an image from the laser autofocus camera.
+
+        Args:
+            save_path: Optional path to save the image
+            use_last_frame: If True, get the last captured frame. If False, trigger a new capture.
+        """
         if not self.microscope.addons.camera_focus:
             return {"error": "Laser AF camera not available"}
 
         camera_focus = self.microscope.addons.camera_focus
+        image = None
 
-        # Send trigger and read frame
-        camera_focus.send_trigger()
-        image = camera_focus.read_frame()
+        if use_last_frame:
+            # Get the last captured frame from the camera's buffer
+            current_frame = getattr(camera_focus, '_current_frame', None)
+            if current_frame is not None:
+                import numpy as np
+                image = np.squeeze(current_frame.frame)
+        else:
+            # Trigger a new capture
+            camera_focus.send_trigger()
+            image = camera_focus.read_frame()
 
         result = {
             "acquired": image is not None,
+            "used_last_frame": use_last_frame,
         }
 
         if image is not None and save_path:
