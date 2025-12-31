@@ -2,7 +2,7 @@
   "mcpServers": {
     "squid-microscope": {
       "command": "python3",
-      "args": ["/Users/hongquan/Cephla Dropbox/Hongquan Li/Github/AI/agent-integration/Squid-microscope/software/mcp_microscope_server.py"]
+      "args": ["./mcp_microscope_server.py"]
     }
   }
 }

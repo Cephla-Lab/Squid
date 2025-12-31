@@ -13,10 +13,19 @@ import inspect
 import json
 import socket
 import threading
+import time
 import traceback
 from typing import Any, Callable, Dict, List, Optional, get_type_hints
 
 import squid.logging
+
+# Qt imports for thread-safe GUI operations
+try:
+    from qtpy.QtCore import QTimer
+
+    QT_AVAILABLE = True
+except ImportError:
+    QT_AVAILABLE = False
 
 try:
     from pydantic import Field
@@ -63,6 +72,7 @@ def resolve_field_value(value, default=None):
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5050
+MAX_BUFFER_SIZE = 1 * 1024 * 1024  # 1 MB limit to prevent memory exhaustion
 
 
 def schema_method(func: Callable) -> Callable:
@@ -116,7 +126,7 @@ def schema_method(func: Callable) -> Callable:
 
                 # Check for Optional (Union with None)
                 if hint.__origin__ is typing.Union:
-                    args = [a for a in hint.__args__ if a is not type(None)]
+                    args = [a for a in hint.__args__ if a is not None]
                     if len(args) == 1:
                         actual_type = args[0]
 
@@ -278,7 +288,7 @@ class MicroscopeControlServer:
             try:
                 self._server_socket.close()
             except Exception:
-                pass
+                pass  # Ignore errors during socket cleanup on shutdown
         if self._thread:
             self._thread.join(timeout=2.0)
         self._log.info("Microscope control server stopped")
@@ -322,6 +332,10 @@ class MicroscopeControlServer:
                 if not chunk:
                     break
                 buffer += chunk
+                if len(buffer) > MAX_BUFFER_SIZE:
+                    response = {"success": False, "error": "Request too large"}
+                    client_socket.sendall((json.dumps(response) + "\n").encode("utf-8"))
+                    return
                 if b"\n" in buffer:
                     break
 
@@ -359,7 +373,7 @@ class MicroscopeControlServer:
             try:
                 client_socket.close()
             except Exception:
-                pass
+                pass  # Ignore errors during client socket cleanup
 
     # ==========================================================================
     # Command implementations
@@ -421,11 +435,11 @@ class MicroscopeControlServer:
     @schema_method
     def _cmd_home(
         self,
-        x: bool = Field(True, description="Home X axis"),
-        y: bool = Field(True, description="Home Y axis"),
-        z: bool = Field(True, description="Home Z axis"),
+        x: bool = Field(True, description="Include X axis in homing (all axes home together)"),
+        y: bool = Field(True, description="Include Y axis in homing (all axes home together)"),
+        z: bool = Field(True, description="Include Z axis in homing (all axes home together)"),
     ) -> Dict[str, Any]:
-        """Home the stage axes to their reference positions."""
+        """Home the stage to reference position. Note: All axes home together; individual axis homing not supported."""
         if x or y or z:
             self.microscope.home_xyz()
         pos = self.microscope.stage.get_pos()
@@ -881,8 +895,12 @@ class MicroscopeControlServer:
         if not self.multipoint_controller.acquisition_in_progress():
             return {"error": "No acquisition in progress"}
 
-        # Use the controller's abort mechanism
-        self.multipoint_controller.request_abort_aquisition()
+        # Use the controller's abort mechanism (handle both spellings for compatibility)
+        if hasattr(self.multipoint_controller, "request_abort_acquisition"):
+            self.multipoint_controller.request_abort_acquisition()
+        else:
+            # Legacy misspelled method name
+            self.multipoint_controller.request_abort_aquisition()
         return {"aborted": True}
 
     @schema_method
@@ -897,9 +915,16 @@ class MicroscopeControlServer:
         if not hasattr(self.gui, "performanceModeToggle"):
             return {"error": "Performance mode toggle not available in GUI"}
 
-        # Toggle the button which triggers the mode change
-        self.gui.performanceModeToggle.setChecked(enabled)
-        self.gui.togglePerformanceMode()
+        # Use QTimer.singleShot to safely modify Qt widgets from the socket thread.
+        # This schedules the call to run on the Qt main thread event loop.
+        if QT_AVAILABLE:
+            # Thread-safe: schedule toggle on main Qt thread
+            QTimer.singleShot(0, lambda: self.gui.performanceModeToggle.setChecked(enabled))
+            # Give Qt event loop time to process
+            time.sleep(0.1)
+        else:
+            # Fallback: direct call (may cause issues if called from non-Qt thread)
+            self.gui.performanceModeToggle.setChecked(enabled)
 
         return {
             "performance_mode": self.gui.performance_mode,
@@ -994,7 +1019,30 @@ class MicroscopeControlServer:
         }
 
         try:
-            exec(code, {"__builtins__": __builtins__, "np": np}, local_vars)
+            # Create a restricted builtins dict - exclude dangerous recursive execution functions
+            # while keeping useful ones for microscope scripting
+            safe_builtins = {
+                k: v
+                for k, v in __builtins__.items()
+                if k
+                not in (
+                    "eval",
+                    "exec",
+                    "compile",
+                    "__import__",
+                    "open",  # Use microscope save methods instead
+                    "input",
+                    "breakpoint",
+                )
+            }
+            # Add back controlled imports
+            safe_builtins["__import__"] = lambda name, *args, **kwargs: (
+                __import__(name, *args, **kwargs)
+                if name in ("numpy", "math", "time", "datetime", "json", "os.path")
+                else (_ for _ in ()).throw(ImportError(f"Import of '{name}' not allowed"))
+            )
+
+            exec(code, {"__builtins__": safe_builtins, "np": np}, local_vars)
 
             response = {}
 
@@ -1003,8 +1051,6 @@ class MicroscopeControlServer:
             if result is not None:
                 # Try to serialize, fall back to str
                 try:
-                    import json
-
                     json.dumps(result)  # Test if serializable
                     response["result"] = result
                 except (TypeError, ValueError):
@@ -1095,6 +1141,8 @@ def send_command(
             if not chunk:
                 break
             buffer += chunk
+            if len(buffer) > MAX_BUFFER_SIZE:
+                raise ValueError("Response too large")
             if b"\n" in buffer:
                 break
 

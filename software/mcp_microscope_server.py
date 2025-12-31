@@ -43,6 +43,9 @@ DEFAULT_PORT = 5050
 _schemas_cache: Optional[dict] = None
 
 
+MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10 MB limit to prevent memory exhaustion
+
+
 def send_command(
     command: str,
     params: Optional[dict] = None,
@@ -65,6 +68,8 @@ def send_command(
                 if not chunk:
                     break
                 buffer += chunk
+                if len(buffer) > MAX_BUFFER_SIZE:
+                    return {"success": False, "error": "Response too large"}
                 if b"\n" in buffer:
                     break
 

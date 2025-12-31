@@ -88,7 +88,7 @@ if __name__ == "__main__":
         control_server.start()
         log.info(f"MCP control server started on {CONTROL_SERVER_HOST}:{CONTROL_SERVER_PORT}")
 
-        # Add python_exec toggle to Settings menu
+        # Add MCP Python Exec toggle and Launch Claude Code to Settings menu
         settings_menu = None
         for action in menu_bar.actions():
             if action.text() == "Settings":
