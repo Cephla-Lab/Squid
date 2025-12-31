@@ -36,6 +36,8 @@ class AcquisitionInfo:
     physical_size_z_um: Optional[float] = None
     physical_size_x_um: Optional[float] = None
     physical_size_y_um: Optional[float] = None
+
+
 from . import utils_ome_tiff_writer as ome_tiff_writer
 from .downsampled_views import (
     crop_overlap,
