@@ -233,15 +233,16 @@ def test_job_runner_injects_acquisition_info() -> None:
 
     # Create JobRunner with acquisition_info and dispatch
     runner = JobRunner(acquisition_info=acquisition_info)
-    runner.dispatch(job)
+    try:
+        runner.dispatch(job)
 
-    # Verify acquisition_info was injected
-    assert job.acquisition_info is not None
-    assert job.acquisition_info.total_time_points == 1
-    assert job.acquisition_info.channel_names == ["DAPI"]
-
-    # Clean up - don't actually start the runner process
-    runner._shutdown_event.set()
+        # Verify acquisition_info was injected
+        assert job.acquisition_info is not None
+        assert job.acquisition_info.total_time_points == 1
+        assert job.acquisition_info.channel_names == ["DAPI"]
+    finally:
+        # Clean up - signal shutdown (don't call shutdown() since process wasn't started)
+        runner._shutdown_event.set()
 
 
 def test_stale_metadata_cleanup() -> None:
@@ -282,12 +283,18 @@ def test_job_runner_cleanup_flag() -> None:
     # Test that cleanup is NOT called when flag is False (default)
     with patch("control.core.job_processing.ome_tiff_writer.cleanup_stale_metadata_files") as mock_cleanup:
         runner = JobRunner(acquisition_info=acquisition_info, cleanup_stale_ome_files=False)
-        mock_cleanup.assert_not_called()
-        runner._shutdown_event.set()
+        try:
+            mock_cleanup.assert_not_called()
+        finally:
+            # Signal shutdown (don't call shutdown() since process wasn't started)
+            runner._shutdown_event.set()
 
     # Test that cleanup IS called when flag is True
     with patch("control.core.job_processing.ome_tiff_writer.cleanup_stale_metadata_files") as mock_cleanup:
         mock_cleanup.return_value = []
         runner = JobRunner(acquisition_info=acquisition_info, cleanup_stale_ome_files=True)
-        mock_cleanup.assert_called_once()
-        runner._shutdown_event.set()
+        try:
+            mock_cleanup.assert_called_once()
+        finally:
+            # Signal shutdown (don't call shutdown() since process wasn't started)
+            runner._shutdown_event.set()

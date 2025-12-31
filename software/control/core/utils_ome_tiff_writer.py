@@ -158,7 +158,7 @@ def update_plane_metadata(metadata: Dict[str, Any], info: "CaptureInfo") -> Dict
 
 def metadata_for_imwrite(metadata: Dict[str, Any]) -> Dict[str, Any]:
     channel_names = metadata.get(CHANNEL_NAMES_KEY) or []
-    meta: Dict[str, Any] = {"axes": "TZCYX"}
+    meta: Dict[str, Any] = {AXES_KEY: "TZCYX"}
     if channel_names:
         meta["Channel"] = {"Name": channel_names}
     if metadata.get(TIME_INCREMENT_KEY) is not None:
