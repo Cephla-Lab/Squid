@@ -111,6 +111,27 @@ microscope_ping
 | `set_performance_mode` | `enabled` | Toggle performance mode (faster, less RAM) |
 | `get_performance_mode` | - | Check performance mode state |
 
+### Direct Python Access
+
+| Command | Parameters | Description |
+|---------|------------|-------------|
+| `python_exec` | `code` | Execute Python with direct access to all microscope objects |
+
+**Available objects in `python_exec`:**
+- `microscope` - Main Microscope instance
+- `stage` - microscope.stage (shortcut)
+- `camera` - microscope.camera (shortcut)
+- `live_controller` - microscope.live_controller
+- `objective_store` - microscope.objective_store
+- `multipoint_controller` - MultiPointController
+- `scan_coordinates` - ScanCoordinates
+- `gui` - GUI reference
+- `np` - numpy module
+
+**Special variables:**
+- `result` - Set to return JSON-serializable data
+- `image` - Set to ndarray to auto-save and return path
+
 ## Examples
 
 ### Basic Imaging
@@ -143,6 +164,36 @@ microscope_run_acquisition(
 
 # Check progress
 microscope_get_acquisition_status()
+```
+
+### Direct Python Access
+
+```python
+# Explore available objects
+microscope_python_exec(code="result = dir(microscope)")
+
+# Get position using direct access
+microscope_python_exec(code="""
+pos = stage.get_pos()
+result = {'x': pos.x_mm, 'y': pos.y_mm, 'z': pos.z_mm}
+""")
+
+# Acquire and return image
+microscope_python_exec(code="""
+image = microscope.acquire_image()
+result = f"Acquired {image.shape}, mean={image.mean():.1f}"
+""")
+# Then use Read tool on returned image_path to view it
+
+# Complex operations
+microscope_python_exec(code="""
+# Access any nested object
+af_camera = microscope.addons.camera_focus
+if af_camera:
+    result = {'has_af': True, 'methods': [m for m in dir(af_camera) if not m.startswith('_')]}
+else:
+    result = {'has_af': False}
+""")
 ```
 
 ## Protocol Details

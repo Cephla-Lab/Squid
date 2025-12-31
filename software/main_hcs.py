@@ -86,4 +86,42 @@ if __name__ == "__main__":
         control_server.start()
         log.info(f"MCP control server started on {CONTROL_SERVER_HOST}:{CONTROL_SERVER_PORT}")
 
+        # Add python_exec toggle to Settings menu
+        settings_menu = None
+        for action in menu_bar.actions():
+            if action.text() == "Settings":
+                settings_menu = action.menu()
+                break
+
+        if settings_menu:
+            settings_menu.addSeparator()
+            python_exec_action = QAction("Enable MCP Python Exec", win)
+            python_exec_action.setCheckable(True)
+            python_exec_action.setChecked(False)
+            python_exec_action.setToolTip("Allow MCP clients (e.g., Claude Code) to execute arbitrary Python code")
+
+            def on_python_exec_toggled(checked):
+                if checked:
+                    reply = QMessageBox.warning(
+                        win,
+                        "Security Warning",
+                        "Enabling MCP Python Exec allows AI agents to execute arbitrary Python code "
+                        "with full access to microscope hardware and system resources.\n\n"
+                        "Only enable this if you trust the connected MCP client.\n\n"
+                        "Warning: Even trusted clients can execute code that may cause unintended "
+                        "damage to hardware or samples due to bugs or mistakes.\n\n"
+                        "Do you want to continue?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No,
+                    )
+                    if reply == QMessageBox.Yes:
+                        control_server.set_python_exec_enabled(True)
+                    else:
+                        python_exec_action.setChecked(False)
+                else:
+                    control_server.set_python_exec_enabled(False)
+
+            python_exec_action.toggled.connect(on_python_exec_toggled)
+            settings_menu.addAction(python_exec_action)
+
     sys.exit(app.exec_())

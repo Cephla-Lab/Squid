@@ -226,6 +226,7 @@ class MicroscopeControlServer:
         self._server_socket: Optional[socket.socket] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._python_exec_enabled = False  # Disabled by default for security
 
         # Register available commands
         self._commands: Dict[str, Callable] = {
@@ -255,6 +256,8 @@ class MicroscopeControlServer:
             "set_performance_mode": self._cmd_set_performance_mode,
             "get_performance_mode": self._cmd_get_performance_mode,
             "get_schemas": self._cmd_get_schemas,
+            "python_exec": self._cmd_python_exec,
+            "get_python_exec_status": self._cmd_get_python_exec_status,
         }
 
     def start(self):
@@ -927,6 +930,133 @@ class MicroscopeControlServer:
                     "required": [],
                 }
         return {"schemas": schemas}
+
+    @schema_method
+    def _cmd_python_exec(
+        self,
+        code: str = Field(
+            ..., description="Python code to execute. Set 'result' for return value, 'image' for auto-saved images."
+        ),
+    ) -> Dict[str, Any]:
+        """
+        Execute Python code with direct access to microscope objects.
+
+        Available objects in scope:
+        - microscope: Main Microscope instance
+        - stage: microscope.stage (shortcut)
+        - camera: microscope.camera (shortcut)
+        - live_controller: microscope.live_controller (shortcut)
+        - objective_store: microscope.objective_store (shortcut)
+        - multipoint_controller: MultiPointController (if available)
+        - scan_coordinates: ScanCoordinates (if available)
+        - np: numpy module
+
+        Special variables:
+        - result: Set this to return data (will be JSON serialized)
+        - image: Set to ndarray to auto-save and return image path
+
+        Example:
+            code = '''
+            pos = stage.get_pos()
+            result = {'x': pos.x_mm, 'y': pos.y_mm}
+            '''
+
+        Example with image:
+            code = '''
+            image = camera.read_frame()
+            result = f"Acquired {image.shape}"
+            '''
+        """
+        # Security check
+        if not self._python_exec_enabled:
+            return {
+                "error": "python_exec is disabled. Enable it in the GUI first for security.",
+                "enabled": False,
+            }
+
+        import numpy as np
+        import os
+        import tempfile
+
+        # Build execution namespace with microscope objects
+        local_vars = {
+            "microscope": self.microscope,
+            "stage": self.microscope.stage,
+            "camera": self.microscope.camera,
+            "live_controller": self.microscope.live_controller,
+            "objective_store": self.microscope.objective_store,
+            "multipoint_controller": self.multipoint_controller,
+            "scan_coordinates": self.scan_coordinates,
+            "gui": self.gui,
+            "np": np,
+            "result": None,
+            "image": None,
+        }
+
+        try:
+            exec(code, {"__builtins__": __builtins__, "np": np}, local_vars)
+
+            response = {}
+
+            # Handle result
+            result = local_vars.get("result")
+            if result is not None:
+                # Try to serialize, fall back to str
+                try:
+                    import json
+
+                    json.dumps(result)  # Test if serializable
+                    response["result"] = result
+                except (TypeError, ValueError):
+                    response["result"] = str(result)
+
+            # Handle image auto-save
+            img = local_vars.get("image")
+            if img is not None and isinstance(img, np.ndarray):
+                try:
+                    import tifffile
+
+                    path = os.path.join(tempfile.gettempdir(), "claude_microscope_image.tiff")
+                    tifffile.imwrite(path, img)
+                    response["image_path"] = path
+                except ImportError:
+                    # Fallback to numpy
+                    path = os.path.join(tempfile.gettempdir(), "claude_microscope_image.npy")
+                    np.save(path, img)
+                    response["image_path"] = path
+
+                response["image_shape"] = list(img.shape)
+                response["image_dtype"] = str(img.dtype)
+
+            return response
+
+        except Exception as e:
+            self._log.error(f"python_exec failed: {e}")
+            import traceback
+
+            return {"error": str(e), "traceback": traceback.format_exc()}
+
+    @schema_method
+    def _cmd_get_python_exec_status(self) -> Dict[str, Any]:
+        """Check if python_exec is currently enabled."""
+        return {"enabled": self._python_exec_enabled}
+
+    def set_python_exec_enabled(self, enabled: bool):
+        """
+        Enable or disable python_exec command.
+
+        This method should be called from the GUI (e.g., checkbox toggle).
+        python_exec is disabled by default for security - users must
+        explicitly enable it.
+
+        Args:
+            enabled: True to enable python_exec, False to disable.
+        """
+        self._python_exec_enabled = enabled
+        if enabled:
+            self._log.warning("python_exec has been ENABLED via GUI")
+        else:
+            self._log.info("python_exec has been disabled via GUI")
 
 
 def send_command(
