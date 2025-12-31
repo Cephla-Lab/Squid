@@ -24,9 +24,17 @@ This document describes how to use the Model Context Protocol (MCP) integration 
 
 ## Setup
 
-### 1. Configure Claude Code
+### Option A: Launch from GUI (Recommended)
 
-Create a `.mcp.json` file in your project directory (or `~/.claude/.mcp.json` for global config):
+1. Start the Squid GUI
+2. Go to **Settings → Launch Claude Code**
+3. A terminal will open with Claude Code running in the correct directory
+
+This automatically configures the MCP connection.
+
+### Option B: Manual Configuration
+
+Create a `.mcp.json` file in the `software` directory:
 
 ```json
 {
@@ -39,16 +47,26 @@ Create a `.mcp.json` file in your project directory (or `~/.claude/.mcp.json` fo
 }
 ```
 
-### 2. Start the Squid GUI
+Then start Claude Code from the `software` directory:
+```bash
+cd /path/to/Squid-microscope/software
+claude
+```
 
-The MicroscopeControlServer starts automatically with the GUI on port 5050.
+### Verify Connection
 
-### 3. Verify Connection
-
-In Claude Code, the microscope tools will be available. Test with:
+In Claude Code, test the connection with:
 ```
 microscope_ping
 ```
+
+### Enable Python Exec (Optional)
+
+The `python_exec` command is disabled by default for security. To enable it:
+
+1. In Squid GUI, go to **Settings → Enable MCP Python Exec**
+2. Read and accept the security warning
+3. The setting resets to disabled when the GUI restarts
 
 ## Available Commands
 
@@ -116,6 +134,9 @@ microscope_ping
 | Command | Parameters | Description |
 |---------|------------|-------------|
 | `python_exec` | `code` | Execute Python with direct access to all microscope objects |
+| `get_python_exec_status` | - | Check if python_exec is enabled |
+
+> **Note:** `python_exec` is disabled by default. Enable it via **Settings → Enable MCP Python Exec** in the GUI.
 
 **Available objects in `python_exec`:**
 - `microscope` - Main Microscope instance
