@@ -7,7 +7,7 @@ the Squid microscope while the GUI is running.
 
 Architecture:
 - GUI runs with MicroscopeControlServer (TCP server on port 5050)
-- This MCP server connects to the TCP server
+- This MCP server connects to the TCP server and dynamically fetches available commands
 - Claude Code connects to this MCP server via stdio
 
 Usage:
@@ -40,6 +40,9 @@ from mcp.types import TextContent, Tool
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5050
 
+# Cache for schemas (refreshed on each list_tools call)
+_schemas_cache: Optional[dict] = None
+
 
 def send_command(
     command: str,
@@ -59,7 +62,7 @@ def send_command(
 
             buffer = b""
             while True:
-                chunk = sock.recv(4096)
+                chunk = sock.recv(8192)
                 if not chunk:
                     break
                 buffer += chunk
@@ -76,275 +79,91 @@ def send_command(
         return {"success": False, "error": str(e)}
 
 
+def fetch_schemas() -> dict:
+    """Fetch command schemas from the microscope control server."""
+    global _schemas_cache
+
+    response = send_command("get_schemas", timeout=10)
+    if response.get("success"):
+        _schemas_cache = response.get("result", {}).get("schemas", {})
+    else:
+        # Return empty if server not available
+        _schemas_cache = {}
+
+    return _schemas_cache
+
+
+def schema_to_mcp_tool(command_name: str, schema: dict) -> Tool:
+    """Convert a command schema to an MCP Tool definition."""
+    # Build JSON Schema properties from the schema
+    properties = {}
+    for param_name, param_info in schema.get("parameters", {}).items():
+        prop = {"type": param_info.get("type", "string")}
+        if "description" in param_info:
+            prop["description"] = param_info["description"]
+        if "default" in param_info:
+            prop["default"] = param_info["default"]
+        if "minimum" in param_info:
+            prop["minimum"] = param_info["minimum"]
+        if "maximum" in param_info:
+            prop["maximum"] = param_info["maximum"]
+        properties[param_name] = prop
+
+    return Tool(
+        name=f"microscope_{command_name}",
+        description=schema.get("description", f"Execute {command_name} command"),
+        inputSchema={
+            "type": "object",
+            "properties": properties,
+            "required": schema.get("required", []),
+        },
+    )
+
+
 # Create MCP server
 app = Server("squid-microscope")
 
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
-    """List available microscope control tools."""
-    return [
-        Tool(
-            name="microscope_get_position",
-            description="Get the current XYZ stage position of the microscope in millimeters",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="microscope_move_to",
-            description="Move the microscope stage to an absolute XYZ position. Coordinates are in millimeters.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "x_mm": {
-                        "type": "number",
-                        "description": "Target X position in millimeters (optional)",
-                    },
-                    "y_mm": {
-                        "type": "number",
-                        "description": "Target Y position in millimeters (optional)",
-                    },
-                    "z_mm": {
-                        "type": "number",
-                        "description": "Target Z position in millimeters (optional)",
-                    },
-                    "blocking": {
-                        "type": "boolean",
-                        "description": "Wait for move to complete (default: true)",
-                        "default": True,
-                    },
+    """List available microscope control tools by fetching schemas from the server."""
+    # Fetch schemas from the microscope control server
+    loop = asyncio.get_event_loop()
+    schemas = await loop.run_in_executor(None, fetch_schemas)
+
+    if not schemas:
+        # Return a minimal ping tool if server is not available
+        return [
+            Tool(
+                name="microscope_ping",
+                description="Check if the microscope control server is running and responsive",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
                 },
-                "required": [],
-            },
-        ),
-        Tool(
-            name="microscope_move_relative",
-            description="Move the microscope stage by a relative amount. Distances are in millimeters.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "dx_mm": {
-                        "type": "number",
-                        "description": "Relative X movement in millimeters (default: 0)",
-                        "default": 0,
-                    },
-                    "dy_mm": {
-                        "type": "number",
-                        "description": "Relative Y movement in millimeters (default: 0)",
-                        "default": 0,
-                    },
-                    "dz_mm": {
-                        "type": "number",
-                        "description": "Relative Z movement in millimeters (default: 0)",
-                        "default": 0,
-                    },
-                    "blocking": {
-                        "type": "boolean",
-                        "description": "Wait for move to complete (default: true)",
-                        "default": True,
-                    },
-                },
-                "required": [],
-            },
-        ),
-        Tool(
-            name="microscope_home",
-            description="Home the microscope stage. This moves the stage to its reference/home position.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "x": {"type": "boolean", "description": "Home X axis", "default": True},
-                    "y": {"type": "boolean", "description": "Home Y axis", "default": True},
-                    "z": {"type": "boolean", "description": "Home Z axis", "default": True},
-                },
-                "required": [],
-            },
-        ),
-        Tool(
-            name="microscope_start_live",
-            description="Start live imaging mode. The camera will continuously stream images to the GUI.",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="microscope_stop_live",
-            description="Stop live imaging mode.",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="microscope_acquire_image",
-            description="Acquire a single image from the microscope camera. Optionally save to a file path.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "save_path": {
-                        "type": "string",
-                        "description": "File path to save the image (optional). Supports TIFF format.",
-                    },
-                },
-                "required": [],
-            },
-        ),
-        Tool(
-            name="microscope_set_channel",
-            description="Set the current imaging channel/mode (e.g., 'BF', 'DAPI', 'GFP', etc.)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "channel_name": {
-                        "type": "string",
-                        "description": "Name of the channel to activate",
-                    },
-                },
-                "required": ["channel_name"],
-            },
-        ),
-        Tool(
-            name="microscope_get_channels",
-            description="Get list of available imaging channels for the current objective",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="microscope_set_exposure",
-            description="Set the camera exposure time in milliseconds",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "exposure_ms": {
-                        "type": "number",
-                        "description": "Exposure time in milliseconds",
-                    },
-                    "channel": {
-                        "type": "string",
-                        "description": "Channel to set exposure for (optional, applies to current if not specified)",
-                    },
-                },
-                "required": ["exposure_ms"],
-            },
-        ),
-        Tool(
-            name="microscope_set_illumination_intensity",
-            description="Set the illumination/laser intensity for a specific channel (0-100%)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "channel": {
-                        "type": "string",
-                        "description": "Channel name",
-                    },
-                    "intensity": {
-                        "type": "number",
-                        "description": "Intensity value (0-100)",
-                    },
-                },
-                "required": ["channel", "intensity"],
-            },
-        ),
-        Tool(
-            name="microscope_get_objectives",
-            description="Get list of available objectives and the currently selected one",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="microscope_set_objective",
-            description="Set the current objective",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "objective_name": {
-                        "type": "string",
-                        "description": "Name of the objective to select",
-                    },
-                },
-                "required": ["objective_name"],
-            },
-        ),
-        Tool(
-            name="microscope_turn_on_illumination",
-            description="Turn on the illumination for the current channel",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="microscope_turn_off_illumination",
-            description="Turn off the illumination",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="microscope_get_status",
-            description="Get comprehensive status of the microscope including position, objective, exposure, etc.",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-        Tool(
-            name="microscope_ping",
-            description="Check if the microscope control server is running and responsive",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        ),
-    ]
+            )
+        ]
+
+    # Convert all schemas to MCP tools
+    tools = []
+    for command_name, schema in schemas.items():
+        # Skip get_schemas itself from the tool list
+        if command_name == "get_schemas":
+            continue
+        tools.append(schema_to_mcp_tool(command_name, schema))
+
+    return tools
 
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Handle tool calls by forwarding to microscope control server."""
-
-    # Map tool names to control server commands
-    tool_to_command = {
-        "microscope_get_position": "get_position",
-        "microscope_move_to": "move_to",
-        "microscope_move_relative": "move_relative",
-        "microscope_home": "home",
-        "microscope_start_live": "start_live",
-        "microscope_stop_live": "stop_live",
-        "microscope_acquire_image": "acquire_image",
-        "microscope_set_channel": "set_channel",
-        "microscope_get_channels": "get_channels",
-        "microscope_set_exposure": "set_exposure",
-        "microscope_set_illumination_intensity": "set_illumination_intensity",
-        "microscope_get_objectives": "get_objectives",
-        "microscope_set_objective": "set_objective",
-        "microscope_turn_on_illumination": "turn_on_illumination",
-        "microscope_turn_off_illumination": "turn_off_illumination",
-        "microscope_get_status": "get_status",
-        "microscope_ping": "ping",
-    }
-
-    if name not in tool_to_command:
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
-
-    command = tool_to_command[name]
+    # Extract command name from tool name (remove "microscope_" prefix)
+    if name.startswith("microscope_"):
+        command = name[len("microscope_") :]
+    else:
+        command = name
 
     # Run the blocking socket call in a thread pool
     loop = asyncio.get_event_loop()

@@ -86,18 +86,30 @@ def schema_method(func: Callable) -> Callable:
         # Get type hint
         if param_name in hints:
             hint = hints[param_name]
-            if hint == float:
+            # Handle Optional types (Union[X, None])
+            actual_type = hint
+            if hasattr(hint, "__origin__"):
+                import typing
+
+                # Check for Optional (Union with None)
+                if hint.__origin__ is typing.Union:
+                    args = [a for a in hint.__args__ if a is not type(None)]
+                    if len(args) == 1:
+                        actual_type = args[0]
+
+            # Map Python types to JSON Schema types
+            if actual_type == float:
                 param_info["type"] = "number"
-            elif hint == int:
+            elif actual_type == int:
                 param_info["type"] = "integer"
-            elif hint == bool:
+            elif actual_type == bool:
                 param_info["type"] = "boolean"
-            elif hint == str:
+            elif actual_type == str:
                 param_info["type"] = "string"
-            elif hasattr(hint, "__origin__"):  # List, Dict, etc.
-                if hint.__origin__ == list:
+            elif hasattr(actual_type, "__origin__"):  # List, Dict, etc.
+                if actual_type.__origin__ == list:
                     param_info["type"] = "array"
-                elif hint.__origin__ == dict:
+                elif actual_type.__origin__ == dict:
                     param_info["type"] = "object"
 
         # Get Field information
