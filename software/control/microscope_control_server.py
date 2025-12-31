@@ -25,6 +25,7 @@ try:
     PYDANTIC_AVAILABLE = True
 except ImportError:
     PYDANTIC_AVAILABLE = False
+    FieldInfo = None
 
     # Fallback Field implementation when pydantic is not available
     def Field(
@@ -36,6 +37,28 @@ except ImportError:
     ):
         """Fallback Field function when pydantic is not installed."""
         return {"default": default, "description": description, "ge": ge, "le": le}
+
+
+def resolve_field_value(value, default=None):
+    """
+    Extract actual value from a pydantic FieldInfo object.
+
+    When Field() is used as a default parameter in a regular Python function,
+    the default becomes the FieldInfo object itself. This helper extracts
+    the actual default value.
+    """
+    if PYDANTIC_AVAILABLE and isinstance(value, FieldInfo):
+        field_default = value.default
+        # Check for PydanticUndefined or Ellipsis (required field)
+        if field_default is ... or (
+            hasattr(field_default, "__class__") and "PydanticUndefinedType" in field_default.__class__.__name__
+        ):
+            return default
+        return field_default
+    elif isinstance(value, dict) and "default" in value:
+        # Fallback Field dict
+        return value.get("default", default)
+    return value
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -161,6 +184,27 @@ class MicroscopeControlServer:
 
     Runs in a background thread within the GUI process, allowing external
     tools to send commands while the GUI remains responsive.
+
+    The server uses a simple JSON-over-TCP protocol:
+    - Client sends: {"command": "cmd_name", "params": {...}}
+    - Server responds: {"success": true/false, "result": {...}} or {"error": "..."}
+
+    Commands are automatically documented via the @schema_method decorator,
+    which extracts parameter info from type hints and pydantic Field annotations.
+
+    Example usage:
+        server = MicroscopeControlServer(microscope, multipoint_controller=mpc)
+        server.start()
+        # ... server runs in background ...
+        server.stop()
+
+    Attributes:
+        microscope: The Microscope instance to control.
+        host: Server bind address (default: 127.0.0.1).
+        port: Server port (default: 5050).
+        multipoint_controller: Optional MultiPointController for acquisitions.
+        scan_coordinates: Optional ScanCoordinates for well plate scanning.
+        gui: Optional GUI reference for UI-specific operations.
     """
 
     def __init__(
@@ -616,6 +660,14 @@ class MicroscopeControlServer:
         """Run a multi-point acquisition across wells using the MultiPointController."""
         import control._def
 
+        # Resolve FieldInfo objects to actual values (fixes bug when params not provided)
+        nx = resolve_field_value(nx, 2)
+        ny = resolve_field_value(ny, 2)
+        experiment_id = resolve_field_value(experiment_id, None)
+        base_path = resolve_field_value(base_path, None)
+        wellplate_format = resolve_field_value(wellplate_format, "96 well plate")
+        overlap_percent = resolve_field_value(overlap_percent, 10.0)
+
         # Check requirements
         if not self.multipoint_controller:
             return {
@@ -720,7 +772,20 @@ class MicroscopeControlServer:
             return {"error": f"Failed to start acquisition: {str(e)}"}
 
     def _parse_wells(self, wells: str, wellplate_settings: dict) -> Dict[str, tuple]:
-        """Parse well string like 'A1:B3' or 'A1,A2,B1' into coordinates."""
+        """
+        Parse well string into stage coordinates.
+
+        Supports two formats:
+        - Range: 'A1:B3' expands to A1, A2, A3, B1, B2, B3
+        - List: 'A1,A2,B1' for specific wells
+
+        Args:
+            wells: Well selection string (e.g., 'A1:B3' or 'A1,A2,B1').
+            wellplate_settings: Dict with 'a1_x_mm', 'a1_y_mm', 'well_spacing_mm'.
+
+        Returns:
+            Dict mapping well IDs to (x_mm, y_mm) coordinates.
+        """
         import re
 
         def row_to_index(row: str) -> int:

@@ -15,13 +15,12 @@ Usage:
 2. Configure Claude Code to use this MCP server
 3. Claude Code can now call microscope control tools directly
 
-Claude Code configuration (~/.claude/claude_code_config.json):
+Claude Code configuration (.mcp.json in project directory):
 {
   "mcpServers": {
     "squid-microscope": {
-      "command": "python",
-      "args": ["/path/to/mcp_microscope_server.py"],
-      "env": {}
+      "command": "python3",
+      "args": ["/path/to/mcp_microscope_server.py"]
     }
   }
 }
