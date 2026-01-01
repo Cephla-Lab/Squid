@@ -80,7 +80,7 @@ cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Name=Squid_hcs
 Icon=$ICON_PATH
-Exec=gnome-terminal --working-directory="$SQUID_SOFTWARE_ROOT" -- /usr/bin/env python3 $SQUID_SOFTWARE_ROOT/main_hcs.py
+Exec=gnome-terminal --working-directory="$SQUID_SOFTWARE_ROOT" -e "/usr/bin/env python3 $SQUID_SOFTWARE_ROOT/main_hcs.py"
 Type=Application
 Terminal=true
 EOF
