@@ -602,8 +602,8 @@ class MicroscopeControlServer:
     def _cmd_autofocus(self) -> Dict[str, Any]:
         """Run autofocus routine (not yet implemented)."""
         # This would need to be implemented based on the autofocus controller
-        # For now, return not implemented
-        return {"error": "Autofocus via control server not yet implemented"}
+        # For now, raise not implemented
+        raise NotImplementedError("Autofocus via control server not yet implemented")
 
     @schema_method
     def _cmd_acquire_laser_af_image(
@@ -613,7 +613,7 @@ class MicroscopeControlServer:
     ) -> Dict[str, Any]:
         """Acquire an image from the laser autofocus camera."""
         if not self.microscope.addons.camera_focus:
-            return {"error": "Laser AF camera not available"}
+            raise RuntimeError("Laser AF camera not available")
 
         camera_focus = self.microscope.addons.camera_focus
         image = None
@@ -683,23 +683,21 @@ class MicroscopeControlServer:
 
         # Check requirements
         if not self.multipoint_controller:
-            return {
-                "error": "MultiPointController not available. Make sure the GUI is running with control server enabled."
-            }
+            raise RuntimeError("MultiPointController not available. Make sure the GUI is running with control server enabled.")
 
         if not self.scan_coordinates:
-            return {"error": "ScanCoordinates not available. Make sure the GUI is running with control server enabled."}
+            raise RuntimeError("ScanCoordinates not available. Make sure the GUI is running with control server enabled.")
 
         # Check if acquisition already running
         if self.multipoint_controller.acquisition_in_progress():
-            return {"error": "Acquisition already in progress"}
+            raise RuntimeError("Acquisition already in progress")
 
         # Parse well coordinates
         wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
         well_coords = self._parse_wells(wells, wellplate_settings)
 
         if not well_coords:
-            return {"error": f"Could not parse wells: {wells}"}
+            raise ValueError(f"Could not parse wells: {wells}")
 
         # Validate channels exist
         objective = self.microscope.objective_store.current_objective
@@ -710,7 +708,7 @@ class MicroscopeControlServer:
 
         invalid_channels = [ch for ch in channels if ch not in available_channel_names]
         if invalid_channels:
-            return {"error": f"Invalid channels: {invalid_channels}. Available: {available_channel_names}"}
+            raise ValueError(f"Invalid channels: {invalid_channels}. Available: {available_channel_names}")
 
         # Set up paths
         if not base_path:
@@ -782,7 +780,7 @@ class MicroscopeControlServer:
             import traceback
 
             self._log.error(traceback.format_exc())
-            return {"error": f"Failed to start acquisition: {str(e)}"}
+            raise RuntimeError(f"Failed to start acquisition: {str(e)}") from e
 
     def _parse_wells(self, wells: str, wellplate_settings: dict) -> Dict[str, tuple]:
         """
@@ -856,7 +854,7 @@ class MicroscopeControlServer:
     def _cmd_get_acquisition_status(self) -> Dict[str, Any]:
         """Get the status of the current acquisition including progress information."""
         if not self.multipoint_controller:
-            return {"error": "MultiPointController not available"}
+            raise RuntimeError("MultiPointController not available")
 
         in_progress = self.multipoint_controller.acquisition_in_progress()
 
@@ -886,10 +884,10 @@ class MicroscopeControlServer:
     def _cmd_abort_acquisition(self) -> Dict[str, Any]:
         """Abort the current running acquisition."""
         if not self.multipoint_controller:
-            return {"error": "MultiPointController not available"}
+            raise RuntimeError("MultiPointController not available")
 
         if not self.multipoint_controller.acquisition_in_progress():
-            return {"error": "No acquisition in progress"}
+            raise RuntimeError("No acquisition in progress")
 
         # Use the controller's abort mechanism (handle both spellings for compatibility)
         if hasattr(self.multipoint_controller, "request_abort_acquisition"):
@@ -906,10 +904,10 @@ class MicroscopeControlServer:
     ) -> Dict[str, Any]:
         """Enable or disable performance mode (disables mosaic view to save RAM, ~14% faster)."""
         if not self.gui:
-            return {"error": "GUI reference not available"}
+            raise RuntimeError("GUI reference not available")
 
         if not hasattr(self.gui, "performanceModeToggle"):
-            return {"error": "Performance mode toggle not available in GUI"}
+            raise RuntimeError("Performance mode toggle not available in GUI")
 
         # Use QTimer.singleShot to safely modify Qt widgets from the socket thread.
         # This schedules the call to run on the Qt main thread event loop.
@@ -931,7 +929,7 @@ class MicroscopeControlServer:
     def _cmd_get_performance_mode(self) -> Dict[str, Any]:
         """Get the current performance mode state."""
         if not self.gui:
-            return {"error": "GUI reference not available"}
+            raise RuntimeError("GUI reference not available")
 
         return {"performance_mode": getattr(self.gui, "performance_mode", False)}
 
@@ -1078,7 +1076,8 @@ class MicroscopeControlServer:
             self._log.error(f"python_exec failed: {e}")
             import traceback
 
-            return {"error": str(e), "traceback": traceback.format_exc()}
+            self._log.error(traceback.format_exc())
+            raise RuntimeError(f"python_exec failed: {str(e)}") from e
 
     @schema_method
     def _cmd_get_python_exec_status(self) -> Dict[str, Any]:
