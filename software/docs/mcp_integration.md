@@ -28,9 +28,24 @@ This document describes how to use the Model Context Protocol (MCP) integration 
 
 1. Start the Squid GUI
 2. Go to **Settings → Launch Claude Code**
-3. A terminal will open with Claude Code running in the correct directory
+3. If Claude Code is not installed, you'll be prompted to install it automatically
+4. A terminal will open with Claude Code running in the correct directory
 
-This automatically configures the MCP connection and permissions.
+This automatically:
+- Starts the MCP control server (on-demand)
+- Configures the MCP connection
+- Pre-approves all microscope commands
+
+### On-Demand Control Server
+
+The MCP control server does **not** start automatically when the GUI launches. It starts when:
+
+| Action | Result |
+|--------|--------|
+| **Settings → Launch Claude Code** | Auto-starts server, then launches Claude Code |
+| **Settings → Enable MCP Control Server** | Manually start/stop the server |
+
+This improves security by only running the server when needed.
 
 ### Pre-configured Permissions
 
@@ -246,7 +261,7 @@ The TCP protocol uses newline-delimited JSON:
 
 ### "Cannot connect to microscope"
 - Ensure the Squid GUI is running
-- Check that the control server is enabled (default: on)
+- Enable the control server via **Settings → Enable MCP Control Server** (or use **Launch Claude Code** which auto-starts it)
 - Verify port 5050 is not blocked
 
 ### Command timeout
