@@ -17,7 +17,7 @@ squid.logging.setup_uncaught_exception_logging()
 
 # app specific libraries
 import control.gui_hcs as gui
-from control._def import USE_TERMINAL_CONSOLE, ENABLE_CONTROL_SERVER, CONTROL_SERVER_HOST, CONTROL_SERVER_PORT
+from control._def import USE_TERMINAL_CONSOLE, ENABLE_MCP_SERVER, CONTROL_SERVER_HOST, CONTROL_SERVER_PORT
 import control.utils
 import control.microscope
 
@@ -25,7 +25,7 @@ import control.microscope
 if USE_TERMINAL_CONSOLE:
     from control.console import ConsoleThread
 
-if ENABLE_CONTROL_SERVER:
+if ENABLE_MCP_SERVER:
     from control.microscope_control_server import MicroscopeControlServer
     import subprocess
     import shutil
@@ -76,7 +76,7 @@ if __name__ == "__main__":
         console_thread = ConsoleThread(console_locals)
         console_thread.start()
 
-    if ENABLE_CONTROL_SERVER:
+    if ENABLE_MCP_SERVER:
         # Create control server but don't start it yet (on-demand)
         control_server = MicroscopeControlServer(
             microscope=microscope,
