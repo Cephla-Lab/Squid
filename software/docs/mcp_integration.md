@@ -30,7 +30,13 @@ This document describes how to use the Model Context Protocol (MCP) integration 
 2. Go to **Settings → Launch Claude Code**
 3. A terminal will open with Claude Code running in the correct directory
 
-This automatically configures the MCP connection.
+This automatically configures the MCP connection and permissions.
+
+### Pre-configured Permissions
+
+The repository includes `.claude/settings.json` which pre-approves all squid-microscope MCP commands. This means Claude Code won't ask for permission each time you run a microscope command.
+
+If you need to customize permissions, create `.claude/settings.local.json` (gitignored) to override the defaults.
 
 ### Option B: Manual Configuration
 
