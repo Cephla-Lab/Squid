@@ -143,6 +143,17 @@ def schema_method(func: Callable) -> Callable:
             elif hasattr(actual_type, "__origin__"):  # List, Dict, etc.
                 if actual_type.__origin__ == list:
                     param_info["type"] = "array"
+                    # Extract item type if available (e.g., List[str] -> items: {type: string})
+                    if hasattr(actual_type, "__args__") and actual_type.__args__:
+                        item_type = actual_type.__args__[0]
+                        if item_type == str:
+                            param_info["items"] = {"type": "string"}
+                        elif item_type == int:
+                            param_info["items"] = {"type": "integer"}
+                        elif item_type == float:
+                            param_info["items"] = {"type": "number"}
+                        elif item_type == bool:
+                            param_info["items"] = {"type": "boolean"}
                 elif actual_type.__origin__ == dict:
                     param_info["type"] = "object"
 
