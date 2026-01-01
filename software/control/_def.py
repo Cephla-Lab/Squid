@@ -952,7 +952,7 @@ USE_JUPYTER_CONSOLE = False
 # The server itself starts on-demand when user clicks "Launch Claude Code" or enables it manually.
 # Security note: Server listens only on localhost (127.0.0.1).
 # The python_exec command is disabled by default and must be explicitly enabled in the GUI.
-ENABLE_MCP_SERVER = True  # Set to False to hide all MCP-related menu items
+ENABLE_MCP_SERVER_SUPPORT = True  # Set to False to hide all MCP-related menu items
 CONTROL_SERVER_HOST = "127.0.0.1"
 CONTROL_SERVER_PORT = 5050
 
