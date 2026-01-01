@@ -89,7 +89,7 @@ if __name__ == "__main__":
 
         def start_control_server_if_needed():
             """Start the control server if not already running."""
-            if not control_server._running:
+            if not control_server.is_running():
                 control_server.start()
                 log.info(f"MCP control server started on {CONTROL_SERVER_HOST}:{CONTROL_SERVER_PORT}")
                 return True

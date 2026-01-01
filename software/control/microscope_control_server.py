@@ -293,6 +293,10 @@ class MicroscopeControlServer:
             self._thread.join(timeout=2.0)
         self._log.info("Microscope control server stopped")
 
+    def is_running(self) -> bool:
+        """Check if the control server is currently running."""
+        return self._running
+
     def _run_server(self):
         """Main server loop - runs in background thread."""
         try:
