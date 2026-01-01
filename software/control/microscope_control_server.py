@@ -238,37 +238,12 @@ class MicroscopeControlServer:
         self._thread: Optional[threading.Thread] = None
         self._python_exec_enabled = False  # Disabled by default for security
 
-        # Register available commands
-        self._commands: Dict[str, Callable] = {
-            "ping": self._cmd_ping,
-            "get_position": self._cmd_get_position,
-            "move_to": self._cmd_move_to,
-            "move_relative": self._cmd_move_relative,
-            "home": self._cmd_home,
-            "start_live": self._cmd_start_live,
-            "stop_live": self._cmd_stop_live,
-            "acquire_image": self._cmd_acquire_image,
-            "set_channel": self._cmd_set_channel,
-            "get_channels": self._cmd_get_channels,
-            "set_exposure": self._cmd_set_exposure,
-            "set_illumination_intensity": self._cmd_set_illumination_intensity,
-            "get_objectives": self._cmd_get_objectives,
-            "set_objective": self._cmd_set_objective,
-            "get_current_objective": self._cmd_get_current_objective,
-            "turn_on_illumination": self._cmd_turn_on_illumination,
-            "turn_off_illumination": self._cmd_turn_off_illumination,
-            "get_status": self._cmd_get_status,
-            "autofocus": self._cmd_autofocus,
-            "acquire_laser_af_image": self._cmd_acquire_laser_af_image,
-            "run_acquisition": self._cmd_run_acquisition,
-            "get_acquisition_status": self._cmd_get_acquisition_status,
-            "abort_acquisition": self._cmd_abort_acquisition,
-            "set_performance_mode": self._cmd_set_performance_mode,
-            "get_performance_mode": self._cmd_get_performance_mode,
-            "get_schemas": self._cmd_get_schemas,
-            "python_exec": self._cmd_python_exec,
-            "get_python_exec_status": self._cmd_get_python_exec_status,
-        }
+        # Auto-discover commands by finding all _cmd_* methods
+        self._commands: Dict[str, Callable] = {}
+        for name, method in inspect.getmembers(self, predicate=callable):
+            if name.startswith("_cmd_"):
+                command_name = name[len("_cmd_") :]
+                self._commands[command_name] = method
 
     def start(self):
         """Start the control server in a background thread."""
