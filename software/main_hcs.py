@@ -77,6 +77,7 @@ if __name__ == "__main__":
         console_thread.start()
 
     if ENABLE_CONTROL_SERVER:
+        # Create control server but don't start it yet (on-demand)
         control_server = MicroscopeControlServer(
             microscope=microscope,
             host=CONTROL_SERVER_HOST,
@@ -85,10 +86,16 @@ if __name__ == "__main__":
             scan_coordinates=win.scanCoordinates,
             gui=win,
         )
-        control_server.start()
-        log.info(f"MCP control server started on {CONTROL_SERVER_HOST}:{CONTROL_SERVER_PORT}")
 
-        # Add MCP Python Exec toggle and Launch Claude Code to Settings menu
+        def start_control_server_if_needed():
+            """Start the control server if not already running."""
+            if not control_server._running:
+                control_server.start()
+                log.info(f"MCP control server started on {CONTROL_SERVER_HOST}:{CONTROL_SERVER_PORT}")
+                return True
+            return False
+
+        # Add MCP menu items to Settings menu
         settings_menu = None
         for action in menu_bar.actions():
             if action.text() == "Settings":
@@ -97,6 +104,24 @@ if __name__ == "__main__":
 
         if settings_menu:
             settings_menu.addSeparator()
+
+            # Control server toggle
+            control_server_action = QAction("Enable MCP Control Server", win)
+            control_server_action.setCheckable(True)
+            control_server_action.setChecked(False)
+            control_server_action.setToolTip("Start/stop the MCP control server for Claude Code integration")
+
+            def on_control_server_toggled(checked):
+                if checked:
+                    start_control_server_if_needed()
+                else:
+                    control_server.stop()
+                    log.info("MCP control server stopped")
+
+            control_server_action.toggled.connect(on_control_server_toggled)
+            settings_menu.addAction(control_server_action)
+
+            # Python exec toggle
             python_exec_action = QAction("Enable MCP Python Exec", win)
             python_exec_action.setCheckable(True)
             python_exec_action.setChecked(False)
@@ -128,6 +153,10 @@ if __name__ == "__main__":
 
             # Add Launch Claude Code action
             def launch_claude_code():
+                # Start control server if not running
+                if start_control_server_if_needed():
+                    control_server_action.setChecked(True)
+
                 # Get the directory containing .mcp.json
                 working_dir = os.path.dirname(os.path.abspath(__file__))
 

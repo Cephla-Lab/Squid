@@ -949,9 +949,10 @@ USE_JUPYTER_CONSOLE = False
 
 # MCP Control Server - allows external tools (like Claude Code) to control the microscope
 # When enabled, a TCP server runs on CONTROL_SERVER_PORT accepting JSON commands
-# Security note: This is enabled by default and listens only on localhost (127.0.0.1).
+# Security note: Listens only on localhost (127.0.0.1). Server starts on-demand when
+# user clicks "Launch Claude Code" or enables it in Settings menu.
 # The python_exec command is disabled by default and must be explicitly enabled in the GUI.
-ENABLE_CONTROL_SERVER = True
+ENABLE_CONTROL_SERVER = True  # Controls whether MCP features are available (not auto-start)
 CONTROL_SERVER_HOST = "127.0.0.1"
 CONTROL_SERVER_PORT = 5050
 
