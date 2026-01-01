@@ -211,8 +211,9 @@ if __name__ == "__main__":
                         subprocess.Popen(["osascript", "-e", script])
 
                     elif sys.platform == "win32":  # Windows
+                        # Quote path to handle spaces
                         subprocess.Popen(
-                            f'start cmd /k "cd /d {working_dir} && claude"',
+                            f'start cmd /k "cd /d \\"{working_dir}\\" && claude"',
                             shell=True,
                         )
 
