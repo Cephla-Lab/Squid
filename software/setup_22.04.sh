@@ -71,3 +71,20 @@ sudo cp "$TOUPCAM_UDEV_RULE_PATH" /etc/udev/rules.d
 sudo usermod -aG dialout $USER
 
 sudo apt autoremove -y
+
+# Install Claude Code CLI (optional - for AI-assisted microscope control)
+echo ""
+echo "Would you like to install Claude Code CLI for AI-assisted microscope control? (y/n)"
+read -r install_claude
+if [[ "$install_claude" =~ ^[Yy]$ ]]; then
+  # Install Node.js if not present
+  if ! command -v node &> /dev/null; then
+    echo "Installing Node.js..."
+    curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+  fi
+  # Install Claude Code globally
+  echo "Installing Claude Code..."
+  sudo npm install -g @anthropic-ai/claude-code
+  echo "Claude Code installed. Run 'claude' from the software directory to start."
+fi
