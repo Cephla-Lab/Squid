@@ -105,7 +105,7 @@ The `python_exec` command is disabled by default for security. To enable it:
 |---------|------------|-------------|
 | `move_to` | `x_mm`, `y_mm`, `z_mm`, `blocking` | Move to absolute position |
 | `move_relative` | `dx_mm`, `dy_mm`, `dz_mm`, `blocking` | Move by relative amount |
-| `home` | `x`, `y`, `z` | Home specified axes |
+| `home` | - | Home all axes (X, Y, Z) |
 
 ### Imaging
 

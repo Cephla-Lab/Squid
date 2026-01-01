@@ -424,15 +424,9 @@ class MicroscopeControlServer:
         return {"new_position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
 
     @schema_method
-    def _cmd_home(
-        self,
-        x: bool = Field(True, description="Include X axis in homing (all axes home together)"),
-        y: bool = Field(True, description="Include Y axis in homing (all axes home together)"),
-        z: bool = Field(True, description="Include Z axis in homing (all axes home together)"),
-    ) -> Dict[str, Any]:
-        """Home the stage to reference position. Note: All axes home together; individual axis homing not supported."""
-        if x or y or z:
-            self.microscope.home_xyz()
+    def _cmd_home(self) -> Dict[str, Any]:
+        """Home all stage axes (X, Y, Z) to reference position."""
+        self.microscope.home_xyz()
         pos = self.microscope.stage.get_pos()
         return {"homed": True, "position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
 
