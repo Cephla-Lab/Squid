@@ -91,6 +91,8 @@ The `python_exec` command is disabled by default for security. To enable it:
 
 ## Available Commands
 
+> **Note:** When accessed via MCP (e.g., from Claude Code), commands are exposed with a `microscope_` prefix. For example, `ping` becomes `microscope_ping`, `move_to` becomes `microscope_move_to`, etc.
+
 ### Status & Position
 
 | Command | Description |
@@ -180,7 +182,7 @@ The `python_exec` command is disabled by default for security. To enable it:
 
 ### Basic Imaging
 
-```python
+```
 # Get current position
 microscope_get_position()
 
@@ -195,7 +197,7 @@ microscope_acquire_image(save_path="/path/to/image.tiff")
 
 ### Well Plate Scanning
 
-```python
+```
 # Scan wells A1-B2 with multiple fluorescence channels
 microscope_run_acquisition(
     wells="A1:B2",
@@ -212,7 +214,7 @@ microscope_get_acquisition_status()
 
 ### Direct Python Access
 
-```python
+```
 # Explore available objects
 microscope_python_exec(code="result = dir(microscope)")
 
