@@ -174,8 +174,8 @@ if __name__ == "__main__":
                         warning_reply = QMessageBox.warning(
                             win,
                             "Security Notice",
-                            "This will download and execute an install script from claude.ai.\n\n"
-                            "Only proceed if you trust Anthropic's official installation method.\n\n"
+                            "This will download and execute an install script from https://claude.ai.\n\n"
+                            "The HTTPS connection verifies the script is from Anthropic.\n\n"
                             "Continue with installation?",
                             QMessageBox.Yes | QMessageBox.No,
                             QMessageBox.Yes,
