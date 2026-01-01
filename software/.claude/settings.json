@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__squid-microscope__*"
+    ]
+  }
+}
