@@ -154,10 +154,9 @@ if __name__ == "__main__":
                                     script = f'tell application "Terminal" to do script "{install_cmd}"'
                                     subprocess.Popen(["osascript", "-e", script])
                             elif sys.platform == "win32":
-                                # Use official install script for Windows
-                                subprocess.Popen(
-                                    ["powershell", "-Command", "irm https://claude.ai/install.ps1 | iex"],
-                                )
+                                # Use official install script for Windows (CMD version)
+                                install_cmd = "curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd"
+                                subprocess.Popen(f'start cmd /k "{install_cmd}"', shell=True)
                             log.info("Started Claude Code installation")
                             QMessageBox.information(
                                 win,
