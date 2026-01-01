@@ -159,6 +159,12 @@ if __name__ == "__main__":
                                     ["powershell", "-Command", "irm https://claude.ai/install.ps1 | iex"],
                                 )
                             log.info("Started Claude Code installation")
+                            QMessageBox.information(
+                                win,
+                                "Installation Started",
+                                "Claude Code installation has started in a terminal window.\n\n"
+                                "After installation completes, restart Squid to use Claude Code.",
+                            )
                         except Exception as e:
                             log.error(f"Failed to start installation: {e}")
                             QMessageBox.warning(
