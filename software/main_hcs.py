@@ -86,6 +86,8 @@ if __name__ == "__main__":
             scan_coordinates=win.scanCoordinates,
             gui=win,
         )
+        # Ensure clean shutdown of control server socket on app exit
+        app.aboutToQuit.connect(control_server.stop)
 
         def start_control_server_if_needed():
             """Start the control server if not already running."""
