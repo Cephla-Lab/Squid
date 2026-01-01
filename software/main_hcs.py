@@ -136,44 +136,27 @@ if __name__ == "__main__":
                     reply = QMessageBox.question(
                         win,
                         "Claude Code Not Found",
-                        "Claude Code CLI is not installed.\n\n"
-                        "Would you like to install it now?\n"
-                        "(Requires Node.js - will be installed if needed)",
+                        "Claude Code CLI is not installed.\n\n" "Would you like to install it now?",
                         QMessageBox.Yes | QMessageBox.No,
                         QMessageBox.Yes,
                     )
                     if reply == QMessageBox.Yes:
                         try:
-                            if sys.platform == "linux":
-                                # Install Node.js if needed, then Claude Code
+                            if sys.platform in ("linux", "darwin"):
+                                # Use official install script for Linux/macOS
                                 install_cmd = (
-                                    "echo 'Installing Claude Code...' && "
-                                    "if ! command -v node &> /dev/null; then "
-                                    "echo 'Installing Node.js...' && "
-                                    "curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && "
-                                    "sudo apt-get install -y nodejs; fi && "
-                                    "sudo npm install -g @anthropic-ai/claude-code && "
+                                    "curl -fsSL https://claude.ai/install.sh | bash && "
                                     "echo 'Installation complete! Press Enter to continue...' && read"
                                 )
-                                subprocess.Popen(["gnome-terminal", "--", "bash", "-c", install_cmd])
-                            elif sys.platform == "darwin":
-                                install_cmd = (
-                                    "echo 'Installing Claude Code...' && "
-                                    "if ! command -v node &> /dev/null; then "
-                                    "echo 'Installing Node.js via Homebrew...' && "
-                                    "brew install node; fi && "
-                                    "npm install -g @anthropic-ai/claude-code && "
-                                    "echo 'Installation complete! Press Enter to continue...' && read"
-                                )
-                                script = f'tell application "Terminal" to do script "{install_cmd}"'
-                                subprocess.Popen(["osascript", "-e", script])
+                                if sys.platform == "linux":
+                                    subprocess.Popen(["gnome-terminal", "--", "bash", "-c", install_cmd])
+                                else:
+                                    script = f'tell application "Terminal" to do script "{install_cmd}"'
+                                    subprocess.Popen(["osascript", "-e", script])
                             elif sys.platform == "win32":
-                                QMessageBox.information(
-                                    win,
-                                    "Windows Installation",
-                                    "Please install Claude Code manually:\n\n"
-                                    "1. Install Node.js from https://nodejs.org\n"
-                                    "2. Run: npm install -g @anthropic-ai/claude-code",
+                                # Use official install script for Windows
+                                subprocess.Popen(
+                                    ["powershell", "-Command", "irm https://claude.ai/install.ps1 | iex"],
                                 )
                             log.info("Started Claude Code installation")
                         except Exception as e:
