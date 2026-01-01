@@ -683,10 +683,14 @@ class MicroscopeControlServer:
 
         # Check requirements
         if not self.multipoint_controller:
-            raise RuntimeError("MultiPointController not available. Make sure the GUI is running with control server enabled.")
+            raise RuntimeError(
+                "MultiPointController not available. Make sure the GUI is running with control server enabled."
+            )
 
         if not self.scan_coordinates:
-            raise RuntimeError("ScanCoordinates not available. Make sure the GUI is running with control server enabled.")
+            raise RuntimeError(
+                "ScanCoordinates not available. Make sure the GUI is running with control server enabled."
+            )
 
         # Check if acquisition already running
         if self.multipoint_controller.acquisition_in_progress():
