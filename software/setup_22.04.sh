@@ -73,6 +73,7 @@ sudo usermod -aG dialout $USER
 sudo apt autoremove -y
 
 # create desktop shortcut
+mkdir -p "$HOME/Desktop"
 DESKTOP_FILE="$HOME/Desktop/Squid_hcs.desktop"
 ICON_PATH="$SQUID_SOFTWARE_ROOT/icon/cephla_logo.svg"
 cat > "$DESKTOP_FILE" << EOF
