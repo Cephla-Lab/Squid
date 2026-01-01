@@ -173,8 +173,11 @@ if __name__ == "__main__":
                         try:
                             if sys.platform in ("linux", "darwin"):
                                 # Use official install script for Linux/macOS
+                                # Download first then execute (allows inspection, avoids curl|bash pattern)
                                 install_cmd = (
-                                    "curl -fsSL https://claude.ai/install.sh | bash && "
+                                    "curl -fsSL https://claude.ai/install.sh -o /tmp/claude_install.sh && "
+                                    "bash /tmp/claude_install.sh && "
+                                    "rm /tmp/claude_install.sh && "
                                     "echo 'Installation complete! Press Enter to continue...' && read"
                                 )
                                 if sys.platform == "linux":
