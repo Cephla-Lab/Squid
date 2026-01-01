@@ -176,6 +176,8 @@ The `python_exec` command is disabled by default for security. To enable it:
 
 ## Examples
 
+> **Note:** The examples below show MCP tool calls as you would describe them to Claude Code. They are not raw Python - Claude Code translates these into the appropriate MCP protocol messages.
+
 ### Basic Imaging
 
 ```python

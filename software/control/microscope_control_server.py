@@ -1017,16 +1017,18 @@ class MicroscopeControlServer:
         try:
             # Create a restricted builtins dict - exclude dangerous recursive execution functions
             # while keeping useful ones for microscope scripting
+            # Note: __builtins__ can be a dict (main module) or module (imported modules)
+            builtins_dict = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
             safe_builtins = {
                 k: v
-                for k, v in __builtins__.items()
+                for k, v in builtins_dict.items()
                 if k
                 not in (
                     "eval",
                     "exec",
                     "compile",
                     "__import__",
-                    "open",  # Use microscope save methods instead
+                    "open",  # Disabled; use tifffile/numpy or set 'image' variable for auto-save
                     "input",
                     "breakpoint",
                 )

@@ -222,7 +222,7 @@ if __name__ == "__main__":
                             ["gnome-terminal", "--", "bash", "-c", f'cd "{working_dir}" && claude; exec bash'],
                             ["konsole", "-e", "bash", "-c", f'cd "{working_dir}" && claude; exec bash'],
                             ["xfce4-terminal", "-e", f'bash -c "cd \\"{working_dir}\\" && claude; exec bash"'],
-                            ["xterm", "-e", f'bash -c "cd {working_dir} && claude; exec bash"'],
+                            ["xterm", "-e", f'bash -c "cd \\"{working_dir}\\" && claude; exec bash"'],
                         ]
                         launched = False
                         for cmd in terminals:
