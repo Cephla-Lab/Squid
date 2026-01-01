@@ -73,6 +73,7 @@ def resolve_field_value(value, default=None):
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5050
 MAX_BUFFER_SIZE = 1 * 1024 * 1024  # 1 MB limit to prevent memory exhaustion
+MAX_CONNECTIONS = 5  # Maximum concurrent client connections
 
 
 def schema_method(func: Callable) -> Callable:
@@ -237,6 +238,7 @@ class MicroscopeControlServer:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._python_exec_enabled = False  # Disabled by default for security
+        self._connection_semaphore = threading.Semaphore(MAX_CONNECTIONS)
 
         # Auto-discover commands by finding all _cmd_* methods
         self._commands: Dict[str, Callable] = {}
@@ -285,9 +287,18 @@ class MicroscopeControlServer:
                 try:
                     client_socket, address = self._server_socket.accept()
                     self._log.debug(f"Connection from {address}")
-                    # Handle each client in a separate thread
-                    client_thread = threading.Thread(target=self._handle_client, args=(client_socket,), daemon=True)
-                    client_thread.start()
+                    # Limit concurrent connections to prevent resource exhaustion
+                    if self._connection_semaphore.acquire(blocking=False):
+                        client_thread = threading.Thread(target=self._handle_client, args=(client_socket,), daemon=True)
+                        client_thread.start()
+                    else:
+                        # Too many connections, reject this one
+                        self._log.warning(f"Connection limit reached, rejecting {address}")
+                        try:
+                            response = {"success": False, "error": "Server busy, too many connections"}
+                            client_socket.sendall((json.dumps(response) + "\n").encode("utf-8"))
+                        finally:
+                            client_socket.close()
                 except socket.timeout:
                     continue
                 except Exception as e:
@@ -353,6 +364,7 @@ class MicroscopeControlServer:
                 client_socket.close()
             except Exception:
                 pass  # Ignore errors during client socket cleanup
+            self._connection_semaphore.release()
 
     # ==========================================================================
     # Command implementations
