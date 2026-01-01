@@ -170,14 +170,24 @@ if __name__ == "__main__":
                         QMessageBox.Yes,
                     )
                     if reply == QMessageBox.Yes:
+                        # Warn about downloading and executing remote script
+                        warning_reply = QMessageBox.warning(
+                            win,
+                            "Security Notice",
+                            "This will download and execute an install script from claude.ai.\n\n"
+                            "Only proceed if you trust Anthropic's official installation method.\n\n"
+                            "Continue with installation?",
+                            QMessageBox.Yes | QMessageBox.No,
+                            QMessageBox.Yes,
+                        )
+                        if warning_reply != QMessageBox.Yes:
+                            return
+
                         try:
                             if sys.platform in ("linux", "darwin"):
                                 # Use official install script for Linux/macOS
-                                # Download first then execute (allows inspection, avoids curl|bash pattern)
                                 install_cmd = (
-                                    "curl -fsSL https://claude.ai/install.sh -o /tmp/claude_install.sh && "
-                                    "bash /tmp/claude_install.sh && "
-                                    "rm /tmp/claude_install.sh && "
+                                    "curl -fsSL https://claude.ai/install.sh | bash && "
                                     "echo 'Installation complete! Press Enter to continue...' && read"
                                 )
                                 if sys.platform == "linux":
