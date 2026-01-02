@@ -12098,6 +12098,10 @@ class SurfacePlotWidget(QWidget):
         self.x_plot = np.array([])
         self.y_plot = np.array([])
         self.z_plot = np.array([])
+        # Reset plot state and clear the visual axes
+        self.plot_populated = False
+        self.ax.clear()
+        self.canvas.draw()
 
     def add_point(self, x: float, y: float, z: float, region: int):
         self.x.append(x)
@@ -12108,7 +12112,10 @@ class SurfacePlotWidget(QWidget):
     def plot(self) -> None:
         """
         Plot both surface and scatter points in 3D.
-        Uses minimum Z at each unique X,Y location to handle Z-stacks.
+
+        For Z-stacks, uses the minimum Z at each unique X,Y location. This shows
+        the bottom/focus surface of the sample and avoids interpolation artifacts
+        that would occur if the surface passed through the middle of the stack.
         """
         try:
             # Clear previous plot
