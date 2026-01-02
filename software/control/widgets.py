@@ -12248,7 +12248,7 @@ class SurfacePlotWidget(QWidget):
 
         print(f"Clicked Point: x={self.x_plot[idx]:.3f}, y={self.y_plot[idx]:.3f}, z={self.z_plot[idx]:.3f}")
         self.canvas.draw()
-        self.signal_point_clicked.emit(self.x_plot[idx], self.y_plot[idx])
+        self.signal_point_clicked.emit(float(self.x_plot[idx]), float(self.y_plot[idx]))
 
 
 class ChannelEditorDialog(QDialog):
