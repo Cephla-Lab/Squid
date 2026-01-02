@@ -1,7 +1,6 @@
 import logging
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 
 import control._def

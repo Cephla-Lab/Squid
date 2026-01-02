@@ -12124,6 +12124,7 @@ class SurfacePlotWidget(QWidget):
             if len(self.x) == 0:
                 self._log.debug("No data to plot")
                 self.canvas.draw()
+                self.plot_populated = False
                 return
 
             x = np.array(self.x).astype(float)
