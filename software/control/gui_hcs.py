@@ -241,7 +241,9 @@ class QtMultiPointController(MultiPointController, QObject):
     def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
         self.image_to_display.emit(frame.frame)
         self.image_to_display_multi.emit(frame.frame, info.configuration.illumination_source)
-        self.signal_coordinates.emit(info.position.x_mm, info.position.y_mm, info.position.z_mm, info.region_id)
+        # Z for plot in μm: use piezo position in piezo-only mode, otherwise convert stepper mm to μm
+        z_for_plot = info.z_piezo_um if (IS_PIEZO_ONLY and info.z_piezo_um is not None) else info.position.z_mm * 1000
+        self.signal_coordinates.emit(info.position.x_mm, info.position.y_mm, z_for_plot, info.region_id)
 
         if not self._napari_inited_for_this_acquisition:
             self._napari_inited_for_this_acquisition = True

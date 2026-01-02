@@ -3068,8 +3068,8 @@ class NavigationWidget(QFrame):
         self.btn_moveY_backward = QPushButton("Backward")
         self.btn_moveY_backward.setDefault(False)
 
-        z_label = QLabel("Z :")
-        z_label.setFixedWidth(20)
+        self.z_label = QLabel("Z :")
+        self.z_label.setFixedWidth(20)
         self.label_Zpos = QLabel()
         self.label_Zpos.setNum(0)
         self.label_Zpos.setFrameStyle(QFrame.Panel | QFrame.Sunken)
@@ -3099,11 +3099,19 @@ class NavigationWidget(QFrame):
         grid_line0.addWidget(self.btn_moveY_forward, 1, 3)
         grid_line0.addWidget(self.btn_moveY_backward, 1, 4)
 
-        grid_line0.addWidget(z_label, 2, 0)
+        grid_line0.addWidget(self.z_label, 2, 0)
         grid_line0.addWidget(self.label_Zpos, 2, 1)
         grid_line0.addWidget(self.entry_dZ, 2, 2)
         grid_line0.addWidget(self.btn_moveZ_forward, 2, 3)
         grid_line0.addWidget(self.btn_moveZ_backward, 2, 4)
+
+        # Hide Z controls in piezo-only mode (Z is controlled via piezo widget)
+        if IS_PIEZO_ONLY:
+            self.z_label.setVisible(False)
+            self.label_Zpos.setVisible(False)
+            self.entry_dZ.setVisible(False)
+            self.btn_moveZ_forward.setVisible(False)
+            self.btn_moveZ_backward.setVisible(False)
 
         self.grid = QVBoxLayout()
         self.grid.addLayout(grid_line0)
@@ -4046,6 +4054,9 @@ class FlexibleMultiPointWidget(QFrame):
         grid_af.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
             grid_af.addWidget(self.checkbox_usePiezo)
+            if IS_PIEZO_ONLY:
+                self.checkbox_usePiezo.setChecked(True)
+                self.checkbox_usePiezo.setVisible(False)
         grid_af.addWidget(self.checkbox_set_z_range)
         grid_af.addWidget(self.checkbox_skipSaving)
 
@@ -5414,6 +5425,9 @@ class WellplateMultiPointWidget(QFrame):
         options_layout.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
+            if IS_PIEZO_ONLY:
+                self.checkbox_usePiezo.setChecked(True)
+                self.checkbox_usePiezo.setVisible(False)
         options_layout.addWidget(self.checkbox_skipSaving)
 
         button_layout = QVBoxLayout()
@@ -7081,6 +7095,9 @@ class MultiPointWithFluidicsWidget(QFrame):
             options_layout.addWidget(self.checkbox_withReflectionAutofocus)
         if HAS_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
+            if IS_PIEZO_ONLY:
+                self.checkbox_usePiezo.setChecked(True)
+                self.checkbox_usePiezo.setVisible(False)
 
         grid.addLayout(options_layout, 0, 2)
 

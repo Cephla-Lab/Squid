@@ -351,6 +351,10 @@ class ZMotorConfig(Enum):
         """Check if this configuration includes a piezo."""
         return "PIEZO" in self.value
 
+    def is_piezo_only(self) -> bool:
+        """Check if this configuration is piezo-only (no stepper)."""
+        return self == ZMotorConfig.PIEZO
+
 
 PRINT_CAMERA_FPS = True
 
@@ -1074,6 +1078,7 @@ A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_pixel"]  # coordi
 # objective piezo
 Z_MOTOR_CONFIG = ZMotorConfig.convert_to_enum(Z_MOTOR_CONFIG)
 HAS_OBJECTIVE_PIEZO = Z_MOTOR_CONFIG.has_piezo()
+IS_PIEZO_ONLY = Z_MOTOR_CONFIG.is_piezo_only()
 MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
 
 # convert str to enum
