@@ -258,4 +258,7 @@ if __name__ == "__main__":
             launch_claude_action.triggered.connect(launch_claude_code)
             settings_menu.addAction(launch_claude_action)
 
-    sys.exit(app.exec_())
+    # Use os._exit() to avoid segfault during Python's shutdown sequence.
+    # PyQt5's C++ destructor order conflicts with Python's garbage collector
+    # during normal shutdown (sys.exit), causing a segfault.
+    os._exit(app.exec_())
