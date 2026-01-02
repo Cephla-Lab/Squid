@@ -12125,26 +12125,26 @@ class SurfacePlotWidget(QWidget):
             regions = np.array(self.regions)
 
             # Filter to get minimum Z at each unique X,Y location (for Z-stacks)
+            # Use vectorized approach for better performance with large datasets
             xy_precision = 4  # decimal places for grouping
             xy_keys = np.round(x, xy_precision) + 1j * np.round(y, xy_precision)
-            unique_xy = np.unique(xy_keys)
 
-            x_plot = []
-            y_plot = []
-            z_plot = []
-            regions_plot = []
-            for xy in unique_xy:
-                xy_mask = xy_keys == xy
-                x_plot.append(x[xy_mask][0])
-                y_plot.append(y[xy_mask][0])
-                z_plot.append(np.min(z[xy_mask]))
-                regions_plot.append(regions[xy_mask][0])
+            # Find index of minimum Z for each unique (X, Y) using vectorized operations
+            unique_xy, inverse = np.unique(xy_keys, return_inverse=True)
 
-            # Store filtered coordinates for click handling
-            self.x_plot = np.array(x_plot)
-            self.y_plot = np.array(y_plot)
-            self.z_plot = np.array(z_plot)
-            regions_plot = np.array(regions_plot)
+            # Sort by group (inverse) then by Z, so first in each group has minimum Z
+            order = np.lexsort((z, inverse))
+            grouped_inverse = inverse[order]
+
+            # First occurrence of each group in sorted order corresponds to minimum Z
+            _, first_indices = np.unique(grouped_inverse, return_index=True)
+            min_z_indices = order[first_indices]
+
+            # Store filtered coordinates using the min-Z indices (ensures x, y, z, region all match)
+            self.x_plot = x[min_z_indices]
+            self.y_plot = y[min_z_indices]
+            self.z_plot = z[min_z_indices]
+            regions_plot = regions[min_z_indices]
 
             # plot surface by region
             for r in np.unique(regions_plot):
@@ -12156,7 +12156,9 @@ class SurfacePlotWidget(QWidget):
                         # griddata uses Delaunay triangulation which requires 2D spread in X-Y space
                         x_range = np.ptp(self.x_plot[mask])  # peak-to-peak (max - min)
                         y_range = np.ptp(self.y_plot[mask])
-                        min_spread = 1e-6  # minimum spread in mm
+                        # Use practical threshold based on typical stage precision (~1 µm)
+                        # Smaller spreads can lead to nearly collinear points and Qhull errors
+                        min_spread = 1e-3  # minimum spread in mm (~1 µm)
 
                         if x_range < min_spread or y_range < min_spread:
                             # Single FOV or collinear points: skip surface, scatter plot will still show
