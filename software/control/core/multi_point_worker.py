@@ -530,6 +530,9 @@ class MultiPointWorker:
             if job_runner is None:
                 continue
             out_queue = job_runner.output_queue()
+            if out_queue is None:
+                # Queue was cleared during shutdown
+                continue
             while True:
                 try:
                     job_result: JobResult = out_queue.get_nowait()
@@ -538,6 +541,9 @@ class MultiPointWorker:
                     if not drain_all:
                         break  # Only process one result per queue if not draining
                 except queue.Empty:
+                    break
+                except ValueError:
+                    # Queue was closed during shutdown - nothing more to drain
                     break
 
         return SummarizeResult(none_failed=none_failed, had_results=had_results)
