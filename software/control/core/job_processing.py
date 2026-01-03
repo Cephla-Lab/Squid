@@ -504,8 +504,25 @@ class JobRunner(multiprocessing.Process):
             return self._pending_count.value > 0
 
     def shutdown(self, timeout_s=1.0):
+        # Guard against double shutdown
+        if self._shutdown_event is None:
+            return
         self._shutdown_event.set()
         self.join(timeout=timeout_s)
+        # If process is still alive after timeout, terminate it
+        if self.is_alive():
+            self.terminate()
+            self.join(timeout=1.0)
+        # Clean up multiprocessing primitives to avoid semaphore leaks
+        self._input_queue.close()
+        self._input_queue.join_thread()
+        self._output_queue.close()
+        self._output_queue.join_thread()
+        # Clear references to allow garbage collection of Event and Value semaphores
+        self._input_queue = None
+        self._output_queue = None
+        self._shutdown_event = None
+        self._pending_count = None
 
     def run(self):
         while not self._shutdown_event.is_set():
