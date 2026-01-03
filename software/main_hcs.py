@@ -266,4 +266,6 @@ if __name__ == "__main__":
     # - aboutToQuit signal fires before app.exec_() returns
     # All hardware cleanup (camera, stage, microcontroller) happens in closeEvent,
     # which completes before os._exit() is called.
-    os._exit(app.exec_())
+    exit_code = app.exec_()
+    logging.shutdown()  # Flush log handlers before os._exit() bypasses Python cleanup
+    os._exit(exit_code)
