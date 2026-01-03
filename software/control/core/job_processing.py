@@ -487,7 +487,13 @@ class JobRunner(multiprocessing.Process):
         # has_pending() to return False while job is still in flight.
         with self._pending_count.get_lock():
             self._pending_count.value += 1
-        self._input_queue.put_nowait(job)
+        try:
+            self._input_queue.put_nowait(job)
+        except Exception:
+            # Roll back pending count if enqueue fails so has_pending() remains accurate
+            with self._pending_count.get_lock():
+                self._pending_count.value -= 1
+            raise
         return True
 
     def output_queue(self) -> multiprocessing.Queue:
