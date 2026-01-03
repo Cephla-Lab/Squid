@@ -482,9 +482,12 @@ class JobRunner(multiprocessing.Process):
         self._pending_count = multiprocessing.Value("i", 0)
 
     def dispatch(self, job: Job):
-        self._input_queue.put_nowait(job)
+        # Increment counter BEFORE putting job in queue to prevent race condition
+        # where worker processes job before counter is incremented, causing
+        # has_pending() to return False while job is still in flight.
         with self._pending_count.get_lock():
             self._pending_count.value += 1
+        self._input_queue.put_nowait(job)
         return True
 
     def output_queue(self) -> multiprocessing.Queue:
