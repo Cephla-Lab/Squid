@@ -478,17 +478,21 @@ class JobRunner(multiprocessing.Process):
         self._input_timeout = 1.0
         self._output_queue: multiprocessing.Queue = multiprocessing.Queue()
         self._shutdown_event: multiprocessing.Event = multiprocessing.Event()
+        # Track jobs in flight (dispatched but not yet completed)
+        self._pending_count = multiprocessing.Value("i", 0)
 
     def dispatch(self, job: Job):
+        with self._pending_count.get_lock():
+            self._pending_count.value += 1
         self._input_queue.put_nowait(job)
-
         return True
 
     def output_queue(self) -> multiprocessing.Queue:
         return self._output_queue
 
     def has_pending(self):
-        return not self._input_queue.empty()
+        with self._pending_count.get_lock():
+            return self._pending_count.value > 0
 
     def shutdown(self, timeout_s=1.0):
         self._shutdown_event.set()
@@ -514,4 +518,9 @@ class JobRunner(multiprocessing.Process):
                 if job:
                     self._log.exception(f"Job {job.job_id} failed! Returning exception result.")
                     self._output_queue.put_nowait(JobResult(job_id=job.job_id, result=None, exception=e))
+            finally:
+                # Decrement pending count when job completes (success, None result, or exception)
+                if job is not None:
+                    with self._pending_count.get_lock():
+                        self._pending_count.value -= 1
         self._log.info("Shutdown request received, exiting run.")
