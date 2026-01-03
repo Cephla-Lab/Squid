@@ -390,6 +390,7 @@ class MultiPointWorker:
 
         for job_class, job_runner in self._job_runners:
             if job_runner is not None:
+                was_killed = False
                 while job_runner.has_pending():
                     # Process any available results while waiting
                     self._summarize_runner_outputs(drain_all=True)
@@ -400,6 +401,7 @@ class MultiPointWorker:
                             f"Timed out after {timeout_s} [s] waiting for jobs to finish.  Pending jobs for {job_class.__name__} abandoned!!!"
                         )
                         job_runner.kill()
+                        was_killed = True
                         break
 
                 # Give worker a moment to put results in queue after processing
@@ -407,8 +409,11 @@ class MultiPointWorker:
                 # Drain results before shutdown
                 self._summarize_runner_outputs(drain_all=True)
 
-                self._log.info("Trying to shut down job runner...")
-                job_runner.shutdown(time_left())
+                if not was_killed:
+                    self._log.info("Trying to shut down job runner...")
+                    job_runner.shutdown(time_left())
+                # Close queues to release semaphores (prevents leak warnings)
+                job_runner.close_queues()
 
         # Final drain of all output queues
         self._summarize_runner_outputs(drain_all=True)

@@ -507,6 +507,21 @@ class JobRunner(multiprocessing.Process):
         self._shutdown_event.set()
         self.join(timeout=timeout_s)
 
+    def close_queues(self):
+        """Close multiprocessing queues to release semaphores.
+
+        Call this after shutdown() when the job runner is no longer needed.
+        This prevents 'leaked semaphore objects' warnings on application exit.
+        """
+        try:
+            self._input_queue.close()
+        except Exception:
+            pass
+        try:
+            self._output_queue.close()
+        except Exception:
+            pass
+
     def run(self):
         while not self._shutdown_event.is_set():
             job = None
