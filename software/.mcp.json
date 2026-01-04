@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "squid-microscope": {
+      "command": "python3",
+      "args": ["./mcp_microscope_server.py"]
+    }
+  }
+}

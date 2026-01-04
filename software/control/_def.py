@@ -325,6 +325,37 @@ class ZProjectionMode(Enum):
             raise ValueError(f"Invalid z-projection mode: '{option}'. Expected 'mip' or 'middle'.")
 
 
+class ZMotorConfig(Enum):
+    """Z motor configuration options.
+
+    STEPPER: Stepper motor only
+    STEPPER_PIEZO: Stepper motor with piezo for fine Z control
+    PIEZO: Piezo only
+    """
+
+    STEPPER = "STEPPER"
+    STEPPER_PIEZO = "STEPPER + PIEZO"
+    PIEZO = "PIEZO"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZMotorConfig"]) -> "ZMotorConfig":
+        """Convert string or enum to ZMotorConfig enum."""
+        if isinstance(option, ZMotorConfig):
+            return option
+        for member in ZMotorConfig:
+            if member.value == option:
+                return member
+        raise ValueError(f"Invalid Z motor config: '{option}'. Expected one of: {[m.value for m in ZMotorConfig]}")
+
+    def has_piezo(self) -> bool:
+        """Check if this configuration includes a piezo."""
+        return "PIEZO" in self.value
+
+    def is_piezo_only(self) -> bool:
+        """Check if this configuration is piezo-only (no stepper)."""
+        return self == ZMotorConfig.PIEZO
+
+
 PRINT_CAMERA_FPS = True
 
 ###########################################################
@@ -933,7 +964,7 @@ FILE_SAVING_OPTION = FileSavingOption.INDIVIDUAL_IMAGES
 CACHED_CONFIG_FILE_PATH = None
 
 # Piezo configuration items
-Z_MOTOR_CONFIG = "STEPPER"  # "STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"
+Z_MOTOR_CONFIG = ZMotorConfig.STEPPER
 
 # the value of OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE is 2.5 or 5
 OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE = 5
@@ -946,6 +977,15 @@ MULTIPOINT_PIEZO_UPDATE_DISPLAY = True
 
 USE_TERMINAL_CONSOLE = False
 USE_JUPYTER_CONSOLE = False
+
+# MCP Control Server - allows external tools (like Claude Code) to control the microscope
+# When enabled, MCP-related menu items appear in Settings (Launch Claude Code, etc.)
+# The server itself starts on-demand when user clicks "Launch Claude Code" or enables it manually.
+# Security note: Server listens only on localhost (127.0.0.1).
+# The python_exec command is disabled by default and must be explicitly enabled in the GUI.
+ENABLE_MCP_SERVER_SUPPORT = True  # Set to False to hide all MCP-related menu items
+CONTROL_SERVER_HOST = "127.0.0.1"
+CONTROL_SERVER_PORT = 5050
 
 try:
     with open("cache/config_file_path.txt", "r") as file:
@@ -1036,7 +1076,9 @@ A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT]["a1_y_pixel"]  # coordi
 ##########################################################
 
 # objective piezo
-HAS_OBJECTIVE_PIEZO = "PIEZO" in Z_MOTOR_CONFIG
+Z_MOTOR_CONFIG = ZMotorConfig.convert_to_enum(Z_MOTOR_CONFIG)
+HAS_OBJECTIVE_PIEZO = Z_MOTOR_CONFIG.has_piezo()
+IS_PIEZO_ONLY = Z_MOTOR_CONFIG.is_piezo_only()
 MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
 
 # convert str to enum

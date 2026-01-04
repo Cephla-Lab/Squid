@@ -3068,8 +3068,8 @@ class NavigationWidget(QFrame):
         self.btn_moveY_backward = QPushButton("Backward")
         self.btn_moveY_backward.setDefault(False)
 
-        z_label = QLabel("Z :")
-        z_label.setFixedWidth(20)
+        self.z_label = QLabel("Z :")
+        self.z_label.setFixedWidth(20)
         self.label_Zpos = QLabel()
         self.label_Zpos.setNum(0)
         self.label_Zpos.setFrameStyle(QFrame.Panel | QFrame.Sunken)
@@ -3099,11 +3099,19 @@ class NavigationWidget(QFrame):
         grid_line0.addWidget(self.btn_moveY_forward, 1, 3)
         grid_line0.addWidget(self.btn_moveY_backward, 1, 4)
 
-        grid_line0.addWidget(z_label, 2, 0)
+        grid_line0.addWidget(self.z_label, 2, 0)
         grid_line0.addWidget(self.label_Zpos, 2, 1)
         grid_line0.addWidget(self.entry_dZ, 2, 2)
         grid_line0.addWidget(self.btn_moveZ_forward, 2, 3)
         grid_line0.addWidget(self.btn_moveZ_backward, 2, 4)
+
+        # Hide Z controls in piezo-only mode (Z is controlled via piezo widget)
+        if IS_PIEZO_ONLY:
+            self.z_label.setVisible(False)
+            self.label_Zpos.setVisible(False)
+            self.entry_dZ.setVisible(False)
+            self.btn_moveZ_forward.setVisible(False)
+            self.btn_moveZ_backward.setVisible(False)
 
         self.grid = QVBoxLayout()
         self.grid.addLayout(grid_line0)
@@ -4046,6 +4054,9 @@ class FlexibleMultiPointWidget(QFrame):
         grid_af.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
             grid_af.addWidget(self.checkbox_usePiezo)
+            if IS_PIEZO_ONLY:
+                self.checkbox_usePiezo.setChecked(True)
+                self.checkbox_usePiezo.setVisible(False)
         grid_af.addWidget(self.checkbox_set_z_range)
         grid_af.addWidget(self.checkbox_skipSaving)
 
@@ -5414,6 +5425,9 @@ class WellplateMultiPointWidget(QFrame):
         options_layout.addWidget(self.checkbox_useFocusMap)
         if HAS_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
+            if IS_PIEZO_ONLY:
+                self.checkbox_usePiezo.setChecked(True)
+                self.checkbox_usePiezo.setVisible(False)
         options_layout.addWidget(self.checkbox_skipSaving)
 
         button_layout = QVBoxLayout()
@@ -7081,6 +7095,9 @@ class MultiPointWithFluidicsWidget(QFrame):
             options_layout.addWidget(self.checkbox_withReflectionAutofocus)
         if HAS_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
+            if IS_PIEZO_ONLY:
+                self.checkbox_usePiezo.setChecked(True)
+                self.checkbox_usePiezo.setVisible(False)
 
         grid.addLayout(options_layout, 0, 2)
 
@@ -12068,12 +12085,23 @@ class SurfacePlotWidget(QWidget):
         self.y = list()
         self.z = list()
         self.regions = list()
+        # Filtered coordinates for plotting (min Z at each unique X,Y)
+        self.x_plot = np.array([])
+        self.y_plot = np.array([])
+        self.z_plot = np.array([])
 
     def clear(self):
         self.x.clear()
         self.y.clear()
         self.z.clear()
         self.regions.clear()
+        self.x_plot = np.array([])
+        self.y_plot = np.array([])
+        self.z_plot = np.array([])
+        # Reset plot state and clear the visual axes
+        self.plot_populated = False
+        self.ax.clear()
+        self.canvas.draw()
 
     def add_point(self, x: float, y: float, z: float, region: int):
         self.x.append(x)
@@ -12085,37 +12113,85 @@ class SurfacePlotWidget(QWidget):
         """
         Plot both surface and scatter points in 3D.
 
-        Args:
-            x (np.array): X coordinates (1D array)
-            y (np.array): Y coordinates (1D array)
-            z (np.array): Z coordinates (1D array)
+        For Z-stacks, uses the minimum Z at each unique X,Y location. This shows
+        the bottom/focus surface of the sample and avoids interpolation artifacts
+        that would occur if the surface passed through the middle of the stack.
         """
         try:
             # Clear previous plot
             self.ax.clear()
+
+            if len(self.x) == 0:
+                self._log.debug("No data to plot")
+                self.canvas.draw()
+                self.plot_populated = False
+                return
 
             x = np.array(self.x).astype(float)
             y = np.array(self.y).astype(float)
             z = np.array(self.z).astype(float)
             regions = np.array(self.regions)
 
+            # Filter to get minimum Z at each unique X,Y location (for Z-stacks)
+            # Use vectorized approach for better performance with large datasets
+            xy_precision = 4  # decimal places for grouping
+            xy_keys = np.round(x, xy_precision) + 1j * np.round(y, xy_precision)
+
+            # Find index of minimum Z for each unique (X, Y) using vectorized operations
+            unique_xy, inverse = np.unique(xy_keys, return_inverse=True)
+
+            # Sort by group (inverse) then by Z, so first in each group has minimum Z
+            order = np.lexsort((z, inverse))
+            grouped_inverse = inverse[order]
+
+            # First occurrence of each group in sorted order corresponds to minimum Z
+            _, first_indices = np.unique(grouped_inverse, return_index=True)
+            min_z_indices = order[first_indices]
+
+            # Store filtered coordinates using the min-Z indices (ensures x, y, z, region all match)
+            self.x_plot = x[min_z_indices]
+            self.y_plot = y[min_z_indices]
+            self.z_plot = z[min_z_indices]
+            regions_plot = regions[min_z_indices]
+
             # plot surface by region
-            for r in np.unique(regions):
+            for r in np.unique(regions_plot):
                 try:
-                    mask = regions == r
+                    mask = regions_plot == r
                     num_points = np.sum(mask)
                     if num_points >= 4:
-                        grid_x, grid_y = np.mgrid[min(x[mask]) : max(x[mask]) : 10j, min(y[mask]) : max(y[mask]) : 10j]
-                        grid_z = griddata((x[mask], y[mask]), z[mask], (grid_x, grid_y), method="cubic")
-                        self.ax.plot_surface(grid_x, grid_y, grid_z, cmap="viridis", edgecolor="none")
+                        # Check if points have sufficient spread in X and Y for surface interpolation
+                        # griddata uses Delaunay triangulation which requires 2D spread in X-Y space
+                        x_range = np.ptp(self.x_plot[mask])  # peak-to-peak (max - min)
+                        y_range = np.ptp(self.y_plot[mask])
+                        # Use practical threshold based on typical stage precision (~1 µm)
+                        # Smaller spreads can lead to nearly collinear points and Qhull errors
+                        min_spread = 1e-3  # minimum spread in mm (~1 µm)
+
+                        if x_range < min_spread or y_range < min_spread:
+                            # Single FOV or collinear points: skip surface, scatter plot will still show
+                            self._log.debug(
+                                f"Region {r}: insufficient X,Y spread for surface "
+                                f"(x_range={x_range:.2e}, y_range={y_range:.2e}), showing scatter only"
+                            )
+                        else:
+                            x_surface = self.x_plot[mask]
+                            y_surface = self.y_plot[mask]
+                            z_surface = self.z_plot[mask]
+
+                            grid_x, grid_y = np.mgrid[
+                                min(x_surface) : max(x_surface) : 10j, min(y_surface) : max(y_surface) : 10j
+                            ]
+                            grid_z = griddata((x_surface, y_surface), z_surface, (grid_x, grid_y), method="cubic")
+                            self.ax.plot_surface(grid_x, grid_y, grid_z, cmap="viridis", edgecolor="none")
                     else:
                         self._log.debug(f"Region {r} has only {num_points} point(s), skipping surface interpolation")
                 except Exception as e:
                     raise Exception(f"Cannot plot region {r}: {e}")
 
-            # Create scatter plot using original coordinates
-            self.colors = ["r"] * len(x)
-            self.scatter = self.ax.scatter(x, y, z, c=self.colors, s=30)
+            # Create scatter plot using filtered coordinates (bottom Z only)
+            self.colors = ["r"] * len(self.x_plot)
+            self.scatter = self.ax.scatter(self.x_plot, self.y_plot, self.z_plot, c=self.colors, s=30)
 
             # Set labels
             self.ax.set_xlabel("X (mm)")
@@ -12124,9 +12200,11 @@ class SurfacePlotWidget(QWidget):
             self.ax.set_title("Double-click a point to go to that position")
 
             # Force x and y to have same scale
-            max_range = max(np.ptp(x), np.ptp(y))
-            center_x = np.mean(x)
-            center_y = np.mean(y)
+            max_range = max(np.ptp(self.x_plot), np.ptp(self.y_plot))
+            if max_range == 0:
+                max_range = 1.0  # Default range for single point
+            center_x = np.mean(self.x_plot)
+            center_y = np.mean(self.y_plot)
 
             self.ax.set_xlim(center_x - max_range / 2, center_x + max_range / 2)
             self.ax.set_ylim(center_y - max_range / 2, center_y + max_range / 2)
@@ -12158,8 +12236,8 @@ class SurfacePlotWidget(QWidget):
         # Cancel drag mode after double-click
         self.canvas.button_pressed = None  # FIX: Avoids AttributeError
 
-        # Project 3D points to 2D screen space
-        x2d, y2d, _ = proj3d.proj_transform(self.x, self.y, self.z, self.ax.get_proj())
+        # Project 3D points to 2D screen space (use filtered plot coordinates)
+        x2d, y2d, _ = proj3d.proj_transform(self.x_plot, self.y_plot, self.z_plot, self.ax.get_proj())
         dists = np.hypot(x2d - event.xdata, y2d - event.ydata)
         idx = np.argmin(dists)
 
@@ -12171,14 +12249,14 @@ class SurfacePlotWidget(QWidget):
             return
 
         # Change point color
-        self.colors = ["r"] * len(self.x)
+        self.colors = ["r"] * len(self.x_plot)
         self.colors[idx] = "g"
         self.scatter.remove()
-        self.scatter = self.ax.scatter(self.x, self.y, self.z, c=self.colors, s=30)
+        self.scatter = self.ax.scatter(self.x_plot, self.y_plot, self.z_plot, c=self.colors, s=30)
 
-        print(f"Clicked Point: x={self.x[idx]:.3f}, y={self.y[idx]:.3f}, z={self.z[idx]:.3f}")
+        print(f"Clicked Point: x={self.x_plot[idx]:.3f}, y={self.y_plot[idx]:.3f}, z={self.z_plot[idx]:.3f}")
         self.canvas.draw()
-        self.signal_point_clicked.emit(self.x[idx], self.y[idx])
+        self.signal_point_clicked.emit(float(self.x_plot[idx]), float(self.y_plot[idx]))
 
 
 class ChannelEditorDialog(QDialog):

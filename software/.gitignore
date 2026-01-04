@@ -5,3 +5,6 @@ cache/
 drivers and libraries/daheng camera/
 acquisition_configurations/
 configurations/channel_definitions.json
+
+# Claude Code local settings (user-specific)
+.claude/settings.local.json
