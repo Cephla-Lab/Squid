@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import math
 import os
 import pathlib
 import tempfile
@@ -46,7 +47,7 @@ class MultiPointController:
         live_controller: LiveController,
         autofocus_controller: AutoFocusController,
         objective_store: ObjectiveStore,
-        channel_configuration_manager: ChannelConfigurationManager,
+        channel_configuration_mananger: ChannelConfigurationManager,
         callbacks: MultiPointControllerFunctions,
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
@@ -62,7 +63,7 @@ class MultiPointController:
         self.autofocusController: AutoFocusController = autofocus_controller
         self.laserAutoFocusController: LaserAutofocusController = laser_autofocus_controller
         self.objectiveStore: ObjectiveStore = objective_store
-        self.channelConfigurationManager: ChannelConfigurationManager = channel_configuration_manager
+        self.channelConfigurationManager: ChannelConfigurationManager = channel_configuration_mananger
         self.callbacks: MultiPointControllerFunctions = callbacks
         self.multiPointWorker: Optional[MultiPointWorker] = None
         self.fluidics: Optional[Any] = microscope.addons.fluidics
@@ -90,6 +91,8 @@ class MultiPointController:
         self.use_manual_focus_map = False
         self.base_path = None
         self.use_fluidics = False
+        self.skip_saving = False
+        self.xy_mode = "Current Position"
 
         self.focus_map = None
         self.gen_focus_map = False
@@ -199,6 +202,12 @@ class MultiPointController:
     def set_use_fluidics(self, use_fluidics):
         self.use_fluidics = use_fluidics
 
+    def set_skip_saving(self, skip_saving):
+        self.skip_saving = skip_saving
+
+    def set_xy_mode(self, xy_mode):
+        self.xy_mode = xy_mode
+
     def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
         self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
@@ -243,6 +252,7 @@ class MultiPointController:
         # TODO: USE OBJECTIVE STORE DATA
         acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
         acquisition_parameters["tube_lens_mm"] = control._def.TUBE_LENS_MM
+        acquisition_parameters["confocal_mode"] = self.channelConfigurationManager.is_confocal_mode()
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
         f.close()
@@ -354,6 +364,79 @@ class MultiPointController:
         non_image_file_size = 100 * 1024
 
         return size_per_image * self.get_acquisition_image_count() + non_image_file_size
+
+    def get_estimated_mosaic_ram_bytes(self) -> int:
+        """
+        Estimate the RAM (in bytes) required to hold the mosaic view in memory.
+
+        The estimate is based on:
+
+        * The mosaic scan bounds in stage space (mm) derived from ``self.scanCoordinates``.
+        * The effective camera pixel size at the sample, computed from the objective
+          magnification factor and the binned camera pixel size in microns.
+        * A downsampling factor chosen so that the effective mosaic pixel size is at
+          least ``control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM`` (in µm). The scan
+          extents are divided by this downsampled pixel size to obtain the mosaic width
+          and height in pixels.
+
+        Assumptions:
+
+        * Each mosaic pixel is stored as a 16‑bit unsigned integer (2 bytes per pixel).
+        * The returned value includes memory for all mosaic channel layers, by
+          multiplying by ``len(self.selected_configurations)``.
+        * The estimate only applies when ``control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY``
+          is enabled and when valid scan coordinates with regions are available;
+          otherwise, it returns 0.
+        """
+        if not control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
+            return 0
+
+        if not self.scanCoordinates or not self.scanCoordinates.has_regions():
+            return 0
+
+        bounds = self.scanCoordinates.get_scan_bounds()
+        if not bounds:
+            return 0
+
+        # Calculate scan extents in mm
+        width_mm = bounds["x"][1] - bounds["x"][0]
+        height_mm = bounds["y"][1] - bounds["y"][0]
+
+        # Get effective pixel size (with downsampling)
+        pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
+        downsample_factor = max(1, int(control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um))
+        viewer_pixel_size_mm = (pixel_size_um * downsample_factor) / 1000
+
+        # Calculate mosaic dimensions in pixels
+        mosaic_width = int(math.ceil(width_mm / viewer_pixel_size_mm))
+        mosaic_height = int(math.ceil(height_mm / viewer_pixel_size_mm))
+
+        # Assume 2 bytes per pixel component (uint16), adjust for color and multiply by number of channels
+        bytes_per_pixel = 2
+
+        # If the camera provides color images (e.g. RGB), account for multiple components per pixel.
+        # Mirror the logic used in get_estimated_acquisition_disk_storage to keep estimates consistent.
+        try:
+            # Common patterns: a boolean property or a zero-arg method named "is_color"
+            is_color_attr = getattr(self.camera, "is_color", None)
+            if callable(is_color_attr):
+                if is_color_attr():
+                    bytes_per_pixel *= 3
+            elif isinstance(is_color_attr, bool) and is_color_attr:
+                bytes_per_pixel *= 3
+        except Exception:
+            # If color information isn't available, fall back to the monochrome assumption.
+            pass
+        num_channels = len(self.selected_configurations)
+        if num_channels == 0:
+            # No channels selected; this is likely an invalid acquisition state.
+            # Log a warning (similar to disk storage estimation) and return 0 as a sentinel.
+            squid.logging.get_logger(__name__).warning(
+                "Estimated mosaic RAM is 0 because no channel configurations are selected."
+            )
+            return 0
+
+        return mosaic_width * mosaic_height * bytes_per_pixel * num_channels
 
     def run_acquisition(self, acquire_current_fov=False):
         if not self.validate_acquisition_settings():
@@ -534,6 +617,19 @@ class MultiPointController:
                 self._stop_per_acquisition_log()
 
     def build_params(self, scan_position_information: ScanPositionInformation) -> AcquisitionParameters:
+        # Determine plate dimensions from wellplate format if available
+        plate_num_rows = 8  # Default for 96-well
+        plate_num_cols = 12
+        if hasattr(self.scanCoordinates, "format") and self.scanCoordinates.format:
+            format_settings = control._def.get_wellplate_settings(self.scanCoordinates.format)
+            if format_settings:
+                plate_num_rows = format_settings.get("rows", 8)
+                plate_num_cols = format_settings.get("cols", 12)
+            else:
+                self._log.debug(
+                    f"Unknown wellplate format '{self.scanCoordinates.format}', using default 96-well dimensions"
+                )
+
         return AcquisitionParameters(
             experiment_ID=self.experiment_ID,
             base_path=self.base_path,
@@ -555,10 +651,21 @@ class MultiPointController:
             z_stacking_config=self.z_stacking_config,
             z_range=self.z_range,
             use_fluidics=self.use_fluidics,
+            skip_saving=self.skip_saving,
+            # Downsampled view generation parameters
+            generate_downsampled_views=control._def.GENERATE_DOWNSAMPLED_WELL_IMAGES or control._def.DISPLAY_PLATE_VIEW,
+            downsampled_well_resolutions_um=control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
+            downsampled_plate_resolution_um=control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
+            downsampled_z_projection=control._def.DOWNSAMPLED_Z_PROJECTION,
+            plate_num_rows=plate_num_rows,
+            plate_num_cols=plate_num_cols,
+            xy_mode=self.xy_mode,
         )
 
     def _on_acquisition_completed(self):
         self._log.debug("MultiPointController._on_acquisition_completed called")
+        # Note: Plate views are saved per timepoint in the worker's run_single_time_point method
+
         # restore the previous selected mode
         if self.gen_focus_map:
             self.autofocusController.clear_focus_map()
@@ -608,3 +715,13 @@ class MultiPointController:
             )
             return False
         return True
+
+    def get_plate_view(self) -> np.ndarray:
+        """Get the current plate view array from the acquisition.
+
+        Returns:
+            Copy of the plate view array, or None if not available.
+        """
+        if self.multiPointWorker is not None:
+            return self.multiPointWorker.get_plate_view()
+        return None
