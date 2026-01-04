@@ -453,6 +453,40 @@ class TestConfigValidation:
         assert well_resolutions == [5.0, 20.0]  # Original unchanged
         assert result == [5.0, 10.0, 20.0]
 
+    def test_config_rejects_string_in_well_resolutions(self):
+        """Test that string values in well_resolutions raise TypeError."""
+        well_resolutions = [5.0, "plate", 20.0]  # Invalid: string in list
+        plate_resolution = 10.0
+
+        with pytest.raises(TypeError, match="must be numeric"):
+            ensure_plate_resolution_in_well_resolutions(well_resolutions, plate_resolution)
+
+    def test_config_rejects_string_plate_resolution(self):
+        """Test that string plate_resolution raises TypeError."""
+        well_resolutions = [5.0, 10.0, 20.0]
+        plate_resolution = "10.0"  # Invalid: string instead of float
+
+        with pytest.raises(TypeError, match="must be numeric"):
+            ensure_plate_resolution_in_well_resolutions(well_resolutions, plate_resolution)
+
+    def test_config_accepts_int_values(self):
+        """Test that integer values are accepted and work correctly."""
+        well_resolutions = [5, 20]  # Integers instead of floats
+        plate_resolution = 10
+
+        result = ensure_plate_resolution_in_well_resolutions(well_resolutions, plate_resolution)
+
+        assert result == [5, 10, 20]
+
+    def test_config_handles_empty_well_resolutions(self):
+        """Test that empty well_resolutions list works correctly."""
+        well_resolutions = []
+        plate_resolution = 10.0
+
+        result = ensure_plate_resolution_in_well_resolutions(well_resolutions, plate_resolution)
+
+        assert result == [10.0]
+
 
 class TestCircularScanInSquareSlot:
     """Tests for circular scan areas in square well slots."""

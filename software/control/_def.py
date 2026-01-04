@@ -21,6 +21,15 @@ def conf_attribute_reader(string_value):
     DOUBLE QUOTES
     """
     actualvalue = str(string_value).strip()
+
+    # Strip inline comments (everything after # that's not inside brackets/quotes)
+    # Only strip if # is not part of a JSON structure (no [ or { before it)
+    if "#" in actualvalue:
+        # Check if it looks like a JSON value (starts with [ or {)
+        if not (actualvalue.startswith("[") or actualvalue.startswith("{")):
+            # Strip comment - take everything before the first #
+            actualvalue = actualvalue.split("#")[0].strip()
+
     try:
         if str(actualvalue) == "None":
             return None
