@@ -5,6 +5,7 @@ import numpy as np
 
 import control._def
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
+from control.core.config import ConfigRepository
 from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
 from control.core.laser_af_settings_manager import LaserAFSettingManager
@@ -319,6 +320,11 @@ class Microscope:
         self._simulated = simulated
 
         self.objective_store: ObjectiveStore = ObjectiveStore()
+
+        # New config repository (centralized config management)
+        self.config_repo: ConfigRepository = ConfigRepository()
+
+        # Legacy config managers (kept during transition)
         # Pass configurations path for loading global channel definitions
         configurations_path = Path(__file__).parent.parent / "configurations"
         self.channel_configuration_mananger: ChannelConfigurationManager = ChannelConfigurationManager(

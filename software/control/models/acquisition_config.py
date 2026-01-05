@@ -101,6 +101,93 @@ class AcquisitionChannel(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Convenience properties for single-camera, single-illumination access
+    # These provide ChannelMode-like interface for UI compatibility
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    @property
+    def exposure_time(self) -> float:
+        """Primary camera exposure time in ms."""
+        camera = next(iter(self.camera_settings.values()), None)
+        return camera.exposure_time_ms if camera else 20.0
+
+    @property
+    def analog_gain(self) -> float:
+        """Primary camera analog gain."""
+        camera = next(iter(self.camera_settings.values()), None)
+        return camera.gain_mode if camera else 0.0
+
+    @property
+    def display_color(self) -> str:
+        """Primary camera display color as hex string."""
+        camera = next(iter(self.camera_settings.values()), None)
+        return camera.display_color if camera else "#FFFFFF"
+
+    @property
+    def illumination_intensity(self) -> float:
+        """Primary illumination channel intensity."""
+        if self.illumination_settings.illumination_channels:
+            ch_name = self.illumination_settings.illumination_channels[0]
+            return self.illumination_settings.intensity.get(ch_name, 20.0)
+        # Fall back to first intensity value if no channels specified
+        if self.illumination_settings.intensity:
+            return next(iter(self.illumination_settings.intensity.values()))
+        return 20.0
+
+    @property
+    def primary_illumination_channel(self) -> Optional[str]:
+        """Name of the primary illumination channel."""
+        if self.illumination_settings.illumination_channels:
+            return self.illumination_settings.illumination_channels[0]
+        return None
+
+    @property
+    def z_offset(self) -> float:
+        """Z offset in micrometers."""
+        return self.illumination_settings.z_offset_um
+
+    @property
+    def emission_filter_position(self) -> int:
+        """Primary emission filter wheel position."""
+        if self.emission_filter_wheel_position:
+            return next(iter(self.emission_filter_wheel_position.values()), 1)
+        return 1
+
+    def get_illumination_source_code(self, illumination_config: "IlluminationChannelConfig") -> int:
+        """Get the illumination source code for the primary illumination channel.
+
+        Args:
+            illumination_config: The machine's illumination channel configuration.
+
+        Returns:
+            Source code (int) for the primary illumination channel, or 0 if not found.
+        """
+        ill_channel_name = self.primary_illumination_channel
+        if not ill_channel_name:
+            return 0
+        ill_channel = illumination_config.get_channel_by_name(ill_channel_name)
+        if not ill_channel:
+            return 0
+        return illumination_config.get_source_code(ill_channel)
+
+    def get_illumination_wavelength(self, illumination_config: "IlluminationChannelConfig") -> Optional[int]:
+        """Get the wavelength for the primary illumination channel.
+
+        Args:
+            illumination_config: The machine's illumination channel configuration.
+
+        Returns:
+            Wavelength in nm, or None if not a fluorescence channel.
+        """
+        ill_channel_name = self.primary_illumination_channel
+        if not ill_channel_name:
+            return None
+        ill_channel = illumination_config.get_channel_by_name(ill_channel_name)
+        if not ill_channel:
+            return None
+        return ill_channel.wavelength_nm
+
     def get_effective_settings(self, confocal_mode: bool) -> "AcquisitionChannel":
         """
         Get effective settings based on confocal mode.
