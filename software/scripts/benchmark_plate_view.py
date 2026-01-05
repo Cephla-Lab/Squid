@@ -28,7 +28,6 @@ logging.getLogger("downsample_tile").setLevel(logging.DEBUG)
 
 from control.core.job_processing import (
     DownsampledViewJob,
-    DownsampledViewResult,
     JobRunner,
     CaptureInfo,
     JobImage,
@@ -133,8 +132,8 @@ def benchmark_single_well(
 
             dispatch_end = time.perf_counter()
 
-            # Wait for result
-            result = runner.output_queue().get(timeout=120.0)
+            # Wait for result to ensure all jobs complete
+            runner.output_queue().get(timeout=120.0)
             result_time = time.perf_counter()
 
             total_time = result_time - well_start
@@ -226,7 +225,7 @@ def benchmark_plate_acquisition(
                         runner.dispatch(job)
 
                 # Wait for this well's result
-                result = runner.output_queue().get(timeout=60.0)
+                runner.output_queue().get(timeout=60.0)
                 well_end = time.perf_counter()
 
                 well_time = (well_end - well_start) * 1000
@@ -379,7 +378,7 @@ def benchmark_full_96_well_plate(
                             runner.dispatch(job)
 
                     # Wait for this well's result
-                    result = runner.output_queue().get(timeout=120.0)
+                    runner.output_queue().get(timeout=120.0)
                     well_end = time.perf_counter()
 
                     well_time = (well_end - well_start) * 1000
@@ -422,8 +421,6 @@ def benchmark_full_96_well_plate(
 
 
 if __name__ == "__main__":
-    import sys
-
     print("=" * 70)
     print("DOWNSAMPLED PLATE VIEW PERFORMANCE BENCHMARK")
     print("=" * 70)

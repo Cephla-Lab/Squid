@@ -266,6 +266,6 @@ def get_current_log_file_path() -> Optional[str]:
     """
     root_logger = get_logger()
     for handler in root_logger.handlers:
-        if isinstance(handler, (logging.FileHandler, logging.handlers.BaseRotatingHandler)):
+        if isinstance(handler, (py_logging.FileHandler, py_logging.handlers.BaseRotatingHandler)):
             return getattr(handler, "baseFilename", None)
     return None

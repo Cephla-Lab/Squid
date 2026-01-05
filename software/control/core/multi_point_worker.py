@@ -597,8 +597,6 @@ class MultiPointWorker:
 
     def _handle_downsampled_view_result(self, result: DownsampledViewResult) -> None:
         """Update plate view with completed well image."""
-        import time
-
         t_start = time.perf_counter()
 
         if self._downsampled_view_manager is None:

@@ -427,7 +427,6 @@ class DownsampledViewJob(Job):
 
     def run(self) -> Optional[DownsampledViewResult]:
         log = squid.logging.get_logger(self.__class__.__name__)
-        import time
 
         t_start = time.perf_counter()
 
@@ -652,8 +651,6 @@ class JobRunner(multiprocessing.Process):
         self._pending_count = None
 
     def run(self):
-        import time
-        import os
         import logging
 
         # Configure logging in subprocess - the squid.logging module sets up console logging
