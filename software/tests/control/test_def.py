@@ -118,3 +118,23 @@ class TestConfAttributeReader:
         """Test that leading/trailing whitespace is stripped."""
         assert conf_attribute_reader("  10.0  ") == 10.0
         assert conf_attribute_reader("  True  ") is True
+
+    def test_strips_inline_comments_from_json_list(self):
+        """Test that inline comments after JSON lists are stripped."""
+        result = conf_attribute_reader("[1, 2, 3]  # some comment")
+        assert result == [1, 2, 3]
+        assert isinstance(result, list)
+
+    def test_strips_inline_comments_from_json_dict(self):
+        """Test that inline comments after JSON dicts are stripped."""
+        result = conf_attribute_reader('{"key": "value"}  # config comment')
+        assert result == {"key": "value"}
+        assert isinstance(result, dict)
+
+    def test_preserves_hash_in_json_while_stripping_trailing_comment(self):
+        """Test that # inside JSON is preserved while trailing comments are stripped."""
+        # This tests the fix for the edge case where JSON contains # AND has a trailing comment
+        result = conf_attribute_reader('{"color": "#FF0000"}  # red color')
+        assert result == {"color": "#FF0000"}
+        result = conf_attribute_reader('["#FFFFFF", "#000000"]  # colors')
+        assert result == ["#FFFFFF", "#000000"]

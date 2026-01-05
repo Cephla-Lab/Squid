@@ -30,6 +30,17 @@ def conf_attribute_reader(string_value):
 
     # JSON failed - strip inline comments if present
     if "#" in actualvalue:
+        # For JSON-like values, try stripping from rightmost # positions
+        # This handles cases like {"color": "#FF0000"}  # comment
+        if actualvalue.startswith("[") or actualvalue.startswith("{"):
+            hash_positions = [i for i, c in enumerate(actualvalue) if c == "#"]
+            for pos in reversed(hash_positions):
+                candidate = actualvalue[:pos].strip()
+                try:
+                    return json.loads(candidate)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+        # For non-JSON or if all JSON attempts failed, strip at first #
         actualvalue = actualvalue.split("#")[0].strip()
 
     # Parse the (possibly stripped) value
