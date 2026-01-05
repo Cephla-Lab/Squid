@@ -1,0 +1,60 @@
+version: 1
+
+channels:
+  # Transillumination (LED Matrix)
+  - name: "BF LED matrix full"
+    type: transillumination
+    wavelength_nm: null
+    controller_port: "USB1"
+    source_code: 0
+    intensity_calibration_file: null
+    enabled: true
+
+  - name: "DF LED matrix"
+    type: transillumination
+    wavelength_nm: null
+    controller_port: "USB1"
+    source_code: 3
+    intensity_calibration_file: null
+    enabled: true
+
+  # Epi-illumination (Fluorescence Lasers)
+  - name: "Fluorescence 405nm"
+    type: epi_illumination
+    wavelength_nm: 405
+    controller_port: "D1"
+    source_code: 11
+    intensity_calibration_file: "405.csv"
+    enabled: true
+
+  - name: "Fluorescence 488nm"
+    type: epi_illumination
+    wavelength_nm: 488
+    controller_port: "D2"
+    source_code: 12
+    intensity_calibration_file: "488.csv"
+    enabled: true
+
+  - name: "Fluorescence 561nm"
+    type: epi_illumination
+    wavelength_nm: 561
+    controller_port: "D4"
+    source_code: 14
+    intensity_calibration_file: "561.csv"
+    enabled: true
+
+  - name: "Fluorescence 638nm"
+    type: epi_illumination
+    wavelength_nm: 638
+    controller_port: "D3"
+    source_code: 13
+    intensity_calibration_file: "638.csv"
+    enabled: true
+
+  - name: "Fluorescence 730nm"
+    type: epi_illumination
+    wavelength_nm: 730
+    controller_port: "D5"
+    source_code: 15
+    intensity_calibration_file: "730.csv"
+    enabled: true

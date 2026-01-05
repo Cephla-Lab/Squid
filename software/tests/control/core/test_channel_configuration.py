@@ -1,12 +1,12 @@
 """Tests for the channel configuration system."""
 
 import json
-import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+import yaml
 
 from control.utils_config import (
     ChannelType,
@@ -16,10 +16,17 @@ from control.utils_config import (
     ChannelDefinitionsConfig,
     ConfocalOverrides,
 )
-from control.core.channel_configuration_mananger import (
-    ChannelConfigurationManager,
-    ConfigType,
+from control.core.channel_configuration_mananger import ChannelConfigurationManager
+from control.models import (
+    IlluminationChannel,
+    IlluminationChannelConfig,
+    AcquisitionChannel,
+    GeneralChannelConfig,
+    ObjectiveChannelConfig,
+    CameraSettings,
+    IlluminationSettings,
 )
+from control.models.illumination_config import IlluminationType
 
 
 class TestChannelType:
@@ -359,8 +366,120 @@ class TestChannelDefinitionsConfig:
         assert ChannelType.LED_MATRIX in types
 
 
-class TestChannelConfigurationManager:
-    """Test ChannelConfigurationManager class."""
+def _create_test_configs(base_path: Path) -> tuple:
+    """Helper to create test illumination and acquisition configs."""
+    machine_configs = base_path / "machine_configs"
+    machine_configs.mkdir(parents=True, exist_ok=True)
+
+    # Create illumination config
+    ill_config = IlluminationChannelConfig(
+        version=1,
+        controller_port_mapping={"USB1": 0, "D1": 11, "D2": 12},
+        channels=[
+            IlluminationChannel(
+                name="BF LED full",
+                type=IlluminationType.TRANSILLUMINATION,
+                wavelength_nm=None,
+                controller_port="USB1",
+            ),
+            IlluminationChannel(
+                name="405 nm Laser",
+                type=IlluminationType.EPI_ILLUMINATION,
+                wavelength_nm=405,
+                controller_port="D1",
+            ),
+            IlluminationChannel(
+                name="488 nm Laser",
+                type=IlluminationType.EPI_ILLUMINATION,
+                wavelength_nm=488,
+                controller_port="D2",
+            ),
+        ],
+    )
+
+    # Create general config
+    general_config = GeneralChannelConfig(
+        version=1,
+        channels=[
+            AcquisitionChannel(
+                name="Brightfield",
+                illumination_settings=IlluminationSettings(
+                    illumination_channels=["BF LED full"],
+                    intensity={"BF LED full": 5.0},
+                    z_offset_um=0.0,
+                ),
+                camera_settings={
+                    "1": CameraSettings(
+                        display_color="#FFFFFF",
+                        exposure_time_ms=20.0,
+                        gain_mode=10.0,
+                    )
+                },
+                emission_filter_wheel_position={1: 1},
+            ),
+            AcquisitionChannel(
+                name="488 nm",
+                illumination_settings=IlluminationSettings(
+                    illumination_channels=["488 nm Laser"],
+                    intensity={"488 nm Laser": 20.0},
+                    z_offset_um=0.0,
+                ),
+                camera_settings={
+                    "1": CameraSettings(
+                        display_color="#00FF00",
+                        exposure_time_ms=25.0,
+                        gain_mode=10.0,
+                    )
+                },
+                emission_filter_wheel_position={1: 2},
+            ),
+        ],
+    )
+
+    # Create objective config
+    objective_config = ObjectiveChannelConfig(
+        version=1,
+        channels=[
+            AcquisitionChannel(
+                name="Brightfield",
+                illumination_settings=IlluminationSettings(
+                    illumination_channels=None,
+                    intensity={"BF LED full": 10.0},
+                    z_offset_um=1.0,
+                ),
+                camera_settings={
+                    "1": CameraSettings(
+                        display_color="#FFFFFF",
+                        exposure_time_ms=30.0,
+                        gain_mode=15.0,
+                        pixel_format="Mono12",
+                    )
+                },
+            ),
+            AcquisitionChannel(
+                name="488 nm",
+                illumination_settings=IlluminationSettings(
+                    illumination_channels=None,
+                    intensity={"488 nm Laser": 30.0},
+                    z_offset_um=2.0,
+                ),
+                camera_settings={
+                    "1": CameraSettings(
+                        display_color="#00FF00",
+                        exposure_time_ms=50.0,
+                        gain_mode=20.0,
+                        pixel_format="Mono12",
+                    )
+                },
+            ),
+        ],
+    )
+
+    return ill_config, general_config, objective_config
+
+
+class TestChannelConfigurationManagerYAML:
+    """Test ChannelConfigurationManager with YAML configs."""
 
     @pytest.fixture
     def temp_config_dir(self):
@@ -369,235 +488,101 @@ class TestChannelConfigurationManager:
             yield Path(tmpdir)
 
     @pytest.fixture
-    def manager_with_config(self, temp_config_dir):
-        """Create a manager with a default config."""
-        # Create default config file
-        default_config = ChannelDefinitionsConfig.generate_default()
-        default_file = temp_config_dir / "channel_definitions.default.json"
-        default_config.save(default_file)
+    def manager_with_yaml(self, temp_config_dir):
+        """Create a manager with YAML configs."""
+        ill_config, general_config, objective_config = _create_test_configs(temp_config_dir)
 
-        manager = ChannelConfigurationManager(configurations_path=temp_config_dir)
-        return manager
+        with patch("control.core.channel_configuration_mananger.ConfigLoader") as MockLoader:
+            mock_loader = MockLoader.return_value
+            mock_loader.load_illumination_config.return_value = ill_config
+            mock_loader.load_general_config.return_value = general_config
+            mock_loader.load_objective_config.return_value = objective_config
+            mock_loader.save_objective_config = MagicMock()
 
-    def test_init_without_config_path(self):
+            manager = ChannelConfigurationManager()
+            manager.set_profile("default")
+            return manager
+
+    def test_init_without_config(self):
+        """Test that manager without config has no general config."""
         manager = ChannelConfigurationManager()
-        assert manager.channel_definitions is None
+        assert manager._general_config is None
+        assert not manager.has_yaml_configs()
 
-    def test_init_with_config_path(self, manager_with_config, temp_config_dir):
-        assert manager_with_config.channel_definitions is not None
-        # User file should be created from default
-        user_file = temp_config_dir / "channel_definitions.json"
-        assert user_file.exists()
+    def test_set_profile_loads_configs(self, manager_with_yaml):
+        """Test that set_profile loads general config."""
+        assert manager_with_yaml._general_config is not None
+        assert manager_with_yaml.has_yaml_configs()
+        assert len(manager_with_yaml._general_config.channels) == 2
 
-    def test_load_creates_user_file_from_default(self, temp_config_dir):
-        # Create only default file
-        default_config = ChannelDefinitionsConfig.generate_default()
-        default_file = temp_config_dir / "channel_definitions.default.json"
-        default_config.save(default_file)
+    def test_get_configurations(self, manager_with_yaml):
+        """Test getting channel modes from YAML config."""
+        configs = manager_with_yaml.get_configurations("10x")
 
-        user_file = temp_config_dir / "channel_definitions.json"
-        assert not user_file.exists()
+        assert len(configs) == 2
+        assert configs[0].name == "Brightfield"
+        assert configs[1].name == "488 nm"
 
-        manager = ChannelConfigurationManager(configurations_path=temp_config_dir)
+        # Check merged values (from objective config)
+        bf_config = configs[0]
+        assert bf_config.exposure_time == 30.0  # From objective
+        assert bf_config.illumination_intensity == 10.0  # From objective
 
-        assert user_file.exists()
-        assert manager.channel_definitions is not None
+    def test_get_channel_configuration_by_name(self, manager_with_yaml):
+        """Test getting a specific channel by name."""
+        config = manager_with_yaml.get_channel_configuration_by_name("10x", "488 nm")
+        assert config is not None
+        assert config.name == "488 nm"
 
-    def test_save_channel_definitions(self, manager_with_config, temp_config_dir):
-        # Modify config
-        manager_with_config.channel_definitions.max_fluorescence_channels = 7
-        manager_with_config.save_channel_definitions()
+        missing = manager_with_yaml.get_channel_configuration_by_name("10x", "Nonexistent")
+        assert missing is None
 
-        # Reload and verify
-        user_file = temp_config_dir / "channel_definitions.json"
-        with open(user_file) as f:
-            data = json.load(f)
-        assert data["max_fluorescence_channels"] == 7
-
-    def test_get_channel_definitions(self, manager_with_config):
-        definitions = manager_with_config.get_channel_definitions()
-        assert definitions is not None
-        assert isinstance(definitions, ChannelDefinitionsConfig)
-
-    def test_add_channel_definition(self, manager_with_config):
-        initial_count = len(manager_with_config.channel_definitions.channels)
-
-        new_channel = ChannelDefinition(
-            name="New Test Channel",
-            type=ChannelType.FLUORESCENCE,
-            numeric_channel=3,
-        )
-        manager_with_config.add_channel_definition(new_channel)
-
-        assert len(manager_with_config.channel_definitions.channels) == initial_count + 1
-
-    def test_remove_channel_definition(self, manager_with_config):
-        # Add a channel first
-        new_channel = ChannelDefinition(
-            name="Channel To Remove",
-            type=ChannelType.FLUORESCENCE,
-            numeric_channel=3,
-        )
-        manager_with_config.add_channel_definition(new_channel)
-        count_after_add = len(manager_with_config.channel_definitions.channels)
-
-        manager_with_config.remove_channel_definition("Channel To Remove")
-
-        assert len(manager_with_config.channel_definitions.channels) == count_after_add - 1
-        assert manager_with_config.channel_definitions.get_channel_by_name("Channel To Remove") is None
-
-    def test_set_channel_enabled(self, manager_with_config):
-        channel_name = manager_with_config.channel_definitions.channels[0].name
-        manager_with_config.set_channel_enabled(channel_name, False)
-
-        channel = manager_with_config.channel_definitions.get_channel_by_name(channel_name)
-        assert channel.enabled is False
-
-    def test_get_enabled_configurations(self, manager_with_config, temp_config_dir):
-        # Set up profile path
-        profile_path = temp_config_dir / "profiles" / "default"
-        profile_path.mkdir(parents=True)
-        manager_with_config.set_profile_path(profile_path)
-
-        # Disable one channel
-        channel_name = manager_with_config.channel_definitions.channels[0].name
-        manager_with_config.set_channel_enabled(channel_name, False)
-
-        all_configs = manager_with_config.get_configurations("10x")
-        enabled_configs = manager_with_config.get_enabled_configurations("10x")
-
-        assert len(enabled_configs) < len(all_configs)
-
-    def test_channel_id_stability(self, manager_with_config, temp_config_dir):
-        """Test that channel IDs are stable across sessions."""
-        profile_path = temp_config_dir / "profiles" / "default"
-        profile_path.mkdir(parents=True)
-        manager_with_config.set_profile_path(profile_path)
-
-        configs1 = manager_with_config.get_configurations("10x")
-        id_map1 = {c.name: c.id for c in configs1}
-
-        # Create new manager (simulating new session)
-        manager2 = ChannelConfigurationManager(configurations_path=temp_config_dir)
-        manager2.set_profile_path(profile_path)
-
-        configs2 = manager2.get_configurations("10x")
-        id_map2 = {c.name: c.id for c in configs2}
-
-        # IDs should be the same
-        for name in id_map1:
-            assert id_map1[name] == id_map2[name], f"ID mismatch for {name}"
-
-    def test_confocal_mode_default_is_false(self, manager_with_config):
+    def test_confocal_mode_default_false(self, manager_with_yaml):
         """Test that confocal mode defaults to False."""
-        assert manager_with_config.confocal_mode is False
-        assert manager_with_config.is_confocal_mode() is False
+        assert manager_with_yaml.confocal_mode is False
+        assert manager_with_yaml.is_confocal_mode() is False
 
-    def test_toggle_confocal_widefield(self, manager_with_config):
-        """Test toggling between confocal and widefield modes."""
-        assert manager_with_config.confocal_mode is False
+    def test_toggle_confocal_widefield(self, manager_with_yaml):
+        """Test toggling confocal mode."""
+        manager_with_yaml.toggle_confocal_widefield(True)
+        assert manager_with_yaml.confocal_mode is True
 
-        manager_with_config.toggle_confocal_widefield(True)
-        assert manager_with_config.confocal_mode is True
-        assert manager_with_config.is_confocal_mode() is True
-        assert manager_with_config.active_config_type == ConfigType.CONFOCAL
+        manager_with_yaml.toggle_confocal_widefield(False)
+        assert manager_with_yaml.confocal_mode is False
 
-        manager_with_config.toggle_confocal_widefield(False)
-        assert manager_with_config.confocal_mode is False
-        assert manager_with_config.is_confocal_mode() is False
-        assert manager_with_config.active_config_type == ConfigType.WIDEFIELD
+    def test_update_configuration(self, manager_with_yaml):
+        """Test updating a configuration attribute."""
+        configs = manager_with_yaml.get_configurations("10x")
+        bf_config = next(c for c in configs if c.name == "Brightfield")
 
-    def test_confocal_mode_affects_channel_settings(self, manager_with_config, temp_config_dir):
-        """Test that confocal mode uses confocal overrides for channel settings."""
-        profile_path = temp_config_dir / "profiles" / "default"
-        objective_path = profile_path / "10x"
-        objective_path.mkdir(parents=True)
-        manager_with_config.set_profile_path(profile_path)
+        # Update exposure time
+        manager_with_yaml.update_configuration("10x", bf_config.id, "ExposureTime", 100.0)
 
-        # Create settings with confocal overrides
-        channel_name = manager_with_config.channel_definitions.channels[0].name
-        settings_with_confocal = {
-            channel_name: {
-                "exposure_time": 25.0,
-                "analog_gain": 5.0,
-                "illumination_intensity": 20.0,
-                "z_offset": 0.0,
-                "confocal": {
-                    "exposure_time": 100.0,
-                    "illumination_intensity": 50.0,
-                },
-            }
-        }
-        settings_file = objective_path / "channel_settings.json"
-        settings_file.write_text(json.dumps(settings_with_confocal))
+        # Verify update
+        updated_configs = manager_with_yaml.get_configurations("10x")
+        updated_bf = next(c for c in updated_configs if c.name == "Brightfield")
+        assert updated_bf.exposure_time == 100.0
 
-        # Load configurations
-        manager_with_config.load_configurations("10x")
+    def test_write_configuration_selected(self, manager_with_yaml, temp_config_dir):
+        """Test writing selected configurations to YAML."""
+        configs = manager_with_yaml.get_configurations("10x")
+        output_dir = temp_config_dir / "acquisition"
+        output_dir.mkdir()
 
-        # Get configurations in widefield mode
-        manager_with_config.toggle_confocal_widefield(False)
-        widefield_configs = manager_with_config.get_configurations("10x")
-        widefield_channel = next(c for c in widefield_configs if c.name == channel_name)
-        assert widefield_channel.exposure_time == 25.0
-        assert widefield_channel.illumination_intensity == 20.0
+        # filename is used to determine output directory
+        dummy_path = output_dir / "dummy_filename.xml"
+        manager_with_yaml.write_configuration_selected("10x", configs, str(dummy_path))
 
-        # Get configurations in confocal mode
-        manager_with_config.toggle_confocal_widefield(True)
-        confocal_configs = manager_with_config.get_configurations("10x")
-        confocal_channel = next(c for c in confocal_configs if c.name == channel_name)
-        assert confocal_channel.exposure_time == 100.0
-        assert confocal_channel.illumination_intensity == 50.0
-        # Non-overridden value should inherit from base
-        assert confocal_channel.analog_gain == 5.0
+        # Check YAML was written
+        yaml_path = output_dir / "acquisition_channels.yaml"
+        assert yaml_path.exists()
 
-    def test_update_configuration_in_confocal_mode(self, manager_with_config, temp_config_dir):
-        """Test that updates in confocal mode go to confocal overrides."""
-        profile_path = temp_config_dir / "profiles" / "default"
-        objective_path = profile_path / "10x"
-        objective_path.mkdir(parents=True)
-        manager_with_config.set_profile_path(profile_path)
-
-        # Initialize settings
-        channel_name = manager_with_config.channel_definitions.channels[0].name
-        manager_with_config.objective_settings["10x"] = {channel_name: ObjectiveChannelSettings(exposure_time=25.0)}
-
-        # Get channel ID
-        configs = manager_with_config.get_configurations("10x")
-        channel = next(c for c in configs if c.name == channel_name)
-
-        # Update in confocal mode
-        manager_with_config.toggle_confocal_widefield(True)
-        manager_with_config.update_configuration("10x", channel.id, "ExposureTime", 100.0)
-
-        # Verify the update went to confocal overrides
-        settings = manager_with_config.objective_settings["10x"][channel_name]
-        assert settings.exposure_time == 25.0  # Base unchanged
-        assert settings.confocal is not None
-        assert settings.confocal.exposure_time == 100.0
-
-    def test_update_configuration_in_widefield_mode(self, manager_with_config, temp_config_dir):
-        """Test that updates in widefield mode go to base settings."""
-        profile_path = temp_config_dir / "profiles" / "default"
-        objective_path = profile_path / "10x"
-        objective_path.mkdir(parents=True)
-        manager_with_config.set_profile_path(profile_path)
-
-        # Initialize settings
-        channel_name = manager_with_config.channel_definitions.channels[0].name
-        manager_with_config.objective_settings["10x"] = {channel_name: ObjectiveChannelSettings(exposure_time=25.0)}
-
-        # Get channel ID
-        configs = manager_with_config.get_configurations("10x")
-        channel = next(c for c in configs if c.name == channel_name)
-
-        # Update in widefield mode
-        manager_with_config.toggle_confocal_widefield(False)
-        manager_with_config.update_configuration("10x", channel.id, "ExposureTime", 50.0)
-
-        # Verify the update went to base settings
-        settings = manager_with_config.objective_settings["10x"][channel_name]
-        assert settings.exposure_time == 50.0  # Base changed
-        assert settings.confocal is None  # No confocal overrides created
+        # Verify YAML content
+        with open(yaml_path) as f:
+            yaml_data = yaml.safe_load(f)
+        assert yaml_data["version"] == 1
+        assert yaml_data["objective"] == "10x"
+        assert len(yaml_data["channels"]) == 2
 
 
 class TestChannelDefinitionValidation:
@@ -653,136 +638,3 @@ class TestChannelDefinitionValidation:
             numeric_channel_mapping={"1": {"illumination_source": 11, "ex_wavelength": 488}},
         )
         assert len(config.channels) == 1
-
-
-class TestMigrationAndCleanup:
-    """Test migration and cleanup functions."""
-
-    @pytest.fixture
-    def temp_config_dir(self):
-        """Create a temporary directory for configurations."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yield Path(tmpdir)
-
-    @pytest.fixture
-    def temp_acquisition_configs(self):
-        """Create a temporary acquisition_configurations structure with XML files."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base_path = Path(tmpdir)
-
-            # Create profile/objective structure with XML files
-            for profile in ["default_profile", "profile2"]:
-                for objective in ["10x", "20x"]:
-                    obj_dir = base_path / profile / objective
-                    obj_dir.mkdir(parents=True)
-
-                    # Create a mock XML config file
-                    xml_content = """<?xml version="1.0" encoding="utf-8"?>
-<modes>
-    <mode ID="1" Name="Test Channel" ExposureTime="50.0" AnalogGain="2.0"
-          IlluminationSource="11" IlluminationIntensity="30.0" CameraSN=""
-          ZOffset="0.5" EmissionFilterPosition="1" Selected="false"/>
-</modes>"""
-                    (obj_dir / "channel_configurations.xml").write_text(xml_content)
-
-            yield base_path
-
-    @pytest.fixture
-    def manager_for_migration(self, temp_config_dir):
-        """Create a manager for migration testing."""
-        default_config = ChannelDefinitionsConfig.generate_default()
-        default_file = temp_config_dir / "channel_definitions.default.json"
-        default_config.save(default_file)
-
-        manager = ChannelConfigurationManager(configurations_path=temp_config_dir)
-        return manager
-
-    def test_migrate_all_profiles(self, manager_for_migration, temp_acquisition_configs):
-        """Test that migrate_all_profiles creates JSON files from XML."""
-        # Verify no JSON files and no marker file exist initially
-        for profile_dir in temp_acquisition_configs.iterdir():
-            if not profile_dir.is_dir():
-                continue
-            for obj_dir in profile_dir.iterdir():
-                if not obj_dir.is_dir():
-                    continue
-                assert not (obj_dir / "channel_settings.json").exists()
-                assert (obj_dir / "channel_configurations.xml").exists()
-
-        # Run migration
-        manager_for_migration.migrate_all_profiles(temp_acquisition_configs)
-
-        # Verify JSON files now exist
-        for profile_dir in temp_acquisition_configs.iterdir():
-            if not profile_dir.is_dir():
-                continue
-            for obj_dir in profile_dir.iterdir():
-                if not obj_dir.is_dir():
-                    continue
-                json_file = obj_dir / "channel_settings.json"
-                assert json_file.exists(), f"JSON file not created: {json_file}"
-
-        # Verify marker file was created
-        assert (temp_acquisition_configs / ".migration_complete").exists()
-
-    def test_migrate_all_profiles_skips_existing_json(self, manager_for_migration, temp_acquisition_configs):
-        """Test that migration doesn't overwrite existing JSON files."""
-        # Create a JSON file with custom content
-        obj_dir = temp_acquisition_configs / "default_profile" / "10x"
-        json_file = obj_dir / "channel_settings.json"
-        json_file.write_text('{"Custom Channel": {"exposure_time": 999.0}}')
-
-        # Run migration
-        manager_for_migration.migrate_all_profiles(temp_acquisition_configs)
-
-        # Verify custom content is preserved
-        content = json.loads(json_file.read_text())
-        assert "Custom Channel" in content
-        assert content["Custom Channel"]["exposure_time"] == 999.0
-
-    def test_migrate_all_profiles_handles_errors(self, manager_for_migration, temp_acquisition_configs):
-        """Test that migration continues after encountering errors."""
-        # Create an invalid XML file
-        bad_xml = temp_acquisition_configs / "default_profile" / "10x" / "channel_configurations.xml"
-        bad_xml.write_text("not valid xml <><>")
-
-        # Migration should not raise, just log warning
-        manager_for_migration.migrate_all_profiles(temp_acquisition_configs)
-
-        # Other profiles should still be migrated
-        good_json = temp_acquisition_configs / "profile2" / "10x" / "channel_settings.json"
-        assert good_json.exists()
-
-    def test_cleanup_orphaned_settings(self, manager_for_migration, temp_acquisition_configs):
-        """Test that orphaned settings are cleaned up when channel is deleted."""
-        # First, create JSON settings files with a channel
-        for profile_dir in temp_acquisition_configs.iterdir():
-            if not profile_dir.is_dir():
-                continue
-            for obj_dir in profile_dir.iterdir():
-                if not obj_dir.is_dir():
-                    continue
-                settings = {
-                    "Channel To Delete": {"exposure_time": 100.0, "analog_gain": 1.0},
-                    "Channel To Keep": {"exposure_time": 50.0, "analog_gain": 0.5},
-                }
-                (obj_dir / "channel_settings.json").write_text(json.dumps(settings))
-
-        # Add channel to definitions so we can remove it
-        manager_for_migration.channel_definitions.channels.append(
-            ChannelDefinition(name="Channel To Delete", type=ChannelType.FLUORESCENCE, numeric_channel=1)
-        )
-
-        # Remove channel with cleanup
-        manager_for_migration.remove_channel_definition("Channel To Delete", base_config_path=temp_acquisition_configs)
-
-        # Verify orphaned settings are removed
-        for profile_dir in temp_acquisition_configs.iterdir():
-            if not profile_dir.is_dir():
-                continue
-            for obj_dir in profile_dir.iterdir():
-                if not obj_dir.is_dir():
-                    continue
-                settings = json.loads((obj_dir / "channel_settings.json").read_text())
-                assert "Channel To Delete" not in settings
-                assert "Channel To Keep" in settings

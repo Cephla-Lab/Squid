@@ -1507,7 +1507,11 @@ class LaserAutofocusSettingWidget(QWidget):
         # Update spinboxes
         for prop_name, spinbox in self.spinboxes.items():
             current_value = getattr(self.laserAutofocusController.laser_af_properties, prop_name)
-            spinbox.setValue(current_value)
+            if current_value is None:
+                # For spinboxes that allow None, set to minimum (shows "None" special text)
+                spinbox.setValue(spinbox.minimum())
+            else:
+                spinbox.setValue(current_value)
 
         # Update exposure and gain
         self.exposure_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_exposure_time_ms)
@@ -12259,30 +12263,105 @@ class SurfacePlotWidget(QWidget):
         self.signal_point_clicked.emit(float(self.x_plot[idx]), float(self.y_plot[idx]))
 
 
-class ChannelEditorDialog(QDialog):
-    """Dialog for editing channel definitions"""
+class WavelengthWidget(QWidget):
+    """Widget for wavelength field with checkbox to toggle between int and N/A."""
+
+    def __init__(self, wavelength_nm=None, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setSpacing(4)
+
+        self.checkbox = QCheckBox()
+        self.checkbox.setToolTip("Check to set wavelength, uncheck for N/A")
+        self.checkbox.stateChanged.connect(self._on_checkbox_changed)
+        layout.addWidget(self.checkbox)
+
+        self.spinbox = QSpinBox()
+        self.spinbox.setRange(200, 900)
+        self.spinbox.setValue(405)
+        layout.addWidget(self.spinbox)
+
+        self.na_label = QLabel("N/A")
+        self.na_label.setStyleSheet("color: gray;")
+        layout.addWidget(self.na_label)
+
+        # Set initial state
+        if wavelength_nm is not None:
+            self.checkbox.setChecked(True)
+            self.spinbox.setValue(wavelength_nm)
+            self.spinbox.setVisible(True)
+            self.na_label.setVisible(False)
+        else:
+            self.checkbox.setChecked(False)
+            self.spinbox.setVisible(False)
+            self.na_label.setVisible(True)
+
+    def _on_checkbox_changed(self, state):
+        checked = state == Qt.Checked
+        self.spinbox.setVisible(checked)
+        self.na_label.setVisible(not checked)
+
+    def get_wavelength(self):
+        """Return wavelength value or None if N/A."""
+        if self.checkbox.isChecked():
+            return self.spinbox.value()
+        return None
+
+    def set_wavelength(self, wavelength_nm):
+        """Set wavelength value or N/A."""
+        if wavelength_nm is not None:
+            self.checkbox.setChecked(True)
+            self.spinbox.setValue(wavelength_nm)
+        else:
+            self.checkbox.setChecked(False)
+
+
+class IlluminationChannelConfiguratorDialog(QDialog):
+    """Dialog for editing illumination channel hardware configuration.
+
+    This edits the machine_configs/illumination_channel_config.yaml file which defines
+    the physical illumination hardware. User-facing acquisition settings (display color,
+    enabled state, filter position) are configured separately in user profile configs.
+    """
 
     signal_channels_updated = Signal()
 
-    def __init__(self, channel_configuration_manager, parent=None, base_config_path=None):
+    # Column indices for the channels table
+    COL_NAME = 0
+    COL_TYPE = 1
+    COL_PORT = 2
+    COL_WAVELENGTH = 3
+    COL_CALIBRATION = 4
+
+    def __init__(self, config_loader, parent=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.channel_manager = channel_configuration_manager
-        # Allow injection of base_config_path for testability; default to global config
-        self.base_config_path = base_config_path or ACQUISITION_CONFIGURATIONS_PATH
-        self.setWindowTitle("Channel Configuration Editor")
-        self.setMinimumSize(900, 600)
+        self.config_loader = config_loader
+        self.illumination_config = None
+        self.setWindowTitle("Illumination Channel Configurator")
+        self.setMinimumSize(900, 500)
         self._setup_ui()
         self._load_channels()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
 
-        # Table for channel definitions
+        # Warning label
+        warning_label = QLabel(
+            "Warning: Illumination channel configuration is hardware-specific. "
+            "Modifying these settings may break existing acquisition configurations. "
+            "Only change these settings when necessary."
+        )
+        warning_label.setWordWrap(True)
+        warning_label.setStyleSheet("color: #CC0000; font-weight: bold;")
+        layout.addWidget(warning_label)
+
+        # Table for illumination channels
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
+        self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(
-            ["Enabled", "Name", "Type", "Numeric Ch", "Ex Wavelength", "Illum. Source", "Filter Pos", "Color"]
+            ["Name", "Type", "Controller Port", "Wavelength (nm)", "Calibration File"]
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -12294,6 +12373,8 @@ class ChannelEditorDialog(QDialog):
         button_layout = QHBoxLayout()
 
         self.btn_add = QPushButton("Add Channel")
+        self.btn_add.setAutoDefault(False)
+        self.btn_add.setDefault(False)
         self.btn_add.clicked.connect(self._add_channel)
         button_layout.addWidget(self.btn_add)
 
@@ -12309,6 +12390,10 @@ class ChannelEditorDialog(QDialog):
         self.btn_move_down.clicked.connect(self._move_down)
         button_layout.addWidget(self.btn_move_down)
 
+        self.btn_port_mapping = QPushButton("Port Mapping...")
+        self.btn_port_mapping.clicked.connect(self._open_port_mapping)
+        button_layout.addWidget(self.btn_port_mapping)
+
         button_layout.addStretch()
 
         self.btn_save = QPushButton("Save")
@@ -12321,121 +12406,103 @@ class ChannelEditorDialog(QDialog):
 
         layout.addLayout(button_layout)
 
+    def _get_calibration_full_path(self, filename):
+        """Get full path for calibration file."""
+        if not filename:
+            return ""
+        calib_dir = self.config_loader.machine_configs_path / "intensity_calibrations"
+        return str(calib_dir / filename)
+
     def _load_channels(self):
-        """Load channel definitions into the table"""
-        definitions = self.channel_manager.get_channel_definitions()
-        if not definitions:
+        """Load illumination channels from YAML config into the table"""
+        self.illumination_config = self.config_loader.load_illumination_config()
+        if not self.illumination_config:
             return
 
-        self.table.setRowCount(len(definitions.channels))
+        # Get available ports (only those with mappings)
+        available_ports = self.illumination_config.get_available_ports()
 
-        for row, channel in enumerate(definitions.channels):
-            # Enabled checkbox
-            enabled_checkbox = QCheckBox()
-            enabled_checkbox.setChecked(channel.enabled)
-            enabled_widget = QWidget()
-            enabled_layout = QHBoxLayout(enabled_widget)
-            enabled_layout.addWidget(enabled_checkbox)
-            enabled_layout.setAlignment(Qt.AlignCenter)
-            enabled_layout.setContentsMargins(0, 0, 0, 0)
-            self.table.setCellWidget(row, 0, enabled_widget)
+        self.table.setRowCount(len(self.illumination_config.channels))
 
-            # Name (editable for fluorescence only, read-only for LED matrix)
+        for row, channel in enumerate(self.illumination_config.channels):
+            # Name (editable)
             name_item = QTableWidgetItem(channel.name)
-            if channel.type.value == "led_matrix":
-                name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-                name_item.setBackground(QColor(240, 240, 240))
-            self.table.setItem(row, 1, name_item)
+            self.table.setItem(row, self.COL_NAME, name_item)
 
-            # Type (read-only)
-            type_item = QTableWidgetItem(channel.type.value)
-            type_item.setFlags(type_item.flags() & ~Qt.ItemIsEditable)
-            type_item.setBackground(QColor(240, 240, 240))
-            self.table.setItem(row, 2, type_item)
+            # Type (dropdown)
+            type_combo = QComboBox()
+            type_combo.addItems(["epi_illumination", "transillumination"])
+            type_combo.setCurrentText(channel.type.value)
+            type_combo.currentTextChanged.connect(lambda text, r=row: self._on_type_changed(r, text))
+            self.table.setCellWidget(row, self.COL_TYPE, type_combo)
 
-            # Numeric channel (dropdown for fluorescence, N/A for brightfield)
-            if channel.type.value == "fluorescence":
-                numeric_combo = QComboBox()
-                max_channels = definitions.max_fluorescence_channels
-                numeric_combo.addItems([str(i) for i in range(1, max_channels + 1)])
-                if channel.numeric_channel:
-                    numeric_combo.setCurrentText(str(channel.numeric_channel))
-                self.table.setCellWidget(row, 3, numeric_combo)
-            else:
-                na_item = QTableWidgetItem("N/A")
-                na_item.setFlags(na_item.flags() & ~Qt.ItemIsEditable)
-                na_item.setBackground(QColor(240, 240, 240))
-                self.table.setItem(row, 3, na_item)
+            # Controller Port (dropdown) - only ports with mappings
+            port_combo = QComboBox()
+            port_combo.addItems(available_ports)
+            port_combo.setCurrentText(channel.controller_port)
+            self.table.setCellWidget(row, self.COL_PORT, port_combo)
 
-            # Ex wavelength (display only, from mapping)
-            ex_wavelength = channel.get_ex_wavelength(definitions.numeric_channel_mapping)
-            ex_item = QTableWidgetItem(str(ex_wavelength) if ex_wavelength else "N/A")
-            ex_item.setFlags(ex_item.flags() & ~Qt.ItemIsEditable)
-            ex_item.setBackground(QColor(240, 240, 240))
-            self.table.setItem(row, 4, ex_item)
+            # Wavelength (checkbox + spinbox, or N/A)
+            wave_widget = WavelengthWidget(channel.wavelength_nm)
+            self.table.setCellWidget(row, self.COL_WAVELENGTH, wave_widget)
 
-            # Illumination source (display only)
-            illum_source = channel.get_illumination_source(definitions.numeric_channel_mapping)
-            illum_item = QTableWidgetItem(str(illum_source))
-            illum_item.setFlags(illum_item.flags() & ~Qt.ItemIsEditable)
-            illum_item.setBackground(QColor(240, 240, 240))
-            self.table.setItem(row, 5, illum_item)
+            # Calibration file (full path)
+            full_path = self._get_calibration_full_path(channel.intensity_calibration_file)
+            calib_item = QTableWidgetItem(full_path)
+            self.table.setItem(row, self.COL_CALIBRATION, calib_item)
 
-            # Filter position (dropdown)
-            filter_combo = QComboBox()
-            filter_combo.addItems([str(i) for i in range(1, 9)])
-            filter_combo.setCurrentText(str(channel.emission_filter_position))
-            self.table.setCellWidget(row, 6, filter_combo)
+    def _on_type_changed(self, row, new_type):
+        """Handle type change - update wavelength default and controller port"""
+        wave_widget = self.table.cellWidget(row, self.COL_WAVELENGTH)
+        available_ports = self.illumination_config.get_available_ports()
 
-            # Color (color picker button)
-            color_btn = QPushButton()
-            color_btn.setStyleSheet(f"background-color: {channel.display_color};")
-            color_btn.setProperty("color", channel.display_color)
-            color_btn.clicked.connect(lambda _checked, r=row: self._pick_color(r))
-            self.table.setCellWidget(row, 7, color_btn)
+        # Find first available USB and D ports
+        first_usb = next((p for p in available_ports if p.startswith("USB")), None)
+        first_d = next((p for p in available_ports if p.startswith("D")), None)
 
-    def _pick_color(self, row):
-        """Open color picker for a row"""
-        color_btn = self.table.cellWidget(row, 7)
-        current_color = QColor(color_btn.property("color"))
-        color = QColorDialog.getColor(current_color, self, "Select Channel Color")
-        if color.isValid():
-            color_btn.setStyleSheet(f"background-color: {color.name()};")
-            color_btn.setProperty("color", color.name())
+        if new_type == "epi_illumination":
+            # Set wavelength to default 405nm for epi
+            if isinstance(wave_widget, WavelengthWidget):
+                wave_widget.set_wavelength(405)
+
+            # Update controller port to first available laser port
+            port_combo = self.table.cellWidget(row, self.COL_PORT)
+            if port_combo and port_combo.currentText().startswith("USB") and first_d:
+                port_combo.setCurrentText(first_d)
+        else:
+            # Set wavelength to N/A for transillumination
+            if isinstance(wave_widget, WavelengthWidget):
+                wave_widget.set_wavelength(None)
+
+            # Update controller port to first available USB port
+            port_combo = self.table.cellWidget(row, self.COL_PORT)
+            if port_combo and port_combo.currentText().startswith("D") and first_usb:
+                port_combo.setCurrentText(first_usb)
 
     def _add_channel(self):
-        """Add a new channel"""
-        from control.utils_config import ChannelDefinition, ChannelType
-
-        dialog = AddChannelDialog(self.channel_manager.get_channel_definitions(), self)
+        """Add a new illumination channel"""
+        dialog = AddIlluminationChannelDialog(self.illumination_config, self)
         if dialog.exec_() == QDialog.Accepted:
             channel_data = dialog.get_channel_data()
-            new_channel = ChannelDefinition(**channel_data)
-            self.channel_manager.add_channel_definition(new_channel)
+            from control.models.illumination_config import IlluminationChannel
+            new_channel = IlluminationChannel(**channel_data)
+            self.illumination_config.channels.append(new_channel)
             self._load_channels()
-            self.signal_channels_updated.emit()
 
     def _remove_channel(self):
-        """Remove selected channel (LED matrix channels cannot be removed)"""
+        """Remove selected channel"""
         current_row = self.table.currentRow()
         if current_row < 0:
             return
 
-        # Check if it's an LED matrix channel (not removable)
-        type_item = self.table.item(current_row, 2)
-        if type_item and type_item.text() == "led_matrix":
-            QMessageBox.warning(self, "Cannot Remove", "LED matrix channels cannot be removed.", QMessageBox.Ok)
-            return
-
-        name_item = self.table.item(current_row, 1)
+        name_item = self.table.item(current_row, 0)
         if name_item:
             reply = QMessageBox.question(
                 self, "Confirm Removal", f"Remove channel '{name_item.text()}'?", QMessageBox.Yes | QMessageBox.No
             )
             if reply == QMessageBox.Yes:
-                self.channel_manager.remove_channel_definition(name_item.text(), base_config_path=self.base_config_path)
+                del self.illumination_config.channels[current_row]
                 self._load_channels()
-                self.signal_channels_updated.emit()
 
     def _move_up(self):
         """Move selected channel up"""
@@ -12443,37 +12510,52 @@ class ChannelEditorDialog(QDialog):
         if current_row <= 0:
             return
 
-        definitions = self.channel_manager.get_channel_definitions()
-        if definitions:
-            channels = definitions.channels
-            channels[current_row], channels[current_row - 1] = channels[current_row - 1], channels[current_row]
-            self.channel_manager.save_channel_definitions()
-            self._load_channels()
-            self.table.selectRow(current_row - 1)
+        channels = self.illumination_config.channels
+        channels[current_row], channels[current_row - 1] = channels[current_row - 1], channels[current_row]
+        self._load_channels()
+        self.table.selectRow(current_row - 1)
 
     def _move_down(self):
         """Move selected channel down"""
         current_row = self.table.currentRow()
-        definitions = self.channel_manager.get_channel_definitions()
-        if not definitions or current_row < 0 or current_row >= len(definitions.channels) - 1:
+        if not self.illumination_config or current_row < 0 or current_row >= len(self.illumination_config.channels) - 1:
             return
 
-        channels = definitions.channels
+        channels = self.illumination_config.channels
         channels[current_row], channels[current_row + 1] = channels[current_row + 1], channels[current_row]
-        self.channel_manager.save_channel_definitions()
         self._load_channels()
         self.table.selectRow(current_row + 1)
 
+    def _open_port_mapping(self):
+        """Open the controller port mapping dialog"""
+        dialog = ControllerPortMappingDialog(self.config_loader, self)
+        dialog.signal_mappings_updated.connect(self._load_channels)
+        dialog.exec_()
+
     def _save_changes(self):
-        """Save all changes to channel definitions"""
-        definitions = self.channel_manager.get_channel_definitions()
-        if not definitions:
+        """Save all changes to illumination channel config"""
+        if not self.illumination_config:
             return
+
+        # Confirmation dialog
+        reply = QMessageBox.question(
+            self,
+            "Confirm Save",
+            "Saving these changes will modify your hardware configuration.\n"
+            "This may affect existing acquisition settings.\n\n"
+            "Do you want to continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        from control.models.illumination_config import IlluminationType
 
         # Validate channel names before saving
         names = []
         for row in range(self.table.rowCount()):
-            name_item = self.table.item(row, 1)
+            name_item = self.table.item(row, self.COL_NAME)
             if name_item:
                 name = name_item.text().strip()
                 if not name:
@@ -12492,46 +12574,59 @@ class ChannelEditorDialog(QDialog):
                     return
                 names.append(name)
 
+        # Update channels from table
         for row in range(self.table.rowCount()):
-            channel = definitions.channels[row]
-
-            # Enabled
-            enabled_widget = self.table.cellWidget(row, 0)
-            checkbox = enabled_widget.findChild(QCheckBox)
-            channel.enabled = checkbox.isChecked()
+            channel = self.illumination_config.channels[row]
 
             # Name
-            name_item = self.table.item(row, 1)
+            name_item = self.table.item(row, self.COL_NAME)
             if name_item:
                 channel.name = name_item.text().strip()
 
-            # Numeric channel (for fluorescence)
-            numeric_widget = self.table.cellWidget(row, 3)
-            if isinstance(numeric_widget, QComboBox):
-                channel.numeric_channel = int(numeric_widget.currentText())
+            # Type
+            type_widget = self.table.cellWidget(row, self.COL_TYPE)
+            if isinstance(type_widget, QComboBox):
+                channel.type = IlluminationType(type_widget.currentText())
 
-            # Filter position
-            filter_widget = self.table.cellWidget(row, 6)
-            if isinstance(filter_widget, QComboBox):
-                channel.emission_filter_position = int(filter_widget.currentText())
+            # Controller Port
+            port_widget = self.table.cellWidget(row, self.COL_PORT)
+            if isinstance(port_widget, QComboBox):
+                channel.controller_port = port_widget.currentText()
 
-            # Color
-            color_btn = self.table.cellWidget(row, 7)
-            if color_btn:
-                channel.display_color = color_btn.property("color")
+            # Wavelength (checkbox + spinbox widget)
+            wave_widget = self.table.cellWidget(row, self.COL_WAVELENGTH)
+            if isinstance(wave_widget, WavelengthWidget):
+                channel.wavelength_nm = wave_widget.get_wavelength()
+            else:
+                channel.wavelength_nm = None
 
-        self.channel_manager.save_channel_definitions()
+            # Calibration file (extract filename from full path)
+            calib_item = self.table.item(row, self.COL_CALIBRATION)
+            if calib_item:
+                calib_text = calib_item.text().strip()
+                if calib_text:
+                    # Extract just the filename from full path
+                    channel.intensity_calibration_file = Path(calib_text).name
+                else:
+                    channel.intensity_calibration_file = None
+
+        # Save to YAML file
+        self.config_loader.save_illumination_config(self.illumination_config)
         self.signal_channels_updated.emit()
         self.accept()
 
 
-class AddChannelDialog(QDialog):
-    """Dialog for adding a new channel"""
+# Keep old name as alias for backwards compatibility
+ChannelEditorDialog = IlluminationChannelConfiguratorDialog
 
-    def __init__(self, definitions, parent=None):
+
+class AddIlluminationChannelDialog(QDialog):
+    """Dialog for adding a new illumination channel"""
+
+    def __init__(self, illumination_config, parent=None):
         super().__init__(parent)
-        self.definitions = definitions
-        self.setWindowTitle("Add New Channel")
+        self.illumination_config = illumination_config
+        self.setWindowTitle("Add Illumination Channel")
         self._setup_ui()
 
     def _setup_ui(self):
@@ -12539,7 +12634,7 @@ class AddChannelDialog(QDialog):
 
         # Channel type
         self.type_combo = QComboBox()
-        self.type_combo.addItems(["fluorescence", "led_matrix"])
+        self.type_combo.addItems(["epi_illumination", "transillumination"])
         self.type_combo.currentTextChanged.connect(self._on_type_changed)
         layout.addRow("Type:", self.type_combo)
 
@@ -12547,29 +12642,27 @@ class AddChannelDialog(QDialog):
         self.name_edit = QLineEdit()
         layout.addRow("Name:", self.name_edit)
 
-        # Numeric channel (for fluorescence)
-        self.numeric_combo = QComboBox()
-        max_channels = self.definitions.max_fluorescence_channels if self.definitions else 5
-        self.numeric_combo.addItems([str(i) for i in range(1, max_channels + 1)])
-        layout.addRow("Numeric Channel:", self.numeric_combo)
+        # Controller port - only ports with mappings
+        available_ports = self.illumination_config.get_available_ports() if self.illumination_config else []
+        # Reorder: D ports first for epi_illumination default
+        d_ports = [p for p in available_ports if p.startswith("D")]
+        usb_ports = [p for p in available_ports if p.startswith("USB")]
+        self.port_combo = QComboBox()
+        self.port_combo.addItems(d_ports + usb_ports)
+        layout.addRow("Controller Port:", self.port_combo)
 
-        # Illumination source (for brightfield)
-        self.illum_spin = QSpinBox()
-        self.illum_spin.setRange(0, 20)
-        self.illum_spin.setEnabled(False)
-        layout.addRow("Illumination Source:", self.illum_spin)
+        # Wavelength (for epi_illumination, optional for transillumination)
+        self.wave_spin = QSpinBox()
+        self.wave_spin.setRange(200, 900)
+        self.wave_spin.setValue(405)
+        self.wave_spin.setSpecialValueText("N/A")  # Show N/A when value is minimum
+        self.wave_spin.setMinimum(0)  # Allow 0 to represent N/A
+        layout.addRow("Wavelength (nm):", self.wave_spin)
 
-        # Filter position
-        self.filter_combo = QComboBox()
-        self.filter_combo.addItems([str(i) for i in range(1, 9)])
-        layout.addRow("Filter Position:", self.filter_combo)
-
-        # Color
-        self.color_btn = QPushButton()
-        self.color_btn.setStyleSheet("background-color: #FFFFFF;")
-        self.color_btn.setProperty("color", "#FFFFFF")
-        self.color_btn.clicked.connect(self._pick_color)
-        layout.addRow("Display Color:", self.color_btn)
+        # Calibration file
+        self.calib_edit = QLineEdit()
+        self.calib_edit.setPlaceholderText("e.g., 405.csv")
+        layout.addRow("Calibration File:", self.calib_edit)
 
         # Buttons
         button_layout = QHBoxLayout()
@@ -12583,33 +12676,14 @@ class AddChannelDialog(QDialog):
 
     def _validate_and_accept(self):
         """Validate input before accepting"""
-        from control.utils_config import CHANNEL_NAME_MAX_LENGTH, CHANNEL_NAME_INVALID_CHARS
-
         name = self.name_edit.text().strip()
         if not name:
             QMessageBox.warning(self, "Validation Error", "Channel name cannot be empty.")
             return
 
-        # Validate name length for filesystem safety
-        if len(name) > CHANNEL_NAME_MAX_LENGTH:
-            QMessageBox.warning(
-                self, "Validation Error", f"Channel name is too long (maximum {CHANNEL_NAME_MAX_LENGTH} characters)."
-            )
-            return
-
-        # Validate name format for filesystem safety (no special characters)
-        # Use strictest set that covers both Windows and Unix restrictions
-        if any(c in name for c in CHANNEL_NAME_INVALID_CHARS):
-            QMessageBox.warning(
-                self,
-                "Validation Error",
-                "Channel name contains invalid characters. " 'Avoid: < > : " / \\ | ? *',
-            )
-            return
-
         # Check for duplicate names
-        if self.definitions:
-            existing_names = [ch.name for ch in self.definitions.channels]
+        if self.illumination_config:
+            existing_names = [ch.name for ch in self.illumination_config.channels]
             if name in existing_names:
                 QMessageBox.warning(self, "Validation Error", f"Channel '{name}' already exists.")
                 return
@@ -12617,70 +12691,78 @@ class AddChannelDialog(QDialog):
         self.accept()
 
     def _on_type_changed(self, type_str):
-        is_fluorescence = type_str == "fluorescence"
-        self.numeric_combo.setEnabled(is_fluorescence)
-        self.illum_spin.setEnabled(not is_fluorescence)
+        is_epi = type_str == "epi_illumination"
+        available_ports = self.illumination_config.get_available_ports() if self.illumination_config else []
+        first_d = next((p for p in available_ports if p.startswith("D")), None)
+        first_usb = next((p for p in available_ports if p.startswith("USB")), None)
 
-    def _pick_color(self):
-        current_color = QColor(self.color_btn.property("color"))
-        color = QColorDialog.getColor(current_color, self, "Select Channel Color")
-        if color.isValid():
-            self.color_btn.setStyleSheet(f"background-color: {color.name()};")
-            self.color_btn.setProperty("color", color.name())
+        # Update port default based on type
+        if is_epi:
+            if first_d:
+                self.port_combo.setCurrentText(first_d)
+            self.wave_spin.setValue(405)
+        else:
+            if first_usb:
+                self.port_combo.setCurrentText(first_usb)
+            self.wave_spin.setValue(0)  # Shows as N/A
 
     def get_channel_data(self):
-        from control.utils_config import ChannelType
+        from control.models.illumination_config import IlluminationType
 
-        channel_type = ChannelType(self.type_combo.currentText())
+        channel_type = IlluminationType(self.type_combo.currentText())
+        wavelength = self.wave_spin.value()
         data = {
-            "name": self.name_edit.text(),
+            "name": self.name_edit.text().strip(),
             "type": channel_type,
-            "emission_filter_position": int(self.filter_combo.currentText()),
-            "display_color": self.color_btn.property("color"),
-            "enabled": True,
+            "controller_port": self.port_combo.currentText(),
+            "wavelength_nm": wavelength if wavelength > 0 else None,
         }
 
-        if channel_type == ChannelType.FLUORESCENCE:
-            data["numeric_channel"] = int(self.numeric_combo.currentText())
-        else:
-            data["illumination_source"] = self.illum_spin.value()
+        calib_text = self.calib_edit.text().strip()
+        data["intensity_calibration_file"] = calib_text if calib_text else None
 
         return data
 
 
-class AdvancedChannelMappingDialog(QDialog):
-    """Dialog for editing advanced channel hardware mappings"""
+# Keep old name as alias for backwards compatibility
+AddChannelDialog = AddIlluminationChannelDialog
+
+
+class ControllerPortMappingDialog(QDialog):
+    """Dialog for editing controller port to source code mappings.
+
+    Shows all available controller ports (USB1-USB8 for LED matrix, D1-D8 for lasers)
+    and their corresponding illumination source codes.
+    """
 
     signal_mappings_updated = Signal()
 
-    def __init__(self, channel_configuration_manager, parent=None):
+    def __init__(self, config_loader, parent=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.channel_manager = channel_configuration_manager
-        self.setWindowTitle("Advanced Channel Hardware Mapping")
-        self.setMinimumSize(600, 400)
+        self.config_loader = config_loader
+        self.illumination_config = None
+        self.setWindowTitle("Controller Port Mapping")
+        self.setMinimumSize(400, 450)
         self._setup_ui()
         self._load_mappings()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
 
-        # Max fluorescence channels setting
-        max_layout = QHBoxLayout()
-        max_layout.addWidget(QLabel("Max Fluorescence Channels:"))
-        self.max_channels_spin = QSpinBox()
-        self.max_channels_spin.setRange(5, 10)
-        self.max_channels_spin.valueChanged.connect(self._on_max_channels_changed)
-        max_layout.addWidget(self.max_channels_spin)
-        max_layout.addStretch()
-        layout.addLayout(max_layout)
+        # Info label
+        info_label = QLabel(
+            "Map controller ports to illumination source codes. "
+            "USB ports are for LED matrix patterns, D ports are for lasers."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: gray; font-style: italic;")
+        layout.addWidget(info_label)
 
-        # Table for numeric channel mappings
-        layout.addWidget(QLabel("Numeric Channel → Illumination Source Mapping:"))
-
+        # Table for port mappings
         self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Numeric Channel", "Illumination Source", "Ex Wavelength (nm)"])
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["Controller Port", "Source Code"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         layout.addWidget(self.table)
@@ -12699,84 +12781,123 @@ class AdvancedChannelMappingDialog(QDialog):
 
         layout.addLayout(button_layout)
 
-    def _on_max_channels_changed(self, new_max):
-        """Handle max channels change - add new mappings and refresh table"""
-        from control.utils_config import NumericChannelMapping
-
-        definitions = self.channel_manager.get_channel_definitions()
-        if not definitions:
-            return
-
-        # Add new mappings if needed
-        for i in range(1, new_max + 1):
-            if str(i) not in definitions.numeric_channel_mapping:
-                definitions.numeric_channel_mapping[str(i)] = NumericChannelMapping(
-                    illumination_source=10 + i, ex_wavelength=400 + i * 50
-                )
-
-        # Update the max value
-        definitions.max_fluorescence_channels = new_max
-
-        # Reload the table to show correct number of rows
-        self._load_mappings()
-
     def _load_mappings(self):
-        """Load current mappings into the table"""
-        definitions = self.channel_manager.get_channel_definitions()
-        if not definitions:
+        """Load current port mappings into the table"""
+        from control.models.illumination_config import IlluminationChannelConfig
+
+        self.illumination_config = self.config_loader.load_illumination_config()
+        if not self.illumination_config:
             return
 
-        # Block signals to prevent recursion when setting value
-        self.max_channels_spin.blockSignals(True)
-        self.max_channels_spin.setValue(definitions.max_fluorescence_channels)
-        self.max_channels_spin.blockSignals(False)
+        port_mapping = self.illumination_config.controller_port_mapping
+        all_ports = IlluminationChannelConfig.ALL_PORTS
 
-        # Only show mappings up to max_fluorescence_channels
-        max_channels = definitions.max_fluorescence_channels
-        self.table.setRowCount(max_channels)
+        self.table.setRowCount(len(all_ports))
 
-        for row in range(max_channels):
-            num_ch = str(row + 1)
-            mapping = definitions.numeric_channel_mapping.get(num_ch)
+        for row, port in enumerate(all_ports):
+            # Controller port (read-only)
+            port_item = QTableWidgetItem(port)
+            port_item.setFlags(port_item.flags() & ~Qt.ItemIsEditable)
+            port_item.setBackground(QColor(240, 240, 240))
+            self.table.setItem(row, 0, port_item)
 
-            # Numeric channel (read-only)
-            num_item = QTableWidgetItem(num_ch)
-            num_item.setFlags(num_item.flags() & ~Qt.ItemIsEditable)
-            num_item.setBackground(QColor(240, 240, 240))
-            self.table.setItem(row, 0, num_item)
-
-            # Illumination source (editable)
-            illum_spin = QSpinBox()
-            illum_spin.setRange(0, 30)
-            illum_spin.setValue(mapping.illumination_source if mapping else 10 + row + 1)
-            self.table.setCellWidget(row, 1, illum_spin)
-
-            # Ex wavelength (editable)
-            wave_spin = QSpinBox()
-            wave_spin.setRange(200, 900)
-            wave_spin.setValue(mapping.ex_wavelength if mapping else 400 + (row + 1) * 50)
-            self.table.setCellWidget(row, 2, wave_spin)
+            # Source code (editable spinbox with N/A option)
+            source_code = port_mapping.get(port)
+            source_widget = SourceCodeWidget(source_code)
+            self.table.setCellWidget(row, 1, source_widget)
 
     def _save_changes(self):
-        """Save changes to mappings"""
-        definitions = self.channel_manager.get_channel_definitions()
-        if not definitions:
+        """Save changes to port mappings"""
+        if not self.illumination_config:
             return
 
-        # Update mappings from table values
+        # Confirmation dialog
+        reply = QMessageBox.question(
+            self,
+            "Confirm Save",
+            "Saving these changes will modify your controller port mappings.\n"
+            "This may affect existing acquisition settings.\n\n"
+            "Do you want to continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # Update mappings from table
+        new_mapping = {}
         for row in range(self.table.rowCount()):
-            num_item = self.table.item(row, 0)
-            if not num_item:
+            port_item = self.table.item(row, 0)
+            if not port_item:
                 continue
 
-            num_ch = num_item.text()
-            illum_spin = self.table.cellWidget(row, 1)
-            wave_spin = self.table.cellWidget(row, 2)
+            port = port_item.text()
+            source_widget = self.table.cellWidget(row, 1)
 
-            if num_ch in definitions.numeric_channel_mapping:
-                definitions.numeric_channel_mapping[num_ch].illumination_source = illum_spin.value()
-                definitions.numeric_channel_mapping[num_ch].ex_wavelength = wave_spin.value()
+            if isinstance(source_widget, SourceCodeWidget):
+                source_code = source_widget.get_source_code()
+                if source_code is not None:
+                    new_mapping[port] = source_code
 
-        self.channel_manager.save_channel_definitions()
+        self.illumination_config.controller_port_mapping = new_mapping
+        self.config_loader.save_illumination_config(self.illumination_config)
         self.signal_mappings_updated.emit()
         self.accept()
+
+
+class SourceCodeWidget(QWidget):
+    """Widget for source code field with checkbox to toggle between int and N/A."""
+
+    def __init__(self, source_code=None, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setSpacing(4)
+
+        self.checkbox = QCheckBox()
+        self.checkbox.setToolTip("Check to set source code, uncheck for N/A")
+        self.checkbox.stateChanged.connect(self._on_checkbox_changed)
+        layout.addWidget(self.checkbox)
+
+        self.spinbox = QSpinBox()
+        self.spinbox.setRange(0, 30)
+        self.spinbox.setValue(0)
+        layout.addWidget(self.spinbox)
+
+        self.na_label = QLabel("N/A")
+        self.na_label.setStyleSheet("color: gray;")
+        layout.addWidget(self.na_label)
+
+        # Set initial state
+        if source_code is not None:
+            self.checkbox.setChecked(True)
+            self.spinbox.setValue(source_code)
+            self.spinbox.setVisible(True)
+            self.na_label.setVisible(False)
+        else:
+            self.checkbox.setChecked(False)
+            self.spinbox.setVisible(False)
+            self.na_label.setVisible(True)
+
+    def _on_checkbox_changed(self, state):
+        checked = state == Qt.Checked
+        self.spinbox.setVisible(checked)
+        self.na_label.setVisible(not checked)
+
+    def get_source_code(self):
+        """Return source code value or None if N/A."""
+        if self.checkbox.isChecked():
+            return self.spinbox.value()
+        return None
+
+    def set_source_code(self, source_code):
+        """Set source code value or N/A."""
+        if source_code is not None:
+            self.checkbox.setChecked(True)
+            self.spinbox.setValue(source_code)
+        else:
+            self.checkbox.setChecked(False)
+
+
+# Keep old name as alias for backwards compatibility
+AdvancedChannelMappingDialog = ControllerPortMappingDialog

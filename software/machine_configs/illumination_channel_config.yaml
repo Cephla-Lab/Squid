@@ -1,0 +1,30 @@
+version: 1
+controller_port_mapping:
+  D1: 11
+  D2: 12
+  D3: 13
+  D4: 14
+  D5: 15
+  USB1: 0
+  USB2: 1
+  USB3: 2
+  USB4: 3
+  USB5: 4
+  USB7: 7
+  USB8: 8
+channels:
+- name: BF LED matrix full
+  type: transillumination
+  controller_port: USB1
+  wavelength_nm: null
+  intensity_calibration_file: null
+- name: Fluorescence 405 nm Ex
+  type: epi_illumination
+  controller_port: D1
+  wavelength_nm: 405
+  intensity_calibration_file: 405.csv
+- name: Fluorescence 488 nm Ex
+  type: epi_illumination
+  controller_port: D2
+  wavelength_nm: 488
+  intensity_calibration_file: 488.csv

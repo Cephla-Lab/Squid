@@ -324,10 +324,8 @@ class Microscope:
         self.channel_configuration_mananger: ChannelConfigurationManager = ChannelConfigurationManager(
             configurations_path=configurations_path
         )
-        # Migrate all profiles/objectives from XML to JSON (one-time operation)
-        migration_marker = control._def.ACQUISITION_CONFIGURATIONS_PATH / ".migration_complete"
-        if not migration_marker.exists():
-            self.channel_configuration_mananger.migrate_all_profiles(control._def.ACQUISITION_CONFIGURATIONS_PATH)
+        # Note: Migration from acquisition_configurations to user_profiles is handled
+        # by run_auto_migration() in main_hcs.py before Microscope is created
 
         # Sync confocal mode from hardware (works in both GUI and headless modes)
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL:

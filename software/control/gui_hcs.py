@@ -460,16 +460,13 @@ class HighContentScreeningGui(QMainWindow):
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
             settings_menu.addAction(led_matrix_action)
 
-        # Channel Configuration menu items
-        channel_config_action = QAction("Channel Configuration", self)
-        channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
-        settings_menu.addAction(channel_config_action)
-
         # Advanced submenu
         advanced_menu = settings_menu.addMenu("Advanced")
-        channel_mapping_action = QAction("Channel Hardware Mapping", self)
-        channel_mapping_action.triggered.connect(self.openAdvancedChannelMapping)
-        advanced_menu.addAction(channel_mapping_action)
+
+        # Illumination Channel Configuration (in Advanced menu)
+        channel_config_action = QAction("Illumination Channel Configuration", self)
+        channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
+        advanced_menu.addAction(channel_config_action)
 
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
@@ -1447,8 +1444,10 @@ class HighContentScreeningGui(QMainWindow):
             self.log.warning("No configuration file found")
 
     def openChannelConfigurationEditor(self):
-        """Open the channel configuration editor dialog"""
-        dialog = widgets.ChannelEditorDialog(self.channelConfigurationManager, self)
+        """Open the illumination channel configurator dialog"""
+        from control.config_loader import ConfigLoader
+        config_loader = ConfigLoader()
+        dialog = widgets.IlluminationChannelConfiguratorDialog(config_loader, self)
         dialog.signal_channels_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 
