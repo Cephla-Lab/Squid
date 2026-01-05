@@ -16,42 +16,48 @@ def conf_attribute_reader(string_value):
     """
     :brief: standardized way for reading config entries
     that are strings, in priority order
-    None -> bool -> dict/list (via json) -> int -> float -> string
-    REMEMBER TO ENCLOSE PROPERTY NAMES IN LISTS/DICTS IN
-    DOUBLE QUOTES
+    JSON -> None -> bool -> int -> float -> string
+    Inline comments (# ...) are stripped, but # inside valid JSON is preserved.
+    REMEMBER TO ENCLOSE PROPERTY NAMES IN LISTS/DICTS IN DOUBLE QUOTES
     """
     actualvalue = str(string_value).strip()
 
-    # Strip inline comments (everything after # that's not inside brackets/quotes)
-    # Only strip if # is not part of a JSON structure (no [ or { before it)
-    if "#" in actualvalue:
-        # Check if it looks like a JSON value (starts with [ or {)
-        if not (actualvalue.startswith("[") or actualvalue.startswith("{")):
-            # Strip comment - take everything before the first #
-            actualvalue = actualvalue.split("#")[0].strip()
+    # Try JSON first - handles valid JSON with # inside (like {"color": "#FF0000"})
+    try:
+        return json.loads(actualvalue)
+    except (json.JSONDecodeError, ValueError):
+        pass
 
+    # JSON failed - strip inline comments if present
+    if "#" in actualvalue:
+        actualvalue = actualvalue.split("#")[0].strip()
+
+    # Parse the (possibly stripped) value
+    if actualvalue == "None":
+        return None
+    if actualvalue in ("True", "true"):
+        return True
+    if actualvalue in ("False", "false"):
+        return False
+
+    # Try JSON again (for cases like [1,2,3] # comment -> [1,2,3])
     try:
-        if str(actualvalue) == "None":
-            return None
-    except:
+        return json.loads(actualvalue)
+    except (json.JSONDecodeError, ValueError):
         pass
+
+    # Try int
     try:
-        if str(actualvalue) == "True" or str(actualvalue) == "true":
-            return True
-        if str(actualvalue) == "False" or str(actualvalue) == "false":
-            return False
-    except:
+        return int(actualvalue)
+    except ValueError:
         pass
+
+    # Try float
     try:
-        actualvalue = json.loads(actualvalue)
-    except:
-        try:
-            actualvalue = int(str(actualvalue))
-        except:
-            try:
-                actualvalue = float(actualvalue)
-            except:
-                actualvalue = str(actualvalue)
+        return float(actualvalue)
+    except ValueError:
+        pass
+
     return actualvalue
 
 
