@@ -6,17 +6,15 @@ This module manages acquisition channel configurations using:
 - general.yaml: Shared acquisition settings across all objectives
 - {objective}.yaml: Objective-specific acquisition settings
 
-The manager loads and merges these configs, providing ChannelMode objects
-for UI compatibility with existing widgets.
+The manager loads and merges these configs, providing AcquisitionChannel objects
+for UI and acquisition use.
 """
 
 from pathlib import Path
 from typing import Any, List, Dict, Optional, Union
-import hashlib
 
 import yaml
 
-from control.utils_config import ChannelMode
 import squid.logging
 from control.config_loader import ConfigLoader
 from control.models import (
@@ -37,7 +35,7 @@ class ChannelConfigurationManager:
     This manager:
     - Loads illumination_channel_config.yaml for hardware channel definitions
     - Loads and merges general.yaml + {objective}.yaml for acquisition settings
-    - Provides ChannelMode objects for UI compatibility
+    - Provides AcquisitionChannel objects for UI and acquisition use
     - Saves configuration updates back to YAML files
     """
 
@@ -188,64 +186,18 @@ class ChannelConfigurationManager:
 
         return channels
 
-    def _acquisition_channel_to_channel_mode(self, acq_channel: AcquisitionChannel) -> ChannelMode:
-        """Convert AcquisitionChannel to ChannelMode for UI compatibility."""
-        # Generate ID from channel name
-        channel_id = hashlib.sha256(acq_channel.name.encode()).hexdigest()[:16]
-
-        # Get illumination source from illumination channel
-        illumination_source = 0
-        ill_channels = acq_channel.illumination_settings.illumination_channels
-        if ill_channels and self._illumination_config:
-            for ill_name in ill_channels:
-                ill_channel = self._illumination_config.get_channel_by_name(ill_name)
-                if ill_channel:
-                    illumination_source = self._illumination_config.get_source_code(ill_channel)
-                    break
-
-        # Get camera settings (use first camera)
-        camera_settings = next(iter(acq_channel.camera_settings.values()), None)
-        exposure_time = camera_settings.exposure_time_ms if camera_settings else 20.0
-        analog_gain = camera_settings.gain_mode if camera_settings else 0.0
-        display_color = camera_settings.display_color if camera_settings else "#FFFFFF"
-
-        # Get intensity (use first illumination channel)
-        intensity = 20.0
-        if ill_channels:
-            intensity = acq_channel.illumination_settings.intensity.get(ill_channels[0], 20.0)
-
-        # Get emission filter position
-        emission_filter_position = 1
-        if acq_channel.emission_filter_wheel_position:
-            emission_filter_position = next(iter(acq_channel.emission_filter_wheel_position.values()), 1)
-
-        return ChannelMode(
-            id=channel_id,
-            name=acq_channel.name,
-            exposure_time=exposure_time,
-            analog_gain=analog_gain,
-            illumination_source=illumination_source,
-            illumination_intensity=intensity,
-            camera_sn="",
-            z_offset=acq_channel.illumination_settings.z_offset_um,
-            emission_filter_position=emission_filter_position,
-            selected=False,
-            color=display_color,
-        )
-
-    def get_configurations(self, objective: str) -> List[ChannelMode]:
-        """Get channel modes for an objective.
+    def get_configurations(self, objective: str) -> List[AcquisitionChannel]:
+        """Get channel configurations for an objective.
 
         Args:
             objective: Objective name
 
         Returns:
-            List of ChannelMode objects for UI
+            List of AcquisitionChannel objects
         """
-        acq_channels = self.get_merged_acquisition_channels(objective)
-        return [self._acquisition_channel_to_channel_mode(ch) for ch in acq_channels]
+        return self.get_merged_acquisition_channels(objective)
 
-    def get_enabled_configurations(self, objective: str) -> List[ChannelMode]:
+    def get_enabled_configurations(self, objective: str) -> List[AcquisitionChannel]:
         """Backward-compatible alias for get_configurations.
 
         Note: In the YAML-based system, all channels are available.
@@ -253,13 +205,13 @@ class ChannelConfigurationManager:
         """
         return self.get_configurations(objective)
 
-    def get_channel_configurations_for_objective(self, objective: str) -> List[ChannelMode]:
+    def get_channel_configurations_for_objective(self, objective: str) -> List[AcquisitionChannel]:
         """Backward-compatible alias for get_configurations."""
         return self.get_configurations(objective)
 
-    def get_channel_configuration_by_name(self, objective: str, name: str) -> Optional[ChannelMode]:
+    def get_channel_configuration_by_name(self, objective: str, name: str) -> Optional[AcquisitionChannel]:
         """Get a channel configuration by its name."""
-        return next((mode for mode in self.get_configurations(objective) if mode.name == name), None)
+        return next((ch for ch in self.get_configurations(objective) if ch.name == name), None)
 
     def update_configuration(self, objective: str, config_id: str, attr_name: str, value: Any) -> None:
         """Update a specific configuration attribute.
@@ -345,13 +297,12 @@ class ChannelConfigurationManager:
         """Get channel name by its ID."""
         acq_channels = self.get_merged_acquisition_channels(objective)
         for ch in acq_channels:
-            ch_id = hashlib.sha256(ch.name.encode()).hexdigest()[:16]
-            if ch_id == config_id:
+            if ch.id == config_id:
                 return ch.name
         return None
 
     def write_configuration_selected(
-        self, objective: str, selected_configurations: List[ChannelMode], filename: str
+        self, objective: str, selected_configurations: List[AcquisitionChannel], filename: str
     ) -> None:
         """Write selected configurations to YAML file for acquisition.
 
@@ -361,12 +312,8 @@ class ChannelConfigurationManager:
         """
         output_dir = Path(filename).parent
 
-        # Get merged acquisition channels for the objective
-        merged_channels = self.get_merged_acquisition_channels(objective)
-
-        # Filter to only selected channels
-        selected_names = {config.name for config in selected_configurations}
-        selected_acq_channels = [ch for ch in merged_channels if ch.name in selected_names]
+        # Use provided configurations directly (they are already AcquisitionChannel objects)
+        selected_acq_channels = selected_configurations
 
         if not selected_acq_channels:
             return

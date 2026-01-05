@@ -14,7 +14,7 @@ from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
-from control.utils_config import LaserAFConfig
+from control.models import LaserAFConfig
 from squid.abc import AbstractCamera, AbstractStage
 import squid.logging
 

@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import yaml
 
-from control.utils_config import LaserAFConfig
+from control.models import LaserAFConfig
 
 
 class LaserAFSettingManager:
