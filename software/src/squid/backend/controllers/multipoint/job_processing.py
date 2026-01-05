@@ -511,25 +511,77 @@ class JobRunner(multiprocessing.Process):
         super().__init__()
         self._log = squid.core.logging.get_logger(__class__.__name__)
 
-        self._input_queue: multiprocessing.Queue = multiprocessing.Queue()
+        self._input_queue: Optional[multiprocessing.Queue] = multiprocessing.Queue()
         self._input_timeout: float = 1.0
-        self._output_queue: multiprocessing.Queue = multiprocessing.Queue()
-        self._shutdown_event: multiprocessing.Event = multiprocessing.Event()
+        self._output_queue: Optional[multiprocessing.Queue] = multiprocessing.Queue()
+        self._shutdown_event: Optional[multiprocessing.Event] = multiprocessing.Event()
+        self._pending_count: Optional[multiprocessing.Value] = multiprocessing.Value("i", 0)
+        self._shutdown_called: bool = False
 
     def dispatch(self, job: Job) -> bool:
-        self._input_queue.put_nowait(job)
+        """Dispatch a job to the worker process.
 
+        Increments the pending counter before queuing to prevent race conditions
+        where has_pending() returns False while a job is being processed.
+        """
+        with self._pending_count.get_lock():
+            self._pending_count.value += 1
+        try:
+            self._input_queue.put_nowait(job)
+        except Exception:
+            # Rollback counter on queue failure
+            with self._pending_count.get_lock():
+                self._pending_count.value -= 1
+            raise
         return True
 
-    def output_queue(self) -> multiprocessing.Queue:
+    def output_queue(self) -> Optional[multiprocessing.Queue]:
         return self._output_queue
 
     def has_pending(self) -> bool:
-        return not self._input_queue.empty()
+        """Check if there are jobs pending or in progress.
+
+        Uses a counter that is incremented when jobs are dispatched and
+        decremented when jobs complete, ensuring jobs in flight are tracked.
+        """
+        if self._pending_count is None:
+            return False
+        with self._pending_count.get_lock():
+            return self._pending_count.value > 0
 
     def shutdown(self, timeout_s: float = 1.0) -> None:
-        self._shutdown_event.set()
+        """Shutdown the job runner and release multiprocessing resources.
+
+        This method properly cleans up multiprocessing primitives (Queue, Event)
+        to prevent "leaked semaphore objects" warnings on application exit.
+        """
+        if self._shutdown_called:
+            return
+        self._shutdown_called = True
+
+        if self._shutdown_event is not None:
+            self._shutdown_event.set()
         self.join(timeout=timeout_s)
+
+        # Terminate if still alive after timeout
+        if self.is_alive():
+            self._log.warning("JobRunner still alive after timeout, terminating")
+            self.terminate()
+            self.join(timeout=0.5)
+
+        # Close queues and wait for feeder threads to finish
+        if self._input_queue is not None:
+            self._input_queue.close()
+            self._input_queue.join_thread()
+        if self._output_queue is not None:
+            self._output_queue.close()
+            self._output_queue.join_thread()
+
+        # Release references to trigger immediate deallocation of semaphores
+        self._input_queue = None
+        self._output_queue = None
+        self._shutdown_event = None
+        self._pending_count = None
 
     def run(self) -> None:
         while not self._shutdown_event.is_set():
@@ -559,4 +611,9 @@ class JobRunner(multiprocessing.Process):
                     self._output_queue.put_nowait(
                         JobResult(job_id=job.job_id, result=None, exception=e)
                     )
+            finally:
+                # Decrement pending counter if we processed a job
+                if job is not None:
+                    with self._pending_count.get_lock():
+                        self._pending_count.value -= 1
         self._log.info("Shutdown request received, exiting run.")

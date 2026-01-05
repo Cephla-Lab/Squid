@@ -126,12 +126,22 @@ class SurfacePlotWidget(QWidget):
         self._y_coords: list[float] = []
         self._z_coords: list[float] = []
         self.regions: list[int] = []
+        # Filtered coordinates for plotting (min Z at each unique X,Y)
+        self.x_plot: np.ndarray = np.array([])
+        self.y_plot: np.ndarray = np.array([])
+        self.z_plot: np.ndarray = np.array([])
 
     def clear(self) -> None:
         self._x_coords.clear()
         self._y_coords.clear()
         self._z_coords.clear()
         self.regions.clear()
+        self.x_plot = np.array([])
+        self.y_plot = np.array([])
+        self.z_plot = np.array([])
+        self.plot_populated = False
+        self.ax.clear()
+        self.canvas.draw()
 
     def add_point(self, x: float, y: float, z: float, region: int) -> None:
         self._x_coords.append(x)
@@ -140,52 +150,85 @@ class SurfacePlotWidget(QWidget):
         self.regions.append(region)
 
     def plot(self) -> None:
-        """
-        Plot both surface and scatter points in 3D.
+        """Plot both surface and scatter points in 3D.
 
-        Args:
-            x (np.array): X coordinates (1D array)
-            y (np.array): Y coordinates (1D array)
-            z (np.array): Z coordinates (1D array)
+        For Z-stacks, uses the minimum Z at each unique X,Y location. This shows
+        the bottom/focus surface of the sample and avoids interpolation artifacts
+        that would occur if the surface passed through the middle of the stack.
         """
         try:
             # Clear previous plot
             self.ax.clear()
+
+            if len(self._x_coords) == 0:
+                self._log.debug("No data to plot")
+                self.canvas.draw()
+                self.plot_populated = False
+                return
 
             x = np.array(self._x_coords).astype(float)
             y = np.array(self._y_coords).astype(float)
             z = np.array(self._z_coords).astype(float)
             regions = np.array(self.regions)
 
-            # plot surface by region
-            for r in np.unique(regions):
+            # Filter to get minimum Z at each unique X,Y location (for Z-stacks)
+            # Use vectorized approach for better performance with large datasets
+            xy_precision = 4  # decimal places for grouping
+            xy_keys = np.round(x, xy_precision) + 1j * np.round(y, xy_precision)
+
+            # Find index of minimum Z for each unique (X, Y) using vectorized operations
+            unique_xy, inverse = np.unique(xy_keys, return_inverse=True)
+
+            # Sort by group (inverse) then by Z, so first in each group has minimum Z
+            order = np.lexsort((z, inverse))
+            grouped_inverse = inverse[order]
+
+            # First occurrence of each group in sorted order corresponds to minimum Z
+            _, first_indices = np.unique(grouped_inverse, return_index=True)
+            min_z_indices = order[first_indices]
+
+            # Store filtered coordinates using the min-Z indices
+            self.x_plot = x[min_z_indices]
+            self.y_plot = y[min_z_indices]
+            self.z_plot = z[min_z_indices]
+            regions_plot = regions[min_z_indices]
+
+            # Plot surface by region
+            for r in np.unique(regions_plot):
                 try:
-                    mask = regions == r
+                    mask = regions_plot == r
                     num_points = np.sum(mask)
                     if num_points >= 4:
-                        x_range = max(x[mask]) - min(x[mask])
-                        y_range = max(y[mask]) - min(y[mask])
-                        # Skip if points are collinear or have no spread in X or Y
-                        if x_range < 1e-9 or y_range < 1e-9:
+                        # Check if points have sufficient spread for surface interpolation
+                        x_range = np.ptp(self.x_plot[mask])
+                        y_range = np.ptp(self.y_plot[mask])
+                        # Use practical threshold based on typical stage precision (~1 µm)
+                        min_spread = 1e-3  # minimum spread in mm
+
+                        if x_range < min_spread or y_range < min_spread:
+                            # Single FOV or collinear points: skip surface
                             self._log.debug(
-                                f"Region {r} has collinear or degenerate points "
-                                f"(x_range={x_range:.2e}, y_range={y_range:.2e}), "
-                                "skipping surface interpolation"
+                                f"Region {r}: insufficient X,Y spread for surface "
+                                f"(x_range={x_range:.2e}, y_range={y_range:.2e}), showing scatter only"
                             )
-                            continue
-                        grid_x, grid_y = np.mgrid[
-                            min(x[mask]) : max(x[mask]) : 10j,
-                            min(y[mask]) : max(y[mask]) : 10j,
-                        ]  # type: ignore[misc]
-                        grid_z = griddata(
-                            (x[mask], y[mask]),
-                            z[mask],
-                            (grid_x, grid_y),
-                            method="cubic",
-                        )
-                        self.ax.plot_surface(
-                            grid_x, grid_y, grid_z, cmap="viridis", edgecolor="none"
-                        )
+                        else:
+                            x_surface = self.x_plot[mask]
+                            y_surface = self.y_plot[mask]
+                            z_surface = self.z_plot[mask]
+
+                            grid_x, grid_y = np.mgrid[
+                                min(x_surface):max(x_surface):10j,
+                                min(y_surface):max(y_surface):10j,
+                            ]  # type: ignore[misc]
+                            grid_z = griddata(
+                                (x_surface, y_surface),
+                                z_surface,
+                                (grid_x, grid_y),
+                                method="cubic",
+                            )
+                            self.ax.plot_surface(
+                                grid_x, grid_y, grid_z, cmap="viridis", edgecolor="none"
+                            )
                     else:
                         self._log.debug(
                             f"Region {r} has only {num_points} point(s), skipping surface interpolation"
@@ -193,9 +236,11 @@ class SurfacePlotWidget(QWidget):
                 except Exception as e:
                     raise Exception(f"Cannot plot region {r}: {e}")
 
-            # Create scatter plot using original coordinates
-            self.colors = ["r"] * len(x)
-            self.scatter = self.ax.scatter(x, y, z, c=self.colors, s=30)
+            # Create scatter plot using filtered coordinates (bottom Z only)
+            self.colors = ["r"] * len(self.x_plot)
+            self.scatter = self.ax.scatter(
+                self.x_plot, self.y_plot, self.z_plot, c=self.colors, s=30
+            )
 
             # Set labels
             self.ax.set_xlabel("X (mm)")
@@ -204,9 +249,11 @@ class SurfacePlotWidget(QWidget):
             self.ax.set_title("Double-click a point to go to that position")
 
             # Force x and y to have same scale
-            max_range = max(np.ptp(x), np.ptp(y))
-            center_x = np.mean(x)
-            center_y = np.mean(y)
+            max_range = max(np.ptp(self.x_plot), np.ptp(self.y_plot))
+            if max_range == 0:
+                max_range = 1.0  # Default range for single point
+            center_x = np.mean(self.x_plot)
+            center_y = np.mean(self.y_plot)
 
             self.ax.set_xlim(center_x - max_range / 2, center_x + max_range / 2)
             self.ax.set_ylim(center_y - max_range / 2, center_y + max_range / 2)
@@ -238,9 +285,9 @@ class SurfacePlotWidget(QWidget):
         # Cancel drag mode after double-click
         self.canvas.button_pressed = None  # FIX: Avoids AttributeError
 
-        # Project 3D points to 2D screen space
+        # Project 3D points to 2D screen space (use filtered plot coordinates)
         x2d, y2d, _ = proj3d.proj_transform(
-            self._x_coords, self._y_coords, self._z_coords, self.ax.get_proj()
+            self.x_plot, self.y_plot, self.z_plot, self.ax.get_proj()
         )
         dists = np.hypot(x2d - event.xdata, y2d - event.ydata)
         idx = np.argmin(dists)
@@ -254,15 +301,15 @@ class SurfacePlotWidget(QWidget):
             return
 
         # Change point color
-        self.colors = ["r"] * len(self._x_coords)
+        self.colors = ["r"] * len(self.x_plot)
         self.colors[idx] = "g"
         self.scatter.remove()
         self.scatter = self.ax.scatter(
-            self._x_coords, self._y_coords, self._z_coords, c=self.colors, s=30
+            self.x_plot, self.y_plot, self.z_plot, c=self.colors, s=30
         )
 
         print(
-            f"Clicked Point: x={self._x_coords[idx]:.3f}, y={self._y_coords[idx]:.3f}, z={self._z_coords[idx]:.3f}"
+            f"Clicked Point: x={self.x_plot[idx]:.3f}, y={self.y_plot[idx]:.3f}, z={self.z_plot[idx]:.3f}"
         )
         self.canvas.draw()
-        self.signal_point_clicked.emit(self._x_coords[idx], self._y_coords[idx])
+        self.signal_point_clicked.emit(float(self.x_plot[idx]), float(self.y_plot[idx]))

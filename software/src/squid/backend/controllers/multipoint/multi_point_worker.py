@@ -1017,6 +1017,10 @@ class MultiPointWorker:
                 self._log.debug(f"  {job_class.__name__}: runner is None, skipping")
                 continue
             out_queue = job_runner.output_queue()
+            # Skip if queue was cleared during shutdown
+            if out_queue is None:
+                self._log.debug(f"  {job_class.__name__}: output queue is None, skipping")
+                continue
             result_count = 0
             # Drain results from the queue
             while True:
@@ -1041,6 +1045,10 @@ class MultiPointWorker:
                 except queue.Empty:
                     if result_count > 0:
                         self._log.debug(f"  {job_class.__name__}: drained {result_count} results from output queue")
+                    break
+                except (ValueError, OSError):
+                    # Queue was closed during shutdown
+                    self._log.debug(f"  {job_class.__name__}: queue closed, stopping drain")
                     break
 
         return SummarizeResult(none_failed=none_failed, had_results=had_results)
