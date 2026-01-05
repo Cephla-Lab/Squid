@@ -16,33 +16,65 @@ def conf_attribute_reader(string_value):
     """
     :brief: standardized way for reading config entries
     that are strings, in priority order
-    None -> bool -> dict/list (via json) -> int -> float -> string
-    REMEMBER TO ENCLOSE PROPERTY NAMES IN LISTS/DICTS IN
-    DOUBLE QUOTES
+    JSON (with comments stripped if needed) -> None -> bool -> int -> float -> string
+    Inline comments (# ...) are stripped, but # inside valid JSON is preserved.
+    REMEMBER TO ENCLOSE PROPERTY NAMES IN LISTS/DICTS IN DOUBLE QUOTES
     """
     actualvalue = str(string_value).strip()
+
+    # Try JSON first - handles valid JSON with # inside (like {"color": "#FF0000"})
     try:
-        if str(actualvalue) == "None":
-            return None
-    except:
+        return json.loads(actualvalue)
+    except (json.JSONDecodeError, ValueError):
         pass
+
+    # JSON failed - strip inline comments if present
+    # Only treat # as comment if preceded by whitespace (e.g., "value  # comment")
+    if "#" in actualvalue:
+        # For JSON-like values, try stripping from rightmost # positions
+        # This handles cases like {"color": "#FF0000"}  # comment
+        if actualvalue.startswith("[") or actualvalue.startswith("{"):
+            hash_positions = [i for i, c in enumerate(actualvalue) if c == "#"]
+            for pos in reversed(hash_positions):
+                candidate = actualvalue[:pos].strip()
+                try:
+                    return json.loads(candidate)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+        # For non-JSON or if all JSON attempts failed, strip comments with whitespace before #
+        # This preserves values like "my#tag" while stripping "value  # comment"
+        # Find the earliest comment separator to handle "value\t# c1  # c2" correctly
+        comment_positions = [actualvalue.find(sep) for sep in (" #", "\t#") if sep in actualvalue]
+        if comment_positions:
+            cut_pos = min(comment_positions)
+            actualvalue = actualvalue[:cut_pos].rstrip()
+
+    # Parse the (possibly stripped) value
+    if actualvalue == "None":
+        return None
+    if actualvalue in ("True", "true"):
+        return True
+    if actualvalue in ("False", "false"):
+        return False
+
+    # Try JSON again (for cases like [1,2,3] # comment -> [1,2,3])
     try:
-        if str(actualvalue) == "True" or str(actualvalue) == "true":
-            return True
-        if str(actualvalue) == "False" or str(actualvalue) == "false":
-            return False
-    except:
+        return json.loads(actualvalue)
+    except (json.JSONDecodeError, ValueError):
         pass
+
+    # Try int
     try:
-        actualvalue = json.loads(actualvalue)
-    except:
-        try:
-            actualvalue = int(str(actualvalue))
-        except:
-            try:
-                actualvalue = float(actualvalue)
-            except:
-                actualvalue = str(actualvalue)
+        return int(actualvalue)
+    except ValueError:
+        pass
+
+    # Try float
+    try:
+        return float(actualvalue)
+    except ValueError:
+        pass
+
     return actualvalue
 
 
