@@ -48,6 +48,7 @@ dependencies = [
     "pyvisa",
     "hidapi",
     "psutil",
+    "filelock>=3.12",
 ]
 
 [project.optional-dependencies]

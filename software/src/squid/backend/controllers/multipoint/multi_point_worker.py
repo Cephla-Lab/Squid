@@ -21,8 +21,10 @@ from squid.core.abc import CameraFrame, CameraFrameFormat
 import squid.core.logging
 import squid.backend.controllers.multipoint.job_processing
 from squid.backend.controllers.multipoint.job_processing import (
+    AcquisitionInfo,
     CaptureInfo,
     SaveImageJob,
+    SaveOMETiffJob,
     DownsampledViewJob,
     DownsampledViewResult,
     Job,
@@ -227,7 +229,28 @@ class MultiPointWorker:
         # Track FOV counts per well for multi-FOV wells
         self._well_fov_counts: Dict[str, int] = {}  # well_id -> total FOVs
 
-        job_classes = [] if self.skip_saving else [SaveImageJob]
+        # Create acquisition-wide metadata for OME-TIFF file generation
+        self.acquisition_info = AcquisitionInfo(
+            total_time_points=self.Nt,
+            total_z_levels=self.NZ,
+            total_channels=len(self.selected_configurations),
+            channel_names=[cfg.name for cfg in self.selected_configurations],
+            experiment_path=self.experiment_path,
+            time_increment_s=self._time_increment_s,
+            physical_size_z_um=self._physical_size_z_um,
+            physical_size_x_um=self._pixel_size_um,
+            physical_size_y_um=self._pixel_size_um,
+        )
+
+        # Determine job classes based on file saving option
+        job_classes: List[Type[Job]] = []
+        use_ome_tiff = FILE_SAVING_OPTION == FileSavingOption.OME_TIFF
+        if not self.skip_saving:
+            if use_ome_tiff:
+                job_classes.append(SaveOMETiffJob)
+            else:
+                job_classes.append(SaveImageJob)
+
         if extra_job_classes:
             job_classes.extend(extra_job_classes)
 
@@ -245,7 +268,10 @@ class MultiPointWorker:
         for job_class in job_classes:
             self._log.info(f"Creating job runner for {job_class.__name__} jobs")
             job_runner = (
-                squid.backend.controllers.multipoint.job_processing.JobRunner()
+                squid.backend.controllers.multipoint.job_processing.JobRunner(
+                    self.acquisition_info,
+                    cleanup_stale_ome_files=use_ome_tiff,
+                )
                 if Acquisition.USE_MULTIPROCESSING
                 else None
             )
@@ -1635,15 +1661,6 @@ class MultiPointWorker:
                 fov=fov,
                 configuration_idx=config_idx,
                 time_point=self.time_point,
-                total_time_points=self.Nt,
-                total_z_levels=self.NZ,
-                total_channels=len(self.selected_configurations),
-                channel_names=[cfg.name for cfg in self.selected_configurations],
-                experiment_path=self.experiment_path,
-                time_increment_s=self._time_increment_s,
-                physical_size_z_um=self._physical_size_z_um,
-                physical_size_x_um=self._pixel_size_um,
-                physical_size_y_um=self._pixel_size_um,
             )
             self._current_capture_info.set(current_capture_info)
         with self._timing.get_timer("send_trigger"):
@@ -1752,15 +1769,6 @@ class MultiPointWorker:
             fov=fov,
             configuration_idx=config.id,
             time_point=self.time_point,
-            total_time_points=self.Nt,
-            total_z_levels=self.NZ,
-            total_channels=len(self.selected_configurations),
-            channel_names=[cfg.name for cfg in self.selected_configurations],
-            experiment_path=self.experiment_path,
-            time_increment_s=self._time_increment_s,
-            physical_size_z_um=self._physical_size_z_um,
-            physical_size_x_um=self._pixel_size_um,
-            physical_size_y_um=self._pixel_size_um,
         )
 
         if len(i_size) == 3:
