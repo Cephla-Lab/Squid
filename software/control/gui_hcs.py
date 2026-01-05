@@ -47,7 +47,7 @@ from control.core.stream_handler import StreamHandler
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
-from control.utils_config import ChannelMode
+from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 import control.lighting
 import control.microscope
@@ -176,7 +176,7 @@ class QtMultiPointController(MultiPointController, QObject):
     signal_acquisition_start = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
-    signal_current_configuration = Signal(ChannelMode)
+    signal_current_configuration = Signal(AcquisitionChannel)
     signal_register_current_fov = Signal(float, float)
     napari_layers_init = Signal(int, int, object)
     napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
@@ -261,8 +261,8 @@ class QtMultiPointController(MultiPointController, QObject):
             frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
         )
 
-    def _signal_current_configuration_fn(self, channel_mode: ChannelMode):
-        self.signal_current_configuration.emit(channel_mode)
+    def _signal_current_configuration_fn(self, config: AcquisitionChannel):
+        self.signal_current_configuration.emit(config)
 
     def _signal_current_fov_fn(self, x_mm: float, y_mm: float):
         self.signal_register_current_fov.emit(x_mm, y_mm)

@@ -36,21 +36,26 @@ def make_test_capture_info(
     z_mm: float = 0.0,
 ) -> CaptureInfo:
     """Create a CaptureInfo for testing."""
-    from control.utils_config import ChannelMode
+    from control.models import AcquisitionChannel, CameraSettings, IlluminationSettings
 
     return CaptureInfo(
         position=squid.abc.Pos(x_mm=x_mm, y_mm=y_mm, z_mm=z_mm, theta_rad=None),
         z_index=0,
         capture_time=time.time(),
-        configuration=ChannelMode(
-            id="0",
+        configuration=AcquisitionChannel(
             name="BF LED matrix full",
-            camera_sn="test",
-            exposure_time=10.0,
-            analog_gain=1.0,
-            illumination_source=0,
-            illumination_intensity=50.0,
-            z_offset=0.0,
+            illumination_settings=IlluminationSettings(
+                illumination_channels=["BF LED matrix full"],
+                intensity={"BF LED matrix full": 50.0},
+                z_offset_um=0.0,
+            ),
+            camera_settings={
+                "camera_1": CameraSettings(
+                    display_color="#FFFFFF",
+                    exposure_time_ms=10.0,
+                    gain_mode=1.0,
+                )
+            },
         ),
         save_directory="/tmp/test",
         file_id="test_0_0",

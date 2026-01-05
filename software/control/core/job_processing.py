@@ -20,7 +20,7 @@ from control import _def, utils_acquisition
 from control._def import ZProjectionMode
 import squid.abc
 import squid.logging
-from control.utils_config import ChannelMode
+from control.models import AcquisitionChannel
 from control.core import utils_ome_tiff_writer as ome_tiff_writer
 
 
@@ -72,7 +72,7 @@ class CaptureInfo:
     position: squid.abc.Pos
     z_index: int
     capture_time: float
-    configuration: ChannelMode
+    configuration: AcquisitionChannel
     save_directory: str
     file_id: str
     region_id: int

@@ -28,7 +28,7 @@ from control.core.objective_store import ObjectiveStore
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.piezo import PiezoStage
-from control.utils_config import ChannelMode
+from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.logging
 import control.core.job_processing
@@ -1045,7 +1045,7 @@ class MultiPointWorker:
         if self.NZ > 1:
             self.move_z_back_after_stack()
 
-    def _select_config(self, config: ChannelMode):
+    def _select_config(self, config: AcquisitionChannel):
         self.callbacks.signal_current_configuration(config)
         self.liveController.set_microscope_mode(config)
         self.wait_till_operation_is_completed()

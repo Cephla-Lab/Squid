@@ -14,7 +14,7 @@ from control.core.multi_point_utils import (
 )
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.stream_handler import StreamHandlerFunctions
-from control.utils_config import ChannelMode
+from control.models import AcquisitionChannel
 from squid.abc import CameraFrame
 import control.microscope
 import squid.logging
@@ -78,7 +78,7 @@ class MpcTestTracker:
         with self._update_lock:
             self._finish_count += 1
 
-    def config_fn(self, mode: ChannelMode):
+    def config_fn(self, mode: AcquisitionChannel):
         self._update()
         with self._update_lock:
             self._config_count += 1

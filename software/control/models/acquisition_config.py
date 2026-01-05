@@ -107,16 +107,37 @@ class AcquisitionChannel(BaseModel):
     # ─────────────────────────────────────────────────────────────────────────────
 
     @property
+    def id(self) -> str:
+        """Unique identifier derived from channel name (for UI compatibility)."""
+        import hashlib
+
+        return hashlib.sha256(self.name.encode()).hexdigest()[:16]
+
+    @property
     def exposure_time(self) -> float:
         """Primary camera exposure time in ms."""
         camera = next(iter(self.camera_settings.values()), None)
         return camera.exposure_time_ms if camera else 20.0
+
+    @exposure_time.setter
+    def exposure_time(self, value: float) -> None:
+        """Set primary camera exposure time in ms."""
+        if self.camera_settings:
+            camera_id = next(iter(self.camera_settings.keys()))
+            self.camera_settings[camera_id].exposure_time_ms = value
 
     @property
     def analog_gain(self) -> float:
         """Primary camera analog gain."""
         camera = next(iter(self.camera_settings.values()), None)
         return camera.gain_mode if camera else 0.0
+
+    @analog_gain.setter
+    def analog_gain(self, value: float) -> None:
+        """Set primary camera analog gain."""
+        if self.camera_settings:
+            camera_id = next(iter(self.camera_settings.keys()))
+            self.camera_settings[camera_id].gain_mode = value
 
     @property
     def display_color(self) -> str:
@@ -134,6 +155,17 @@ class AcquisitionChannel(BaseModel):
         if self.illumination_settings.intensity:
             return next(iter(self.illumination_settings.intensity.values()))
         return 20.0
+
+    @illumination_intensity.setter
+    def illumination_intensity(self, value: float) -> None:
+        """Set primary illumination channel intensity."""
+        if self.illumination_settings.illumination_channels:
+            ch_name = self.illumination_settings.illumination_channels[0]
+            self.illumination_settings.intensity[ch_name] = value
+        elif self.illumination_settings.intensity:
+            # Update first intensity value
+            first_key = next(iter(self.illumination_settings.intensity.keys()))
+            self.illumination_settings.intensity[first_key] = value
 
     @property
     def primary_illumination_channel(self) -> Optional[str]:

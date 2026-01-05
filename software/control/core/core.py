@@ -41,7 +41,7 @@ from threading import Thread, Lock
 from pathlib import Path
 from datetime import datetime
 from enum import Enum
-from control.utils_config import ChannelConfig, ChannelMode, LaserAFConfig
+from control.models import AcquisitionChannel
 import time
 import itertools
 import json
@@ -296,7 +296,7 @@ class TrackingController(QObject):
     signal_tracking_stopped = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
-    signal_current_configuration = Signal(ChannelMode)
+    signal_current_configuration = Signal(AcquisitionChannel)
 
     def __init__(
         self,
@@ -482,7 +482,7 @@ class TrackingWorker(QObject):
     finished = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
-    signal_current_configuration = Signal(ChannelMode)
+    signal_current_configuration = Signal(AcquisitionChannel)
 
     def __init__(self, trackingController: TrackingController):
         QObject.__init__(self)
@@ -509,7 +509,7 @@ class TrackingWorker(QObject):
             base_path=os.path.join(self.base_path, self.experiment_ID), image_format="bmp"
         )
 
-    def _select_config(self, config: ChannelMode):
+    def _select_config(self, config: AcquisitionChannel):
         self.signal_current_configuration.emit(config)
         # TODO(imo): replace with illumination controller.
         self.liveController.set_microscope_mode(config)
