@@ -85,15 +85,17 @@ def downsample_tile(
     tile: np.ndarray,
     source_pixel_size_um: float,
     target_pixel_size_um: float,
+    fast_mode: bool = True,
 ) -> np.ndarray:
     """Downsample a tile to target pixel size.
-
-    Uses cv2.INTER_AREA for quality downsampling.
 
     Args:
         tile: Image tile
         source_pixel_size_um: Source pixel size in micrometers
         target_pixel_size_um: Target pixel size in micrometers
+        fast_mode: If True, use INTER_LINEAR (fast, ~100x speedup).
+                   If False, use INTER_AREA (slower but highest quality).
+                   For plate view previews, fast_mode=True is recommended.
 
     Returns:
         Downsampled tile, or original if target <= source
@@ -112,10 +114,13 @@ def downsample_tile(
     if new_width < 1 or new_height < 1:
         return tile
 
+    # INTER_LINEAR is ~100x faster than INTER_AREA with acceptable quality for previews
+    interpolation = cv2.INTER_LINEAR if fast_mode else cv2.INTER_AREA
+
     downsampled = cv2.resize(
         tile,
         (new_width, new_height),
-        interpolation=cv2.INTER_AREA,
+        interpolation=interpolation,
     )
 
     t_resize = time.perf_counter()
@@ -127,8 +132,9 @@ def downsample_tile(
     t_end = time.perf_counter()
 
     # Log timing for performance analysis
+    mode = "LINEAR" if fast_mode else "AREA"
     log.debug(
-        f"[PERF] downsample_tile: {tile.shape} -> ({new_height}, {new_width}) factor={factor} | "
+        f"[PERF] downsample_tile: {tile.shape} -> ({new_height}, {new_width}) factor={factor} mode={mode} | "
         f"resize={t_resize - t_start:.4f}s, dtype={t_end - t_resize:.4f}s, TOTAL={t_end - t_start:.4f}s"
     )
 
