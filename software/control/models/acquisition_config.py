@@ -39,15 +39,9 @@ class ConfocalSettings(BaseModel):
     """Confocal-specific settings in an acquisition channel."""
 
     filter_wheel_id: int = Field(1, description="Filter wheel ID (default: 1)")
-    emission_filter_wheel_position: int = Field(
-        1, description="Filter slot position (default: 1)"
-    )
-    illumination_iris: Optional[float] = Field(
-        None, description="Illumination iris setting (objective-specific)"
-    )
-    emission_iris: Optional[float] = Field(
-        None, description="Emission iris setting (objective-specific)"
-    )
+    emission_filter_wheel_position: int = Field(1, description="Filter slot position (default: 1)")
+    illumination_iris: Optional[float] = Field(None, description="Illumination iris setting (objective-specific)")
+    emission_iris: Optional[float] = Field(None, description="Emission iris setting (objective-specific)")
 
     model_config = {"extra": "forbid"}
 
@@ -62,9 +56,7 @@ class IlluminationSettings(BaseModel):
     illumination_channels: Optional[List[str]] = Field(
         None, description="Names of illumination channels from illumination_channel_config (only in general.yaml)"
     )
-    intensity: Dict[str, float] = Field(
-        ..., description="Channel name -> intensity percentage mapping"
-    )
+    intensity: Dict[str, float] = Field(..., description="Channel name -> intensity percentage mapping")
     z_offset_um: float = Field(0.0, description="Z offset in micrometers")
 
     model_config = {"extra": "forbid"}
@@ -83,9 +75,7 @@ class AcquisitionChannelOverride(BaseModel):
     camera_settings: Optional[Dict[str, CameraSettings]] = Field(
         None, description="Override camera settings for confocal mode"
     )
-    confocal_settings: Optional[ConfocalSettings] = Field(
-        None, description="Override confocal settings"
-    )
+    confocal_settings: Optional[ConfocalSettings] = Field(None, description="Override confocal settings")
 
     model_config = {"extra": "forbid"}
 
@@ -94,9 +84,7 @@ class AcquisitionChannel(BaseModel):
     """A single acquisition channel configuration."""
 
     name: str = Field(..., description="Display name for this acquisition channel")
-    illumination_settings: IlluminationSettings = Field(
-        ..., description="Illumination configuration"
-    )
+    illumination_settings: IlluminationSettings = Field(..., description="Illumination configuration")
     camera_settings: Dict[str, CameraSettings] = Field(
         default_factory=dict, description="Camera ID -> settings mapping"
     )
@@ -113,9 +101,7 @@ class AcquisitionChannel(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    def get_effective_settings(
-        self, confocal_mode: bool
-    ) -> "AcquisitionChannel":
+    def get_effective_settings(self, confocal_mode: bool) -> "AcquisitionChannel":
         """
         Get effective settings based on confocal mode.
 
@@ -157,9 +143,7 @@ class GeneralChannelConfig(BaseModel):
     """
 
     version: int = Field(1, description="Configuration format version")
-    channels: List[AcquisitionChannel] = Field(
-        default_factory=list, description="List of acquisition channels"
-    )
+    channels: List[AcquisitionChannel] = Field(default_factory=list, description="List of acquisition channels")
 
     model_config = {"extra": "forbid"}
 

@@ -49,7 +49,4 @@ class ConfocalConfig(BaseModel):
 
     def has_property(self, property_name: str) -> bool:
         """Check if a property is available for configuration."""
-        return (
-            property_name in self.public_properties
-            or property_name in self.objective_specific_properties
-        )
+        return property_name in self.public_properties or property_name in self.objective_specific_properties

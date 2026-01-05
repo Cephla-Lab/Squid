@@ -17,7 +17,6 @@ import hashlib
 import yaml
 
 from control.utils_config import ChannelMode
-import control._def
 import squid.logging
 from control.config_loader import ConfigLoader
 from control.models import (
@@ -117,9 +116,7 @@ class ChannelConfigurationManager:
 
         # Validate illumination references
         if self._general_config and self._illumination_config:
-            errors = validate_illumination_references(
-                self._general_config, self._illumination_config
-            )
+            errors = validate_illumination_references(self._general_config, self._illumination_config)
             for error in errors:
                 self._log.warning(error)
 
@@ -141,9 +138,7 @@ class ChannelConfigurationManager:
             return
 
         # Load objective config
-        obj_config = self._config_loader.load_objective_config(
-            self._current_profile, objective
-        )
+        obj_config = self._config_loader.load_objective_config(self._current_profile, objective)
 
         if obj_config:
             self._objective_configs[objective] = obj_config
@@ -166,9 +161,7 @@ class ChannelConfigurationManager:
 
         obj_config = self._objective_configs.get(objective)
         if obj_config:
-            self._config_loader.save_objective_config(
-                self._current_profile, objective, obj_config
-            )
+            self._config_loader.save_objective_config(self._current_profile, objective, obj_config)
             self._log.debug(f"Saved config for objective '{objective}'")
 
     def get_merged_acquisition_channels(
@@ -195,9 +188,7 @@ class ChannelConfigurationManager:
 
         return channels
 
-    def _acquisition_channel_to_channel_mode(
-        self, acq_channel: AcquisitionChannel
-    ) -> ChannelMode:
+    def _acquisition_channel_to_channel_mode(self, acq_channel: AcquisitionChannel) -> ChannelMode:
         """Convert AcquisitionChannel to ChannelMode for UI compatibility."""
         # Generate ID from channel name
         channel_id = hashlib.sha256(acq_channel.name.encode()).hexdigest()[:16]
@@ -221,16 +212,12 @@ class ChannelConfigurationManager:
         # Get intensity (use first illumination channel)
         intensity = 20.0
         if ill_channels:
-            intensity = acq_channel.illumination_settings.intensity.get(
-                ill_channels[0], 20.0
-            )
+            intensity = acq_channel.illumination_settings.intensity.get(ill_channels[0], 20.0)
 
         # Get emission filter position
         emission_filter_position = 1
         if acq_channel.emission_filter_wheel_position:
-            emission_filter_position = next(
-                iter(acq_channel.emission_filter_wheel_position.values()), 1
-            )
+            emission_filter_position = next(iter(acq_channel.emission_filter_wheel_position.values()), 1)
 
         return ChannelMode(
             id=channel_id,
@@ -272,14 +259,9 @@ class ChannelConfigurationManager:
 
     def get_channel_configuration_by_name(self, objective: str, name: str) -> Optional[ChannelMode]:
         """Get a channel configuration by its name."""
-        return next(
-            (mode for mode in self.get_configurations(objective) if mode.name == name),
-            None
-        )
+        return next((mode for mode in self.get_configurations(objective) if mode.name == name), None)
 
-    def update_configuration(
-        self, objective: str, config_id: str, attr_name: str, value: Any
-    ) -> None:
+    def update_configuration(self, objective: str, config_id: str, attr_name: str, value: Any) -> None:
         """Update a specific configuration attribute.
 
         Updates the YAML config and saves to disk.
@@ -354,9 +336,7 @@ class ChannelConfigurationManager:
 
         # Re-merge configs
         if self._general_config:
-            self._merged_channels[objective] = merge_channel_configs(
-                self._general_config, obj_config
-            )
+            self._merged_channels[objective] = merge_channel_configs(self._general_config, obj_config)
 
         # Save to disk
         self.save_configurations(objective)
@@ -386,9 +366,7 @@ class ChannelConfigurationManager:
 
         # Filter to only selected channels
         selected_names = {config.name for config in selected_configurations}
-        selected_acq_channels = [
-            ch for ch in merged_channels if ch.name in selected_names
-        ]
+        selected_acq_channels = [ch for ch in merged_channels if ch.name in selected_names]
 
         if not selected_acq_channels:
             return

@@ -9,6 +9,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 
 try:
     import yaml
+
     HAS_YAML = True
 except ImportError:
     HAS_YAML = False
@@ -95,7 +96,10 @@ class ReferenceImageViewer(QMainWindow):
 
     def browse_file(self):
         file_paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select laser_af_settings file", "", "Config Files (*.json *.yaml *.yml);;JSON Files (*.json);;YAML Files (*.yaml *.yml);;All Files (*)"
+            self,
+            "Select laser_af_settings file",
+            "",
+            "Config Files (*.json *.yaml *.yml);;JSON Files (*.json);;YAML Files (*.yaml *.yml);;All Files (*)",
         )
         for file_path in file_paths:
             self.load_reference_image(file_path)

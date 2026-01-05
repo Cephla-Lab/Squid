@@ -8,20 +8,19 @@ import tempfile
 from pathlib import Path
 
 import pytest
-import yaml
 
 from control.config_loader import ConfigLoader
 from control.default_config_generator import (
     DEFAULT_EXPOSURE_TIME_MS,
     DEFAULT_GAIN_MODE,
     DEFAULT_ILLUMINATION_INTENSITY,
-    create_acquisition_channel_from_illumination,
+    create_general_acquisition_channel,
+    create_objective_acquisition_channel,
     generate_default_configs,
     generate_general_config,
     get_display_color_for_channel,
 )
 from control.models import (
-    CameraMappingsConfig,
     ConfocalConfig,
     GeneralChannelConfig,
     IlluminationChannel,
@@ -287,8 +286,8 @@ class TestDefaultConfigGenerator:
         color = get_display_color_for_channel(channel)
         assert color == DEFAULT_LED_COLOR
 
-    def test_create_acquisition_channel_from_illumination(self):
-        """Test creating acquisition channel from illumination channel."""
+    def test_create_general_acquisition_channel(self):
+        """Test creating acquisition channel for general.yaml."""
         ill_channel = IlluminationChannel(
             name="Fluorescence 488nm",
             type=IlluminationType.EPI_ILLUMINATION,
@@ -297,9 +296,7 @@ class TestDefaultConfigGenerator:
             source_code=11,
         )
 
-        acq_channel = create_acquisition_channel_from_illumination(
-            ill_channel, include_confocal=False
-        )
+        acq_channel = create_general_acquisition_channel(ill_channel, include_confocal=False)
 
         assert acq_channel.name == "488 nm"  # Simplified name
         assert "1" in acq_channel.camera_settings
@@ -308,8 +305,8 @@ class TestDefaultConfigGenerator:
         assert acq_channel.illumination_settings.intensity["Fluorescence 488nm"] == DEFAULT_ILLUMINATION_INTENSITY
         assert acq_channel.confocal_settings is None
 
-    def test_create_acquisition_channel_with_confocal(self):
-        """Test creating acquisition channel with confocal settings."""
+    def test_create_objective_acquisition_channel_with_confocal(self):
+        """Test creating objective acquisition channel with confocal settings."""
         ill_channel = IlluminationChannel(
             name="Fluorescence 488nm",
             type=IlluminationType.EPI_ILLUMINATION,
@@ -318,16 +315,14 @@ class TestDefaultConfigGenerator:
             source_code=11,
         )
 
-        acq_channel = create_acquisition_channel_from_illumination(
-            ill_channel, include_confocal=True
-        )
+        acq_channel = create_objective_acquisition_channel(ill_channel, include_confocal=True)
 
         assert acq_channel.confocal_settings is not None
         assert acq_channel.confocal_settings.filter_wheel_id == 1
         assert acq_channel.confocal_settings.emission_filter_wheel_position == 1
         assert acq_channel.confocal_override is not None
 
-    def test_create_acquisition_channel_led_intensity(self):
+    def test_create_objective_acquisition_channel_led_intensity(self):
         """Test that USB LED sources get lower default intensity (5) vs lasers (20)."""
         from control.default_config_generator import (
             DEFAULT_LED_ILLUMINATION_INTENSITY,
@@ -341,7 +336,7 @@ class TestDefaultConfigGenerator:
             controller_port="D1",
             source_code=11,
         )
-        laser_acq = create_acquisition_channel_from_illumination(laser_channel)
+        laser_acq = create_objective_acquisition_channel(laser_channel)
         assert laser_acq.illumination_settings.intensity["Fluorescence 488nm"] == DEFAULT_ILLUMINATION_INTENSITY
 
         # USB LED source should get lower intensity of 5
@@ -352,7 +347,7 @@ class TestDefaultConfigGenerator:
             controller_port="USB1",
             source_code=0,
         )
-        led_acq = create_acquisition_channel_from_illumination(led_channel)
+        led_acq = create_objective_acquisition_channel(led_channel)
         assert led_acq.illumination_settings.intensity["BF LED matrix"] == DEFAULT_LED_ILLUMINATION_INTENSITY
         assert DEFAULT_LED_ILLUMINATION_INTENSITY == 5.0
 

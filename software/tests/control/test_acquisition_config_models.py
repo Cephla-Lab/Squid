@@ -107,8 +107,10 @@ class TestIlluminationChannelConfig:
         config = IlluminationChannelConfig(
             version=1,
             controller_port_mapping={
-                "D1": 11, "D2": 12,
-                "USB1": 0, "USB4": 3,  # USB ports encode LED patterns
+                "D1": 11,
+                "D2": 12,
+                "USB1": 0,
+                "USB4": 3,  # USB ports encode LED patterns
             },
             channels=[
                 IlluminationChannel(
@@ -258,9 +260,7 @@ class TestCameraMappingsConfig:
         # With confocal
         config_with_confocal = CameraMappingsConfig(
             hardware_connection_info={
-                "camera_1": CameraHardwareInfo(
-                    confocal_settings=ConfocalCameraSettings(filter_wheel_id=1)
-                ),
+                "camera_1": CameraHardwareInfo(confocal_settings=ConfocalCameraSettings(filter_wheel_id=1)),
             },
         )
         assert config_with_confocal.has_confocal_in_light_path("camera_1") is True

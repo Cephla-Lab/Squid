@@ -39,7 +39,7 @@ import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -58,11 +58,7 @@ from control.models import (
     LaserAFConfig,
     ObjectiveChannelConfig,
 )
-from control.models.illumination_config import (
-    DEFAULT_LED_COLOR,
-    DEFAULT_WAVELENGTH_COLORS,
-    IlluminationType,
-)
+from control.models.illumination_config import IlluminationType
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -201,9 +197,7 @@ def load_channel_definitions_json(json_path: Path) -> Optional[Dict[str, Any]]:
         return json.load(f)
 
 
-def convert_channel_definitions_to_illumination_config(
-    channel_defs: Dict[str, Any]
-) -> IlluminationChannelConfig:
+def convert_channel_definitions_to_illumination_config(channel_defs: Dict[str, Any]) -> IlluminationChannelConfig:
     """
     Convert channel_definitions.default.json to IlluminationChannelConfig.
 
@@ -321,7 +315,9 @@ def convert_xml_channels_to_acquisition_config(
         )
 
         # emission_filter_wheel_position only in general.yaml
-        emission_filter_wheel_position = {1: xml_ch["emission_filter_position"]} if include_illumination_channels else None
+        emission_filter_wheel_position = (
+            {1: xml_ch["emission_filter_position"]} if include_illumination_channels else None
+        )
 
         # Create confocal settings if needed
         confocal_settings = None
@@ -538,10 +534,7 @@ def migrate_profile(
             )
 
             # Determine if any objective has confocal
-            has_any_confocal = any(
-                (source_path / obj / "confocal_configurations.xml").exists()
-                for obj in objectives
-            )
+            has_any_confocal = any((source_path / obj / "confocal_configurations.xml").exists() for obj in objectives)
 
             # general.yaml has illumination_channels, display_color, z_offset_um
             # emission_filter_wheel_position at channel level
@@ -560,10 +553,14 @@ def migrate_profile(
                     )
                 },
                 emission_filter_wheel_position={1: xml_ch["emission_filter_position"]},
-                confocal_settings=ConfocalSettings(
-                    filter_wheel_id=1,
-                    emission_filter_wheel_position=xml_ch["emission_filter_position"],
-                ) if has_any_confocal else None,
+                confocal_settings=(
+                    ConfocalSettings(
+                        filter_wheel_id=1,
+                        emission_filter_wheel_position=xml_ch["emission_filter_position"],
+                    )
+                    if has_any_confocal
+                    else None
+                ),
             )
             general_channels.append(acq_channel)
 
@@ -669,10 +666,7 @@ def run_auto_migration(software_path: Optional[Path] = None, force: bool = False
         return False
 
     # Check if there are any profiles to migrate
-    profiles = [
-        item.name for item in source_path.iterdir()
-        if item.is_dir() and not item.name.startswith(".")
-    ]
+    profiles = [item.name for item in source_path.iterdir() if item.is_dir() and not item.name.startswith(".")]
 
     if not profiles:
         logger.debug("No profiles found in acquisition_configurations")
@@ -726,9 +720,7 @@ def run_auto_migration(software_path: Optional[Path] = None, force: bool = False
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Migrate legacy acquisition configurations to new YAML format."
-    )
+    parser = argparse.ArgumentParser(description="Migrate legacy acquisition configurations to new YAML format.")
     parser.add_argument(
         "--source",
         type=Path,

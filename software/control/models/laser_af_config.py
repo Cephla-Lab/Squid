@@ -5,7 +5,7 @@ These models define per-objective laser autofocus settings, including
 calibration data and detection parameters.
 """
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -33,9 +33,7 @@ class LaserAFConfig(BaseModel):
     x_reference: Optional[float] = Field(None, description="X reference position")
     has_reference: bool = Field(False, description="Whether a reference image exists")
     calibration_timestamp: str = Field("", description="Timestamp of last calibration")
-    pixel_to_um_calibration_distance: float = Field(
-        6.0, description="Distance used for pixel-to-um calibration"
-    )
+    pixel_to_um_calibration_distance: float = Field(6.0, description="Distance used for pixel-to-um calibration")
 
     # Detection parameters
     laser_af_range: float = Field(100.0, description="Autofocus search range in um")
@@ -44,9 +42,7 @@ class LaserAFConfig(BaseModel):
         SpotDetectionMode.DUAL_RIGHT.value,
         description="Spot detection mode (single, dual_left, dual_right)",
     )
-    displacement_success_window_um: float = Field(
-        1.0, description="Acceptable displacement window in um"
-    )
+    displacement_success_window_um: float = Field(1.0, description="Acceptable displacement window in um")
 
     # Spot detection
     spot_crop_size: int = Field(100, description="Size of spot crop region")
@@ -60,9 +56,7 @@ class LaserAFConfig(BaseModel):
     filter_sigma: Optional[float] = Field(None, description="Gaussian filter sigma (-1 to disable)")
 
     # Camera settings
-    focus_camera_exposure_time_ms: float = Field(
-        0.2, description="Focus camera exposure time in ms"
-    )
+    focus_camera_exposure_time_ms: float = Field(0.2, description="Focus camera exposure time in ms")
     focus_camera_analog_gain: float = Field(0.0, description="Focus camera analog gain")
 
     # Initialization
@@ -70,15 +64,9 @@ class LaserAFConfig(BaseModel):
     initialize_crop_height: int = Field(800, description="Initial crop height")
 
     # Reference image (base64 encoded)
-    reference_image: Optional[str] = Field(
-        None, description="Base64-encoded reference image data"
-    )
-    reference_image_shape: Optional[List[int]] = Field(
-        None, description="Shape of reference image array"
-    )
-    reference_image_dtype: Optional[str] = Field(
-        None, description="Data type of reference image array"
-    )
+    reference_image: Optional[str] = Field(None, description="Base64-encoded reference image data")
+    reference_image_shape: Optional[List[int]] = Field(None, description="Shape of reference image array")
+    reference_image_dtype: Optional[str] = Field(None, description="Data type of reference image array")
 
     model_config = {"extra": "forbid"}
 

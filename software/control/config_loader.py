@@ -12,7 +12,7 @@ This module handles loading and saving all configuration types:
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Type, TypeVar
+from typing import List, Optional, Type, TypeVar
 
 import yaml
 
@@ -154,11 +154,7 @@ class ConfigLoader:
         """Get list of available user profiles."""
         if not self.user_profiles_path.exists():
             return []
-        return [
-            d.name
-            for d in self.user_profiles_path.iterdir()
-            if d.is_dir() and not d.name.startswith(".")
-        ]
+        return [d.name for d in self.user_profiles_path.iterdir() if d.is_dir() and not d.name.startswith(".")]
 
     def get_available_objectives(self, profile: str) -> List[str]:
         """Get list of available objectives for a profile."""
@@ -181,30 +177,22 @@ class ConfigLoader:
         path = self.user_profiles_path / profile / "channel_configs" / "general.yaml"
         self._save_yaml(path, config)
 
-    def load_objective_config(
-        self, profile: str, objective: str
-    ) -> Optional[ObjectiveChannelConfig]:
+    def load_objective_config(self, profile: str, objective: str) -> Optional[ObjectiveChannelConfig]:
         """Load objective-specific channel configuration."""
         path = self.user_profiles_path / profile / "channel_configs" / f"{objective}.yaml"
         return self._load_yaml(path, ObjectiveChannelConfig)
 
-    def save_objective_config(
-        self, profile: str, objective: str, config: ObjectiveChannelConfig
-    ) -> None:
+    def save_objective_config(self, profile: str, objective: str, config: ObjectiveChannelConfig) -> None:
         """Save objective-specific channel configuration."""
         path = self.user_profiles_path / profile / "channel_configs" / f"{objective}.yaml"
         self._save_yaml(path, config)
 
-    def load_laser_af_config(
-        self, profile: str, objective: str
-    ) -> Optional[LaserAFConfig]:
+    def load_laser_af_config(self, profile: str, objective: str) -> Optional[LaserAFConfig]:
         """Load laser AF configuration for an objective."""
         path = self.user_profiles_path / profile / "laser_af_configs" / f"{objective}.yaml"
         return self._load_yaml(path, LaserAFConfig)
 
-    def save_laser_af_config(
-        self, profile: str, objective: str, config: LaserAFConfig
-    ) -> None:
+    def save_laser_af_config(self, profile: str, objective: str, config: LaserAFConfig) -> None:
         """Save laser AF configuration for an objective."""
         path = self.user_profiles_path / profile / "laser_af_configs" / f"{objective}.yaml"
         self._save_yaml(path, config)

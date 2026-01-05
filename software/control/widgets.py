@@ -12360,9 +12360,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
         # Table for illumination channels
         self.table = QTableWidget()
         self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(
-            ["Name", "Type", "Controller Port", "Wavelength (nm)", "Calibration File"]
-        )
+        self.table.setHorizontalHeaderLabels(["Name", "Type", "Controller Port", "Wavelength (nm)", "Calibration File"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -12485,6 +12483,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
         if dialog.exec_() == QDialog.Accepted:
             channel_data = dialog.get_channel_data()
             from control.models.illumination_config import IlluminationChannel
+
             new_channel = IlluminationChannel(**channel_data)
             self.illumination_config.channels.append(new_channel)
             self._load_channels()

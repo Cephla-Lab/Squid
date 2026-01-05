@@ -41,6 +41,7 @@ class LaserAFSettingManager:
         elif legacy_json_path.exists():
             # Fallback to legacy JSON format (for migration)
             import json
+
             with open(legacy_json_path, "r") as f:
                 config_dict = json.load(f)
                 self.autofocus_configurations[objective] = LaserAFConfig(**config_dict)

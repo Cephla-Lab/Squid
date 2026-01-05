@@ -9,7 +9,7 @@ controller ports and serial command codes.
 from enum import Enum
 from typing import ClassVar, Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 class IlluminationType(str, Enum):
@@ -32,12 +32,8 @@ class IlluminationChannel(BaseModel):
 
     name: str = Field(..., description="Unique name for this illumination channel")
     type: IlluminationType = Field(..., description="Type of illumination")
-    controller_port: str = Field(
-        ..., description="Controller port (D1-D5 for lasers, USB1-USB8 for LED patterns)"
-    )
-    wavelength_nm: Optional[int] = Field(
-        None, description="Wavelength in nm (for epi-illumination channels)"
-    )
+    controller_port: str = Field(..., description="Controller port (D1-D5 for lasers, USB1-USB8 for LED patterns)")
+    wavelength_nm: Optional[int] = Field(None, description="Wavelength in nm (for epi-illumination channels)")
     intensity_calibration_file: Optional[str] = Field(
         None, description="Reference to calibration CSV file in intensity_calibrations/"
     )
@@ -50,8 +46,22 @@ class IlluminationChannelConfig(BaseModel):
 
     # All available controller ports in canonical order
     ALL_PORTS: ClassVar[List[str]] = [
-        "USB1", "USB2", "USB3", "USB4", "USB5", "USB6", "USB7", "USB8",
-        "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8",
+        "USB1",
+        "USB2",
+        "USB3",
+        "USB4",
+        "USB5",
+        "USB6",
+        "USB7",
+        "USB8",
+        "D1",
+        "D2",
+        "D3",
+        "D4",
+        "D5",
+        "D6",
+        "D7",
+        "D8",
     ]
 
     version: int = Field(1, description="Configuration format version")
@@ -72,7 +82,7 @@ class IlluminationChannelConfig(BaseModel):
             "USB7": 7,  # top_half
             "USB8": 8,  # bottom_half
         },
-        description="Mapping from controller port to source code"
+        description="Mapping from controller port to source code",
     )
     channels: List[IlluminationChannel] = Field(
         default_factory=list, description="List of available illumination channels"
@@ -94,8 +104,15 @@ class IlluminationChannelConfig(BaseModel):
             return channel.source_code
         if hasattr(channel, "led_matrix_pattern") and channel.led_matrix_pattern:
             # Legacy: try to map pattern name to source code
-            legacy_patterns = {"full": 0, "left_half": 1, "right_half": 2, "dark_field": 3,
-                              "low_na": 4, "top_half": 7, "bottom_half": 8}
+            legacy_patterns = {
+                "full": 0,
+                "left_half": 1,
+                "right_half": 2,
+                "dark_field": 3,
+                "low_na": 4,
+                "top_half": 7,
+                "bottom_half": 8,
+            }
             return legacy_patterns.get(channel.led_matrix_pattern, 0)
         return 0  # Default for unknown
 

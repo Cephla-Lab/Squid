@@ -5,7 +5,7 @@ These models define camera-to-hardware bindings, including dichroic positions
 and filter wheel associations.
 """
 
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 from pydantic import BaseModel, Field
 
@@ -13,12 +13,8 @@ from pydantic import BaseModel, Field
 class ConfocalCameraSettings(BaseModel):
     """Confocal-specific settings for a camera."""
 
-    filter_wheel_id: Optional[int] = Field(
-        None, description="Filter wheel ID associated with this camera"
-    )
-    dichroic_position: Optional[int] = Field(
-        None, description="Dichroic position when this camera is selected"
-    )
+    filter_wheel_id: Optional[int] = Field(None, description="Filter wheel ID associated with this camera")
+    dichroic_position: Optional[int] = Field(None, description="Dichroic position when this camera is selected")
 
     model_config = {"extra": "allow"}  # Allow additional confocal-specific settings
 
@@ -26,9 +22,7 @@ class ConfocalCameraSettings(BaseModel):
 class CameraHardwareInfo(BaseModel):
     """Hardware connections for a camera."""
 
-    filter_wheel_id: Optional[int] = Field(
-        None, description="Filter wheel ID (for systems without confocal)"
-    )
+    filter_wheel_id: Optional[int] = Field(None, description="Filter wheel ID (for systems without confocal)")
     confocal_settings: Optional[ConfocalCameraSettings] = Field(
         None, description="Confocal-specific settings (only if confocal present)"
     )
@@ -39,9 +33,7 @@ class CameraHardwareInfo(BaseModel):
 class CameraPropertyBindings(BaseModel):
     """Properties set when a camera combination is selected."""
 
-    dichroic_position: Optional[int] = Field(
-        None, description="Dichroic position (for systems without confocal)"
-    )
+    dichroic_position: Optional[int] = Field(None, description="Dichroic position (for systems without confocal)")
     confocal_settings: Optional[ConfocalCameraSettings] = Field(
         None, description="Confocal-specific bindings (only if confocal present)"
     )

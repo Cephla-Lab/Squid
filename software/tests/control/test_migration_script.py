@@ -11,6 +11,7 @@ import pytest
 
 # Import migration functions
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "tools"))
 
 from migrate_acquisition_configs import (
@@ -248,9 +249,7 @@ class TestMigrationIntegration:
 
         # Parse and convert XML
         xml_channels = parse_xml_config(source_dir / "widefield_configurations.xml")
-        obj_config = convert_xml_channels_to_acquisition_config(
-            xml_channels, illumination_config
-        )
+        obj_config = convert_xml_channels_to_acquisition_config(xml_channels, illumination_config)
 
         # Save objective config
         target_dir = temp_dir / "user_profiles" / "test_profile" / "channel_configs"

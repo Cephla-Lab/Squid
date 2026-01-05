@@ -330,18 +330,14 @@ def ensure_default_configs(
     illumination_config = config_loader.load_illumination_config()
     if illumination_config is None:
         logger.error("Cannot generate defaults: illumination_channel_config.yaml not found")
-        raise FileNotFoundError(
-            "illumination_channel_config.yaml is required to generate default configs"
-        )
+        raise FileNotFoundError("illumination_channel_config.yaml is required to generate default configs")
 
     # Check for confocal
     confocal_config = config_loader.load_confocal_config()
 
     # Generate configs
     logger.info(f"Generating default configs for profile '{profile}'")
-    general_config, objective_configs = generate_default_configs(
-        illumination_config, confocal_config, objectives
-    )
+    general_config, objective_configs = generate_default_configs(illumination_config, confocal_config, objectives)
 
     # Ensure directories exist
     config_loader.ensure_profile_directories(profile)
