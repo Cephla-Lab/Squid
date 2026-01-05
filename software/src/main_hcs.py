@@ -129,8 +129,18 @@ if __name__ == "__main__":
         console_thread = ConsoleThread(console_locals)
         console_thread.start()
 
+    # Use os._exit() to prevent segfault during Python's shutdown sequence.
+    # PyQt5's C++ destructor order conflicts with Python's garbage collector.
+    #
+    # Note: This does NOT skip critical cleanup because:
+    # - closeEvent() runs when the window closes (before app.exec_() returns)
+    # - aboutToQuit signal fires before app.exec_() returns
+    # All hardware cleanup (camera, stage, microcontroller) happens in closeEvent,
+    # which completes before os._exit() is called.
     try:
-        sys.exit(app.exec_())
+        exit_code = app.exec_()
     finally:
         # Clean shutdown of application context
         context.shutdown()
+    logging.shutdown()  # Flush log handlers before os._exit() bypasses Python cleanup
+    os._exit(exit_code)

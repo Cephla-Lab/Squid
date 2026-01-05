@@ -270,6 +270,18 @@ class Microcontroller:
         cmd[3] = status
         self.send_command(cmd)
 
+    def set_trigger_mode(self, mode: int) -> None:
+        """Set the hardware trigger mode.
+
+        Args:
+            mode: 0 for edge trigger (fixed pulse width), 1 for level trigger
+                  (variable pulse width based on illumination time)
+        """
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_TRIGGER_MODE
+        cmd[2] = mode
+        self.send_command(cmd)
+
     def _move_axis_usteps(self, usteps: int, axis_command_code: int) -> None:
         direction = np.sign(usteps)
         n_microsteps_abs = abs(usteps)

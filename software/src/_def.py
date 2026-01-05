@@ -21,42 +21,65 @@ def conf_attribute_reader(string_value):
     """
     Standardized way for reading config entries that are strings.
 
-    Priority order: None -> bool -> dict/list (via json) -> int -> float -> string
+    Priority order: JSON (with comments stripped if needed) -> None -> bool -> int -> float -> string
+    Inline comments (# ...) are stripped, but # inside valid JSON is preserved.
 
     REMEMBER TO ENCLOSE PROPERTY NAMES IN LISTS/DICTS IN DOUBLE QUOTES
     """
     actualvalue = str(string_value).strip()
 
-    # Check for None
+    # Try JSON first - handles valid JSON with # inside (like {"color": "#FF0000"})
     try:
-        if str(actualvalue) == "None":
-            return None
-    except (ValueError, TypeError, AttributeError):
+        return json.loads(actualvalue)
+    except (json.JSONDecodeError, ValueError):
         pass
 
-    # Check for boolean
+    # JSON failed - strip inline comments if present
+    # Only treat # as comment if preceded by whitespace (e.g., "value  # comment")
+    if "#" in actualvalue:
+        # For JSON-like values, try stripping from rightmost # positions
+        # This handles cases like {"color": "#FF0000"}  # comment
+        if actualvalue.startswith("[") or actualvalue.startswith("{"):
+            hash_positions = [i for i, c in enumerate(actualvalue) if c == "#"]
+            for pos in reversed(hash_positions):
+                candidate = actualvalue[:pos].strip()
+                try:
+                    return json.loads(candidate)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+        # For non-JSON or if all JSON attempts failed, strip comments with whitespace before #
+        # This preserves values like "my#tag" while stripping "value  # comment"
+        # Find the earliest comment separator to handle "value\t# c1  # c2" correctly
+        comment_positions = [actualvalue.find(sep) for sep in (" #", "\t#") if sep in actualvalue]
+        if comment_positions:
+            cut_pos = min(comment_positions)
+            actualvalue = actualvalue[:cut_pos].rstrip()
+
+    # Parse the (possibly stripped) value
+    if actualvalue == "None":
+        return None
+    if actualvalue in ("True", "true"):
+        return True
+    if actualvalue in ("False", "false"):
+        return False
+
+    # Try JSON again (for cases like [1,2,3] # comment -> [1,2,3])
     try:
-        if str(actualvalue) == "True" or str(actualvalue) == "true":
-            return True
-        if str(actualvalue) == "False" or str(actualvalue) == "false":
-            return False
-    except (ValueError, TypeError, AttributeError):
+        return json.loads(actualvalue)
+    except (json.JSONDecodeError, ValueError):
         pass
 
-    # Try JSON (dict/list)
+    # Try int
     try:
-        actualvalue = json.loads(actualvalue)
-    except (json.JSONDecodeError, ValueError, TypeError):
-        # Try int
-        try:
-            actualvalue = int(str(actualvalue))
-        except (ValueError, TypeError):
-            # Try float
-            try:
-                actualvalue = float(actualvalue)
-            except (ValueError, TypeError):
-                # Fall back to string
-                actualvalue = str(actualvalue)
+        return int(actualvalue)
+    except ValueError:
+        pass
+
+    # Try float
+    try:
+        return float(actualvalue)
+    except ValueError:
+        pass
 
     return actualvalue
 
@@ -104,6 +127,17 @@ class TriggerMode:
             if value == option or name == option.upper():
                 return getattr(TriggerMode, name)
         raise ValueError(f"Invalid trigger mode: {option}")
+
+
+class HardwareTriggerMode:
+    """Hardware trigger mode for camera triggering.
+
+    EDGE: Fixed pulse width (TRIGGER_PULSE_LENGTH_us, typically 50us)
+    LEVEL: Variable pulse width (strobe_delay + illumination_on_time)
+    """
+
+    EDGE = 0
+    LEVEL = 1
 
 
 class Acquisition:
@@ -190,6 +224,7 @@ class CMD_SET:
     SEND_HARDWARE_TRIGGER = 30
     SET_STROBE_DELAY = 31
     SET_AXIS_DISABLE_ENABLE = 32
+    SET_TRIGGER_MODE = 33
     SET_PIN_LEVEL = 41
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -358,6 +393,37 @@ class ZProjectionMode(Enum):
             return ZProjectionMode(option.lower())
         except ValueError:
             raise ValueError(f"Invalid z projection mode: {option}")
+
+
+class ZMotorConfig(Enum):
+    """Z motor configuration options.
+
+    STEPPER: Stepper motor only
+    STEPPER_PIEZO: Stepper motor with piezo for fine Z control
+    PIEZO: Piezo only
+    """
+
+    STEPPER = "STEPPER"
+    STEPPER_PIEZO = "STEPPER + PIEZO"
+    PIEZO = "PIEZO"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "ZMotorConfig"]) -> "ZMotorConfig":
+        """Convert string or enum to ZMotorConfig enum."""
+        if isinstance(option, ZMotorConfig):
+            return option
+        for member in ZMotorConfig:
+            if member.value == option:
+                return member
+        raise ValueError(f"Invalid Z motor config: '{option}'. Expected one of: {[m.value for m in ZMotorConfig]}")
+
+    def has_piezo(self) -> bool:
+        """Check if this configuration includes a piezo."""
+        return "PIEZO" in self.value
+
+    def is_piezo_only(self) -> bool:
+        """Check if this configuration is piezo-only (no stepper)."""
+        return self == ZMotorConfig.PIEZO
 
 
 PRINT_CAMERA_FPS = True
@@ -851,6 +917,9 @@ PRIOR_STAGE_SN = ""
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 
+# Hardware trigger mode (edge vs level trigger for ToupCam cameras)
+HARDWARE_TRIGGER_MODE = HardwareTriggerMode.EDGE
+
 
 def read_objectives_csv(file_path):
     objectives = {}
@@ -975,7 +1044,7 @@ FILE_SAVING_OPTION = FileSavingOption.INDIVIDUAL_IMAGES
 CACHED_CONFIG_FILE_PATH = None
 
 # Piezo configuration items
-Z_MOTOR_CONFIG = "STEPPER"  # "STEPPER", "STEPPER + PIEZO", "PIEZO", "LINEAR"
+Z_MOTOR_CONFIG = ZMotorConfig.STEPPER
 
 # the value of OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE is 2.5 or 5
 OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE = 5
@@ -1103,7 +1172,10 @@ A1_Y_PIXEL = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT][
 ##########################################################
 
 # objective piezo
-HAS_OBJECTIVE_PIEZO = "PIEZO" in Z_MOTOR_CONFIG
+# Ensure Z_MOTOR_CONFIG is an enum (may be string from config file)
+Z_MOTOR_CONFIG = ZMotorConfig.convert_to_enum(Z_MOTOR_CONFIG)
+HAS_OBJECTIVE_PIEZO = Z_MOTOR_CONFIG.has_piezo()
+IS_PIEZO_ONLY = Z_MOTOR_CONFIG.is_piezo_only()
 MULTIPOINT_USE_PIEZO_FOR_ZSTACKS = HAS_OBJECTIVE_PIEZO
 
 # convert str to enum

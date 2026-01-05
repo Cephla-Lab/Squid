@@ -486,9 +486,23 @@ class Microscope:
             self.addons.camera_focus.enable_callbacks(True)
             self.addons.camera_focus.start_streaming()
 
-    def acquire_image(self) -> Optional[np.ndarray]:
+    def acquire_image(self) -> np.ndarray:
+        """Acquire a single image from the camera.
+
+        Turns on illumination, triggers the camera, reads the frame, and turns off
+        illumination. The trigger mode (software vs hardware) is determined by the
+        live controller configuration.
+
+        Returns:
+            The acquired image as a numpy array.
+
+        Raises:
+            RuntimeError: If the camera fails to return a frame.
+        """
+        using_software_trigger = self.live_controller.trigger_mode == _def.TriggerMode.SOFTWARE
+
         # turn on illumination and send trigger
-        if self.live_controller.trigger_mode == _def.TriggerMode.SOFTWARE:
+        if using_software_trigger:
             self.live_controller.turn_on_illumination()
             self.waitForMicrocontroller()
             self.camera.send_trigger()
@@ -498,16 +512,17 @@ class Microscope:
                 illumination_on_time_us=self.camera.get_exposure_time() * 1000,
             )
 
-        # read a frame from camera
-        image = self.camera.read_frame()
-        if image is None:
-            print("self.camera.read_frame() returned None")
-
-        # turn off the illumination if using software trigger
-        if self.live_controller.trigger_mode == _def.TriggerMode.SOFTWARE:
-            self.live_controller.turn_off_illumination()
-
-        return image
+        try:
+            # read a frame from camera
+            image = self.camera.read_frame()
+            if image is None:
+                self._log.error("camera.read_frame() returned None")
+                raise RuntimeError("Failed to acquire image: camera.read_frame() returned None")
+            return image
+        finally:
+            # always turn off illumination when using software trigger
+            if using_software_trigger:
+                self.live_controller.turn_off_illumination()
 
     def home_xyz(self) -> None:
         if _def.HOMING_ENABLED_Z:
@@ -554,7 +569,7 @@ class Microscope:
         return self.stage.get_pos().z_mm
 
     def move_z_to(self, z_mm: float, blocking: bool = True) -> None:
-        self.stage.move_z_to(z_mm)
+        self.stage.move_z_to(z_mm, blocking=blocking)
 
     def start_live(self) -> None:
         self.live_controller.start_live()
