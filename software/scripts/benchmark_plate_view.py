@@ -22,9 +22,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
-# Enable DEBUG for detailed timing from stitch_tiles and downsample_tile
-logging.getLogger("stitch_tiles").setLevel(logging.DEBUG)
-logging.getLogger("downsample_tile").setLevel(logging.DEBUG)
+# Enable DEBUG for detailed timing from downsampled view processing
+logging.getLogger("squid.control.core.downsampled_views").setLevel(logging.DEBUG)
 
 from control.core.job_processing import (
     DownsampledViewJob,
