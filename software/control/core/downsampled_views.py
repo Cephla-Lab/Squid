@@ -266,21 +266,7 @@ def ensure_plate_resolution_in_well_resolutions(
 
     Returns:
         Sorted list of resolutions including plate resolution
-
-    Raises:
-        TypeError: If any resolution value is not numeric (int or float)
     """
-    # Validate plate_resolution is numeric
-    if not isinstance(plate_resolution, (int, float)):
-        raise TypeError(
-            f"plate_resolution must be numeric (int or float), got {type(plate_resolution).__name__}: {plate_resolution!r}"
-        )
-
-    # Validate all well_resolutions are numeric
-    for i, res in enumerate(well_resolutions):
-        if not isinstance(res, (int, float)):
-            raise TypeError(f"well_resolutions[{i}] must be numeric (int or float), got {type(res).__name__}: {res!r}")
-
     result = list(well_resolutions)
     if plate_resolution not in result:
         result.append(plate_resolution)
