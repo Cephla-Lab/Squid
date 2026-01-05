@@ -9,6 +9,7 @@ adjacent with no empty space between them.
 """
 
 import os
+import time
 from typing import List, Tuple, Dict, Optional, Union
 
 import cv2
@@ -97,9 +98,7 @@ def downsample_tile(
     Returns:
         Downsampled tile, or original if target <= source
     """
-    import time
-
-    log = squid.logging.get_logger("downsample_tile")
+    log = squid.logging.get_logger(__name__)
     t_start = time.perf_counter()
 
     factor = int(round(target_pixel_size_um / source_pixel_size_um))
@@ -149,9 +148,7 @@ def stitch_tiles(
     Returns:
         Stitched image
     """
-    import time
-
-    log = squid.logging.get_logger("stitch_tiles")
+    log = squid.logging.get_logger(__name__)
     t_start = time.perf_counter()
 
     if len(tiles) == 0:

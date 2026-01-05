@@ -654,9 +654,16 @@ class JobRunner(multiprocessing.Process):
         import logging
 
         # Configure logging in subprocess - the squid.logging module sets up console logging
-        # on import, but we need to ensure it's properly initialized in this process
-        # Set DEBUG level to see intermediate FOV timing (can be changed to INFO for less output)
-        squid.logging.set_stdout_log_level(logging.DEBUG)
+        # on import, but we need to ensure it's properly initialized in this process.
+        # Default to INFO for stdout in the worker, and allow overriding via
+        # the SQUID_WORKER_LOG_LEVEL environment variable (e.g. "DEBUG").
+        stdout_level = logging.INFO
+        env_level = os.environ.get("SQUID_WORKER_LOG_LEVEL")
+        if env_level:
+            env_level_upper = env_level.upper()
+            if hasattr(logging, env_level_upper):
+                stdout_level = getattr(logging, env_level_upper)
+        squid.logging.set_stdout_log_level(stdout_level)
 
         # Set up file logging if a log file path was provided
         # Use a separate file for the worker to avoid multiprocess file write conflicts
