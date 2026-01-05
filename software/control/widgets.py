@@ -9615,7 +9615,11 @@ class NapariPlateViewWidget(QWidget):
             self._clamping_zoom = False
 
     def _draw_plate_boundaries(self):
-        """Draw boundary rectangles around each well."""
+        """Draw grid lines to show well boundaries.
+
+        Uses O(rows + cols) lines instead of O(rows * cols) rectangles for better
+        performance with large plates (e.g., 1536-well).
+        """
         if self.num_rows == 0 or self.num_cols == 0:
             return
         if self.well_slot_shape[0] == 0 or self.well_slot_shape[1] == 0:
@@ -9625,29 +9629,27 @@ class NapariPlateViewWidget(QWidget):
         if "_plate_boundaries" in self.viewer.layers:
             self.viewer.layers.remove("_plate_boundaries")
 
-        rectangles = []
+        lines = []
         slot_h, slot_w = self.well_slot_shape
+        plate_height = self.num_rows * slot_h
+        plate_width = self.num_cols * slot_w
 
-        for row in range(self.num_rows):
-            for col in range(self.num_cols):
-                y0 = row * slot_h
-                x0 = col * slot_w
-                # Rectangle corners: top-left, top-right, bottom-right, bottom-left
-                rect = [
-                    [y0, x0],
-                    [y0, x0 + slot_w],
-                    [y0 + slot_h, x0 + slot_w],
-                    [y0 + slot_h, x0],
-                ]
-                rectangles.append(rect)
+        # Horizontal lines (num_rows + 1 lines)
+        for row in range(self.num_rows + 1):
+            y = row * slot_h
+            lines.append([[y, 0], [y, plate_width]])
 
-        if rectangles:
+        # Vertical lines (num_cols + 1 lines)
+        for col in range(self.num_cols + 1):
+            x = col * slot_w
+            lines.append([[0, x], [plate_height, x]])
+
+        if lines:
             self.viewer.add_shapes(
-                rectangles,
-                shape_type="polygon",
+                lines,
+                shape_type="line",
                 edge_color="white",
-                edge_width=2,
-                face_color="transparent",
+                edge_width=1,
                 name="_plate_boundaries",
             )
             # Move boundaries layer to bottom so it doesn't interfere with clicks
