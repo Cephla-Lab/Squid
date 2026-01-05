@@ -29,6 +29,7 @@ def conf_attribute_reader(string_value):
         pass
 
     # JSON failed - strip inline comments if present
+    # Only treat # as comment if preceded by whitespace (e.g., "value  # comment")
     if "#" in actualvalue:
         # For JSON-like values, try stripping from rightmost # positions
         # This handles cases like {"color": "#FF0000"}  # comment
@@ -40,8 +41,12 @@ def conf_attribute_reader(string_value):
                     return json.loads(candidate)
                 except (json.JSONDecodeError, ValueError):
                     continue
-        # For non-JSON or if all JSON attempts failed, strip at first #
-        actualvalue = actualvalue.split("#")[0].strip()
+        # For non-JSON or if all JSON attempts failed, strip comments with whitespace before #
+        # This preserves values like "my#tag" while stripping "value  # comment"
+        for sep in (" #", "\t#"):
+            if sep in actualvalue:
+                actualvalue = actualvalue.split(sep)[0].rstrip()
+                break
 
     # Parse the (possibly stripped) value
     if actualvalue == "None":

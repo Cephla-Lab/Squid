@@ -138,3 +138,10 @@ class TestConfAttributeReader:
         assert result == {"color": "#FF0000"}
         result = conf_attribute_reader('["#FFFFFF", "#000000"]  # colors')
         assert result == ["#FFFFFF", "#000000"]
+
+    def test_preserves_hash_in_string_without_whitespace(self):
+        """Test that # in string values is preserved when not preceded by whitespace."""
+        # Hash without preceding whitespace is part of the value, not a comment
+        assert conf_attribute_reader("my#tag") == "my#tag"
+        assert conf_attribute_reader("color#123") == "color#123"
+        assert conf_attribute_reader("test#value  # comment") == "test#value"
