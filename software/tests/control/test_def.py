@@ -145,3 +145,10 @@ class TestConfAttributeReader:
         assert conf_attribute_reader("my#tag") == "my#tag"
         assert conf_attribute_reader("color#123") == "color#123"
         assert conf_attribute_reader("test#value  # comment") == "test#value"
+
+    def test_strips_at_earliest_comment_separator(self):
+        """Test that stripping occurs at the earliest comment separator."""
+        # Should strip at first \t#, not at later  #
+        assert conf_attribute_reader("value\t# comment1  # comment2") == "value"
+        # Should strip at first  #, not at later \t#
+        assert conf_attribute_reader("value # comment1\t# comment2") == "value"

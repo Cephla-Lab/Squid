@@ -16,7 +16,7 @@ def conf_attribute_reader(string_value):
     """
     :brief: standardized way for reading config entries
     that are strings, in priority order
-    JSON -> None -> bool -> int -> float -> string
+    JSON (with comments stripped if needed) -> None -> bool -> int -> float -> string
     Inline comments (# ...) are stripped, but # inside valid JSON is preserved.
     REMEMBER TO ENCLOSE PROPERTY NAMES IN LISTS/DICTS IN DOUBLE QUOTES
     """
@@ -43,10 +43,11 @@ def conf_attribute_reader(string_value):
                     continue
         # For non-JSON or if all JSON attempts failed, strip comments with whitespace before #
         # This preserves values like "my#tag" while stripping "value  # comment"
-        for sep in (" #", "\t#"):
-            if sep in actualvalue:
-                actualvalue = actualvalue.split(sep)[0].rstrip()
-                break
+        # Find the earliest comment separator to handle "value\t# c1  # c2" correctly
+        comment_positions = [actualvalue.find(sep) for sep in (" #", "\t#") if sep in actualvalue]
+        if comment_positions:
+            cut_pos = min(comment_positions)
+            actualvalue = actualvalue[:cut_pos].rstrip()
 
     # Parse the (possibly stripped) value
     if actualvalue == "None":
