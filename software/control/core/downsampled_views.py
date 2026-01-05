@@ -97,6 +97,11 @@ def downsample_tile(
     Returns:
         Downsampled tile, or original if target <= source
     """
+    import time
+
+    log = squid.logging.get_logger("downsample_tile")
+    t_start = time.perf_counter()
+
     factor = int(round(target_pixel_size_um / source_pixel_size_um))
 
     if factor <= 1:
@@ -114,9 +119,19 @@ def downsample_tile(
         interpolation=cv2.INTER_AREA,
     )
 
+    t_resize = time.perf_counter()
+
     # Preserve dtype
     if downsampled.dtype != tile.dtype:
         downsampled = downsampled.astype(tile.dtype)
+
+    t_end = time.perf_counter()
+
+    # Log timing for performance analysis
+    log.debug(
+        f"[PERF] downsample_tile: {tile.shape} -> ({new_height}, {new_width}) factor={factor} | "
+        f"resize={t_resize - t_start:.4f}s, dtype={t_end - t_resize:.4f}s, TOTAL={t_end - t_start:.4f}s"
+    )
 
     return downsampled
 
@@ -134,6 +149,11 @@ def stitch_tiles(
     Returns:
         Stitched image
     """
+    import time
+
+    log = squid.logging.get_logger("stitch_tiles")
+    t_start = time.perf_counter()
+
     if len(tiles) == 0:
         raise ValueError("No tiles to stitch")
 
@@ -158,12 +178,16 @@ def stitch_tiles(
     canvas_width = int(round(canvas_width_mm * 1000.0 / pixel_size_um))
     canvas_height = int(round(canvas_height_mm * 1000.0 / pixel_size_um))
 
+    t_calc = time.perf_counter()
+
     # Handle RGB images
     dtype = tiles[0][0].dtype
     if len(tiles[0][0].shape) == 3:
         canvas = np.zeros((canvas_height, canvas_width, tiles[0][0].shape[2]), dtype=dtype)
     else:
         canvas = np.zeros((canvas_height, canvas_width), dtype=dtype)
+
+    t_alloc = time.perf_counter()
 
     # Place tiles
     for tile, (x_mm, y_mm) in tiles:
@@ -175,6 +199,15 @@ def stitch_tiles(
         x_end = min(x_pixel + w, canvas_width)
 
         canvas[y_pixel:y_end, x_pixel:x_end] = tile[: y_end - y_pixel, : x_end - x_pixel]
+
+    t_place = time.perf_counter()
+
+    # Log detailed timing for performance analysis
+    log.debug(
+        f"[PERF] stitch_tiles: {len(tiles)} tiles -> ({canvas_height}, {canvas_width}) | "
+        f"calc={t_calc - t_start:.4f}s, alloc={t_alloc - t_calc:.4f}s, place={t_place - t_alloc:.4f}s, "
+        f"TOTAL={t_place - t_start:.4f}s"
+    )
 
     return canvas
 

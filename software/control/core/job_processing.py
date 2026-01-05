@@ -427,10 +427,18 @@ class DownsampledViewJob(Job):
 
     def run(self) -> Optional[DownsampledViewResult]:
         log = squid.logging.get_logger(self.__class__.__name__)
+        import time
+
+        t_start = time.perf_counter()
+
+        # Get image array (may involve unpickling)
+        tile = self.image_array()
+        t_get_image = time.perf_counter()
 
         # Crop overlap from tile
-        tile = self.image_array()
         cropped = crop_overlap(tile, self.overlap_pixels)
+
+        t_crop = time.perf_counter()
 
         # Get or create accumulator for this well
         if self.well_id not in self._well_accumulators:
@@ -453,12 +461,17 @@ class DownsampledViewJob(Job):
             z_index=self.z_index,
         )
 
+        t_accumulate = time.perf_counter()
+
         # If not all FOVs for all channels received yet, return None
         if not accumulator.is_complete():
+            t_intermediate = time.perf_counter()
             z_info = f" z {self.z_index + 1}/{self.total_z_levels}" if self.total_z_levels > 1 else ""
             log.debug(
                 f"Well {self.well_id}: channel {self.channel_idx} FOV {self.fov_index + 1}/{self.total_fovs_in_well}{z_info}, "
-                f"channels: {accumulator.get_channel_count()}/{self.total_channels}"
+                f"channels: {accumulator.get_channel_count()}/{self.total_channels} | "
+                f"tile={tile.shape}, get_img={t_get_image - t_start:.3f}s, crop={t_crop - t_get_image:.3f}s, "
+                f"accum={t_accumulate - t_crop:.3f}s, total={t_intermediate - t_start:.3f}s"
             )
             return None
 
@@ -469,19 +482,26 @@ class DownsampledViewJob(Job):
         )
 
         try:
+            t_stitch_start = time.perf_counter()
+
             # Stitch all channels
             stitched_channels = accumulator.stitch_all_channels()
+
+            t_stitch_end = time.perf_counter()
 
             # Get channel names for metadata
             channel_names = accumulator.channel_names
 
             # Generate plate view images first (at plate resolution only)
+            t_downsample_plate_start = time.perf_counter()
             well_images_for_plate: Dict[int, np.ndarray] = {}
             for ch_idx in sorted(stitched_channels.keys()):
                 downsampled = downsample_tile(stitched_channels[ch_idx], self.pixel_size_um, self.plate_resolution_um)
                 well_images_for_plate[ch_idx] = downsampled
+            t_downsample_plate_end = time.perf_counter()
 
             # Save TIFFs only if not skipping
+            t_save_start = time.perf_counter()
             if not self.skip_saving:
                 wells_dir = os.path.join(self.output_dir, "wells")
                 os.makedirs(wells_dir, exist_ok=True)
@@ -517,6 +537,23 @@ class DownsampledViewJob(Job):
                     )
                     log.debug(f"Saved {filepath} with shape {stacked.shape} ({len(downsampled_stack)} channels)")
 
+            t_save_end = time.perf_counter()
+
+            # Log timing summary for performance analysis
+            t_total = t_save_end - t_start
+            stitched_shape = list(stitched_channels.values())[0].shape if stitched_channels else (0, 0)
+            plate_shape = list(well_images_for_plate.values())[0].shape if well_images_for_plate else (0, 0)
+            log.debug(
+                f"[PERF] Well {self.well_id} complete: "
+                f"get_img={t_get_image - t_start:.3f}s, crop={t_crop - t_get_image:.3f}s, "
+                f"accum={t_accumulate - t_crop:.3f}s, stitch={t_stitch_end - t_stitch_start:.3f}s, "
+                f"downsample_plate={t_downsample_plate_end - t_downsample_plate_start:.3f}s, "
+                f"save={t_save_end - t_save_start:.3f}s, "
+                f"TOTAL={t_total:.3f}s | "
+                f"tile={tile.shape}, stitched={stitched_shape}, plate={plate_shape}, "
+                f"channels={len(stitched_channels)}, skip_saving={self.skip_saving}"
+            )
+
             return DownsampledViewResult(
                 well_id=self.well_id,
                 well_row=self.well_row,
@@ -540,10 +577,12 @@ class JobRunner(multiprocessing.Process):
         self,
         acquisition_info: Optional[AcquisitionInfo] = None,
         cleanup_stale_ome_files: bool = False,
+        log_file_path: Optional[str] = None,
     ):
         super().__init__()
         self._log = squid.logging.get_logger(__class__.__name__)
         self._acquisition_info = acquisition_info
+        self._log_file_path = log_file_path  # Will be used in subprocess to set up file logging
 
         self._input_queue: multiprocessing.Queue = multiprocessing.Queue()
         self._input_timeout = 1.0
@@ -613,19 +652,52 @@ class JobRunner(multiprocessing.Process):
         self._pending_count = None
 
     def run(self):
+        import time
+        import os
+        import logging
+
+        # Configure logging in subprocess - the squid.logging module sets up console logging
+        # on import, but we need to ensure it's properly initialized in this process
+        # Set DEBUG level to see intermediate FOV timing (can be changed to INFO for less output)
+        squid.logging.set_stdout_log_level(logging.DEBUG)
+
+        # Set up file logging if a log file path was provided
+        # Use a separate file for the worker to avoid multiprocess file write conflicts
+        worker_log_path = None
+        if self._log_file_path:
+            base, ext = os.path.splitext(self._log_file_path)
+            worker_log_path = f"{base}_worker{ext}"
+            squid.logging.add_file_handler(worker_log_path, replace_existing=True, level=logging.DEBUG)
+
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        worker_log_msg = f", worker_log={worker_log_path}" if worker_log_path else ""
+        self._log.info(f"JobRunner subprocess started (PID={os.getpid()}{worker_log_msg})")
+
         while not self._shutdown_event.is_set():
             job = None
             try:
+                t_wait_start = time.perf_counter()
                 job = self._input_queue.get(timeout=self._input_timeout)
-                self._log.info(f"Running job {job.job_id}...")
+                t_got_job = time.perf_counter()
+
+                self._log.info(f"Running job {job.job_id} (waited {(t_got_job - t_wait_start)*1000:.1f}ms in queue)...")
+
+                t_run_start = time.perf_counter()
                 result = job.run()
+                t_run_end = time.perf_counter()
+
                 # Only queue non-None results (DownsampledViewJob returns None for intermediate FOVs)
                 if result is not None:
-                    self._log.info(f"Job {job.job_id} returned. Sending result to output queue.")
+                    self._log.info(
+                        f"Job {job.job_id} returned in {(t_run_end - t_run_start)*1000:.1f}ms. "
+                        f"Sending result to output queue."
+                    )
                     self._output_queue.put_nowait(JobResult(job_id=job.job_id, result=result, exception=None))
                     self._log.debug(f"Result for {job.job_id} is on output queue.")
                 else:
-                    self._log.debug(f"Job {job.job_id} returned None, not queuing.")
+                    self._log.debug(
+                        f"Job {job.job_id} returned None in {(t_run_end - t_run_start)*1000:.1f}ms, not queuing."
+                    )
             except queue.Empty:
                 pass
             except Exception as e:
