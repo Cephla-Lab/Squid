@@ -112,7 +112,7 @@ def downsample_tile(
     tile: np.ndarray,
     source_pixel_size_um: float,
     target_pixel_size_um: float,
-    method: DownsamplingMethod = DownsamplingMethod.INTER_LINEAR,
+    method: DownsamplingMethod = DownsamplingMethod.INTER_AREA_FAST,
 ) -> np.ndarray:
     """Downsample a tile to target pixel size.
 
@@ -174,7 +174,7 @@ def downsample_to_resolutions(
     tile: np.ndarray,
     source_pixel_size_um: float,
     target_resolutions_um: List[float],
-    method: DownsamplingMethod = DownsamplingMethod.INTER_LINEAR,
+    method: DownsamplingMethod = DownsamplingMethod.INTER_AREA_FAST,
 ) -> Dict[float, np.ndarray]:
     """Downsample a tile to multiple target resolutions.
 

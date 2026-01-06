@@ -386,7 +386,7 @@ class DownsampledViewJob(Job):
     z_index: int = 0
     total_z_levels: int = 1
     z_projection_mode: Union[ZProjectionMode, str] = ZProjectionMode.MIP
-    interpolation_method: Union[DownsamplingMethod, str] = DownsamplingMethod.INTER_LINEAR
+    interpolation_method: Union[DownsamplingMethod, str] = DownsamplingMethod.INTER_AREA_FAST
     skip_saving: bool = False  # Skip TIFF file saving (just generate for display)
 
     # Class-level accumulator storage keyed by well_id.
@@ -518,6 +518,8 @@ class DownsampledViewJob(Job):
 
                 # Downsample each channel to all target resolutions
                 # downsample_to_resolutions handles cascading for INTER_AREA
+                # Initialize resolution stacks before the loop to avoid UnboundLocalError if stitched_channels is empty
+                resolution_stacks: Dict[float, List[np.ndarray]] = {r: [] for r in self.target_resolutions_um}
                 for ch_idx in sorted(stitched_channels.keys()):
                     # Get all resolutions for this channel (may include plate_resolution)
                     resolutions_to_compute = [r for r in self.target_resolutions_um if r != self.plate_resolution_um]
@@ -528,9 +530,6 @@ class DownsampledViewJob(Job):
                     downsampled_images[self.plate_resolution_um] = well_images_for_plate[ch_idx]
 
                     # Store for stacking
-                    if ch_idx == min(stitched_channels.keys()):
-                        # First channel - initialize resolution -> [images] mapping
-                        resolution_stacks: Dict[float, List[np.ndarray]] = {r: [] for r in self.target_resolutions_um}
                     for resolution in self.target_resolutions_um:
                         resolution_stacks[resolution].append(downsampled_images[resolution])
 

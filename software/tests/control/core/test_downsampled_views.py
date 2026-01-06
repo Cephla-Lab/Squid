@@ -229,8 +229,8 @@ class TestDownsampleTile:
         rmse_linear_vs_area = np.sqrt(np.mean((linear.astype(float) - area.astype(float)) ** 2))
         rmse_fast_vs_area = np.sqrt(np.mean((area_fast.astype(float) - area.astype(float)) ** 2))
 
-        # INTER_AREA_FAST should be much closer to INTER_AREA (allow some margin for edge cases)
-        assert rmse_fast_vs_area < rmse_linear_vs_area or rmse_fast_vs_area < 2000
+        # INTER_AREA_FAST should be closer to INTER_AREA than INTER_LINEAR is
+        assert rmse_fast_vs_area < rmse_linear_vs_area
 
     def test_downsample_methods_produce_different_results(self):
         """Test that INTER_LINEAR and INTER_AREA produce different results."""
