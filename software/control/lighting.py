@@ -1,11 +1,11 @@
 from enum import Enum
-import json
-import os
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from typing import Dict
 
 from control.microcontroller import Microcontroller
+from control.core.config import ConfigRepository
 
 
 class LightSourceType(Enum):
@@ -79,20 +79,29 @@ class IlluminationController:
         if self.light_source_type is None and self.disable_intensity_calibration is False:
             self._load_intensity_calibrations()
 
-    def _load_channel_mappings(self, default_mappings):
-        """Load channel mappings from JSON file, fallback to default if file not found."""
-        try:
-            # Get the parent directory of the current file
-            current_dir = Path(__file__).parent.parent
-            mapping_file = current_dir / "channel_mappings.json"
+    def _load_channel_mappings(self, default_mappings: Dict[int, int]) -> Dict[int, int]:
+        """Load channel mappings from illumination_channel_config.yaml, fallback to default if not found.
 
-            if mapping_file.exists():
-                with open(mapping_file, "r") as f:
-                    mappings = json.load(f)
-                    # Convert string keys to integers
-                    return {int(k): v for k, v in mappings["Illumination Code Map"].items()}
-            return default_mappings
-        except (json.JSONDecodeError, KeyError, FileNotFoundError):
+        Returns:
+            Dict mapping wavelength (nm) to source_code for TTL control.
+        """
+        try:
+            config_repo = ConfigRepository()
+            illumination_config = config_repo.get_illumination_config()
+
+            if illumination_config is None:
+                return default_mappings
+
+            # Build wavelength -> source_code mapping from YAML config
+            mappings = {}
+            for channel in illumination_config.channels:
+                if channel.wavelength_nm is not None:
+                    # Use get_source_code to resolve from controller_port_mapping
+                    source_code = illumination_config.get_source_code(channel)
+                    mappings[channel.wavelength_nm] = source_code
+
+            return mappings if mappings else default_mappings
+        except Exception:
             return default_mappings
 
     def _configure_light_source(self):
@@ -143,7 +152,7 @@ class IlluminationController:
 
     def _load_intensity_calibrations(self):
         """Load intensity calibrations for all available wavelengths."""
-        calibrations_dir = Path(__file__).parent.parent / "intensity_calibrations"
+        calibrations_dir = Path(__file__).parent.parent / "machine_configs" / "intensity_calibrations"
         if not calibrations_dir.exists():
             return
 

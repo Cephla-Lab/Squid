@@ -21,6 +21,9 @@ from control._def import USE_TERMINAL_CONSOLE, ENABLE_MCP_SERVER_SUPPORT, CONTRO
 import control.utils
 import control.microscope
 
+# Import auto-migration function
+from tools.migrate_acquisition_configs import run_auto_migration
+
 
 if USE_TERMINAL_CONSOLE:
     from control.console import ConsoleThread
@@ -49,6 +52,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     log.info(f"Squid Repository State: {control.utils.get_squid_repo_state_description()}")
+
+    # Auto-migrate legacy acquisition configurations if present
+    run_auto_migration()
 
     app = QApplication([])
     app.setStyle("Fusion")

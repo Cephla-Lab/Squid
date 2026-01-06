@@ -4,7 +4,7 @@ from typing import List, Tuple, Dict, Optional, Callable, Union
 from control._def import ZProjectionMode, DownsamplingMethod
 from control.core.job_processing import CaptureInfo
 from control.core.scan_coordinates import ScanCoordinates
-from control.utils_config import ChannelMode
+from control.models import AcquisitionChannel
 from squid.abc import CameraFrame
 
 
@@ -27,7 +27,7 @@ class ScanPositionInformation:
 class AcquisitionParameters:
     experiment_ID: Optional[str]
     base_path: Optional[str]
-    selected_configurations: List[ChannelMode]
+    selected_configurations: List[AcquisitionChannel]
     acquisition_start_time: float
     scan_position_information: ScanPositionInformation
 
@@ -108,7 +108,7 @@ class MultiPointControllerFunctions:
     signal_acquisition_start: Callable[[AcquisitionParameters], None]
     signal_acquisition_finished: Callable[[], None]
     signal_new_image: Callable[[CameraFrame, CaptureInfo], None]
-    signal_current_configuration: Callable[[ChannelMode], None]
+    signal_current_configuration: Callable[[AcquisitionChannel], None]
     signal_current_fov: Callable[[float, float], None]
     signal_overall_progress: Callable[[OverallProgressUpdate], None]
     signal_region_progress: Callable[[RegionProgressUpdate], None]

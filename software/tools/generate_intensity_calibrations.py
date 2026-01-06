@@ -83,7 +83,7 @@ def main():
     # Calibration parameters
     WAVELENGTHS = [405, 470, 638]  # Wavelengths to calibrate
     DAC_STEPS = np.arange(0, 100.1, 0.5)  # DAC values to measure (0, 0.1, 0.2, ..., 100)
-    OUTPUT_DIR = "intensity_calibrations"  # Output directory for calibration files
+    OUTPUT_DIR = "machine_configs/intensity_calibrations"  # Output directory for calibration files
     EARLY_STOP_mW = 500  # Early stop at 500 mW
 
     # Create output directory if it doesn't exist

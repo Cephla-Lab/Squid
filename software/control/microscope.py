@@ -5,6 +5,7 @@ import numpy as np
 
 import control._def
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
+from control.core.config import ConfigRepository
 from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
 from control.core.laser_af_settings_manager import LaserAFSettingManager
@@ -319,15 +320,18 @@ class Microscope:
         self._simulated = simulated
 
         self.objective_store: ObjectiveStore = ObjectiveStore()
+
+        # New config repository (centralized config management)
+        self.config_repo: ConfigRepository = ConfigRepository()
+
+        # Legacy config managers (kept during transition)
         # Pass configurations path for loading global channel definitions
         configurations_path = Path(__file__).parent.parent / "configurations"
         self.channel_configuration_mananger: ChannelConfigurationManager = ChannelConfigurationManager(
             configurations_path=configurations_path
         )
-        # Migrate all profiles/objectives from XML to JSON (one-time operation)
-        migration_marker = control._def.ACQUISITION_CONFIGURATIONS_PATH / ".migration_complete"
-        if not migration_marker.exists():
-            self.channel_configuration_mananger.migrate_all_profiles(control._def.ACQUISITION_CONFIGURATIONS_PATH)
+        # Note: Migration from acquisition_configurations to user_profiles is handled
+        # by run_auto_migration() in main_hcs.py before Microscope is created
 
         # Sync confocal mode from hardware (works in both GUI and headless modes)
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL:

@@ -7,6 +7,13 @@ from PyQt5.QtCore import Qt
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 
+try:
+    import yaml
+
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
 
 class ImageWindow(QMainWindow):
     """Window to display a single reference image"""
@@ -52,12 +59,12 @@ class ReferenceImageViewer(QMainWindow):
         layout = QVBoxLayout(central_widget)
 
         # Add browse button
-        browse_btn = QPushButton("Browse for laser_af_settings.json")
+        browse_btn = QPushButton("Browse for laser_af_settings (JSON or YAML)")
         browse_btn.clicked.connect(self.browse_file)
         layout.addWidget(browse_btn)
 
         # Add drag-drop label
-        self.drop_label = QLabel("Drag and drop laser_af_settings.json here")
+        self.drop_label = QLabel("Drag and drop laser_af_settings file here\n(JSON or YAML)")
         self.drop_label.setAlignment(Qt.AlignCenter)
         self.drop_label.setWordWrap(True)
         self.drop_label.setStyleSheet(
@@ -84,21 +91,30 @@ class ReferenceImageViewer(QMainWindow):
     def dropEvent(self, event):
         files = [u.toLocalFile() for u in event.mimeData().urls()]
         for file_path in files:
-            if file_path.endswith(".json"):
+            if file_path.endswith(".json") or file_path.endswith(".yaml") or file_path.endswith(".yml"):
                 self.load_reference_image(file_path)
 
     def browse_file(self):
         file_paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select laser_af_settings.json", "", "JSON Files (*.json);;All Files (*)"
+            self,
+            "Select laser_af_settings file",
+            "",
+            "Config Files (*.json *.yaml *.yml);;JSON Files (*.json);;YAML Files (*.yaml *.yml);;All Files (*)",
         )
         for file_path in file_paths:
             self.load_reference_image(file_path)
 
     def load_reference_image(self, file_path):
         try:
-            # Load JSON file
-            with open(file_path, "r") as f:
-                data = json.load(f)
+            # Load file based on extension
+            if file_path.endswith(".yaml") or file_path.endswith(".yml"):
+                if not HAS_YAML:
+                    raise ImportError("PyYAML is required to load YAML files. Install with: pip install pyyaml")
+                with open(file_path, "r") as f:
+                    data = yaml.safe_load(f)
+            else:
+                with open(file_path, "r") as f:
+                    data = json.load(f)
 
             # Extract image data
             ref_image_b64 = data.get("reference_image")

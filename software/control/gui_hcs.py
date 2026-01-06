@@ -47,7 +47,7 @@ from control.core.stream_handler import StreamHandler
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
-from control.utils_config import ChannelMode
+from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 import control.lighting
 import control.microscope
@@ -176,7 +176,7 @@ class QtMultiPointController(MultiPointController, QObject):
     signal_acquisition_start = Signal()
     image_to_display = Signal(np.ndarray)
     image_to_display_multi = Signal(np.ndarray, int)
-    signal_current_configuration = Signal(ChannelMode)
+    signal_current_configuration = Signal(AcquisitionChannel)
     signal_register_current_fov = Signal(float, float)
     napari_layers_init = Signal(int, int, object)
     napari_layers_update = Signal(np.ndarray, float, float, int, str)  # image, x_mm, y_mm, k, channel
@@ -240,7 +240,10 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
         self.image_to_display.emit(frame.frame)
-        self.image_to_display_multi.emit(frame.frame, info.configuration.illumination_source)
+        if not USE_NAPARI_FOR_MULTIPOINT:
+            # TODO: This will fail - AcquisitionChannel doesn't have illumination_source attribute.
+            # Need to call info.configuration.get_illumination_source_code(illumination_config) instead.
+            self.image_to_display_multi.emit(frame.frame, info.configuration.illumination_source)
         # Z for plot in μm: piezo-only uses piezo position, mixed mode combines stepper + piezo
         stepper_z_um = info.position.z_mm * 1000
         if IS_PIEZO_ONLY:
@@ -261,8 +264,8 @@ class QtMultiPointController(MultiPointController, QObject):
             frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
         )
 
-    def _signal_current_configuration_fn(self, channel_mode: ChannelMode):
-        self.signal_current_configuration.emit(channel_mode)
+    def _signal_current_configuration_fn(self, config: AcquisitionChannel):
+        self.signal_current_configuration.emit(config)
 
     def _signal_current_fov_fn(self, x_mm: float, y_mm: float):
         self.signal_register_current_fov.emit(x_mm, y_mm)
@@ -460,16 +463,13 @@ class HighContentScreeningGui(QMainWindow):
             led_matrix_action.triggered.connect(self.openLedMatrixSettings)
             settings_menu.addAction(led_matrix_action)
 
-        # Channel Configuration menu items
-        channel_config_action = QAction("Channel Configuration", self)
-        channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
-        settings_menu.addAction(channel_config_action)
-
         # Advanced submenu
         advanced_menu = settings_menu.addMenu("Advanced")
-        channel_mapping_action = QAction("Channel Hardware Mapping", self)
-        channel_mapping_action.triggered.connect(self.openAdvancedChannelMapping)
-        advanced_menu.addAction(channel_mapping_action)
+
+        # Illumination Channel Configuration (in Advanced menu)
+        channel_config_action = QAction("Illumination Channel Configuration", self)
+        channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
+        advanced_menu.addAction(channel_config_action)
 
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
@@ -1447,8 +1447,11 @@ class HighContentScreeningGui(QMainWindow):
             self.log.warning("No configuration file found")
 
     def openChannelConfigurationEditor(self):
-        """Open the channel configuration editor dialog"""
-        dialog = widgets.ChannelEditorDialog(self.channelConfigurationManager, self)
+        """Open the illumination channel configurator dialog"""
+        from control.core.config import ConfigRepository
+
+        config_repo = ConfigRepository()
+        dialog = widgets.IlluminationChannelConfiguratorDialog(config_repo, self)
         dialog.signal_channels_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 

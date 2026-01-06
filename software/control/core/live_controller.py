@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import squid.logging
 from control.microcontroller import Microcontroller
@@ -10,6 +10,9 @@ from squid.abc import CameraAcquisitionMode, AbstractCamera
 
 from control._def import *
 from control import utils_channel
+
+if TYPE_CHECKING:
+    from control.models import AcquisitionChannel, IlluminationChannelConfig
 
 
 class LiveController:
@@ -25,7 +28,7 @@ class LiveController:
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.microscope = microscope
         self.camera: AbstractCamera = camera
-        self.currentConfiguration = None
+        self.currentConfiguration: Optional[AcquisitionChannel] = None
         self.trigger_mode: Optional[TriggerMode] = TriggerMode.SOFTWARE  # @@@ change to None
         self.is_live = False
         self.control_illumination = control_illumination
@@ -50,59 +53,93 @@ class LiveController:
 
         self.enable_channel_auto_filter_switching: bool = True
 
-    # illumination control
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Illumination config helpers
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def _get_illumination_config(self) -> Optional[IlluminationChannelConfig]:
+        """Get the machine's illumination channel configuration."""
+        return self.microscope.config_repo.get_illumination_config()
+
+    def _get_illumination_source(self) -> int:
+        """Get the illumination source code for current configuration."""
+        if not self.currentConfiguration:
+            return 0
+        ill_config = self._get_illumination_config()
+        if not ill_config:
+            return 0
+        return self.currentConfiguration.get_illumination_source_code(ill_config)
+
+    def _get_illumination_wavelength(self) -> Optional[int]:
+        """Get the wavelength for current configuration (None for LED matrix)."""
+        if not self.currentConfiguration:
+            return None
+        ill_config = self._get_illumination_config()
+        if not ill_config:
+            return None
+        return self.currentConfiguration.get_illumination_wavelength(ill_config)
+
+    def _is_led_matrix(self) -> bool:
+        """Check if current configuration is LED matrix (source code < 10)."""
+        return self._get_illumination_source() < 10
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Illumination control
+    # ─────────────────────────────────────────────────────────────────────────────
+
     def turn_on_illumination(self):
-        if not "LED matrix" in self.currentConfiguration.name:
-            self.microscope.illumination_controller.turn_on_illumination(
-                int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
-            )
-        elif self.microscope.addons.sci_microscopy_led_array and "LED matrix" in self.currentConfiguration.name:
+        if not self._is_led_matrix():
+            wavelength = self._get_illumination_wavelength()
+            if wavelength:
+                self.microscope.illumination_controller.turn_on_illumination(wavelength)
+        elif self.microscope.addons.sci_microscopy_led_array and self._is_led_matrix():
             self.microscope.addons.sci_microscopy_led_array.turn_on_illumination()
-        # LED matrix
+        # LED matrix without SciMicroscopy array
         else:
-            self.microscope.low_level_drivers.microcontroller.turn_on_illumination()  # to wrap microcontroller in Squid_led_array
+            self.microscope.low_level_drivers.microcontroller.turn_on_illumination()
         self.illumination_on = True
 
     def turn_off_illumination(self):
-        if not "LED matrix" in self.currentConfiguration.name:
-            self.microscope.illumination_controller.turn_off_illumination(
-                int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
-            )
-        elif self.microscope.addons.sci_microscopy_led_array and "LED matrix" in self.currentConfiguration.name:
+        if not self._is_led_matrix():
+            wavelength = self._get_illumination_wavelength()
+            if wavelength:
+                self.microscope.illumination_controller.turn_off_illumination(wavelength)
+        elif self.microscope.addons.sci_microscopy_led_array and self._is_led_matrix():
             self.microscope.addons.sci_microscopy_led_array.turn_off_illumination()
-        # LED matrix
+        # LED matrix without SciMicroscopy array
         else:
-            self.microscope.low_level_drivers.microcontroller.turn_off_illumination()  # to wrap microcontroller in Squid_led_array
+            self.microscope.low_level_drivers.microcontroller.turn_off_illumination()
         self.illumination_on = False
 
     def update_illumination(self):
-        illumination_source = self.currentConfiguration.illumination_source
+        illumination_source = self._get_illumination_source()
         intensity = self.currentConfiguration.illumination_intensity
-        if illumination_source < 10:  # LED matrix
+        if self._is_led_matrix():
             if self.microscope.addons.sci_microscopy_led_array:
-                # set color
+                # set color based on channel name
                 led_array = self.microscope.addons.sci_microscopy_led_array
-                if "BF LED matrix full_R" in self.currentConfiguration.name:
+                name = self.currentConfiguration.name
+                if "BF LED matrix full_R" in name:
                     led_colors = (1, 0, 0)
-                elif "BF LED matrix full_G" in self.currentConfiguration.name:
+                elif "BF LED matrix full_G" in name:
                     led_colors = (0, 1, 0)
-                elif "BF LED matrix full_B" in self.currentConfiguration.name:
+                elif "BF LED matrix full_B" in name:
                     led_colors = (0, 0, 1)
                 else:
                     led_colors = SCIMICROSCOPY_LED_ARRAY_DEFAULT_COLOR
 
-                # set mode
-                if "BF LED matrix left half" in self.currentConfiguration.name:
+                # set mode based on channel name
+                if "BF LED matrix left half" in name:
                     led_mode = "dpc.l"
-                elif "BF LED matrix right half" in self.currentConfiguration.name:
+                elif "BF LED matrix right half" in name:
                     led_mode = "dpc.r"
-                elif "BF LED matrix top half" in self.currentConfiguration.name:
+                elif "BF LED matrix top half" in name:
                     led_mode = "dpc.t"
-                elif "BF LED matrix bottom half" in self.currentConfiguration.name:
+                elif "BF LED matrix bottom half" in name:
                     led_mode = "dpc.b"
-                elif "BF LED matrix full" in self.currentConfiguration.name:
+                elif "BF LED matrix full" in name:
                     led_mode = "bf"
-                elif "DF LED matrix" in self.currentConfiguration.name:
+                elif "DF LED matrix" in name:
                     led_mode = "df"
                 else:
                     self._log.warning("Unknown configuration name, using default mode 'bf'.")
@@ -113,11 +150,12 @@ class LiveController:
                 led_array.set_illumination(led_mode)
             else:
                 micro: Microcontroller = self.microscope.low_level_drivers.microcontroller
-                if "BF LED matrix full_R" in self.currentConfiguration.name:
+                name = self.currentConfiguration.name
+                if "BF LED matrix full_R" in name:
                     micro.set_illumination_led_matrix(illumination_source, r=(intensity / 100), g=0, b=0)
-                elif "BF LED matrix full_G" in self.currentConfiguration.name:
+                elif "BF LED matrix full_G" in name:
                     micro.set_illumination_led_matrix(illumination_source, r=0, g=(intensity / 100), b=0)
-                elif "BF LED matrix full_B" in self.currentConfiguration.name:
+                elif "BF LED matrix full_B" in name:
                     micro.set_illumination_led_matrix(illumination_source, r=0, g=0, b=(intensity / 100))
                 else:
                     micro.set_illumination_led_matrix(
@@ -127,15 +165,16 @@ class LiveController:
                         b=(intensity / 100) * LED_MATRIX_B_FACTOR,
                     )
         else:
-            # update illumination
-            wavelength = int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
-            self.microscope.illumination_controller.set_intensity(wavelength, intensity)
-            if self.microscope.addons.nl5 and NL5_USE_DOUT and "Fluorescence" in self.currentConfiguration.name:
-                self.microscope.addons.nl5.set_active_channel(NL5_WAVENLENGTH_MAP[wavelength])
-                if NL5_USE_AOUT:
-                    self.microscope.addons.nl5.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
-                if self.microscope.addons.cellx and ENABLE_CELLX:
-                    self.microscope.addons.cellx.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
+            # Laser/fluorescence illumination
+            wavelength = self._get_illumination_wavelength()
+            if wavelength:
+                self.microscope.illumination_controller.set_intensity(wavelength, intensity)
+                if self.microscope.addons.nl5 and NL5_USE_DOUT:
+                    self.microscope.addons.nl5.set_active_channel(NL5_WAVENLENGTH_MAP[wavelength])
+                    if NL5_USE_AOUT:
+                        self.microscope.addons.nl5.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
+                    if self.microscope.addons.cellx and ENABLE_CELLX:
+                        self.microscope.addons.cellx.set_laser_power(NL5_WAVENLENGTH_MAP[wavelength], int(intensity))
 
         # set emission filter position
         if ENABLE_SPINNING_DISK_CONFOCAL:
@@ -306,9 +345,7 @@ class LiveController:
             self._set_trigger_fps(fps)
 
     # set microscope mode
-    # @@@ to do: change softwareTriggerGenerator to TriggerGeneratror
-    def set_microscope_mode(self, configuration):
-
+    def set_microscope_mode(self, configuration: "AcquisitionChannel"):
         self.currentConfiguration = configuration
         self._log.info("setting microscope mode to " + self.currentConfiguration.name)
 

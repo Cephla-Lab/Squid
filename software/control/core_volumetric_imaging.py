@@ -23,7 +23,6 @@ from datetime import datetime
 
 from lxml import etree as ET
 from pathlib import Path
-import control.utils_config as utils_config
 
 
 class StreamHandler(QObject):

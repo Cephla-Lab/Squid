@@ -10,10 +10,12 @@ import cv2
 import imageio
 
 import control._def
-from control.utils_config import ChannelMode
+from control.models import AcquisitionChannel
 
 
-def save_image(image: np.array, file_id: str, save_directory: str, config: ChannelMode, is_color: bool) -> np.array:
+def save_image(
+    image: np.array, file_id: str, save_directory: str, config: AcquisitionChannel, is_color: bool
+) -> np.array:
     if image.dtype == np.uint16:
         saving_path = os.path.join(save_directory, file_id + "_" + str(config.name).replace(" ", "_") + ".tiff")
     else:

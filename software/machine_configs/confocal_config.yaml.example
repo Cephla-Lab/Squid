@@ -1,0 +1,22 @@
+version: 1
+
+# Filter wheel slot mappings
+filter_slots:
+  1: "Empty"
+  2: "BP 525/50"
+  3: "BP 600/50"
+  4: "BP 700/75"
+  5: "LP 650"
+
+# Properties that can be configured
+# public: available in general channel settings
+# objective_specific: only in objective-specific configs
+configurable_properties:
+  illumination_iris:
+    type: public
+    min: 0.0
+    max: 100.0
+  emission_iris:
+    type: public
+    min: 0.0
+    max: 100.0

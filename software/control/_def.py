@@ -557,7 +557,7 @@ LED_MATRIX_G_FACTOR = 0
 LED_MATRIX_B_FACTOR = 1
 
 DEFAULT_SAVING_PATH = str(Path.home()) + "/Downloads"
-ACQUISITION_CONFIGURATIONS_PATH = Path("acquisition_configurations")
+ACQUISITION_CONFIGURATIONS_PATH = Path("user_profiles")
 FILE_ID_PADDING = 0
 
 

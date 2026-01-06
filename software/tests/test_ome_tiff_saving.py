@@ -30,23 +30,29 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
     import control._def as _def
     from control._def import FileSavingOption
     from control.core.job_processing import SaveOMETiffJob, CaptureInfo, JobImage, AcquisitionInfo
-    from control.utils_config import ChannelMode
+    from control.models import AcquisitionChannel, CameraSettings, IlluminationSettings
     import squid.abc
 
     original_option = _def.FILE_SAVING_OPTION
     _def.FILE_SAVING_OPTION = FileSavingOption.OME_TIFF
 
     channels = [
-        ChannelMode(
-            id=str(idx),
+        AcquisitionChannel(
             name=name,
-            exposure_time=10.0,
-            analog_gain=1.0,
-            illumination_source=idx,
-            illumination_intensity=5.0,
-            z_offset=0.0,
+            illumination_settings=IlluminationSettings(
+                illumination_channels=[name],
+                intensity={name: 5.0},
+                z_offset_um=0.0,
+            ),
+            camera_settings={
+                "camera_1": CameraSettings(
+                    display_color="#FFFFFF",
+                    exposure_time_ms=10.0,
+                    gain_mode=1.0,
+                )
+            },
         )
-        for idx, name in enumerate(["DAPI", "GFP"], start=1)
+        for name in ["DAPI", "GFP"]
     ]
 
     total_timepoints = 2
@@ -182,7 +188,7 @@ def test_ome_tiff_memmap_roundtrip(shape: tuple[int, int]) -> None:
 def test_job_runner_injects_acquisition_info() -> None:
     """Test that JobRunner.dispatch() properly injects acquisition_info into SaveOMETiffJob."""
     from control.core.job_processing import SaveOMETiffJob, CaptureInfo, JobImage, AcquisitionInfo, JobRunner
-    from control.utils_config import ChannelMode
+    from control.models import AcquisitionChannel, CameraSettings, IlluminationSettings
     import squid.abc
 
     # Create test data
@@ -198,14 +204,20 @@ def test_job_runner_injects_acquisition_info() -> None:
         physical_size_y_um=0.5,
     )
 
-    channel = ChannelMode(
-        id="1",
+    channel = AcquisitionChannel(
         name="DAPI",
-        exposure_time=10.0,
-        analog_gain=1.0,
-        illumination_source=1,
-        illumination_intensity=5.0,
-        z_offset=0.0,
+        illumination_settings=IlluminationSettings(
+            illumination_channels=["DAPI"],
+            intensity={"DAPI": 5.0},
+            z_offset_um=0.0,
+        ),
+        camera_settings={
+            "camera_1": CameraSettings(
+                display_color="#FFFFFF",
+                exposure_time_ms=10.0,
+                gain_mode=1.0,
+            )
+        },
     )
 
     capture_info = CaptureInfo(
