@@ -193,8 +193,9 @@ bool control_strobe[6] = {false, false, false, false, false, false};
 bool strobe_output_level[6] = {LOW, LOW, LOW, LOW, LOW, LOW};
 bool strobe_on[6] = {false, false, false, false, false, false};
 unsigned long strobe_delay[6] = {0, 0, 0, 0, 0, 0};
-long illumination_on_time[6] = {0, 0, 0, 0, 0, 0};
+uint32_t illumination_on_time[6] = {0, 0, 0, 0, 0, 0};
 long timestamp_trigger_rising_edge[6] = {0, 0, 0, 0, 0, 0};
+volatile uint8_t trigger_mode = 0;
 IntervalTimer strobeTimer;
 
 /***************************************************************************************************/

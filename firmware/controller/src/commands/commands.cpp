@@ -37,6 +37,7 @@ void init_callbacks()
     cmd_map[DISABLE_STAGE_PID] = &callback_disable_stage_pid;
     cmd_map[INITFILTERWHEEL] = &callback_initfilterwheel;
     cmd_map[SET_AXIS_DISABLE_ENABLE] = &callback_set_axis_disable_enable;
+    cmd_map[SET_TRIGGER_MODE] = &callback_set_trigger_mode;
 
     cmd_map[INITIALIZE] = &callback_initialize;
     cmd_map[RESET] = &callback_reset;
@@ -165,6 +166,12 @@ void callback_set_axis_disable_enable()
     }
 }
 
+void callback_set_trigger_mode()
+{
+    if (buffer_rx[2] <= 1)
+        trigger_mode = buffer_rx[2];
+}
+
 void callback_initialize()
 {
     // reset z target position so that z does not move when "current position" for z is set to 0
@@ -210,6 +217,9 @@ void callback_initialize()
     // DAC init
     set_DAC8050x_config();
     set_DAC8050x_default_gain();
+
+    // reset trigger mode to normal
+    trigger_mode = 0;
 }
 
 void callback_reset()
@@ -233,4 +243,5 @@ void callback_reset()
     is_preparing_for_homing_Z = false;
     is_preparing_for_homing_W = false;
     cmd_id = 0;
+    trigger_mode = 0;
 }

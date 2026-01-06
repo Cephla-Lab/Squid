@@ -11,14 +11,17 @@ try:
     from control.core.downsampled_views import (
         DownsampledViewManager,
         WellTileAccumulator,
+        _pyrdown_chain,
         calculate_overlap_pixels,
         crop_overlap,
         downsample_tile,
+        downsample_to_resolutions,
         stitch_tiles,
         parse_well_id,
         format_well_id,
         ensure_plate_resolution_in_well_resolutions,
     )
+    from control._def import DownsamplingMethod
 
     MODULE_AVAILABLE = True
 except ImportError:
@@ -181,6 +184,196 @@ class TestDownsampleTile:
 
         # cv2.resize handles non-divisible dimensions
         assert downsampled.shape == (51, 48)  # floor(103/2), floor(97/2)
+
+    def test_downsample_inter_linear_method(self):
+        """Test downsampling with INTER_LINEAR method."""
+        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
+
+        downsampled = downsample_tile(tile, 1.0, 5.0, method=DownsamplingMethod.INTER_LINEAR)
+
+        assert downsampled.shape == (20, 20)
+        assert downsampled.dtype == np.uint16
+
+    def test_downsample_inter_area_method(self):
+        """Test downsampling with INTER_AREA method."""
+        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
+
+        downsampled = downsample_tile(tile, 1.0, 5.0, method=DownsamplingMethod.INTER_AREA)
+
+        assert downsampled.shape == (20, 20)
+        assert downsampled.dtype == np.uint16
+
+    def test_downsample_inter_area_fast_method(self):
+        """Test downsampling with INTER_AREA_FAST (pyrDown chain) method."""
+        tile = np.random.randint(0, 65535, (200, 200), dtype=np.uint16)
+
+        downsampled = downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA_FAST)
+
+        assert downsampled.shape == (20, 20)
+        assert downsampled.dtype == np.uint16
+
+    def test_downsample_inter_area_fast_quality(self):
+        """Test that INTER_AREA_FAST produces reasonable quality output."""
+        # Use random noise pattern for more realistic quality comparison
+        np.random.seed(42)
+        tile = np.random.randint(0, 65535, (2048, 2048), dtype=np.uint16)
+
+        linear = downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_LINEAR)
+        area_fast = downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA_FAST)
+        area = downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA)
+
+        # All should have same shape
+        assert linear.shape == area_fast.shape == area.shape == (204, 204)
+
+        # INTER_AREA_FAST should be closer to INTER_AREA than INTER_LINEAR is
+        rmse_linear_vs_area = np.sqrt(np.mean((linear.astype(float) - area.astype(float)) ** 2))
+        rmse_fast_vs_area = np.sqrt(np.mean((area_fast.astype(float) - area.astype(float)) ** 2))
+
+        # INTER_AREA_FAST should be closer to INTER_AREA than INTER_LINEAR is
+        assert rmse_fast_vs_area < rmse_linear_vs_area
+
+    def test_downsample_methods_produce_different_results(self):
+        """Test that INTER_LINEAR and INTER_AREA produce different results."""
+        # Use a pattern that shows difference between interpolation methods
+        tile = np.zeros((100, 100), dtype=np.uint16)
+        tile[::2, ::2] = 65535  # Checkerboard pattern
+
+        linear = downsample_tile(tile, 1.0, 5.0, method=DownsamplingMethod.INTER_LINEAR)
+        area = downsample_tile(tile, 1.0, 5.0, method=DownsamplingMethod.INTER_AREA)
+
+        # Both should have same shape
+        assert linear.shape == area.shape == (20, 20)
+        # But different values (INTER_AREA averages, INTER_LINEAR interpolates)
+        assert not np.array_equal(linear, area)
+
+
+class TestDownsampleToResolutions:
+    """Tests for multi-resolution downsampling."""
+
+    def test_downsample_to_resolutions_single(self):
+        """Test downsampling to a single resolution."""
+        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
+
+        results = downsample_to_resolutions(tile, 1.0, [5.0])
+
+        assert len(results) == 1
+        assert 5.0 in results
+        assert results[5.0].shape == (20, 20)
+
+    def test_downsample_to_resolutions_multiple(self):
+        """Test downsampling to multiple resolutions."""
+        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
+
+        results = downsample_to_resolutions(tile, 1.0, [2.0, 5.0, 10.0])
+
+        assert len(results) == 3
+        assert results[2.0].shape == (50, 50)
+        assert results[5.0].shape == (20, 20)
+        assert results[10.0].shape == (10, 10)
+
+    def test_downsample_to_resolutions_inter_linear(self):
+        """Test multi-resolution with INTER_LINEAR (parallel from original)."""
+        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
+
+        results = downsample_to_resolutions(tile, 1.0, [5.0, 10.0], method=DownsamplingMethod.INTER_LINEAR)
+
+        assert len(results) == 2
+        assert results[5.0].shape == (20, 20)
+        assert results[10.0].shape == (10, 10)
+
+    def test_downsample_to_resolutions_inter_area(self):
+        """Test multi-resolution with INTER_AREA (cascaded)."""
+        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
+
+        results = downsample_to_resolutions(tile, 1.0, [5.0, 10.0], method=DownsamplingMethod.INTER_AREA)
+
+        assert len(results) == 2
+        assert results[5.0].shape == (20, 20)
+        assert results[10.0].shape == (10, 10)
+
+    def test_downsample_to_resolutions_inter_area_fast(self):
+        """Test multi-resolution with INTER_AREA_FAST (parallel, pyrDown chain)."""
+        tile = np.random.randint(0, 65535, (200, 200), dtype=np.uint16)
+
+        results = downsample_to_resolutions(tile, 1.0, [5.0, 10.0], method=DownsamplingMethod.INTER_AREA_FAST)
+
+        assert len(results) == 2
+        assert results[5.0].shape == (40, 40)
+        assert results[10.0].shape == (20, 20)
+
+    def test_downsample_to_resolutions_unsorted_input(self):
+        """Test that unsorted resolutions are handled correctly."""
+        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
+
+        # Pass resolutions in unsorted order
+        results = downsample_to_resolutions(tile, 1.0, [10.0, 2.0, 5.0])
+
+        assert len(results) == 3
+        assert results[2.0].shape == (50, 50)
+        assert results[5.0].shape == (20, 20)
+        assert results[10.0].shape == (10, 10)
+
+    def test_downsample_to_resolutions_preserves_dtype(self):
+        """Test that dtype is preserved across all resolutions."""
+        tile = np.ones((100, 100), dtype=np.uint16) * 30000
+
+        results = downsample_to_resolutions(tile, 1.0, [2.0, 5.0, 10.0])
+
+        for resolution, img in results.items():
+            assert img.dtype == np.uint16
+
+    def test_downsample_cascaded_vs_parallel_quality(self):
+        """Test that cascaded INTER_AREA has minimal quality loss vs parallel."""
+        # For INTER_AREA, cascaded should be very close to parallel
+        tile = np.random.randint(0, 65535, (1000, 1000), dtype=np.uint16)
+
+        # Get cascaded result
+        cascaded = downsample_to_resolutions(tile, 1.0, [5.0, 10.0, 20.0], method=DownsamplingMethod.INTER_AREA)
+
+        # Compute parallel result manually
+        parallel_10 = downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA)
+
+        # For INTER_AREA cascaded, the 10um result should be very close to parallel
+        # (small differences due to rounding in intermediate steps)
+        diff = np.abs(cascaded[10.0].astype(float) - parallel_10.astype(float))
+        max_diff = diff.max()
+        # Allow some tolerance for cascading artifacts
+        assert max_diff < 1000, f"Max diff {max_diff} too large for INTER_AREA cascading"
+
+
+class TestDownsamplingMethodEnum:
+    """Tests for DownsamplingMethod enum."""
+
+    def test_enum_values(self):
+        """Test enum has expected values."""
+        assert DownsamplingMethod.INTER_LINEAR.value == "inter_linear"
+        assert DownsamplingMethod.INTER_AREA_FAST.value == "inter_area_fast"
+        assert DownsamplingMethod.INTER_AREA.value == "inter_area"
+
+    def test_convert_from_string_linear(self):
+        """Test converting string to INTER_LINEAR."""
+        result = DownsamplingMethod.convert_to_enum("inter_linear")
+        assert result == DownsamplingMethod.INTER_LINEAR
+
+    def test_convert_from_string_area_fast(self):
+        """Test converting string to INTER_AREA_FAST."""
+        result = DownsamplingMethod.convert_to_enum("inter_area_fast")
+        assert result == DownsamplingMethod.INTER_AREA_FAST
+
+    def test_convert_from_string_area(self):
+        """Test converting string to INTER_AREA."""
+        result = DownsamplingMethod.convert_to_enum("inter_area")
+        assert result == DownsamplingMethod.INTER_AREA
+
+    def test_convert_from_enum(self):
+        """Test that passing enum returns same enum."""
+        result = DownsamplingMethod.convert_to_enum(DownsamplingMethod.INTER_LINEAR)
+        assert result == DownsamplingMethod.INTER_LINEAR
+
+    def test_convert_invalid_raises(self):
+        """Test that invalid string raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid downsampling method"):
+            DownsamplingMethod.convert_to_enum("invalid_method")
 
 
 class TestStitchTiles:
@@ -684,3 +877,123 @@ class TestWellTileAccumulatorZProjection:
 
         stitched = accumulator.stitch_all_channels()
         assert np.all(stitched[0] == 99)  # Max of 0..99
+
+
+class TestPyrdownChain:
+    """Tests for _pyrdown_chain helper function."""
+
+    def test_pyrdown_chain_large_image(self):
+        """Test pyrDown chain with large image requiring multiple reductions."""
+        tile = np.random.randint(0, 65535, (2048, 2048), dtype=np.uint16)
+        target_size = (200, 200)
+
+        result = _pyrdown_chain(tile, target_size[0], target_size[1])
+
+        assert result.shape == target_size
+        assert result.dtype == tile.dtype
+
+    def test_pyrdown_chain_small_image_no_pyramid(self):
+        """Test pyrDown with image too small for pyramid reduction."""
+        # When image is already close to target size, should just resize
+        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
+        target_size = (80, 80)
+
+        result = _pyrdown_chain(tile, target_size[0], target_size[1])
+
+        assert result.shape == target_size
+        assert result.dtype == tile.dtype
+
+    def test_pyrdown_chain_exact_target_size(self):
+        """Test pyrDown when image is exactly target size."""
+        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
+
+        result = _pyrdown_chain(tile, 100, 100)
+
+        assert result.shape == (100, 100)
+        # Should be unchanged (or very close)
+        assert np.array_equal(result, tile)
+
+    def test_pyrdown_chain_power_of_2_dimensions(self):
+        """Test pyrDown with exact power of 2 dimensions."""
+        tile = np.random.randint(0, 65535, (1024, 1024), dtype=np.uint16)
+        # 1024 -> 512 -> 256 -> 128 (3 pyrDowns, then resize to 100)
+        target_size = (100, 100)
+
+        result = _pyrdown_chain(tile, target_size[0], target_size[1])
+
+        assert result.shape == target_size
+        assert result.dtype == tile.dtype
+
+    def test_pyrdown_chain_asymmetric_dimensions(self):
+        """Test pyrDown with non-square image."""
+        tile = np.random.randint(0, 65535, (2048, 1024), dtype=np.uint16)
+        target_width, target_height = 100, 200
+
+        result = _pyrdown_chain(tile, target_width, target_height)
+
+        # numpy shape is (height, width)
+        assert result.shape == (target_height, target_width)
+        assert result.dtype == tile.dtype
+
+    def test_pyrdown_chain_preserves_dtype_uint8(self):
+        """Test pyrDown preserves uint8 dtype."""
+        tile = np.random.randint(0, 255, (512, 512), dtype=np.uint8)
+        target_size = (50, 50)
+
+        result = _pyrdown_chain(tile, target_size[0], target_size[1])
+
+        assert result.shape == target_size
+        assert result.dtype == np.uint8
+
+
+class TestDownsamplingPerformance:
+    """Performance regression tests for downsampling methods."""
+
+    def test_inter_area_fast_faster_than_inter_area(self):
+        """Verify INTER_AREA_FAST is significantly faster than INTER_AREA."""
+        import time
+
+        tile = np.random.randint(0, 65535, (2048, 2048), dtype=np.uint16)
+
+        # Warmup
+        downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA_FAST)
+        downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA)
+
+        # Time INTER_AREA_FAST
+        iterations = 5
+        start = time.perf_counter()
+        for _ in range(iterations):
+            downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA_FAST)
+        time_fast = (time.perf_counter() - start) / iterations
+
+        # Time INTER_AREA
+        start = time.perf_counter()
+        for _ in range(iterations):
+            downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA)
+        time_area = (time.perf_counter() - start) / iterations
+
+        # INTER_AREA_FAST should be at least 2x faster (conservative for CI variability)
+        speedup = time_area / time_fast
+        assert speedup > 2, f"INTER_AREA_FAST speedup {speedup:.1f}x is less than expected 2x"
+
+    def test_inter_linear_fastest(self):
+        """Verify INTER_LINEAR is the fastest method."""
+        import time
+
+        tile = np.random.randint(0, 65535, (2048, 2048), dtype=np.uint16)
+
+        # Warmup
+        for method in DownsamplingMethod:
+            downsample_tile(tile, 1.0, 10.0, method=method)
+
+        times = {}
+        iterations = 5
+        for method in DownsamplingMethod:
+            start = time.perf_counter()
+            for _ in range(iterations):
+                downsample_tile(tile, 1.0, 10.0, method=method)
+            times[method] = (time.perf_counter() - start) / iterations
+
+        # INTER_LINEAR should be fastest
+        assert times[DownsamplingMethod.INTER_LINEAR] < times[DownsamplingMethod.INTER_AREA_FAST]
+        assert times[DownsamplingMethod.INTER_LINEAR] < times[DownsamplingMethod.INTER_AREA]

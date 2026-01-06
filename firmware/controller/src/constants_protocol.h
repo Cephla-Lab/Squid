@@ -58,6 +58,7 @@ static const int SET_PID_ARGUMENTS = 29;
 static const int SEND_HARDWARE_TRIGGER = 30;
 static const int SET_STROBE_DELAY = 31;
 static const int SET_AXIS_DISABLE_ENABLE = 32;
+static const int SET_TRIGGER_MODE = 33;
 static const int SET_PIN_LEVEL = 41;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;

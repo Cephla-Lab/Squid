@@ -202,6 +202,8 @@ class MultiPointWorker:
         ]
         self._downsampled_plate_resolution_um = acquisition_parameters.downsampled_plate_resolution_um
         self._downsampled_z_projection = acquisition_parameters.downsampled_z_projection
+        self._downsampled_interpolation_method = acquisition_parameters.downsampled_interpolation_method
+        self._save_downsampled_well_images = acquisition_parameters.save_downsampled_well_images
         self._plate_num_rows = acquisition_parameters.plate_num_rows
         self._plate_num_cols = acquisition_parameters.plate_num_cols
         self._overlap_pixels: Optional[Tuple[int, int, int, int]] = None
@@ -228,12 +230,17 @@ class MultiPointWorker:
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
         self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
         self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
+
+        # Get the current log file path to share with subprocess workers
+        log_file_path = squid.logging.get_current_log_file_path()
+
         for job_class in job_classes:
             self._log.info(f"Creating job runner for {job_class.__name__} jobs")
             job_runner = (
                 control.core.job_processing.JobRunner(
                     self.acquisition_info,
                     cleanup_stale_ome_files=use_ome_tiff,
+                    log_file_path=log_file_path,
                 )
                 if Acquisition.USE_MULTIPROCESSING
                 else None
@@ -592,6 +599,8 @@ class MultiPointWorker:
 
     def _handle_downsampled_view_result(self, result: DownsampledViewResult) -> None:
         """Update plate view with completed well image."""
+        t_start = time.perf_counter()
+
         if self._downsampled_view_manager is None:
             return
         try:
@@ -600,6 +609,8 @@ class MultiPointWorker:
                 result.well_col,
                 result.well_images,
             )
+            t_update = time.perf_counter()
+
             self._log.info(
                 f"Updated plate view for well {result.well_id} at ({result.well_row}, {result.well_col}) "
                 f"with {len(result.well_images)} channels"
@@ -619,6 +630,13 @@ class MultiPointWorker:
                         plate_image=plate_image.copy(),
                     )
                 )
+
+            t_signal = time.perf_counter()
+            self._log.debug(
+                f"[PERF] _handle_downsampled_view_result {result.well_id}: "
+                f"update_well={t_update - t_start:.3f}s, signals={t_signal - t_update:.3f}s, "
+                f"TOTAL={t_signal - t_start:.3f}s"
+            )
         except Exception as e:
             self._log.exception(
                 f"Failed to update plate view for well {result.well_id} "
@@ -725,6 +743,8 @@ class MultiPointWorker:
             z_index=info.z_index,
             total_z_levels=self.NZ,
             z_projection_mode=self._downsampled_z_projection,
+            interpolation_method=self._downsampled_interpolation_method,
+            skip_saving=self.skip_saving or not self._save_downsampled_well_images,
         )
 
     def _initialize_downsampled_view_manager(self, image: np.ndarray) -> None:

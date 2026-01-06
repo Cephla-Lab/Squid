@@ -67,6 +67,7 @@ static const int SET_PID_ARGUMENTS = 29;
 static const int SEND_HARDWARE_TRIGGER = 30;
 static const int SET_STROBE_DELAY = 31;
 static const int SET_AXIS_DISABLE_ENABLE = 32;
+static const int SET_TRIGGER_MODE = 33;
 static const int SET_PIN_LEVEL = 41;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;
@@ -150,10 +151,14 @@ bool control_strobe[6] = {false, false, false, false, false, false};
 bool strobe_output_level[6] = {LOW, LOW, LOW, LOW, LOW, LOW};
 bool strobe_on[6] = {false, false, false, false, false, false};
 unsigned long strobe_delay[6] = {0, 0, 0, 0, 0, 0};
-long illumination_on_time[6] = {0, 0, 0, 0, 0, 0};
+uint32_t illumination_on_time[6] = {0, 0, 0, 0, 0, 0};
 long timestamp_trigger_rising_edge[6] = {0, 0, 0, 0, 0, 0};
 IntervalTimer strobeTimer;
 static const int strobeTimer_interval_us = 100;
+
+// 0: normal trigger mode
+// 1: level trigger mode
+volatile uint8_t trigger_mode = 0;
 
 /***************************************************************************************************/
 /******************************************* DAC80508 **********************************************/
@@ -1673,6 +1678,12 @@ void loop() {
             }
             break;
           }
+        case SET_TRIGGER_MODE:
+          {
+            if (buffer_rx[2] <= 1)
+              trigger_mode = buffer_rx[2];
+            break;
+          }
         case INITIALIZE:
           {
             // reset z target position so that z does not move when "current position" for z is set to 0
@@ -1751,48 +1762,29 @@ void loop() {
   }
 
   // camera trigger
-  for (int camera_channel = 0; camera_channel < 6; camera_channel++)
-  {
-    // end the trigger pulse
-    if (trigger_output_level[camera_channel] == LOW && (micros() - timestamp_trigger_rising_edge[camera_channel]) >= TRIGGER_PULSE_LENGTH_us )
+  if (trigger_mode == 0) {
+    for (int camera_channel = 0; camera_channel < 6; camera_channel++)
     {
-      digitalWrite(camera_trigger_pins[camera_channel], HIGH);
-      trigger_output_level[camera_channel] = HIGH;
+      // end the trigger pulse
+      if (trigger_output_level[camera_channel] == LOW && (micros() - timestamp_trigger_rising_edge[camera_channel]) >= TRIGGER_PULSE_LENGTH_us )
+      {
+        digitalWrite(camera_trigger_pins[camera_channel], HIGH);
+        trigger_output_level[camera_channel] = HIGH;
+      }
     }
-
-    /*
-      // strobe pulse
-      if(control_strobe[camera_channel])
+  }
+  else {
+    // for level trigger logic
+    for (int camera_channel = 0; camera_channel < 6; camera_channel++)
+    {
+      // end the trigger pulse after strobe_delay + illumination_on_time
+      // so illumination is fully contained within the trigger pulse
+      if (trigger_output_level[camera_channel] == LOW && (micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel] + illumination_on_time[camera_channel])
       {
-      if(illumination_on_time[camera_channel] <= 30000)
-      {
-        // if the illumination on time is smaller than 30 ms, use delayMicroseconds to control the pulse length to avoid pulse length jitter (can be up to 20 us if using the code in the else branch)
-        if( ((micros()-timestamp_trigger_rising_edge[camera_channel])>=strobe_delay[camera_channel]) && strobe_output_level[camera_channel]==LOW )
-        {
-          turn_on_illumination();
-          delayMicroseconds(illumination_on_time[camera_channel]);
-          turn_off_illumination();
-          control_strobe[camera_channel] = false;
-        }
+        digitalWrite(camera_trigger_pins[camera_channel], HIGH);
+        trigger_output_level[camera_channel] = HIGH;
       }
-      else
-      {
-        // start the strobe
-        if( ((micros()-timestamp_trigger_rising_edge[camera_channel])>=strobe_delay[camera_channel]) && strobe_output_level[camera_channel]==LOW )
-        {
-          turn_on_illumination();
-          strobe_output_level[camera_channel] = HIGH;
-        }
-        // end the strobe
-        if(((micros()-timestamp_trigger_rising_edge[camera_channel])>=strobe_delay[camera_channel]+illumination_on_time[camera_channel]) && strobe_output_level[camera_channel]==HIGH)
-        {
-          turn_off_illumination();
-          strobe_output_level[camera_channel] = LOW;
-          control_strobe[camera_channel] = false;
-        }
-      }
-      }
-    */
+    }
   }
 
   // homing - preparing for homing

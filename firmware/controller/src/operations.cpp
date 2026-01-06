@@ -330,48 +330,29 @@ void finalize_homing_xy()
 
 void do_camera_trigger()
 {
-  for (int camera_channel = 0; camera_channel < 6; camera_channel++)
-  {
-    // end the trigger pulse
-    if (trigger_output_level[camera_channel] == LOW && (micros() - timestamp_trigger_rising_edge[camera_channel]) >= TRIGGER_PULSE_LENGTH_us )
+  if (trigger_mode == 0) {
+    for (int camera_channel = 0; camera_channel < 6; camera_channel++)
     {
-      digitalWrite(camera_trigger_pins[camera_channel], HIGH);
-      trigger_output_level[camera_channel] = HIGH;
+      // end the trigger pulse
+      if (trigger_output_level[camera_channel] == LOW && (micros() - timestamp_trigger_rising_edge[camera_channel]) >= TRIGGER_PULSE_LENGTH_us )
+      {
+        digitalWrite(camera_trigger_pins[camera_channel], HIGH);
+        trigger_output_level[camera_channel] = HIGH;
+      }
     }
-
-    /*
-      // strobe pulse
-      if(control_strobe[camera_channel])
+  }
+  else {
+    // for level trigger logic
+    for (int camera_channel = 0; camera_channel < 6; camera_channel++)
+    {
+      // end the trigger pulse after strobe_delay + illumination_on_time
+      // so illumination is fully contained within the trigger pulse
+      if (trigger_output_level[camera_channel] == LOW && (micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel] + illumination_on_time[camera_channel])
       {
-      if(illumination_on_time[camera_channel] <= 30000)
-      {
-        // if the illumination on time is smaller than 30 ms, use delayMicroseconds to control the pulse length to avoid pulse length jitter (can be up to 20 us if using the code in the else branch)
-        if( ((micros()-timestamp_trigger_rising_edge[camera_channel])>=strobe_delay[camera_channel]) && strobe_output_level[camera_channel]==LOW )
-        {
-          turn_on_illumination();
-          delayMicroseconds(illumination_on_time[camera_channel]);
-          turn_off_illumination();
-          control_strobe[camera_channel] = false;
-        }
+        digitalWrite(camera_trigger_pins[camera_channel], HIGH);
+        trigger_output_level[camera_channel] = HIGH;
       }
-      else
-      {
-        // start the strobe
-        if( ((micros()-timestamp_trigger_rising_edge[camera_channel])>=strobe_delay[camera_channel]) && strobe_output_level[camera_channel]==LOW )
-        {
-          turn_on_illumination();
-          strobe_output_level[camera_channel] = HIGH;
-        }
-        // end the strobe
-        if(((micros()-timestamp_trigger_rising_edge[camera_channel])>=strobe_delay[camera_channel]+illumination_on_time[camera_channel]) && strobe_output_level[camera_channel]==HIGH)
-        {
-          turn_off_illumination();
-          strobe_output_level[camera_channel] = LOW;
-          control_strobe[camera_channel] = false;
-        }
-      }
-      }
-    */
+    }
   }
 }
 

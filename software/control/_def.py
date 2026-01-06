@@ -191,6 +191,7 @@ class CMD_SET:
     SEND_HARDWARE_TRIGGER = 30
     SET_STROBE_DELAY = 31
     SET_AXIS_DISABLE_ENABLE = 32
+    SET_TRIGGER_MODE = 33
     SET_PIN_LEVEL = 41
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -355,6 +356,36 @@ class ZProjectionMode(Enum):
             return ZProjectionMode(option.lower())
         except ValueError:
             raise ValueError(f"Invalid z-projection mode: '{option}'. Expected 'mip' or 'middle'.")
+
+
+class DownsamplingMethod(Enum):
+    """Interpolation method for downsampled view generation.
+
+    INTER_LINEAR: Fast bilinear interpolation (~0.05ms). Each resolution is computed
+        directly from the original image (parallel). Best for real-time previews.
+    INTER_AREA_FAST: Gaussian pyramid downsampling (~1ms). Uses cv2.pyrDown chain
+        (optimized 2x reductions) then INTER_AREA for final size. Good balance of
+        speed and quality. Resolutions computed in parallel.
+    INTER_AREA: High-quality area averaging (~18ms). Resolutions are computed in
+        cascade (original→5um→10um→20um) for speed. Best for final output quality.
+    """
+
+    INTER_LINEAR = "inter_linear"
+    INTER_AREA_FAST = "inter_area_fast"
+    INTER_AREA = "inter_area"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "DownsamplingMethod"]) -> "DownsamplingMethod":
+        """Convert string or enum to DownsamplingMethod enum."""
+        if isinstance(option, DownsamplingMethod):
+            return option
+        try:
+            return DownsamplingMethod(option.lower())
+        except ValueError:
+            raise ValueError(
+                f"Invalid downsampling method: '{option}'. "
+                "Expected 'inter_linear', 'inter_area_fast', or 'inter_area'."
+            )
 
 
 class ZMotorConfig(Enum):
@@ -781,12 +812,16 @@ USE_NAPARI_FOR_LIVE_CONTROL = False
 LIVE_ONLY_MODE = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 
-# Downsampled well image generation (for Select Well Mode)
-GENERATE_DOWNSAMPLED_WELL_IMAGES = False  # Set to True to generate downsampled well TIFFs
-DISPLAY_PLATE_VIEW = False  # Set to True to show plate view tab during acquisition
+# Downsampled view settings (for Select Well Mode)
+# SAVE_DOWNSAMPLED_WELL_IMAGES: Save individual well TIFFs (e.g., wells/A1_5um.tiff)
+# DISPLAY_PLATE_VIEW: Show plate view tab in GUI during acquisition
+# Note: Plate view TIFF (plate_10um.tiff) is always saved when either setting is enabled
+SAVE_DOWNSAMPLED_WELL_IMAGES = False
+DISPLAY_PLATE_VIEW = False
 DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
 DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
 DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
+DOWNSAMPLED_INTERPOLATION_METHOD = DownsamplingMethod.INTER_AREA_FAST  # Balanced speed/quality default
 
 # Downsampled view job timeouts
 # DOWNSAMPLED_VIEW_JOB_TIMEOUT_S: Maximum time (seconds) to wait for all downsampled view
@@ -871,6 +906,14 @@ PRIOR_STAGE_SN = ""
 
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
+
+
+class HardwareTriggerMode:
+    EDGE = 0  # Fixed pulse width (TRIGGER_PULSE_LENGTH_us)
+    LEVEL = 1  # Variable pulse width (illumination_on_time)
+
+
+HARDWARE_TRIGGER_MODE = HardwareTriggerMode.EDGE
 
 
 def read_objectives_csv(file_path):
@@ -1121,3 +1164,66 @@ DEFAULT_TRIGGER_MODE = TriggerMode.convert_to_var(DEFAULT_TRIGGER_MODE)
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):
     DEFAULT_SAVING_PATH = str(Path.home()) + "/" + DEFAULT_SAVING_PATH.strip("/")
+
+# Load Views settings from config file at startup
+# These values override the defaults above and are accessed via control._def.XXX
+if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
+    try:
+        _views_config = ConfigParser()
+        _views_config.read(CACHED_CONFIG_FILE_PATH)
+        if _views_config.has_section("VIEWS"):
+            log.info("Loading Views settings from config file")
+            if _views_config.has_option("VIEWS", "display_plate_view"):
+                DISPLAY_PLATE_VIEW = _views_config.get("VIEWS", "display_plate_view").lower() in ("true", "1", "yes")
+            if _views_config.has_option("VIEWS", "display_mosaic_view"):
+                USE_NAPARI_FOR_MOSAIC_DISPLAY = _views_config.get("VIEWS", "display_mosaic_view").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            # Support both old and new config key names for backward compatibility
+            if _views_config.has_option("VIEWS", "save_downsampled_well_images"):
+                SAVE_DOWNSAMPLED_WELL_IMAGES = _views_config.get("VIEWS", "save_downsampled_well_images").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            elif _views_config.has_option("VIEWS", "generate_downsampled_well_images"):
+                # Legacy config key
+                SAVE_DOWNSAMPLED_WELL_IMAGES = _views_config.get(
+                    "VIEWS", "generate_downsampled_well_images"
+                ).lower() in ("true", "1", "yes")
+            if _views_config.has_option("VIEWS", "downsampled_well_resolutions_um"):
+                try:
+                    _res_str = _views_config.get("VIEWS", "downsampled_well_resolutions_um")
+                    DOWNSAMPLED_WELL_RESOLUTIONS_UM = [float(x.strip()) for x in _res_str.split(",") if x.strip()]
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "downsampled_plate_resolution_um"):
+                try:
+                    DOWNSAMPLED_PLATE_RESOLUTION_UM = _views_config.getfloat("VIEWS", "downsampled_plate_resolution_um")
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "downsampled_z_projection"):
+                try:
+                    DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.convert_to_enum(
+                        _views_config.get("VIEWS", "downsampled_z_projection")
+                    )
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "downsampled_interpolation_method"):
+                try:
+                    DOWNSAMPLED_INTERPOLATION_METHOD = DownsamplingMethod.convert_to_enum(
+                        _views_config.get("VIEWS", "downsampled_interpolation_method")
+                    )
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "mosaic_view_target_pixel_size_um"):
+                try:
+                    MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = _views_config.getfloat(
+                        "VIEWS", "mosaic_view_target_pixel_size_um"
+                    )
+                except ValueError:
+                    pass
+    except Exception as e:
+        log.warning(f"Failed to load Views settings from config: {e}")

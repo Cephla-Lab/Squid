@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Optional, Callable, Union
 
-from control._def import ZProjectionMode
+from control._def import ZProjectionMode, DownsamplingMethod
 from control.core.job_processing import CaptureInfo
 from control.core.scan_coordinates import ScanCoordinates
 from control.utils_config import ChannelMode
@@ -56,9 +56,11 @@ class AcquisitionParameters:
 
     # Downsampled view generation parameters
     generate_downsampled_views: bool = False
+    save_downsampled_well_images: bool = False  # Save individual well TIFFs (wells/A1_5um.tiff)
     downsampled_well_resolutions_um: Optional[List[float]] = None
     downsampled_plate_resolution_um: float = 10.0
     downsampled_z_projection: Union[ZProjectionMode, str] = ZProjectionMode.MIP
+    downsampled_interpolation_method: Union[DownsamplingMethod, str] = DownsamplingMethod.INTER_AREA_FAST
     plate_num_rows: int = 8  # For 96-well plate
     plate_num_cols: int = 12  # For 96-well plate
 

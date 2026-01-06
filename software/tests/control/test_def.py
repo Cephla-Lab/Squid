@@ -1,7 +1,7 @@
-"""Tests for control._def module, specifically ZMotorConfig enum and conf_attribute_reader."""
+"""Tests for control._def module, specifically ZMotorConfig enum, HardwareTriggerMode and conf_attribute_reader."""
 
 import pytest
-from control._def import ZMotorConfig, conf_attribute_reader
+from control._def import ZMotorConfig, HardwareTriggerMode, conf_attribute_reader
 
 
 class TestZMotorConfig:
@@ -42,6 +42,26 @@ class TestZMotorConfig:
         assert ZMotorConfig.STEPPER.is_piezo_only() is False
         assert ZMotorConfig.STEPPER_PIEZO.is_piezo_only() is False
         assert ZMotorConfig.PIEZO.is_piezo_only() is True
+
+
+class TestHardwareTriggerMode:
+    """Tests for HardwareTriggerMode class."""
+
+    def test_enum_values(self):
+        """Test that enum has expected values matching firmware."""
+        assert HardwareTriggerMode.EDGE == 0
+        assert HardwareTriggerMode.LEVEL == 1
+
+    def test_values_match_firmware_protocol(self):
+        """Test that values can be passed directly to microcontroller."""
+        # These values are sent directly to firmware via set_trigger_mode()
+        # EDGE (0) = fixed pulse width (TRIGGER_PULSE_LENGTH_us)
+        # LEVEL (1) = variable pulse width (illumination_on_time)
+        assert isinstance(HardwareTriggerMode.EDGE, int)
+        assert isinstance(HardwareTriggerMode.LEVEL, int)
+        assert HardwareTriggerMode.EDGE in (0, 1)
+        assert HardwareTriggerMode.LEVEL in (0, 1)
+        assert HardwareTriggerMode.EDGE != HardwareTriggerMode.LEVEL
 
 
 class TestConfAttributeReader:

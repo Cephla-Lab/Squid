@@ -255,3 +255,17 @@ def remove_handler(handler: py_logging.Handler) -> None:
             handler.close()
         except Exception:
             pass
+
+
+def get_current_log_file_path() -> Optional[str]:
+    """
+    Get the path to the current log file, if any file logging is configured.
+
+    Returns:
+        The absolute path to the log file, or None if no file logging is configured.
+    """
+    root_logger = get_logger()
+    for handler in root_logger.handlers:
+        if isinstance(handler, (py_logging.FileHandler, py_logging.handlers.BaseRotatingHandler)):
+            return getattr(handler, "baseFilename", None)
+    return None
