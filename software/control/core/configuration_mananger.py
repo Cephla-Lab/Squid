@@ -99,32 +99,51 @@ class ConfigurationManager:
                 self.laser_af_manager.load_configurations(objective)
 
     def create_new_profile(self, profile_name: str) -> None:
-        """Create a new profile using current configurations.
+        """Create a new profile by copying all configs from the current profile.
 
         Uses new YAML-based directory structure:
         user_profiles/{profile}/channel_configs/{objective}.yaml
         user_profiles/{profile}/laser_af_configs/{objective}.yaml
         """
+        import shutil
+
         new_profile_path = self.base_config_path / profile_name
         if new_profile_path.exists():
             raise ValueError(f"Profile {profile_name} already exists")
+
+        current_profile_path = self.base_config_path / self.current_profile
 
         # Create new directory structure
         os.makedirs(new_profile_path / "channel_configs", exist_ok=True)
         os.makedirs(new_profile_path / "laser_af_configs", exist_ok=True)
 
-        objectives = control._def.OBJECTIVES
+        # Copy all YAML files from current profile to new profile
+        # This preserves ALL configs, including those not currently loaded in memory
+        source_channel_configs = current_profile_path / "channel_configs"
+        dest_channel_configs = new_profile_path / "channel_configs"
+        if source_channel_configs.exists():
+            for yaml_file in source_channel_configs.glob("*.yaml"):
+                shutil.copy2(yaml_file, dest_channel_configs / yaml_file.name)
 
+        source_laser_af = current_profile_path / "laser_af_configs"
+        dest_laser_af = new_profile_path / "laser_af_configs"
+        if source_laser_af.exists():
+            for yaml_file in source_laser_af.glob("*.yaml"):
+                shutil.copy2(yaml_file, dest_laser_af / yaml_file.name)
+
+        # Switch to the new profile
         self.current_profile = profile_name
         if self.channel_manager:
             self.channel_manager.set_profile_path(new_profile_path)
         if self.laser_af_manager:
             self.laser_af_manager.set_profile_path(new_profile_path)
 
+        # Load configurations for all available objectives
+        objectives = control._def.OBJECTIVES
         for objective in objectives:
             if self.channel_manager:
-                self.channel_manager.save_configurations(objective)
+                self.channel_manager.load_configurations(objective)
             if self.laser_af_manager:
-                self.laser_af_manager.save_configurations(objective)
+                self.laser_af_manager.load_configurations(objective)
 
         self.available_profiles = self._get_available_profiles()
