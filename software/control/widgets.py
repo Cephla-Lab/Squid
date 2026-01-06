@@ -768,7 +768,7 @@ class PreferencesDialog(QDialog):
         # Interpolation Method
         self.interpolation_method_combo = QComboBox()
         self.interpolation_method_combo.addItems(["inter_linear", "inter_area_fast", "inter_area"])
-        current_interp = self._get_config_value("VIEWS", "downsampled_interpolation_method", "inter_linear")
+        current_interp = self._get_config_value("VIEWS", "downsampled_interpolation_method", "inter_area_fast")
         self.interpolation_method_combo.setCurrentText(current_interp)
         self.interpolation_method_combo.setToolTip(
             "inter_linear: Fastest (~0.05ms), good for real-time previews\n"
@@ -1246,7 +1246,7 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             changes.append(("Z-Projection Mode", old_val, new_val, False))
 
-        old_val = self._get_config_value("VIEWS", "downsampled_interpolation_method", "inter_linear")
+        old_val = self._get_config_value("VIEWS", "downsampled_interpolation_method", "inter_area_fast")
         new_val = self.interpolation_method_combo.currentText()
         if old_val != new_val:
             changes.append(("Interpolation Method", old_val, new_val, False))

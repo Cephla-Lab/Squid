@@ -818,7 +818,7 @@ DISPLAY_PLATE_VIEW = False  # Set to True to show plate view tab during acquisit
 DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
 DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
 DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
-DOWNSAMPLED_INTERPOLATION_METHOD = DownsamplingMethod.INTER_LINEAR  # INTER_LINEAR is fast, INTER_AREA is high quality
+DOWNSAMPLED_INTERPOLATION_METHOD = DownsamplingMethod.INTER_AREA_FAST  # Balanced speed/quality default
 
 # Downsampled view job timeouts
 # DOWNSAMPLED_VIEW_JOB_TIMEOUT_S: Maximum time (seconds) to wait for all downsampled view
