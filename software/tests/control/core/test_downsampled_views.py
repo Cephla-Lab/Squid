@@ -11,6 +11,7 @@ try:
     from control.core.downsampled_views import (
         DownsampledViewManager,
         WellTileAccumulator,
+        _pyrdown_chain,
         calculate_overlap_pixels,
         crop_overlap,
         downsample_tile,
@@ -876,3 +877,123 @@ class TestWellTileAccumulatorZProjection:
 
         stitched = accumulator.stitch_all_channels()
         assert np.all(stitched[0] == 99)  # Max of 0..99
+
+
+class TestPyrdownChain:
+    """Tests for _pyrdown_chain helper function."""
+
+    def test_pyrdown_chain_large_image(self):
+        """Test pyrDown chain with large image requiring multiple reductions."""
+        tile = np.random.randint(0, 65535, (2048, 2048), dtype=np.uint16)
+        target_size = (200, 200)
+
+        result = _pyrdown_chain(tile, target_size[0], target_size[1])
+
+        assert result.shape == target_size
+        assert result.dtype == tile.dtype
+
+    def test_pyrdown_chain_small_image_no_pyramid(self):
+        """Test pyrDown with image too small for pyramid reduction."""
+        # When image is already close to target size, should just resize
+        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
+        target_size = (80, 80)
+
+        result = _pyrdown_chain(tile, target_size[0], target_size[1])
+
+        assert result.shape == target_size
+        assert result.dtype == tile.dtype
+
+    def test_pyrdown_chain_exact_target_size(self):
+        """Test pyrDown when image is exactly target size."""
+        tile = np.random.randint(0, 65535, (100, 100), dtype=np.uint16)
+
+        result = _pyrdown_chain(tile, 100, 100)
+
+        assert result.shape == (100, 100)
+        # Should be unchanged (or very close)
+        assert np.array_equal(result, tile)
+
+    def test_pyrdown_chain_power_of_2_dimensions(self):
+        """Test pyrDown with exact power of 2 dimensions."""
+        tile = np.random.randint(0, 65535, (1024, 1024), dtype=np.uint16)
+        # 1024 -> 512 -> 256 -> 128 (3 pyrDowns, then resize to 100)
+        target_size = (100, 100)
+
+        result = _pyrdown_chain(tile, target_size[0], target_size[1])
+
+        assert result.shape == target_size
+        assert result.dtype == tile.dtype
+
+    def test_pyrdown_chain_asymmetric_dimensions(self):
+        """Test pyrDown with non-square image."""
+        tile = np.random.randint(0, 65535, (2048, 1024), dtype=np.uint16)
+        target_width, target_height = 100, 200
+
+        result = _pyrdown_chain(tile, target_width, target_height)
+
+        # numpy shape is (height, width)
+        assert result.shape == (target_height, target_width)
+        assert result.dtype == tile.dtype
+
+    def test_pyrdown_chain_preserves_dtype_uint8(self):
+        """Test pyrDown preserves uint8 dtype."""
+        tile = np.random.randint(0, 255, (512, 512), dtype=np.uint8)
+        target_size = (50, 50)
+
+        result = _pyrdown_chain(tile, target_size[0], target_size[1])
+
+        assert result.shape == target_size
+        assert result.dtype == np.uint8
+
+
+class TestDownsamplingPerformance:
+    """Performance regression tests for downsampling methods."""
+
+    def test_inter_area_fast_faster_than_inter_area(self):
+        """Verify INTER_AREA_FAST is significantly faster than INTER_AREA."""
+        import time
+
+        tile = np.random.randint(0, 65535, (2048, 2048), dtype=np.uint16)
+
+        # Warmup
+        downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA_FAST)
+        downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA)
+
+        # Time INTER_AREA_FAST
+        iterations = 5
+        start = time.perf_counter()
+        for _ in range(iterations):
+            downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA_FAST)
+        time_fast = (time.perf_counter() - start) / iterations
+
+        # Time INTER_AREA
+        start = time.perf_counter()
+        for _ in range(iterations):
+            downsample_tile(tile, 1.0, 10.0, method=DownsamplingMethod.INTER_AREA)
+        time_area = (time.perf_counter() - start) / iterations
+
+        # INTER_AREA_FAST should be at least 5x faster
+        speedup = time_area / time_fast
+        assert speedup > 5, f"INTER_AREA_FAST speedup {speedup:.1f}x is less than expected 5x"
+
+    def test_inter_linear_fastest(self):
+        """Verify INTER_LINEAR is the fastest method."""
+        import time
+
+        tile = np.random.randint(0, 65535, (2048, 2048), dtype=np.uint16)
+
+        # Warmup
+        for method in DownsamplingMethod:
+            downsample_tile(tile, 1.0, 10.0, method=method)
+
+        times = {}
+        iterations = 5
+        for method in DownsamplingMethod:
+            start = time.perf_counter()
+            for _ in range(iterations):
+                downsample_tile(tile, 1.0, 10.0, method=method)
+            times[method] = (time.perf_counter() - start) / iterations
+
+        # INTER_LINEAR should be fastest
+        assert times[DownsamplingMethod.INTER_LINEAR] < times[DownsamplingMethod.INTER_AREA_FAST]
+        assert times[DownsamplingMethod.INTER_LINEAR] < times[DownsamplingMethod.INTER_AREA]
