@@ -6,5 +6,8 @@ drivers and libraries/daheng camera/
 acquisition_configurations/
 user_profiles/
 
+# Machine-specific config (committed as template, local changes ignored)
+machine_configs/illumination_channel_config.yaml
+
 # Claude Code local settings (user-specific)
 .claude/settings.local.json

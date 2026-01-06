@@ -12377,28 +12377,35 @@ class IlluminationChannelConfiguratorDialog(QDialog):
         button_layout.addWidget(self.btn_add)
 
         self.btn_remove = QPushButton("Remove Channel")
+        self.btn_remove.setAutoDefault(False)
+        self.btn_remove.setDefault(False)
         self.btn_remove.clicked.connect(self._remove_channel)
         button_layout.addWidget(self.btn_remove)
 
         self.btn_move_up = QPushButton("Move Up")
+        self.btn_move_up.setAutoDefault(False)
         self.btn_move_up.clicked.connect(self._move_up)
         button_layout.addWidget(self.btn_move_up)
 
         self.btn_move_down = QPushButton("Move Down")
+        self.btn_move_down.setAutoDefault(False)
         self.btn_move_down.clicked.connect(self._move_down)
         button_layout.addWidget(self.btn_move_down)
 
         self.btn_port_mapping = QPushButton("Port Mapping...")
+        self.btn_port_mapping.setAutoDefault(False)
         self.btn_port_mapping.clicked.connect(self._open_port_mapping)
         button_layout.addWidget(self.btn_port_mapping)
 
         button_layout.addStretch()
 
         self.btn_save = QPushButton("Save")
+        self.btn_save.setAutoDefault(False)
         self.btn_save.clicked.connect(self._save_changes)
         button_layout.addWidget(self.btn_save)
 
         self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.setAutoDefault(False)
         self.btn_cancel.clicked.connect(self.reject)
         button_layout.addWidget(self.btn_cancel)
 

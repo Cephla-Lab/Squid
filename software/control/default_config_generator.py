@@ -103,13 +103,8 @@ def create_general_acquisition_channel(
             emission_filter_wheel_position=1,
         )
 
-    # Use a simplified name for the acquisition channel
-    channel_name = illumination_channel.name
-    if illumination_channel.wavelength_nm:
-        channel_name = f"{illumination_channel.wavelength_nm} nm"
-
     return AcquisitionChannel(
-        name=channel_name,
+        name=illumination_channel.name,
         illumination_settings=illumination_settings,
         camera_settings=camera_settings,
         emission_filter_wheel_position=emission_filter_wheel_position,
@@ -192,13 +187,8 @@ def create_objective_acquisition_channel(
             ),
         )
 
-    # Use a simplified name for the acquisition channel
-    channel_name = illumination_channel.name
-    if illumination_channel.wavelength_nm:
-        channel_name = f"{illumination_channel.wavelength_nm} nm"
-
     return AcquisitionChannel(
-        name=channel_name,
+        name=illumination_channel.name,
         illumination_settings=illumination_settings,
         camera_settings=camera_settings,
         emission_filter_wheel_position=None,  # Not in objective files
