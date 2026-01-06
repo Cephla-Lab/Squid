@@ -746,7 +746,7 @@ class PreferencesDialog(QDialog):
         from qtpy.QtCore import QRegularExpression
         from qtpy.QtGui import QRegularExpressionValidator
 
-        well_res_pattern = QRegularExpression(r"^\s*\d+(\.\d+)?\s*(,\s*\d+(\.\d+)?\s*)*$")
+        well_res_pattern = QRegularExpression(r"^\s*\d+(\.\d+)?(\s*,\s*\d+(\.\d+)?)*\s*$")
         self.well_resolutions_edit.setValidator(QRegularExpressionValidator(well_res_pattern))
         plate_layout.addRow("Well Resolutions (μm):", self.well_resolutions_edit)
 

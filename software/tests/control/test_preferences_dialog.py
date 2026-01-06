@@ -248,8 +248,12 @@ class TestChangeDetection:
         changes = preferences_dialog._get_changes()
         assert any(c[0] == "Mosaic Target Pixel Size" for c in changes)
 
-    def test_views_settings_are_live_update(self, preferences_dialog):
-        """Verify Views settings don't require restart."""
+    def test_generate_downsampled_does_not_require_restart(self, preferences_dialog):
+        """Verify 'Generate Downsampled Well Images' doesn't require restart.
+
+        Note: Display Plate View and Display Mosaic View DO require restart
+        since they affect tab creation at startup.
+        """
         preferences_dialog.generate_downsampled_checkbox.setChecked(True)
         changes = preferences_dialog._get_changes()
         views_change = next(c for c in changes if c[0] == "Generate Downsampled Well Images")
