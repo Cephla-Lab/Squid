@@ -792,16 +792,19 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageArrayDisplayWindow = core.ImageArrayDisplayWindow()
                 self.imageDisplayTabs.addTab(self.imageArrayDisplayWindow.widget, "Multichannel Acquisition")
 
-            if USE_NAPARI_FOR_MOSAIC_DISPLAY:
+            # Use control._def.XXX (not star-imported copy) to get runtime config values
+            self.napariMosaicDisplayWidget = None
+            if control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
                     self.objectiveStore, self.camera, self.contrastManager
                 )
                 self.imageDisplayTabs.addTab(self.napariMosaicDisplayWidget, "Mosaic View")
 
-                # Plate view for well-based acquisitions (only if enabled)
-                if control._def.DISPLAY_PLATE_VIEW:
-                    self.napariPlateViewWidget = widgets.NapariPlateViewWidget(self.contrastManager)
-                    self.imageDisplayTabs.addTab(self.napariPlateViewWidget, "Plate View")
+            # Plate view for well-based acquisitions (independent of mosaic view)
+            self.napariPlateViewWidget = None
+            if control._def.DISPLAY_PLATE_VIEW:
+                self.napariPlateViewWidget = widgets.NapariPlateViewWidget(self.contrastManager)
+                self.imageDisplayTabs.addTab(self.napariPlateViewWidget, "Plate View")
 
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()
@@ -1276,7 +1279,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.multipointController.image_to_display_multi.connect(self.imageArrayDisplayWindow.display_image)
 
             # Setup mosaic display widget connections
-            if USE_NAPARI_FOR_MOSAIC_DISPLAY:
+            if control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napari_connections["napariMosaicDisplayWidget"] = [
                     (self.multipointController.napari_layers_update, self.napariMosaicDisplayWidget.updateMosaic),
                     (self.napariMosaicDisplayWidget.signal_coordinates_clicked, self.move_from_click_mm),
@@ -1333,23 +1336,23 @@ class HighContentScreeningGui(QMainWindow):
                         ]
                     )
 
-                # Setup plate view widget connections (only if plate view is enabled)
-                # Use Qt.QueuedConnection explicitly for thread safety since these signals
-                # are emitted from the acquisition worker thread and received on the main thread.
-                # This ensures the slot is invoked in the receiver's thread event loop.
-                if control._def.DISPLAY_PLATE_VIEW and hasattr(self, "napariPlateViewWidget"):
-                    self.napari_connections["napariPlateViewWidget"] = [
-                        (
-                            self.multipointController.plate_view_init,
-                            self.napariPlateViewWidget.initPlateLayout,
-                            Qt.QueuedConnection,
-                        ),
-                        (
-                            self.multipointController.plate_view_update,
-                            self.napariPlateViewWidget.updatePlateView,
-                            Qt.QueuedConnection,
-                        ),
-                    ]
+            # Setup plate view widget connections (independent of mosaic display)
+            # Use Qt.QueuedConnection explicitly for thread safety since these signals
+            # are emitted from the acquisition worker thread and received on the main thread.
+            # This ensures the slot is invoked in the receiver's thread event loop.
+            if self.napariPlateViewWidget is not None:
+                self.napari_connections["napariPlateViewWidget"] = [
+                    (
+                        self.multipointController.plate_view_init,
+                        self.napariPlateViewWidget.initPlateLayout,
+                        Qt.QueuedConnection,
+                    ),
+                    (
+                        self.multipointController.plate_view_update,
+                        self.napariPlateViewWidget.updatePlateView,
+                        Qt.QueuedConnection,
+                    ),
+                ]
 
             # Make initial connections
             self.updateNapariConnections()
@@ -1411,14 +1414,12 @@ class HighContentScreeningGui(QMainWindow):
         elif not self.live_only_mode:
             configs = [config.name for config in selected_configurations]
             print(configs)
-            if USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
-                # For well-based acquisitions (Select Wells or Load Coordinates), use Plate View
-                is_well_based = xy_mode is not None and xy_mode in ("Select Wells", "Load Coordinates")
-                if is_well_based and hasattr(self, "napariPlateViewWidget") and control._def.DISPLAY_PLATE_VIEW:
-                    self.imageDisplayTabs.setCurrentWidget(self.napariPlateViewWidget)
-                else:
-                    self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
-
+            # For well-based acquisitions (Select Wells or Load Coordinates), use Plate View if enabled
+            is_well_based = xy_mode is not None and xy_mode in ("Select Wells", "Load Coordinates")
+            if is_well_based and self.napariPlateViewWidget is not None and Nz == 1:
+                self.imageDisplayTabs.setCurrentWidget(self.napariPlateViewWidget)
+            elif control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
+                self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
             elif USE_NAPARI_FOR_MULTIPOINT:
                 self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
             else:

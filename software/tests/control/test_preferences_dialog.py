@@ -45,6 +45,7 @@ def sample_config():
     config.set("VIEWS", "downsampled_well_resolutions_um", "5.0, 10.0, 20.0")
     config.set("VIEWS", "downsampled_plate_resolution_um", "10.0")
     config.set("VIEWS", "downsampled_z_projection", "mip")
+    config.set("VIEWS", "display_mosaic_view", "true")
     config.set("VIEWS", "mosaic_view_target_pixel_size_um", "2.0")
 
     return config
@@ -225,7 +226,7 @@ class TestChangeDetection:
         # Config has display_plate_view=true, checkbox should be checked
         preferences_dialog.display_plate_view_checkbox.setChecked(False)
         changes = preferences_dialog._get_changes()
-        assert any(c[0] == "Display Plate View" for c in changes)
+        assert any(c[0] == "Display Plate View *" for c in changes)
 
     def test_detect_views_well_resolutions_change(self, preferences_dialog):
         preferences_dialog.well_resolutions_edit.setText("1.0, 2.0")
@@ -422,6 +423,9 @@ class TestViewsTab:
     def test_z_projection_initialized(self, preferences_dialog):
         assert preferences_dialog.z_projection_combo.currentText() == "mip"
 
+    def test_display_mosaic_view_checkbox_initialized(self, preferences_dialog):
+        assert preferences_dialog.display_mosaic_view_checkbox.isChecked() is True
+
     def test_mosaic_pixel_size_initialized(self, preferences_dialog):
         assert preferences_dialog.mosaic_pixel_size_spinbox.value() == 2.0
 
@@ -431,6 +435,7 @@ class TestViewsTab:
         preferences_dialog.well_resolutions_edit.setText("2.5, 5.0")
         preferences_dialog.plate_resolution_spinbox.setValue(15.0)
         preferences_dialog.z_projection_combo.setCurrentText("middle")
+        preferences_dialog.display_mosaic_view_checkbox.setChecked(False)
         preferences_dialog.mosaic_pixel_size_spinbox.setValue(3.0)
 
         preferences_dialog._apply_settings()
@@ -445,6 +450,7 @@ class TestViewsTab:
         assert saved_config.get("VIEWS", "downsampled_well_resolutions_um") == "2.5, 5.0"
         assert saved_config.get("VIEWS", "downsampled_plate_resolution_um") == "15.0"
         assert saved_config.get("VIEWS", "downsampled_z_projection") == "middle"
+        assert saved_config.get("VIEWS", "display_mosaic_view") == "false"
         assert saved_config.get("VIEWS", "mosaic_view_target_pixel_size_um") == "3.0"
 
     def test_views_settings_applied_to_def(self, preferences_dialog):
@@ -455,6 +461,7 @@ class TestViewsTab:
         preferences_dialog.well_resolutions_edit.setText("2.5, 5.0, 15.0")
         preferences_dialog.plate_resolution_spinbox.setValue(20.0)
         preferences_dialog.z_projection_combo.setCurrentText("middle")
+        preferences_dialog.display_mosaic_view_checkbox.setChecked(False)
         preferences_dialog.mosaic_pixel_size_spinbox.setValue(4.0)
 
         preferences_dialog._apply_live_settings()
@@ -464,6 +471,7 @@ class TestViewsTab:
         assert _def.DOWNSAMPLED_WELL_RESOLUTIONS_UM == [2.5, 5.0, 15.0]
         assert _def.DOWNSAMPLED_PLATE_RESOLUTION_UM == 20.0
         assert _def.DOWNSAMPLED_Z_PROJECTION == _def.ZProjectionMode.MIDDLE
+        assert _def.USE_NAPARI_FOR_MOSAIC_DISPLAY is False
         assert _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM == 4.0
 
     def test_well_resolutions_validator_accepts_valid_input(self, preferences_dialog):

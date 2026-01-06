@@ -772,6 +772,11 @@ class PreferencesDialog(QDialog):
         mosaic_group = CollapsibleGroupBox("Mosaic View")
         mosaic_layout = QFormLayout()
 
+        # Display Mosaic View
+        self.display_mosaic_view_checkbox = QCheckBox()
+        self.display_mosaic_view_checkbox.setChecked(self._get_config_bool("VIEWS", "display_mosaic_view", True))
+        mosaic_layout.addRow("Display Mosaic View:", self.display_mosaic_view_checkbox)
+
         # Mosaic Target Pixel Size
         self.mosaic_pixel_size_spinbox = QDoubleSpinBox()
         self.mosaic_pixel_size_spinbox.setRange(0.5, 20.0)
@@ -911,6 +916,11 @@ class PreferencesDialog(QDialog):
         self.config.set("VIEWS", "downsampled_well_resolutions_um", self.well_resolutions_edit.text())
         self.config.set("VIEWS", "downsampled_plate_resolution_um", str(self.plate_resolution_spinbox.value()))
         self.config.set("VIEWS", "downsampled_z_projection", self.z_projection_combo.currentText())
+        self.config.set(
+            "VIEWS",
+            "display_mosaic_view",
+            "true" if self.display_mosaic_view_checkbox.isChecked() else "false",
+        )
         self.config.set("VIEWS", "mosaic_view_target_pixel_size_um", str(self.mosaic_pixel_size_spinbox.value()))
 
         # Save to file
@@ -997,6 +1007,7 @@ class PreferencesDialog(QDialog):
             self._log.warning(f"Invalid well resolutions format: {resolutions_str}")
         _def.DOWNSAMPLED_PLATE_RESOLUTION_UM = self.plate_resolution_spinbox.value()
         _def.DOWNSAMPLED_Z_PROJECTION = _def.ZProjectionMode.convert_to_enum(self.z_projection_combo.currentText())
+        _def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
         _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
 
     def _get_changes(self):
@@ -1202,7 +1213,7 @@ class PreferencesDialog(QDialog):
         old_val = self._get_config_bool("VIEWS", "display_plate_view", False)
         new_val = self.display_plate_view_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Display Plate View", str(old_val), str(new_val), False))
+            changes.append(("Display Plate View *", str(old_val), str(new_val), True))
 
         old_val = self._get_config_value("VIEWS", "downsampled_well_resolutions_um", "5.0, 10.0, 20.0")
         new_val = self.well_resolutions_edit.text()
@@ -1218,6 +1229,11 @@ class PreferencesDialog(QDialog):
         new_val = self.z_projection_combo.currentText()
         if old_val != new_val:
             changes.append(("Z-Projection Mode", old_val, new_val, False))
+
+        old_val = self._get_config_bool("VIEWS", "display_mosaic_view", True)
+        new_val = self.display_mosaic_view_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Display Mosaic View *", str(old_val), str(new_val), True))
 
         old_val = self._get_config_float("VIEWS", "mosaic_view_target_pixel_size_um", 2.0)
         new_val = self.mosaic_pixel_size_spinbox.value()
@@ -3895,8 +3911,7 @@ class FlexibleMultiPointWidget(QFrame):
         self.channelConfigurationManager = channelConfigurationManager
         self.scanCoordinates = scanCoordinates
         self.focusMapWidget = focusMapWidget
-        if napariMosaicWidget is not None:
-            self.napariMosaicWidget = napariMosaicWidget
+        self.napariMosaicWidget = napariMosaicWidget
         self.performance_mode = False
         self.base_path_is_set = False
         self.location_list = np.empty((0, 3), dtype=float)
@@ -5188,8 +5203,7 @@ class WellplateMultiPointWidget(QFrame):
         self.channelConfigurationManager = channelConfigurationManager
         self.scanCoordinates = scanCoordinates
         self.focusMapWidget = focusMapWidget
-        if napariMosaicWidget is not None:
-            self.napariMosaicWidget = napariMosaicWidget
+        self.napariMosaicWidget = napariMosaicWidget
         self.performance_mode = False
         self.tab_widget: Optional[QTabWidget] = tab_widget
         self.well_selection_widget: Optional[WellSelectionWidget] = well_selection_widget
@@ -5692,7 +5706,7 @@ class WellplateMultiPointWidget(QFrame):
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
         self.signal_acquisition_started.connect(self.display_progress_bar)
         self.eta_timer.timeout.connect(self.update_eta_display)
-        if not self.performance_mode:
+        if not self.performance_mode and self.napariMosaicWidget is not None:
             self.napariMosaicWidget.signal_layers_initialized.connect(self.enable_manual_ROI)
 
         # Connect save/clear coordinates button
@@ -7153,8 +7167,7 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.objectiveStore = objectiveStore
         self.channelConfigurationManager = channelConfigurationManager
         self.scanCoordinates = scanCoordinates
-        if napariMosaicWidget is not None:
-            self.napariMosaicWidget = napariMosaicWidget
+        self.napariMosaicWidget = napariMosaicWidget
         self.performance_mode = False
 
         self.base_path_is_set = False
@@ -9688,6 +9701,10 @@ class NapariPlateViewWidget(QWidget):
         super().__init__(parent)
         self.contrastManager = contrastManager
         self.viewer = napari.Viewer(show=False)
+        # Disable napari's native menu bar so it doesn't take over macOS global menu bar
+        if sys.platform == "darwin":
+            self.viewer.window.main_menu.setNativeMenuBar(False)
+        self.viewer.window.main_menu.hide()
         self.layout = QVBoxLayout()
         self.layout.addWidget(self.viewer.window._qt_window)
 
