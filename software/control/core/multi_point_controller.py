@@ -657,6 +657,7 @@ class MultiPointController:
             downsampled_well_resolutions_um=control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
             downsampled_plate_resolution_um=control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
             downsampled_z_projection=control._def.DOWNSAMPLED_Z_PROJECTION,
+            downsampled_interpolation_method=control._def.DOWNSAMPLED_INTERPOLATION_METHOD,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,

@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 import tifffile
 
-from control._def import ZProjectionMode
+from control._def import ZProjectionMode, DownsamplingMethod
 import squid.logging
 
 
@@ -85,7 +85,7 @@ def downsample_tile(
     tile: np.ndarray,
     source_pixel_size_um: float,
     target_pixel_size_um: float,
-    fast_mode: bool = True,
+    method: DownsamplingMethod = DownsamplingMethod.INTER_LINEAR,
 ) -> np.ndarray:
     """Downsample a tile to target pixel size.
 
@@ -93,9 +93,7 @@ def downsample_tile(
         tile: Image tile
         source_pixel_size_um: Source pixel size in micrometers
         target_pixel_size_um: Target pixel size in micrometers
-        fast_mode: If True, use INTER_LINEAR (fast, ~100x speedup).
-                   If False, use INTER_AREA (slower but highest quality).
-                   For plate view previews, fast_mode=True is recommended.
+        method: Interpolation method (INTER_LINEAR for speed, INTER_AREA for quality)
 
     Returns:
         Downsampled tile, or original if target <= source
@@ -114,8 +112,8 @@ def downsample_tile(
     if new_width < 1 or new_height < 1:
         return tile
 
-    # INTER_LINEAR is ~100x faster than INTER_AREA with acceptable quality for previews
-    interpolation = cv2.INTER_LINEAR if fast_mode else cv2.INTER_AREA
+    # Select OpenCV interpolation constant
+    interpolation = cv2.INTER_LINEAR if method == DownsamplingMethod.INTER_LINEAR else cv2.INTER_AREA
 
     downsampled = cv2.resize(
         tile,
@@ -132,13 +130,64 @@ def downsample_tile(
     t_end = time.perf_counter()
 
     # Log timing for performance analysis
-    mode = "LINEAR" if fast_mode else "AREA"
+    mode = "LINEAR" if method == DownsamplingMethod.INTER_LINEAR else "AREA"
     log.debug(
         f"[PERF] downsample_tile: {tile.shape} -> ({new_height}, {new_width}) factor={factor} mode={mode} | "
         f"resize={t_resize - t_start:.4f}s, dtype={t_end - t_resize:.4f}s, TOTAL={t_end - t_start:.4f}s"
     )
 
     return downsampled
+
+
+def downsample_to_resolutions(
+    tile: np.ndarray,
+    source_pixel_size_um: float,
+    target_resolutions_um: List[float],
+    method: DownsamplingMethod = DownsamplingMethod.INTER_LINEAR,
+) -> Dict[float, np.ndarray]:
+    """Downsample a tile to multiple target resolutions.
+
+    For INTER_LINEAR: Each resolution is computed directly from the original (parallel).
+    For INTER_AREA: Resolutions are computed in cascade (sorted finest to coarsest)
+        to improve performance (~3x faster than parallel INTER_AREA).
+
+    Args:
+        tile: Image tile
+        source_pixel_size_um: Source pixel size in micrometers
+        target_resolutions_um: List of target resolutions in micrometers
+        method: Interpolation method
+
+    Returns:
+        Dictionary mapping resolution to downsampled tile
+    """
+    log = squid.logging.get_logger(__name__)
+    t_start = time.perf_counter()
+
+    results: Dict[float, np.ndarray] = {}
+
+    # Sort resolutions finest to coarsest for cascading
+    sorted_resolutions = sorted(target_resolutions_um)
+
+    if method == DownsamplingMethod.INTER_LINEAR:
+        # Parallel: each from original
+        for resolution in sorted_resolutions:
+            results[resolution] = downsample_tile(tile, source_pixel_size_um, resolution, method)
+    else:
+        # Cascaded for INTER_AREA: original → finest → ... → coarsest
+        current = tile
+        current_resolution = source_pixel_size_um
+        for resolution in sorted_resolutions:
+            current = downsample_tile(current, current_resolution, resolution, method)
+            results[resolution] = current
+            current_resolution = resolution
+
+    t_end = time.perf_counter()
+    log.debug(
+        f"[PERF] downsample_to_resolutions: {len(target_resolutions_um)} resolutions, "
+        f"method={method.value}, TOTAL={t_end - t_start:.4f}s"
+    )
+
+    return results
 
 
 def stitch_tiles(

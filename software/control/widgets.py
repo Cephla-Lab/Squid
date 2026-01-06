@@ -765,6 +765,17 @@ class PreferencesDialog(QDialog):
         self.z_projection_combo.setCurrentText(current_projection)
         plate_layout.addRow("Z-Projection Mode:", self.z_projection_combo)
 
+        # Interpolation Method
+        self.interpolation_method_combo = QComboBox()
+        self.interpolation_method_combo.addItems(["inter_linear", "inter_area"])
+        current_interp = self._get_config_value("VIEWS", "downsampled_interpolation_method", "inter_linear")
+        self.interpolation_method_combo.setCurrentText(current_interp)
+        self.interpolation_method_combo.setToolTip(
+            "inter_linear: Fast (~0.3ms), good for real-time previews\n"
+            "inter_area: Slower (~200ms), highest quality for final output"
+        )
+        plate_layout.addRow("Interpolation Method:", self.interpolation_method_combo)
+
         plate_group.content.addLayout(plate_layout)
         layout.addWidget(plate_group)
 
@@ -916,6 +927,7 @@ class PreferencesDialog(QDialog):
         self.config.set("VIEWS", "downsampled_well_resolutions_um", self.well_resolutions_edit.text())
         self.config.set("VIEWS", "downsampled_plate_resolution_um", str(self.plate_resolution_spinbox.value()))
         self.config.set("VIEWS", "downsampled_z_projection", self.z_projection_combo.currentText())
+        self.config.set("VIEWS", "downsampled_interpolation_method", self.interpolation_method_combo.currentText())
         self.config.set(
             "VIEWS",
             "display_mosaic_view",
@@ -1007,6 +1019,9 @@ class PreferencesDialog(QDialog):
             self._log.warning(f"Invalid well resolutions format: {resolutions_str}")
         _def.DOWNSAMPLED_PLATE_RESOLUTION_UM = self.plate_resolution_spinbox.value()
         _def.DOWNSAMPLED_Z_PROJECTION = _def.ZProjectionMode.convert_to_enum(self.z_projection_combo.currentText())
+        _def.DOWNSAMPLED_INTERPOLATION_METHOD = _def.DownsamplingMethod.convert_to_enum(
+            self.interpolation_method_combo.currentText()
+        )
         _def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
         _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
 
@@ -1229,6 +1244,11 @@ class PreferencesDialog(QDialog):
         new_val = self.z_projection_combo.currentText()
         if old_val != new_val:
             changes.append(("Z-Projection Mode", old_val, new_val, False))
+
+        old_val = self._get_config_value("VIEWS", "downsampled_interpolation_method", "inter_linear")
+        new_val = self.interpolation_method_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Interpolation Method", old_val, new_val, False))
 
         old_val = self._get_config_bool("VIEWS", "display_mosaic_view", True)
         new_val = self.display_mosaic_view_checkbox.isChecked()

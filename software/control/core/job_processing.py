@@ -17,7 +17,7 @@ import numpy as np
 import tifffile
 
 from control import _def, utils_acquisition
-from control._def import ZProjectionMode
+from control._def import ZProjectionMode, DownsamplingMethod
 import squid.abc
 import squid.logging
 from control.utils_config import ChannelMode
@@ -61,6 +61,7 @@ class AcquisitionInfo:
 from .downsampled_views import (
     crop_overlap,
     downsample_tile,
+    downsample_to_resolutions,
     WellTileAccumulator,
 )
 
@@ -385,6 +386,7 @@ class DownsampledViewJob(Job):
     z_index: int = 0
     total_z_levels: int = 1
     z_projection_mode: Union[ZProjectionMode, str] = ZProjectionMode.MIP
+    interpolation_method: Union[DownsamplingMethod, str] = DownsamplingMethod.INTER_LINEAR
     skip_saving: bool = False  # Skip TIFF file saving (just generate for display)
 
     # Class-level accumulator storage keyed by well_id.
@@ -491,11 +493,20 @@ class DownsampledViewJob(Job):
             # Get channel names for metadata
             channel_names = accumulator.channel_names
 
+            # Convert interpolation_method to enum if string
+            interp_method = (
+                DownsamplingMethod.convert_to_enum(self.interpolation_method)
+                if isinstance(self.interpolation_method, str)
+                else self.interpolation_method
+            )
+
             # Generate plate view images first (at plate resolution only)
             t_downsample_plate_start = time.perf_counter()
             well_images_for_plate: Dict[int, np.ndarray] = {}
             for ch_idx in sorted(stitched_channels.keys()):
-                downsampled = downsample_tile(stitched_channels[ch_idx], self.pixel_size_um, self.plate_resolution_um)
+                downsampled = downsample_tile(
+                    stitched_channels[ch_idx], self.pixel_size_um, self.plate_resolution_um, interp_method
+                )
                 well_images_for_plate[ch_idx] = downsampled
             t_downsample_plate_end = time.perf_counter()
 
@@ -505,17 +516,27 @@ class DownsampledViewJob(Job):
                 wells_dir = os.path.join(self.output_dir, "wells")
                 os.makedirs(wells_dir, exist_ok=True)
 
-                for resolution in self.target_resolutions_um:
-                    # Downsample each channel
-                    downsampled_stack = []
-                    for ch_idx in sorted(stitched_channels.keys()):
-                        if resolution == self.plate_resolution_um:
-                            # Reuse already computed plate resolution
-                            downsampled_stack.append(well_images_for_plate[ch_idx])
-                        else:
-                            downsampled = downsample_tile(stitched_channels[ch_idx], self.pixel_size_um, resolution)
-                            downsampled_stack.append(downsampled)
+                # Downsample each channel to all target resolutions
+                # downsample_to_resolutions handles cascading for INTER_AREA
+                for ch_idx in sorted(stitched_channels.keys()):
+                    # Get all resolutions for this channel (may include plate_resolution)
+                    resolutions_to_compute = [r for r in self.target_resolutions_um if r != self.plate_resolution_um]
+                    downsampled_images = downsample_to_resolutions(
+                        stitched_channels[ch_idx], self.pixel_size_um, resolutions_to_compute, interp_method
+                    )
+                    # Add already-computed plate resolution
+                    downsampled_images[self.plate_resolution_um] = well_images_for_plate[ch_idx]
 
+                    # Store for stacking
+                    if ch_idx == min(stitched_channels.keys()):
+                        # First channel - initialize resolution -> [images] mapping
+                        resolution_stacks: Dict[float, List[np.ndarray]] = {r: [] for r in self.target_resolutions_um}
+                    for resolution in self.target_resolutions_um:
+                        resolution_stacks[resolution].append(downsampled_images[resolution])
+
+                # Save each resolution as multipage TIFF
+                for resolution in self.target_resolutions_um:
+                    downsampled_stack = resolution_stacks[resolution]
                     if not downsampled_stack:
                         continue
 

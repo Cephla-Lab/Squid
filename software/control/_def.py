@@ -358,6 +358,29 @@ class ZProjectionMode(Enum):
             raise ValueError(f"Invalid z-projection mode: '{option}'. Expected 'mip' or 'middle'.")
 
 
+class DownsamplingMethod(Enum):
+    """Interpolation method for downsampled view generation.
+
+    INTER_LINEAR: Fast bilinear interpolation (~0.3ms). Each resolution is computed
+        directly from the original image (parallel). Best for real-time previews.
+    INTER_AREA: High-quality area averaging (~200ms). Resolutions are computed in
+        cascade (original→5um→10um→20um) for speed. Best for final output quality.
+    """
+
+    INTER_LINEAR = "inter_linear"
+    INTER_AREA = "inter_area"
+
+    @staticmethod
+    def convert_to_enum(option: Union[str, "DownsamplingMethod"]) -> "DownsamplingMethod":
+        """Convert string or enum to DownsamplingMethod enum."""
+        if isinstance(option, DownsamplingMethod):
+            return option
+        try:
+            return DownsamplingMethod(option.lower())
+        except ValueError:
+            raise ValueError(f"Invalid downsampling method: '{option}'. Expected 'inter_linear' or 'inter_area'.")
+
+
 class ZMotorConfig(Enum):
     """Z motor configuration options.
 
@@ -788,6 +811,7 @@ DISPLAY_PLATE_VIEW = False  # Set to True to show plate view tab during acquisit
 DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
 DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
 DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
+DOWNSAMPLED_INTERPOLATION_METHOD = DownsamplingMethod.INTER_LINEAR  # INTER_LINEAR is fast, INTER_AREA is high quality
 
 # Downsampled view job timeouts
 # DOWNSAMPLED_VIEW_JOB_TIMEOUT_S: Maximum time (seconds) to wait for all downsampled view
@@ -1166,6 +1190,13 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                 try:
                     DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.convert_to_enum(
                         _views_config.get("VIEWS", "downsampled_z_projection")
+                    )
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "downsampled_interpolation_method"):
+                try:
+                    DOWNSAMPLED_INTERPOLATION_METHOD = DownsamplingMethod.convert_to_enum(
+                        _views_config.get("VIEWS", "downsampled_interpolation_method")
                     )
                 except ValueError:
                     pass
