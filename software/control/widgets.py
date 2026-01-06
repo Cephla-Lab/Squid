@@ -131,22 +131,87 @@ class WrapperWindow(QMainWindow):
         super().closeEvent(event)
 
 
-class CollapsibleGroupBox(QGroupBox):
-    def __init__(self, title):
-        super(CollapsibleGroupBox, self).__init__(title)
-        self.setCheckable(True)
-        self.setChecked(True)
-        self.higher_layout = QVBoxLayout()
-        self.content = QVBoxLayout()
-        # self.content.setAlignment(Qt.AlignTop)
-        self.content_widget = QWidget()
-        self.content_widget.setLayout(self.content)
-        self.higher_layout.addWidget(self.content_widget)
-        self.setLayout(self.higher_layout)
-        self.toggled.connect(self.toggle_content)
+class CollapsibleGroupBox(QWidget):
+    """A collapsible group box with arrow indicator for expand/collapse."""
 
-    def toggle_content(self, state):
-        self.content_widget.setVisible(state)
+    def __init__(self, title, collapsed=False):
+        super().__init__()
+        self._collapsed = collapsed
+        self._title = title
+
+        # Main layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 8)
+        main_layout.setSpacing(0)
+
+        # Header button with arrow
+        self._header = QPushButton()
+        self._header.setStyleSheet(
+            """
+            QPushButton {
+                text-align: left;
+                padding: 8px;
+                font-weight: bold;
+                background-color: palette(button);
+                border: 1px solid palette(mid);
+                border-bottom: none;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: palette(light);
+            }
+            """
+        )
+        self._header.clicked.connect(self._toggle)
+        main_layout.addWidget(self._header)
+
+        # Content widget with border to show grouping
+        self.content_widget = QFrame()
+        self.content_widget.setObjectName("collapsibleContent")
+        self.content_widget.setFrameShape(QFrame.StyledPanel)
+        self.content_widget.setStyleSheet(
+            """
+            QFrame#collapsibleContent {
+                border: 1px solid palette(mid);
+                border-top: none;
+                border-bottom-left-radius: 4px;
+                border-bottom-right-radius: 4px;
+                background-color: palette(base);
+            }
+            QFrame#collapsibleContent QLabel {
+                border: none;
+                background: transparent;
+            }
+            """
+        )
+        self.content = QVBoxLayout(self.content_widget)
+        self.content.setContentsMargins(15, 10, 10, 10)
+        main_layout.addWidget(self.content_widget)
+
+        # Set initial state
+        self._update_header()
+        self.content_widget.setVisible(not collapsed)
+
+    def _update_header(self):
+        arrow = "▼" if not self._collapsed else "▶"
+        self._header.setText(f"{arrow}  {self._title}")
+
+    def _toggle(self):
+        self._collapsed = not self._collapsed
+        self._update_header()
+        self.content_widget.setVisible(not self._collapsed)
+
+    def setCollapsed(self, collapsed):
+        """Programmatically set collapsed state."""
+        if self._collapsed != collapsed:
+            self._collapsed = collapsed
+            self._update_header()
+            self.content_widget.setVisible(not collapsed)
+
+    def isCollapsed(self):
+        """Return current collapsed state."""
+        return self._collapsed
 
 
 class ConfigEditor(QDialog):
@@ -651,26 +716,24 @@ class PreferencesDialog(QDialog):
 
     def _create_views_tab(self):
         tab = QWidget()
-        layout = QFormLayout(tab)
+        layout = QVBoxLayout(tab)
         layout.setSpacing(10)
 
-        # Description label
-        desc_label = QLabel("Settings for downsampled well/plate views during acquisition.")
-        desc_label.setStyleSheet("color: #666; font-style: italic;")
-        desc_label.setWordWrap(True)
-        layout.addRow(desc_label)
+        # Plate View section
+        plate_group = CollapsibleGroupBox("Plate View")
+        plate_layout = QFormLayout()
 
         # Generate Downsampled Well Images
         self.generate_downsampled_checkbox = QCheckBox()
         self.generate_downsampled_checkbox.setChecked(
             self._get_config_bool("VIEWS", "generate_downsampled_well_images", False)
         )
-        layout.addRow("Generate Downsampled Well Images:", self.generate_downsampled_checkbox)
+        plate_layout.addRow("Generate Downsampled Well Images:", self.generate_downsampled_checkbox)
 
         # Display Plate View
         self.display_plate_view_checkbox = QCheckBox()
         self.display_plate_view_checkbox.setChecked(self._get_config_bool("VIEWS", "display_plate_view", False))
-        layout.addRow("Display Plate View:", self.display_plate_view_checkbox)
+        plate_layout.addRow("Display Plate View:", self.display_plate_view_checkbox)
 
         # Well Resolutions (comma-separated)
         self.well_resolutions_edit = QLineEdit()
@@ -685,7 +748,7 @@ class PreferencesDialog(QDialog):
 
         well_res_pattern = QRegularExpression(r"^\s*\d+(\.\d+)?\s*(,\s*\d+(\.\d+)?\s*)*$")
         self.well_resolutions_edit.setValidator(QRegularExpressionValidator(well_res_pattern))
-        layout.addRow("Well Resolutions (μm):", self.well_resolutions_edit)
+        plate_layout.addRow("Well Resolutions (μm):", self.well_resolutions_edit)
 
         # Plate Resolution
         self.plate_resolution_spinbox = QDoubleSpinBox()
@@ -693,14 +756,21 @@ class PreferencesDialog(QDialog):
         self.plate_resolution_spinbox.setSingleStep(1.0)
         self.plate_resolution_spinbox.setValue(self._get_config_float("VIEWS", "downsampled_plate_resolution_um", 10.0))
         self.plate_resolution_spinbox.setSuffix(" μm")
-        layout.addRow("Plate Resolution:", self.plate_resolution_spinbox)
+        plate_layout.addRow("Plate Resolution:", self.plate_resolution_spinbox)
 
         # Z-Projection Mode
         self.z_projection_combo = QComboBox()
         self.z_projection_combo.addItems(["mip", "middle"])
         current_projection = self._get_config_value("VIEWS", "downsampled_z_projection", "mip")
         self.z_projection_combo.setCurrentText(current_projection)
-        layout.addRow("Z-Projection Mode:", self.z_projection_combo)
+        plate_layout.addRow("Z-Projection Mode:", self.z_projection_combo)
+
+        plate_group.content.addLayout(plate_layout)
+        layout.addWidget(plate_group)
+
+        # Mosaic View section
+        mosaic_group = CollapsibleGroupBox("Mosaic View")
+        mosaic_layout = QFormLayout()
 
         # Mosaic Target Pixel Size
         self.mosaic_pixel_size_spinbox = QDoubleSpinBox()
@@ -710,8 +780,12 @@ class PreferencesDialog(QDialog):
             self._get_config_float("VIEWS", "mosaic_view_target_pixel_size_um", 2.0)
         )
         self.mosaic_pixel_size_spinbox.setSuffix(" μm")
-        layout.addRow("Mosaic Target Pixel Size:", self.mosaic_pixel_size_spinbox)
+        mosaic_layout.addRow("Target Pixel Size:", self.mosaic_pixel_size_spinbox)
 
+        mosaic_group.content.addLayout(mosaic_layout)
+        layout.addWidget(mosaic_group)
+
+        layout.addStretch()
         self.tab_widget.addTab(tab, "Views")
 
     def _get_config_value(self, section, option, default=""):
