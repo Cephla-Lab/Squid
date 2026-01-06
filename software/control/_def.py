@@ -1130,3 +1130,51 @@ DEFAULT_TRIGGER_MODE = TriggerMode.convert_to_var(DEFAULT_TRIGGER_MODE)
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):
     DEFAULT_SAVING_PATH = str(Path.home()) + "/" + DEFAULT_SAVING_PATH.strip("/")
+
+# Load Views settings from config file at startup
+# These values override the defaults above and are accessed via control._def.XXX
+if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
+    try:
+        _views_config = ConfigParser()
+        _views_config.read(CACHED_CONFIG_FILE_PATH)
+        if _views_config.has_section("VIEWS"):
+            log.info("Loading Views settings from config file")
+            if _views_config.has_option("VIEWS", "display_plate_view"):
+                DISPLAY_PLATE_VIEW = _views_config.get("VIEWS", "display_plate_view").lower() in ("true", "1", "yes")
+            if _views_config.has_option("VIEWS", "display_mosaic_view"):
+                USE_NAPARI_FOR_MOSAIC_DISPLAY = _views_config.get("VIEWS", "display_mosaic_view").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            if _views_config.has_option("VIEWS", "generate_downsampled_well_images"):
+                GENERATE_DOWNSAMPLED_WELL_IMAGES = _views_config.get(
+                    "VIEWS", "generate_downsampled_well_images"
+                ).lower() in ("true", "1", "yes")
+            if _views_config.has_option("VIEWS", "downsampled_well_resolutions_um"):
+                try:
+                    _res_str = _views_config.get("VIEWS", "downsampled_well_resolutions_um")
+                    DOWNSAMPLED_WELL_RESOLUTIONS_UM = [float(x.strip()) for x in _res_str.split(",") if x.strip()]
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "downsampled_plate_resolution_um"):
+                try:
+                    DOWNSAMPLED_PLATE_RESOLUTION_UM = _views_config.getfloat("VIEWS", "downsampled_plate_resolution_um")
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "downsampled_z_projection"):
+                try:
+                    DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.convert_to_enum(
+                        _views_config.get("VIEWS", "downsampled_z_projection")
+                    )
+                except ValueError:
+                    pass
+            if _views_config.has_option("VIEWS", "mosaic_view_target_pixel_size_um"):
+                try:
+                    MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = _views_config.getfloat(
+                        "VIEWS", "mosaic_view_target_pixel_size_um"
+                    )
+                except ValueError:
+                    pass
+    except Exception as e:
+        log.warning(f"Failed to load Views settings from config: {e}")
