@@ -676,7 +676,15 @@ class PreferencesDialog(QDialog):
         self.well_resolutions_edit = QLineEdit()
         default_resolutions = self._get_config_value("VIEWS", "downsampled_well_resolutions_um", "5.0, 10.0, 20.0")
         self.well_resolutions_edit.setText(default_resolutions)
-        self.well_resolutions_edit.setToolTip("Comma-separated list of resolution values in micrometers")
+        self.well_resolutions_edit.setToolTip(
+            "Comma-separated list of resolution values in micrometers (e.g., 5.0, 10.0, 20.0)"
+        )
+        # Validator for comma-separated positive numbers
+        from qtpy.QtCore import QRegularExpression
+        from qtpy.QtGui import QRegularExpressionValidator
+
+        well_res_pattern = QRegularExpression(r"^\s*\d+(\.\d+)?\s*(,\s*\d+(\.\d+)?\s*)*$")
+        self.well_resolutions_edit.setValidator(QRegularExpressionValidator(well_res_pattern))
         layout.addRow("Well Resolutions (μm):", self.well_resolutions_edit)
 
         # Plate Resolution
@@ -1110,6 +1118,37 @@ class PreferencesDialog(QDialog):
         new_val = self.search_area_ratio.value()
         if old_val != new_val:
             changes.append(("Search Area Ratio", str(old_val), str(new_val), False))
+
+        # Views settings (live update)
+        old_val = self._get_config_bool("VIEWS", "generate_downsampled_well_images", False)
+        new_val = self.generate_downsampled_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Generate Downsampled Well Images", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_bool("VIEWS", "display_plate_view", False)
+        new_val = self.display_plate_view_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Display Plate View", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_value("VIEWS", "downsampled_well_resolutions_um", "5.0, 10.0, 20.0")
+        new_val = self.well_resolutions_edit.text()
+        if old_val != new_val:
+            changes.append(("Well Resolutions", old_val, new_val, False))
+
+        old_val = self._get_config_float("VIEWS", "downsampled_plate_resolution_um", 10.0)
+        new_val = self.plate_resolution_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Plate Resolution", f"{old_val} μm", f"{new_val} μm", False))
+
+        old_val = self._get_config_value("VIEWS", "downsampled_z_projection", "mip")
+        new_val = self.z_projection_combo.currentText()
+        if old_val != new_val:
+            changes.append(("Z-Projection Mode", old_val, new_val, False))
+
+        old_val = self._get_config_float("VIEWS", "mosaic_view_target_pixel_size_um", 2.0)
+        new_val = self.mosaic_pixel_size_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Mosaic Target Pixel Size", f"{old_val} μm", f"{new_val} μm", False))
 
         return changes
 

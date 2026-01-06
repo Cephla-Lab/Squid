@@ -215,6 +215,45 @@ class TestChangeDetection:
         file_change = next(c for c in changes if c[0] == "File Saving Format")
         assert file_change[3] is False  # does not require restart
 
+    def test_detect_views_generate_downsampled_change(self, preferences_dialog):
+        current = preferences_dialog.generate_downsampled_checkbox.isChecked()
+        preferences_dialog.generate_downsampled_checkbox.setChecked(not current)
+        changes = preferences_dialog._get_changes()
+        assert any(c[0] == "Generate Downsampled Well Images" for c in changes)
+
+    def test_detect_views_display_plate_view_change(self, preferences_dialog):
+        # Config has display_plate_view=true, checkbox should be checked
+        preferences_dialog.display_plate_view_checkbox.setChecked(False)
+        changes = preferences_dialog._get_changes()
+        assert any(c[0] == "Display Plate View" for c in changes)
+
+    def test_detect_views_well_resolutions_change(self, preferences_dialog):
+        preferences_dialog.well_resolutions_edit.setText("1.0, 2.0")
+        changes = preferences_dialog._get_changes()
+        assert any(c[0] == "Well Resolutions" for c in changes)
+
+    def test_detect_views_plate_resolution_change(self, preferences_dialog):
+        preferences_dialog.plate_resolution_spinbox.setValue(25.0)
+        changes = preferences_dialog._get_changes()
+        assert any(c[0] == "Plate Resolution" for c in changes)
+
+    def test_detect_views_z_projection_change(self, preferences_dialog):
+        preferences_dialog.z_projection_combo.setCurrentText("middle")
+        changes = preferences_dialog._get_changes()
+        assert any(c[0] == "Z-Projection Mode" for c in changes)
+
+    def test_detect_views_mosaic_pixel_size_change(self, preferences_dialog):
+        preferences_dialog.mosaic_pixel_size_spinbox.setValue(5.0)
+        changes = preferences_dialog._get_changes()
+        assert any(c[0] == "Mosaic Target Pixel Size" for c in changes)
+
+    def test_views_settings_are_live_update(self, preferences_dialog):
+        """Verify Views settings don't require restart."""
+        preferences_dialog.generate_downsampled_checkbox.setChecked(True)
+        changes = preferences_dialog._get_changes()
+        views_change = next(c for c in changes if c[0] == "Generate Downsampled Well Images")
+        assert views_change[3] is False  # does not require restart
+
 
 class TestApplySettings:
     """Test settings application."""
@@ -413,12 +452,42 @@ class TestViewsTab:
 
         preferences_dialog.generate_downsampled_checkbox.setChecked(True)
         preferences_dialog.display_plate_view_checkbox.setChecked(True)
+        preferences_dialog.well_resolutions_edit.setText("2.5, 5.0, 15.0")
         preferences_dialog.plate_resolution_spinbox.setValue(20.0)
+        preferences_dialog.z_projection_combo.setCurrentText("middle")
         preferences_dialog.mosaic_pixel_size_spinbox.setValue(4.0)
 
         preferences_dialog._apply_live_settings()
 
         assert _def.GENERATE_DOWNSAMPLED_WELL_IMAGES is True
         assert _def.DISPLAY_PLATE_VIEW is True
+        assert _def.DOWNSAMPLED_WELL_RESOLUTIONS_UM == [2.5, 5.0, 15.0]
         assert _def.DOWNSAMPLED_PLATE_RESOLUTION_UM == 20.0
+        assert _def.DOWNSAMPLED_Z_PROJECTION == _def.ZProjectionMode.MIDDLE
         assert _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM == 4.0
+
+    def test_well_resolutions_validator_accepts_valid_input(self, preferences_dialog):
+        """Test that validator accepts valid comma-separated numeric values."""
+        validator = preferences_dialog.well_resolutions_edit.validator()
+        assert validator is not None
+
+        # Valid inputs
+        from qtpy.QtGui import QValidator
+
+        assert validator.validate("5.0, 10.0, 20.0", 0)[0] == QValidator.Acceptable
+        assert validator.validate("5, 10, 20", 0)[0] == QValidator.Acceptable
+        assert validator.validate("5.0,10.0,20.0", 0)[0] == QValidator.Acceptable
+        assert validator.validate("  5.0 , 10.0 ", 0)[0] == QValidator.Acceptable
+        assert validator.validate("100", 0)[0] == QValidator.Acceptable
+
+    def test_well_resolutions_validator_rejects_invalid_input(self, preferences_dialog):
+        """Test that validator rejects invalid inputs."""
+        validator = preferences_dialog.well_resolutions_edit.validator()
+
+        from qtpy.QtGui import QValidator
+
+        # Invalid inputs should not be Acceptable
+        assert validator.validate("abc", 0)[0] != QValidator.Acceptable
+        assert validator.validate("5.0, abc, 10.0", 0)[0] != QValidator.Acceptable
+        assert validator.validate("-5.0, 10.0", 0)[0] != QValidator.Acceptable
+        assert validator.validate("", 0)[0] != QValidator.Acceptable
