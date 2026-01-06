@@ -5,8 +5,10 @@ These models define per-objective laser autofocus settings, including
 calibration data and detection parameters.
 """
 
-from typing import List, Optional
+import base64
+from typing import List, Optional, Tuple
 
+import numpy as np
 from pydantic import BaseModel, Field
 
 from control._def import SpotDetectionMode
@@ -77,3 +79,24 @@ class LaserAFConfig(BaseModel):
     def set_spot_detection_mode(self, mode: SpotDetectionMode) -> None:
         """Set the spot detection mode from enum."""
         self.spot_detection_mode = mode.value
+
+    @property
+    def reference_image_cropped(self) -> Optional[np.ndarray]:
+        """Convert stored base64 data back to numpy array."""
+        if self.reference_image is None:
+            return None
+        data = base64.b64decode(self.reference_image.encode("utf-8"))
+        return np.frombuffer(data, dtype=np.dtype(self.reference_image_dtype)).reshape(self.reference_image_shape)
+
+    def set_reference_image(self, image: Optional[np.ndarray]) -> None:
+        """Convert numpy array to base64 encoded string or clear reference if None."""
+        if image is None:
+            self.reference_image = None
+            self.reference_image_shape = None
+            self.reference_image_dtype = None
+            self.has_reference = False
+            return
+        self.reference_image = base64.b64encode(image.tobytes()).decode("utf-8")
+        self.reference_image_shape = list(image.shape)
+        self.reference_image_dtype = str(image.dtype)
+        self.has_reference = True
