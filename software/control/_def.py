@@ -812,9 +812,12 @@ USE_NAPARI_FOR_LIVE_CONTROL = False
 LIVE_ONLY_MODE = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
 
-# Downsampled well image generation (for Select Well Mode)
-GENERATE_DOWNSAMPLED_WELL_IMAGES = False  # Set to True to generate downsampled well TIFFs
-DISPLAY_PLATE_VIEW = False  # Set to True to show plate view tab during acquisition
+# Downsampled view settings (for Select Well Mode)
+# SAVE_DOWNSAMPLED_WELL_IMAGES: Save individual well TIFFs (e.g., wells/A1_5um.tiff)
+# DISPLAY_PLATE_VIEW: Show plate view tab in GUI during acquisition
+# Note: Plate view TIFF (plate_10um.tiff) is always saved when either setting is enabled
+SAVE_DOWNSAMPLED_WELL_IMAGES = False
+DISPLAY_PLATE_VIEW = False
 DOWNSAMPLED_WELL_RESOLUTIONS_UM = [5.0, 10.0, 20.0]
 DOWNSAMPLED_PLATE_RESOLUTION_UM = 10.0  # Auto-added to DOWNSAMPLED_WELL_RESOLUTIONS_UM if not present
 DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.MIP
@@ -1178,8 +1181,16 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                     "1",
                     "yes",
                 )
-            if _views_config.has_option("VIEWS", "generate_downsampled_well_images"):
-                GENERATE_DOWNSAMPLED_WELL_IMAGES = _views_config.get(
+            # Support both old and new config key names for backward compatibility
+            if _views_config.has_option("VIEWS", "save_downsampled_well_images"):
+                SAVE_DOWNSAMPLED_WELL_IMAGES = _views_config.get("VIEWS", "save_downsampled_well_images").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+            elif _views_config.has_option("VIEWS", "generate_downsampled_well_images"):
+                # Legacy config key
+                SAVE_DOWNSAMPLED_WELL_IMAGES = _views_config.get(
                     "VIEWS", "generate_downsampled_well_images"
                 ).lower() in ("true", "1", "yes")
             if _views_config.has_option("VIEWS", "downsampled_well_resolutions_um"):

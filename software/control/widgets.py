@@ -723,16 +723,21 @@ class PreferencesDialog(QDialog):
         plate_group = CollapsibleGroupBox("Plate View")
         plate_layout = QFormLayout()
 
-        # Generate Downsampled Well Images
-        self.generate_downsampled_checkbox = QCheckBox()
-        self.generate_downsampled_checkbox.setChecked(
-            self._get_config_bool("VIEWS", "generate_downsampled_well_images", False)
+        # Save Downsampled Well Images
+        self.save_downsampled_checkbox = QCheckBox()
+        self.save_downsampled_checkbox.setChecked(self._get_config_bool("VIEWS", "save_downsampled_well_images", False))
+        self.save_downsampled_checkbox.setToolTip(
+            "Save individual well TIFFs (e.g., wells/A1_5um.tiff, wells/A1_10um.tiff)"
         )
-        plate_layout.addRow("Generate Downsampled Well Images:", self.generate_downsampled_checkbox)
+        plate_layout.addRow("Save Downsampled Well Images:", self.save_downsampled_checkbox)
 
         # Display Plate View
         self.display_plate_view_checkbox = QCheckBox()
         self.display_plate_view_checkbox.setChecked(self._get_config_bool("VIEWS", "display_plate_view", False))
+        self.display_plate_view_checkbox.setToolTip(
+            "Show plate view tab in GUI during acquisition.\n"
+            "Note: Plate view TIFF is always saved when either option is enabled."
+        )
         plate_layout.addRow("Display Plate View:", self.display_plate_view_checkbox)
 
         # Well Resolutions (comma-separated)
@@ -917,8 +922,8 @@ class PreferencesDialog(QDialog):
         # Views settings
         self.config.set(
             "VIEWS",
-            "generate_downsampled_well_images",
-            "true" if self.generate_downsampled_checkbox.isChecked() else "false",
+            "save_downsampled_well_images",
+            "true" if self.save_downsampled_checkbox.isChecked() else "false",
         )
         self.config.set(
             "VIEWS",
@@ -1010,7 +1015,7 @@ class PreferencesDialog(QDialog):
         _def.Tracking.SEARCH_AREA_RATIO = self.search_area_ratio.value()
 
         # Views settings
-        _def.GENERATE_DOWNSAMPLED_WELL_IMAGES = self.generate_downsampled_checkbox.isChecked()
+        _def.SAVE_DOWNSAMPLED_WELL_IMAGES = self.save_downsampled_checkbox.isChecked()
         _def.DISPLAY_PLATE_VIEW = self.display_plate_view_checkbox.isChecked()
         # Parse comma-separated resolutions
         resolutions_str = self.well_resolutions_edit.text()
@@ -1221,10 +1226,10 @@ class PreferencesDialog(QDialog):
             changes.append(("Search Area Ratio", str(old_val), str(new_val), False))
 
         # Views settings (live update)
-        old_val = self._get_config_bool("VIEWS", "generate_downsampled_well_images", False)
-        new_val = self.generate_downsampled_checkbox.isChecked()
+        old_val = self._get_config_bool("VIEWS", "save_downsampled_well_images", False)
+        new_val = self.save_downsampled_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Generate Downsampled Well Images", str(old_val), str(new_val), False))
+            changes.append(("Save Downsampled Well Images", str(old_val), str(new_val), False))
 
         old_val = self._get_config_bool("VIEWS", "display_plate_view", False)
         new_val = self.display_plate_view_checkbox.isChecked()

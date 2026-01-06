@@ -56,6 +56,7 @@ class AcquisitionParameters:
 
     # Downsampled view generation parameters
     generate_downsampled_views: bool = False
+    save_downsampled_well_images: bool = False  # Save individual well TIFFs (wells/A1_5um.tiff)
     downsampled_well_resolutions_um: Optional[List[float]] = None
     downsampled_plate_resolution_um: float = 10.0
     downsampled_z_projection: Union[ZProjectionMode, str] = ZProjectionMode.MIP
