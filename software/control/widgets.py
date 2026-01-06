@@ -767,12 +767,13 @@ class PreferencesDialog(QDialog):
 
         # Interpolation Method
         self.interpolation_method_combo = QComboBox()
-        self.interpolation_method_combo.addItems(["inter_linear", "inter_area"])
+        self.interpolation_method_combo.addItems(["inter_linear", "inter_area_fast", "inter_area"])
         current_interp = self._get_config_value("VIEWS", "downsampled_interpolation_method", "inter_linear")
         self.interpolation_method_combo.setCurrentText(current_interp)
         self.interpolation_method_combo.setToolTip(
-            "inter_linear: Fast (~0.3ms), good for real-time previews\n"
-            "inter_area: Slower (~200ms), highest quality for final output"
+            "inter_linear: Fastest (~0.05ms), good for real-time previews\n"
+            "inter_area_fast: Balanced (~1ms), pyramid downsampling\n"
+            "inter_area: Slowest (~18ms), highest quality for final output"
         )
         plate_layout.addRow("Interpolation Method:", self.interpolation_method_combo)
 

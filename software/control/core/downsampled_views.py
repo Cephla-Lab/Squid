@@ -81,6 +81,33 @@ def crop_overlap(
     return tile[top:bottom_idx, left:right_idx]
 
 
+def _pyrdown_chain(tile: np.ndarray, target_width: int, target_height: int) -> np.ndarray:
+    """Fast downsampling using Gaussian pyramid (cv2.pyrDown chain).
+
+    Uses repeated 2x reductions via cv2.pyrDown (highly optimized with SIMD),
+    then INTER_AREA for final sizing. ~18x faster than pure INTER_AREA with
+    similar quality.
+
+    Args:
+        tile: Input image
+        target_width: Target width
+        target_height: Target height
+
+    Returns:
+        Downsampled image
+    """
+    result = tile
+    # Apply pyrDown until we're close to target size (within 2x)
+    while result.shape[0] > target_height * 2 and result.shape[1] > target_width * 2:
+        result = cv2.pyrDown(result)
+
+    # Final resize to exact target size
+    if result.shape[0] != target_height or result.shape[1] != target_width:
+        result = cv2.resize(result, (target_width, target_height), interpolation=cv2.INTER_AREA)
+
+    return result
+
+
 def downsample_tile(
     tile: np.ndarray,
     source_pixel_size_um: float,
@@ -93,7 +120,10 @@ def downsample_tile(
         tile: Image tile
         source_pixel_size_um: Source pixel size in micrometers
         target_pixel_size_um: Target pixel size in micrometers
-        method: Interpolation method (INTER_LINEAR for speed, INTER_AREA for quality)
+        method: Interpolation method:
+            - INTER_LINEAR: Fast (~0.05ms), good for real-time previews
+            - INTER_AREA_FAST: Balanced (~1ms), pyrDown chain + INTER_AREA
+            - INTER_AREA: Highest quality (~18ms), pure area averaging
 
     Returns:
         Downsampled tile, or original if target <= source
@@ -112,14 +142,16 @@ def downsample_tile(
     if new_width < 1 or new_height < 1:
         return tile
 
-    # Select OpenCV interpolation constant
-    interpolation = cv2.INTER_LINEAR if method == DownsamplingMethod.INTER_LINEAR else cv2.INTER_AREA
-
-    downsampled = cv2.resize(
-        tile,
-        (new_width, new_height),
-        interpolation=interpolation,
-    )
+    # Select downsampling strategy
+    if method == DownsamplingMethod.INTER_LINEAR:
+        downsampled = cv2.resize(tile, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+        mode = "LINEAR"
+    elif method == DownsamplingMethod.INTER_AREA_FAST:
+        downsampled = _pyrdown_chain(tile, new_width, new_height)
+        mode = "AREA_FAST"
+    else:  # INTER_AREA
+        downsampled = cv2.resize(tile, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        mode = "AREA"
 
     t_resize = time.perf_counter()
 
@@ -130,7 +162,6 @@ def downsample_tile(
     t_end = time.perf_counter()
 
     # Log timing for performance analysis
-    mode = "LINEAR" if method == DownsamplingMethod.INTER_LINEAR else "AREA"
     log.debug(
         f"[PERF] downsample_tile: {tile.shape} -> ({new_height}, {new_width}) factor={factor} mode={mode} | "
         f"resize={t_resize - t_start:.4f}s, dtype={t_end - t_resize:.4f}s, TOTAL={t_end - t_start:.4f}s"
@@ -147,7 +178,8 @@ def downsample_to_resolutions(
 ) -> Dict[float, np.ndarray]:
     """Downsample a tile to multiple target resolutions.
 
-    For INTER_LINEAR: Each resolution is computed directly from the original (parallel).
+    For INTER_LINEAR and INTER_AREA_FAST: Each resolution is computed directly
+        from the original (parallel) since these methods are already fast.
     For INTER_AREA: Resolutions are computed in cascade (sorted finest to coarsest)
         to improve performance (~3x faster than parallel INTER_AREA).
 
@@ -168,8 +200,8 @@ def downsample_to_resolutions(
     # Sort resolutions finest to coarsest for cascading
     sorted_resolutions = sorted(target_resolutions_um)
 
-    if method == DownsamplingMethod.INTER_LINEAR:
-        # Parallel: each from original
+    if method in (DownsamplingMethod.INTER_LINEAR, DownsamplingMethod.INTER_AREA_FAST):
+        # Parallel: each from original (both methods are fast enough)
         for resolution in sorted_resolutions:
             results[resolution] = downsample_tile(tile, source_pixel_size_um, resolution, method)
     else:

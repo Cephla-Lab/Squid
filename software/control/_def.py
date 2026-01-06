@@ -361,13 +361,17 @@ class ZProjectionMode(Enum):
 class DownsamplingMethod(Enum):
     """Interpolation method for downsampled view generation.
 
-    INTER_LINEAR: Fast bilinear interpolation (~0.3ms). Each resolution is computed
+    INTER_LINEAR: Fast bilinear interpolation (~0.05ms). Each resolution is computed
         directly from the original image (parallel). Best for real-time previews.
-    INTER_AREA: High-quality area averaging (~200ms). Resolutions are computed in
+    INTER_AREA_FAST: Gaussian pyramid downsampling (~1ms). Uses cv2.pyrDown chain
+        (optimized 2x reductions) then INTER_AREA for final size. Good balance of
+        speed and quality. Resolutions computed in parallel.
+    INTER_AREA: High-quality area averaging (~18ms). Resolutions are computed in
         cascade (original→5um→10um→20um) for speed. Best for final output quality.
     """
 
     INTER_LINEAR = "inter_linear"
+    INTER_AREA_FAST = "inter_area_fast"
     INTER_AREA = "inter_area"
 
     @staticmethod
@@ -378,7 +382,10 @@ class DownsamplingMethod(Enum):
         try:
             return DownsamplingMethod(option.lower())
         except ValueError:
-            raise ValueError(f"Invalid downsampling method: '{option}'. Expected 'inter_linear' or 'inter_area'.")
+            raise ValueError(
+                f"Invalid downsampling method: '{option}'. "
+                "Expected 'inter_linear', 'inter_area_fast', or 'inter_area'."
+            )
 
 
 class ZMotorConfig(Enum):
