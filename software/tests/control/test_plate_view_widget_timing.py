@@ -14,7 +14,15 @@ def plate_view_widget(qtbot):
     contrast_manager = ContrastManager()
     widget = NapariPlateViewWidget(contrast_manager)
     qtbot.addWidget(widget)
-    return widget
+    try:
+        yield widget
+    finally:
+        # Ensure the embedded napari viewer is properly closed after tests
+        viewer = getattr(widget, "viewer", None)
+        if viewer is not None:
+            close_method = getattr(viewer, "close", None)
+            if callable(close_method):
+                close_method()
 
 
 class TestNapariPlateViewWidgetTiming:
@@ -39,7 +47,7 @@ class TestNapariPlateViewWidgetTiming:
 
         print(f"\ninitPlateLayout ({num_rows}x{num_cols}, {well_slot_shape}): {elapsed_ms:.1f} ms")
         # Should be fast - just drawing boundaries
-        assert elapsed_ms < 2000, f"initPlateLayout too slow: {elapsed_ms:.1f} ms"
+        assert elapsed_ms < 500, f"initPlateLayout too slow: {elapsed_ms:.1f} ms"
 
     def test_first_layer_creation_timing(self, plate_view_widget, qtbot):
         """Measure time for first layer creation (add_image)."""
