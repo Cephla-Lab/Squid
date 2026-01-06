@@ -6,7 +6,7 @@ calibration data and detection parameters.
 """
 
 import base64
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 from pydantic import BaseModel, Field

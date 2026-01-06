@@ -5,7 +5,6 @@ Pure functions that operate on config models without side effects.
 """
 
 import shutil
-from pathlib import Path
 from typing import List, TYPE_CHECKING
 
 from control.models import (

@@ -11,8 +11,6 @@ from control.core.config import ConfigRepository
 from control.models import (
     GeneralChannelConfig,
     ObjectiveChannelConfig,
-    IlluminationChannelConfig,
-    LaserAFConfig,
     AcquisitionChannel,
     IlluminationSettings,
     CameraSettings,

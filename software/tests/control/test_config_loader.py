@@ -298,7 +298,7 @@ class TestDefaultConfigGenerator:
 
         acq_channel = create_general_acquisition_channel(ill_channel, include_confocal=False)
 
-        assert acq_channel.name == "488 nm"  # Simplified name
+        assert acq_channel.name == "Fluorescence 488nm"  # Preserves illumination channel name
         assert "1" in acq_channel.camera_settings
         assert acq_channel.camera_settings["1"].exposure_time_ms == DEFAULT_EXPOSURE_TIME_MS
         assert acq_channel.camera_settings["1"].gain_mode == DEFAULT_GAIN_MODE
