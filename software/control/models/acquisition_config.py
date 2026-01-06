@@ -103,7 +103,6 @@ class AcquisitionChannel(BaseModel):
 
     # ─────────────────────────────────────────────────────────────────────────────
     # Convenience properties for single-camera, single-illumination access
-    # These provide ChannelMode-like interface for UI compatibility
     # ─────────────────────────────────────────────────────────────────────────────
 
     @property

@@ -137,14 +137,14 @@ def create_objective_acquisition_channel(
 
     # Use lower intensity for transillumination (LED), higher for epi (lasers)
     if illumination_channel.type == IlluminationType.TRANSILLUMINATION:
-        default_intensity = DEFAULT_LED_ILLUMINATION_INTENSITY  # 5.0
+        default_intensity = DEFAULT_LED_ILLUMINATION_INTENSITY
     else:
-        default_intensity = DEFAULT_ILLUMINATION_INTENSITY  # 20.0
+        default_intensity = DEFAULT_ILLUMINATION_INTENSITY
 
     # objective.yaml: exposure, gain, pixel_format (display_color is in general.yaml)
     camera_settings = {
         camera_id: CameraSettings(
-            display_color=display_color,  # Kept for now but could be omitted
+            display_color=display_color,
             exposure_time_ms=DEFAULT_EXPOSURE_TIME_MS,
             gain_mode=DEFAULT_GAIN_MODE,
             pixel_format=None,  # Can be set per objective if needed
