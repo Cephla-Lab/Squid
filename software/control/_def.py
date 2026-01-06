@@ -1078,9 +1078,12 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                 except ValueError:
                     pass
             if _views_config.has_option("VIEWS", "downsampled_z_projection"):
-                DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.convert_to_enum(
-                    _views_config.get("VIEWS", "downsampled_z_projection")
-                )
+                try:
+                    DOWNSAMPLED_Z_PROJECTION = ZProjectionMode.convert_to_enum(
+                        _views_config.get("VIEWS", "downsampled_z_projection")
+                    )
+                except ValueError:
+                    pass
             if _views_config.has_option("VIEWS", "mosaic_view_target_pixel_size_um"):
                 try:
                     MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = _views_config.getfloat(
