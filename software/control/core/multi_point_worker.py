@@ -744,7 +744,7 @@ class MultiPointWorker:
             total_z_levels=self.NZ,
             z_projection_mode=self._downsampled_z_projection,
             interpolation_method=self._downsampled_interpolation_method,
-            skip_saving=not self._save_downsampled_well_images,
+            skip_saving=self.skip_saving or not self._save_downsampled_well_images,
         )
 
     def _initialize_downsampled_view_manager(self, image: np.ndarray) -> None:
