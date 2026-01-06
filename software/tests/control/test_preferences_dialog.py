@@ -40,7 +40,7 @@ def sample_config():
     config.set("TRACKING", "search_area_ratio", "10")
 
     config.add_section("VIEWS")
-    config.set("VIEWS", "generate_downsampled_well_images", "false")
+    config.set("VIEWS", "save_downsampled_well_images", "false")
     config.set("VIEWS", "display_plate_view", "true")
     config.set("VIEWS", "downsampled_well_resolutions_um", "5.0, 10.0, 20.0")
     config.set("VIEWS", "downsampled_plate_resolution_um", "10.0")
@@ -217,10 +217,10 @@ class TestChangeDetection:
         assert file_change[3] is False  # does not require restart
 
     def test_detect_views_generate_downsampled_change(self, preferences_dialog):
-        current = preferences_dialog.generate_downsampled_checkbox.isChecked()
-        preferences_dialog.generate_downsampled_checkbox.setChecked(not current)
+        current = preferences_dialog.save_downsampled_checkbox.isChecked()
+        preferences_dialog.save_downsampled_checkbox.setChecked(not current)
         changes = preferences_dialog._get_changes()
-        assert any(c[0] == "Generate Downsampled Well Images" for c in changes)
+        assert any(c[0] == "Save Downsampled Well Images" for c in changes)
 
     def test_detect_views_display_plate_view_change(self, preferences_dialog):
         # Config has display_plate_view=true, checkbox should be checked
@@ -236,7 +236,7 @@ class TestChangeDetection:
     def test_detect_views_plate_resolution_change(self, preferences_dialog):
         preferences_dialog.plate_resolution_spinbox.setValue(25.0)
         changes = preferences_dialog._get_changes()
-        assert any(c[0] == "Plate Resolution" for c in changes)
+        assert any(c[0] == "Target Pixel Size" for c in changes)
 
     def test_detect_views_z_projection_change(self, preferences_dialog):
         preferences_dialog.z_projection_combo.setCurrentText("middle")
@@ -249,14 +249,14 @@ class TestChangeDetection:
         assert any(c[0] == "Mosaic Target Pixel Size" for c in changes)
 
     def test_generate_downsampled_does_not_require_restart(self, preferences_dialog):
-        """Verify 'Generate Downsampled Well Images' doesn't require restart.
+        """Verify 'Save Downsampled Well Images' doesn't require restart.
 
         Note: Display Plate View and Display Mosaic View DO require restart
         since they affect tab creation at startup.
         """
-        preferences_dialog.generate_downsampled_checkbox.setChecked(True)
+        preferences_dialog.save_downsampled_checkbox.setChecked(True)
         changes = preferences_dialog._get_changes()
-        views_change = next(c for c in changes if c[0] == "Generate Downsampled Well Images")
+        views_change = next(c for c in changes if c[0] == "Save Downsampled Well Images")
         assert views_change[3] is False  # does not require restart
 
 
@@ -412,8 +412,8 @@ class TestViewsTab:
         tab_names = [preferences_dialog.tab_widget.tabText(i) for i in range(preferences_dialog.tab_widget.count())]
         assert "Views" in tab_names
 
-    def test_generate_downsampled_checkbox_initialized(self, preferences_dialog):
-        assert preferences_dialog.generate_downsampled_checkbox.isChecked() is False
+    def test_save_downsampled_checkbox_initialized(self, preferences_dialog):
+        assert preferences_dialog.save_downsampled_checkbox.isChecked() is False
 
     def test_display_plate_view_checkbox_initialized(self, preferences_dialog):
         assert preferences_dialog.display_plate_view_checkbox.isChecked() is True
@@ -434,7 +434,7 @@ class TestViewsTab:
         assert preferences_dialog.mosaic_pixel_size_spinbox.value() == 2.0
 
     def test_views_settings_saved_to_file(self, preferences_dialog, temp_config_file):
-        preferences_dialog.generate_downsampled_checkbox.setChecked(True)
+        preferences_dialog.save_downsampled_checkbox.setChecked(True)
         preferences_dialog.display_plate_view_checkbox.setChecked(False)
         preferences_dialog.well_resolutions_edit.setText("2.5, 5.0")
         preferences_dialog.plate_resolution_spinbox.setValue(15.0)
@@ -449,7 +449,7 @@ class TestViewsTab:
         saved_config = ConfigParser()
         saved_config.read(temp_config_file)
 
-        assert saved_config.get("VIEWS", "generate_downsampled_well_images") == "true"
+        assert saved_config.get("VIEWS", "save_downsampled_well_images") == "true"
         assert saved_config.get("VIEWS", "display_plate_view") == "false"
         assert saved_config.get("VIEWS", "downsampled_well_resolutions_um") == "2.5, 5.0"
         assert saved_config.get("VIEWS", "downsampled_plate_resolution_um") == "15.0"
@@ -460,7 +460,7 @@ class TestViewsTab:
     def test_views_settings_applied_to_def(self, preferences_dialog):
         import control._def as _def
 
-        preferences_dialog.generate_downsampled_checkbox.setChecked(True)
+        preferences_dialog.save_downsampled_checkbox.setChecked(True)
         preferences_dialog.display_plate_view_checkbox.setChecked(True)
         preferences_dialog.well_resolutions_edit.setText("2.5, 5.0, 15.0")
         preferences_dialog.plate_resolution_spinbox.setValue(20.0)
@@ -470,7 +470,7 @@ class TestViewsTab:
 
         preferences_dialog._apply_live_settings()
 
-        assert _def.GENERATE_DOWNSAMPLED_WELL_IMAGES is True
+        assert _def.SAVE_DOWNSAMPLED_WELL_IMAGES is True
         assert _def.DISPLAY_PLATE_VIEW is True
         assert _def.DOWNSAMPLED_WELL_RESOLUTIONS_UM == [2.5, 5.0, 15.0]
         assert _def.DOWNSAMPLED_PLATE_RESOLUTION_UM == 20.0
