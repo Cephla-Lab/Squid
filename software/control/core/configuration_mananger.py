@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.laser_af_settings_manager import LaserAFSettingManager
-from control.config_loader import ConfigLoader
+from control.core.config import ConfigRepository
 from control.default_config_generator import ensure_default_configs
 import control._def
 import squid.logging
@@ -78,7 +78,7 @@ class ConfigurationManager:
 
         # Ensure default configs exist for this profile
         try:
-            config_loader = ConfigLoader()
+            config_loader = ConfigRepository()
             objectives = list(control._def.OBJECTIVES) if hasattr(control._def, "OBJECTIVES") else None
             if ensure_default_configs(config_loader, profile_name, objectives):
                 log.info(f"Generated default configs for profile '{profile_name}'")

@@ -196,6 +196,22 @@ class ConfigRepository:
         """Check if a profile exists."""
         return (self.user_profiles_path / name).exists()
 
+    def profile_has_configs(self, profile: Optional[str] = None) -> bool:
+        """Check if a profile has any configuration files (general.yaml exists)."""
+        profile_path = self._get_profile_path(profile)
+        general_path = profile_path / "channel_configs" / "general.yaml"
+        return general_path.exists()
+
+    def ensure_profile_directories(self, profile: Optional[str] = None) -> None:
+        """Create profile directories if they don't exist."""
+        profile_path = self._get_profile_path(profile)
+        (profile_path / "channel_configs").mkdir(parents=True, exist_ok=True)
+        (profile_path / "laser_af_configs").mkdir(parents=True, exist_ok=True)
+
+    def get_profile_path(self, profile: Optional[str] = None) -> Path:
+        """Get the path for a user profile (public API)."""
+        return self._get_profile_path(profile)
+
     # ─────────────────────────────────────────────────────────────────────────
     # Machine Configs (global, cached indefinitely)
     # ─────────────────────────────────────────────────────────────────────────
@@ -232,61 +248,114 @@ class ConfigRepository:
         """Check if system has confocal hardware."""
         return self.get_confocal_config() is not None
 
+    def save_illumination_config(self, config: IlluminationChannelConfig) -> None:
+        """Save illumination channel configuration and update cache."""
+        path = self.machine_configs_path / "illumination_channel_config.yaml"
+        self._save_yaml(path, config)
+        self._machine_cache["illumination"] = config
+
+    def save_confocal_config(self, config: ConfocalConfig) -> None:
+        """Save confocal configuration and update cache."""
+        path = self.machine_configs_path / "confocal_config.yaml"
+        self._save_yaml(path, config)
+        self._machine_cache["confocal"] = config
+
+    def save_camera_mappings(self, config: CameraMappingsConfig) -> None:
+        """Save camera mappings configuration and update cache."""
+        path = self.machine_configs_path / "camera_mappings.yaml"
+        self._save_yaml(path, config)
+        self._machine_cache["camera_mappings"] = config
+
+    def ensure_machine_configs_directory(self) -> None:
+        """Create machine_configs directory if it doesn't exist."""
+        self.machine_configs_path.mkdir(parents=True, exist_ok=True)
+        (self.machine_configs_path / "intensity_calibrations").mkdir(exist_ok=True)
+
     # ─────────────────────────────────────────────────────────────────────────
     # Profile Configs - Channel Configs (cached until profile change or save)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def get_general_config(self) -> Optional[GeneralChannelConfig]:
-        """Load general channel configuration for current profile (cached)."""
-        cache_key = "general"
-        if cache_key not in self._profile_cache:
+    def get_general_config(self, profile: Optional[str] = None) -> Optional[GeneralChannelConfig]:
+        """Load general channel configuration (cached when using current profile)."""
+        if profile is None or profile == self._current_profile:
+            cache_key = "general"
+            if cache_key not in self._profile_cache:
+                profile_path = self._get_profile_path()
+                path = profile_path / "channel_configs" / "general.yaml"
+                self._profile_cache[cache_key] = self._load_yaml(path, GeneralChannelConfig)
+            return self._profile_cache[cache_key]
+        else:
+            # Explicit profile - load directly without caching
+            path = self.user_profiles_path / profile / "channel_configs" / "general.yaml"
+            return self._load_yaml(path, GeneralChannelConfig)
+
+    def get_objective_config(self, objective: str, profile: Optional[str] = None) -> Optional[ObjectiveChannelConfig]:
+        """Load objective-specific channel configuration (cached when using current profile)."""
+        if profile is None or profile == self._current_profile:
+            cache_key = f"objective:{objective}"
+            if cache_key not in self._profile_cache:
+                profile_path = self._get_profile_path()
+                path = profile_path / "channel_configs" / f"{objective}.yaml"
+                self._profile_cache[cache_key] = self._load_yaml(path, ObjectiveChannelConfig)
+            return self._profile_cache[cache_key]
+        else:
+            # Explicit profile - load directly without caching
+            path = self.user_profiles_path / profile / "channel_configs" / f"{objective}.yaml"
+            return self._load_yaml(path, ObjectiveChannelConfig)
+
+    def save_general_config(self, profile: str, config: GeneralChannelConfig) -> None:
+        """Save general channel configuration and update cache if current profile."""
+        if profile == self._current_profile:
             profile_path = self._get_profile_path()
             path = profile_path / "channel_configs" / "general.yaml"
-            self._profile_cache[cache_key] = self._load_yaml(path, GeneralChannelConfig)
-        return self._profile_cache[cache_key]
+            self._save_yaml(path, config)
+            self._profile_cache["general"] = config
+        else:
+            # Different profile - save without caching
+            path = self.user_profiles_path / profile / "channel_configs" / "general.yaml"
+            self._save_yaml(path, config)
 
-    def get_objective_config(self, objective: str) -> Optional[ObjectiveChannelConfig]:
-        """Load objective-specific channel configuration (cached)."""
-        cache_key = f"objective:{objective}"
-        if cache_key not in self._profile_cache:
+    def save_objective_config(self, profile: str, objective: str, config: ObjectiveChannelConfig) -> None:
+        """Save objective-specific channel configuration and update cache if current profile."""
+        if profile == self._current_profile:
             profile_path = self._get_profile_path()
             path = profile_path / "channel_configs" / f"{objective}.yaml"
-            self._profile_cache[cache_key] = self._load_yaml(path, ObjectiveChannelConfig)
-        return self._profile_cache[cache_key]
-
-    def save_general_config(self, config: GeneralChannelConfig) -> None:
-        """Save general channel configuration and update cache."""
-        profile_path = self._get_profile_path()
-        path = profile_path / "channel_configs" / "general.yaml"
-        self._save_yaml(path, config)
-        self._profile_cache["general"] = config
-
-    def save_objective_config(self, objective: str, config: ObjectiveChannelConfig) -> None:
-        """Save objective-specific channel configuration and update cache."""
-        profile_path = self._get_profile_path()
-        path = profile_path / "channel_configs" / f"{objective}.yaml"
-        self._save_yaml(path, config)
-        self._profile_cache[f"objective:{objective}"] = config
+            self._save_yaml(path, config)
+            self._profile_cache[f"objective:{objective}"] = config
+        else:
+            # Different profile - save without caching
+            path = self.user_profiles_path / profile / "channel_configs" / f"{objective}.yaml"
+            self._save_yaml(path, config)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Profile Configs - Laser AF (cached until profile change or save)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def get_laser_af_config(self, objective: str) -> Optional[LaserAFConfig]:
-        """Load laser AF configuration for an objective (cached)."""
-        cache_key = f"laser_af:{objective}"
-        if cache_key not in self._profile_cache:
+    def get_laser_af_config(self, objective: str, profile: Optional[str] = None) -> Optional[LaserAFConfig]:
+        """Load laser AF configuration for an objective (cached when using current profile)."""
+        if profile is None or profile == self._current_profile:
+            cache_key = f"laser_af:{objective}"
+            if cache_key not in self._profile_cache:
+                profile_path = self._get_profile_path()
+                path = profile_path / "laser_af_configs" / f"{objective}.yaml"
+                self._profile_cache[cache_key] = self._load_yaml(path, LaserAFConfig)
+            return self._profile_cache[cache_key]
+        else:
+            # Explicit profile - load directly without caching
+            path = self.user_profiles_path / profile / "laser_af_configs" / f"{objective}.yaml"
+            return self._load_yaml(path, LaserAFConfig)
+
+    def save_laser_af_config(self, profile: str, objective: str, config: LaserAFConfig) -> None:
+        """Save laser AF configuration and update cache if current profile."""
+        if profile == self._current_profile:
             profile_path = self._get_profile_path()
             path = profile_path / "laser_af_configs" / f"{objective}.yaml"
-            self._profile_cache[cache_key] = self._load_yaml(path, LaserAFConfig)
-        return self._profile_cache[cache_key]
-
-    def save_laser_af_config(self, objective: str, config: LaserAFConfig) -> None:
-        """Save laser AF configuration and update cache."""
-        profile_path = self._get_profile_path()
-        path = profile_path / "laser_af_configs" / f"{objective}.yaml"
-        self._save_yaml(path, config)
-        self._profile_cache[f"laser_af:{objective}"] = config
+            self._save_yaml(path, config)
+            self._profile_cache[f"laser_af:{objective}"] = config
+        else:
+            # Different profile - save without caching
+            path = self.user_profiles_path / profile / "laser_af_configs" / f"{objective}.yaml"
+            self._save_yaml(path, config)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Cache Management
@@ -300,3 +369,32 @@ class ConfigRepository:
         """Clear all caches (rarely needed)."""
         self._machine_cache.clear()
         self._profile_cache.clear()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # ConfigLoader Compatibility Aliases
+    # These match the old ConfigLoader API for easier migration
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def load_illumination_config(self) -> Optional[IlluminationChannelConfig]:
+        """Alias for get_illumination_config (ConfigLoader compatibility)."""
+        return self.get_illumination_config()
+
+    def load_confocal_config(self) -> Optional[ConfocalConfig]:
+        """Alias for get_confocal_config (ConfigLoader compatibility)."""
+        return self.get_confocal_config()
+
+    def load_camera_mappings(self) -> Optional[CameraMappingsConfig]:
+        """Alias for get_camera_mappings (ConfigLoader compatibility)."""
+        return self.get_camera_mappings()
+
+    def load_general_config(self, profile: str) -> Optional[GeneralChannelConfig]:
+        """Alias for get_general_config with explicit profile (ConfigLoader compatibility)."""
+        return self.get_general_config(profile)
+
+    def load_objective_config(self, profile: str, objective: str) -> Optional[ObjectiveChannelConfig]:
+        """Alias for get_objective_config with explicit profile (ConfigLoader compatibility)."""
+        return self.get_objective_config(objective, profile)
+
+    def load_laser_af_config(self, profile: str, objective: str) -> Optional[LaserAFConfig]:
+        """Alias for get_laser_af_config with explicit profile (ConfigLoader compatibility)."""
+        return self.get_laser_af_config(objective, profile)

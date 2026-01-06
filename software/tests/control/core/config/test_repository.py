@@ -243,7 +243,7 @@ class TestConfigRepositoryProfileConfigs:
             ],
         )
 
-        repo_with_profile.save_general_config(new_config)
+        repo_with_profile.save_general_config("default", new_config)
 
         # Check file was written
         path = temp_dir / "user_profiles" / "default" / "channel_configs" / "general.yaml"
@@ -275,7 +275,7 @@ class TestConfigRepositoryProfileConfigs:
             ],
         )
 
-        repo_with_profile.save_objective_config("40x", new_config)
+        repo_with_profile.save_objective_config("default", "40x", new_config)
 
         # Check file was written
         path = temp_dir / "user_profiles" / "default" / "channel_configs" / "40x.yaml"

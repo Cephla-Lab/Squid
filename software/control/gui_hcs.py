@@ -1445,10 +1445,10 @@ class HighContentScreeningGui(QMainWindow):
 
     def openChannelConfigurationEditor(self):
         """Open the illumination channel configurator dialog"""
-        from control.config_loader import ConfigLoader
+        from control.core.config import ConfigRepository
 
-        config_loader = ConfigLoader()
-        dialog = widgets.IlluminationChannelConfiguratorDialog(config_loader, self)
+        config_repo = ConfigRepository()
+        dialog = widgets.IlluminationChannelConfiguratorDialog(config_repo, self)
         dialog.signal_channels_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 

@@ -16,7 +16,7 @@ from typing import Any, List, Dict, Optional, Union
 import yaml
 
 import squid.logging
-from control.config_loader import ConfigLoader
+from control.core.config import ConfigRepository
 from control.models import (
     AcquisitionChannel,
     GeneralChannelConfig,
@@ -58,21 +58,21 @@ class ChannelConfigurationManager:
         self._objective_configs: Dict[str, ObjectiveChannelConfig] = {}
         self._merged_channels: Dict[str, List[AcquisitionChannel]] = {}
         self._illumination_config: Optional[IlluminationChannelConfig] = None
-        self._config_loader: Optional[ConfigLoader] = None
+        self._config_loader: Optional[ConfigRepository] = None
         self._current_profile: Optional[str] = None
 
         # Initialize config loader if requested
         if configurations_path or initialize:
-            self._config_loader = ConfigLoader()
+            self._config_loader = ConfigRepository()
             self._illumination_config = self._config_loader.load_illumination_config()
 
     def set_configurations_path(self, configurations_path: Optional[Path] = None) -> None:
         """Initialize the config loader and load illumination config.
 
         Args:
-            configurations_path: Deprecated, ignored. ConfigLoader auto-detects paths.
+            configurations_path: Deprecated, ignored. ConfigRepository auto-detects paths.
         """
-        self._config_loader = ConfigLoader()
+        self._config_loader = ConfigRepository()
         self._illumination_config = self._config_loader.load_illumination_config()
 
     def set_profile_path(self, profile_path: Path) -> None:
@@ -103,7 +103,7 @@ class ChannelConfigurationManager:
         """
         self._current_profile = profile
         if not self._config_loader:
-            self._config_loader = ConfigLoader()
+            self._config_loader = ConfigRepository()
 
         # Load illumination config if not already loaded
         if not self._illumination_config:

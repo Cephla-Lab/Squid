@@ -9,7 +9,7 @@ for available channels and creates appropriate defaults.
 import logging
 from typing import Dict, List, Optional, Tuple
 
-from control.config_loader import ConfigLoader
+from control.core.config import ConfigRepository
 from control.models import (
     AcquisitionChannel,
     AcquisitionChannelOverride,
@@ -293,7 +293,7 @@ def generate_default_configs(
 
 
 def ensure_default_configs(
-    config_loader: ConfigLoader,
+    config_loader: ConfigRepository,
     profile: str,
     objectives: Optional[List[str]] = None,
 ) -> bool:
@@ -304,7 +304,7 @@ def ensure_default_configs(
     for all objectives based on the illumination_channel_config.
 
     Args:
-        config_loader: ConfigLoader instance
+        config_loader: ConfigRepository instance
         profile: Profile name
         objectives: List of objectives (default: standard set)
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict
 
 from control.microcontroller import Microcontroller
-from control.config_loader import ConfigLoader
+from control.core.config import ConfigRepository
 
 
 class LightSourceType(Enum):
@@ -86,8 +86,8 @@ class IlluminationController:
             Dict mapping wavelength (nm) to source_code for TTL control.
         """
         try:
-            config_loader = ConfigLoader()
-            illumination_config = config_loader.load_illumination_config()
+            config_repo = ConfigRepository()
+            illumination_config = config_repo.load_illumination_config()
 
             if illumination_config is None:
                 return default_mappings
