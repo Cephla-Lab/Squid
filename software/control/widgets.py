@@ -755,13 +755,14 @@ class PreferencesDialog(QDialog):
         self.well_resolutions_edit.setValidator(QRegularExpressionValidator(well_res_pattern))
         plate_layout.addRow("Well Resolutions (μm):", self.well_resolutions_edit)
 
-        # Plate Resolution
+        # Target Pixel Size
         self.plate_resolution_spinbox = QDoubleSpinBox()
         self.plate_resolution_spinbox.setRange(1.0, 100.0)
         self.plate_resolution_spinbox.setSingleStep(1.0)
         self.plate_resolution_spinbox.setValue(self._get_config_float("VIEWS", "downsampled_plate_resolution_um", 10.0))
         self.plate_resolution_spinbox.setSuffix(" μm")
-        plate_layout.addRow("Plate Resolution:", self.plate_resolution_spinbox)
+        self.plate_resolution_spinbox.setToolTip("Pixel size for the plate view overview image")
+        plate_layout.addRow("Target Pixel Size:", self.plate_resolution_spinbox)
 
         # Z-Projection Mode
         self.z_projection_combo = QComboBox()
@@ -1244,7 +1245,7 @@ class PreferencesDialog(QDialog):
         old_val = self._get_config_float("VIEWS", "downsampled_plate_resolution_um", 10.0)
         new_val = self.plate_resolution_spinbox.value()
         if not self._floats_equal(old_val, new_val):
-            changes.append(("Plate Resolution", f"{old_val} μm", f"{new_val} μm", False))
+            changes.append(("Target Pixel Size", f"{old_val} μm", f"{new_val} μm", False))
 
         old_val = self._get_config_value("VIEWS", "downsampled_z_projection", "mip")
         new_val = self.z_projection_combo.currentText()
