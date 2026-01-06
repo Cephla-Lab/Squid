@@ -240,7 +240,10 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
         self.image_to_display.emit(frame.frame)
-        self.image_to_display_multi.emit(frame.frame, info.configuration.illumination_source)
+        if not USE_NAPARI_FOR_MULTIPOINT:
+            # TODO: This will fail - AcquisitionChannel doesn't have illumination_source attribute.
+            # Need to call info.configuration.get_illumination_source_code(illumination_config) instead.
+            self.image_to_display_multi.emit(frame.frame, info.configuration.illumination_source)
         # Z for plot in μm: piezo-only uses piezo position, mixed mode combines stepper + piezo
         stepper_z_um = info.position.z_mm * 1000
         if IS_PIEZO_ONLY:
