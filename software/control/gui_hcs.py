@@ -792,9 +792,8 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageArrayDisplayWindow = core.ImageArrayDisplayWindow()
                 self.imageDisplayTabs.addTab(self.imageArrayDisplayWindow.widget, "Multichannel Acquisition")
 
-            # Use control._def.XXX (not star-imported copy) to get runtime config values
             self.napariMosaicDisplayWidget = None
-            if control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
+            if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
                     self.objectiveStore, self.camera, self.contrastManager
                 )
@@ -802,7 +801,7 @@ class HighContentScreeningGui(QMainWindow):
 
             # Plate view for well-based acquisitions (independent of mosaic view)
             self.napariPlateViewWidget = None
-            if control._def.DISPLAY_PLATE_VIEW:
+            if DISPLAY_PLATE_VIEW:
                 self.napariPlateViewWidget = widgets.NapariPlateViewWidget(self.contrastManager)
                 self.imageDisplayTabs.addTab(self.napariPlateViewWidget, "Plate View")
 
@@ -1279,7 +1278,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.multipointController.image_to_display_multi.connect(self.imageArrayDisplayWindow.display_image)
 
             # Setup mosaic display widget connections
-            if control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
+            if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napari_connections["napariMosaicDisplayWidget"] = [
                     (self.multipointController.napari_layers_update, self.napariMosaicDisplayWidget.updateMosaic),
                     (self.napariMosaicDisplayWidget.signal_coordinates_clicked, self.move_from_click_mm),
@@ -1418,7 +1417,7 @@ class HighContentScreeningGui(QMainWindow):
             is_well_based = xy_mode is not None and xy_mode in ("Select Wells", "Load Coordinates")
             if is_well_based and self.napariPlateViewWidget is not None and Nz == 1:
                 self.imageDisplayTabs.setCurrentWidget(self.napariPlateViewWidget)
-            elif control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
+            elif USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
                 self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
             elif USE_NAPARI_FOR_MULTIPOINT:
                 self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
