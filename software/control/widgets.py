@@ -12334,10 +12334,10 @@ class IlluminationChannelConfiguratorDialog(QDialog):
     COL_WAVELENGTH = 3
     COL_CALIBRATION = 4
 
-    def __init__(self, config_loader, parent=None):
+    def __init__(self, config_repo, parent=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.config_loader = config_loader
+        self.config_repo = config_repo
         self.illumination_config = None
         self.setWindowTitle("Illumination Channel Configurator")
         self.setMinimumSize(900, 500)
@@ -12415,12 +12415,12 @@ class IlluminationChannelConfiguratorDialog(QDialog):
         """Get full path for calibration file."""
         if not filename:
             return ""
-        calib_dir = self.config_loader.machine_configs_path / "intensity_calibrations"
+        calib_dir = self.config_repo.machine_configs_path / "intensity_calibrations"
         return str(calib_dir / filename)
 
     def _load_channels(self):
         """Load illumination channels from YAML config into the table"""
-        self.illumination_config = self.config_loader.load_illumination_config()
+        self.illumination_config = self.config_repo.get_illumination_config()
         if not self.illumination_config:
             return
 
@@ -12534,7 +12534,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
 
     def _open_port_mapping(self):
         """Open the controller port mapping dialog"""
-        dialog = ControllerPortMappingDialog(self.config_loader, self)
+        dialog = ControllerPortMappingDialog(self.config_repo, self)
         dialog.signal_mappings_updated.connect(self._load_channels)
         dialog.exec_()
 
@@ -12617,7 +12617,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
                     channel.intensity_calibration_file = None
 
         # Save to YAML file
-        self.config_loader.save_illumination_config(self.illumination_config)
+        self.config_repo.save_illumination_config(self.illumination_config)
         self.signal_channels_updated.emit()
         self.accept()
 
@@ -12743,10 +12743,10 @@ class ControllerPortMappingDialog(QDialog):
 
     signal_mappings_updated = Signal()
 
-    def __init__(self, config_loader, parent=None):
+    def __init__(self, config_repo, parent=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.config_loader = config_loader
+        self.config_repo = config_repo
         self.illumination_config = None
         self.setWindowTitle("Controller Port Mapping")
         self.setMinimumSize(400, 450)
@@ -12791,7 +12791,7 @@ class ControllerPortMappingDialog(QDialog):
         """Load current port mappings into the table"""
         from control.models.illumination_config import IlluminationChannelConfig
 
-        self.illumination_config = self.config_loader.load_illumination_config()
+        self.illumination_config = self.config_repo.get_illumination_config()
         if not self.illumination_config:
             return
 
@@ -12846,7 +12846,7 @@ class ControllerPortMappingDialog(QDialog):
                     new_mapping[port] = source_code
 
         self.illumination_config.controller_port_mapping = new_mapping
-        self.config_loader.save_illumination_config(self.illumination_config)
+        self.config_repo.save_illumination_config(self.illumination_config)
         self.signal_mappings_updated.emit()
         self.accept()
 

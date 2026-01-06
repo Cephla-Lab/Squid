@@ -370,31 +370,3 @@ class ConfigRepository:
         self._machine_cache.clear()
         self._profile_cache.clear()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # ConfigLoader Compatibility Aliases
-    # These match the old ConfigLoader API for easier migration
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def load_illumination_config(self) -> Optional[IlluminationChannelConfig]:
-        """Alias for get_illumination_config (ConfigLoader compatibility)."""
-        return self.get_illumination_config()
-
-    def load_confocal_config(self) -> Optional[ConfocalConfig]:
-        """Alias for get_confocal_config (ConfigLoader compatibility)."""
-        return self.get_confocal_config()
-
-    def load_camera_mappings(self) -> Optional[CameraMappingsConfig]:
-        """Alias for get_camera_mappings (ConfigLoader compatibility)."""
-        return self.get_camera_mappings()
-
-    def load_general_config(self, profile: str) -> Optional[GeneralChannelConfig]:
-        """Alias for get_general_config with explicit profile (ConfigLoader compatibility)."""
-        return self.get_general_config(profile)
-
-    def load_objective_config(self, profile: str, objective: str) -> Optional[ObjectiveChannelConfig]:
-        """Alias for get_objective_config with explicit profile (ConfigLoader compatibility)."""
-        return self.get_objective_config(objective, profile)
-
-    def load_laser_af_config(self, profile: str, objective: str) -> Optional[LaserAFConfig]:
-        """Alias for get_laser_af_config with explicit profile (ConfigLoader compatibility)."""
-        return self.get_laser_af_config(objective, profile)

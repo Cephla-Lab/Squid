@@ -78,9 +78,9 @@ class ConfigurationManager:
 
         # Ensure default configs exist for this profile
         try:
-            config_loader = ConfigRepository()
+            config_repo = ConfigRepository()
             objectives = list(control._def.OBJECTIVES) if hasattr(control._def, "OBJECTIVES") else None
-            if ensure_default_configs(config_loader, profile_name, objectives):
+            if ensure_default_configs(config_repo, profile_name, objectives):
                 log.info(f"Generated default configs for profile '{profile_name}'")
         except Exception as e:
             log.warning(f"Could not generate default configs: {e}")

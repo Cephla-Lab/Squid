@@ -293,7 +293,7 @@ def generate_default_configs(
 
 
 def ensure_default_configs(
-    config_loader: ConfigRepository,
+    config_repo: ConfigRepository,
     profile: str,
     objectives: Optional[List[str]] = None,
 ) -> bool:
@@ -304,7 +304,7 @@ def ensure_default_configs(
     for all objectives based on the illumination_channel_config.
 
     Args:
-        config_loader: ConfigRepository instance
+        config_repo: ConfigRepository instance
         profile: Profile name
         objectives: List of objectives (default: standard set)
 
@@ -312,30 +312,30 @@ def ensure_default_configs(
         True if configs were generated, False if they already existed
     """
     # Check if configs already exist
-    if config_loader.profile_has_configs(profile):
+    if config_repo.profile_has_configs(profile):
         logger.debug(f"Profile '{profile}' already has configs")
         return False
 
     # Load illumination config
-    illumination_config = config_loader.load_illumination_config()
+    illumination_config = config_repo.get_illumination_config()
     if illumination_config is None:
         logger.error("Cannot generate defaults: illumination_channel_config.yaml not found")
         raise FileNotFoundError("illumination_channel_config.yaml is required to generate default configs")
 
     # Check for confocal
-    confocal_config = config_loader.load_confocal_config()
+    confocal_config = config_repo.get_confocal_config()
 
     # Generate configs
     logger.info(f"Generating default configs for profile '{profile}'")
     general_config, objective_configs = generate_default_configs(illumination_config, confocal_config, objectives)
 
     # Ensure directories exist
-    config_loader.ensure_profile_directories(profile)
+    config_repo.ensure_profile_directories(profile)
 
     # Save configs
-    config_loader.save_general_config(profile, general_config)
+    config_repo.save_general_config(profile, general_config)
     for objective, obj_config in objective_configs.items():
-        config_loader.save_objective_config(profile, objective, obj_config)
+        config_repo.save_objective_config(profile, objective, obj_config)
 
     logger.info(
         f"Generated default configs for profile '{profile}': "

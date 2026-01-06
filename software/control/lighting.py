@@ -87,7 +87,7 @@ class IlluminationController:
         """
         try:
             config_repo = ConfigRepository()
-            illumination_config = config_repo.load_illumination_config()
+            illumination_config = config_repo.get_illumination_config()
 
             if illumination_config is None:
                 return default_mappings

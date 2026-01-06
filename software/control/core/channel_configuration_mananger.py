@@ -58,22 +58,22 @@ class ChannelConfigurationManager:
         self._objective_configs: Dict[str, ObjectiveChannelConfig] = {}
         self._merged_channels: Dict[str, List[AcquisitionChannel]] = {}
         self._illumination_config: Optional[IlluminationChannelConfig] = None
-        self._config_loader: Optional[ConfigRepository] = None
+        self._config_repo: Optional[ConfigRepository] = None
         self._current_profile: Optional[str] = None
 
-        # Initialize config loader if requested
+        # Initialize config repo if requested
         if configurations_path or initialize:
-            self._config_loader = ConfigRepository()
-            self._illumination_config = self._config_loader.load_illumination_config()
+            self._config_repo = ConfigRepository()
+            self._illumination_config = self._config_repo.get_illumination_config()
 
     def set_configurations_path(self, configurations_path: Optional[Path] = None) -> None:
-        """Initialize the config loader and load illumination config.
+        """Initialize the config repo and load illumination config.
 
         Args:
             configurations_path: Deprecated, ignored. ConfigRepository auto-detects paths.
         """
-        self._config_loader = ConfigRepository()
-        self._illumination_config = self._config_loader.load_illumination_config()
+        self._config_repo = ConfigRepository()
+        self._illumination_config = self._config_repo.get_illumination_config()
 
     def set_profile_path(self, profile_path: Path) -> None:
         """Set the root path for configurations.
@@ -102,15 +102,15 @@ class ChannelConfigurationManager:
             profile: Profile name (e.g., "default", "user1")
         """
         self._current_profile = profile
-        if not self._config_loader:
-            self._config_loader = ConfigRepository()
+        if not self._config_repo:
+            self._config_repo = ConfigRepository()
 
         # Load illumination config if not already loaded
         if not self._illumination_config:
-            self._illumination_config = self._config_loader.load_illumination_config()
+            self._illumination_config = self._config_repo.get_illumination_config()
 
         # Load general.yaml
-        self._general_config = self._config_loader.load_general_config(profile)
+        self._general_config = self._config_repo.get_general_config(profile)
 
         # Validate illumination references
         if self._general_config and self._illumination_config:
@@ -127,7 +127,7 @@ class ChannelConfigurationManager:
 
         Loads {objective}.yaml and merges with general.yaml.
         """
-        if not self._config_loader or not self._current_profile:
+        if not self._config_repo or not self._current_profile:
             self._log.debug("No profile set, skipping config load")
             return
 
@@ -136,7 +136,7 @@ class ChannelConfigurationManager:
             return
 
         # Load objective config
-        obj_config = self._config_loader.load_objective_config(self._current_profile, objective)
+        obj_config = self._config_repo.get_objective_config(objective, self._current_profile)
 
         if obj_config:
             self._objective_configs[objective] = obj_config
@@ -153,13 +153,13 @@ class ChannelConfigurationManager:
 
         Saves the current objective config to {objective}.yaml.
         """
-        if not self._config_loader or not self._current_profile:
+        if not self._config_repo or not self._current_profile:
             self._log.warning("Cannot save: no profile set")
             return
 
         obj_config = self._objective_configs.get(objective)
         if obj_config:
-            self._config_loader.save_objective_config(self._current_profile, objective, obj_config)
+            self._config_repo.save_objective_config(self._current_profile, objective, obj_config)
             self._log.debug(f"Saved config for objective '{objective}'")
 
     def get_merged_acquisition_channels(
