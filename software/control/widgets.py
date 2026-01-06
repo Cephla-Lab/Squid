@@ -213,6 +213,90 @@ class NDViewerTab(QWidget):
             if self._viewer is not None:
                 self._viewer.setVisible(False)
 
+    def go_to_fov(self, well_id: str, fov_index: int):
+        """
+        Navigate the NDViewer to a specific well and FOV.
+
+        Called when user double-clicks a location in the plate view.
+        Maps (well_id, fov_index) to the flat xarray FOV dimension index.
+        """
+        if self._viewer is None:
+            self._log.debug("go_to_fov: no viewer loaded")
+            return
+
+        ndv_viewer = getattr(self._viewer, "ndv_viewer", None)
+        xarray_data = getattr(self._viewer, "_xarray_data", None)
+
+        if ndv_viewer is None or xarray_data is None:
+            self._log.debug("go_to_fov: ndv_viewer or xarray_data not available")
+            return
+
+        if "fov" not in xarray_data.dims:
+            self._log.debug("go_to_fov: no fov dimension in data")
+            return
+
+        # Find the flat FOV index that matches (well_id, fov_index)
+        target_flat_idx = self._find_flat_fov_index(well_id, fov_index)
+        if target_flat_idx is None:
+            self._log.debug(f"go_to_fov: could not find FOV for well={well_id}, fov={fov_index}")
+            return
+
+        self._set_ndv_fov_index(ndv_viewer, xarray_data, target_flat_idx)
+        self._log.info(f"go_to_fov: navigated to well={well_id}, fov={fov_index} (flat_idx={target_flat_idx})")
+
+    def _find_flat_fov_index(self, well_id: str, fov_index: int) -> Optional[int]:
+        """
+        Find the flat xarray FOV index for a given (well_id, fov_index).
+
+        The xarray FOV dimension is a flat list of all FOVs across all wells.
+        We need to re-discover the FOV list to find the matching index.
+        """
+        if self._dataset_path is None:
+            return None
+
+        try:
+            from control import ndviewer_light
+            from pathlib import Path
+
+            base_path = Path(self._dataset_path)
+            fmt = ndviewer_light.detect_format(base_path)
+            fovs = self._viewer._discover_fovs(base_path, fmt)
+
+            # Find the flat index where region matches well_id and fov matches fov_index
+            for flat_idx, fov_info in enumerate(fovs):
+                if fov_info["region"] == well_id and fov_info["fov"] == fov_index:
+                    return flat_idx
+
+            return None
+        except Exception as e:
+            self._log.debug(f"_find_flat_fov_index error: {e}")
+            return None
+
+    def _set_ndv_fov_index(self, ndv_viewer, xarray_data, fov_idx: int):
+        """Set the NDV viewer's current FOV index."""
+        try:
+            # NDV ArrayViewer uses display_model.current_index to control position
+            if hasattr(ndv_viewer, "display_model"):
+                dm = ndv_viewer.display_model
+                if hasattr(dm, "current_index"):
+                    # current_index is a dict-like ValidatedEventedDict
+                    dm.current_index["fov"] = fov_idx
+                    self._log.debug(f"_set_ndv_fov_index: set fov={fov_idx} via display_model.current_index")
+                    return
+
+            # Fallback: try dims API (older ndv versions)
+            if hasattr(ndv_viewer, "dims"):
+                dims = ndv_viewer.dims
+                if hasattr(dims, "current_step"):
+                    current = dict(dims.current_step)
+                    current["fov"] = fov_idx
+                    dims.current_step = current
+                    return
+
+            self._log.debug("_set_ndv_fov_index: no compatible API found")
+        except Exception as e:
+            self._log.debug(f"_set_ndv_fov_index error: {e}")
+
 
 class CollapsibleGroupBox(QWidget):
     """A collapsible group box with arrow indicator for expand/collapse."""
