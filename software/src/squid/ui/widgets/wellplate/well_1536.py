@@ -1,4 +1,9 @@
+import re
+
 from squid.ui.widgets.wellplate._common import *
+from qtpy.QtCore import QPoint, QTimer
+from qtpy.QtGui import QPixmap, QPainter, QPen
+from qtpy.QtWidgets import QApplication
 from _def import WELLPLATE_OFFSET_X_mm, WELLPLATE_OFFSET_Y_mm
 
 from squid.core.events import (
@@ -8,7 +13,7 @@ from squid.core.events import (
     WellplateFormatChanged,
 )
 
-from typing import TYPE_CHECKING
+from typing import Optional, Tuple, TYPE_CHECKING
 if TYPE_CHECKING:
     from squid.ui.ui_event_bus import UIEventBus
 
@@ -21,6 +26,8 @@ class Well1536SelectionWidget(QWidget):
         self.format = "1536 well plate"
         self.selected_cells = {}  # Dictionary to keep track of selected cells and their colors
         self.current_cell = None  # To track the current (green) cell
+
+        # defaults
         self.rows = 32
         self.columns = 48
         self.spacing_mm = 2.25
@@ -30,6 +37,7 @@ class Well1536SelectionWidget(QWidget):
         self.a1_y_mm = 7.86  # measured stage position - to update
         self.a1_x_pixel = 144  # coordinate on the png - to update
         self.a1_y_pixel = 108  # coordinate on the png - to update
+
         self._bus.subscribe(ClickToMoveEnabledChanged, self._on_click_to_move_enabled_changed)
         self._bus.subscribe(WellplateFormatChanged, self._on_wellplate_format_changed)
         self.initUI()
@@ -71,6 +79,26 @@ class Well1536SelectionWidget(QWidget):
         self.label.setFixedSize(image_width, image_height)
         self.label.setAlignment(Qt.AlignCenter)
 
+        # Mouse interaction is handled on the widget that *displays* the pixmap (QLabel),
+        # not on the QPixmap itself. We delay the single-click handler so that it can be
+        # cancelled when a double-click arrives.
+        self._pending_click_cell: Optional[Tuple[int, int]] = None
+        self._pending_click_modifiers = Qt.NoModifier
+        self._click_token = 0
+        self._press_pos: Optional[QPoint] = None
+        self._press_button = None
+        self._press_modifiers = Qt.NoModifier
+        self._is_dragging = False
+        self._drag_start_cell: Optional[Tuple[int, int]] = None
+        self._last_drag_rect: Optional[Tuple[int, int, int, int]] = None  # (r0, r1, c0, c1)
+        self._drag_mode: Optional[str] = None  # "replace" | "add" | "remove"
+        app = QApplication.instance()
+        self._double_click_ms = app.doubleClickInterval() if app is not None else 250
+        self.label.mousePressEvent = self._on_label_mouse_press
+        self.label.mouseDoubleClickEvent = self._on_label_mouse_double_click
+        self.label.mouseMoveEvent = self._on_label_mouse_move
+        self.label.mouseReleaseEvent = self._on_label_mouse_release
+
         self.cell_input = QLineEdit(self)
         self.cell_input.setPlaceholderText("e.g. AE12 or B4")
         go_button = QPushButton("Go to well", self)
@@ -78,6 +106,7 @@ class Well1536SelectionWidget(QWidget):
         self.selection_input = QLineEdit(self)
         self.selection_input.setPlaceholderText("e.g. A1:E48, X1, AC24, Z2:AF6, ...")
         self.selection_input.editingFinished.connect(self.select_cells)
+        self.selection_input.returnPressed.connect(self.select_cells)
 
         # Create navigation buttons
         up_button = QPushButton("↑", self)
@@ -129,6 +158,231 @@ class Well1536SelectionWidget(QWidget):
         layout.addWidget(control_widget)
         self.setLayout(layout)
 
+    # -------------------------------------------------------------------------
+    # Mouse interaction helper methods
+    # -------------------------------------------------------------------------
+
+    def _cell_from_label_pos(self, pos: QPoint) -> Optional[Tuple[int, int]]:
+        """Map a click position in label pixel coords -> (row, col) or None."""
+        col = int(pos.x() // self.a)
+        row = int(pos.y() // self.a)
+        if 0 <= row < self.rows and 0 <= col < self.columns:
+            return (row, col)
+        return None
+
+    def _row_label(self, row: int) -> str:
+        """Row index to letter (A..Z, AA..AF for 32 rows)."""
+        if row < 26:
+            return chr(65 + row)
+        return chr(64 + (row // 26)) + chr(65 + (row % 26))
+
+    def _cell_name(self, row: int, col: int) -> str:
+        return f"{self._row_label(row)}{col + 1}"
+
+    def _emit_selection_changed(self) -> None:
+        """Refresh UI elements that depend on selected_cells and notify listeners."""
+        self.redraw_wells()
+        self._set_selection_input_from_selected_cells()
+        self._publish_selection()
+
+    def _toggle_or_replace_selection(self, cell: Tuple[int, int], *, additive: bool) -> None:
+        """
+        Selection semantics to match the table-based well selector:
+        - additive=False: replace selection with only this cell
+        - additive=True: toggle this cell without clearing others
+        """
+        if additive:
+            if cell in self.selected_cells:
+                self.selected_cells.pop(cell, None)
+            else:
+                self.selected_cells[cell] = "#1f77b4"
+        else:
+            self.selected_cells = {cell: "#1f77b4"}
+
+    def _set_selection_input_from_selected_cells(self) -> None:
+        """Render current selection into the textbox, compacted into per-row ranges."""
+        if not self.selected_cells:
+            self.selection_input.setText("")
+            return
+
+        rows_to_cols: dict = {}
+        for r, c in self.selected_cells.keys():
+            rows_to_cols.setdefault(r, []).append(c)
+
+        parts = []
+        for r in sorted(rows_to_cols.keys()):
+            cols = sorted(set(rows_to_cols[r]))
+            start = prev = cols[0]
+            for c in cols[1:]:
+                if c == prev + 1:
+                    prev = c
+                    continue
+                # flush run
+                if start == prev:
+                    parts.append(f"{self._row_label(r)}{start + 1}")
+                else:
+                    parts.append(f"{self._row_label(r)}{start + 1}:{self._row_label(r)}{prev + 1}")
+                start = prev = c
+            # flush last run
+            if start == prev:
+                parts.append(f"{self._row_label(r)}{start + 1}")
+            else:
+                parts.append(f"{self._row_label(r)}{start + 1}:{self._row_label(r)}{prev + 1}")
+
+        self.selection_input.setText(", ".join(parts))
+
+    def _commit_single_click(self, token: int) -> None:
+        """Delayed single-click handler. Cancelled if a double-click arrives."""
+        # If a double-click happened, the token will have changed -> ignore.
+        if token != self._click_token:
+            return
+        if self._is_dragging:
+            return
+        cell = self._pending_click_cell
+        mods = self._pending_click_modifiers
+        self._pending_click_cell = None
+        self._pending_click_modifiers = Qt.NoModifier
+        if cell is None:
+            return
+
+        self.current_cell = cell
+        self._toggle_or_replace_selection(cell, additive=bool(mods & Qt.ShiftModifier))
+
+        # Update UI without navigating (no stage move here).
+        row, col = cell
+        self.cell_input.setText(self._cell_name(row, col))
+        self._emit_selection_changed()
+
+    def _on_label_mouse_press(self, event) -> None:
+        if event.button() not in (Qt.LeftButton, Qt.RightButton):
+            return
+
+        cell = self._cell_from_label_pos(event.pos())
+        if cell is None:
+            return
+
+        self._press_pos = QPoint(event.pos())
+        self._press_button = event.button()
+        self._press_modifiers = event.modifiers()
+        self._is_dragging = False
+        self._drag_start_cell = cell
+        self._last_drag_rect = None
+        self._drag_mode = None
+
+        # Delay single-click action so we can cancel it if a double-click arrives.
+        if event.button() == Qt.LeftButton:
+            self._pending_click_cell = cell
+            self._pending_click_modifiers = event.modifiers()
+            self._click_token += 1
+            token = self._click_token
+            QTimer.singleShot(self._double_click_ms, lambda: self._commit_single_click(token))
+        event.accept()
+
+    def _apply_drag_rect(self, rect: Tuple[int, int, int, int], mode: str) -> None:
+        r0, r1, c0, c1 = rect
+        if mode == "add":
+            for r in range(r0, r1 + 1):
+                for c in range(c0, c1 + 1):
+                    self.selected_cells[(r, c)] = "#1f77b4"
+        elif mode == "remove":
+            for r in range(r0, r1 + 1):
+                for c in range(c0, c1 + 1):
+                    self.selected_cells.pop((r, c), None)
+
+    def _on_label_mouse_move(self, event) -> None:
+        if self._press_pos is None or self._drag_start_cell is None:
+            return
+
+        # Start drag if we moved far enough.
+        if not self._is_dragging:
+            threshold = QApplication.startDragDistance()
+            if (event.pos() - self._press_pos).manhattanLength() < threshold:
+                return
+
+            # Cancel any pending single-click action.
+            self._click_token += 1
+            self._pending_click_cell = None
+            self._pending_click_modifiers = Qt.NoModifier
+            self._is_dragging = True
+
+            # Determine drag mode:
+            # - Left-drag: replace selection (unless Shift is held, then add)
+            # - Right-drag: remove
+            if self._press_button == Qt.RightButton:
+                self._drag_mode = "remove"
+            elif self._press_modifiers & Qt.ShiftModifier:
+                self._drag_mode = "add"
+            else:
+                self._drag_mode = "replace"
+
+        current_cell = self._cell_from_label_pos(event.pos())
+        if current_cell is None:
+            return
+
+        r0 = min(self._drag_start_cell[0], current_cell[0])
+        r1 = max(self._drag_start_cell[0], current_cell[0])
+        c0 = min(self._drag_start_cell[1], current_cell[1])
+        c1 = max(self._drag_start_cell[1], current_cell[1])
+        rect = (r0, r1, c0, c1)
+        if rect == self._last_drag_rect:
+            return
+        self._last_drag_rect = rect
+
+        if self._drag_mode == "replace":
+            self.selected_cells = {}
+            self._apply_drag_rect(rect, "add")
+        else:
+            # add/remove
+            self._apply_drag_rect(rect, self._drag_mode)
+        self.current_cell = current_cell  # keep outline tracking cursor
+        self.redraw_wells()
+        event.accept()
+
+    def _on_label_mouse_release(self, event) -> None:
+        if self._press_pos is None:
+            return
+
+        if self._is_dragging:
+            # Finalize drag selection: sync textbox + notify listeners.
+            self._set_selection_input_from_selected_cells()
+            self._publish_selection()
+
+        self._press_pos = None
+        self._press_button = None
+        self._press_modifiers = Qt.NoModifier
+        self._is_dragging = False
+        self._drag_start_cell = None
+        self._last_drag_rect = None
+        self._drag_mode = None
+        event.accept()
+
+    def _on_label_mouse_double_click(self, event) -> None:
+        if event.button() != Qt.LeftButton:
+            return
+
+        cell = self._cell_from_label_pos(event.pos())
+        if cell is None:
+            return
+
+        # Cancel any pending single-click action.
+        self._click_token += 1
+        self._pending_click_cell = None
+        self._is_dragging = False
+
+        # Double-click navigates to the cell AND selects it.
+        self._toggle_or_replace_selection(cell, additive=bool(event.modifiers() & Qt.ShiftModifier))
+        self._set_selection_input_from_selected_cells()
+        self._publish_selection()
+
+        # Navigate to the cell (emits MoveStageToCommand via update_current_cell).
+        self.current_cell = cell
+        self.update_current_cell()
+        event.accept()
+
+    # -------------------------------------------------------------------------
+    # Navigation methods
+    # -------------------------------------------------------------------------
+
     def move_up(self):
         if self.current_cell:
             row, col = self.current_cell
@@ -160,47 +414,22 @@ class Well1536SelectionWidget(QWidget):
     def add_current_well(self):
         if self.current_cell:
             row, col = self.current_cell
-            cell_name = f"{chr(65 + row)}{col + 1}"
-
-            if (row, col) in self.selected_cells:
-                # If the well is already selected, remove it
-                del self.selected_cells[(row, col)]
-                self.remove_well_from_selection_input(cell_name)
+            cell = (row, col)
+            cell_name = self._cell_name(row, col)
+            if cell in self.selected_cells:
+                self.selected_cells.pop(cell, None)
                 print(f"Removed well {cell_name}")
             else:
-                # If the well is not selected, add it
-                self.selected_cells[(row, col)] = (
-                    "#1f77b4"  # Add to selected cells with blue color
-                )
-                self.add_well_to_selection_input(cell_name)
+                self.selected_cells[cell] = "#1f77b4"
                 print(f"Added well {cell_name}")
-
-            self.redraw_wells()
-            self._publish_selection()
-
-    def add_well_to_selection_input(self, cell_name):
-        current_selection = self.selection_input.text()
-        if current_selection:
-            self.selection_input.setText(f"{current_selection}, {cell_name}")
-        else:
-            self.selection_input.setText(cell_name)
-
-    def remove_well_from_selection_input(self, cell_name):
-        current_selection = self.selection_input.text()
-        cells = [cell.strip() for cell in current_selection.split(",")]
-        if cell_name in cells:
-            cells.remove(cell_name)
-            self.selection_input.setText(", ".join(cells))
+            # Redraw only (do not navigate on select/toggle).
+            self._emit_selection_changed()
 
     def update_current_cell(self):
         self.redraw_wells()
         row, col = self.current_cell
-        if row < 26:
-            row_label = chr(65 + row)
-        else:
-            row_label = chr(64 + (row // 26)) + chr(65 + (row % 26))
         # Update cell_input with the correct label (e.g., A1, B2, AA1, etc.)
-        self.cell_input.setText(f"{row_label}{col + 1}")
+        self.cell_input.setText(self._cell_name(row, col))
 
         x_mm = col * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
         y_mm = row * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
@@ -211,7 +440,7 @@ class Well1536SelectionWidget(QWidget):
         self.image.fill(QColor("white"))  # Clear the pixmap first
         painter = QPainter(self.image)
         painter.setPen(QColor("white"))
-        # Draw selected cells in red
+        # Draw selected cells (blue)
         for (row, col), color in self.selected_cells.items():
             painter.setBrush(QColor(color))
             painter.drawRect(col * self.a, row * self.a, self.a, self.a)
@@ -232,11 +461,7 @@ class Well1536SelectionWidget(QWidget):
             row_index = self.row_to_index(row_part)
             col_index = int(col_part) - 1
             self.current_cell = (row_index, col_index)  # Update the current cell
-            self.redraw_wells()  # Redraw with the new current cell
-            x_mm = col_index * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
-            y_mm = row_index * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
-            if self._click_to_move_enabled:
-                self._bus.publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
+            self.update_current_cell()
 
     def select_cells(self):
         # first clear selection
