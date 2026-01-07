@@ -148,7 +148,7 @@ class NDViewerTab(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(self._layout)
 
-        self._placeholder = QLabel("NDViewer: waiting for an acquisition to start…")
+        self._placeholder = QLabel("NDViewer: waiting for an acquisition to start...")
         self._placeholder.setAlignment(Qt.AlignCenter)
         self._layout.addWidget(self._placeholder, 1)
 
@@ -164,7 +164,7 @@ class NDViewerTab(QWidget):
         self._dataset_path = dataset_path
 
         if not dataset_path:
-            self._placeholder.setText("NDViewer: waiting for an acquisition to start…")
+            self._placeholder.setText("NDViewer: waiting for an acquisition to start...")
             self._placeholder.setVisible(True)
             if self._viewer is not None:
                 self._viewer.setVisible(False)
