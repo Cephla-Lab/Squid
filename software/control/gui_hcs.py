@@ -875,6 +875,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageDisplayTabs.addTab(self.imageArrayDisplayWindow.widget, "Multichannel Acquisition")
 
             # Embedded NDViewer (lightweight) - updated automatically when a new acquisition starts.
+            self.ndviewerTab = None
             try:
                 self.ndviewerTab = widgets.NDViewerTab()
                 self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
@@ -895,7 +896,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageDisplayTabs.addTab(self.napariPlateViewWidget, "Plate View")
 
                 # Connect plate view double-click to NDViewer navigation and tab switch
-                if hasattr(self, "ndviewerTab") and self.ndviewerTab is not None:
+                if self.ndviewerTab is not None:
                     self.napariPlateViewWidget.signal_well_fov_clicked.connect(self._on_plate_view_fov_clicked)
 
             # z plot
@@ -1759,7 +1760,7 @@ class HighContentScreeningGui(QMainWindow):
             self.log.info("STARTING ACQUISITION")
             # Update NDViewer tab to point at the newly created experiment folder.
             try:
-                if hasattr(self, "ndviewerTab") and self.ndviewerTab is not None:
+                if self.ndviewerTab is not None:
                     base_path = getattr(self.multipointController, "base_path", None)
                     experiment_id = getattr(self.multipointController, "experiment_ID", None)
                     if base_path and experiment_id:
@@ -1943,17 +1944,14 @@ class HighContentScreeningGui(QMainWindow):
 
     def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int):
         """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""
-        if not hasattr(self, "ndviewerTab") or self.ndviewerTab is None:
+        if self.ndviewerTab is None:
             return
 
-        # Navigate to the FOV
-        self.ndviewerTab.go_to_fov(well_id, fov_index)
-
-        # Switch to NDViewer tab if the FOV can be displayed
-        # (go_to_fov logs debug messages but doesn't raise, so we switch unconditionally)
-        ndviewer_tab_idx = self.imageDisplayTabs.indexOf(self.ndviewerTab)
-        if ndviewer_tab_idx >= 0:
-            self.imageDisplayTabs.setCurrentIndex(ndviewer_tab_idx)
+        # Navigate to the FOV, only switch tab if successful
+        if self.ndviewerTab.go_to_fov(well_id, fov_index):
+            ndviewer_tab_idx = self.imageDisplayTabs.indexOf(self.ndviewerTab)
+            if ndviewer_tab_idx >= 0:
+                self.imageDisplayTabs.setCurrentIndex(ndviewer_tab_idx)
 
     def closeEvent(self, event):
         # Show confirmation dialog

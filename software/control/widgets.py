@@ -237,32 +237,37 @@ class NDViewerTab(QWidget):
             if self._viewer is not None:
                 self._viewer.setVisible(False)
 
-    def go_to_fov(self, well_id: str, fov_index: int):
+    def go_to_fov(self, well_id: str, fov_index: int) -> bool:
         """
         Navigate the NDViewer to a specific well and FOV.
 
         Called when user double-clicks a location in the plate view.
         Maps (well_id, fov_index) to the flat xarray FOV dimension index.
+
+        Returns:
+            True if navigation succeeded, False otherwise.
         """
         if self._viewer is None:
             self._log.debug("go_to_fov: no viewer loaded")
-            return
+            return False
 
         if not self._viewer.has_fov_dimension():
             self._log.debug("go_to_fov: no fov dimension available")
-            return
+            return False
 
         # Find the flat FOV index that matches (well_id, fov_index)
         target_flat_idx = self._find_flat_fov_index(well_id, fov_index)
         if target_flat_idx is None:
             self._log.debug(f"go_to_fov: could not find FOV for well={well_id}, fov={fov_index}")
-            return
+            return False
 
         # Use the public API to navigate
         if self._viewer.set_current_index("fov", target_flat_idx):
             self._log.info(f"go_to_fov: navigated to well={well_id}, fov={fov_index} (flat_idx={target_flat_idx})")
+            return True
         else:
             self._log.debug(f"go_to_fov: set_current_index failed for fov={target_flat_idx}")
+            return False
 
     def _find_flat_fov_index(self, well_id: str, fov_index: int) -> Optional[int]:
         """
