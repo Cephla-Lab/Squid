@@ -10024,7 +10024,7 @@ class NapariPlateViewWidget(QWidget):
                 lines,
                 shape_type="line",
                 edge_color="white",
-                edge_width=1,
+                edge_width=2,
                 name="_plate_boundaries",
             )
             # Make boundaries layer non-interactive so it doesn't intercept clicks
