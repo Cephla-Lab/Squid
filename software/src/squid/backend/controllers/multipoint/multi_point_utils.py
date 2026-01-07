@@ -6,7 +6,7 @@ from squid.backend.controllers.multipoint.job_processing import CaptureInfo
 from squid.backend.managers import ScanCoordinates
 from squid.core.utils.config_utils import ChannelMode
 from squid.core.abc import CameraFrame
-from _def import ZProjectionMode
+from _def import ZProjectionMode, DownsamplingMethod
 
 
 
@@ -58,9 +58,11 @@ class AcquisitionParameters:
 
     # Downsampled view generation parameters
     generate_downsampled_views: bool = False
+    save_downsampled_well_images: bool = False  # Save individual well TIFFs
     downsampled_well_resolutions_um: List[float] = field(default_factory=list)
     downsampled_plate_resolution_um: float = 10.0
     downsampled_z_projection: ZProjectionMode = ZProjectionMode.MIP
+    downsampled_interpolation_method: DownsamplingMethod = DownsamplingMethod.INTER_AREA_FAST
     plate_num_rows: int = 8  # Default for 96-well
     plate_num_cols: int = 12
     xy_mode: str = "Current Position"

@@ -16,7 +16,7 @@ import numpy as np
 import tifffile
 
 import _def
-from _def import ZProjectionMode
+from _def import ZProjectionMode, DownsamplingMethod
 from squid.backend.io import utils_acquisition
 import squid.core.abc
 import squid.core.logging
@@ -393,6 +393,8 @@ class DownsampledViewJob(Job):
     total_z_levels: int = 1
     z_projection_mode: Union[ZProjectionMode, str] = ZProjectionMode.MIP
     skip_saving: bool = False  # Skip TIFF file saving (just generate for display)
+    save_well_images: bool = False  # Save individual well TIFFs (controlled by SAVE_DOWNSAMPLED_WELL_IMAGES)
+    interpolation_method: DownsamplingMethod = DownsamplingMethod.INTER_AREA_FAST
 
     # Class-level accumulator storage keyed by well_id.
     # Note: This runs inside JobRunner (a multiprocessing.Process), so each worker
@@ -497,11 +499,12 @@ class DownsampledViewJob(Job):
                     stitched_channels[ch_idx],
                     self.pixel_size_um,
                     self.plate_resolution_um,
+                    self.interpolation_method,
                 )
                 well_images_for_plate[ch_idx] = downsampled
 
-            # Save TIFFs only if not skipping
-            if not self.skip_saving:
+            # Save well TIFFs only if enabled and not skipping
+            if self.save_well_images and not self.skip_saving:
                 wells_dir = os.path.join(self.output_dir, "wells")
                 os.makedirs(wells_dir, exist_ok=True)
 
@@ -517,6 +520,7 @@ class DownsampledViewJob(Job):
                                 stitched_channels[ch_idx],
                                 self.pixel_size_um,
                                 resolution,
+                                self.interpolation_method,
                             )
                             downsampled_stack.append(downsampled)
 

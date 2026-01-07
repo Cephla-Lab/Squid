@@ -217,11 +217,13 @@ class MultiPointWorker:
 
         # Downsampled view parameters
         self._generate_downsampled_views = acquisition_parameters.generate_downsampled_views
+        self._save_downsampled_well_images = acquisition_parameters.save_downsampled_well_images
         self._plate_num_rows = acquisition_parameters.plate_num_rows
         self._plate_num_cols = acquisition_parameters.plate_num_cols
         self._downsampled_well_resolutions_um = acquisition_parameters.downsampled_well_resolutions_um
         self._downsampled_plate_resolution_um = acquisition_parameters.downsampled_plate_resolution_um
         self._downsampled_z_projection = acquisition_parameters.downsampled_z_projection
+        self._downsampled_interpolation_method = acquisition_parameters.downsampled_interpolation_method
         self._xy_mode = acquisition_parameters.xy_mode
         self._downsampled_view_manager: Optional[DownsampledViewManager] = None
         self._downsampled_output_dir: Optional[str] = None
@@ -760,7 +762,7 @@ class MultiPointWorker:
         if not self._generate_downsampled_views:
             self._log.debug(
                 "Plate view disabled: generate_downsampled_views=False. "
-                "Set DISPLAY_PLATE_VIEW=True or GENERATE_DOWNSAMPLED_WELL_IMAGES=True in _def.py"
+                "Set DISPLAY_PLATE_VIEW=True or SAVE_DOWNSAMPLED_WELL_IMAGES=True in _def.py"
             )
             return
         if not self._is_well_based_acquisition():
@@ -1588,6 +1590,8 @@ class MultiPointWorker:
             total_z_levels=self.NZ,
             z_projection_mode=self._downsampled_z_projection,
             skip_saving=self.skip_saving,
+            save_well_images=self._save_downsampled_well_images,
+            interpolation_method=self._downsampled_interpolation_method,
         )
 
         return job

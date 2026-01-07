@@ -990,10 +990,12 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             use_fluidics=self.use_fluidics,
             skip_saving=self.skip_saving,
             # Downsampled view generation parameters
-            generate_downsampled_views=_def.GENERATE_DOWNSAMPLED_WELL_IMAGES or _def.DISPLAY_PLATE_VIEW,
+            generate_downsampled_views=_def.SAVE_DOWNSAMPLED_WELL_IMAGES or _def.DISPLAY_PLATE_VIEW,
+            save_downsampled_well_images=_def.SAVE_DOWNSAMPLED_WELL_IMAGES,
             downsampled_well_resolutions_um=_def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
             downsampled_plate_resolution_um=_def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
             downsampled_z_projection=_def.DOWNSAMPLED_Z_PROJECTION,
+            downsampled_interpolation_method=_def.DOWNSAMPLED_INTERPOLATION_METHOD,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
