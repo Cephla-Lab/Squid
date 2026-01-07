@@ -277,18 +277,13 @@ class NDViewerTab(QWidget):
         Find the flat xarray FOV index for a given (well_id, fov_index).
 
         The xarray FOV dimension is a flat list of all FOVs across all wells.
-        We need to re-discover the FOV list to find the matching index.
+        Uses the viewer's public get_fov_list() API to get the FOV mapping.
         """
-        if self._dataset_path is None:
+        if self._viewer is None:
             return None
 
         try:
-            from control import ndviewer_light
-            from pathlib import Path
-
-            base_path = Path(self._dataset_path)
-            fmt = ndviewer_light.detect_format(base_path)
-            fovs = self._viewer._discover_fovs(base_path, fmt)
+            fovs = self._viewer.get_fov_list()
 
             # Find the flat index where region matches well_id and fov matches fov_index
             for flat_idx, fov_info in enumerate(fovs):
