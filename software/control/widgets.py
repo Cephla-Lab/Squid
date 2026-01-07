@@ -255,9 +255,8 @@ class NDViewerTab(QWidget):
             self._log.debug("go_to_fov: no viewer loaded")
             return
 
-        xarray_data = getattr(self._viewer, "_xarray_data", None)
-        if xarray_data is None or "fov" not in xarray_data.dims:
-            self._log.debug("go_to_fov: no xarray data or fov dimension")
+        if not self._viewer.has_fov_dimension():
+            self._log.debug("go_to_fov: no fov dimension available")
             return
 
         # Find the flat FOV index that matches (well_id, fov_index)
