@@ -1485,7 +1485,10 @@ class MultiPointWorker:
                                 "Failed to dispatch multiprocessing job!"
                             )
                     else:
-                        # Run synchronously and handle the result
+                        # Run synchronously - inject acquisition_info for jobs that need it
+                        # (mirrors JobRunner.dispatch() which injects for SaveOMETiffJob)
+                        if isinstance(job, SaveOMETiffJob):
+                            job.acquisition_info = self.acquisition_info
                         result = job.run()
                         if result is not None and isinstance(result, DownsampledViewResult):
                             self._log.info(f"Synchronous job returned DownsampledViewResult for well {result.well_id}")
