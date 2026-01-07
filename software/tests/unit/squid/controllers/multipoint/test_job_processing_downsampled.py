@@ -149,6 +149,7 @@ class TestDownsampledViewJob:
                 plate_resolution_um=10.0,
                 output_dir=output_dir,
                 channel_names=["BF"],
+                save_well_images=True,  # Enable file saving for this test
             )
 
             result = job.run()
@@ -263,6 +264,7 @@ class TestDownsampledViewJob:
                     plate_resolution_um=10.0,
                     output_dir=output_dir,
                     channel_names=channel_names,
+                    save_well_images=True,  # Enable file saving for this test
                 )
                 result = job.run()
                 results.append(result)
