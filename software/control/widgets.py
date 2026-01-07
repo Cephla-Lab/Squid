@@ -224,16 +224,9 @@ class NDViewerTab(QWidget):
                 self._viewer = ndviewer_light.LightweightViewer(dataset_path)
                 self._layout.addWidget(self._viewer, 1)
             else:
-                # Best-effort cleanup of open handles when switching datasets.
-                try:
-                    self._viewer._close_open_handles()
-                except Exception:
-                    pass
+                # load_dataset() handles cleanup of previous handles internally
                 self._viewer.load_dataset(dataset_path)
-                try:
-                    self._viewer._force_refresh()
-                except Exception:
-                    pass
+                self._viewer.refresh()
 
             self._viewer.setVisible(True)
             self._placeholder.setVisible(False)
