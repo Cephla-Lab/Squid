@@ -70,7 +70,7 @@ class MosaicWorker(QObject):
             if image.shape[0] <= 0 or image.shape[1] <= 0:
                 return
 
-            pixel_size_um = info.physical_size_x_um or info.physical_size_y_um
+            pixel_size_um = info.pixel_size_um
             if pixel_size_um is None or pixel_size_um <= 0:
                 return
 

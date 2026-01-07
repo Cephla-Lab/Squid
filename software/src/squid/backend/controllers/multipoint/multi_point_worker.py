@@ -1668,6 +1668,7 @@ class MultiPointWorker:
                 fov=fov,
                 configuration_idx=config_idx,
                 time_point=self.time_point,
+                pixel_size_um=self._pixel_size_um,
             )
             self._current_capture_info.set(current_capture_info)
         with self._timing.get_timer("send_trigger"):
@@ -1776,6 +1777,7 @@ class MultiPointWorker:
             fov=fov,
             configuration_idx=config.id,
             time_point=self.time_point,
+            pixel_size_um=self._pixel_size_um,
         )
 
         if len(i_size) == 3:

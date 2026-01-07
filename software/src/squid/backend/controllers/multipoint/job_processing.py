@@ -84,6 +84,7 @@ class CaptureInfo:
     configuration_idx: int
     z_piezo_um: Optional[float] = None
     time_point: Optional[int] = None
+    pixel_size_um: Optional[float] = None  # Per-tile pixel size for mosaic display
 
 
 @dataclass()
