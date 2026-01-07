@@ -874,14 +874,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageArrayDisplayWindow = core.ImageArrayDisplayWindow()
                 self.imageDisplayTabs.addTab(self.imageArrayDisplayWindow.widget, "Multichannel Acquisition")
 
-            # Embedded NDViewer (lightweight) - updated automatically when a new acquisition starts.
-            self.ndviewerTab = None
-            try:
-                self.ndviewerTab = widgets.NDViewerTab()
-                self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
-            except Exception:
-                self.log.exception("Failed to initialize NDViewer tab")
-
             self.napariMosaicDisplayWidget = None
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
@@ -895,9 +887,17 @@ class HighContentScreeningGui(QMainWindow):
                 self.napariPlateViewWidget = widgets.NapariPlateViewWidget(self.contrastManager)
                 self.imageDisplayTabs.addTab(self.napariPlateViewWidget, "Plate View")
 
-                # Connect plate view double-click to NDViewer navigation and tab switch
-                if self.ndviewerTab is not None:
-                    self.napariPlateViewWidget.signal_well_fov_clicked.connect(self._on_plate_view_fov_clicked)
+            # Embedded NDViewer (lightweight) - initialized AFTER napari widgets to avoid conflicts
+            self.ndviewerTab = None
+            try:
+                self.ndviewerTab = widgets.NDViewerTab()
+                self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
+            except Exception:
+                self.log.exception("Failed to initialize NDViewer tab")
+
+            # Connect plate view double-click to NDViewer navigation and tab switch
+            if self.napariPlateViewWidget is not None and self.ndviewerTab is not None:
+                self.napariPlateViewWidget.signal_well_fov_clicked.connect(self._on_plate_view_fov_clicked)
 
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()

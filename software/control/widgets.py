@@ -10727,8 +10727,17 @@ class NapariPlateViewWidget(QWidget):
                 edge_width=1,
                 name="_plate_boundaries",
             )
-            # Move boundaries layer to bottom so it doesn't interfere with clicks
+            # Make boundaries layer non-interactive so it doesn't intercept clicks
+            boundaries_layer = self.viewer.layers["_plate_boundaries"]
+            boundaries_layer.mouse_pan = False
+            boundaries_layer.mouse_zoom = False
+            # Move boundaries layer to bottom
             self.viewer.layers.move(len(self.viewer.layers) - 1, 0)
+            # Ensure an image layer is selected, not the shapes layer
+            for layer in reversed(self.viewer.layers):
+                if layer.name != "_plate_boundaries":
+                    self.viewer.layers.selection.active = layer
+                    break
 
     def extractWavelength(self, name):
         """Extract wavelength from channel name for colormap selection."""
