@@ -335,26 +335,92 @@ class WrapperWindow(QMainWindow):
         super().closeEvent(event)
 
 
-class CollapsibleGroupBox(QGroupBox):
-    higher_layout: QVBoxLayout
+class CollapsibleGroupBox(QWidget):
+    """A collapsible group box with arrow indicator for expand/collapse."""
+
     content: QVBoxLayout
-    content_widget: QWidget
+    content_widget: QFrame
 
-    def __init__(self, title: str) -> None:
-        super(CollapsibleGroupBox, self).__init__(title)
-        self.setCheckable(True)
-        self.setChecked(True)
-        self.higher_layout = QVBoxLayout()
-        self.content = QVBoxLayout()
-        # self.content.setAlignment(Qt.AlignTop)
-        self.content_widget = QWidget()
-        self.content_widget.setLayout(self.content)
-        self.higher_layout.addWidget(self.content_widget)
-        self.setLayout(self.higher_layout)
-        self.toggled.connect(self.toggle_content)
+    def __init__(self, title: str, collapsed: bool = False) -> None:
+        super().__init__()
+        self._collapsed = collapsed
+        self._title = title
 
-    def toggle_content(self, state: bool) -> None:
-        self.content_widget.setVisible(state)
+        # Main layout
+        from qtpy.QtWidgets import QPushButton
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 8)
+        main_layout.setSpacing(0)
+
+        # Header button with arrow
+        self._header = QPushButton()
+        self._header.setStyleSheet(
+            """
+            QPushButton {
+                text-align: left;
+                padding: 8px;
+                font-weight: bold;
+                background-color: palette(button);
+                border: 1px solid palette(mid);
+                border-bottom: none;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: palette(light);
+            }
+            """
+        )
+        self._header.clicked.connect(self._toggle)
+        main_layout.addWidget(self._header)
+
+        # Content widget with border to show grouping
+        self.content_widget = QFrame()
+        self.content_widget.setObjectName("collapsibleContent")
+        self.content_widget.setFrameShape(QFrame.StyledPanel)
+        self.content_widget.setStyleSheet(
+            """
+            QFrame#collapsibleContent {
+                border: 1px solid palette(mid);
+                border-top: none;
+                border-bottom-left-radius: 4px;
+                border-bottom-right-radius: 4px;
+                background-color: palette(base);
+            }
+            QFrame#collapsibleContent QLabel {
+                border: none;
+                background: transparent;
+            }
+            """
+        )
+        self.content = QVBoxLayout(self.content_widget)
+        self.content.setContentsMargins(15, 10, 10, 10)
+        main_layout.addWidget(self.content_widget)
+
+        # Set initial state
+        self._update_header()
+        self.content_widget.setVisible(not collapsed)
+
+    def _update_header(self) -> None:
+        arrow = "▼" if not self._collapsed else "▶"
+        self._header.setText(f"{arrow}  {self._title}")
+
+    def _toggle(self) -> None:
+        self._collapsed = not self._collapsed
+        self._update_header()
+        self.content_widget.setVisible(not self._collapsed)
+
+    def setCollapsed(self, collapsed: bool) -> None:
+        """Programmatically set collapsed state."""
+        if self._collapsed != collapsed:
+            self._collapsed = collapsed
+            self._update_header()
+            self.content_widget.setVisible(not collapsed)
+
+    def isCollapsed(self) -> bool:
+        """Return current collapsed state."""
+        return self._collapsed
 
 
 class PandasTableModel(QAbstractTableModel):
