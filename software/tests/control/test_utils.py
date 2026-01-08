@@ -45,9 +45,11 @@ def test_single_spot_detection():
     result = find_spot_location(image, mode=SpotDetectionMode.SINGLE)
 
     assert result is not None
-    detected_x, detected_y = result
+    detected_x, detected_y, intensity_profile = result
     assert abs(detected_x - spot_x) < 5
     assert abs(detected_y - spot_y) < 5
+    assert intensity_profile is not None
+    assert len(intensity_profile) == 400  # INTENSITY_PROFILE_HALF_WIDTH * 2
 
 
 def test_dual_spot_detection():
@@ -58,13 +60,13 @@ def test_dual_spot_detection():
     # Test right spot detection
     result = find_spot_location(image, mode=SpotDetectionMode.DUAL_RIGHT)
     assert result is not None
-    detected_x, detected_y = result
+    detected_x, detected_y, _ = result
     assert abs(detected_x - spots[1][0]) < 5
 
     # Test left spot detection
     result = find_spot_location(image, mode=SpotDetectionMode.DUAL_LEFT)
     assert result is not None
-    detected_x, detected_y = result
+    detected_x, detected_y, _ = result
     assert abs(detected_x - spots[0][0]) < 5
 
 
@@ -76,7 +78,7 @@ def test_multi_spot_detection():
     # Test rightmost spot detection
     result = find_spot_location(image, mode=SpotDetectionMode.MULTI_RIGHT)
     assert result
-    detected_x, detected_y = result
+    detected_x, detected_y, _ = result
     assert abs(detected_x - spots[2][0]) < 5
 
     # Test second from right spot detection

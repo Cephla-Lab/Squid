@@ -56,7 +56,7 @@ def check_image_from_disk(image_path: str):
             )
 
             if result is not None:
-                x, y = result
+                x, y, _ = result
                 print(f"Found spot at: ({x:.1f}, {y:.1f})")
             else:
                 print("No spot detected")
