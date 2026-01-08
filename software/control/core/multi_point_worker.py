@@ -604,6 +604,15 @@ class MultiPointWorker:
 
         if self._downsampled_view_manager is None:
             return
+
+        # Periodic memory logging every 20 wells
+        if not hasattr(self, "_well_count"):
+            self._well_count = 0
+        self._well_count += 1
+        if self._well_count % 20 == 0:
+            from control.core.memory_profiler import log_memory
+
+            log_memory(f"After {self._well_count} wells", level="INFO", include_children=True)
         try:
             self._downsampled_view_manager.update_well(
                 result.well_row,

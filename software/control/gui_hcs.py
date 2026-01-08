@@ -242,6 +242,12 @@ class QtMultiPointController(MultiPointController, QObject):
         # Skip ALL display-related emissions in performance mode to prevent memory accumulation
         # Qt's event queue can grow unbounded if GUI can't keep up with image emissions
         if getattr(self, "_performance_mode_enabled", False):
+            # Log occasionally to confirm this code path is active
+            if not hasattr(self, "_perf_mode_skip_count"):
+                self._perf_mode_skip_count = 0
+            self._perf_mode_skip_count += 1
+            if self._perf_mode_skip_count % 500 == 1:
+                self._log.debug(f"[PERF] Skipping image_to_display emit (count={self._perf_mode_skip_count})")
             # Only emit coordinates for progress tracking (lightweight)
             stepper_z_um = info.position.z_mm * 1000
             if IS_PIEZO_ONLY:

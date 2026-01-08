@@ -31,6 +31,28 @@ def get_process_memory_mb() -> float:
     return process.memory_info().rss / (1024 * 1024)
 
 
+def get_all_process_memory_mb() -> Tuple[float, List[Tuple[int, float]]]:
+    """Get memory usage for this process and all child processes.
+
+    Returns:
+        Tuple of (total_mb, [(child_pid, child_mb), ...])
+    """
+    process = psutil.Process(os.getpid())
+    main_mb = process.memory_info().rss / (1024 * 1024)
+    total_mb = main_mb
+    children = []
+
+    for child in process.children(recursive=True):
+        try:
+            child_mb = child.memory_info().rss / (1024 * 1024)
+            children.append((child.pid, child_mb))
+            total_mb += child_mb
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    return total_mb, children
+
+
 def get_system_memory_info() -> Dict[str, float]:
     """Get system memory info in MB."""
     mem = psutil.virtual_memory()
@@ -42,26 +64,40 @@ def get_system_memory_info() -> Dict[str, float]:
     }
 
 
-def log_memory(context: str = "", level: str = "INFO") -> float:
+def log_memory(context: str = "", level: str = "INFO", include_children: bool = False) -> float:
     """Log current memory usage with context.
 
     Args:
         context: Description of what's happening
         level: Log level (DEBUG, INFO, WARNING)
+        include_children: If True, also log child process memory
 
     Returns:
-        Current process memory in MB
+        Current process memory in MB (or total if include_children)
     """
     log = squid.logging.get_logger("MemoryProfiler")
 
-    proc_mb = get_process_memory_mb()
-    sys_info = get_system_memory_info()
-
-    msg = (
-        f"[MEM] {context}: process={proc_mb:.1f}MB, "
-        f"system_used={sys_info['used_mb']:.1f}MB ({sys_info['percent']:.1f}%), "
-        f"available={sys_info['available_mb']:.1f}MB"
-    )
+    if include_children:
+        total_mb, children = get_all_process_memory_mb()
+        proc_mb = get_process_memory_mb()
+        sys_info = get_system_memory_info()
+        children_str = ", ".join([f"child[{pid}]={mb:.1f}MB" for pid, mb in children]) if children else "none"
+        msg = (
+            f"[MEM] {context}: process={proc_mb:.1f}MB, children=[{children_str}], "
+            f"TOTAL={total_mb:.1f}MB, "
+            f"system_used={sys_info['used_mb']:.1f}MB ({sys_info['percent']:.1f}%), "
+            f"available={sys_info['available_mb']:.1f}MB"
+        )
+        result = total_mb
+    else:
+        proc_mb = get_process_memory_mb()
+        sys_info = get_system_memory_info()
+        msg = (
+            f"[MEM] {context}: process={proc_mb:.1f}MB, "
+            f"system_used={sys_info['used_mb']:.1f}MB ({sys_info['percent']:.1f}%), "
+            f"available={sys_info['available_mb']:.1f}MB"
+        )
+        result = proc_mb
 
     if level == "DEBUG":
         log.debug(msg)
@@ -70,7 +106,7 @@ def log_memory(context: str = "", level: str = "INFO") -> float:
     else:
         log.info(msg)
 
-    return proc_mb
+    return result
 
 
 def format_size(size_bytes: int) -> str:
