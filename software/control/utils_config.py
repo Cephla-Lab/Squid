@@ -63,6 +63,8 @@ class LaserAFConfig(BaseModel):
     reference_image: Optional[str] = None  # Stores base64 encoded reference image for cross-correlation check
     reference_image_shape: Optional[tuple] = None
     reference_image_dtype: Optional[str] = None
+    reference_intensity_profile: Optional[str] = None  # Base64 encoded 1D intensity profile for CC check
+    reference_intensity_profile_dtype: Optional[str] = None
     initialize_crop_width: int = 1200  # Width of the center crop used for initialization
     initialize_crop_height: int = 800  # Height of the center crop used for initialization
 
@@ -73,6 +75,14 @@ class LaserAFConfig(BaseModel):
             return None
         data = base64.b64decode(self.reference_image.encode("utf-8"))
         return np.frombuffer(data, dtype=np.dtype(self.reference_image_dtype)).reshape(self.reference_image_shape)
+
+    @property
+    def reference_intensity_profile_array(self) -> Optional[np.ndarray]:
+        """Convert stored base64 intensity profile data back to numpy array"""
+        if self.reference_intensity_profile is None:
+            return None
+        data = base64.b64decode(self.reference_intensity_profile.encode("utf-8"))
+        return np.frombuffer(data, dtype=np.dtype(self.reference_intensity_profile_dtype))
 
     @field_validator("spot_detection_mode", mode="before")
     @classmethod
@@ -94,6 +104,15 @@ class LaserAFConfig(BaseModel):
         self.reference_image_shape = image.shape
         self.reference_image_dtype = str(image.dtype)
         self.has_reference = True
+
+    def set_reference_intensity_profile(self, profile: Optional[np.ndarray]) -> None:
+        """Convert numpy array to base64 encoded string or clear if None"""
+        if profile is None:
+            self.reference_intensity_profile = None
+            self.reference_intensity_profile_dtype = None
+            return
+        self.reference_intensity_profile = base64.b64encode(profile.tobytes()).decode("utf-8")
+        self.reference_intensity_profile_dtype = str(profile.dtype)
 
     def model_dump(self, serialize=False, **kwargs):
         """Ensure proper serialization of enums to strings"""

@@ -51,10 +51,12 @@ class LaserAutofocusController(QObject):
 
         self.laser_af_properties = LaserAFConfig()
         self.reference_crop = None
+        self.reference_intensity_profile = None  # reference intensity profile for CC check
 
         self.spot_spacing_pixels = None  # spacing between the spots from the two interfaces (unit: pixel)
 
         self.image = None  # for saving the focus camera image for debugging when centroid cannot be found
+        self.intensity_profile = None  # temporary storage for intensity profile during set_reference
 
         # Load configurations if provided
         if self.laserAFSettingManager:
@@ -77,6 +79,7 @@ class LaserAutofocusController(QObject):
 
         if self.laser_af_properties.has_reference:
             self.reference_crop = self.laser_af_properties.reference_image_cropped
+            self.reference_intensity_profile = self.laser_af_properties.reference_intensity_profile_array
 
         self.camera.set_region_of_interest(
             self.laser_af_properties.x_offset,
@@ -301,7 +304,7 @@ class LaserAutofocusController(QObject):
             return finish_with(float("nan"))
 
         # get laser spot location
-        result = self._get_laser_spot_centroid()
+        result = self._get_laser_spot_centroid(check_intensity_correlation=True)
 
         if result is not None:
             # Spot found on first try
@@ -371,7 +374,7 @@ class LaserAutofocusController(QObject):
                 current_pos_um = target_pos_um
 
             # Attempt spot detection
-            result = self._get_laser_spot_centroid()
+            result = self._get_laser_spot_centroid(check_intensity_correlation=True)
 
             if result is not None:
                 displacement_um = self._get_displacement_from_centroid(result)
@@ -470,6 +473,7 @@ class LaserAutofocusController(QObject):
         # get laser spot location and image
         result = self._get_laser_spot_centroid()
         reference_image = self.image
+        reference_intensity_profile = self.intensity_profile
 
         # turn off the laser
         try:
@@ -483,17 +487,28 @@ class LaserAutofocusController(QObject):
             self._log.error("Failed to detect laser spot while setting reference")
             return False
 
+        if reference_intensity_profile is None:
+            self._log.warning("No intensity profile available for reference")
+            # Continue anyway - intensity profile is optional for backward compatibility
+
         x, y = result
 
         # Store cropped and normalized reference image
         center_y = int(reference_image.shape[0] / 2)
         x_start = max(0, int(x) - self.laser_af_properties.spot_crop_size // 2)
-        x_end = min(reference_image.shape[1], int(x) + self.laser_af_properties.spot_crop_size // 2)
+        x_end = min(
+            reference_image.shape[1],
+            int(x) + self.laser_af_properties.spot_crop_size // 2,
+        )
         y_start = max(0, center_y - self.laser_af_properties.spot_crop_size // 2)
-        y_end = min(reference_image.shape[0], center_y + self.laser_af_properties.spot_crop_size // 2)
+        y_end = min(
+            reference_image.shape[0],
+            center_y + self.laser_af_properties.spot_crop_size // 2,
+        )
 
         reference_crop = reference_image[y_start:y_end, x_start:x_end].astype(np.float32)
         self.reference_crop = (reference_crop - np.mean(reference_crop)) / np.max(reference_crop)
+        self.reference_intensity_profile = reference_intensity_profile
 
         self.signal_displacement_um.emit(0)
         self._log.info(f"Set reference position to ({x:.1f}, {y:.1f})")
@@ -502,11 +517,15 @@ class LaserAutofocusController(QObject):
             update={"x_reference": x, "has_reference": True}
         )  # We don't keep reference_crop here to avoid serializing it
 
-        # Update cached file. reference_crop needs to be saved.
+        # Update cached file. reference_crop and intensity_profile need to be saved.
         self.laserAFSettingManager.update_laser_af_settings(
             self.objectiveStore.current_objective,
-            {"x_reference": x + self.laser_af_properties.x_offset, "has_reference": True},
+            {
+                "x_reference": x + self.laser_af_properties.x_offset,
+                "has_reference": True,
+            },
             crop_image=self.reference_crop,
+            intensity_profile=reference_intensity_profile,
         )
         self.laserAFSettingManager.save_configurations(self.objectiveStore.current_objective)
 
@@ -590,18 +609,70 @@ class LaserAutofocusController(QObject):
 
         return True, correlation
 
+    def _check_intensity_profile_correlation(
+        self, intensity_profile: np.ndarray, debug_plot: bool = False
+    ) -> Tuple[bool, float]:
+        """Check if current intensity profile correlates well with reference.
+
+        Args:
+            intensity_profile: Current intensity profile to compare
+            debug_plot: If True, show a matplotlib plot comparing the profiles
+
+        Returns:
+            Tuple[bool, float]: (passed, correlation) where passed is True if correlation >= threshold
+        """
+        if self.reference_intensity_profile is None:
+            self._log.warning("No reference intensity profile available for comparison")
+            return True, float("nan")  # Pass if no reference (backward compatibility)
+
+        # Calculate normalized cross-correlation
+        correlation = np.corrcoef(intensity_profile.ravel(), self.reference_intensity_profile.ravel())[0, 1]
+        self._log.debug(f"Intensity profile correlation: {correlation:.3f}")
+
+        if debug_plot:
+            import matplotlib.pyplot as plt
+
+            fig, ax = plt.subplots(figsize=(10, 4))
+            x = np.arange(len(self.reference_intensity_profile))
+            ax.plot(x, self.reference_intensity_profile, label="Reference", alpha=0.8)
+            ax.plot(x, intensity_profile, label="Current", alpha=0.8)
+            ax.axhline(y=0, color="gray", linestyle="--", alpha=0.3)
+            ax.set_xlabel("Position (pixels from center)")
+            ax.set_ylabel("Normalized Intensity")
+            ax.set_title(f"Intensity Profile Comparison (correlation: {correlation:.3f})")
+            ax.legend()
+            plt.tight_layout()
+            plt.show()
+
+        passed = correlation >= control._def.INTENSITY_PROFILE_CORRELATION_THRESHOLD
+        if not passed:
+            self._log.warning(
+                f"Intensity profile correlation check failed: {correlation:.3f} < "
+                f"{control._def.INTENSITY_PROFILE_CORRELATION_THRESHOLD}"
+            )
+
+        return passed, correlation
+
     def get_new_frame(self):
         # IMPORTANT: This assumes that the autofocus laser is already on!
         self.camera.send_trigger(self.camera.get_exposure_time())
         return self.camera.read_frame()
 
     def _get_laser_spot_centroid(
-        self, remove_background: bool = False, use_center_crop: Optional[Tuple[int, int]] = None
+        self,
+        remove_background: bool = False,
+        use_center_crop: Optional[Tuple[int, int]] = None,
+        check_intensity_correlation: bool = False,
     ) -> Optional[Tuple[float, float]]:
         """Get the centroid location of the laser spot.
 
         Averages multiple measurements to improve accuracy. The number of measurements
         is controlled by LASER_AF_AVERAGING_N.
+
+        Args:
+            remove_background: Apply background removal using top-hat filter
+            use_center_crop: (width, height) to crop around center before detection
+            check_intensity_correlation: If True, verify intensity profile correlation with reference
 
         Returns:
             Optional[Tuple[float, float]]: (x,y) coordinates of spot centroid, or None if detection fails
@@ -612,6 +683,7 @@ class LaserAutofocusController(QObject):
         successful_detections = 0
         tmp_x = 0
         tmp_y = 0
+        intensity_profile = None
 
         image = None
         for i in range(self.laser_af_properties.laser_af_averaging_n):
@@ -653,13 +725,16 @@ class LaserAutofocusController(QObject):
                     )
                     continue
 
+                # Unpack result: (centroid_x, centroid_y, intensity_profile)
+                spot_x, spot_y, intensity_profile = result
+
                 if use_center_crop is not None:
                     x, y = (
-                        result[0] + (full_width - use_center_crop[0]) // 2,
-                        result[1] + (full_height - use_center_crop[1]) // 2,
+                        spot_x + (full_width - use_center_crop[0]) // 2,
+                        spot_y + (full_height - use_center_crop[1]) // 2,
                     )
                 else:
-                    x, y = result
+                    x, y = spot_x, spot_y
 
                 if (
                     self.laser_af_properties.has_reference
@@ -689,6 +764,16 @@ class LaserAutofocusController(QObject):
         if successful_detections <= 0:
             self._log.error(f"No successful detections")
             return None
+
+        # Perform intensity profile cross-correlation check if requested
+        if check_intensity_correlation:
+            if intensity_profile is not None:
+                passed, correlation = self._check_intensity_profile_correlation(intensity_profile)
+                if not passed:
+                    return None
+        else:
+            # Store the intensity profile for later use (e.g., when setting reference)
+            self.intensity_profile = intensity_profile
 
         # Calculate average position from successful detections
         x = tmp_x / successful_detections

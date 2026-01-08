@@ -25,6 +25,7 @@ from control._def import (
     LASER_AF_MIN_PEAK_DISTANCE,
     LASER_AF_MIN_PEAK_PROMINENCE,
     LASER_AF_SPOT_SPACING,
+    INTENSITY_PROFILE_HALF_WIDTH,
     SpotDetectionMode,
     FocusMeasureOperator,
 )
@@ -207,7 +208,7 @@ def find_spot_location(
     params: Optional[dict] = None,
     filter_sigma: Optional[int] = None,
     debug_plot: bool = False,
-) -> Optional[Tuple[float, float]]:
+) -> Optional[Tuple[float, float, np.ndarray]]:
     """Find the location of a spot in an image.
 
     Args:
@@ -224,7 +225,9 @@ def find_spot_location(
             - spot_spacing (int): Expected spacing between spots for multi-spot modes (default: 100)
 
     Returns:
-        Optional[Tuple[float, float]]: (x,y) coordinates of selected spot, or None if detection fails
+        Optional[Tuple[float, float, np.ndarray]]: (x, y, intensity_profile) where intensity_profile is a
+            1D array of length 400 (INTENSITY_PROFILE_HALF_WIDTH * 2) centered at the detected peak,
+            or None if detection fails
 
     Raises:
         ValueError: If image is invalid or mode is incompatible with detected spots
@@ -309,6 +312,22 @@ def find_spot_location(
         else:
             raise ValueError(f"Unknown spot detection mode: {mode}")
 
+        # Extract centered intensity profile (200 pixels on each side of peak)
+        profile_start = peak_x - INTENSITY_PROFILE_HALF_WIDTH
+        profile_end = peak_x + INTENSITY_PROFILE_HALF_WIDTH
+        profile_length = INTENSITY_PROFILE_HALF_WIDTH * 2
+
+        if profile_start < 0 or profile_end > len(x_intensity_profile):
+            # Handle edge cases with padding
+            centered_profile = np.zeros(profile_length, dtype=x_intensity_profile.dtype)
+            src_start = max(0, profile_start)
+            src_end = min(len(x_intensity_profile), profile_end)
+            dst_start = max(0, -profile_start)
+            dst_end = dst_start + (src_end - src_start)
+            centered_profile[dst_start:dst_end] = x_intensity_profile[src_start:src_end]
+        else:
+            centered_profile = x_intensity_profile[profile_start:profile_end].copy()
+
         if debug_plot:
             import matplotlib.pyplot as plt
 
@@ -354,7 +373,8 @@ def find_spot_location(
             plt.show()
 
         # Calculate centroid in window around selected peak
-        return _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
+        centroid_x, centroid_y = _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
+        return (centroid_x, centroid_y, centered_profile)
 
     except (ValueError, NotImplementedError) as e:
         raise e
