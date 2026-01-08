@@ -239,6 +239,20 @@ class QtMultiPointController(MultiPointController, QObject):
         self.signal_register_current_fov.emit(finish_pos.x_mm, finish_pos.y_mm)
 
     def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
+        # Skip ALL display-related emissions in performance mode to prevent memory accumulation
+        # Qt's event queue can grow unbounded if GUI can't keep up with image emissions
+        if getattr(self, "_performance_mode_enabled", False):
+            # Only emit coordinates for progress tracking (lightweight)
+            stepper_z_um = info.position.z_mm * 1000
+            if IS_PIEZO_ONLY:
+                z_for_plot = info.z_piezo_um if info.z_piezo_um is not None else 0
+            elif info.z_piezo_um is not None:
+                z_for_plot = stepper_z_um + info.z_piezo_um
+            else:
+                z_for_plot = stepper_z_um
+            self.signal_coordinates.emit(info.position.x_mm, info.position.y_mm, z_for_plot, info.region_id)
+            return
+
         self.image_to_display.emit(frame.frame)
         self.image_to_display_multi.emit(frame.frame, info.configuration.illumination_source)
         # Z for plot in μm: piezo-only uses piezo position, mixed mode combines stepper + piezo
@@ -250,11 +264,6 @@ class QtMultiPointController(MultiPointController, QObject):
         else:
             z_for_plot = stepper_z_um
         self.signal_coordinates.emit(info.position.x_mm, info.position.y_mm, z_for_plot, info.region_id)
-
-        # Skip napari layer updates completely in performance mode to prevent memory accumulation
-        # Even disconnected signals can cause memory issues when emitting large arrays
-        if getattr(self, "_performance_mode_enabled", False):
-            return
 
         if not self._napari_inited_for_this_acquisition:
             self._napari_inited_for_this_acquisition = True
