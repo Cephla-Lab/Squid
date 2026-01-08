@@ -171,6 +171,99 @@ class QtAutoFocusController(AutoFocusController, QObject):
         )
 
 
+class RateLimitedDisplayEmitter(QObject):
+    """Rate-limits display updates to prevent Qt event queue from growing unbounded.
+
+    Instead of emitting every frame, buffers the latest frame per channel and
+    emits on a timer. This keeps memory bounded while maintaining visual feedback.
+    """
+
+    def __init__(self, emit_interval_ms: int = 200, parent=None):
+        super().__init__(parent)
+        self._emit_interval_ms = emit_interval_ms
+        self._latest_frames = {}  # channel_name -> (frame_copy, info)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._emit_buffered)
+        self._emit_callbacks = []  # List of (callback_fn,) to call with (frame, info)
+        self._enabled = True
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+    def set_emit_interval(self, interval_ms: int):
+        """Set the emit interval in milliseconds. 0 = emit every frame."""
+        self._emit_interval_ms = interval_ms
+        if self._timer.isActive():
+            self._timer.setInterval(interval_ms)
+
+    def set_enabled(self, enabled: bool):
+        """Enable or disable rate limiting. When disabled, frames are emitted immediately."""
+        self._enabled = enabled
+        if not enabled and self._timer.isActive():
+            self._timer.stop()
+            self._latest_frames.clear()
+
+    def add_emit_callback(self, callback):
+        """Add a callback to be called when emitting frames. callback(frame, info)"""
+        self._emit_callbacks.append(callback)
+
+    def clear_callbacks(self):
+        """Remove all emit callbacks."""
+        self._emit_callbacks.clear()
+
+    def queue_frame(self, frame: np.ndarray, info: "CaptureInfo"):
+        """Queue a frame for rate-limited emission.
+
+        If rate limiting is disabled (interval=0), emits immediately.
+        Otherwise, buffers the frame and starts the timer if not running.
+        """
+        if not self._enabled:
+            return
+
+        channel_name = info.configuration.name
+
+        if self._emit_interval_ms <= 0:
+            # Emit immediately (no rate limiting)
+            for callback in self._emit_callbacks:
+                try:
+                    callback(frame, info)
+                except Exception as e:
+                    self._log.error(f"Error in emit callback: {e}")
+            return
+
+        # Buffer the latest frame for this channel (make a copy to avoid reference issues)
+        self._latest_frames[channel_name] = (frame.copy(), info)
+
+        # Start timer if not already running
+        if not self._timer.isActive():
+            self._timer.start(self._emit_interval_ms)
+
+    def _emit_buffered(self):
+        """Timer callback: emit all buffered frames and clear the buffer."""
+        if not self._latest_frames:
+            self._timer.stop()
+            return
+
+        for channel_name, (frame, info) in self._latest_frames.items():
+            for callback in self._emit_callbacks:
+                try:
+                    callback(frame, info)
+                except Exception as e:
+                    self._log.error(f"Error in emit callback for {channel_name}: {e}")
+
+        self._latest_frames.clear()
+
+    def stop(self):
+        """Stop the timer and clear buffered frames."""
+        if self._timer.isActive():
+            self._timer.stop()
+        self._latest_frames.clear()
+
+    def flush(self):
+        """Emit any buffered frames immediately and stop the timer."""
+        if self._latest_frames:
+            self._emit_buffered()
+        self.stop()
+
+
 class QtMultiPointController(MultiPointController, QObject):
     acquisition_finished = Signal()
     signal_acquisition_start = Signal()
@@ -224,9 +317,29 @@ class QtMultiPointController(MultiPointController, QObject):
 
         self._napari_inited_for_this_acquisition = False
 
+        # Rate-limited display emitter to prevent Qt event queue from growing unbounded
+        # Default 200ms interval = ~5 FPS display updates during acquisition
+        self._display_emitter = RateLimitedDisplayEmitter(emit_interval_ms=200, parent=self)
+        self._display_emitter.add_emit_callback(self._emit_display_signals)
+
+    def _emit_display_signals(self, frame: np.ndarray, info: CaptureInfo):
+        """Callback for rate-limited display updates. Emits all display-related signals."""
+        self.image_to_display.emit(frame)
+        self.image_to_display_multi.emit(frame, info.configuration.illumination_source)
+
+        if not self._napari_inited_for_this_acquisition:
+            self._napari_inited_for_this_acquisition = True
+            self.napari_layers_init.emit(frame.shape[0], frame.shape[1], frame.dtype)
+
+        objective_magnification = str(int(self.objectiveStore.get_current_objective_info()["magnification"]))
+        napari_layer_name = objective_magnification + "x " + info.configuration.name
+        self.napari_layers_update.emit(frame, info.position.x_mm, info.position.y_mm, info.z_index, napari_layer_name)
+
     def _signal_acquisition_start_fn(self, parameters: AcquisitionParameters):
         # TODO mpc napari signals
         self._napari_inited_for_this_acquisition = False
+        # Reset rate limiter for new acquisition
+        self._display_emitter.stop()
         if not self.run_acquisition_current_fov:
             self.signal_set_display_tabs.emit(self.selected_configurations, self.NZ, self.xy_mode)
         else:
@@ -234,34 +347,14 @@ class QtMultiPointController(MultiPointController, QObject):
         self.signal_acquisition_start.emit()
 
     def _signal_acquisition_finished_fn(self):
+        # Flush any remaining buffered frames before signaling completion
+        self._display_emitter.flush()
         self.acquisition_finished.emit()
         finish_pos = self.stage.get_pos()
         self.signal_register_current_fov.emit(finish_pos.x_mm, finish_pos.y_mm)
 
     def _signal_new_image_fn(self, frame: squid.abc.CameraFrame, info: CaptureInfo):
-        # Skip ALL display-related emissions in performance mode to prevent memory accumulation
-        # Qt's event queue can grow unbounded if GUI can't keep up with image emissions
-        if getattr(self, "_performance_mode_enabled", False):
-            # Log occasionally to confirm this code path is active
-            if not hasattr(self, "_perf_mode_skip_count"):
-                self._perf_mode_skip_count = 0
-            self._perf_mode_skip_count += 1
-            if self._perf_mode_skip_count % 500 == 1:
-                self._log.debug(f"[PERF] Skipping image_to_display emit (count={self._perf_mode_skip_count})")
-            # Only emit coordinates for progress tracking (lightweight)
-            stepper_z_um = info.position.z_mm * 1000
-            if IS_PIEZO_ONLY:
-                z_for_plot = info.z_piezo_um if info.z_piezo_um is not None else 0
-            elif info.z_piezo_um is not None:
-                z_for_plot = stepper_z_um + info.z_piezo_um
-            else:
-                z_for_plot = stepper_z_um
-            self.signal_coordinates.emit(info.position.x_mm, info.position.y_mm, z_for_plot, info.region_id)
-            return
-
-        self.image_to_display.emit(frame.frame)
-        self.image_to_display_multi.emit(frame.frame, info.configuration.illumination_source)
-        # Z for plot in μm: piezo-only uses piezo position, mixed mode combines stepper + piezo
+        # Always emit coordinates for progress tracking (lightweight)
         stepper_z_um = info.position.z_mm * 1000
         if IS_PIEZO_ONLY:
             z_for_plot = info.z_piezo_um if info.z_piezo_um is not None else 0
@@ -271,15 +364,13 @@ class QtMultiPointController(MultiPointController, QObject):
             z_for_plot = stepper_z_um
         self.signal_coordinates.emit(info.position.x_mm, info.position.y_mm, z_for_plot, info.region_id)
 
-        if not self._napari_inited_for_this_acquisition:
-            self._napari_inited_for_this_acquisition = True
-            self.napari_layers_init.emit(frame.frame.shape[0], frame.frame.shape[1], frame.frame.dtype)
+        # Skip ALL display updates in performance mode
+        if getattr(self, "_performance_mode_enabled", False):
+            return
 
-        objective_magnification = str(int(self.objectiveStore.get_current_objective_info()["magnification"]))
-        napri_layer_name = objective_magnification + "x " + info.configuration.name
-        self.napari_layers_update.emit(
-            frame.frame, info.position.x_mm, info.position.y_mm, info.z_index, napri_layer_name
-        )
+        # Queue frame for rate-limited display updates (default 200ms = ~5 FPS)
+        # This prevents Qt event queue from growing unbounded during fast acquisition
+        self._display_emitter.queue_frame(frame.frame, info)
 
     def _signal_current_configuration_fn(self, channel_mode: ChannelMode):
         self.signal_current_configuration.emit(channel_mode)
