@@ -206,6 +206,7 @@ class MultiPointWorker:
         self._save_downsampled_well_images = acquisition_parameters.save_downsampled_well_images
         self._plate_num_rows = acquisition_parameters.plate_num_rows
         self._plate_num_cols = acquisition_parameters.plate_num_cols
+        self._skip_plate_view_display_updates = acquisition_parameters.skip_plate_view_display_updates
         self._overlap_pixels: Optional[Tuple[int, int, int, int]] = None
         self._region_fov_counts: Dict[str, int] = {}  # Track total FOVs per region
 
@@ -618,7 +619,7 @@ class MultiPointWorker:
 
             # Skip plate view display updates in performance mode to prevent RAM accumulation
             # Each update copies the entire plate view (~64MB per channel) which can queue up
-            if self._acquisition_parameters.skip_plate_view_display_updates:
+            if self._skip_plate_view_display_updates:
                 t_signal = time.perf_counter()
                 self._log.debug(
                     f"[PERF] _handle_downsampled_view_result {result.well_id}: "
