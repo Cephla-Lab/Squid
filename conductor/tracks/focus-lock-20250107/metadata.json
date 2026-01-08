@@ -1,0 +1,33 @@
+{
+  "name": "Continuous Focus Lock System",
+  "created": "2025-01-07",
+  "status": "planning",
+  "priority": "high",
+  "description": "Implement continuous closed-loop focus lock with dockable status widget, gain-scheduled control, and piezo-only Z correction",
+  "supersedes": [
+    "focus_lock_20251226",
+    "continuous_focus_20251230"
+  ],
+  "references": [
+    "storm-control/hal4000/focusLock (Zhuang Lab, Harvard)"
+  ],
+  "key_features": [
+    "Mode-based operation (Off / Always On / Auto Lock)",
+    "Gain-scheduled proportional control",
+    "Buffer-based lock quality assessment",
+    "Dockable status widget visible alongside live imaging",
+    "Comprehensive quality metrics (SNR, RMS, drift rate)",
+    "Piezo-only Z control with range warnings"
+  ],
+  "files_to_create": [
+    "squid/core/config/focus_lock.py",
+    "squid/backend/controllers/autofocus/continuous_focus_lock.py",
+    "squid/ui/widgets/hardware/focus_lock_status.py"
+  ],
+  "files_to_modify": [
+    "squid/core/events.py",
+    "squid/ui/main_window.py",
+    "squid/application.py",
+    "squid/backend/controllers/multipoint/multi_point_worker.py"
+  ]
+}
