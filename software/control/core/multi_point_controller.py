@@ -27,6 +27,7 @@ from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
 import squid.logging
+from control.core.memory_profiler import log_memory
 
 
 NoOpCallbacks = MultiPointControllerFunctions(
@@ -594,6 +595,7 @@ class MultiPointController:
             updated_callbacks = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
 
             acquisition_params = self.build_params(scan_position_information=scan_position_information)
+            log_memory("ACQUISITION START: before worker creation", level="INFO")
             self.callbacks.signal_acquisition_start(acquisition_params)
             self.multiPointWorker = MultiPointWorker(
                 scope=self.microscope,
@@ -666,6 +668,7 @@ class MultiPointController:
 
     def _on_acquisition_completed(self):
         self._log.debug("MultiPointController._on_acquisition_completed called")
+        log_memory("ACQUISITION COMPLETE: before cleanup", level="INFO")
         # Note: Plate views are saved per timepoint in the worker's run_single_time_point method
 
         # restore the previous selected mode

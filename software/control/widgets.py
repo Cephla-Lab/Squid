@@ -12,6 +12,7 @@ import squid.logging
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.downsampled_views import format_well_id
+from control.core.memory_profiler import log_memory, MemoryTracker
 from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
@@ -9728,6 +9729,19 @@ class NapariMosaicDisplayWidget(QWidget):
 
         is_rgb = len(image.shape) == 3 and image.shape[2] == 3
         if layer.data.shape[:2] != (mosaic_height, mosaic_width):
+            # Memory profiling: log before resize
+            old_shape = layer.data.shape
+            num_layers = len([l for l in self.viewer.layers if l.name != "Manual ROI"])
+            bytes_per_pixel = 2 if layer.data.dtype == np.uint16 else (3 if is_rgb else 1)
+            old_size_mb = (old_shape[0] * old_shape[1] * bytes_per_pixel * num_layers) / (1024 * 1024)
+            new_size_mb = (mosaic_height * mosaic_width * bytes_per_pixel * num_layers) / (1024 * 1024)
+            log_memory(
+                f"MOSAIC RESIZE: {old_shape[:2]} -> ({mosaic_height}, {mosaic_width}), "
+                f"{num_layers} layers, old={old_size_mb:.1f}MB, new={new_size_mb:.1f}MB, "
+                f"peak={old_size_mb + new_size_mb:.1f}MB",
+                level="WARNING",
+            )
+
             # calculate offsets for existing data
             y_offset = int(math.floor((prev_top_left[0] - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
             x_offset = int(math.floor((prev_top_left[1] - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm))
@@ -9751,6 +9765,10 @@ class NapariMosaicDisplayWidget(QWidget):
                     else:
                         new_data[y_offset:y_end, x_offset:x_end] = mosaic.data[: y_end - y_offset, : x_end - x_offset]
                     mosaic.data = new_data
+
+            # Force GC after resize to free old arrays
+            gc.collect()
+            log_memory("MOSAIC RESIZE complete (after GC)", level="DEBUG")
 
             if "Manual ROI" in self.viewer.layers:
                 self.update_shape_layer_position(prev_top_left, self.top_left_coordinate)

@@ -22,6 +22,7 @@ import squid.abc
 import squid.logging
 from control.utils_config import ChannelMode
 from control.core import utils_ome_tiff_writer as ome_tiff_writer
+from control.core.memory_profiler import log_memory
 
 
 @dataclass
@@ -407,8 +408,16 @@ class DownsampledViewJob(Job):
         This method is safe to call even if no accumulators exist.
         Performance: O(1) - just clears the dictionaries.
         """
+        num_accumulators = len(cls._well_accumulators)
+        if num_accumulators > 0:
+            log_memory(f"ACCUMULATOR CLEAR: clearing {num_accumulators} well accumulators", level="WARNING")
         cls._well_accumulators.clear()
         cls._failed_wells.clear()
+        if num_accumulators > 0:
+            import gc
+
+            gc.collect()
+            log_memory("ACCUMULATOR CLEAR complete (after GC)", level="DEBUG")
 
     @classmethod
     def get_accumulator_count(cls) -> int:
@@ -452,6 +461,10 @@ class DownsampledViewJob(Job):
                 total_z_levels=self.total_z_levels,
                 z_projection_mode=self.z_projection_mode,
             )
+            # Log memory every 10 wells to track accumulator growth
+            num_wells = len(self._well_accumulators)
+            if num_wells % 10 == 0 or num_wells == 1:
+                log_memory(f"ACCUMULATOR: {num_wells} wells in memory (new: {self.well_id})", level="DEBUG")
 
         accumulator = self._well_accumulators[self.well_id]
         accumulator.add_tile(
