@@ -290,6 +290,10 @@ class QtMultiPointController(MultiPointController, QObject):
         )
 
     def _signal_plate_view_update_fn(self, plate_view_update: PlateViewUpdate):
+        # Skip plate view updates in performance mode to prevent memory accumulation
+        # Each update sends a copy of the entire plate view (~64MB per channel)
+        if getattr(self, "_performance_mode_enabled", False):
+            return
         self.plate_view_update.emit(
             plate_view_update.channel_idx,
             plate_view_update.channel_name,

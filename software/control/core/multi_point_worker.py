@@ -616,6 +616,17 @@ class MultiPointWorker:
                 f"with {len(result.well_images)} channels"
             )
 
+            # Skip plate view display updates in performance mode to prevent RAM accumulation
+            # Each update copies the entire plate view (~64MB per channel) which can queue up
+            if self._acquisition_parameters.skip_plate_view_display_updates:
+                t_signal = time.perf_counter()
+                self._log.debug(
+                    f"[PERF] _handle_downsampled_view_result {result.well_id}: "
+                    f"update_well={t_update - t_start:.3f}s, signals=SKIPPED (performance mode), "
+                    f"TOTAL={t_signal - t_start:.3f}s"
+                )
+                return
+
             # Emit plate view update for each channel
             for ch_idx, plate_image in enumerate(self._downsampled_view_manager.plate_view):
                 channel_name = (

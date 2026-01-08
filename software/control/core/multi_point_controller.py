@@ -664,6 +664,8 @@ class MultiPointController:
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
+            # Skip plate view display updates in performance mode to prevent RAM accumulation
+            skip_plate_view_display_updates=getattr(self, "_performance_mode_enabled", False),
         )
 
     def _on_acquisition_completed(self):

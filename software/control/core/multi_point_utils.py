@@ -64,6 +64,10 @@ class AcquisitionParameters:
     plate_num_rows: int = 8  # For 96-well plate
     plate_num_cols: int = 12  # For 96-well plate
 
+    # Performance mode: skip plate view display updates to prevent RAM accumulation
+    # When True, plate view is still computed and saved but not sent to GUI
+    skip_plate_view_display_updates: bool = False
+
     # XY mode for determining scan type
     xy_mode: str = "Current Position"  # "Current Position", "Select Wells", "Manual", "Load Coordinates"
 
