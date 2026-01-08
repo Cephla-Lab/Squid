@@ -105,6 +105,12 @@ class LaserAFConfig(BaseModel):
     reference_image: Optional[str] = Field(None, description="Base64-encoded reference image data")
     reference_image_shape: Optional[List[int]] = Field(None, description="Shape of reference image array")
     reference_image_dtype: Optional[str] = Field(None, description="Data type of reference image array")
+    reference_intensity_profile: Optional[str] = Field(
+        None, description="Base64-encoded 1D intensity profile for CC check"
+    )
+    reference_intensity_profile_dtype: Optional[str] = Field(
+        None, description="Data type of intensity profile array"
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -136,3 +142,20 @@ class LaserAFConfig(BaseModel):
         self.reference_image_shape = list(image.shape)
         self.reference_image_dtype = str(image.dtype)
         self.has_reference = True
+
+    @property
+    def reference_intensity_profile_array(self) -> Optional[np.ndarray]:
+        """Convert stored base64 intensity profile data back to numpy array."""
+        if self.reference_intensity_profile is None:
+            return None
+        data = base64.b64decode(self.reference_intensity_profile.encode("utf-8"))
+        return np.frombuffer(data, dtype=np.dtype(self.reference_intensity_profile_dtype))
+
+    def set_reference_intensity_profile(self, profile: Optional[np.ndarray]) -> None:
+        """Convert numpy array to base64 encoded string or clear if None."""
+        if profile is None:
+            self.reference_intensity_profile = None
+            self.reference_intensity_profile_dtype = None
+            return
+        self.reference_intensity_profile = base64.b64encode(profile.tobytes()).decode("utf-8")
+        self.reference_intensity_profile_dtype = str(profile.dtype)
