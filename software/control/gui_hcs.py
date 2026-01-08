@@ -251,6 +251,11 @@ class QtMultiPointController(MultiPointController, QObject):
             z_for_plot = stepper_z_um
         self.signal_coordinates.emit(info.position.x_mm, info.position.y_mm, z_for_plot, info.region_id)
 
+        # Skip napari layer updates completely in performance mode to prevent memory accumulation
+        # Even disconnected signals can cause memory issues when emitting large arrays
+        if getattr(self, "_performance_mode_enabled", False):
+            return
+
         if not self._napari_inited_for_this_acquisition:
             self._napari_inited_for_this_acquisition = True
             self.napari_layers_init.emit(frame.frame.shape[0], frame.frame.shape[1], frame.frame.dtype)
@@ -530,6 +535,8 @@ class HighContentScreeningGui(QMainWindow):
             laser_autofocus_controller=self.laserAutofocusController,
             fluidics=self.fluidics,
         )
+        # Initialize performance mode flag on controller
+        self.multipointController._performance_mode_enabled = self.performance_mode
 
     def setup_hardware(self):
         # Setup hardware components
@@ -1424,6 +1431,8 @@ class HighContentScreeningGui(QMainWindow):
         self.performanceModeToggle.setText(button_txt + " Performance Mode")
         self.updateNapariConnections()
         self.toggleNapariTabs()
+        # Sync performance mode to multipointController to skip napari signal emissions
+        self.multipointController._performance_mode_enabled = self.performance_mode
         self.signal_performance_mode_changed.emit(self.performance_mode)
         print(f"Performance mode {'enabled' if self.performance_mode else 'disabled'}")
 
