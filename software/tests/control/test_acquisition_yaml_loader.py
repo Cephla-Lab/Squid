@@ -3,7 +3,6 @@ Unit tests for control/acquisition_yaml_loader.py
 """
 
 import pytest
-from pathlib import Path
 
 from control.acquisition_yaml_loader import (
     AcquisitionYAMLData,
@@ -196,6 +195,18 @@ acquisition:
         with pytest.raises(Exception):  # yaml.YAMLError
             parse_acquisition_yaml(str(yaml_file))
 
+    def test_parse_invalid_widget_type_raises_error(self, tmp_path):
+        """Test that invalid widget_type raises ValueError."""
+        yaml_content = """
+acquisition:
+  widget_type: unknown
+"""
+        yaml_file = tmp_path / "test_invalid_widget.yaml"
+        yaml_file.write_text(yaml_content)
+
+        with pytest.raises(ValueError, match="Invalid widget_type"):
+            parse_acquisition_yaml(str(yaml_file))
+
     def test_parse_camera_binning_invalid_format(self, tmp_path):
         """Test that invalid camera binning format is handled."""
         yaml_content = """
@@ -220,6 +231,23 @@ objective:
     - 1
 """
         yaml_file = tmp_path / "test_binning_incomplete.yaml"
+        yaml_file.write_text(yaml_content)
+
+        result = parse_acquisition_yaml(str(yaml_file))
+        assert result.camera_binning is None
+
+    def test_parse_camera_binning_oversized(self, tmp_path):
+        """Test that oversized camera binning (more than 2 values) is handled."""
+        yaml_content = """
+acquisition:
+  widget_type: wellplate
+objective:
+  camera_binning:
+    - 1
+    - 2
+    - 3
+"""
+        yaml_file = tmp_path / "test_binning_oversized.yaml"
         yaml_file.write_text(yaml_content)
 
         result = parse_acquisition_yaml(str(yaml_file))

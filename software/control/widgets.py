@@ -389,10 +389,15 @@ class AcquisitionYAMLDropMixin:
         if hasattr(self, "_original_stylesheet"):
             self.setStyleSheet(self._original_stylesheet)
         files = [u.toLocalFile() for u in event.mimeData().urls()]
-        for file_path in files:
-            if file_path.endswith(".yaml") or file_path.endswith(".yml"):
-                self._load_acquisition_yaml(file_path)
-                break  # Only load the first YAML file
+        yaml_files = [f for f in files if f.endswith(".yaml") or f.endswith(".yml")]
+        if yaml_files:
+            if len(yaml_files) > 1 and hasattr(self, "_log"):
+                self._log.warning(
+                    "Multiple YAML files dropped (%d). Only loading the first: %s",
+                    len(yaml_files),
+                    yaml_files[0],
+                )
+            self._load_acquisition_yaml(yaml_files[0])
         event.accept()
 
     def _get_expected_widget_type(self) -> str:
@@ -432,8 +437,12 @@ class AcquisitionYAMLDropMixin:
             camera = getattr(self.multipointController, "camera", None)
             if camera and hasattr(camera, "get_binning"):
                 current_binning = tuple(camera.get_binning())
-        except Exception:
-            self._log.debug("Could not get camera binning for validation")
+        except Exception as e:
+            self._log.warning(
+                "Could not get camera binning for validation; using default %s: %s",
+                current_binning,
+                e,
+            )
 
         validation = validate_hardware(yaml_data, self.objectiveStore.current_objective, current_binning)
 
@@ -5446,7 +5455,15 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 x, y, z = center[0], center[1], center[2]
             elif len(center) == 2:
                 x, y = center[0], center[1]
-                z = self.stage.get_pos().z_mm
+                # Get current stage Z if available, otherwise use 0
+                stage = getattr(self, "stage", None)
+                if stage is not None:
+                    try:
+                        z = stage.get_pos().z_mm
+                    except (AttributeError, Exception):
+                        z = 0.0
+                else:
+                    z = 0.0
             else:
                 continue
 

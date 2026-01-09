@@ -174,9 +174,13 @@ def _save_acquisition_yaml(
     }
 
     yaml_path = os.path.join(experiment_path, "acquisition.yaml")
-    with open(yaml_path, "w") as f:
-        f.write(f"# Acquisition Parameters - {params.experiment_ID}\n\n")
-        yaml.dump(yaml_dict, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    try:
+        with open(yaml_path, "w", encoding="utf-8") as f:
+            f.write(f"# Acquisition Parameters - {params.experiment_ID}\n\n")
+            yaml.dump(yaml_dict, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    except (OSError, yaml.YAMLError) as exc:
+        _log = squid.logging.get_logger(__name__)
+        _log.error("Failed to write acquisition YAML file '%s': %s", yaml_path, exc)
 
 
 class MultiPointController:

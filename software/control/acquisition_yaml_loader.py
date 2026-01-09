@@ -80,6 +80,12 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     wellplate_scan = data.get("wellplate_scan", {})
     flexible_scan = data.get("flexible_scan", {})
 
+    # Validate widget_type
+    VALID_WIDGET_TYPES = ("wellplate", "flexible")
+    widget_type = acq.get("widget_type", "wellplate")
+    if widget_type not in VALID_WIDGET_TYPES:
+        raise ValueError(f"Invalid widget_type '{widget_type}'. Must be one of: {VALID_WIDGET_TYPES}")
+
     # Parse camera binning
     binning = obj.get("camera_binning")
     if binning and isinstance(binning, list) and len(binning) == 2:
@@ -102,7 +108,7 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
         scan_shape = wellplate_regions[0].get("shape")
 
     return AcquisitionYAMLData(
-        widget_type=acq.get("widget_type", "wellplate"),
+        widget_type=widget_type,
         xy_mode=acq.get("xy_mode", "Select Wells"),
         # Objective info
         objective_name=obj.get("name"),
