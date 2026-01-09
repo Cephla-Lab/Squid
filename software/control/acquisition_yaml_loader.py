@@ -62,7 +62,7 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     Raises:
         FileNotFoundError: If file doesn't exist
         yaml.YAMLError: If file is not valid YAML
-        KeyError: If required fields are missing
+        ValueError: If file is empty or has invalid widget_type
     """
     with open(file_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
