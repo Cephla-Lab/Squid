@@ -362,12 +362,34 @@ class AcquisitionYAMLDropMixin:
     4. Implement `_apply_yaml_settings(yaml_data)` to apply settings to the widget
     """
 
+    def _is_valid_yaml_drop(self, file_path: str) -> bool:
+        """Check if the path is a valid YAML file or a folder containing acquisition.yaml."""
+        if file_path.endswith(".yaml") or file_path.endswith(".yml"):
+            return True
+        # Check if it's a directory containing acquisition.yaml
+        if os.path.isdir(file_path):
+            yaml_path = os.path.join(file_path, "acquisition.yaml")
+            if os.path.isfile(yaml_path):
+                return True
+        return False
+
+    def _resolve_yaml_path(self, file_path: str) -> str:
+        """Resolve the actual YAML file path from a file or folder."""
+        if file_path.endswith(".yaml") or file_path.endswith(".yml"):
+            return file_path
+        # Check if it's a directory containing acquisition.yaml
+        if os.path.isdir(file_path):
+            yaml_path = os.path.join(file_path, "acquisition.yaml")
+            if os.path.isfile(yaml_path):
+                return yaml_path
+        return file_path
+
     def dragEnterEvent(self, event):
-        """Handle drag enter event for YAML file drops."""
+        """Handle drag enter event for YAML file or folder drops."""
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 file_path = url.toLocalFile()
-                if file_path.endswith(".yaml") or file_path.endswith(".yml"):
+                if self._is_valid_yaml_drop(file_path):
                     event.accept()
                     # Visual feedback - dashed border (store original for restore)
                     if not hasattr(self, "_original_stylesheet"):
@@ -385,19 +407,19 @@ class AcquisitionYAMLDropMixin:
         event.accept()
 
     def dropEvent(self, event):
-        """Handle drop event for YAML file."""
+        """Handle drop event for YAML file or folder."""
         if hasattr(self, "_original_stylesheet"):
             self.setStyleSheet(self._original_stylesheet)
-        files = [u.toLocalFile() for u in event.mimeData().urls()]
-        yaml_files = [f for f in files if f.endswith(".yaml") or f.endswith(".yml")]
-        if yaml_files:
-            if len(yaml_files) > 1 and hasattr(self, "_log"):
+        paths = [u.toLocalFile() for u in event.mimeData().urls()]
+        yaml_paths = [self._resolve_yaml_path(p) for p in paths if self._is_valid_yaml_drop(p)]
+        if yaml_paths:
+            if len(yaml_paths) > 1 and hasattr(self, "_log"):
                 self._log.warning(
-                    "Multiple YAML files dropped (%d). Only loading the first: %s",
-                    len(yaml_files),
-                    yaml_files[0],
+                    "Multiple YAML files/folders dropped (%d). Only loading the first: %s",
+                    len(yaml_paths),
+                    yaml_paths[0],
                 )
-            self._load_acquisition_yaml(yaml_files[0])
+            self._load_acquisition_yaml(yaml_paths[0])
         event.accept()
 
     def _get_expected_widget_type(self) -> str:
