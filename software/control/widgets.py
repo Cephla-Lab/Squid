@@ -6704,19 +6704,25 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         if time_checked and not z_checked:
             # Time lapse selected but Z stack not - show "Z stack not selected" message
             self.z_not_selected_label.setVisible(True)
+            self.time_not_selected_label.setVisible(False)
             # Hide actual Z controls
             for i in range(self.dz_layout.count()):
                 widget = self.dz_layout.itemAt(i).widget()
                 if widget:
                     widget.setVisible(False)
+            # Show Time controls
+            self.show_time_controls(True)
         elif z_checked and not time_checked:
             # Z stack selected but Time lapse not - show "Time lapse not selected" message
             self.time_not_selected_label.setVisible(True)
+            self.z_not_selected_label.setVisible(False)
             # Hide actual Time controls
             for i in range(self.dt_layout.count()):
                 widget = self.dt_layout.itemAt(i).widget()
                 if widget:
                     widget.setVisible(False)
+            # Show Z controls
+            self.show_z_controls(True)
         else:
             # Both selected or both unselected - hide informational labels
             self.z_not_selected_label.setVisible(False)
