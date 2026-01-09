@@ -75,11 +75,9 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     obj = data.get("objective", {})
     z_stack = data.get("z_stack", {})
     time_series = data.get("time_series", {})
-    grid = data.get("grid", {})  # Legacy format fallback
     channels = data.get("channels", [])
     autofocus = data.get("autofocus", {})
     wellplate_scan = data.get("wellplate_scan", {})
-    scan_positions = data.get("scan_positions", {})  # Legacy format fallback
     flexible_scan = data.get("flexible_scan", {})
 
     # Validate widget_type
@@ -98,29 +96,16 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     # Determine overlap_percent from the appropriate section
     if wellplate_scan:
         overlap = wellplate_scan.get("overlap_percent", 10.0)
-    elif scan_positions:
-        overlap = scan_positions.get("overlap_percent", 10.0)
     elif flexible_scan:
         overlap = flexible_scan.get("overlap_percent", 10.0)
     else:
         overlap = 10.0
 
-    # Get scan shape and regions from wellplate_scan or legacy scan_positions
+    # Get scan shape from first region if available
     scan_shape = None
-    wellplate_regions = wellplate_scan.get("regions") or scan_positions.get("regions")
+    wellplate_regions = wellplate_scan.get("regions")
     if wellplate_regions and len(wellplate_regions) > 0:
         scan_shape = wellplate_regions[0].get("shape")
-
-    # Parse Z-stack settings (prefer z_stack section, fall back to grid for legacy format)
-    nz = z_stack.get("nz") if "nz" in z_stack else grid.get("nz", 1)
-    delta_z_mm = z_stack.get("delta_z_mm") if "delta_z_mm" in z_stack else grid.get("delta_z_mm", 0.001)
-
-    # Parse time series settings (prefer time_series section, fall back to grid for legacy format)
-    nt = time_series.get("nt") if "nt" in time_series else grid.get("nt", 1)
-    delta_t_s = time_series.get("delta_t_s") if "delta_t_s" in time_series else grid.get("delta_t_s", 0.0)
-
-    # Parse scan_size_mm (prefer wellplate_scan, fall back to scan_positions)
-    scan_size_mm = wellplate_scan.get("scan_size_mm") or scan_positions.get("scan_size_mm")
 
     return AcquisitionYAMLData(
         widget_type=widget_type,
@@ -131,27 +116,27 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
         objective_pixel_size_um=obj.get("pixel_size_um"),
         camera_binning=camera_binning,
         # Z-stack (convert mm to um)
-        nz=nz,
-        delta_z_um=delta_z_mm * 1000,
+        nz=z_stack.get("nz", 1),
+        delta_z_um=z_stack.get("delta_z_mm", 0.001) * 1000,
         z_stacking_config=z_stack.get("config", "FROM BOTTOM"),
         # Time series
-        nt=nt,
-        delta_t_s=delta_t_s,
+        nt=time_series.get("nt", 1),
+        delta_t_s=time_series.get("delta_t_s", 0.0),
         # Channels
         channel_names=[ch.get("name") for ch in channels if ch.get("name")],
         # Autofocus
         contrast_af=autofocus.get("contrast_af", False),
         laser_af=autofocus.get("laser_af", False),
         # Wellplate-specific
-        scan_size_mm=scan_size_mm,
+        scan_size_mm=wellplate_scan.get("scan_size_mm"),
         overlap_percent=overlap,
         scan_shape=scan_shape,
         wellplate_regions=wellplate_regions,
         # Flexible-specific
-        nx=flexible_scan.get("nx") or grid.get("nx", 1),
-        ny=flexible_scan.get("ny") or grid.get("ny", 1),
-        delta_x_mm=flexible_scan.get("delta_x_mm") or grid.get("delta_x_mm", 0.9),
-        delta_y_mm=flexible_scan.get("delta_y_mm") or grid.get("delta_y_mm", 0.9),
+        nx=flexible_scan.get("nx", 1),
+        ny=flexible_scan.get("ny", 1),
+        delta_x_mm=flexible_scan.get("delta_x_mm", 0.9),
+        delta_y_mm=flexible_scan.get("delta_y_mm", 0.9),
         flexible_positions=flexible_scan.get("positions"),
     )
 
