@@ -155,8 +155,8 @@ wellplate_scan:
         assert result["started"] is True
         # Verify scan_coordinates.clear_regions was called
         mock_server.scan_coordinates.clear_regions.assert_called_once()
-        # Verify add_flexible_region was called (for override wells)
-        assert mock_server.scan_coordinates.add_flexible_region.called
+        # Verify add_region was called (for wellplate mode with wells override)
+        assert mock_server.scan_coordinates.add_region.called
 
     def test_multipoint_controller_settings(self, mock_server, yaml_file):
         """Test that MultiPointController is configured correctly from YAML."""

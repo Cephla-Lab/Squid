@@ -980,6 +980,9 @@ class MicroscopeControlServer:
         2. Wellplate regions from YAML
         3. Flexible positions from YAML
 
+        For wellplate mode, uses add_region() with scan_size_mm to calculate the grid.
+        For flexible mode, uses add_flexible_region() with explicit Nx/Ny.
+
         Raises ValueError if no regions are specified.
         """
         import control._def
@@ -987,8 +990,12 @@ class MicroscopeControlServer:
         # Clear existing regions
         self.scan_coordinates.clear_regions()
 
+        # Determine scan parameters for wellplate mode
+        scan_size_mm = yaml_data.scan_size_mm or 2.0  # Default scan size
+        scan_shape = yaml_data.scan_shape or "Square"
+
         if wells:
-            # Wells override provided - parse them
+            # Wells override provided - parse them (wellplate mode)
             wellplate_format = raw_yaml.get("sample", {}).get("wellplate_format", "96 well plate")
             wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
             well_coords = self._parse_wells(wells, wellplate_settings)
@@ -999,29 +1006,39 @@ class MicroscopeControlServer:
             current_z = self.microscope.stage.get_pos().z_mm
 
             for well_id, (well_x, well_y) in well_coords.items():
-                self.scan_coordinates.add_flexible_region(
-                    region_id=well_id,
+                # Use add_region for wellplate mode - calculates grid from scan_size_mm
+                self.scan_coordinates.add_region(
+                    well_id=well_id,
                     center_x=well_x,
                     center_y=well_y,
-                    center_z=current_z,
-                    Nx=yaml_data.nx,
-                    Ny=yaml_data.ny,
+                    scan_size_mm=scan_size_mm,
                     overlap_percent=yaml_data.overlap_percent,
+                    shape=scan_shape,
                 )
+                # Update z coordinate (add_region uses current stage z)
+                if well_id in self.scan_coordinates.region_centers:
+                    self.scan_coordinates.region_centers[well_id][2] = current_z
+
         elif yaml_data.wellplate_regions:
-            # Use regions from YAML
+            # Use wellplate regions from YAML
             for region in yaml_data.wellplate_regions:
                 name = region.get("name", "region")
                 center = region.get("center_mm", [0, 0, 0])
-                self.scan_coordinates.add_flexible_region(
-                    region_id=name,
+                region_z = center[2] if len(center) > 2 else self.microscope.stage.get_pos().z_mm
+
+                # Use add_region for wellplate mode - calculates grid from scan_size_mm
+                self.scan_coordinates.add_region(
+                    well_id=name,
                     center_x=center[0],
                     center_y=center[1],
-                    center_z=center[2] if len(center) > 2 else self.microscope.stage.get_pos().z_mm,
-                    Nx=yaml_data.nx,
-                    Ny=yaml_data.ny,
+                    scan_size_mm=scan_size_mm,
                     overlap_percent=yaml_data.overlap_percent,
+                    shape=region.get("shape", scan_shape),
                 )
+                # Update z coordinate from YAML (add_region uses current stage z)
+                if name in self.scan_coordinates.region_centers:
+                    self.scan_coordinates.region_centers[name][2] = region_z
+
         elif yaml_data.flexible_positions:
             # Use flexible positions from YAML
             for pos in yaml_data.flexible_positions:
