@@ -302,12 +302,11 @@ class LaserAutofocusController(QObject):
         x, y = centroid
         return (x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
 
-    def measure_displacement(self, search_for_spot: bool = True, debug_plot: bool = False) -> float:
+    def measure_displacement(self, search_for_spot: bool = True) -> float:
         """Measure the displacement of the laser spot from the reference position.
 
         Args:
             search_for_spot: If True, search for spot if not found at current position
-            debug_plot: If True, show debug plots for intensity profile RMSE check
 
         Returns:
             float: Displacement in micrometers, or float('nan') if measurement fails
@@ -324,7 +323,7 @@ class LaserAutofocusController(QObject):
             return finish_with(float("nan"))
 
         # get laser spot location
-        result = self._get_laser_spot_centroid(check_intensity_correlation=True, debug_plot=debug_plot)
+        result = self._get_laser_spot_centroid(check_intensity_correlation=True)
 
         if result is not None:
             # Spot found on first try
@@ -394,7 +393,7 @@ class LaserAutofocusController(QObject):
                 current_pos_um = target_pos_um
 
             # Attempt spot detection
-            result = self._get_laser_spot_centroid(check_intensity_correlation=True, debug_plot=debug_plot)
+            result = self._get_laser_spot_centroid(check_intensity_correlation=True)
 
             if result is not None:
                 displacement_um = self._get_displacement_from_centroid(result)
@@ -418,12 +417,11 @@ class LaserAutofocusController(QObject):
             self._log.exception("Turning off AF laser timed out! Laser may still be on.")
         return finish_with(float("nan"))
 
-    def move_to_target(self, target_um: float, debug_plot: bool = False) -> bool:
+    def move_to_target(self, target_um: float) -> bool:
         """Move the stage to reach a target displacement from reference position.
 
         Args:
             target_um: Target displacement in micrometers
-            debug_plot: If True, show debug plots for cross-correlation check
 
         Returns:
             bool: True if move was successful, False if measurement failed or displacement was out of range
@@ -438,7 +436,7 @@ class LaserAutofocusController(QObject):
         else:
             original_z_um = self.stage.get_pos().z_mm * 1000
 
-        current_displacement_um = self.measure_displacement(debug_plot=debug_plot)
+        current_displacement_um = self.measure_displacement()
         self._log.info(f"Current laser AF displacement: {current_displacement_um:.1f} μm")
 
         if math.isnan(current_displacement_um):
@@ -455,7 +453,7 @@ class LaserAutofocusController(QObject):
         self._move_z(um_to_move)
 
         # Verify using cross-correlation that spot is in same location as reference
-        cc_result, correlation = self._verify_spot_alignment(debug_plot=debug_plot)
+        cc_result, correlation = self._verify_spot_alignment()
         self.signal_cross_correlation.emit(correlation)
         if not cc_result:
             self._log.warning("Cross correlation check failed - spots not well aligned")
@@ -595,15 +593,12 @@ class LaserAutofocusController(QObject):
         self.is_initialized = False
         self.load_cached_configuration()
 
-    def _verify_spot_alignment(self, debug_plot: bool = False) -> Tuple[bool, np.array]:
+    def _verify_spot_alignment(self) -> Tuple[bool, np.array]:
         """Verify laser spot alignment using cross-correlation with reference image.
 
         Captures current laser spot image and compares it with the reference image
         using normalized cross-correlation. Images are cropped around the expected
         spot location and normalized by maximum intensity before comparison.
-
-        Args:
-            debug_plot: If True, show matplotlib plot comparing the two image crops
 
         Returns:
             bool: True if spots are well aligned (correlation > CORRELATION_THRESHOLD), False otherwise
@@ -663,7 +658,7 @@ class LaserAutofocusController(QObject):
 
         self._log.info(f"Cross correlation with reference: {correlation:.3f}")
 
-        if debug_plot:
+        if False:  # Set to True to enable debug plot
             import matplotlib.pyplot as plt
 
             fig, axes = plt.subplots(1, 3, figsize=(12, 4))
@@ -722,14 +717,11 @@ class LaserAutofocusController(QObject):
 
         return rmse, {"rmse": rmse}
 
-    def _check_intensity_profile_match(
-        self, intensity_profile: np.ndarray, debug_plot: bool = False
-    ) -> Tuple[bool, float]:
+    def _check_intensity_profile_match(self, intensity_profile: np.ndarray) -> Tuple[bool, float]:
         """Check if current intensity profile matches reference using RMSE score.
 
         Args:
             intensity_profile: Current intensity profile to compare
-            debug_plot: If True, show a matplotlib plot comparing the profiles
 
         Returns:
             Tuple[bool, float]: (passed, score) where passed is True if score <= threshold
@@ -744,7 +736,7 @@ class LaserAutofocusController(QObject):
         )
         self._log.debug(f"Intensity profile RMSE: {score:.3f}")
 
-        if debug_plot:
+        if False:  # Set to True to enable debug plot
             import matplotlib.pyplot as plt
 
             fig, ax = plt.subplots(figsize=(10, 4))
@@ -778,7 +770,6 @@ class LaserAutofocusController(QObject):
         remove_background: bool = False,
         use_center_crop: Optional[Tuple[int, int]] = None,
         check_intensity_correlation: bool = False,
-        debug_plot: bool = False,
     ) -> Optional[Tuple[float, float]]:
         """Get the centroid location of the laser spot.
 
@@ -789,7 +780,6 @@ class LaserAutofocusController(QObject):
             remove_background: Apply background removal using top-hat filter
             use_center_crop: (width, height) to crop around center before detection
             check_intensity_correlation: If True, verify intensity profile correlation with reference
-            debug_plot: If True, show debug plot for intensity profile RMSE check
 
         Returns:
             Optional[Tuple[float, float]]: (x,y) coordinates of spot centroid, or None if detection fails
@@ -895,7 +885,7 @@ class LaserAutofocusController(QObject):
         # Perform intensity profile match check if requested
         if check_intensity_correlation:
             if intensity_profile is not None:
-                passed, score = self._check_intensity_profile_match(intensity_profile, debug_plot=debug_plot)
+                passed, score = self._check_intensity_profile_match(intensity_profile)
                 if not passed:
                     return None
         else:
