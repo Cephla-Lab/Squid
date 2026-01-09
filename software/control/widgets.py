@@ -4116,7 +4116,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.setAcceptDrops(True)  # Enable drag-and-drop for loading acquisition YAML
+        # Enable drag-and-drop so we can warn users that flexible YAML loading isn't supported yet.
+        self.setAcceptDrops(True)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.acquisition_start_time = None
         self.last_used_locations = None
@@ -5391,6 +5392,26 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
     # ========== Drag-and-Drop for Loading Acquisition YAML ==========
     # Uses AcquisitionYAMLDropMixin for drag-drop handling
+    def dropEvent(self, event):
+        if hasattr(self, "_original_stylesheet"):
+            self.setStyleSheet(self._original_stylesheet)
+
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+
+        paths = [url.toLocalFile() for url in event.mimeData().urls()]
+        yaml_paths = [self._resolve_yaml_path(path) for path in paths if self._is_valid_yaml_drop(path)]
+        if not yaml_paths:
+            event.ignore()
+            return
+
+        QMessageBox.information(
+            self,
+            "Not Supported",
+            "Flexible multipoint YAML drag-and-drop is not supported yet.",
+        )
+        event.acceptProposedAction()
 
     def _get_expected_widget_type(self) -> str:
         """Return the expected widget_type for this widget."""
