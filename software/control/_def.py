@@ -602,7 +602,7 @@ LASER_AF_RANGE = 100
 DISPLACEMENT_SUCCESS_WINDOW_UM = 1.0
 SPOT_CROP_SIZE = 100
 CORRELATION_THRESHOLD = 0.7
-INTENSITY_PROFILE_CORRELATION_THRESHOLD = 0.6  # Threshold for intensity profile CC check
+INTENSITY_PROFILE_RMSE_THRESHOLD = 1.0  # Maximum RMSE score for intensity profile match (lower is better)
 INTENSITY_PROFILE_HALF_WIDTH = 200  # Half-width of centered intensity profile (total length = 400)
 PIXEL_TO_UM_CALIBRATION_DISTANCE = 6.0
 LASER_AF_Y_WINDOW = 96

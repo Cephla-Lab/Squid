@@ -81,6 +81,20 @@ class LaserAutofocusController(QObject):
             self.reference_crop = self.laser_af_properties.reference_image_cropped
             self.reference_intensity_profile = self.laser_af_properties.reference_intensity_profile_array
 
+            # Invalidate reference if either crop image or intensity profile is missing
+            if self.reference_crop is None or self.reference_intensity_profile is None:
+                missing = []
+                if self.reference_crop is None:
+                    missing.append("reference image")
+                if self.reference_intensity_profile is None:
+                    missing.append("intensity profile")
+                self._log.warning(
+                    f"Loaded laser AF profile is missing {', '.join(missing)}. " "Please re-set reference."
+                )
+                self.laser_af_properties = self.laser_af_properties.model_copy(update={"has_reference": False})
+                self.reference_crop = None
+                self.reference_intensity_profile = None
+
         self.camera.set_region_of_interest(
             self.laser_af_properties.x_offset,
             self.laser_af_properties.y_offset,
@@ -609,25 +623,66 @@ class LaserAutofocusController(QObject):
 
         return True, correlation
 
-    def _check_intensity_profile_correlation(
+    def _compute_intensity_profile_rmse(
+        self, y: np.ndarray, r: np.ndarray, edge_frac: float = 0.1, k: float = 3.0, lam: float = 0.5
+    ) -> Tuple[float, dict]:
+        """Compute RMSE-based match score between two intensity profiles.
+
+        Uses log-transformed RMSE with automatic delta estimation from edge noise,
+        plus optional derivative term for shape matching.
+
+        Args:
+            y: Current intensity profile
+            r: Reference intensity profile
+            edge_frac: Fraction of edges to use for noise estimation
+            k: Multiplier for noise-based delta (typically 2-5)
+            lam: Weight for derivative term
+
+        Returns:
+            Tuple[float, dict]: (score, details) where score is combined RMSE (lower is better)
+        """
+        y = np.asarray(y, float)
+        r = np.asarray(r, float)
+
+        # Estimate delta from measured profile edges
+        n = y.size
+        m = max(1, int(edge_frac * n))
+        edges = np.r_[y[:m], y[-m:]]
+        sigma = float(np.std(edges))
+        delta = max(1e-4, k * sigma)
+
+        ly = np.log(y + delta)
+        lr = np.log(r + delta)
+
+        err = float(np.sqrt(np.mean((ly - lr) ** 2)))
+        err_d = float(np.sqrt(np.mean((np.diff(ly) - np.diff(lr)) ** 2)))
+        score = err + lam * err_d
+
+        return score, {"err": err, "err_d": err_d, "score": score, "delta": delta, "sigma_edge": sigma, "lam": lam}
+
+    def _check_intensity_profile_match(
         self, intensity_profile: np.ndarray, debug_plot: bool = False
     ) -> Tuple[bool, float]:
-        """Check if current intensity profile correlates well with reference.
+        """Check if current intensity profile matches reference using RMSE score.
 
         Args:
             intensity_profile: Current intensity profile to compare
             debug_plot: If True, show a matplotlib plot comparing the profiles
 
         Returns:
-            Tuple[bool, float]: (passed, correlation) where passed is True if correlation >= threshold
+            Tuple[bool, float]: (passed, score) where passed is True if score <= threshold
         """
         if self.reference_intensity_profile is None:
             self._log.warning("No reference intensity profile available for comparison")
             return True, float("nan")  # Pass if no reference (backward compatibility)
 
-        # Calculate normalized cross-correlation
-        correlation = np.corrcoef(intensity_profile.ravel(), self.reference_intensity_profile.ravel())[0, 1]
-        self._log.debug(f"Intensity profile correlation: {correlation:.3f}")
+        # Calculate RMSE-based match score
+        score, details = self._compute_intensity_profile_rmse(
+            intensity_profile.ravel(), self.reference_intensity_profile.ravel()
+        )
+        self._log.debug(
+            f"Intensity profile RMSE score: {score:.3f} (err={details['err']:.3f}, err_d={details['err_d']:.3f})"
+        )
 
         if debug_plot:
             import matplotlib.pyplot as plt
@@ -639,19 +694,19 @@ class LaserAutofocusController(QObject):
             ax.axhline(y=0, color="gray", linestyle="--", alpha=0.3)
             ax.set_xlabel("Position (pixels from center)")
             ax.set_ylabel("Normalized Intensity")
-            ax.set_title(f"Intensity Profile Comparison (correlation: {correlation:.3f})")
+            ax.set_title(f"Intensity Profile Comparison (RMSE score: {score:.3f})")
             ax.legend()
             plt.tight_layout()
             plt.show()
 
-        passed = correlation >= control._def.INTENSITY_PROFILE_CORRELATION_THRESHOLD
+        passed = score <= control._def.INTENSITY_PROFILE_RMSE_THRESHOLD
         if not passed:
             self._log.warning(
-                f"Intensity profile correlation check failed: {correlation:.3f} < "
-                f"{control._def.INTENSITY_PROFILE_CORRELATION_THRESHOLD}"
+                f"Intensity profile RMSE check failed: {score:.3f} > "
+                f"{control._def.INTENSITY_PROFILE_RMSE_THRESHOLD}"
             )
 
-        return passed, correlation
+        return passed, score
 
     def get_new_frame(self):
         # IMPORTANT: This assumes that the autofocus laser is already on!
@@ -765,10 +820,10 @@ class LaserAutofocusController(QObject):
             self._log.error(f"No successful detections")
             return None
 
-        # Perform intensity profile cross-correlation check if requested
+        # Perform intensity profile match check if requested
         if check_intensity_correlation:
             if intensity_profile is not None:
-                passed, correlation = self._check_intensity_profile_correlation(intensity_profile)
+                passed, score = self._check_intensity_profile_match(intensity_profile)
                 if not passed:
                     return None
         else:
