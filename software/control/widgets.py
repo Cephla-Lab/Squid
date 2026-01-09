@@ -4703,6 +4703,7 @@ class FlexibleMultiPointWidget(QFrame):
             self.multipointController.set_base_path(self.lineEdit_savingDir.text())
             self.multipointController.set_use_fluidics(False)
             self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
+            self.multipointController.set_widget_type("flexible")
             self.multipointController.set_selected_configurations(
                 (item.text() for item in self.list_configurations.selectedItems())
             )
@@ -6872,6 +6873,9 @@ class WellplateMultiPointWidget(QFrame):
             self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
             self.multipointController.set_use_fluidics(False)
             self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
+            self.multipointController.set_widget_type("wellplate")
+            self.multipointController.set_scan_size(self.entry_scan_size.value())
+            self.multipointController.set_overlap_percent(self.entry_overlap.value())
             self.multipointController.set_xy_mode(self.combobox_xy_mode.currentText())
             self.multipointController.set_selected_configurations(
                 [item.text() for item in self.list_configurations.selectedItems()]
