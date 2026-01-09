@@ -49,6 +49,7 @@ dependencies = [
     "hidapi",
     "psutil",
     "filelock>=3.12",
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]

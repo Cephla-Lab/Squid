@@ -12,7 +12,13 @@ import squid.backend.drivers.lighting as lighting  # type: ignore
 import types as _types
 
 # Insert into control namespace if missing for test compatibility
-import control as _control
+try:
+    import control as _control
+except ModuleNotFoundError:
+    import sys as _sys
+
+    _control = _types.ModuleType("control")
+    _sys.modules["control"] = _control
 
 if not hasattr(_control, "lighting"):
     _control.lighting = lighting  # type: ignore[attr-defined]

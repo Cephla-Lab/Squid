@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "squid-microscope": {
+      "command": "python",
+      "args": ["-m", "squid.mcp.server", "--simulation"],
+      "cwd": "${workspaceFolder}/src"
+    }
+  }
+}

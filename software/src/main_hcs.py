@@ -3,6 +3,8 @@ import argparse
 import faulthandler
 import logging
 import os
+import shutil
+import subprocess
 
 os.environ["QT_API"] = "pyqt5"
 import signal
@@ -122,6 +124,126 @@ if __name__ == "__main__":
     menu_bar = win.menuBar()
     menu_bar.addMenu(file_menu)
     menu_bar.addMenu(microscope_utils_menu)
+
+    # Settings menu with MCP integration
+    settings_menu = QMenu("Settings", win)
+    menu_bar.addMenu(settings_menu)
+
+    # MCP Control Server state (using dict for mutable state in closures)
+    mcp_state = {"process": None, "python_exec_enabled": False}
+
+    def on_toggle_mcp_server(checked):
+        if checked:
+            # Start MCP server
+            try:
+                server_args = ["python", "-m", "squid.mcp.server"]
+                server_args.append("--simulation" if args.simulation else "--real")
+                mcp_state["process"] = subprocess.Popen(
+                    server_args,
+                    cwd=os.path.dirname(__file__),
+                )
+                log.info(f"MCP server started (PID: {mcp_state['process'].pid})")
+            except Exception as e:
+                log.error(f"Failed to start MCP server: {e}")
+                action_enable_mcp.setChecked(False)
+        else:
+            # Stop MCP server
+            if mcp_state["process"] is not None:
+                mcp_state["process"].terminate()
+                try:
+                    mcp_state["process"].wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    mcp_state["process"].kill()
+                log.info("MCP server stopped")
+                mcp_state["process"] = None
+
+    def on_toggle_python_exec(checked):
+        if checked:
+            reply = QMessageBox.warning(
+                win,
+                "Security Warning",
+                "Enabling Python exec allows Claude to run arbitrary code.\n\n"
+                "Only enable this if you trust the AI agent completely.\n\n"
+                "Continue?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                action_enable_python_exec.setChecked(False)
+                return
+        mcp_state["python_exec_enabled"] = checked
+        # Note: This sets a local flag. The MCP server would need to be restarted
+        # or communicate via IPC to actually toggle this. For now, this is a placeholder.
+        log.info(f"MCP Python exec {'enabled' if checked else 'disabled'}")
+
+    def on_launch_claude_code():
+        # Ensure MCP server is running
+        if not action_enable_mcp.isChecked():
+            action_enable_mcp.setChecked(True)
+            on_toggle_mcp_server(True)
+
+        # Check if claude is installed
+        if shutil.which("claude") is None:
+            reply = QMessageBox.question(
+                win,
+                "Claude Code Not Found",
+                "Claude Code CLI not found. Would you like to install it?\n\n"
+                "This requires npm to be installed.",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                try:
+                    subprocess.run(
+                        ["npm", "install", "-g", "@anthropic-ai/claude-code"],
+                        check=True,
+                    )
+                    QMessageBox.information(
+                        win, "Installation Complete", "Claude Code installed successfully."
+                    )
+                except Exception as e:
+                    QMessageBox.critical(
+                        win, "Installation Failed", f"Failed to install Claude Code: {e}"
+                    )
+                    return
+            else:
+                return
+
+        # Open terminal with Claude Code in the software directory
+        software_dir = os.path.dirname(__file__)
+        try:
+            if sys.platform == "darwin":
+                # macOS: open Terminal.app in the directory
+                subprocess.Popen(
+                    ["open", "-a", "Terminal", software_dir],
+                )
+            elif sys.platform == "linux":
+                # Linux: try common terminals
+                for terminal in ["gnome-terminal", "konsole", "xterm"]:
+                    if shutil.which(terminal):
+                        subprocess.Popen([terminal, "--working-directory", software_dir])
+                        break
+            elif sys.platform == "win32":
+                # Windows: open cmd in directory
+                subprocess.Popen(["cmd", "/c", "start", "cmd", "/k", f"cd /d {software_dir}"])
+            log.info("Launched terminal for Claude Code")
+        except Exception as e:
+            QMessageBox.warning(
+                win, "Launch Failed", f"Could not launch terminal: {e}\n\nRun 'claude' manually."
+            )
+
+    action_enable_mcp = QAction("Enable MCP Control Server", win, checkable=True)
+    action_enable_mcp.triggered.connect(on_toggle_mcp_server)
+    settings_menu.addAction(action_enable_mcp)
+
+    action_enable_python_exec = QAction("Enable MCP Python Exec", win, checkable=True)
+    action_enable_python_exec.triggered.connect(on_toggle_python_exec)
+    settings_menu.addAction(action_enable_python_exec)
+
+    settings_menu.addSeparator()
+
+    action_launch_claude = QAction("Launch Claude Code", win)
+    action_launch_claude.triggered.connect(on_launch_claude_code)
+    settings_menu.addAction(action_launch_claude)
+
     win.show()
 
     if USE_TERMINAL_CONSOLE:

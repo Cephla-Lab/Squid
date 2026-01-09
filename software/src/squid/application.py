@@ -36,6 +36,8 @@ if TYPE_CHECKING:
     from squid.ui.qt_event_dispatcher import QtEventDispatcher
     from squid.ui.ui_event_bus import UIEventBus
     from squid.backend.controllers.tracking_controller import TrackingControllerCore
+    from squid.backend.controllers.autofocus.continuous_focus_lock import ContinuousFocusLockController
+    from squid.backend.controllers.autofocus.focus_lock_simulator import FocusLockSimulator
 
 
 @dataclass
@@ -55,6 +57,7 @@ class Controllers:
     multipoint: Optional["MultiPointController"] = None
     autofocus: Optional["AutoFocusController"] = None
     laser_autofocus: Optional["LaserAutofocusController"] = None
+    continuous_focus_lock: "ContinuousFocusLockController | FocusLockSimulator | None" = None
     live_focus: Optional["LiveController"] = None
     channel_config_manager: Optional["ChannelConfigurationManager"] = None
     objective_store: Optional["ObjectiveStore"] = None
@@ -363,11 +366,15 @@ class ApplicationContext:
         )
         self._controllers.autofocus = self._build_autofocus_controller()
         self._controllers.laser_autofocus = self._build_laser_autofocus_controller()
+        self._controllers.continuous_focus_lock = self._build_continuous_focus_lock(
+            laser_autofocus=self._controllers.laser_autofocus,
+        )
         self._controllers.scan_coordinates = self._build_scan_coordinates()
         self._controllers.multipoint = self._build_multipoint_controller(
             autofocus=self._controllers.autofocus,
             laser_autofocus=self._controllers.laser_autofocus,
             scan_coordinates=self._controllers.scan_coordinates,
+            focus_lock_controller=self._controllers.continuous_focus_lock,
         )
         # Phase 8: ImageClickController for click-to-move
         self._controllers.image_click = self._build_image_click_controller()
@@ -530,11 +537,48 @@ class ApplicationContext:
             stream_handler=getattr(self._microscope, "stream_handler_focus", None),
         )
 
+    def _build_continuous_focus_lock(
+        self,
+        laser_autofocus: Optional[LaserAutofocusController],
+    ) -> Optional["ContinuousFocusLockController | FocusLockSimulator"]:
+        """Create focus lock controller for continuous piezo correction."""
+        if self._services is None:
+            return None
+
+        # In simulation mode, always use the simulator for predictable behavior
+        if self._simulation:
+            from squid.core.config.focus_lock import FocusLockConfig
+            from squid.backend.controllers.autofocus.focus_lock_simulator import FocusLockSimulator
+
+            piezo_service = self._services.get("piezo")
+            return FocusLockSimulator(
+                event_bus=event_bus,
+                config=FocusLockConfig(),
+                laser_autofocus=laser_autofocus,
+                piezo_service=piezo_service,
+            )
+
+        # Real hardware: use actual controller if laser AF and piezo are available
+        piezo_service = self._services.get("piezo")
+        if laser_autofocus is not None and piezo_service is not None:
+            from squid.core.config.focus_lock import FocusLockConfig
+            from squid.backend.controllers.autofocus import ContinuousFocusLockController
+
+            return ContinuousFocusLockController(
+                laser_af=laser_autofocus,
+                piezo_service=piezo_service,
+                event_bus=event_bus,
+                config=FocusLockConfig(),
+            )
+
+        return None
+
     def _build_multipoint_controller(
         self,
         autofocus: Optional[AutoFocusController],
         laser_autofocus: Optional[LaserAutofocusController],
         scan_coordinates: Optional[ScanCoordinates],
+        focus_lock_controller: Optional["ContinuousFocusLockController | FocusLockSimulator"],
     ) -> Optional[MultiPointController]:
         """Create MultiPointController using services and EventBus callbacks."""
         if self._microscope is None or self._services is None:
@@ -557,6 +601,7 @@ class ApplicationContext:
             self._microscope.channel_configuration_manager,
             scan_coordinates=scan_coordinates,
             laser_autofocus_controller=laser_autofocus,
+            focus_lock_controller=focus_lock_controller,
             camera_service=camera_service,
             stage_service=stage_service,
             peripheral_service=peripheral_service,
@@ -853,6 +898,11 @@ class ApplicationContext:
                     self._controllers.live_focus.stop_live()  # type: ignore[union-attr]
                 except Exception:
                     self._log.exception("Failed to stop focus LiveController during shutdown")
+            if getattr(self._controllers, "continuous_focus_lock", None):
+                try:
+                    self._controllers.continuous_focus_lock.shutdown()
+                except Exception:
+                    self._log.exception("Failed to shutdown focus lock controller")
             # StreamHandler doesn't have a stop method currently
 
         self._shutdown_hardware()

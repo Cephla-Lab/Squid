@@ -160,24 +160,40 @@ class PeripheralService(BaseService):
                     illumination_on_time_us=illumination_on_time_us,
                 )
 
-    def turn_on_af_laser(self, wait_for_completion: bool = True) -> None:
+    def turn_on_af_laser(
+        self, wait_for_completion: bool = True, bypass_mode_gate: bool = False
+    ) -> None:
         """Turn on the autofocus laser.
 
         Args:
             wait_for_completion: Whether to wait for operation to complete
+            bypass_mode_gate: If True, skip mode gate check. Use ONLY from backend
+                controllers that manage their own lifecycle. UI code must NEVER
+                pass bypass_mode_gate=True.
         """
+        if not bypass_mode_gate and self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring TurnOnAFLaserCommand due to global mode gate")
+            return
         with self._lock:
             if self._microcontroller is not None:
                 self._microcontroller.turn_on_AF_laser()
                 if wait_for_completion:
                     self._microcontroller.wait_till_operation_is_completed()
 
-    def turn_off_af_laser(self, wait_for_completion: bool = True) -> None:
+    def turn_off_af_laser(
+        self, wait_for_completion: bool = True, bypass_mode_gate: bool = False
+    ) -> None:
         """Turn off the autofocus laser.
 
         Args:
             wait_for_completion: Whether to wait for operation to complete
+            bypass_mode_gate: If True, skip mode gate check. Use ONLY from backend
+                controllers that manage their own lifecycle. UI code must NEVER
+                pass bypass_mode_gate=True.
         """
+        if not bypass_mode_gate and self._blocked_for_ui_hardware_commands():
+            self._log.info("Ignoring TurnOffAFLaserCommand due to global mode gate")
+            return
         with self._lock:
             if self._microcontroller is not None:
                 self._microcontroller.turn_off_AF_laser()

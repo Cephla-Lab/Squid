@@ -567,6 +567,7 @@ class HighContentScreeningGui(QMainWindow):
                 "right",
                 relativeTo=dock_laserfocus_image_display,
             )
+
             if SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS:
                 laserfocus_dockArea.addDock(
                     dock_waveform, "bottom", relativeTo=dock_laserfocus_liveController

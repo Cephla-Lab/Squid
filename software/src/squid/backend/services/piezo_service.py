@@ -12,6 +12,7 @@ to support both GUI interactions and real-time control loops.
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Optional, Tuple
 
@@ -25,6 +26,10 @@ from squid.core.events import (
 
 if TYPE_CHECKING:
     from squid.core.abc import PiezoStage
+
+
+# Simulated piezo settling time in seconds (typical piezo step time ~9ms)
+_SIMULATED_SETTLE_TIME_S = 0.010
 
 
 @dataclass(frozen=True)
@@ -168,7 +173,8 @@ class PiezoService(BaseService):
                 self._piezo.move_to(clamped)
                 actual = getattr(self._piezo, "position", clamped)
             else:
-                # Simulated mode
+                # Simulated mode - add settling time to simulate physical piezo
+                time.sleep(_SIMULATED_SETTLE_TIME_S)
                 actual = clamped
             self._state = replace(self._state, position_um=actual)
 
@@ -192,7 +198,8 @@ class PiezoService(BaseService):
                 self._piezo.move_to(target)
                 actual = getattr(self._piezo, "position", target)
             else:
-                # Simulated mode
+                # Simulated mode - add settling time to simulate physical piezo
+                time.sleep(_SIMULATED_SETTLE_TIME_S)
                 current = self._state.position_um
                 actual = self._clamp_position(current + delta_um)
             self._state = replace(self._state, position_um=actual)
@@ -235,7 +242,8 @@ class PiezoService(BaseService):
             if self._piezo:
                 self._piezo.move_to(clamped)
             else:
-                # Simulated mode - update state directly
+                # Simulated mode - add settling time to simulate physical piezo
+                time.sleep(_SIMULATED_SETTLE_TIME_S)
                 self._state = replace(self._state, position_um=clamped)
 
     def sync_state(self) -> float:

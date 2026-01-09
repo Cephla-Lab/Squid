@@ -38,8 +38,16 @@ class UIEventBus:
     def __init__(self, core_bus: EventBus, dispatcher: QtEventDispatcher):
         self._core_bus = core_bus
         self._dispatcher = dispatcher
+        self._dispatcher_alive = True
         self._wrapper_map: Dict[Tuple[Type[Event], Callable], Callable] = {}
         self._lock = threading.RLock()
+        try:
+            self._dispatcher.destroyed.connect(self._on_dispatcher_destroyed)
+        except Exception:
+            _log.debug("UIEventBus: failed to connect dispatcher destroyed signal", exc_info=True)
+
+    def _on_dispatcher_destroyed(self, _obj: object = None) -> None:
+        self._dispatcher_alive = False
 
     def publish(self, event: Event) -> None:
         """Publish an event to the core bus.
@@ -63,6 +71,8 @@ class UIEventBus:
         with self._lock:
             # Create wrapper that marshals to main thread
             def wrapper(event: Event, _handler=handler) -> None:
+                if not self._dispatcher_alive:
+                    return
                 is_main = self._dispatcher.is_main_thread()
                 thread_name = threading.current_thread().name
                 if is_main:
@@ -72,7 +82,10 @@ class UIEventBus:
                 else:
                     # Marshal to main thread via Qt signal
                     _log.debug(f"UIEventBus: {type(event).__name__} from {thread_name}, dispatching to main thread")
-                    self._dispatcher.dispatch.emit(_handler, event)
+                    try:
+                        self._dispatcher.dispatch.emit(_handler, event)
+                    except RuntimeError:
+                        self._dispatcher_alive = False
 
             self._wrapper_map[(event_type, handler)] = wrapper
             self._core_bus.subscribe(event_type, wrapper)

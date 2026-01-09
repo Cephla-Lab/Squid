@@ -328,6 +328,7 @@ def create_laser_autofocus_widgets(gui: "HighContentScreeningGui") -> None:
         initial_is_initialized=gui.laserAutofocusController.is_initialized,
         initial_has_reference=laser_af_props.has_reference,
     )
+    gui.focusLockStatusWidget = widgets.FocusLockStatusWidget(gui._ui_event_bus)
     gui.imageDisplayWindow_focus = ImageDisplayWindow(event_bus=gui._ui_event_bus)
     # Connect image display window to settings widget for spot tracking
     gui.laserAutofocusSettingWidget.set_image_display_window(gui.imageDisplayWindow_focus)

@@ -3,6 +3,9 @@ from squid.backend.controllers.autofocus.auto_focus_worker import AutofocusWorke
 from squid.backend.controllers.autofocus.laser_auto_focus_controller import (
     LaserAutofocusController,
 )
+from squid.backend.controllers.autofocus.continuous_focus_lock import (
+    ContinuousFocusLockController,
+)
 from squid.backend.controllers.autofocus.laser_af_settings_manager import LaserAFSettingManager
 
 __all__ = [
@@ -10,4 +13,5 @@ __all__ = [
     "AutofocusWorker",
     "LaserAutofocusController",
     "LaserAFSettingManager",
+    "ContinuousFocusLockController",
 ]

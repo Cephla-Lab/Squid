@@ -53,6 +53,8 @@ if TYPE_CHECKING:
     )
     from squid.backend.controllers import MicroscopeModeController
     from squid.core.events import EventBus
+    from squid.backend.controllers.autofocus.continuous_focus_lock import ContinuousFocusLockController
+    from squid.backend.controllers.autofocus.focus_lock_simulator import FocusLockSimulator
 
 from squid.core.events import (
     AcquisitionStarted,
@@ -87,6 +89,7 @@ class MultiPointWorker:
         illumination_service: Optional["IlluminationService"] = None,
         filter_wheel_service: Optional["FilterWheelService"] = None,
         enable_channel_auto_filter_switching: bool = True,
+        focus_lock_controller: Optional["ContinuousFocusLockController | FocusLockSimulator"] = None,
         *,
         extra_job_classes: list[type[Job]] | None = None,
         abort_on_failed_jobs: bool = True,
@@ -109,6 +112,7 @@ class MultiPointWorker:
         self._illumination_service = illumination_service
         self._filter_wheel_service = filter_wheel_service
         self._enable_channel_auto_filter_switching = enable_channel_auto_filter_switching
+        self._focus_lock_controller = focus_lock_controller
 
         if self._camera_service is None or self._stage_service is None or self._peripheral_service is None:
             raise ValueError(
@@ -371,6 +375,13 @@ class MultiPointWorker:
     def _piezo_move_to(self, position_um: float) -> None:
         if self._piezo_service:
             self._piezo_service.move_to(position_um)
+
+    def _is_simulated_camera(self) -> bool:
+        camera = getattr(self._camera_service, "_camera", None)
+        if camera is None:
+            return False
+        module_name = getattr(camera.__class__, "__module__", "")
+        return "cameras.simulated" in module_name
 
     def update_use_piezo(self, value: bool) -> None:
         self.use_piezo = value
@@ -1212,101 +1223,121 @@ class MultiPointWorker:
         if self.use_piezo:
             self.z_piezo_um: float = self._piezo_get_position()
 
-        for z_level in range(self.NZ):
-            file_ID: str = (
-                f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
-            )
+        pause_focus_lock = (
+            self._focus_lock_controller is not None
+            and self._focus_lock_controller.is_running
+            and self.use_piezo
+            and self.NZ > 1
+        )
+        focus_lock_paused = False
+        if pause_focus_lock:
+            try:
+                self._focus_lock_controller.pause()
+                focus_lock_paused = True
+            except Exception:
+                self._log.exception("Failed to pause focus lock for Z-stack")
 
-            acquire_pos: squid.core.abc.Pos = self._stage_get_pos()
-            metadata: Dict[str, float] = {
-                "x": acquire_pos.x_mm,
-                "y": acquire_pos.y_mm,
-                "z": acquire_pos.z_mm,
-            }
-            self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
-
-            if (
-                z_level == 0
-                and (self.do_reflection_af or self.do_autofocus)
-                and self.Nt > 1
-            ):
-                self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
-
-            # laser af characterization mode
-            if (
-                self.laser_auto_focus_controller
-                and self.laser_auto_focus_controller.characterization_mode
-            ):
-                image: np.ndarray = self.laser_auto_focus_controller.get_image()
-                saving_path: str = os.path.join(
-                    current_path, file_ID + "_laser af camera" + ".bmp"
-                )
-                iio.imwrite(saving_path, image)
-
-            # iterate through selected modes
-            for config_idx, config in enumerate(self.selected_configurations):
-                if self.NZ == 1:  # TODO: handle z offset for z stack
-                    self.handle_z_offset(config, True)
-
-                # acquire image
-                with self._timing.get_timer("acquire_camera_image"):
-                    # TODO(imo): This really should not look for a string in a user configurable name.  We
-                    # need some proper flag on the config to signal this instead...
-                    if "RGB" in config.name:
-                        self.acquire_rgb_image(
-                            config, file_ID, current_path, z_level, region_id, fov
-                        )
-                    else:
-                        self.acquire_camera_image(
-                            config,
-                            file_ID,
-                            current_path,
-                            z_level,
-                            region_id=region_id,
-                            fov=fov,
-                            config_idx=config_idx,
-                        )
-
-                if self.NZ == 1:  # TODO: handle z offset for z stack
-                    self.handle_z_offset(config, False)
-
-                current_image: int = (
-                    fov * self.NZ * len(self.selected_configurations)
-                    + z_level * len(self.selected_configurations)
-                    + config_idx
-                    + 1
-                )
-                # Publish progress event via EventBus
-                self._publish_acquisition_progress(
-                    current_fov=current_image,
-                    total_fovs=self.total_scans,
-                    current_region=getattr(self, "_current_region", 1),
-                    total_regions=getattr(self, "_total_regions", 1),
-                    current_channel=config.name,
+        try:
+            for z_level in range(self.NZ):
+                file_ID: str = (
+                    f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
                 )
 
-                # Publish worker progress event for controller state tracking
-                self._publish_worker_progress(
-                    current_region=getattr(self, "_current_region", 1),
-                    total_regions=getattr(self, "_total_regions", 1),
-                    current_fov=current_image,
-                    total_fovs=self.total_scans,
-                )
+                acquire_pos: squid.core.abc.Pos = self._stage_get_pos()
+                metadata: Dict[str, float] = {
+                    "x": acquire_pos.x_mm,
+                    "y": acquire_pos.y_mm,
+                    "z": acquire_pos.z_mm,
+                }
+                self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
 
-            # updates coordinates df
-            self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov)
-            # check if the acquisition should be aborted
-            if self._abort_requested.is_set():
-                self.handle_acquisition_abort(current_path)
+                if (
+                    z_level == 0
+                    and (self.do_reflection_af or self.do_autofocus)
+                    and self.Nt > 1
+                ):
+                    self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
 
-            # update FOV counter
-            self.af_fov_count = self.af_fov_count + 1
+                # laser af characterization mode
+                if (
+                    self.laser_auto_focus_controller
+                    and self.laser_auto_focus_controller.characterization_mode
+                ):
+                    image: np.ndarray = self.laser_auto_focus_controller.get_image()
+                    saving_path: str = os.path.join(
+                        current_path, file_ID + "_laser af camera" + ".bmp"
+                    )
+                    iio.imwrite(saving_path, image)
 
-            if z_level < self.NZ - 1:
-                self.move_z_for_stack()
+                # iterate through selected modes
+                for config_idx, config in enumerate(self.selected_configurations):
+                    if self.NZ == 1:  # TODO: handle z offset for z stack
+                        self.handle_z_offset(config, True)
 
-        if self.NZ > 1:
-            self.move_z_back_after_stack()
+                    # acquire image
+                    with self._timing.get_timer("acquire_camera_image"):
+                        # TODO(imo): This really should not look for a string in a user configurable name.  We
+                        # need some proper flag on the config to signal this instead...
+                        if "RGB" in config.name:
+                            self.acquire_rgb_image(
+                                config, file_ID, current_path, z_level, region_id, fov
+                            )
+                        else:
+                            self.acquire_camera_image(
+                                config,
+                                file_ID,
+                                current_path,
+                                z_level,
+                                region_id=region_id,
+                                fov=fov,
+                                config_idx=config_idx,
+                            )
+
+                    if self.NZ == 1:  # TODO: handle z offset for z stack
+                        self.handle_z_offset(config, False)
+
+                    current_image: int = (
+                        fov * self.NZ * len(self.selected_configurations)
+                        + z_level * len(self.selected_configurations)
+                        + config_idx
+                        + 1
+                    )
+                    # Publish progress event via EventBus
+                    self._publish_acquisition_progress(
+                        current_fov=current_image,
+                        total_fovs=self.total_scans,
+                        current_region=getattr(self, "_current_region", 1),
+                        total_regions=getattr(self, "_total_regions", 1),
+                        current_channel=config.name,
+                    )
+
+                    # Publish worker progress event for controller state tracking
+                    self._publish_worker_progress(
+                        current_region=getattr(self, "_current_region", 1),
+                        total_regions=getattr(self, "_total_regions", 1),
+                        current_fov=current_image,
+                        total_fovs=self.total_scans,
+                    )
+
+                # updates coordinates df
+                self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov)
+                # check if the acquisition should be aborted
+                if self._abort_requested.is_set():
+                    self.handle_acquisition_abort(current_path)
+
+                # update FOV counter
+                self.af_fov_count = self.af_fov_count + 1
+
+                if z_level < self.NZ - 1:
+                    self.move_z_for_stack()
+        finally:
+            if self.NZ > 1:
+                self.move_z_back_after_stack()
+            if focus_lock_paused:
+                try:
+                    self._focus_lock_controller.resume()
+                except Exception:
+                    self._log.exception("Failed to resume focus lock after Z-stack")
 
     def _select_config(self, config: ChannelMode) -> None:
         self._apply_channel_mode(config)
@@ -1392,10 +1423,21 @@ class MultiPointWorker:
                     self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0
                 ) or self.autofocusController.use_focus_map:
                     self.autofocusController.autofocus()
-                    self.autofocusController.wait_till_autofocus_has_completed()
+                    timeout_s = 2.0 if self._is_simulated_camera() else None
+                    if not self.autofocusController.wait_till_autofocus_has_completed(
+                        timeout_s=timeout_s
+                    ):
+                        self._log.warning("Autofocus timed out; continuing acquisition")
+                        return False
         else:
             self._log.info("laser reflection af")
             try:
+                if (
+                    self._focus_lock_controller is not None
+                    and self._focus_lock_controller.mode != "off"
+                    and self._focus_lock_controller.is_running
+                ):
+                    return self._focus_lock_controller.wait_for_lock(timeout_s=5.0)
                 self.laser_auto_focus_controller.move_to_target(0)
             except Exception as e:
                 file_ID: str = f"{region_id}_focus_camera.bmp"

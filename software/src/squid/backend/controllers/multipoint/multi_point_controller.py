@@ -41,6 +41,7 @@ from squid.core.events import (
     StartNewExperimentCommand,
     StartAcquisitionCommand,
     StopAcquisitionCommand,
+    AcquisitionFinished,
     AcquisitionStateChanged,
     AcquisitionProgress,
     AcquisitionRegionProgress,
@@ -60,6 +61,8 @@ if TYPE_CHECKING:
         FilterWheelService,
     )
     from squid.core.events import EventBus
+    from squid.backend.controllers.autofocus.continuous_focus_lock import ContinuousFocusLockController
+    from squid.backend.controllers.autofocus.focus_lock_simulator import FocusLockSimulator
 
 
 class AcquisitionControllerState(Enum):
@@ -87,6 +90,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         *,
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
+        focus_lock_controller: Optional["ContinuousFocusLockController | FocusLockSimulator"] = None,
         piezo_service: Optional["PiezoService"] = None,
         fluidics_service: Optional["FluidicsService"] = None,
         nl5_service: Optional["NL5Service"] = None,
@@ -147,6 +151,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self._stage_service = stage_service
         self._peripheral_service = peripheral_service
         self._piezo_service = piezo_service
+        self._focus_lock_controller = focus_lock_controller
         self._fluidics_service = fluidics_service
         self._nl5_service = nl5_service
         self._illumination_service = illumination_service
@@ -905,6 +910,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 nl5_service=self._nl5_service,
                 event_bus=self._event_bus,
                 stream_handler=self._stream_handler,
+                focus_lock_controller=self._focus_lock_controller,
             )
             # Allow tests/simulation to override long frame wait timeouts.
             if hasattr(self, "frame_wait_timeout_override_s"):
@@ -1001,7 +1007,11 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             xy_mode=self.xy_mode,
         )
 
-    def _on_acquisition_completed(self, success: bool = True) -> None:
+    def _on_acquisition_completed(
+        self,
+        success: bool = True,
+        error: Optional[str] = None,
+    ) -> None:
         """Cleanup after acquisition and publish finished state."""
         import threading
         thread_name = threading.current_thread().name
@@ -1065,6 +1075,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
             # Publish acquisition finished state even if cleanup fails
             self._publish_acquisition_state(in_progress=False)
+            self._publish_acquisition_finished(success=success, error=error)
 
             # Transition to COMPLETED or FAILED based on worker result
             # Only transition if we're in a state that can transition
@@ -1221,7 +1232,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         )
 
         # Call cleanup logic with success flag from worker
-        self._on_acquisition_completed(success=event.success)
+        self._on_acquisition_completed(success=event.success, error=event.error)
 
     def _on_worker_progress(self, event: AcquisitionWorkerProgress) -> None:
         """Handle AcquisitionWorkerProgress event from worker thread.
@@ -1267,3 +1278,24 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 is_aborting=is_aborting
             ))
             self._log.info(f"Published AcquisitionStateChanged(in_progress={in_progress}, experiment_id={experiment_id})")
+
+    def _publish_acquisition_finished(
+        self,
+        success: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        """Publish AcquisitionFinished event for external subscribers."""
+        if not self._event_bus:
+            return
+        try:
+            experiment_id = self._require_experiment_id()
+        except RuntimeError:
+            return
+        exc = RuntimeError(error) if error else None
+        self._event_bus.publish(
+            AcquisitionFinished(
+                success=success,
+                experiment_id=experiment_id,
+                error=exc,
+            )
+        )

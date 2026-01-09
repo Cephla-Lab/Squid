@@ -136,6 +136,29 @@ class TestPeripheralService:
         mock_mcu.turn_off_AF_laser.assert_called_once()
         assert mock_mcu.wait_till_operation_is_completed.call_count == 2
 
+    def test_af_laser_mode_gate_bypass(self):
+        """Bypass should skip mode gate checks for backend controllers."""
+        from squid.backend.services.peripheral_service import PeripheralService
+        from squid.core.events import EventBus
+
+        class _Gate:
+            def blocked_for_ui_hardware_commands(self):
+                return True
+
+        mock_mcu = Mock()
+        bus = EventBus()
+        service = PeripheralService(mock_mcu, bus, mode_gate=_Gate())
+
+        service.turn_on_af_laser()
+        service.turn_off_af_laser()
+        assert mock_mcu.turn_on_AF_laser.call_count == 0
+        assert mock_mcu.turn_off_AF_laser.call_count == 0
+
+        service.turn_on_af_laser(bypass_mode_gate=True)
+        service.turn_off_af_laser(bypass_mode_gate=True)
+        assert mock_mcu.turn_on_AF_laser.call_count == 1
+        assert mock_mcu.turn_off_AF_laser.call_count == 1
+
     def test_add_joystick_button_listener(self):
         """add_joystick_button_listener should delegate to microcontroller."""
         from squid.backend.services.peripheral_service import PeripheralService

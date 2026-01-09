@@ -397,6 +397,63 @@ def find_spot_location(
         return None
 
 
+def extract_spot_metrics(
+    cropped_region: np.ndarray,
+    spot_x_local: float,
+    spot_y_local: float,
+) -> Tuple[float, float, float]:
+    """Extract spot metrics from a cropped region.
+
+    Args:
+        cropped_region: Cropped image region around the spot.
+        spot_x_local: X position of spot within the crop.
+        spot_y_local: Y position of spot within the crop.
+
+    Returns:
+        Tuple of (snr, peak_intensity, background_level).
+    """
+    if cropped_region is None or cropped_region.size == 0:
+        return (float("nan"), float("nan"), float("nan"))
+
+    height, width = cropped_region.shape[:2]
+    if height == 0 or width == 0:
+        return (float("nan"), float("nan"), float("nan"))
+
+    x = int(round(spot_x_local))
+    y = int(round(spot_y_local))
+    x = max(0, min(width - 1, x))
+    y = max(0, min(height - 1, y))
+
+    half_size = 5
+    x1 = max(0, x - half_size)
+    x2 = min(width, x + half_size)
+    y1 = max(0, y - half_size)
+    y2 = min(height, y + half_size)
+    spot_region = cropped_region[y1:y2, x1:x2]
+    if spot_region.size == 0:
+        peak = float("nan")
+    else:
+        peak = float(np.max(spot_region))
+
+    edge_width = 3
+    edge_width = min(edge_width, height // 2, width // 2)
+    if edge_width <= 0:
+        background = float(np.median(cropped_region))
+    else:
+        edges = np.concatenate(
+            [
+                cropped_region[:edge_width, :].ravel(),
+                cropped_region[-edge_width:, :].ravel(),
+                cropped_region[:, :edge_width].ravel(),
+                cropped_region[:, -edge_width:].ravel(),
+            ]
+        )
+        background = float(np.median(edges))
+
+    snr = (peak - background) / max(background, 1.0)
+    return (snr, peak, background)
+
+
 def _calculate_spot_centroid(
     cropped_image: np.ndarray, peak_x: int, peak_y: int, params: dict
 ) -> Tuple[float, float]:

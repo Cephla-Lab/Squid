@@ -17,17 +17,32 @@
     "Buffer-based lock quality assessment",
     "Dockable status widget visible alongside live imaging",
     "Comprehensive quality metrics (SNR, RMS, drift rate)",
-    "Piezo-only Z control with range warnings"
+    "Piezo-only Z control with range warnings",
+    "Continuous laser usage (no per-iteration toggling)",
+    "Thread-safe measurement with concurrent access prevention",
+    "Crash recovery and laser safety cleanup"
   ],
   "files_to_create": [
-    "squid/core/config/focus_lock.py",
-    "squid/backend/controllers/autofocus/continuous_focus_lock.py",
-    "squid/ui/widgets/hardware/focus_lock_status.py"
+    "software/src/squid/core/config/focus_lock.py",
+    "software/src/squid/backend/controllers/autofocus/continuous_focus_lock.py",
+    "software/src/squid/ui/widgets/hardware/focus_lock_status.py",
+    "software/tests/unit/squid/backend/controllers/autofocus/test_continuous_focus_lock.py",
+    "software/tests/integration/test_focus_lock_integration.py"
   ],
   "files_to_modify": [
-    "squid/core/events.py",
-    "squid/ui/main_window.py",
-    "squid/application.py",
-    "squid/backend/controllers/multipoint/multi_point_worker.py"
+    "software/src/squid/core/events.py",
+    "software/src/_def.py",
+    "software/src/squid/core/utils/hardware_utils.py",
+    "software/src/squid/backend/controllers/autofocus/laser_auto_focus_controller.py",
+    "software/src/squid/backend/controllers/autofocus/__init__.py",
+    "software/src/squid/backend/controllers/__init__.py",
+    "software/src/squid/backend/services/peripheral_service.py",
+    "software/src/squid/application.py",
+    "software/src/squid/backend/controllers/multipoint/multi_point_controller.py",
+    "software/src/squid/backend/controllers/multipoint/multi_point_worker.py",
+    "software/src/squid/ui/gui/widget_factory.py",
+    "software/src/squid/ui/gui/layout_builder.py",
+    "software/src/squid/ui/widgets/hardware/__init__.py",
+    "software/src/squid/ui/widgets/__init__.py"
   ]
 }

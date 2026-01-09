@@ -315,10 +315,17 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
             )
         )
 
-    def wait_till_autofocus_has_completed(self) -> None:
+    def wait_till_autofocus_has_completed(self, timeout_s: Optional[float] = None) -> bool:
+        deadline = None
+        if timeout_s is not None:
+            deadline = time.monotonic() + timeout_s
         while self.autofocus_in_progress:
+            if deadline is not None and time.monotonic() > deadline:
+                self._log.warning("autofocus wait timed out")
+                return False
             time.sleep(0.005)
         self._log.info("autofocus wait has completed, exit wait")
+        return True
 
     # ============================================================
     # EventBus command handlers

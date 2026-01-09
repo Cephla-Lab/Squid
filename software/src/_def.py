@@ -856,6 +856,34 @@ NL5_WAVENLENGTH_MAP = {
 # Laser AF characterization mode
 LASER_AF_CHARACTERIZATION_MODE = False
 
+# Focus Lock Configuration
+FOCUS_LOCK_GAIN = 0.5
+FOCUS_LOCK_GAIN_MAX = 0.7
+FOCUS_LOCK_BUFFER_LENGTH = 5
+FOCUS_LOCK_OFFSET_THRESHOLD_UM = 0.5
+FOCUS_LOCK_MIN_SPOT_SNR = 5.0
+FOCUS_LOCK_LOOP_RATE_HZ = 30
+FOCUS_LOCK_METRICS_RATE_HZ = 10
+FOCUS_LOCK_PIEZO_WARNING_MARGIN_UM = 20.0
+FOCUS_LOCK_DEFAULT_MODE = "off"
+
+# Focus Lock Recovery Parameters
+FOCUS_LOCK_RECOVERY_ATTEMPTS = 3  # Number of retry cycles before declaring lost
+FOCUS_LOCK_RECOVERY_DELAY_S = 0.2  # Delay between retry attempts
+FOCUS_LOCK_RECOVERY_WINDOW_READINGS = 3  # Good readings needed to recover
+
+# Focus Lock Hysteresis Thresholds
+FOCUS_LOCK_ACQUIRE_THRESHOLD_UM = 0.3  # Tighter threshold to acquire lock
+FOCUS_LOCK_MAINTAIN_THRESHOLD_UM = 0.8  # Looser threshold to maintain lock
+
+# Focus Lock Auto-Search Parameters
+FOCUS_LOCK_AUTO_SEARCH_ENABLED = False  # Enable auto-search on lock loss
+FOCUS_LOCK_SEARCH_RANGE_UM = 20.0  # Search ±20um around last known position
+FOCUS_LOCK_SEARCH_MIN_PERCENT = 15.0  # Lower limit as % of piezo range (safety clamp)
+FOCUS_LOCK_SEARCH_MAX_PERCENT = 85.0  # Upper limit as % of piezo range (safety clamp)
+FOCUS_LOCK_SEARCH_STEP_UM = 5.0  # Step size during sweep
+FOCUS_LOCK_SEARCH_SETTLE_MS = 200.0  # Settling time per step (ms)
+
 # Napari integration
 USE_NAPARI_FOR_LIVE_VIEW = False
 USE_NAPARI_FOR_MULTIPOINT = True

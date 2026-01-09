@@ -173,7 +173,11 @@ A compact, always-visible panel that docks alongside any image display tab:
    - Dropdown or segmented control: Off | Always On | Auto Lock
    - Lock/Unlock toggle button (for Always On mode)
 
-6. **Collapse/Expand**
+6. **Fine Adjust Controls**
+   - Step size input (μm)
+   - Up/Down buttons to shift the lock target by the step
+
+7. **Collapse/Expand**
    - Collapsed: Just status LED + Z position
    - Expanded: Full panel with all metrics
 
@@ -257,6 +261,14 @@ class FocusLockWarning(Event):
     warning_type: str  # "piezo_low" | "piezo_high" | "signal_lost" | "snr_low"
     message: str
 
+@dataclass(frozen=True)
+class FocusLockFrameUpdated(Event):
+    """Cropped AF spot region for widget preview (~10 Hz)."""
+    frame: np.ndarray  # Small cropped region around spot
+    spot_x_px: float  # Centroid x in cropped frame
+    spot_y_px: float  # Centroid y in cropped frame
+    correlation: float  # Correlation vs reference (0-1)
+
 # Commands
 @dataclass(frozen=True)
 class SetFocusLockModeCommand(Event):
@@ -272,6 +284,21 @@ class StartFocusLockCommand(Event):
 class StopFocusLockCommand(Event):
     """Command to stop focus lock."""
     pass
+
+@dataclass(frozen=True)
+class PauseFocusLockCommand(Event):
+    """Command to pause focus lock (e.g., during Z-stack)."""
+    pass
+
+@dataclass(frozen=True)
+class ResumeFocusLockCommand(Event):
+    """Command to resume focus lock after pause."""
+    pass
+
+@dataclass(frozen=True)
+class AdjustFocusLockTargetCommand(Event):
+    """Command to adjust focus lock target by a relative offset."""
+    delta_um: float
 ```
 
 ## Piezo-Only Considerations

@@ -21,3 +21,8 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ## [ ] Track: Controller Refactoring (MultiPoint & Live)
 *Link: [./conductor/tracks/refactor_controllers_20251230/](./conductor/tracks/refactor_controllers_20251230/)*
+
+---
+
+## [ ] Track: Continuous closed-loop laser autofocus with real-time feedback and acquisition integration
+*Link: [./conductor/tracks/continuous_focus_20251230/](./conductor/tracks/continuous_focus_20251230/)*

@@ -25,11 +25,12 @@ import threading
 import time
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Type, TypeVar
 
 import numpy as np
 
 import squid.core.logging
+from squid.core.config.focus_lock import FocusLockMode
 
 _log = squid.core.logging.get_logger("squid.events")
 
@@ -927,6 +928,143 @@ class LaserAFCrossCorrelationResult(Event):
     """Cross-correlation result from laser autofocus."""
 
     result: Any  # correlation data
+
+
+# ============================================================================
+# Focus Lock Events
+# ============================================================================
+
+FocusLockStatus = Literal["disabled", "ready", "locked", "recovering", "searching", "lost", "paused"]
+
+
+@dataclass
+class FocusLockModeChanged(Event):
+    """Notification that focus lock mode changed."""
+
+    mode: FocusLockMode
+
+
+@dataclass
+class FocusLockStatusChanged(Event):
+    """Notification that focus lock status changed."""
+
+    is_locked: bool
+    status: FocusLockStatus
+    lock_buffer_fill: int
+    lock_buffer_length: int
+
+
+@dataclass
+class FocusLockMetricsUpdated(Event):
+    """Focus lock metrics update."""
+
+    z_error_um: float
+    z_position_um: float
+    spot_snr: float
+    spot_intensity: float
+    z_error_rms_um: float
+    drift_rate_um_per_s: float
+    is_good_reading: bool
+    correlation: float
+    spot_offset_px: float = float("nan")  # Spot offset from reference in pixels
+    piezo_delta_um: float = float("nan")  # Piezo position change from lock reference
+    lock_buffer_fill: int = 0  # Current lock buffer fill level
+    lock_buffer_length: int = 5  # Total lock buffer length
+    lock_quality: float = 1.0  # Smoothed RMS-based quality (0-1, higher is better)
+
+
+@dataclass
+class FocusLockWarning(Event):
+    """Focus lock warning notification."""
+
+    warning_type: str
+    message: str
+
+
+# ============================================================================
+# Focus Lock Commands
+# ============================================================================
+
+
+@dataclass
+class SetFocusLockModeCommand(Event):
+    """Command to set focus lock mode."""
+
+    mode: FocusLockMode
+
+
+@dataclass
+class StartFocusLockCommand(Event):
+    """Command to start focus lock."""
+
+    target_um: float = 0.0
+
+
+@dataclass
+class StopFocusLockCommand(Event):
+    """Command to stop focus lock."""
+
+    pass
+
+
+@dataclass
+class PauseFocusLockCommand(Event):
+    """Command to pause focus lock."""
+
+    pass
+
+
+@dataclass
+class ResumeFocusLockCommand(Event):
+    """Command to resume focus lock."""
+
+    pass
+
+
+@dataclass
+class AdjustFocusLockTargetCommand(Event):
+    """Command to adjust focus lock target by a relative offset."""
+
+    delta_um: float
+
+
+@dataclass
+class SetFocusLockReferenceCommand(Event):
+    """Command to set/lock the current position as the focus lock reference.
+
+    This forces the focus lock to immediately lock at the current Z position,
+    bypassing the normal buffer fill acquisition process.
+    """
+
+    pass
+
+
+@dataclass
+class ReleaseFocusLockReferenceCommand(Event):
+    """Command to release the focus lock reference.
+
+    This clears the lock and returns to 'searching' state while keeping
+    the focus lock loop running.
+    """
+
+    pass
+
+
+@dataclass
+class SetFocusLockAutoSearchCommand(Event):
+    """Command to enable or disable auto-search on lock loss."""
+
+    enabled: bool
+
+
+@dataclass
+class FocusLockSearchProgress(Event):
+    """Progress update during piezo sweep search."""
+
+    phase: str  # "last_position" or "sweep"
+    current_position_um: float
+    search_min_um: float
+    search_max_um: float
 
 
 # ============================================================================
@@ -1978,3 +2116,160 @@ class PlateViewUpdate(Event):
     channel_idx: int
     channel_name: str
     plate_image: np.ndarray  # Full plate view for this channel
+
+
+# ============================================================================
+# Focus Lock Events
+# ============================================================================
+
+from typing import Literal
+
+# Import FocusLockMode from config (single source of truth)
+from squid.core.config.focus_lock import FocusLockMode
+
+# Type alias for focus lock status (only defined here, not in config)
+FocusLockStatus = Literal["disabled", "ready", "locked", "recovering", "searching", "lost", "paused"]
+
+
+@dataclass
+class FocusLockModeChanged(Event):
+    """Notification that focus lock mode changed."""
+
+    mode: str  # FocusLockMode: "off", "on"
+
+
+@dataclass
+class FocusLockStatusChanged(Event):
+    """Notification that focus lock status changed."""
+
+    is_locked: bool
+    status: str  # FocusLockStatus: "disabled", "searching", "locked", "lost", "paused"
+    lock_buffer_fill: int
+    lock_buffer_length: int
+
+
+@dataclass
+class FocusLockMetricsUpdated(Event):
+    """Periodic metrics update from focus lock controller.
+
+    Published at ~10 Hz when focus lock is active.
+    """
+
+    z_error_um: float
+    z_position_um: float
+    spot_snr: float
+    spot_intensity: float
+    z_error_rms_um: float  # RMS error over recent history
+    drift_rate_um_per_s: float  # Estimated drift rate
+    is_good_reading: bool  # Whether current measurement is valid for lock
+    correlation: float  # Cross-correlation quality (0-1), NaN if unavailable
+    spot_offset_px: float = float("nan")  # Spot offset from reference in pixels
+    piezo_delta_um: float = float("nan")  # Piezo position change from lock reference
+    lock_buffer_fill: int = 0  # Current lock buffer fill level
+    lock_buffer_length: int = 5  # Total lock buffer length
+    lock_quality: float = 1.0  # Smoothed RMS-based quality (0-1, higher is better)
+
+
+@dataclass
+class FocusLockWarning(Event):
+    """Warning from focus lock controller.
+
+    Used for conditions that need user attention but don't stop the lock.
+    """
+
+    warning_type: str  # "piezo_low" | "piezo_high" | "signal_lost" | "snr_low" | "reference_invalid"
+    message: str
+
+
+@dataclass
+class FocusLockFrameUpdated(Event):
+    """Cropped AF spot region for widget preview.
+
+    Published at ~10 Hz when focus lock is active. Contains a small
+    cropped region around the detected spot for display in the widget.
+    """
+
+    frame: np.ndarray  # Small cropped region around spot (grayscale)
+    spot_x_px: float  # Centroid x position in cropped frame
+    spot_y_px: float  # Centroid y position in cropped frame
+    frame_width: int  # Width of the cropped frame
+    frame_height: int  # Height of the cropped frame
+    spot_valid: bool = True  # Whether spot detection succeeded (draw marker only if True)
+
+
+# ============================================================================
+# Focus Lock Commands
+# ============================================================================
+
+
+@dataclass
+class SetFocusLockModeCommand(Event):
+    """Command to set focus lock operating mode."""
+
+    mode: str  # FocusLockMode: "off", "on"
+
+
+@dataclass
+class StartFocusLockCommand(Event):
+    """Command to start focus lock."""
+
+    target_um: float = 0.0
+
+
+@dataclass
+class StopFocusLockCommand(Event):
+    """Command to stop focus lock."""
+
+    pass
+
+
+@dataclass
+class PauseFocusLockCommand(Event):
+    """Command to pause focus lock (e.g., during Z-stack)."""
+
+    pass
+
+
+@dataclass
+class ResumeFocusLockCommand(Event):
+    """Command to resume focus lock after pause."""
+
+    pass
+
+
+@dataclass
+class AdjustFocusLockTargetCommand(Event):
+    """Command to adjust focus lock target by a relative offset."""
+
+    delta_um: float
+
+
+@dataclass
+class SetFocusLockReferenceCommand(Event):
+    """Command to set/lock the current position as the focus lock reference."""
+
+    pass
+
+
+@dataclass
+class ReleaseFocusLockReferenceCommand(Event):
+    """Command to release the focus lock reference."""
+
+    pass
+
+
+@dataclass
+class SetFocusLockAutoSearchCommand(Event):
+    """Command to enable or disable auto-search on lock loss."""
+
+    enabled: bool
+
+
+@dataclass
+class FocusLockSearchProgress(Event):
+    """Progress update during piezo sweep search."""
+
+    phase: str  # "last_position" or "sweep"
+    current_position_um: float
+    search_min_um: float
+    search_max_um: float

@@ -16,6 +16,7 @@ from squid.backend.controllers.tracking_controller import TrackingControllerCore
 from squid.backend.controllers.autofocus import (
     AutoFocusController,
     LaserAutofocusController,
+    ContinuousFocusLockController,
 )
 
 # Multipoint acquisition controllers
@@ -34,6 +35,7 @@ __all__ = [
     # Autofocus
     "AutoFocusController",
     "LaserAutofocusController",
+    "ContinuousFocusLockController",
     # Multipoint
     "MultiPointController",
     "MultiPointWorker",

@@ -44,6 +44,7 @@ from squid.core.events import (
     LaserAFMoveCompleted,
     ProfileChanged,
     ObjectiveChanged,
+    FocusLockStatusChanged,
 )
 
 if TYPE_CHECKING:
@@ -734,6 +735,7 @@ class LaserAutofocusControlWidget(QFrame):
         # Cached state from events
         self._is_initialized = initial_is_initialized
         self._has_reference = initial_has_reference
+        self._focus_lock_active = False
 
         self.btn_set_reference: QPushButton
         self.label_displacement: QLabel
@@ -752,6 +754,7 @@ class LaserAutofocusControlWidget(QFrame):
         self._event_bus.subscribe(LaserAFMoveCompleted, self._on_move_completed)
         self._event_bus.subscribe(ProfileChanged, self._on_profile_or_objective_changed)
         self._event_bus.subscribe(ObjectiveChanged, self._on_profile_or_objective_changed)
+        self._event_bus.subscribe(FocusLockStatusChanged, self._on_focus_lock_status_changed)
 
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Track live state for stop/start around operations."""
@@ -793,6 +796,15 @@ class LaserAutofocusControlWidget(QFrame):
     def _on_profile_or_objective_changed(self, event) -> None:
         """Handle profile or objective changes - refresh init state."""
         self.update_init_state()
+
+    def _on_focus_lock_status_changed(self, event: FocusLockStatusChanged) -> None:
+        """Disable laser AF controls while focus lock is active.
+
+        When focus lock is engaged (ready/locked/lost), we disable Set Reference,
+        Measure Displacement, and Move to Target to prevent conflicts.
+        """
+        self._focus_lock_active = event.status in ("ready", "locked", "lost")
+        self._update_conflict_state()
 
     def add_components(self) -> None:
         self.btn_set_reference = QPushButton(" Set Reference ")
@@ -846,12 +858,39 @@ class LaserAutofocusControlWidget(QFrame):
         # Displacement updates via LaserAFDisplacementMeasured event subscription
 
     def update_init_state(self) -> None:
-        """Update button enabled states based on cached initialization state."""
-        # Set Reference requires initialization
-        self.btn_set_reference.setEnabled(self._is_initialized)
-        # Measure/Move require both initialization AND a reference
-        self.btn_measure_displacement.setEnabled(self._is_initialized and self._has_reference)
-        self.btn_move_to_target.setEnabled(self._is_initialized and self._has_reference)
+        """Update button enabled states based on cached initialization state.
+
+        This is called when initialization state changes. The actual enabled
+        state also depends on focus lock status, handled by _update_conflict_state.
+        """
+        # _update_conflict_state handles all the logic including focus lock check
+        self._update_conflict_state()
+
+    def _update_conflict_state(self) -> None:
+        """Update button states based on focus lock status.
+
+        When focus lock is active, Set Reference, Measure Displacement, and
+        Move to Target are all disabled to prevent conflicts.
+        """
+        # Set Reference requires initialization and no focus lock
+        can_set_ref = self._is_initialized and not self._focus_lock_active
+        self.btn_set_reference.setEnabled(can_set_ref)
+
+        # Measure/Move require initialization, reference, and no focus lock
+        can_measure = self._is_initialized and self._has_reference and not self._focus_lock_active
+        self.btn_measure_displacement.setEnabled(can_measure)
+        self.btn_move_to_target.setEnabled(can_measure)
+
+        # Set tooltips to explain why buttons are disabled
+        if self._focus_lock_active:
+            tooltip = "Disabled while Focus Lock is active"
+            self.btn_set_reference.setToolTip(tooltip)
+            self.btn_measure_displacement.setToolTip(tooltip)
+            self.btn_move_to_target.setToolTip(tooltip)
+        else:
+            self.btn_set_reference.setToolTip("")
+            self.btn_measure_displacement.setToolTip("")
+            self.btn_move_to_target.setToolTip("")
 
     def move_to_target(self) -> None:
         was_live = self._is_live

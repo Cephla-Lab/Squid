@@ -24,6 +24,7 @@ from _def import (
     USE_NAPARI_FOR_LIVE_CONTROL,
     USE_NAPARI_WELL_SELECTION,
     SHOW_DAC_CONTROL,
+    SUPPORT_LASER_AUTOFOCUS,
 )
 
 
@@ -38,6 +39,12 @@ def setup_control_panel_layout(gui: "HighContentScreeningGui") -> None:
         layout.addWidget(gui.liveControlWidget)
 
     layout.addWidget(gui.cameraTabWidget)
+
+    # Add Focus Lock widget below camera controls (only if laser AF is supported)
+    if SUPPORT_LASER_AUTOFOCUS:
+        focus_lock_widget = getattr(gui, "focusLockStatusWidget", None)
+        if focus_lock_widget is not None:
+            layout.addWidget(focus_lock_widget)
 
     if SHOW_DAC_CONTROL:
         layout.addWidget(gui.dacControlWidget)
@@ -84,13 +91,18 @@ def get_main_window_minimum_size() -> tuple[int, int]:
     return (width_min, height_min)
 
 
+def _build_image_display_container(gui: "HighContentScreeningGui") -> QWidget:
+    # Focus lock widget is added to the control panel in setup_control_panel_layout()
+    return gui.imageDisplayTabs
+
+
 def setup_single_window_layout(gui: "HighContentScreeningGui") -> None:
     """Configure single window layout with dock areas."""
     main_dockArea = dock.DockArea()
 
     dock_display = dock.Dock("Image Display", autoOrientation=False)
     dock_display.showTitleBar()
-    dock_display.addWidget(gui.imageDisplayTabs)
+    dock_display.addWidget(_build_image_display_container(gui))
     dock_display.setStretch(x=100, y=100)
     main_dockArea.addDock(dock_display)
 
@@ -118,7 +130,7 @@ def setup_multi_window_layout(gui: "HighContentScreeningGui") -> None:
     """Configure multi-window layout with separate display window."""
     gui.setCentralWidget(gui.centralWidget)
     gui.tabbedImageDisplayWindow = QMainWindow()
-    gui.tabbedImageDisplayWindow.setCentralWidget(gui.imageDisplayTabs)
+    gui.tabbedImageDisplayWindow.setCentralWidget(_build_image_display_container(gui))
     gui.tabbedImageDisplayWindow.setWindowFlags(
         gui.windowFlags() | Qt.CustomizeWindowHint
     )

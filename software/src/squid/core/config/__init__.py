@@ -14,6 +14,7 @@ from squid.core.config.channel_definitions import (
     ObjectiveChannelSettings,
     ChannelDefinitionsConfig,
 )
+from squid.core.config.focus_lock import FocusLockConfig, FocusLockMode
 
 
 class FilterWheelControllerVariant(enum.Enum):

@@ -30,9 +30,15 @@ class _DummyWindow:
     def __init__(self) -> None:
         self._qt_window = QWidget()
         self._qt_viewer = _DummyQtViewer()
+        self.main_menu = _DummyMenu()
 
     def add_dock_widget(self, *args: Any, **kwargs: Any) -> _DummyDock:
         return _DummyDock()
+
+
+class _DummyMenu:
+    def clear(self) -> None:
+        pass
 
 
 class _DummyDims:

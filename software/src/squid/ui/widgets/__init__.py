@@ -56,6 +56,7 @@ __all__ = [
     "TriggerControlWidget",
     "LaserAutofocusControlWidget",
     "LedMatrixSettingsDialog",
+    "FocusLockStatusWidget",
     # wellplate
     "WellSelectionWidget",
     "WellplateFormatWidget",
@@ -127,6 +128,7 @@ _LAZY_IMPORTS: Final[dict[str, tuple[str, str]]] = {
     "TriggerControlWidget": ("squid.ui.widgets.hardware", "TriggerControlWidget"),
     "LaserAutofocusControlWidget": ("squid.ui.widgets.hardware", "LaserAutofocusControlWidget"),
     "LedMatrixSettingsDialog": ("squid.ui.widgets.hardware", "LedMatrixSettingsDialog"),
+    "FocusLockStatusWidget": ("squid.ui.widgets.hardware", "FocusLockStatusWidget"),
     # wellplate
     "WellSelectionWidget": ("squid.ui.widgets.wellplate", "WellSelectionWidget"),
     "WellplateFormatWidget": ("squid.ui.widgets.wellplate", "WellplateFormatWidget"),
@@ -162,4 +164,3 @@ def __getattr__(name: str) -> Any:
     value = getattr(module, attr_name)
     globals()[name] = value
     return value
-
