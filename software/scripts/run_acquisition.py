@@ -208,6 +208,12 @@ Examples:
         help="Override wells from YAML (e.g., 'A1:B3' for range or 'A1,A2,B1' for list)",
     )
     parser.add_argument(
+        "--base-path",
+        "-b",
+        default=None,
+        help="Override save path for acquired images",
+    )
+    parser.add_argument(
         "--simulation",
         action="store_true",
         help="Run in simulation mode (no real hardware)",
@@ -350,6 +356,8 @@ Examples:
         params = {"yaml_path": yaml_path}
         if args.wells:
             params["wells"] = args.wells
+        if args.base_path:
+            params["base_path"] = args.base_path
 
         # Start acquisition
         print("Starting acquisition...")
