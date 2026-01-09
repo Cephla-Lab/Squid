@@ -21,12 +21,11 @@ import squid.logging
 
 # Qt imports for thread-safe GUI operations
 try:
-    from qtpy.QtCore import QEventLoop, QTimer
+    from qtpy.QtCore import QTimer
 
     QT_AVAILABLE = True
 except ImportError:
     QT_AVAILABLE = False
-    QEventLoop = None
 
 
 class AcquisitionResult(TypedDict):
@@ -689,6 +688,8 @@ class MicroscopeControlServer:
         overlap_percent: float = Field(10.0, description="Overlap between FOVs in percent", ge=0, le=50),
     ) -> Dict[str, Any]:
         """Run a multi-point acquisition across wells using the MultiPointController."""
+        import os
+
         import control._def
 
         # Resolve FieldInfo objects to actual values (fixes bug when params not provided)
@@ -794,7 +795,7 @@ class MicroscopeControlServer:
                 "total_fovs": total_fovs,
                 "total_images": total_images,
                 "experiment_id": self.multipoint_controller.experiment_ID,
-                "save_dir": f"{base_path}/{self.multipoint_controller.experiment_ID}",
+                "save_dir": os.path.join(base_path, self.multipoint_controller.experiment_ID),
             }
 
         except Exception as e:
@@ -1142,8 +1143,8 @@ class MicroscopeControlServer:
         # Update GUI widgets (thread-safe) if GUI is available
         self._update_gui_from_yaml(yaml_data, yaml_path)
 
-        # Validate channels exist
-        available_channels = self._validate_channels(yaml_data.channel_names, current_objective)
+        # Validate channels exist (raises ValueError if invalid)
+        self._validate_channels(yaml_data.channel_names, current_objective)
 
         # Set up paths - require explicit DEFAULT_SAVING_PATH configuration
         if not base_path:
@@ -1192,7 +1193,7 @@ class MicroscopeControlServer:
                 "total_fovs": total_fovs,
                 "total_images": total_images,
                 "experiment_id": self.multipoint_controller.experiment_ID,
-                "save_dir": f"{base_path}/{self.multipoint_controller.experiment_ID}",
+                "save_dir": os.path.join(base_path, self.multipoint_controller.experiment_ID),
             }
 
         except Exception as e:

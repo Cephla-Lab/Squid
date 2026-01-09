@@ -5,7 +5,7 @@ Tests for the _cmd_run_acquisition_from_yaml command.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 
 class TestRunAcquisitionFromYAML:

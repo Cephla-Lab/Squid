@@ -302,7 +302,11 @@ Examples:
     gui_process = None
 
     def cleanup(signum=None, frame=None):
-        """Clean up on exit, warning if acquisition is still running."""
+        """Clean up on exit, warning if acquisition is still running.
+
+        Called from signal handlers and explicit error paths. Always exits.
+        When gui_process is None (e.g., --no-launch mode), just exits cleanly.
+        """
         if gui_process:
             # Check if acquisition is still running before terminating
             try:
@@ -323,7 +327,8 @@ Examples:
 
     # Register signal handlers
     signal.signal(signal.SIGINT, cleanup)
-    signal.signal(signal.SIGTERM, cleanup)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, cleanup)
 
     try:
         # Launch GUI if needed
