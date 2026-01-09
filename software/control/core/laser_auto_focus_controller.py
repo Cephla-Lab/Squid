@@ -705,42 +705,22 @@ class LaserAutofocusController(QObject):
 
         return True, correlation
 
-    def _compute_intensity_profile_rmse(
-        self, y: np.ndarray, r: np.ndarray, edge_frac: float = 0.1, k: float = 3.0, lam: float = 0.5
-    ) -> Tuple[float, dict]:
-        """Compute RMSE-based match score between two intensity profiles.
-
-        Uses log-transformed RMSE with automatic delta estimation from edge noise,
-        plus optional derivative term for shape matching.
+    def _compute_intensity_profile_rmse(self, y: np.ndarray, r: np.ndarray) -> Tuple[float, dict]:
+        """Compute RMSE between two intensity profiles.
 
         Args:
             y: Current intensity profile
             r: Reference intensity profile
-            edge_frac: Fraction of edges to use for noise estimation
-            k: Multiplier for noise-based delta (typically 2-5)
-            lam: Weight for derivative term
 
         Returns:
-            Tuple[float, dict]: (score, details) where score is combined RMSE (lower is better)
+            Tuple[float, dict]: (rmse, details) where rmse is root mean square error (lower is better)
         """
         y = np.asarray(y, float)
         r = np.asarray(r, float)
 
-        # Estimate delta from measured profile edges
-        n = y.size
-        m = max(1, int(edge_frac * n))
-        edges = np.r_[y[:m], y[-m:]]
-        sigma = float(np.std(edges))
-        delta = max(1e-4, k * sigma)
+        rmse = float(np.sqrt(np.mean((y - r) ** 2)))
 
-        ly = np.log(y + delta)
-        lr = np.log(r + delta)
-
-        err = float(np.sqrt(np.mean((ly - lr) ** 2)))
-        err_d = float(np.sqrt(np.mean((np.diff(ly) - np.diff(lr)) ** 2)))
-        score = err + lam * err_d
-
-        return score, {"err": err, "err_d": err_d, "score": score, "delta": delta, "sigma_edge": sigma, "lam": lam}
+        return rmse, {"rmse": rmse}
 
     def _check_intensity_profile_match(
         self, intensity_profile: np.ndarray, debug_plot: bool = False
@@ -762,9 +742,7 @@ class LaserAutofocusController(QObject):
         score, details = self._compute_intensity_profile_rmse(
             intensity_profile.ravel(), self.reference_intensity_profile.ravel()
         )
-        self._log.debug(
-            f"Intensity profile RMSE score: {score:.3f} (err={details['err']:.3f}, err_d={details['err_d']:.3f})"
-        )
+        self._log.debug(f"Intensity profile RMSE: {score:.3f}")
 
         if debug_plot:
             import matplotlib.pyplot as plt
