@@ -55,6 +55,8 @@ class LaserAutofocusController(QObject):
 
         self.image = None  # for saving the focus camera image for debugging when centroid cannot be found
         self.intensity_profile = None  # temporary storage for intensity profile during set_reference
+        self.intensity_min = None  # temporary storage for intensity min during set_reference
+        self.intensity_max = None  # temporary storage for intensity max during set_reference
 
         # Load configurations if available
         self.load_cached_configuration()
@@ -543,6 +545,8 @@ class LaserAutofocusController(QObject):
         result = self._get_laser_spot_centroid()
         reference_image = self.image
         reference_intensity_profile = self.intensity_profile
+        reference_intensity_min = self.intensity_min
+        reference_intensity_max = self.intensity_max
 
         # turn off the laser
         try:
@@ -592,7 +596,11 @@ class LaserAutofocusController(QObject):
         # so that self.laser_af_properties.reference_image_cropped stays in sync with self.reference_crop
         self.laser_af_properties.set_reference_image(self.reference_crop)
         if reference_intensity_profile is not None:
-            self.laser_af_properties.set_reference_intensity_profile(reference_intensity_profile)
+            self.laser_af_properties.set_reference_intensity_profile(
+                reference_intensity_profile,
+                intensity_min=reference_intensity_min,
+                intensity_max=reference_intensity_max,
+            )
 
         # Update cached file. reference_crop and intensity_profile need to be saved.
         if self._current_profile and self.objectiveStore:
@@ -602,7 +610,11 @@ class LaserAutofocusController(QObject):
             )
             save_config.set_reference_image(self.reference_crop)
             if reference_intensity_profile is not None:
-                save_config.set_reference_intensity_profile(reference_intensity_profile)
+                save_config.set_reference_intensity_profile(
+                    reference_intensity_profile,
+                    intensity_min=reference_intensity_min,
+                    intensity_max=reference_intensity_max,
+                )
             self._config_repo.save_laser_af_config(
                 self._current_profile, self.objectiveStore.current_objective, save_config
             )
@@ -878,11 +890,21 @@ class LaserAutofocusController(QObject):
                     "peak_prominence": self.laser_af_properties.min_peak_prominence,
                     "spot_spacing": self.laser_af_properties.spot_spacing,
                 }
+
+                # Pass reference intensity min/max for normalization during measurement
+                ref_min = None
+                ref_max = None
+                if check_intensity_correlation:
+                    ref_min = self.laser_af_properties.reference_intensity_min
+                    ref_max = self.laser_af_properties.reference_intensity_max
+
                 result = utils.find_spot_location(
                     image,
                     mode=self.laser_af_properties.get_spot_detection_mode(),
                     params=spot_detection_params,
                     filter_sigma=self.laser_af_properties.filter_sigma,
+                    reference_intensity_min=ref_min,
+                    reference_intensity_max=ref_max,
                 )
                 if result is None:
                     self._log.warning(
@@ -890,8 +912,8 @@ class LaserAutofocusController(QObject):
                     )
                     continue
 
-                # Unpack result: (centroid_x, centroid_y, intensity_profile)
-                spot_x, spot_y, intensity_profile = result
+                # Unpack result: (centroid_x, centroid_y, intensity_profile, intensity_min, intensity_max)
+                spot_x, spot_y, intensity_profile, intensity_min, intensity_max = result
 
                 if use_center_crop is not None:
                     x, y = (
@@ -938,8 +960,10 @@ class LaserAutofocusController(QObject):
                 if not passed:
                     return None
         else:
-            # Store the intensity profile for later use (e.g., when setting reference)
+            # Store the intensity profile and min/max for later use (e.g., when setting reference)
             self.intensity_profile = intensity_profile
+            self.intensity_min = intensity_min
+            self.intensity_max = intensity_max
 
         # Calculate average position from successful detections
         x = tmp_x / successful_detections
