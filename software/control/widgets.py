@@ -7578,9 +7578,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             if yaml_data.xy_mode in ["Current Position", "Select Wells", "Manual", "Load Coordinates"]:
                 self.combobox_xy_mode.setCurrentText(yaml_data.xy_mode)
 
-            # Load well regions if present
+            # Load well regions if present and update XY checkbox state
             if yaml_data.wellplate_regions:
                 self._load_well_regions(yaml_data.wellplate_regions)
+                self.checkbox_xy.setChecked(True)
+            else:
+                self.checkbox_xy.setChecked(False)
 
         finally:
             # Unblock all signals
