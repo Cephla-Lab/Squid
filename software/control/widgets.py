@@ -352,6 +352,156 @@ class ConfigEditorBackwardsCompatible(ConfigEditor):
         self.close()
 
 
+class AcquisitionYAMLDropMixin:
+    """Mixin class providing drag-and-drop functionality for loading acquisition YAML files.
+
+    Widgets using this mixin must:
+    1. Call `self.setAcceptDrops(True)` in __init__
+    2. Have `self._log`, `self.multipointController`, `self.objectiveStore` attributes
+    3. Implement `_get_expected_widget_type()` returning "wellplate" or "flexible"
+    4. Implement `_apply_yaml_settings(yaml_data)` to apply settings to the widget
+    """
+
+    def dragEnterEvent(self, event):
+        """Handle drag enter event for YAML file drops."""
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                file_path = url.toLocalFile()
+                if file_path.endswith(".yaml") or file_path.endswith(".yml"):
+                    event.accept()
+                    # Visual feedback - dashed border (store original for restore)
+                    if not hasattr(self, "_original_stylesheet"):
+                        self._original_stylesheet = self.styleSheet()
+                    self.setStyleSheet(
+                        self._original_stylesheet + f" {self.__class__.__name__} {{ border: 3px dashed #4a90d9; }}"
+                    )
+                    return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        """Handle drag leave event."""
+        if hasattr(self, "_original_stylesheet"):
+            self.setStyleSheet(self._original_stylesheet)
+        event.accept()
+
+    def dropEvent(self, event):
+        """Handle drop event for YAML file."""
+        if hasattr(self, "_original_stylesheet"):
+            self.setStyleSheet(self._original_stylesheet)
+        files = [u.toLocalFile() for u in event.mimeData().urls()]
+        for file_path in files:
+            if file_path.endswith(".yaml") or file_path.endswith(".yml"):
+                self._load_acquisition_yaml(file_path)
+                break  # Only load the first YAML file
+        event.accept()
+
+    def _get_expected_widget_type(self) -> str:
+        """Return the expected widget_type for this widget. Override in subclass."""
+        raise NotImplementedError("Subclass must implement _get_expected_widget_type()")
+
+    def _get_other_widget_name(self) -> str:
+        """Return the name of the other widget type for error messages."""
+        if self._get_expected_widget_type() == "wellplate":
+            return "Flexible Multipoint"
+        return "Wellplate Multipoint"
+
+    def _load_acquisition_yaml(self, file_path: str):
+        """Load acquisition settings from YAML file."""
+        from control.acquisition_yaml_loader import parse_acquisition_yaml, validate_hardware
+
+        try:
+            yaml_data = parse_acquisition_yaml(file_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", f"Failed to parse YAML file:\n{e}")
+            return
+
+        # Check widget type
+        expected_type = self._get_expected_widget_type()
+        if yaml_data.widget_type != expected_type:
+            QMessageBox.warning(
+                self,
+                "Widget Type Mismatch",
+                f"This YAML is for '{yaml_data.widget_type}' mode.\n"
+                f"Please drop this file on the {self._get_other_widget_name()} widget instead.",
+            )
+            return
+
+        # Validate hardware
+        current_binning = (1, 1)
+        try:
+            camera = getattr(self.multipointController, "camera", None)
+            if camera and hasattr(camera, "get_binning"):
+                current_binning = tuple(camera.get_binning())
+        except Exception:
+            self._log.debug("Could not get camera binning for validation")
+
+        validation = validate_hardware(yaml_data, self.objectiveStore.current_objective, current_binning)
+
+        if not validation.is_valid:
+            dialog = AcquisitionYAMLMismatchDialog(validation, self)
+            dialog.exec_()
+            return
+
+        # Apply settings with signal blocking
+        self._apply_yaml_settings(yaml_data)
+        self._log.info(f"Loaded acquisition settings from: {file_path}")
+
+    def _apply_yaml_settings(self, yaml_data):
+        """Apply parsed YAML settings to widget controls. Override in subclass."""
+        raise NotImplementedError("Subclass must implement _apply_yaml_settings()")
+
+
+class AcquisitionYAMLMismatchDialog(QDialog):
+    """Dialog shown when hardware configuration doesn't match loaded YAML settings."""
+
+    def __init__(self, validation_result, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Cannot Load Settings")
+        self.setMinimumWidth(400)
+
+        layout = QVBoxLayout(self)
+
+        # Warning icon and title
+        title_layout = QHBoxLayout()
+        icon_label = QLabel()
+        icon_label.setPixmap(self.style().standardIcon(QStyle.SP_MessageBoxWarning).pixmap(32, 32))
+        title_layout.addWidget(icon_label)
+        title_label = QLabel("<b>Hardware Configuration Mismatch</b>")
+        title_label.setStyleSheet("font-size: 14px;")
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        layout.addLayout(title_layout)
+
+        layout.addSpacing(10)
+
+        # Mismatch details
+        message_label = QLabel(validation_result.message)
+        message_label.setWordWrap(True)
+        message_label.setStyleSheet("background-color: #fff3cd; padding: 10px; border-radius: 4px;")
+        layout.addWidget(message_label)
+
+        layout.addSpacing(10)
+
+        # Instructions
+        instruction_label = QLabel(
+            "Please update your hardware settings to match the YAML file, then drag and drop again."
+        )
+        instruction_label.setWordWrap(True)
+        instruction_label.setStyleSheet("color: #666;")
+        layout.addWidget(instruction_label)
+
+        layout.addSpacing(15)
+
+        # OK button
+        button_layout = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        button_layout.addStretch()
+        button_layout.addWidget(ok_btn)
+        layout.addLayout(button_layout)
+
+
 class PreferencesDialog(QDialog):
     """User-friendly preferences dialog with tabbed interface for common settings."""
 
@@ -3915,7 +4065,7 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -3935,6 +4085,7 @@ class FlexibleMultiPointWidget(QFrame):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self.setAcceptDrops(True)  # Enable drag-and-drop for loading acquisition YAML
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.acquisition_start_time = None
         self.last_used_locations = None
@@ -5207,8 +5358,139 @@ class FlexibleMultiPointWidget(QFrame):
     def set_performance_mode(self, enabled):
         self.performance_mode = enabled
 
+    # ========== Drag-and-Drop for Loading Acquisition YAML ==========
+    # Uses AcquisitionYAMLDropMixin for drag-drop handling
 
-class WellplateMultiPointWidget(QFrame):
+    def _get_expected_widget_type(self) -> str:
+        """Return the expected widget_type for this widget."""
+        return "flexible"
+
+    def _apply_yaml_settings(self, yaml_data):
+        """Apply parsed YAML settings to widget controls."""
+        # Collect widgets to block signals
+        widgets_to_block = [
+            self.entry_NX,
+            self.entry_NY,
+            self.entry_NZ,
+            self.entry_deltaZ,
+            self.entry_Nt,
+            self.entry_dt,
+            self.list_configurations,
+            self.checkbox_withAutofocus,
+            self.checkbox_withReflectionAutofocus,
+        ]
+
+        # Add optional widgets if they exist
+        if hasattr(self, "entry_deltaX"):
+            widgets_to_block.append(self.entry_deltaX)
+        if hasattr(self, "entry_deltaY"):
+            widgets_to_block.append(self.entry_deltaY)
+        if hasattr(self, "entry_overlap"):
+            widgets_to_block.append(self.entry_overlap)
+
+        for widget in widgets_to_block:
+            widget.blockSignals(True)
+
+        try:
+            # Grid settings (flexible specific)
+            self.entry_NX.setValue(yaml_data.nx)
+            self.entry_NY.setValue(yaml_data.ny)
+            if hasattr(self, "entry_deltaX") and not self.use_overlap:
+                self.entry_deltaX.setValue(yaml_data.delta_x_mm)
+                self.entry_deltaY.setValue(yaml_data.delta_y_mm)
+            if hasattr(self, "entry_overlap") and self.use_overlap:
+                self.entry_overlap.setValue(yaml_data.overlap_percent)
+
+            # Z-stack settings
+            self.entry_NZ.setValue(yaml_data.nz)
+            self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+
+            # Time series settings
+            self.entry_Nt.setValue(yaml_data.nt)
+            self.entry_dt.setValue(yaml_data.delta_t_s)
+
+            # Channels
+            if yaml_data.channel_names:
+                self.list_configurations.clearSelection()
+                for i in range(self.list_configurations.count()):
+                    item = self.list_configurations.item(i)
+                    if item.text() in yaml_data.channel_names:
+                        item.setSelected(True)
+
+            # Autofocus
+            self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
+            self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+
+            # Load positions if present
+            if yaml_data.flexible_positions:
+                self._load_positions(yaml_data.flexible_positions)
+
+        finally:
+            # Unblock all signals
+            for widget in widgets_to_block:
+                widget.blockSignals(False)
+
+            # Update FOV positions to reflect new NX, NY, delta values
+            self.update_fov_positions()
+
+    def _load_positions(self, positions):
+        """Load positions from YAML into the location list."""
+        # Clear existing locations
+        self.clear_only_location_list()
+
+        for pos in positions:
+            name = pos.get("name", f"R{len(self.location_ids)}")
+            center = pos.get("center_mm", [0, 0, 0])
+
+            if len(center) >= 3:
+                x, y, z = center[0], center[1], center[2]
+            elif len(center) == 2:
+                x, y = center[0], center[1]
+                z = self.stage.get_pos().z_mm
+            else:
+                continue
+
+            # Add to data structures
+            self.location_list = np.vstack((self.location_list, [[x, y, z]]))
+            self.location_ids = np.append(self.location_ids, name)
+
+            # Update UI - dropdown
+            location_str = f"x:{round(x, 3)} mm  y:{round(y, 3)} mm  z:{round(z * 1000, 1)} um"
+            self.dropdown_location_list.addItem(location_str)
+
+            # Update UI - table
+            row = self.table_location_list.rowCount()
+            self.table_location_list.insertRow(row)
+            self.table_location_list.setItem(row, 0, QTableWidgetItem(str(round(x, 3))))
+            self.table_location_list.setItem(row, 1, QTableWidgetItem(str(round(y, 3))))
+            self.table_location_list.setItem(row, 2, QTableWidgetItem(str(round(z * 1000, 1))))
+            self.table_location_list.setItem(row, 3, QTableWidgetItem(name))
+
+            # Add to scan coordinates
+            if self.use_overlap:
+                self.scanCoordinates.add_flexible_region(
+                    name,
+                    x,
+                    y,
+                    z,
+                    self.entry_NX.value(),
+                    self.entry_NY.value(),
+                    overlap_percent=self.entry_overlap.value(),
+                )
+            else:
+                self.scanCoordinates.add_flexible_region_with_step_size(
+                    name,
+                    x,
+                    y,
+                    z,
+                    self.entry_NX.value(),
+                    self.entry_NY.value(),
+                    self.entry_deltaX.value(),
+                    self.entry_deltaY.value(),
+                )
+
+
+class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -5233,6 +5515,7 @@ class WellplateMultiPointWidget(QFrame):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self.setAcceptDrops(True)  # Enable drag-and-drop for loading acquisition YAML
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.stage = stage
         self.navigationViewer = navigationViewer
@@ -7183,6 +7466,142 @@ class WellplateMultiPointWidget(QFrame):
             except Exception as e:
                 self._log.error(f"Failed to save coordinates: {str(e)}")
                 QMessageBox.warning(self, "Save Error", f"Failed to save coordinates to {folder_path}\nError: {str(e)}")
+
+    # ========== Drag-and-Drop for Loading Acquisition YAML ==========
+    # Uses AcquisitionYAMLDropMixin for drag-drop handling
+
+    def _get_expected_widget_type(self) -> str:
+        """Return the expected widget_type for this widget."""
+        return "wellplate"
+
+    def _apply_yaml_settings(self, yaml_data):
+        """Apply parsed YAML settings to widget controls."""
+        # Collect widgets to block signals
+        widgets_to_block = [
+            self.entry_NZ,
+            self.entry_deltaZ,
+            self.entry_Nt,
+            self.entry_dt,
+            self.entry_overlap,
+            self.entry_scan_size,
+            self.combobox_shape,
+            self.list_configurations,
+            self.checkbox_withAutofocus,
+            self.checkbox_withReflectionAutofocus,
+            self.combobox_xy_mode,
+            self.checkbox_xy,
+            self.checkbox_z,
+            self.checkbox_time,
+        ]
+
+        for widget in widgets_to_block:
+            widget.blockSignals(True)
+
+        try:
+            # Z-stack settings
+            if yaml_data.nz > 1:
+                self.checkbox_z.setChecked(True)
+            self.entry_NZ.setValue(yaml_data.nz)
+            self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+
+            # Time series settings
+            if yaml_data.nt > 1:
+                self.checkbox_time.setChecked(True)
+            self.entry_Nt.setValue(yaml_data.nt)
+            self.entry_dt.setValue(yaml_data.delta_t_s)
+
+            # Overlap
+            self.entry_overlap.setValue(yaml_data.overlap_percent)
+
+            # Scan size and shape (wellplate specific)
+            if yaml_data.scan_size_mm:
+                self.entry_scan_size.setValue(yaml_data.scan_size_mm)
+            if yaml_data.scan_shape:
+                index = self.combobox_shape.findText(yaml_data.scan_shape)
+                if index >= 0:
+                    self.combobox_shape.setCurrentIndex(index)
+
+            # Channels
+            if yaml_data.channel_names:
+                self.list_configurations.clearSelection()
+                for i in range(self.list_configurations.count()):
+                    item = self.list_configurations.item(i)
+                    if item.text() in yaml_data.channel_names:
+                        item.setSelected(True)
+
+            # Autofocus
+            self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
+            self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+
+            # XY mode - set to Select Wells for wellplate YAML
+            if yaml_data.xy_mode in ["Current Position", "Select Wells", "Manual", "Load Coordinates"]:
+                self.combobox_xy_mode.setCurrentText(yaml_data.xy_mode)
+
+            # Load well regions if present
+            if yaml_data.wellplate_regions:
+                self._load_well_regions(yaml_data.wellplate_regions)
+
+        finally:
+            # Unblock all signals
+            for widget in widgets_to_block:
+                widget.blockSignals(False)
+
+            # Trigger UI updates
+            self.update_control_visibility()
+            self.update_coordinates()
+
+    def _load_well_regions(self, regions):
+        """Load well regions from YAML and select them in the well selector."""
+        if not self.well_selection_widget:
+            return
+
+        # Block signals during batch selection to prevent multiple updates
+        self.well_selection_widget.blockSignals(True)
+
+        try:
+            # Clear current selection
+            self.well_selection_widget.clearSelection()
+
+            has_selection = False
+            # Parse well names and select them
+            for region in regions:
+                well_name = region.get("name", "")
+                if not well_name:
+                    continue
+
+                # Parse well name (e.g., "C4" -> row=2, col=3)
+                row, col = self._parse_well_name(well_name)
+                if row is not None and col is not None:
+                    # Check bounds
+                    if row < self.well_selection_widget.rowCount() and col < self.well_selection_widget.columnCount():
+                        item = self.well_selection_widget.item(row, col)
+                        if item:
+                            item.setSelected(True)
+                            has_selection = True
+        finally:
+            # Unblock signals
+            self.well_selection_widget.blockSignals(False)
+
+        # Emit signal once to trigger coordinate update
+        self.well_selection_widget.signal_wellSelected.emit(has_selection)
+
+    def _parse_well_name(self, well_name: str):
+        """Parse well name like 'C4' to (row, col) indices."""
+        match = re.match(r"^([A-Z]+)(\d+)$", well_name.upper())
+        if not match:
+            return None, None
+
+        row_str, col_str = match.groups()
+
+        # Convert row letters to index (A=0, B=1, ..., AA=26, etc.)
+        row = 0
+        for char in row_str:
+            row = row * 26 + (ord(char) - ord("A") + 1)
+        row -= 1  # Convert to 0-based index
+
+        col = int(col_str) - 1  # Convert to 0-based index
+
+        return row, col
 
 
 class MultiPointWithFluidicsWidget(QFrame):
