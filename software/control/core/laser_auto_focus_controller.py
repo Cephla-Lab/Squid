@@ -585,7 +585,7 @@ class LaserAutofocusController(QObject):
         self.camera.send_trigger()
         current_image = self.camera.read_frame()
         """
-        self._get_laser_spot_centroid()
+        centroid_result = self._get_laser_spot_centroid()
         current_image = self.image
 
         try:
@@ -603,8 +603,13 @@ class LaserAutofocusController(QObject):
             self._log.error("Failed to get images for cross-correlation check")
             return failure_return_value
 
-        # Crop and normalize current image
-        center_x = int(self.laser_af_properties.x_reference)
+        if centroid_result is None:
+            self._log.error("Failed to detect spot centroid for cross-correlation check")
+            return failure_return_value
+
+        # Crop current image around the detected peak (not the reference position)
+        current_peak_x, current_peak_y = centroid_result
+        center_x = int(current_peak_x)
         center_y = int(current_image.shape[0] / 2)
 
         x_start = max(0, center_x - self.laser_af_properties.spot_crop_size // 2)
@@ -627,26 +632,28 @@ class LaserAutofocusController(QObject):
 
             # Reference crop
             axes[0].imshow(self.reference_crop, cmap="gray")
-            axes[0].set_title("Reference Crop (normalized)")
+            axes[0].set_title(f"Reference Crop\n(x={self.laser_af_properties.x_reference:.1f})")
             axes[0].axis("off")
 
             # Current crop
             axes[1].imshow(current_norm, cmap="gray")
-            axes[1].set_title("Current Crop (normalized)")
+            axes[1].set_title(f"Current Crop\n(x={current_peak_x:.1f})")
             axes[1].axis("off")
 
             # Difference image
             diff = current_norm - self.reference_crop
             axes[2].imshow(diff, cmap="RdBu", vmin=-0.5, vmax=0.5)
-            axes[2].set_title("Difference (Current - Reference)")
+            axes[2].set_title("Difference\n(Current - Reference)")
             axes[2].axis("off")
 
             passed = correlation >= self.laser_af_properties.correlation_threshold
             status = "PASS" if passed else "FAIL"
             color = "green" if passed else "red"
+            peak_diff = current_peak_x - self.laser_af_properties.x_reference
             fig.suptitle(
-                f"Cross-Correlation Check: {correlation:.3f} (threshold={self.laser_af_properties.correlation_threshold}) [{status}]",
-                fontsize=12,
+                f"Cross-Correlation: {correlation:.3f} (threshold={self.laser_af_properties.correlation_threshold}) [{status}]\n"
+                f"Peak shift: {peak_diff:.1f} pixels",
+                fontsize=11,
                 color=color,
             )
 
