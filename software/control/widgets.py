@@ -7571,6 +7571,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
             # Trigger UI updates
             self.update_control_visibility()
+            self.update_tab_styles()
             self.update_coordinates()
 
     def _load_well_regions(self, regions):
