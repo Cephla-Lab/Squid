@@ -7590,7 +7590,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             for widget in widgets_to_block:
                 widget.blockSignals(False)
 
-            # Trigger UI updates
+            # Trigger UI updates that would normally be called by checkbox toggle handlers
+            self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
+            if hasattr(self, "combobox_z_mode"):
+                self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
+            self.update_scan_control_ui()
             self.update_control_visibility()
             self.update_tab_styles()
             self.update_coordinates()
