@@ -643,6 +643,7 @@ class FocusLockStatusWidget(EventBusFrame):
         self._status_label.setText(self._status.upper())
         self._update_buttons()
         self._update_nudge_enabled()
+        self._update_piezo_controls_enabled()
         self._update_lock_bar()
 
     def _update_buttons(self) -> None:
@@ -817,6 +818,23 @@ class FocusLockStatusWidget(EventBusFrame):
         self._nudge_down.setEnabled(enabled)
         self._nudge_up.setEnabled(enabled)
         self._nudge_step.setEnabled(enabled)
+
+    def _update_piezo_controls_enabled(self) -> None:
+        # Piezo Set/Reset works when focus lock is not engaged
+        # (disabled when locked/recovering/searching as control loop overrides manual moves)
+        enabled = self._status in ("disabled", "ready", "paused", "lost")
+        self._jump_spinbox.setEnabled(enabled)
+        self._jump_btn.setEnabled(enabled)
+        self._center_btn.setEnabled(enabled)
+        if not enabled:
+            tooltip = "Disabled while Focus Lock is engaged"
+            self._jump_spinbox.setToolTip(tooltip)
+            self._jump_btn.setToolTip(tooltip)
+            self._center_btn.setToolTip(tooltip)
+        else:
+            self._jump_spinbox.setToolTip("Offset from piezo center")
+            self._jump_btn.setToolTip("Move piezo to center + offset")
+            self._center_btn.setToolTip("Move piezo to center of range")
 
     def _on_warning(self, event: FocusLockWarning) -> None:
         # Log warnings from backend but no separate indicator
