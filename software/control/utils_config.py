@@ -65,6 +65,8 @@ class LaserAFConfig(BaseModel):
     reference_image_dtype: Optional[str] = None
     reference_intensity_profile: Optional[str] = None  # Base64 encoded 1D intensity profile for CC check
     reference_intensity_profile_dtype: Optional[str] = None
+    reference_intensity_min: Optional[float] = None  # Min intensity value used for reference normalization
+    reference_intensity_max: Optional[float] = None  # Max intensity value used for reference normalization
     initialize_crop_width: int = 1200  # Width of the center crop used for initialization
     initialize_crop_height: int = 800  # Height of the center crop used for initialization
 
@@ -105,14 +107,29 @@ class LaserAFConfig(BaseModel):
         self.reference_image_dtype = str(image.dtype)
         self.has_reference = True
 
-    def set_reference_intensity_profile(self, profile: Optional[np.ndarray]) -> None:
-        """Convert numpy array to base64 encoded string or clear if None"""
+    def set_reference_intensity_profile(
+        self,
+        profile: Optional[np.ndarray],
+        intensity_min: Optional[float] = None,
+        intensity_max: Optional[float] = None,
+    ) -> None:
+        """Convert numpy array to base64 encoded string or clear if None.
+
+        Args:
+            profile: The intensity profile array, or None to clear
+            intensity_min: Min intensity value used for normalization
+            intensity_max: Max intensity value used for normalization
+        """
         if profile is None:
             self.reference_intensity_profile = None
             self.reference_intensity_profile_dtype = None
+            self.reference_intensity_min = None
+            self.reference_intensity_max = None
             return
         self.reference_intensity_profile = base64.b64encode(profile.tobytes()).decode("utf-8")
         self.reference_intensity_profile_dtype = str(profile.dtype)
+        self.reference_intensity_min = intensity_min
+        self.reference_intensity_max = intensity_max
 
     def model_dump(self, serialize=False, **kwargs):
         """Ensure proper serialization of enums to strings"""

@@ -766,7 +766,7 @@ class LaserAutofocusSettingWidget(QWidget):
             try:
                 result = utils.find_spot_location(frame, mode=mode, params=params, filter_sigma=sigma, debug_plot=True)
                 if result is not None:
-                    x, y, _ = result  # Unpack centroid (x, y) and ignore intensity_profile
+                    x, y, _, _, _ = result  # Unpack centroid (x, y) and ignore intensity_profile and min/max
                     self.signal_laser_spot_location.emit(frame, x, y)
                 else:
                     raise Exception("No spot detection result returned")

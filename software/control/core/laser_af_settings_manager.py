@@ -53,6 +53,8 @@ class LaserAFSettingManager:
         updates: Dict[str, Any],
         crop_image: Optional[np.ndarray] = None,
         intensity_profile: Optional[np.ndarray] = None,
+        intensity_min: Optional[float] = None,
+        intensity_max: Optional[float] = None,
     ) -> None:
         if objective not in self.autofocus_configurations:
             self.autofocus_configurations[objective] = LaserAFConfig(**updates)
@@ -62,4 +64,6 @@ class LaserAFSettingManager:
         if crop_image is not None:
             self.autofocus_configurations[objective].set_reference_image(crop_image)
         if intensity_profile is not None:
-            self.autofocus_configurations[objective].set_reference_intensity_profile(intensity_profile)
+            self.autofocus_configurations[objective].set_reference_intensity_profile(
+                intensity_profile, intensity_min=intensity_min, intensity_max=intensity_max
+            )

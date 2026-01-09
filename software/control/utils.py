@@ -208,7 +208,9 @@ def find_spot_location(
     params: Optional[dict] = None,
     filter_sigma: Optional[int] = None,
     debug_plot: bool = False,
-) -> Optional[Tuple[float, float, np.ndarray]]:
+    reference_intensity_min: Optional[float] = None,
+    reference_intensity_max: Optional[float] = None,
+) -> Optional[Tuple[float, float, np.ndarray, float, float]]:
     """Find the location of a spot in an image.
 
     Args:
@@ -223,11 +225,16 @@ def find_spot_location(
             - peak_prominence (float): Minimum peak prominence (default: 100)
             - intensity_threshold (float): Threshold for intensity filtering (default: 0.1)
             - spot_spacing (int): Expected spacing between spots for multi-spot modes (default: 100)
+        filter_sigma: Sigma for Gaussian filter, or None to skip filtering
+        debug_plot: If True, show debug plots
+        reference_intensity_min: Min intensity for normalization. If None, use current image's min.
+        reference_intensity_max: Max intensity for normalization. If None, use current image's max.
 
     Returns:
-        Optional[Tuple[float, float, np.ndarray]]: (x, y, intensity_profile) where intensity_profile is a
-            1D array of length 400 (INTENSITY_PROFILE_HALF_WIDTH * 2) centered at the detected peak,
-            or None if detection fails
+        Optional[Tuple[float, float, np.ndarray, float, float]]: (x, y, intensity_profile, intensity_min, intensity_max)
+            where intensity_profile is a 1D array of length 400 (INTENSITY_PROFILE_HALF_WIDTH * 2) centered
+            at the detected peak, and intensity_min/max are the values used for normalization.
+            Returns None if detection fails.
 
     Raises:
         ValueError: If image is invalid or mode is incompatible with detected spots
@@ -271,12 +278,15 @@ def find_spot_location(
         # Crop along the y axis
         cropped_image = image[peak_y - p["y_window"] : peak_y + p["y_window"], :]
 
-        # Get signal along x
-        x_intensity_profile = np.sum(cropped_image, axis=0)
+        # Get signal along x (raw intensities)
+        x_intensity_profile_raw = np.sum(cropped_image, axis=0).astype(float)
 
-        # Normalize intensity profile
-        x_intensity_profile = x_intensity_profile - np.min(x_intensity_profile)
-        x_intensity_profile = x_intensity_profile / np.max(x_intensity_profile)
+        # Compute local min/max for normalization
+        local_min = np.min(x_intensity_profile_raw)
+        local_max = np.max(x_intensity_profile_raw)
+
+        # Normalize intensity profile for peak detection (always use local normalization)
+        x_intensity_profile = (x_intensity_profile_raw - local_min) / (local_max - local_min)
 
         # Find all peaks
         peaks = signal.find_peaks(
@@ -312,21 +322,36 @@ def find_spot_location(
         else:
             raise ValueError(f"Unknown spot detection mode: {mode}")
 
-        # Extract centered intensity profile (200 pixels on each side of peak)
+        # Extract centered intensity profile from raw values (200 pixels on each side of peak)
         profile_start = peak_x - INTENSITY_PROFILE_HALF_WIDTH
         profile_end = peak_x + INTENSITY_PROFILE_HALF_WIDTH
         profile_length = INTENSITY_PROFILE_HALF_WIDTH * 2
 
-        if profile_start < 0 or profile_end > len(x_intensity_profile):
+        if profile_start < 0 or profile_end > len(x_intensity_profile_raw):
             # Handle edge cases with padding
-            centered_profile = np.zeros(profile_length, dtype=x_intensity_profile.dtype)
+            centered_profile_raw = np.zeros(profile_length, dtype=x_intensity_profile_raw.dtype)
             src_start = max(0, profile_start)
-            src_end = min(len(x_intensity_profile), profile_end)
+            src_end = min(len(x_intensity_profile_raw), profile_end)
             dst_start = max(0, -profile_start)
             dst_end = dst_start + (src_end - src_start)
-            centered_profile[dst_start:dst_end] = x_intensity_profile[src_start:src_end]
+            centered_profile_raw[dst_start:dst_end] = x_intensity_profile_raw[src_start:src_end]
         else:
-            centered_profile = x_intensity_profile[profile_start:profile_end].copy()
+            centered_profile_raw = x_intensity_profile_raw[profile_start:profile_end].copy()
+
+        # Normalize the centered profile
+        # Use reference min/max if provided (for measurement), otherwise use local (for initialization)
+        if reference_intensity_min is not None and reference_intensity_max is not None:
+            norm_min = reference_intensity_min
+            norm_max = reference_intensity_max
+        else:
+            norm_min = local_min
+            norm_max = local_max
+
+        # Avoid division by zero
+        if norm_max - norm_min > 0:
+            centered_profile = (centered_profile_raw - norm_min) / (norm_max - norm_min)
+        else:
+            centered_profile = np.zeros_like(centered_profile_raw)
 
         if debug_plot:
             import matplotlib.pyplot as plt
@@ -374,7 +399,8 @@ def find_spot_location(
 
         # Calculate centroid in window around selected peak
         centroid_x, centroid_y = _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
-        return (centroid_x, centroid_y, centered_profile)
+        # Return local min/max (the raw intensity values from this image)
+        return (centroid_x, centroid_y, centered_profile, local_min, local_max)
 
     except (ValueError, NotImplementedError) as e:
         raise e
