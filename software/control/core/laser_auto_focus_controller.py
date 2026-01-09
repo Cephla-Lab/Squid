@@ -414,11 +414,12 @@ class LaserAutofocusController(QObject):
             self._log.exception("Turning off AF laser timed out! Laser may still be on.")
         return finish_with(float("nan"))
 
-    def move_to_target(self, target_um: float) -> bool:
+    def move_to_target(self, target_um: float, debug_plot: bool = False) -> bool:
         """Move the stage to reach a target displacement from reference position.
 
         Args:
             target_um: Target displacement in micrometers
+            debug_plot: If True, show debug plots for cross-correlation check
 
         Returns:
             bool: True if move was successful, False if measurement failed or displacement was out of range
@@ -444,7 +445,7 @@ class LaserAutofocusController(QObject):
         self._move_z(um_to_move)
 
         # Verify using cross-correlation that spot is in same location as reference
-        cc_result, correlation = self._verify_spot_alignment()
+        cc_result, correlation = self._verify_spot_alignment(debug_plot=debug_plot)
         self.signal_cross_correlation.emit(correlation)
         if not cc_result:
             self._log.warning("Cross correlation check failed - spots not well aligned")
@@ -556,12 +557,15 @@ class LaserAutofocusController(QObject):
         self.is_initialized = False
         self.load_cached_configuration()
 
-    def _verify_spot_alignment(self) -> Tuple[bool, np.array]:
+    def _verify_spot_alignment(self, debug_plot: bool = False) -> Tuple[bool, np.array]:
         """Verify laser spot alignment using cross-correlation with reference image.
 
         Captures current laser spot image and compares it with the reference image
         using normalized cross-correlation. Images are cropped around the expected
         spot location and normalized by maximum intensity before comparison.
+
+        Args:
+            debug_plot: If True, show matplotlib plot comparing the two image crops
 
         Returns:
             bool: True if spots are well aligned (correlation > CORRELATION_THRESHOLD), False otherwise
@@ -615,6 +619,39 @@ class LaserAutofocusController(QObject):
         correlation = np.corrcoef(current_norm.ravel(), self.reference_crop.ravel())[0, 1]
 
         self._log.info(f"Cross correlation with reference: {correlation:.3f}")
+
+        if debug_plot:
+            import matplotlib.pyplot as plt
+
+            fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+
+            # Reference crop
+            axes[0].imshow(self.reference_crop, cmap="gray")
+            axes[0].set_title("Reference Crop (normalized)")
+            axes[0].axis("off")
+
+            # Current crop
+            axes[1].imshow(current_norm, cmap="gray")
+            axes[1].set_title("Current Crop (normalized)")
+            axes[1].axis("off")
+
+            # Difference image
+            diff = current_norm - self.reference_crop
+            axes[2].imshow(diff, cmap="RdBu", vmin=-0.5, vmax=0.5)
+            axes[2].set_title("Difference (Current - Reference)")
+            axes[2].axis("off")
+
+            passed = correlation >= self.laser_af_properties.correlation_threshold
+            status = "PASS" if passed else "FAIL"
+            color = "green" if passed else "red"
+            fig.suptitle(
+                f"Cross-Correlation Check: {correlation:.3f} (threshold={self.laser_af_properties.correlation_threshold}) [{status}]",
+                fontsize=12,
+                color=color,
+            )
+
+            plt.tight_layout()
+            plt.show()
 
         # Check if correlation exceeds threshold
         if correlation < self.laser_af_properties.correlation_threshold:
