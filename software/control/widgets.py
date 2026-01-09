@@ -7522,14 +7522,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         try:
             # Z-stack settings
-            if yaml_data.nz > 1:
-                self.checkbox_z.setChecked(True)
+            self.checkbox_z.setChecked(yaml_data.nz > 1)
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
 
             # Time series settings
-            if yaml_data.nt > 1:
-                self.checkbox_time.setChecked(True)
+            self.checkbox_time.setChecked(yaml_data.nt > 1)
             self.entry_Nt.setValue(yaml_data.nt)
             self.entry_dt.setValue(yaml_data.delta_t_s)
 
