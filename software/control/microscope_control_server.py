@@ -15,17 +15,35 @@ import socket
 import threading
 import time
 import traceback
-from typing import Any, Callable, Dict, List, Optional, get_type_hints
+from typing import Any, Callable, Dict, List, Optional, TypedDict, get_type_hints
 
 import squid.logging
 
 # Qt imports for thread-safe GUI operations
 try:
-    from qtpy.QtCore import QTimer
+    from qtpy.QtCore import QEventLoop, QTimer
 
     QT_AVAILABLE = True
 except ImportError:
     QT_AVAILABLE = False
+    QEventLoop = None
+
+
+class AcquisitionResult(TypedDict):
+    """Return type for run_acquisition_from_yaml command."""
+
+    started: bool
+    yaml_path: str
+    widget_type: str
+    region_count: int
+    channels: List[str]
+    nz: int
+    nt: int
+    total_fovs: int
+    total_images: int
+    experiment_id: str
+    save_dir: str
+
 
 try:
     from pydantic import Field
@@ -900,6 +918,287 @@ class MicroscopeControlServer:
             # Legacy misspelled method name
             self.multipoint_controller.request_abort_aquisition()
         return {"aborted": True}
+
+    def _update_gui_from_yaml(self, yaml_data, yaml_path: str) -> None:
+        """Update GUI widgets from YAML settings in a thread-safe manner.
+
+        Uses a threading Event to ensure the GUI update completes before returning.
+        """
+        if not self.gui or not QT_AVAILABLE:
+            return
+
+        widget = None
+        if yaml_data.widget_type == "wellplate" and hasattr(self.gui, "wellplateMultiPointWidget"):
+            widget = self.gui.wellplateMultiPointWidget
+        elif yaml_data.widget_type == "flexible" and hasattr(self.gui, "flexibleMultiPointWidget"):
+            widget = self.gui.flexibleMultiPointWidget
+
+        if not widget or not hasattr(widget, "_load_acquisition_yaml"):
+            return
+
+        # Use a threading Event to synchronize with the Qt main thread
+        gui_update_complete = threading.Event()
+
+        def update_gui():
+            try:
+                widget._load_acquisition_yaml(yaml_path)
+            except Exception as e:
+                self._log.error(f"Failed to update GUI from YAML: {e}")
+            finally:
+                gui_update_complete.set()
+
+        # Schedule GUI update on Qt main thread
+        QTimer.singleShot(0, update_gui)
+
+        # Wait for GUI update to complete (with timeout)
+        if not gui_update_complete.wait(timeout=5.0):
+            self._log.warning("GUI update from YAML timed out after 5 seconds")
+
+    def _validate_channels(self, channel_names: List[str], current_objective: str) -> List[str]:
+        """Validate that requested channels exist for the current objective.
+
+        Returns the list of available channel names.
+        Raises ValueError if any requested channels are invalid.
+        """
+        available_channels = self.microscope.channel_configuration_mananger.get_channel_configurations_for_objective(
+            current_objective
+        )
+        available_channel_names = [ch.name for ch in available_channels] if available_channels else []
+
+        invalid_channels = [ch for ch in channel_names if ch not in available_channel_names]
+        if invalid_channels:
+            raise ValueError(f"Invalid channels: {invalid_channels}. Available: {available_channel_names}")
+
+        return available_channel_names
+
+    def _configure_regions_from_yaml(self, yaml_data, raw_yaml: dict, wells: Optional[str]) -> None:
+        """Configure scan regions from YAML data or wells override.
+
+        Clears existing regions and adds new ones based on:
+        1. Wells override parameter (if provided)
+        2. Wellplate regions from YAML
+        3. Flexible positions from YAML
+
+        Raises ValueError if no regions are specified.
+        """
+        import control._def
+
+        # Clear existing regions
+        self.scan_coordinates.clear_regions()
+
+        if wells:
+            # Wells override provided - parse them
+            wellplate_format = raw_yaml.get("sample", {}).get("wellplate_format", "96 well plate")
+            wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
+            well_coords = self._parse_wells(wells, wellplate_settings)
+
+            if not well_coords:
+                raise ValueError(f"Could not parse wells: {wells}")
+
+            current_z = self.microscope.stage.get_pos().z_mm
+
+            for well_id, (well_x, well_y) in well_coords.items():
+                self.scan_coordinates.add_flexible_region(
+                    region_id=well_id,
+                    center_x=well_x,
+                    center_y=well_y,
+                    center_z=current_z,
+                    Nx=yaml_data.nx,
+                    Ny=yaml_data.ny,
+                    overlap_percent=yaml_data.overlap_percent,
+                )
+        elif yaml_data.wellplate_regions:
+            # Use regions from YAML
+            for region in yaml_data.wellplate_regions:
+                name = region.get("name", "region")
+                center = region.get("center_mm", [0, 0, 0])
+                self.scan_coordinates.add_flexible_region(
+                    region_id=name,
+                    center_x=center[0],
+                    center_y=center[1],
+                    center_z=center[2] if len(center) > 2 else self.microscope.stage.get_pos().z_mm,
+                    Nx=yaml_data.nx,
+                    Ny=yaml_data.ny,
+                    overlap_percent=yaml_data.overlap_percent,
+                )
+        elif yaml_data.flexible_positions:
+            # Use flexible positions from YAML
+            for pos in yaml_data.flexible_positions:
+                name = pos.get("name", "position")
+                center = pos.get("center_mm", [0, 0, 0])
+                self.scan_coordinates.add_flexible_region(
+                    region_id=name,
+                    center_x=center[0],
+                    center_y=center[1],
+                    center_z=center[2] if len(center) > 2 else self.microscope.stage.get_pos().z_mm,
+                    Nx=yaml_data.nx,
+                    Ny=yaml_data.ny,
+                    overlap_percent=yaml_data.overlap_percent,
+                )
+        else:
+            raise ValueError("No wells or regions specified in YAML and no wells override provided")
+
+        # Sort coordinates for efficient scanning pattern
+        self.scan_coordinates.sort_coordinates()
+
+    def _configure_controller_from_yaml(self, yaml_data, use_piezo: bool) -> None:
+        """Configure the MultiPointController with settings from YAML data."""
+        # Set acquisition parameters on the controller
+        self.multipoint_controller.set_NX(1)  # Already handled by flexible regions
+        self.multipoint_controller.set_NY(1)
+        self.multipoint_controller.set_NZ(yaml_data.nz)
+        self.multipoint_controller.set_deltaZ(yaml_data.delta_z_um)
+        self.multipoint_controller.set_Nt(yaml_data.nt)
+        self.multipoint_controller.set_deltat(yaml_data.delta_t_s)
+
+        # Set autofocus flags
+        self.multipoint_controller.do_autofocus = yaml_data.contrast_af
+        self.multipoint_controller.do_reflection_af = yaml_data.laser_af
+
+        # Set piezo usage
+        if hasattr(self.multipoint_controller, "use_piezo"):
+            self.multipoint_controller.use_piezo = use_piezo
+
+        # Set the selected channels
+        self.multipoint_controller.set_selected_configurations(yaml_data.channel_names)
+
+    @schema_method
+    def _cmd_run_acquisition_from_yaml(
+        self,
+        yaml_path: str = Field(..., description="Path to acquisition.yaml file saved by the GUI"),
+        wells: Optional[str] = Field(
+            None, description="Override wells (e.g., 'A1:B3'). If None, use regions from YAML"
+        ),
+        experiment_id: Optional[str] = Field(None, description="Override experiment ID. If None, auto-generate"),
+        base_path: Optional[str] = Field(None, description="Override save path. If None, use default"),
+    ) -> AcquisitionResult:
+        """Run acquisition using settings from a previously-saved acquisition.yaml file.
+
+        This command loads all acquisition parameters from a YAML file that was saved
+        during a previous acquisition (including z-stack, timelapse, channels, autofocus,
+        and region coordinates), updates the GUI to reflect these settings, and starts
+        the acquisition.
+        """
+        import os
+
+        import yaml
+
+        import control._def
+        from control.acquisition_yaml_loader import parse_acquisition_yaml, validate_hardware
+
+        self._log.info(f"Starting acquisition from YAML: {yaml_path}")
+
+        # Resolve FieldInfo objects to actual values
+        wells = resolve_field_value(wells, None)
+        experiment_id = resolve_field_value(experiment_id, None)
+        base_path = resolve_field_value(base_path, None)
+
+        # Validate file exists
+        if not os.path.exists(yaml_path):
+            raise FileNotFoundError(f"YAML file not found: {yaml_path}")
+
+        # Check requirements
+        if not self.multipoint_controller:
+            raise RuntimeError(
+                "MultiPointController not available. Make sure the GUI is running with control server enabled."
+            )
+
+        if not self.scan_coordinates:
+            raise RuntimeError(
+                "ScanCoordinates not available. Make sure the GUI is running with control server enabled."
+            )
+
+        # Check if acquisition already running
+        if self.multipoint_controller.acquisition_in_progress():
+            raise RuntimeError("Acquisition already in progress")
+
+        # Parse YAML file
+        try:
+            yaml_data = parse_acquisition_yaml(yaml_path)
+        except Exception as e:
+            raise ValueError(f"Failed to parse YAML file: {e}") from e
+
+        # Also load raw YAML for fields not in AcquisitionYAMLData (like use_piezo)
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            raw_yaml = yaml.safe_load(f)
+        z_stack_config = raw_yaml.get("z_stack", {})
+        use_piezo = z_stack_config.get("use_piezo", False)
+
+        # Validate hardware configuration (objective, binning)
+        current_binning = (1, 1)
+        try:
+            camera = getattr(self.microscope, "camera", None)
+            if camera and hasattr(camera, "get_binning"):
+                current_binning = tuple(camera.get_binning())
+        except Exception as e:
+            self._log.warning(f"Could not get camera binning for validation: {e}")
+
+        current_objective = self.microscope.objective_store.current_objective
+        validation = validate_hardware(yaml_data, current_objective, current_binning)
+
+        if not validation.is_valid:
+            raise RuntimeError(f"Hardware configuration mismatch:\n{validation.message}")
+
+        # Update GUI widgets (thread-safe) if GUI is available
+        self._update_gui_from_yaml(yaml_data, yaml_path)
+
+        # Validate channels exist
+        available_channels = self._validate_channels(yaml_data.channel_names, current_objective)
+
+        # Set up paths - require explicit DEFAULT_SAVING_PATH configuration
+        if not base_path:
+            default_path = getattr(control._def, "DEFAULT_SAVING_PATH", None)
+            if not default_path:
+                raise RuntimeError(
+                    "No base_path provided and DEFAULT_SAVING_PATH not configured in control._def. "
+                    "Please provide a base_path parameter or configure DEFAULT_SAVING_PATH."
+                )
+            base_path = default_path
+        if not experiment_id:
+            experiment_id = f"YAML_acquisition_{int(time.time())}"
+
+        # Configure the MultiPointController
+        try:
+            # Configure regions from YAML or wells override
+            self._configure_regions_from_yaml(yaml_data, raw_yaml, wells)
+
+            # Configure controller settings from YAML
+            self._configure_controller_from_yaml(yaml_data, use_piezo)
+
+            # Set the base path and start new experiment
+            self.multipoint_controller.set_base_path(base_path)
+            self.multipoint_controller.start_new_experiment(experiment_id)
+
+            # Calculate total FOVs for status reporting
+            total_fovs = sum(len(coords) for coords in self.scan_coordinates.region_fov_coordinates.values())
+            total_images = total_fovs * len(yaml_data.channel_names) * yaml_data.nz * yaml_data.nt
+
+            # Run the acquisition (non-blocking - runs in worker thread)
+            self.multipoint_controller.run_acquisition()
+
+            self._log.info(
+                f"Acquisition started: {total_fovs} FOVs, {len(yaml_data.channel_names)} channels, "
+                f"nz={yaml_data.nz}, nt={yaml_data.nt}, total_images={total_images}"
+            )
+
+            return {
+                "started": True,
+                "yaml_path": yaml_path,
+                "widget_type": yaml_data.widget_type,
+                "region_count": len(self.scan_coordinates.region_fov_coordinates),
+                "channels": yaml_data.channel_names,
+                "nz": yaml_data.nz,
+                "nt": yaml_data.nt,
+                "total_fovs": total_fovs,
+                "total_images": total_images,
+                "experiment_id": self.multipoint_controller.experiment_ID,
+                "save_dir": f"{base_path}/{self.multipoint_controller.experiment_ID}",
+            }
+
+        except Exception as e:
+            self._log.error(f"Failed to start acquisition from YAML: {e}")
+            self._log.error(traceback.format_exc())
+            raise RuntimeError(f"Failed to start acquisition: {str(e)}") from e
 
     @schema_method
     def _cmd_set_performance_mode(
