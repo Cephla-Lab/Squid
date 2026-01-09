@@ -6751,10 +6751,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.time_not_selected_label.setVisible(False)
 
             # Show/hide actual controls based on individual states
-            if z_checked:
-                self.show_z_controls(True)
-            if time_checked:
-                self.show_time_controls(True)
+            self.show_z_controls(z_checked)
+            self.show_time_controls(time_checked)
 
     def update_region_progress(self, current_fov, num_fovs):
         self.progress_bar.setMaximum(num_fovs)
