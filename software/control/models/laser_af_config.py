@@ -111,6 +111,12 @@ class LaserAFConfig(BaseModel):
     reference_intensity_profile_dtype: Optional[str] = Field(
         None, description="Data type of intensity profile array"
     )
+    reference_intensity_min: Optional[float] = Field(
+        None, description="Min intensity value used for reference normalization"
+    )
+    reference_intensity_max: Optional[float] = Field(
+        None, description="Max intensity value used for reference normalization"
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -151,11 +157,26 @@ class LaserAFConfig(BaseModel):
         data = base64.b64decode(self.reference_intensity_profile.encode("utf-8"))
         return np.frombuffer(data, dtype=np.dtype(self.reference_intensity_profile_dtype))
 
-    def set_reference_intensity_profile(self, profile: Optional[np.ndarray]) -> None:
-        """Convert numpy array to base64 encoded string or clear if None."""
+    def set_reference_intensity_profile(
+        self,
+        profile: Optional[np.ndarray],
+        intensity_min: Optional[float] = None,
+        intensity_max: Optional[float] = None,
+    ) -> None:
+        """Convert numpy array to base64 encoded string or clear if None.
+
+        Args:
+            profile: The intensity profile array, or None to clear
+            intensity_min: Min intensity value used for normalization
+            intensity_max: Max intensity value used for normalization
+        """
         if profile is None:
             self.reference_intensity_profile = None
             self.reference_intensity_profile_dtype = None
+            self.reference_intensity_min = None
+            self.reference_intensity_max = None
             return
         self.reference_intensity_profile = base64.b64encode(profile.tobytes()).decode("utf-8")
         self.reference_intensity_profile_dtype = str(profile.dtype)
+        self.reference_intensity_min = intensity_min
+        self.reference_intensity_max = intensity_max
