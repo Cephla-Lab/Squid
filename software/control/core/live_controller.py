@@ -52,6 +52,8 @@ class LiveController:
 
     # illumination control
     def turn_on_illumination(self):
+        if self.currentConfiguration is None:
+            return
         if not "LED matrix" in self.currentConfiguration.name:
             self.microscope.illumination_controller.turn_on_illumination(
                 int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
@@ -64,6 +66,8 @@ class LiveController:
         self.illumination_on = True
 
     def turn_off_illumination(self):
+        if self.currentConfiguration is None:
+            return
         if not "LED matrix" in self.currentConfiguration.name:
             self.microscope.illumination_controller.turn_off_illumination(
                 int(utils_channel.extract_wavelength_from_config_name(self.currentConfiguration.name))
@@ -308,15 +312,18 @@ class LiveController:
     # set microscope mode
     # @@@ to do: change softwareTriggerGenerator to TriggerGeneratror
     def set_microscope_mode(self, configuration):
-
-        self.currentConfiguration = configuration
-        self._log.info("setting microscope mode to " + self.currentConfiguration.name)
+        self._log.info("setting microscope mode to " + configuration.name)
 
         # temporarily stop live while changing mode
         if self.is_live is True:
             self._stop_existing_timer()
             if self.control_illumination:
+                # Turn off illumination BEFORE switching self.currentConfiguration.
+                # This ensures the MCU's illumination_source still points to the old channel
+                # when TURN_OFF_ILLUMINATION is processed, so the correct laser is turned off.
                 self.turn_off_illumination()
+
+        self.currentConfiguration = configuration
 
         # set camera exposure time and analog gain
         self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
