@@ -831,6 +831,9 @@ class HighContentScreeningGui(QMainWindow):
         except ValueError as e:
             self.log.warning(f"Cannot restore pixel format {pixel_format_str} - not supported by this camera: {e}")
             return False
+        except (AttributeError, RuntimeError) as e:
+            self.log.error(f"Camera error while restoring pixel format settings: {e}")
+            return False
 
         self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(True)
         self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(pixel_format_str)

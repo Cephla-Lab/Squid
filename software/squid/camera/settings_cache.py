@@ -105,7 +105,7 @@ def load_camera_settings(cache_path: Path = _DEFAULT_CACHE_PATH) -> Optional[Cac
             settings = json.load(f)
     except json.JSONDecodeError as e:
         _log.error(
-            f"Camera settings cache file is corrupted at {cache_path}: {e}. " "Delete this file to reset to defaults."
+            f"Camera settings cache file is corrupted at {cache_path}: {e}. Delete this file to reset to defaults."
         )
         return None
     except PermissionError as e:

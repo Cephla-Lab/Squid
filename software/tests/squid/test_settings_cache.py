@@ -7,7 +7,6 @@ from unittest.mock import Mock
 
 import pytest
 
-import squid.camera.settings_cache
 from squid.camera.settings_cache import (
     CachedCameraSettings,
     DEFAULT_BINNING,
