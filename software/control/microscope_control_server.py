@@ -1059,7 +1059,7 @@ class MicroscopeControlServer:
         # Sort coordinates for efficient scanning pattern
         self.scan_coordinates.sort_coordinates()
 
-    def _configure_controller_from_yaml(self, yaml_data, use_piezo: bool) -> None:
+    def _configure_controller_from_yaml(self, yaml_data) -> None:
         """Configure the MultiPointController with settings from YAML data."""
         # Set acquisition parameters on the controller
         self.multipoint_controller.set_NX(1)  # Already handled by flexible regions
@@ -1075,7 +1075,7 @@ class MicroscopeControlServer:
 
         # Set piezo usage
         if hasattr(self.multipoint_controller, "use_piezo"):
-            self.multipoint_controller.use_piezo = use_piezo
+            self.multipoint_controller.use_piezo = yaml_data.use_piezo
 
         # Set the selected channels
         self.multipoint_controller.set_selected_configurations(yaml_data.channel_names)
@@ -1136,11 +1136,9 @@ class MicroscopeControlServer:
         except Exception as e:
             raise ValueError(f"Failed to parse YAML file: {e}") from e
 
-        # Also load raw YAML for fields not in AcquisitionYAMLData (like use_piezo)
+        # Load raw YAML for fields that need direct access (wellplate_format)
         with open(yaml_path, "r", encoding="utf-8") as f:
             raw_yaml = yaml.safe_load(f)
-        z_stack_config = raw_yaml.get("z_stack", {})
-        use_piezo = z_stack_config.get("use_piezo", False)
 
         # Validate hardware configuration (objective, binning)
         current_binning = (1, 1)
@@ -1181,7 +1179,7 @@ class MicroscopeControlServer:
             self._configure_regions_from_yaml(yaml_data, raw_yaml, wells)
 
             # Configure controller settings from YAML
-            self._configure_controller_from_yaml(yaml_data, use_piezo)
+            self._configure_controller_from_yaml(yaml_data)
 
             # Set the base path and start new experiment
             self.multipoint_controller.set_base_path(base_path)

@@ -465,9 +465,10 @@ class TestHelperMethods:
         yaml_data.delta_t_s = 60.0
         yaml_data.contrast_af = True
         yaml_data.laser_af = False
+        yaml_data.use_piezo = True
         yaml_data.channel_names = ["Channel1"]
 
-        mock_server._configure_controller_from_yaml(yaml_data, use_piezo=True)
+        mock_server._configure_controller_from_yaml(yaml_data)
 
         mock_server.multipoint_controller.set_NZ.assert_called_with(5)
         mock_server.multipoint_controller.set_deltaZ.assert_called_with(10.0)
@@ -475,4 +476,5 @@ class TestHelperMethods:
         mock_server.multipoint_controller.set_deltat.assert_called_with(60.0)
         assert mock_server.multipoint_controller.do_autofocus is True
         assert mock_server.multipoint_controller.do_reflection_af is False
+        assert mock_server.multipoint_controller.use_piezo is True
         mock_server.multipoint_controller.set_selected_configurations.assert_called_with(["Channel1"])

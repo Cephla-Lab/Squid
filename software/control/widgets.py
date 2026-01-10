@@ -5430,6 +5430,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.list_configurations,
             self.checkbox_withAutofocus,
             self.checkbox_withReflectionAutofocus,
+            self.checkbox_usePiezo,
         ]
 
         # Add optional widgets if they exist
@@ -5456,6 +5457,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # Z-stack settings
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+
+            # Piezo setting
+            self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
 
             # Time series settings
             self.entry_Nt.setValue(yaml_data.nt)
@@ -6704,8 +6708,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             if widget:
                 widget.setVisible(visible)
 
-        # Show/hide Z-min/Z-max based on dropdown selection
-        self.toggle_z_range_controls(self.combobox_z_mode.currentText() == "Set Range")
+        # Show/hide Z-min/Z-max based on dropdown selection AND visibility
+        # Only show range controls if Z is enabled (visible=True) AND mode is "Set Range"
+        show_range = visible and self.combobox_z_mode.currentText() == "Set Range"
+        self.toggle_z_range_controls(show_range)
 
     def store_time_parameters(self):
         """Store current Time parameters before hiding controls"""
@@ -7556,6 +7562,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.checkbox_xy,
             self.checkbox_z,
             self.checkbox_time,
+            self.combobox_z_mode,
+            self.checkbox_usePiezo,
         ]
 
         for widget in widgets_to_block:
@@ -7566,6 +7574,17 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.checkbox_z.setChecked(yaml_data.nz > 1)
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+
+            # Z mode - map YAML config to combobox text
+            z_mode_map = {
+                "FROM BOTTOM": "From Bottom",
+                "SET RANGE": "Set Range",
+            }
+            z_mode = z_mode_map.get(yaml_data.z_stacking_config, "From Bottom")
+            self.combobox_z_mode.setCurrentText(z_mode)
+
+            # Piezo setting
+            self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
 
             # Time series settings
             self.checkbox_time.setChecked(yaml_data.nt > 1)
@@ -7611,10 +7630,19 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             for widget in widgets_to_block:
                 widget.blockSignals(False)
 
-            # Trigger UI updates that would normally be called by checkbox toggle handlers
-            self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
-            if hasattr(self, "combobox_z_mode"):
-                self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
+            # Get final checkbox states
+            z_checked = self.checkbox_z.isChecked()
+            time_checked = self.checkbox_time.isChecked()
+            xy_checked = self.checkbox_xy.isChecked()
+
+            # Handle Z checkbox state - enable/disable z_mode dropdown
+            self.combobox_z_mode.setEnabled(z_checked)
+
+            # Handle XY checkbox state - enable/disable xy_mode dropdown
+            self.combobox_xy_mode.setEnabled(xy_checked)
+
+            # Update all UI components - this handles visibility correctly
+            # based on checkbox states and mode selections
             self.update_scan_control_ui()
             self.update_control_visibility()
             self.update_tab_styles()
