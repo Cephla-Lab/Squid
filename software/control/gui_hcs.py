@@ -773,27 +773,48 @@ class HighContentScreeningGui(QMainWindow):
         self.setupCameraTabWidget()
 
     def _restore_cached_camera_settings(self) -> None:
-        """Restore cached camera settings (binning, pixel format) from disk."""
+        """Restore cached camera settings from disk and update UI widgets.
+
+        Applies both hardware settings (via camera API) and synchronizes the UI
+        dropdown widgets. Silently returns if no cached settings exist.
+        Errors are logged but do not prevent application startup.
+        """
         cached_settings = squid.camera.settings_cache.load_camera_settings()
         if not cached_settings:
             return
 
+        # Restore binning
         try:
             self.camera.set_binning(*cached_settings.binning)
             binning_text = f"{cached_settings.binning[0]}x{cached_settings.binning[1]}"
             self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
+        except ValueError as e:
+            self.log.warning(f"Cannot restore binning {cached_settings.binning} - not supported by camera: {e}")
+        except (AttributeError, RuntimeError) as e:
+            self.log.error(f"Camera error while restoring binning settings: {e}")
 
-            if cached_settings.pixel_format:
+        # Restore pixel format
+        if cached_settings.pixel_format:
+            try:
                 pixel_format = squid.config.CameraPixelFormat.from_string(cached_settings.pixel_format)
-                self.camera.set_pixel_format(pixel_format)
-                self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(cached_settings.pixel_format)
+            except KeyError:
+                self.log.warning(f"Cached pixel format '{cached_settings.pixel_format}' is not recognized")
+                pixel_format = None
 
-            self.log.info(
-                f"Restored camera settings: binning={cached_settings.binning}, "
-                f"pixel_format={cached_settings.pixel_format}"
-            )
-        except Exception as e:
-            self.log.warning(f"Failed to restore camera settings: {e}")
+            if pixel_format:
+                try:
+                    self.camera.set_pixel_format(pixel_format)
+                    self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(cached_settings.pixel_format)
+                except ValueError as e:
+                    self.log.warning(
+                        f"Cannot restore pixel format {cached_settings.pixel_format} - "
+                        f"not supported by this camera: {e}"
+                    )
+
+        self.log.info(
+            f"Restored camera settings: binning={cached_settings.binning}, "
+            f"pixel_format={cached_settings.pixel_format}"
+        )
 
     def setupImageDisplayTabs(self):
         if USE_NAPARI_FOR_LIVE_VIEW:
