@@ -1007,7 +1007,7 @@ class MicroscopeControlServer:
         display_plate_view: Optional[bool] = Field(None, description="Enable/disable plate view display"),
         display_mosaic_view: Optional[bool] = Field(None, description="Enable/disable mosaic view display"),
     ) -> Dict[str, Any]:
-        """Set multiple view settings at once for RAM debugging (affects next acquisition)."""
+        """Set multiple view settings at once for RAM debugging (mosaic view: immediate; others: next acquisition)."""
         changes = []
 
         # Note: Use isinstance(x, bool) instead of "x is not None" because Field(None, ...)
