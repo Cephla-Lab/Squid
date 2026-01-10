@@ -937,6 +937,101 @@ class MicroscopeControlServer:
 
         return {"performance_mode": getattr(self.gui, "performance_mode", False)}
 
+    # ==========================================================================
+    # View debug settings (for RAM usage debugging)
+    # ==========================================================================
+
+    @schema_method
+    def _cmd_get_view_settings(self) -> Dict[str, Any]:
+        """Get current view settings for RAM debugging (downsampled images, plate view, mosaic view)."""
+        import control._def
+
+        return {
+            "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
+            "display_plate_view": control._def.DISPLAY_PLATE_VIEW,
+            "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
+            "mosaic_view_target_pixel_size_um": control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM,
+            "downsampled_well_resolutions_um": control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
+            "downsampled_plate_resolution_um": control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
+            "performance_mode": getattr(self.gui, "performance_mode", False) if self.gui else None,
+        }
+
+    @schema_method
+    def _cmd_set_save_downsampled_images(
+        self,
+        enabled: bool = Field(..., description="Enable (true) or disable (false) saving downsampled well images"),
+    ) -> Dict[str, Any]:
+        """Enable or disable saving downsampled well images (affects next acquisition)."""
+        import control._def
+
+        control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = enabled
+        return {
+            "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
+            "message": f"Saving downsampled well images {'enabled' if enabled else 'disabled'} (takes effect on next acquisition)",
+        }
+
+    @schema_method
+    def _cmd_set_display_plate_view(
+        self,
+        enabled: bool = Field(..., description="Enable (true) or disable (false) plate view display"),
+    ) -> Dict[str, Any]:
+        """Enable or disable plate view display during acquisition (affects next acquisition)."""
+        import control._def
+
+        control._def.DISPLAY_PLATE_VIEW = enabled
+        return {
+            "display_plate_view": control._def.DISPLAY_PLATE_VIEW,
+            "message": f"Plate view display {'enabled' if enabled else 'disabled'} (takes effect on next acquisition)",
+        }
+
+    @schema_method
+    def _cmd_set_display_mosaic_view(
+        self,
+        enabled: bool = Field(..., description="Enable (true) or disable (false) mosaic view display"),
+    ) -> Dict[str, Any]:
+        """Enable or disable mosaic view display during acquisition (affects next acquisition)."""
+        import control._def
+
+        control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = enabled
+        return {
+            "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
+            "message": f"Mosaic view display {'enabled' if enabled else 'disabled'} (takes effect on next acquisition)",
+        }
+
+    @schema_method
+    def _cmd_set_view_settings(
+        self,
+        save_downsampled_well_images: Optional[bool] = Field(
+            None, description="Enable/disable saving downsampled well images"
+        ),
+        display_plate_view: Optional[bool] = Field(None, description="Enable/disable plate view display"),
+        display_mosaic_view: Optional[bool] = Field(None, description="Enable/disable mosaic view display"),
+    ) -> Dict[str, Any]:
+        """Set multiple view settings at once for RAM debugging (affects next acquisition)."""
+        import control._def
+
+        changes = []
+
+        if save_downsampled_well_images is not None:
+            control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = save_downsampled_well_images
+            changes.append(f"save_downsampled_well_images={'enabled' if save_downsampled_well_images else 'disabled'}")
+
+        if display_plate_view is not None:
+            control._def.DISPLAY_PLATE_VIEW = display_plate_view
+            changes.append(f"display_plate_view={'enabled' if display_plate_view else 'disabled'}")
+
+        if display_mosaic_view is not None:
+            control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = display_mosaic_view
+            changes.append(f"display_mosaic_view={'enabled' if display_mosaic_view else 'disabled'}")
+
+        return {
+            "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
+            "display_plate_view": control._def.DISPLAY_PLATE_VIEW,
+            "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
+            "changes": changes,
+            "message": "Settings updated (takes effect on next acquisition)",
+        }
+
     @schema_method
     def _cmd_get_schemas(self) -> Dict[str, Any]:
         """Get JSON schemas for all available commands (useful for AI agents)."""
