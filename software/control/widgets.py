@@ -905,8 +905,9 @@ class PreferencesDialog(QDialog):
         plate_layout = QFormLayout()
 
         # Save Downsampled Well Images
+        # Read from _def (runtime state) instead of config file for consistency with MCP changes
         self.save_downsampled_checkbox = QCheckBox()
-        self.save_downsampled_checkbox.setChecked(self._get_config_bool("VIEWS", "save_downsampled_well_images", False))
+        self.save_downsampled_checkbox.setChecked(_def.SAVE_DOWNSAMPLED_WELL_IMAGES)
         self.save_downsampled_checkbox.setToolTip(
             "Save individual well TIFFs (e.g., wells/A1_5um.tiff, wells/A1_10um.tiff)"
         )
@@ -914,7 +915,7 @@ class PreferencesDialog(QDialog):
 
         # Display Plate View
         self.display_plate_view_checkbox = QCheckBox()
-        self.display_plate_view_checkbox.setChecked(self._get_config_bool("VIEWS", "display_plate_view", False))
+        self.display_plate_view_checkbox.setChecked(_def.DISPLAY_PLATE_VIEW)
         self.display_plate_view_checkbox.setToolTip(
             "Show plate view tab in GUI during acquisition.\n"
             "Note: Plate view TIFF is always saved when either option is enabled."
@@ -923,7 +924,7 @@ class PreferencesDialog(QDialog):
 
         # Well Resolutions (comma-separated)
         self.well_resolutions_edit = QLineEdit()
-        default_resolutions = self._get_config_value("VIEWS", "downsampled_well_resolutions_um", "5.0, 10.0, 20.0")
+        default_resolutions = ", ".join(str(r) for r in _def.DOWNSAMPLED_WELL_RESOLUTIONS_UM)
         self.well_resolutions_edit.setText(default_resolutions)
         self.well_resolutions_edit.setToolTip(
             "Comma-separated list of resolution values in micrometers (e.g., 5.0, 10.0, 20.0)"
@@ -940,7 +941,7 @@ class PreferencesDialog(QDialog):
         self.plate_resolution_spinbox = QDoubleSpinBox()
         self.plate_resolution_spinbox.setRange(1.0, 100.0)
         self.plate_resolution_spinbox.setSingleStep(1.0)
-        self.plate_resolution_spinbox.setValue(self._get_config_float("VIEWS", "downsampled_plate_resolution_um", 10.0))
+        self.plate_resolution_spinbox.setValue(_def.DOWNSAMPLED_PLATE_RESOLUTION_UM)
         self.plate_resolution_spinbox.setSuffix(" μm")
         self.plate_resolution_spinbox.setToolTip("Pixel size for the plate view overview image")
         plate_layout.addRow("Target Pixel Size:", self.plate_resolution_spinbox)
@@ -948,14 +949,14 @@ class PreferencesDialog(QDialog):
         # Z-Projection Mode
         self.z_projection_combo = QComboBox()
         self.z_projection_combo.addItems(["mip", "middle"])
-        current_projection = self._get_config_value("VIEWS", "downsampled_z_projection", "mip")
+        current_projection = _def.DOWNSAMPLED_Z_PROJECTION.value
         self.z_projection_combo.setCurrentText(current_projection)
         plate_layout.addRow("Z-Projection Mode:", self.z_projection_combo)
 
         # Interpolation Method
         self.interpolation_method_combo = QComboBox()
         self.interpolation_method_combo.addItems(["inter_linear", "inter_area_fast", "inter_area"])
-        current_interp = self._get_config_value("VIEWS", "downsampled_interpolation_method", "inter_area_fast")
+        current_interp = _def.DOWNSAMPLED_INTERPOLATION_METHOD.value
         self.interpolation_method_combo.setCurrentText(current_interp)
         self.interpolation_method_combo.setToolTip(
             "inter_linear: Fastest (~0.05ms), good for real-time previews\n"
@@ -973,16 +974,14 @@ class PreferencesDialog(QDialog):
 
         # Display Mosaic View
         self.display_mosaic_view_checkbox = QCheckBox()
-        self.display_mosaic_view_checkbox.setChecked(self._get_config_bool("VIEWS", "display_mosaic_view", True))
+        self.display_mosaic_view_checkbox.setChecked(_def.USE_NAPARI_FOR_MOSAIC_DISPLAY)
         mosaic_layout.addRow("Display Mosaic View:", self.display_mosaic_view_checkbox)
 
         # Mosaic Target Pixel Size
         self.mosaic_pixel_size_spinbox = QDoubleSpinBox()
         self.mosaic_pixel_size_spinbox.setRange(0.5, 20.0)
         self.mosaic_pixel_size_spinbox.setSingleStep(0.5)
-        self.mosaic_pixel_size_spinbox.setValue(
-            self._get_config_float("VIEWS", "mosaic_view_target_pixel_size_um", 2.0)
-        )
+        self.mosaic_pixel_size_spinbox.setValue(_def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM)
         self.mosaic_pixel_size_spinbox.setSuffix(" μm")
         mosaic_layout.addRow("Target Pixel Size:", self.mosaic_pixel_size_spinbox)
 
