@@ -787,7 +787,10 @@ class HighContentScreeningGui(QMainWindow):
         try:
             self.camera.set_binning(*cached_settings.binning)
             binning_text = f"{cached_settings.binning[0]}x{cached_settings.binning[1]}"
+            # Block signals to prevent redundant camera.set_binning() call from signal handler
+            self.cameraSettingWidget.dropdown_binning.blockSignals(True)
             self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
+            self.cameraSettingWidget.dropdown_binning.blockSignals(False)
         except ValueError as e:
             self.log.warning(f"Cannot restore binning {cached_settings.binning} - not supported by camera: {e}")
         except (AttributeError, RuntimeError) as e:
@@ -804,7 +807,10 @@ class HighContentScreeningGui(QMainWindow):
             if pixel_format:
                 try:
                     self.camera.set_pixel_format(pixel_format)
+                    # Block signals to prevent redundant camera.set_pixel_format() call from signal handler
+                    self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(True)
                     self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(cached_settings.pixel_format)
+                    self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(False)
                 except ValueError as e:
                     self.log.warning(
                         f"Cannot restore pixel format {cached_settings.pixel_format} - "
