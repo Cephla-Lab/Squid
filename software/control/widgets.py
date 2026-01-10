@@ -7263,13 +7263,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self._log.error("Failed to start acquisition.  Not enough RAM available.")
                 return
 
-            self.setEnabled_all(False)
-            self.is_current_acquisition_widget = True
-            self.btn_startAcquisition.setText("Stop\n Acquisition ")
-
-            # Emit signals
-            self.signal_acquisition_started.emit(True)
-            self.signal_acquisition_shape.emit(self.entry_NZ.value(), self.entry_deltaZ.value())
+            # Update UI to show acquisition is running
+            self._set_ui_acquisition_running(self.entry_NZ.value(), self.entry_deltaZ.value())
 
             # Start acquisition
             self.multipointController.run_acquisition()
@@ -7279,6 +7274,24 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # in an odd state.
             self.multipointController.request_abort_aquisition()
 
+    def _set_ui_acquisition_running(self, nz: int, delta_z_um: float, set_button_checked: bool = False):
+        """Update UI to reflect that acquisition is running.
+
+        Args:
+            nz: Number of Z slices
+            delta_z_um: Z step size in microns
+            set_button_checked: If True, also set the button to checked state
+                (needed when called externally, not from button click)
+        """
+        self.is_current_acquisition_widget = True
+        self.setEnabled_all(False)
+        if set_button_checked:
+            self.btn_startAcquisition.setChecked(True)
+        self.btn_startAcquisition.setText("Stop\n Acquisition ")
+        # Emit signals to notify other components
+        self.signal_acquisition_started.emit(True)
+        self.signal_acquisition_shape.emit(nz, delta_z_um)
+
     def set_acquisition_running_state(self, is_running: bool, nz: int = 1, delta_z_um: float = 1.0):
         """Set the widget's acquisition state (thread-safe via signal).
 
@@ -7287,18 +7300,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         """
         self._log.debug(f"set_acquisition_running_state: is_running={is_running}, nz={nz}, delta_z_um={delta_z_um}")
         if is_running:
-            # Mark this widget as the one running acquisition
-            self.is_current_acquisition_widget = True
-            # Disable all controls except start button and progress
-            self.setEnabled_all(False)
-            # Update button state
-            self.btn_startAcquisition.setChecked(True)
-            self.btn_startAcquisition.setText("Stop\n Acquisition ")
-            # Emit signals to notify other components
-            self.signal_acquisition_started.emit(True)
-            self.signal_acquisition_shape.emit(nz, delta_z_um)
+            self._set_ui_acquisition_running(nz, delta_z_um, set_button_checked=True)
         else:
-            # Re-enable controls
             self.acquisition_is_finished()
 
     def acquisition_is_finished(self):
