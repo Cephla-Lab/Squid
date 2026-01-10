@@ -132,137 +132,6 @@ class WrapperWindow(QMainWindow):
         super().closeEvent(event)
 
 
-class NDViewerTab(QWidget):
-    """
-    Embedded NDViewer (ndviewer_light) for showing the latest acquisition.
-
-    This is designed to live inside an existing QTabWidget (no separate QApplication / process).
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent=parent)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
-        self._viewer = None
-        self._dataset_path: Optional[str] = None
-
-        self._layout = QVBoxLayout()
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self.setLayout(self._layout)
-
-        self._placeholder = QLabel("NDViewer: waiting for an acquisition to start...")
-        self._placeholder.setAlignment(Qt.AlignCenter)
-        self._layout.addWidget(self._placeholder, 1)
-
-    def set_dataset_path(self, dataset_path: Optional[str]):
-        """
-        Point the embedded NDViewer at a dataset folder and refresh.
-
-        Pass None to clear the view.
-        """
-        dataset_path = dataset_path or None
-        if dataset_path == self._dataset_path:
-            return
-        self._dataset_path = dataset_path
-
-        if not dataset_path:
-            self._placeholder.setText("NDViewer: waiting for an acquisition to start...")
-            self._placeholder.setVisible(True)
-            if self._viewer is not None:
-                self._viewer.setVisible(False)
-            return
-
-        if not os.path.isdir(dataset_path):
-            self._placeholder.setText(f"NDViewer: dataset folder not found:\n{dataset_path}")
-            self._placeholder.setVisible(True)
-            if self._viewer is not None:
-                self._viewer.setVisible(False)
-            return
-
-        try:
-            # Lazy import so the main UI doesn't pay NDV import costs until needed.
-            from control import ndviewer_light
-        except Exception as e:
-            self._placeholder.setText(f"NDViewer: failed to import ndviewer_light:\n{e}")
-            self._placeholder.setVisible(True)
-            if self._viewer is not None:
-                self._viewer.setVisible(False)
-            return
-
-        # If NDV isn't available, ndviewer_light already renders a useful placeholder inside its viewer.
-        try:
-            if self._viewer is None:
-                self._viewer = ndviewer_light.LightweightViewer(dataset_path)
-                self._layout.addWidget(self._viewer, 1)
-            else:
-                # load_dataset() handles cleanup of previous handles internally
-                self._viewer.load_dataset(dataset_path)
-                self._viewer.refresh()
-
-            self._viewer.setVisible(True)
-            self._placeholder.setVisible(False)
-        except Exception:
-            self._log.exception("NDViewerTab failed to load dataset")
-            self._placeholder.setText(f"NDViewer: failed to load dataset:\n{dataset_path}")
-            self._placeholder.setVisible(True)
-            if self._viewer is not None:
-                self._viewer.setVisible(False)
-
-    def go_to_fov(self, well_id: str, fov_index: int) -> bool:
-        """
-        Navigate the NDViewer to a specific well and FOV.
-
-        Called when user double-clicks a location in the plate view.
-        Maps (well_id, fov_index) to the flat xarray FOV dimension index.
-
-        Returns:
-            True if navigation succeeded, False otherwise.
-        """
-        if self._viewer is None:
-            self._log.debug("go_to_fov: no viewer loaded")
-            return False
-
-        if not self._viewer.has_fov_dimension():
-            self._log.debug("go_to_fov: no fov dimension available")
-            return False
-
-        # Find the flat FOV index that matches (well_id, fov_index)
-        target_flat_idx = self._find_flat_fov_index(well_id, fov_index)
-        if target_flat_idx is None:
-            self._log.debug(f"go_to_fov: could not find FOV for well={well_id}, fov={fov_index}")
-            return False
-
-        # Use the public API to navigate
-        if self._viewer.set_current_index("fov", target_flat_idx):
-            self._log.info(f"go_to_fov: navigated to well={well_id}, fov={fov_index} (flat_idx={target_flat_idx})")
-            return True
-        else:
-            self._log.debug(f"go_to_fov: set_current_index failed for fov={target_flat_idx}")
-            return False
-
-    def _find_flat_fov_index(self, well_id: str, fov_index: int) -> Optional[int]:
-        """
-        Find the flat xarray FOV index for a given (well_id, fov_index).
-
-        The xarray FOV dimension is a flat list of all FOVs across all wells.
-        Uses the viewer's public get_fov_list() API to get the FOV mapping.
-        """
-        if self._viewer is None:
-            return None
-
-        try:
-            fovs = self._viewer.get_fov_list()
-
-            # Find the flat index where region matches well_id and fov matches fov_index
-            for flat_idx, fov_info in enumerate(fovs):
-                if fov_info["region"] == well_id and fov_info["fov"] == fov_index:
-                    return flat_idx
-
-            return None
-        except Exception as e:
-            self._log.debug(f"_find_flat_fov_index error: {e}")
-            return None
-
-
 class CollapsibleGroupBox(QWidget):
     """A collapsible group box with arrow indicator for expand/collapse."""
 
@@ -10581,20 +10450,11 @@ class NapariPlateViewWidget(QWidget):
                 lines,
                 shape_type="line",
                 edge_color="white",
-                edge_width=2,
+                edge_width=1,
                 name="_plate_boundaries",
             )
-            # Make boundaries layer non-interactive so it doesn't intercept clicks
-            boundaries_layer = self.viewer.layers["_plate_boundaries"]
-            boundaries_layer.mouse_pan = False
-            boundaries_layer.mouse_zoom = False
-            # Move boundaries layer to bottom
+            # Move boundaries layer to bottom so it doesn't interfere with clicks
             self.viewer.layers.move(len(self.viewer.layers) - 1, 0)
-            # Ensure an image layer is selected, not the shapes layer
-            for layer in reversed(self.viewer.layers):
-                if layer.name != "_plate_boundaries":
-                    self.viewer.layers.selection.active = layer
-                    break
 
     def extractWavelength(self, name):
         """Extract wavelength from channel name for colormap selection."""

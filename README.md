@@ -48,35 +48,6 @@ New version coming soon!
 ### Firmware
 Usually firmware should be already uploaded to the controller. If you do need to re-upload firmware, see the [firmware README](firmware/README.md) for instructions.
 
-### Git Submodules
-This repository uses git submodules for external dependencies. After cloning, initialize submodules:
-
-```bash
-# Clone with submodules (recommended)
-git clone --recursive https://github.com/Cephla-Lab/Squid.git
-
-# Or initialize after clone
-git submodule update --init --recursive
-```
-
-**Submodules:**
-| Path | Repository | Description |
-|------|------------|-------------|
-| `software/control/ndviewer_light` | [ndviewer_light](https://github.com/Cephla-Lab/ndviewer_light) | Lightweight NDV-based image viewer |
-| `software/fluidics_v2` | [fluidics_v2](https://github.com/Alpaca233/fluidics_v2) | Fluidics control |
-
-**Updating submodules:**
-```bash
-# Update a specific submodule to latest
-cd software/control/ndviewer_light
-git fetch origin
-git checkout main
-git pull origin main
-cd ../../..
-git add software/control/ndviewer_light
-git commit -m "chore: update ndviewer_light submodule"
-```
-
 ## Open-source Assets for the original Squid
 ![alt text](https://i.imgur.com/Gjwh02y.png)
 - tracking software repo: [GitHub](https://github.com/prakashlab/squid-tracking)
