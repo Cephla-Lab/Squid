@@ -896,6 +896,8 @@ class PreferencesDialog(QDialog):
         self.tab_widget.addTab(tab, "Advanced")
 
     def _create_views_tab(self):
+        import control._def as _def  # Import module to read runtime state
+
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setSpacing(10)
@@ -1215,6 +1217,8 @@ class PreferencesDialog(QDialog):
     def _get_changes(self):
         """Get list of settings that have changed from current config.
         Returns list of (name, old, new, requires_restart) tuples."""
+        import control._def as _def  # Import module to read runtime state for Views settings
+
         changes = []
 
         # General settings (live update)
