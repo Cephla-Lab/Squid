@@ -955,6 +955,47 @@ class MicroscopeControlServer:
         if not gui_update_complete.wait(timeout=5.0):
             self._log.warning("GUI update from YAML timed out after 5 seconds")
 
+    def _set_gui_acquisition_state(self, yaml_data, is_running: bool) -> None:
+        """Update GUI widget state to reflect acquisition running/stopped.
+
+        This mirrors what toggle_acquisition() does in the widget when the user
+        clicks the Start/Stop button, ensuring the GUI properly reflects the
+        acquisition state when started via TCP command.
+        """
+        if not self.gui or not QT_AVAILABLE:
+            return
+
+        widget = None
+        if yaml_data.widget_type == "wellplate" and hasattr(self.gui, "wellplateMultiPointWidget"):
+            widget = self.gui.wellplateMultiPointWidget
+        elif yaml_data.widget_type == "flexible" and hasattr(self.gui, "flexibleMultiPointWidget"):
+            widget = self.gui.flexibleMultiPointWidget
+
+        if not widget:
+            return
+
+        def update_state():
+            try:
+                if is_running:
+                    # Mark this widget as the one running acquisition
+                    widget.is_current_acquisition_widget = True
+                    # Disable all controls except start button and progress
+                    widget.setEnabled_all(False)
+                    # Update button state
+                    widget.btn_startAcquisition.setChecked(True)
+                    widget.btn_startAcquisition.setText("Stop\n Acquisition ")
+                    # Emit signals to notify other components
+                    widget.signal_acquisition_started.emit(True)
+                    widget.signal_acquisition_shape.emit(yaml_data.nz, yaml_data.delta_z_um)
+                else:
+                    # Re-enable controls (acquisition_is_finished handles this normally)
+                    widget.acquisition_is_finished()
+            except Exception as e:
+                self._log.error(f"Failed to update GUI acquisition state: {e}")
+
+        # Schedule on Qt main thread
+        QTimer.singleShot(0, update_state)
+
     def _validate_channels(self, channel_names: List[str], current_objective: str) -> List[str]:
         """Validate that requested channels exist for the current objective.
 
@@ -1191,6 +1232,9 @@ class MicroscopeControlServer:
 
             # Run the acquisition (non-blocking - runs in worker thread)
             self.multipoint_controller.run_acquisition()
+
+            # Update GUI to reflect acquisition in progress
+            self._set_gui_acquisition_state(yaml_data, is_running=True)
 
             self._log.info(
                 f"Acquisition started: {total_fovs} FOVs, {len(yaml_data.channel_names)} channels, "
