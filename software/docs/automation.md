@@ -90,7 +90,7 @@ python scripts/run_acquisition.py --yaml acquisition.yaml --host 192.168.1.100 -
 | `--dry-run` | Validate YAML without running |
 | `--verbose`, `-v` | Show detailed output |
 | `--host` | Server host (default: localhost) |
-| `--port` | Server port (default: 5000) |
+| `--port` | Server port (default: 5050) |
 
 ## Exit Codes
 
@@ -148,7 +148,7 @@ jobs:
 ### "Control server did not become available"
 - Ensure the GUI is running with `--start-server` flag
 - Or enable via Settings → Enable MCP Control Server
-- Check that port 5000 is not blocked
+- Check that port 5050 is not blocked
 
 ### "TCP command only supports wellplate mode"
 - The YAML was saved from FlexibleMultiPoint mode

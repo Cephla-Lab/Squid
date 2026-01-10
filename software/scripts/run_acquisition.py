@@ -448,6 +448,10 @@ Examples:
                 print("\nAcquisition completed successfully!")
             elif status.get("timeout"):
                 print(f"\nAcquisition timed out after {status.get('elapsed', 0):.0f}s")
+                exit_code = 1
+            elif status.get("error"):
+                print(f"\nAcquisition error: {status.get('error')}")
+                exit_code = 1
 
         # If not waiting and we launched the GUI, inform user
         if not args.wait and gui_process:
