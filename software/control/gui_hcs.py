@@ -54,6 +54,7 @@ import control.microscope
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
 import squid.abc
+import squid.camera.settings_cache
 import squid.camera.utils
 import squid.config
 import squid.logging
@@ -623,6 +624,28 @@ class HighContentScreeningGui(QMainWindow):
                 include_camera_temperature_setting=False,
                 include_camera_auto_wb_setting=True,
             )
+
+        # Restore cached camera settings (binning, pixel format)
+        cached_settings = squid.camera.settings_cache.load_camera_settings()
+        if cached_settings:
+            try:
+                # Apply binning to camera and update UI
+                self.camera.set_binning(*cached_settings.binning)
+                binning_text = f"{cached_settings.binning[0]}x{cached_settings.binning[1]}"
+                self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
+
+                # Apply pixel format to camera and update UI
+                if cached_settings.pixel_format:
+                    pixel_format = squid.config.CameraPixelFormat.from_string(cached_settings.pixel_format)
+                    self.camera.set_pixel_format(pixel_format)
+                    self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(cached_settings.pixel_format)
+
+                self.log.info(
+                    f"Restored camera settings: binning={cached_settings.binning}, pixel_format={cached_settings.pixel_format}"
+                )
+            except Exception as e:
+                self.log.warning(f"Failed to restore camera settings: {e}")
+
         self.profileWidget = widgets.ProfileWidget(self.configurationManager)
         self.liveControlWidget = widgets.LiveControlWidget(
             self.streamHandler,
@@ -1715,6 +1738,10 @@ class HighContentScreeningGui(QMainWindow):
             squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
         except ValueError as e:
             self.log.error(f"Couldn't cache position while closing.  Ignoring and continuing. Error is: {e}")
+
+        # Save camera settings (binning, pixel format)
+        squid.camera.settings_cache.save_camera_settings(self.camera)
+
         self.movement_update_timer.stop()
 
         if self.emission_filter_wheel:
