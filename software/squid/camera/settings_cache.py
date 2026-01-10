@@ -1,7 +1,7 @@
 """Camera settings persistence for session continuity.
 
 This module provides save/load functionality for camera settings (binning, pixel format)
-to maintain user preferences across application restarts. Settings are stored as JSON
+to maintain user preferences across application restarts. Settings are stored as YAML
 in the cache directory.
 
 Typical usage:
@@ -14,17 +14,18 @@ Typical usage:
         camera.set_binning(*settings.binning)
 """
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
+
+import yaml
 
 import squid.logging
 from squid.abc import AbstractCamera
 
 _log = squid.logging.get_logger(__name__)
 
-_DEFAULT_CACHE_PATH = Path("cache/camera_settings.json")
+_DEFAULT_CACHE_PATH = Path("cache/camera_settings.yaml")
 DEFAULT_BINNING: Tuple[int, int] = (1, 1)
 
 
@@ -49,7 +50,7 @@ class CachedCameraSettings:
 
 
 def save_camera_settings(camera: AbstractCamera, cache_path: Path = _DEFAULT_CACHE_PATH) -> None:
-    """Save current camera settings (binning and pixel format) to a JSON cache file.
+    """Save current camera settings (binning and pixel format) to a YAML cache file.
 
     Creates parent directories if they do not exist. This function is fail-safe -
     errors are logged but do not raise exceptions, allowing application shutdown
@@ -57,7 +58,7 @@ def save_camera_settings(camera: AbstractCamera, cache_path: Path = _DEFAULT_CAC
 
     Args:
         camera: Camera instance to read settings from.
-        cache_path: Path to the cache file. Defaults to 'cache/camera_settings.json'
+        cache_path: Path to the cache file. Defaults to 'cache/camera_settings.yaml'
             relative to the current working directory.
     """
     try:
@@ -75,7 +76,7 @@ def save_camera_settings(camera: AbstractCamera, cache_path: Path = _DEFAULT_CAC
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_path, "w") as f:
-            json.dump(settings, f, indent=2)
+            yaml.safe_dump(settings, f, default_flow_style=False)
         _log.info(f"Camera settings saved: binning={binning}, pixel_format={pixel_format}")
     except PermissionError as e:
         _log.error(f"Cannot save camera settings - permission denied for {cache_path}: {e}")
@@ -84,12 +85,12 @@ def save_camera_settings(camera: AbstractCamera, cache_path: Path = _DEFAULT_CAC
 
 
 def load_camera_settings(cache_path: Path = _DEFAULT_CACHE_PATH) -> Optional[CachedCameraSettings]:
-    """Load cached camera settings from a JSON cache file.
+    """Load cached camera settings from a YAML cache file.
 
     This function is fail-safe - returns None on any error condition.
 
     Args:
-        cache_path: Path to the cache file. Defaults to 'cache/camera_settings.json'
+        cache_path: Path to the cache file. Defaults to 'cache/camera_settings.yaml'
             relative to the current working directory.
 
     Returns:
@@ -102,8 +103,8 @@ def load_camera_settings(cache_path: Path = _DEFAULT_CACHE_PATH) -> Optional[Cac
 
     try:
         with open(cache_path, "r") as f:
-            settings = json.load(f)
-    except json.JSONDecodeError as e:
+            settings = yaml.safe_load(f)
+    except yaml.YAMLError as e:
         _log.error(
             f"Camera settings cache file is corrupted at {cache_path}: {e}. Delete this file to reset to defaults."
         )

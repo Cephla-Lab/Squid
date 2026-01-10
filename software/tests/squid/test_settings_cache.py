@@ -1,11 +1,11 @@
 """Tests for squid.camera.settings_cache module."""
 
-import json
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+import yaml
 
 from squid.camera.settings_cache import (
     CachedCameraSettings,
@@ -61,12 +61,12 @@ class TestSaveCameraSettings:
         mock_camera.get_pixel_format.return_value = CameraPixelFormat.MONO8
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "camera_settings.json"
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
             save_camera_settings(mock_camera, cache_path)
 
             assert cache_path.exists()
             with open(cache_path, "r") as f:
-                data = json.load(f)
+                data = yaml.safe_load(f)
 
             assert data["binning"] == [2, 2]
             assert data["pixel_format"] == "MONO8"
@@ -78,11 +78,11 @@ class TestSaveCameraSettings:
         mock_camera.get_pixel_format.return_value = None
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "camera_settings.json"
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
             save_camera_settings(mock_camera, cache_path)
 
             with open(cache_path, "r") as f:
-                data = json.load(f)
+                data = yaml.safe_load(f)
 
             assert data["binning"] == [1, 1]
             assert data["pixel_format"] is None
@@ -94,7 +94,7 @@ class TestSaveCameraSettings:
         mock_camera.get_pixel_format.return_value = None
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "nested" / "dir" / "camera_settings.json"
+            cache_path = Path(tmpdir) / "nested" / "dir" / "camera_settings.yaml"
             save_camera_settings(mock_camera, cache_path)
 
             assert cache_path.exists()
@@ -105,7 +105,7 @@ class TestSaveCameraSettings:
         mock_camera.get_binning.side_effect = RuntimeError("Camera disconnected")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "camera_settings.json"
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
             # Should not raise, just log error
             save_camera_settings(mock_camera, cache_path)
             assert not cache_path.exists()
@@ -117,9 +117,9 @@ class TestLoadCameraSettings:
     def test_load_settings(self):
         """Test loading valid camera settings."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "camera_settings.json"
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
             with open(cache_path, "w") as f:
-                json.dump({"binning": [2, 2], "pixel_format": "MONO8"}, f)
+                yaml.safe_dump({"binning": [2, 2], "pixel_format": "MONO8"}, f)
 
             settings = load_camera_settings(cache_path)
 
@@ -130,9 +130,9 @@ class TestLoadCameraSettings:
     def test_load_settings_no_pixel_format(self):
         """Test loading when pixel format is null."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "camera_settings.json"
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
             with open(cache_path, "w") as f:
-                json.dump({"binning": [4, 4], "pixel_format": None}, f)
+                yaml.safe_dump({"binning": [4, 4], "pixel_format": None}, f)
 
             settings = load_camera_settings(cache_path)
 
@@ -143,16 +143,16 @@ class TestLoadCameraSettings:
     def test_load_missing_file(self):
         """Test loading when file doesn't exist returns None."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "nonexistent.json"
+            cache_path = Path(tmpdir) / "nonexistent.yaml"
             settings = load_camera_settings(cache_path)
             assert settings is None
 
-    def test_load_corrupted_json(self):
-        """Test loading corrupted JSON returns None."""
+    def test_load_corrupted_yaml(self):
+        """Test loading corrupted YAML returns None."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "camera_settings.json"
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
             with open(cache_path, "w") as f:
-                f.write("not valid json {{{")
+                f.write("not: valid: yaml: {{{\n  - broken")
 
             settings = load_camera_settings(cache_path)
             assert settings is None
@@ -160,9 +160,9 @@ class TestLoadCameraSettings:
     def test_load_missing_binning_uses_default(self):
         """Test loading with missing binning key uses default."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "camera_settings.json"
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
             with open(cache_path, "w") as f:
-                json.dump({"pixel_format": "MONO8"}, f)
+                yaml.safe_dump({"pixel_format": "MONO8"}, f)
 
             settings = load_camera_settings(cache_path)
 
@@ -173,9 +173,9 @@ class TestLoadCameraSettings:
     def test_load_invalid_binning_format_uses_default(self):
         """Test loading with invalid binning format uses default."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "camera_settings.json"
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
             with open(cache_path, "w") as f:
-                json.dump({"binning": "invalid", "pixel_format": "MONO8"}, f)
+                yaml.safe_dump({"binning": "invalid", "pixel_format": "MONO8"}, f)
 
             settings = load_camera_settings(cache_path)
 
@@ -185,9 +185,9 @@ class TestLoadCameraSettings:
     def test_load_binning_wrong_length_uses_default(self):
         """Test loading with wrong binning length uses default."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "camera_settings.json"
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
             with open(cache_path, "w") as f:
-                json.dump({"binning": [1, 2, 3], "pixel_format": None}, f)
+                yaml.safe_dump({"binning": [1, 2, 3], "pixel_format": None}, f)
 
             settings = load_camera_settings(cache_path)
 
@@ -197,9 +197,9 @@ class TestLoadCameraSettings:
     def test_load_binning_negative_returns_none(self):
         """Test loading with negative binning values returns None due to validation."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "camera_settings.json"
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
             with open(cache_path, "w") as f:
-                json.dump({"binning": [-1, 2], "pixel_format": None}, f)
+                yaml.safe_dump({"binning": [-1, 2], "pixel_format": None}, f)
 
             settings = load_camera_settings(cache_path)
             # Should return None because CachedCameraSettings validation fails
@@ -216,7 +216,7 @@ class TestRoundTrip:
         mock_camera.get_pixel_format.return_value = CameraPixelFormat.MONO12
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "camera_settings.json"
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
 
             save_camera_settings(mock_camera, cache_path)
             settings = load_camera_settings(cache_path)
@@ -232,7 +232,7 @@ class TestRoundTrip:
         mock_camera.get_pixel_format.return_value = None
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = Path(tmpdir) / "camera_settings.json"
+            cache_path = Path(tmpdir) / "camera_settings.yaml"
 
             save_camera_settings(mock_camera, cache_path)
             settings = load_camera_settings(cache_path)
