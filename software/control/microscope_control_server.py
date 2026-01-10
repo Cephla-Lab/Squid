@@ -926,6 +926,7 @@ class MicroscopeControlServer:
         Uses a threading Event to ensure the GUI update completes before returning.
         """
         if not self.gui or not QT_AVAILABLE:
+            self._log.debug("Skipping GUI update: GUI not available or Qt not available")
             return
 
         widget = None
@@ -934,7 +935,11 @@ class MicroscopeControlServer:
         elif yaml_data.widget_type == "flexible" and hasattr(self.gui, "flexibleMultiPointWidget"):
             widget = self.gui.flexibleMultiPointWidget
 
-        if not widget or not hasattr(widget, "_load_acquisition_yaml"):
+        if not widget:
+            self._log.warning(f"Cannot update GUI: No widget found for type '{yaml_data.widget_type}'")
+            return
+        if not hasattr(widget, "_load_acquisition_yaml"):
+            self._log.warning(f"Cannot update GUI: Widget {type(widget).__name__} lacks _load_acquisition_yaml method")
             return
 
         # Use a threading Event to synchronize with the Qt main thread
@@ -984,7 +989,10 @@ class MicroscopeControlServer:
 
         # Check if the widget has the signal (added for TCP server support)
         if not hasattr(widget, "signal_set_acquisition_running"):
-            self._log.warning("Widget does not have signal_set_acquisition_running signal")
+            self._log.warning(
+                f"Widget {type(widget).__name__} does not have signal_set_acquisition_running signal. "
+                "GUI will not reflect acquisition state. This may indicate a version mismatch."
+            )
             return
 
         # Emit the signal - Qt will automatically queue this to the widget's thread
@@ -1172,18 +1180,30 @@ class MicroscopeControlServer:
         except Exception as e:
             raise ValueError(f"Failed to parse YAML file: {e}") from e
 
+        # FlexibleMultiPoint is not supported via TCP/MCP - only wellplate mode
+        if yaml_data.widget_type != "wellplate":
+            raise ValueError(
+                f"TCP command only supports wellplate mode acquisitions. "
+                f"Got widget_type='{yaml_data.widget_type}'. "
+                f"FlexibleMultiPoint acquisitions must be run from the GUI."
+            )
+
         # Load raw YAML for fields that need direct access (wellplate_format)
         with open(yaml_path, "r", encoding="utf-8") as f:
             raw_yaml = yaml.safe_load(f)
 
         # Validate hardware configuration (objective, binning)
-        current_binning = (1, 1)
+        current_binning = None
         try:
             camera = getattr(self.microscope, "camera", None)
             if camera and hasattr(camera, "get_binning"):
                 current_binning = tuple(camera.get_binning())
         except Exception as e:
             self._log.warning(f"Could not get camera binning for validation: {e}")
+
+        if current_binning is None:
+            self._log.warning("Skipping binning validation - could not determine current camera binning")
+            current_binning = (1, 1)  # Default for validation (will skip binning check)
 
         current_objective = self.microscope.objective_store.current_objective
         validation = validate_hardware(yaml_data, current_objective, current_binning)

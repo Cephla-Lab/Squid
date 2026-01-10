@@ -84,8 +84,8 @@ def wait_for_server(
                 print(f"Waiting for server... (attempt {attempt})")
             time.sleep(retry_interval)
         except Exception as e:
-            if verbose:
-                print(f"Unexpected error: {e}")
+            # Always show unexpected errors - they may indicate a real problem
+            print(f"Unexpected error connecting to server: {e}")
             time.sleep(retry_interval)
 
     # Log failure details even when not verbose
@@ -135,15 +135,26 @@ def monitor_acquisition(
     """Monitor acquisition progress until completion or timeout."""
     start_time = time.time()
     last_fov = -1
+    consecutive_errors = 0
+    max_consecutive_errors = 10
 
     while True:
         try:
             response = send_command("get_acquisition_status", host=host, port=port, timeout=10.0)
 
             if not response.get("success"):
-                print(f"Error getting status: {response.get('error', 'Unknown error')}")
+                print(f"\nWarning: Error getting status: {response.get('error', 'Unknown error')}")
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    return {
+                        "completed": False,
+                        "error": f"Lost connection to server after {consecutive_errors} consecutive errors",
+                    }
                 time.sleep(poll_interval)
                 continue
+
+            # Reset error counter on success
+            consecutive_errors = 0
 
             result = response.get("result", {})
             in_progress = result.get("in_progress", False)
@@ -167,9 +178,28 @@ def monitor_acquisition(
                 last_fov = current_fov
                 sys.stdout.flush()
 
+        except (socket.error, ConnectionRefusedError, socket.timeout) as e:
+            # Connection errors during monitoring - warn and continue trying
+            consecutive_errors += 1
+            print(f"\nWarning: Connection error polling status: {e}")
+            if consecutive_errors >= max_consecutive_errors:
+                return {
+                    "completed": False,
+                    "error": f"Lost connection to server after {consecutive_errors} consecutive errors",
+                }
         except Exception as e:
+            # Unexpected errors - always show them
+            consecutive_errors += 1
+            print(f"\nWarning: Unexpected error polling status: {e}")
             if verbose:
-                print(f"\nError polling status: {e}")
+                import traceback
+
+                traceback.print_exc()
+            if consecutive_errors >= max_consecutive_errors:
+                return {
+                    "completed": False,
+                    "error": f"Too many errors polling status: {e}",
+                }
 
         # Check timeout
         if timeout and (time.time() - start_time) > timeout:
@@ -307,11 +337,15 @@ Examples:
 
     gui_process = None
 
+    # Track exit code for cleanup function
+    exit_code = 0
+
     def cleanup(signum=None, frame=None):
         """Clean up on exit, warning if acquisition is still running.
 
         Called from signal handlers and explicit error paths. Always exits.
         When gui_process is None (e.g., --no-launch mode), just exits cleanly.
+        Uses the exit_code variable from the enclosing scope.
         """
         if gui_process:
             # Check if acquisition is still running before terminating
@@ -320,8 +354,10 @@ Examples:
                 if response.get("success") and response.get("result", {}).get("in_progress"):
                     print("\nWARNING: Acquisition is still in progress!")
                     print("Terminating GUI will abort the acquisition and may result in data loss.")
-            except Exception:
-                pass  # Server may not be reachable
+            except (socket.error, ConnectionRefusedError, socket.timeout, json.JSONDecodeError):
+                pass  # Server may not be reachable during cleanup - expected
+            except Exception as e:
+                print(f"\nWarning: Unexpected error checking acquisition status: {e}")
 
             print("\nTerminating GUI...")
             gui_process.terminate()
@@ -329,7 +365,7 @@ Examples:
                 gui_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 gui_process.kill()
-        sys.exit(0)
+        sys.exit(exit_code)
 
     # Register signal handlers
     signal.signal(signal.SIGINT, cleanup)
@@ -348,6 +384,7 @@ Examples:
         if not wait_for_server(host=args.host, port=args.port, verbose=args.verbose):
             print("Error: Control server did not become available within timeout")
             print("Make sure the GUI is running and 'Enable MCP Control Server' is checked in Settings")
+            exit_code = 1
             cleanup()
 
         print("Control server ready!")
@@ -371,6 +408,7 @@ Examples:
 
         if not response.get("success"):
             print(f"Error starting acquisition: {response.get('error', 'Unknown error')}")
+            exit_code = 1
             cleanup()
 
         result = response.get("result", {})
@@ -415,6 +453,7 @@ Examples:
             import traceback
 
             traceback.print_exc()
+        exit_code = 1
         cleanup()
 
 
