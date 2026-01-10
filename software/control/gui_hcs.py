@@ -16,7 +16,7 @@ from control.core.scan_coordinates import (
 os.environ["QT_API"] = "pyqt5"
 import serial
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 import numpy as np
 
 # qt libraries
@@ -54,6 +54,7 @@ import control.microscope
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
 import squid.abc
+import squid.camera.settings_cache
 import squid.camera.utils
 import squid.config
 import squid.logging
@@ -623,6 +624,9 @@ class HighContentScreeningGui(QMainWindow):
                 include_camera_temperature_setting=False,
                 include_camera_auto_wb_setting=True,
             )
+
+        self._restore_cached_camera_settings()
+
         self.profileWidget = widgets.ProfileWidget(self.configurationManager)
         self.liveControlWidget = widgets.LiveControlWidget(
             self.streamHandler,
@@ -767,6 +771,74 @@ class HighContentScreeningGui(QMainWindow):
 
         self.setupRecordTabWidget()
         self.setupCameraTabWidget()
+
+    def _restore_cached_camera_settings(self) -> None:
+        """Restore cached camera settings from disk and update UI widgets.
+
+        Applies both hardware settings (via camera API) and synchronizes the UI
+        dropdown widgets. Silently returns if no cached settings exist.
+        Errors are logged but do not prevent application startup.
+        """
+        cached_settings = squid.camera.settings_cache.load_camera_settings()
+        if not cached_settings:
+            return
+
+        binning_restored = self._restore_binning(cached_settings.binning)
+        pixel_format_restored = self._restore_pixel_format(cached_settings.pixel_format)
+
+        if binning_restored or pixel_format_restored:
+            self.log.info(
+                f"Restored camera settings: binning={cached_settings.binning}, "
+                f"pixel_format={cached_settings.pixel_format}"
+            )
+
+    def _restore_binning(self, binning: Tuple[int, int]) -> bool:
+        """Apply binning setting to camera and sync UI dropdown.
+
+        Returns True if successfully applied, False otherwise.
+        """
+        try:
+            self.camera.set_binning(*binning)
+        except ValueError as e:
+            self.log.warning(f"Cannot restore binning {binning} - not supported by camera: {e}")
+            return False
+        except (AttributeError, RuntimeError) as e:
+            self.log.error(f"Camera error while restoring binning settings: {e}")
+            return False
+
+        binning_text = f"{binning[0]}x{binning[1]}"
+        self.cameraSettingWidget.dropdown_binning.blockSignals(True)
+        self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
+        self.cameraSettingWidget.dropdown_binning.blockSignals(False)
+        return True
+
+    def _restore_pixel_format(self, pixel_format_str: Optional[str]) -> bool:
+        """Apply pixel format setting to camera and sync UI dropdown.
+
+        Returns True if successfully applied, False otherwise.
+        """
+        if not pixel_format_str:
+            return False
+
+        try:
+            pixel_format = squid.config.CameraPixelFormat.from_string(pixel_format_str)
+        except KeyError:
+            self.log.warning(f"Cached pixel format '{pixel_format_str}' is not recognized")
+            return False
+
+        try:
+            self.camera.set_pixel_format(pixel_format)
+        except ValueError as e:
+            self.log.warning(f"Cannot restore pixel format {pixel_format_str} - not supported by this camera: {e}")
+            return False
+        except (AttributeError, RuntimeError) as e:
+            self.log.error(f"Camera error while restoring pixel format settings: {e}")
+            return False
+
+        self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(True)
+        self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(pixel_format_str)
+        self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(False)
+        return True
 
     def setupImageDisplayTabs(self):
         if USE_NAPARI_FOR_LIVE_VIEW:
@@ -1715,6 +1787,10 @@ class HighContentScreeningGui(QMainWindow):
             squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
         except ValueError as e:
             self.log.error(f"Couldn't cache position while closing.  Ignoring and continuing. Error is: {e}")
+
+        # Save camera settings (binning, pixel format)
+        squid.camera.settings_cache.save_camera_settings(self.camera)
+
         self.movement_update_timer.stop()
 
         if self.emission_filter_wheel:
