@@ -625,26 +625,7 @@ class HighContentScreeningGui(QMainWindow):
                 include_camera_auto_wb_setting=True,
             )
 
-        # Restore cached camera settings (binning, pixel format)
-        cached_settings = squid.camera.settings_cache.load_camera_settings()
-        if cached_settings:
-            try:
-                # Apply binning to camera and update UI
-                self.camera.set_binning(*cached_settings.binning)
-                binning_text = f"{cached_settings.binning[0]}x{cached_settings.binning[1]}"
-                self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
-
-                # Apply pixel format to camera and update UI
-                if cached_settings.pixel_format:
-                    pixel_format = squid.config.CameraPixelFormat.from_string(cached_settings.pixel_format)
-                    self.camera.set_pixel_format(pixel_format)
-                    self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(cached_settings.pixel_format)
-
-                self.log.info(
-                    f"Restored camera settings: binning={cached_settings.binning}, pixel_format={cached_settings.pixel_format}"
-                )
-            except Exception as e:
-                self.log.warning(f"Failed to restore camera settings: {e}")
+        self._restore_cached_camera_settings()
 
         self.profileWidget = widgets.ProfileWidget(self.configurationManager)
         self.liveControlWidget = widgets.LiveControlWidget(
@@ -790,6 +771,29 @@ class HighContentScreeningGui(QMainWindow):
 
         self.setupRecordTabWidget()
         self.setupCameraTabWidget()
+
+    def _restore_cached_camera_settings(self) -> None:
+        """Restore cached camera settings (binning, pixel format) from disk."""
+        cached_settings = squid.camera.settings_cache.load_camera_settings()
+        if not cached_settings:
+            return
+
+        try:
+            self.camera.set_binning(*cached_settings.binning)
+            binning_text = f"{cached_settings.binning[0]}x{cached_settings.binning[1]}"
+            self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
+
+            if cached_settings.pixel_format:
+                pixel_format = squid.config.CameraPixelFormat.from_string(cached_settings.pixel_format)
+                self.camera.set_pixel_format(pixel_format)
+                self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(cached_settings.pixel_format)
+
+            self.log.info(
+                f"Restored camera settings: binning={cached_settings.binning}, "
+                f"pixel_format={cached_settings.pixel_format}"
+            )
+        except Exception as e:
+            self.log.warning(f"Failed to restore camera settings: {e}")
 
     def setupImageDisplayTabs(self):
         if USE_NAPARI_FOR_LIVE_VIEW:
