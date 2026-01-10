@@ -64,8 +64,68 @@ def temp_config_file(sample_config):
 
 
 @pytest.fixture
-def preferences_dialog(qtbot, sample_config, temp_config_file):
-    """Create a PreferencesDialog instance for testing."""
+def sync_def_with_config(sample_config):
+    """Sync _def module variables with sample_config values.
+
+    This mimics app startup behavior where config file is loaded and _def
+    variables are set. Since Views tab now reads from _def (for MCP support),
+    tests that expect config values need _def to be synchronized first.
+    """
+    import control._def as _def
+
+    # Store original values
+    originals = {
+        "SAVE_DOWNSAMPLED_WELL_IMAGES": _def.SAVE_DOWNSAMPLED_WELL_IMAGES,
+        "DISPLAY_PLATE_VIEW": _def.DISPLAY_PLATE_VIEW,
+        "DOWNSAMPLED_WELL_RESOLUTIONS_UM": _def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
+        "DOWNSAMPLED_PLATE_RESOLUTION_UM": _def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
+        "DOWNSAMPLED_Z_PROJECTION": _def.DOWNSAMPLED_Z_PROJECTION,
+        "DOWNSAMPLED_INTERPOLATION_METHOD": _def.DOWNSAMPLED_INTERPOLATION_METHOD,
+        "USE_NAPARI_FOR_MOSAIC_DISPLAY": _def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
+        "MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM": _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM,
+    }
+
+    # Sync _def with sample_config (mimics app startup)
+    _def.SAVE_DOWNSAMPLED_WELL_IMAGES = sample_config.get("VIEWS", "save_downsampled_well_images").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+    _def.DISPLAY_PLATE_VIEW = sample_config.get("VIEWS", "display_plate_view").lower() in ("true", "1", "yes")
+    _def.DOWNSAMPLED_WELL_RESOLUTIONS_UM = [
+        float(x.strip()) for x in sample_config.get("VIEWS", "downsampled_well_resolutions_um").split(",")
+    ]
+    _def.DOWNSAMPLED_PLATE_RESOLUTION_UM = float(sample_config.get("VIEWS", "downsampled_plate_resolution_um"))
+    _def.DOWNSAMPLED_Z_PROJECTION = _def.ZProjectionMode.convert_to_enum(
+        sample_config.get("VIEWS", "downsampled_z_projection")
+    )
+    _def.USE_NAPARI_FOR_MOSAIC_DISPLAY = sample_config.get("VIEWS", "display_mosaic_view").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+    _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = float(sample_config.get("VIEWS", "mosaic_view_target_pixel_size_um"))
+
+    yield
+
+    # Restore original values
+    _def.SAVE_DOWNSAMPLED_WELL_IMAGES = originals["SAVE_DOWNSAMPLED_WELL_IMAGES"]
+    _def.DISPLAY_PLATE_VIEW = originals["DISPLAY_PLATE_VIEW"]
+    _def.DOWNSAMPLED_WELL_RESOLUTIONS_UM = originals["DOWNSAMPLED_WELL_RESOLUTIONS_UM"]
+    _def.DOWNSAMPLED_PLATE_RESOLUTION_UM = originals["DOWNSAMPLED_PLATE_RESOLUTION_UM"]
+    _def.DOWNSAMPLED_Z_PROJECTION = originals["DOWNSAMPLED_Z_PROJECTION"]
+    _def.DOWNSAMPLED_INTERPOLATION_METHOD = originals["DOWNSAMPLED_INTERPOLATION_METHOD"]
+    _def.USE_NAPARI_FOR_MOSAIC_DISPLAY = originals["USE_NAPARI_FOR_MOSAIC_DISPLAY"]
+    _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = originals["MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM"]
+
+
+@pytest.fixture
+def preferences_dialog(qtbot, sample_config, temp_config_file, sync_def_with_config):
+    """Create a PreferencesDialog instance for testing.
+
+    Uses sync_def_with_config to ensure _def matches sample_config,
+    mimicking app startup behavior.
+    """
     dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
     qtbot.addWidget(dialog)
     return dialog
@@ -503,3 +563,116 @@ class TestViewsTab:
         assert validator.validate("5.0, abc, 10.0", 0)[0] != QValidator.Acceptable
         assert validator.validate("-5.0, 10.0", 0)[0] != QValidator.Acceptable
         assert validator.validate("", 0)[0] != QValidator.Acceptable
+
+
+class TestViewsTabDefIntegration:
+    """Test that Views tab reads from _def runtime state (for MCP support).
+
+    The Views tab was changed to read from _def module variables instead of
+    config file. This enables MCP commands to modify view settings and have
+    the dialog reflect those changes when opened.
+    """
+
+    def test_ui_initializes_from_def_not_config(self, qtbot, sample_config, temp_config_file):
+        """Verify UI reads from _def, not config file, for Views settings."""
+        import control._def as _def
+
+        # Set _def values different from config file
+        original_save = _def.SAVE_DOWNSAMPLED_WELL_IMAGES
+        original_plate = _def.DISPLAY_PLATE_VIEW
+        original_mosaic = _def.USE_NAPARI_FOR_MOSAIC_DISPLAY
+
+        try:
+            # Config has: save=false, display_plate=true, display_mosaic=true
+            # Set _def to opposite values
+            _def.SAVE_DOWNSAMPLED_WELL_IMAGES = True
+            _def.DISPLAY_PLATE_VIEW = False
+            _def.USE_NAPARI_FOR_MOSAIC_DISPLAY = False
+
+            # Create dialog - should read from _def, not config
+            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+            qtbot.addWidget(dialog)
+
+            # UI should show _def values, not config values
+            assert dialog.save_downsampled_checkbox.isChecked() is True  # _def=True, config=false
+            assert dialog.display_plate_view_checkbox.isChecked() is False  # _def=False, config=true
+            assert dialog.display_mosaic_view_checkbox.isChecked() is False  # _def=False, config=true
+
+        finally:
+            # Restore original values
+            _def.SAVE_DOWNSAMPLED_WELL_IMAGES = original_save
+            _def.DISPLAY_PLATE_VIEW = original_plate
+            _def.USE_NAPARI_FOR_MOSAIC_DISPLAY = original_mosaic
+
+    def test_change_detection_compares_against_def(self, qtbot, sample_config, temp_config_file):
+        """Verify change detection uses _def values, not config file."""
+        import control._def as _def
+
+        original_save = _def.SAVE_DOWNSAMPLED_WELL_IMAGES
+
+        try:
+            # Set _def to True
+            _def.SAVE_DOWNSAMPLED_WELL_IMAGES = True
+
+            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+            qtbot.addWidget(dialog)
+
+            # UI shows True (from _def), don't change anything
+            # Change detection should show NO changes (comparing UI=True vs _def=True)
+            changes = dialog._get_changes()
+            save_changes = [c for c in changes if c[0] == "Save Downsampled Well Images"]
+            assert len(save_changes) == 0, "Should not detect change when UI matches _def"
+
+            # Now change the checkbox
+            dialog.save_downsampled_checkbox.setChecked(False)
+            changes = dialog._get_changes()
+            save_changes = [c for c in changes if c[0] == "Save Downsampled Well Images"]
+            assert len(save_changes) == 1, "Should detect change when UI differs from _def"
+
+        finally:
+            _def.SAVE_DOWNSAMPLED_WELL_IMAGES = original_save
+
+    def test_mcp_changes_reflected_in_dialog(self, qtbot, sample_config, temp_config_file):
+        """Simulate MCP changing _def values, verify dialog shows updated values."""
+        import control._def as _def
+
+        original_mosaic_size = _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM
+        original_plate_res = _def.DOWNSAMPLED_PLATE_RESOLUTION_UM
+
+        try:
+            # Simulate MCP changing values
+            _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 5.0
+            _def.DOWNSAMPLED_PLATE_RESOLUTION_UM = 25.0
+
+            # Open dialog - should show MCP-changed values
+            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+            qtbot.addWidget(dialog)
+
+            assert dialog.mosaic_pixel_size_spinbox.value() == 5.0
+            assert dialog.plate_resolution_spinbox.value() == 25.0
+
+        finally:
+            _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = original_mosaic_size
+            _def.DOWNSAMPLED_PLATE_RESOLUTION_UM = original_plate_res
+
+    def test_no_phantom_changes_after_mcp_modification(self, qtbot, sample_config, temp_config_file):
+        """After MCP changes _def, opening dialog should not show phantom changes."""
+        import control._def as _def
+
+        original_z_proj = _def.DOWNSAMPLED_Z_PROJECTION
+
+        try:
+            # Simulate MCP changing z-projection to "middle"
+            _def.DOWNSAMPLED_Z_PROJECTION = _def.ZProjectionMode.MIDDLE
+
+            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+            qtbot.addWidget(dialog)
+
+            # UI shows "middle" (from _def)
+            # Change detection should NOT flag this as a change
+            changes = dialog._get_changes()
+            z_proj_changes = [c for c in changes if c[0] == "Z-Projection Mode"]
+            assert len(z_proj_changes) == 0, "Should not show phantom change for MCP-modified value"
+
+        finally:
+            _def.DOWNSAMPLED_Z_PROJECTION = original_z_proj
