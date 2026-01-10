@@ -5571,6 +5571,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     signal_acquisition_shape = Signal(int, float)  # acquisition Nz, dz
     signal_manual_shape_mode = Signal(bool)  # enable manual shape layer on mosaic display
     signal_toggle_live_scan_grid = Signal(bool)  # enable/disable live scan grid
+    # Signal to set acquisition running state from any thread (used by TCP server)
+    signal_set_acquisition_running = Signal(bool, int, float)  # is_running, nz, delta_z_um
 
     def __init__(
         self,
@@ -6104,6 +6106,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
         self.signal_acquisition_started.connect(self.display_progress_bar)
+        # Connect signal for setting acquisition state from external sources (e.g., TCP server)
+        self.signal_set_acquisition_running.connect(self.set_acquisition_running_state)
         self.eta_timer.timeout.connect(self.update_eta_display)
         if not self.performance_mode and self.napariMosaicWidget is not None:
             self.napariMosaicWidget.signal_layers_initialized.connect(self.enable_manual_ROI)
@@ -7274,6 +7278,28 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # This must eventually propagate through and call our aquisition_is_finished, or else we'll be left
             # in an odd state.
             self.multipointController.request_abort_aquisition()
+
+    def set_acquisition_running_state(self, is_running: bool, nz: int = 1, delta_z_um: float = 1.0):
+        """Set the widget's acquisition state (thread-safe via signal).
+
+        This is called when acquisition is started from an external source (e.g., TCP server)
+        to update the GUI to reflect that an acquisition is in progress.
+        """
+        self._log.debug(f"set_acquisition_running_state: is_running={is_running}, nz={nz}, delta_z_um={delta_z_um}")
+        if is_running:
+            # Mark this widget as the one running acquisition
+            self.is_current_acquisition_widget = True
+            # Disable all controls except start button and progress
+            self.setEnabled_all(False)
+            # Update button state
+            self.btn_startAcquisition.setChecked(True)
+            self.btn_startAcquisition.setText("Stop\n Acquisition ")
+            # Emit signals to notify other components
+            self.signal_acquisition_started.emit(True)
+            self.signal_acquisition_shape.emit(nz, delta_z_um)
+        else:
+            # Re-enable controls
+            self.acquisition_is_finished()
 
     def acquisition_is_finished(self):
         self._log.debug(

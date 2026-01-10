@@ -961,10 +961,13 @@ class MicroscopeControlServer:
         This mirrors what toggle_acquisition() does in the widget when the user
         clicks the Start/Stop button, ensuring the GUI properly reflects the
         acquisition state when started via TCP command.
+
+        Uses Qt signal/slot mechanism which is thread-safe and automatically
+        queues the call to the widget's thread.
         """
         self._log.debug(f"_set_gui_acquisition_state called: is_running={is_running}, gui={self.gui is not None}")
-        if not self.gui or not QT_AVAILABLE:
-            self._log.debug("No GUI or Qt not available, skipping GUI state update")
+        if not self.gui:
+            self._log.debug("No GUI available, skipping GUI state update")
             return
 
         widget = None
@@ -979,31 +982,14 @@ class MicroscopeControlServer:
             self._log.debug(f"No widget found for type {yaml_data.widget_type}")
             return
 
-        def update_state():
-            self._log.debug(f"update_state executing: is_running={is_running}")
-            try:
-                if is_running:
-                    # Mark this widget as the one running acquisition
-                    widget.is_current_acquisition_widget = True
-                    # Disable all controls except start button and progress
-                    widget.setEnabled_all(False)
-                    # Update button state
-                    widget.btn_startAcquisition.setChecked(True)
-                    widget.btn_startAcquisition.setText("Stop\n Acquisition ")
-                    # Emit signals to notify other components
-                    widget.signal_acquisition_started.emit(True)
-                    widget.signal_acquisition_shape.emit(yaml_data.nz, yaml_data.delta_z_um)
-                    self._log.debug("GUI state updated to acquisition running")
-                else:
-                    # Re-enable controls (acquisition_is_finished handles this normally)
-                    widget.acquisition_is_finished()
-                    self._log.debug("GUI state updated to acquisition finished")
-            except Exception as e:
-                self._log.error(f"Failed to update GUI acquisition state: {e}")
+        # Check if the widget has the signal (added for TCP server support)
+        if not hasattr(widget, "signal_set_acquisition_running"):
+            self._log.warning("Widget does not have signal_set_acquisition_running signal")
+            return
 
-        # Schedule on Qt main thread
-        self._log.debug("Scheduling GUI state update on Qt main thread")
-        QTimer.singleShot(0, update_state)
+        # Emit the signal - Qt will automatically queue this to the widget's thread
+        self._log.debug(f"Emitting signal_set_acquisition_running: is_running={is_running}")
+        widget.signal_set_acquisition_running.emit(is_running, yaml_data.nz, yaml_data.delta_z_um)
 
     def _validate_channels(self, channel_names: List[str], current_objective: str) -> List[str]:
         """Validate that requested channels exist for the current objective.
@@ -1239,11 +1225,12 @@ class MicroscopeControlServer:
             total_fovs = sum(len(coords) for coords in self.scan_coordinates.region_fov_coordinates.values())
             total_images = total_fovs * len(yaml_data.channel_names) * yaml_data.nz * yaml_data.nt
 
+            # Update GUI to reflect acquisition in progress BEFORE starting
+            # (must happen before run_acquisition so the event loop can process it)
+            self._set_gui_acquisition_state(yaml_data, is_running=True)
+
             # Run the acquisition (non-blocking - runs in worker thread)
             self.multipoint_controller.run_acquisition()
-
-            # Update GUI to reflect acquisition in progress
-            self._set_gui_acquisition_state(yaml_data, is_running=True)
 
             self._log.info(
                 f"Acquisition started: {total_fovs} FOVs, {len(yaml_data.channel_names)} channels, "
