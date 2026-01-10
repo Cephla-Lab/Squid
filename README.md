@@ -68,11 +68,7 @@ git submodule update --init --recursive
 **Updating submodules:**
 ```bash
 # Update a specific submodule to latest
-cd software/control/ndviewer_light
-git fetch origin
-git checkout main
-git pull origin main
-cd ../../..
+git submodule update --remote software/control/ndviewer_light
 git add software/control/ndviewer_light
 git commit -m "chore: update ndviewer_light submodule"
 ```

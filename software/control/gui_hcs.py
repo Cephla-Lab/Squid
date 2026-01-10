@@ -1758,15 +1758,7 @@ class HighContentScreeningGui(QMainWindow):
         self.log.debug(f"toggleAcquisitionStarted({acquisition_started=})")
         if acquisition_started:
             self.log.info("STARTING ACQUISITION")
-            # Update NDViewer tab to point at the newly created experiment folder.
-            try:
-                if self.ndviewerTab is not None:
-                    base_path = getattr(self.multipointController, "base_path", None)
-                    experiment_id = getattr(self.multipointController, "experiment_ID", None)
-                    if base_path and experiment_id:
-                        self.ndviewerTab.set_dataset_path(os.path.join(base_path, experiment_id))
-            except Exception:
-                self.log.exception("Failed to update NDViewer tab for new acquisition")
+            self._update_ndviewer_for_acquisition()
             if self.is_live_scan_grid_on:
                 self.toggle_live_scan_grid(on=False)
                 self.live_scan_grid_was_on = True
@@ -1942,16 +1934,30 @@ class HighContentScreeningGui(QMainWindow):
         self._ram_monitor_initialized = True
         self._update_ram_monitor_visibility()
 
-    def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int):
+    def _update_ndviewer_for_acquisition(self) -> None:
+        """Update NDViewer tab to point at the current acquisition folder."""
+        if self.ndviewerTab is None:
+            return
+
+        try:
+            base_path = getattr(self.multipointController, "base_path", None)
+            experiment_id = getattr(self.multipointController, "experiment_ID", None)
+            if base_path and experiment_id:
+                self.ndviewerTab.set_dataset_path(os.path.join(base_path, experiment_id))
+        except Exception:
+            self.log.exception("Failed to update NDViewer tab for new acquisition")
+
+    def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int) -> None:
         """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""
         if self.ndviewerTab is None:
             return
 
-        # Navigate to the FOV, only switch tab if successful
-        if self.ndviewerTab.go_to_fov(well_id, fov_index):
-            ndviewer_tab_idx = self.imageDisplayTabs.indexOf(self.ndviewerTab)
-            if ndviewer_tab_idx >= 0:
-                self.imageDisplayTabs.setCurrentIndex(ndviewer_tab_idx)
+        if not self.ndviewerTab.go_to_fov(well_id, fov_index):
+            return
+
+        ndviewer_tab_idx = self.imageDisplayTabs.indexOf(self.ndviewerTab)
+        if ndviewer_tab_idx >= 0:
+            self.imageDisplayTabs.setCurrentIndex(ndviewer_tab_idx)
 
     def closeEvent(self, event):
         # Show confirmation dialog
