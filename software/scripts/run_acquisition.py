@@ -56,6 +56,9 @@ def send_command(
             if b"\n" in buffer:
                 break
 
+        if not buffer:
+            raise ConnectionError("Server closed connection without response")
+
         return json.loads(buffer.decode("utf-8").strip())
 
 
