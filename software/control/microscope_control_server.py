@@ -962,19 +962,25 @@ class MicroscopeControlServer:
         clicks the Start/Stop button, ensuring the GUI properly reflects the
         acquisition state when started via TCP command.
         """
+        self._log.debug(f"_set_gui_acquisition_state called: is_running={is_running}, gui={self.gui is not None}")
         if not self.gui or not QT_AVAILABLE:
+            self._log.debug("No GUI or Qt not available, skipping GUI state update")
             return
 
         widget = None
         if yaml_data.widget_type == "wellplate" and hasattr(self.gui, "wellplateMultiPointWidget"):
             widget = self.gui.wellplateMultiPointWidget
+            self._log.debug("Found wellplateMultiPointWidget")
         elif yaml_data.widget_type == "flexible" and hasattr(self.gui, "flexibleMultiPointWidget"):
             widget = self.gui.flexibleMultiPointWidget
+            self._log.debug("Found flexibleMultiPointWidget")
 
         if not widget:
+            self._log.debug(f"No widget found for type {yaml_data.widget_type}")
             return
 
         def update_state():
+            self._log.debug(f"update_state executing: is_running={is_running}")
             try:
                 if is_running:
                     # Mark this widget as the one running acquisition
@@ -987,13 +993,16 @@ class MicroscopeControlServer:
                     # Emit signals to notify other components
                     widget.signal_acquisition_started.emit(True)
                     widget.signal_acquisition_shape.emit(yaml_data.nz, yaml_data.delta_z_um)
+                    self._log.debug("GUI state updated to acquisition running")
                 else:
                     # Re-enable controls (acquisition_is_finished handles this normally)
                     widget.acquisition_is_finished()
+                    self._log.debug("GUI state updated to acquisition finished")
             except Exception as e:
                 self._log.error(f"Failed to update GUI acquisition state: {e}")
 
         # Schedule on Qt main thread
+        self._log.debug("Scheduling GUI state update on Qt main thread")
         QTimer.singleShot(0, update_state)
 
     def _validate_channels(self, channel_names: List[str], current_objective: str) -> List[str]:
