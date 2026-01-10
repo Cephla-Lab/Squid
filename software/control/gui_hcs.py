@@ -16,7 +16,7 @@ from control.core.scan_coordinates import (
 os.environ["QT_API"] = "pyqt5"
 import serial
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 import numpy as np
 
 # qt libraries
@@ -783,50 +783,59 @@ class HighContentScreeningGui(QMainWindow):
         if not cached_settings:
             return
 
-        self._restore_binning(cached_settings.binning)
-        self._restore_pixel_format(cached_settings.pixel_format)
+        binning_restored = self._restore_binning(cached_settings.binning)
+        pixel_format_restored = self._restore_pixel_format(cached_settings.pixel_format)
 
-        self.log.info(
-            f"Restored camera settings: binning={cached_settings.binning}, "
-            f"pixel_format={cached_settings.pixel_format}"
-        )
+        if binning_restored or pixel_format_restored:
+            self.log.info(
+                f"Restored camera settings: binning={cached_settings.binning}, "
+                f"pixel_format={cached_settings.pixel_format}"
+            )
 
-    def _restore_binning(self, binning: tuple) -> None:
-        """Apply binning setting to camera and sync UI dropdown."""
+    def _restore_binning(self, binning: Tuple[int, int]) -> bool:
+        """Apply binning setting to camera and sync UI dropdown.
+
+        Returns True if successfully applied, False otherwise.
+        """
         try:
             self.camera.set_binning(*binning)
         except ValueError as e:
             self.log.warning(f"Cannot restore binning {binning} - not supported by camera: {e}")
-            return
+            return False
         except (AttributeError, RuntimeError) as e:
             self.log.error(f"Camera error while restoring binning settings: {e}")
-            return
+            return False
 
         binning_text = f"{binning[0]}x{binning[1]}"
         self.cameraSettingWidget.dropdown_binning.blockSignals(True)
         self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
         self.cameraSettingWidget.dropdown_binning.blockSignals(False)
+        return True
 
-    def _restore_pixel_format(self, pixel_format_str: str) -> None:
-        """Apply pixel format setting to camera and sync UI dropdown."""
+    def _restore_pixel_format(self, pixel_format_str: Optional[str]) -> bool:
+        """Apply pixel format setting to camera and sync UI dropdown.
+
+        Returns True if successfully applied, False otherwise.
+        """
         if not pixel_format_str:
-            return
+            return False
 
         try:
             pixel_format = squid.config.CameraPixelFormat.from_string(pixel_format_str)
         except KeyError:
             self.log.warning(f"Cached pixel format '{pixel_format_str}' is not recognized")
-            return
+            return False
 
         try:
             self.camera.set_pixel_format(pixel_format)
         except ValueError as e:
             self.log.warning(f"Cannot restore pixel format {pixel_format_str} - not supported by this camera: {e}")
-            return
+            return False
 
         self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(True)
         self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(pixel_format_str)
         self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(False)
+        return True
 
     def setupImageDisplayTabs(self):
         if USE_NAPARI_FOR_LIVE_VIEW:
