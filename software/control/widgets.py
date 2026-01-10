@@ -16,6 +16,7 @@ from control.core.geometry_utils import get_effective_well_size, calculate_well_
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 import control.utils as utils
+import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
 from squid.config import CameraPixelFormat
@@ -896,6 +897,11 @@ class PreferencesDialog(QDialog):
         self.tab_widget.addTab(tab, "Advanced")
 
     def _create_views_tab(self):
+        # NOTE: Views settings read from control._def (runtime state) instead of config file.
+        # This enables MCP commands to modify these settings for RAM usage diagnostics,
+        # with changes reflected when this dialog opens. See PR #424 for context.
+        # This pattern may be modified if the settings architecture is refactored.
+
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setSpacing(10)
@@ -906,7 +912,7 @@ class PreferencesDialog(QDialog):
 
         # Save Downsampled Well Images
         self.save_downsampled_checkbox = QCheckBox()
-        self.save_downsampled_checkbox.setChecked(self._get_config_bool("VIEWS", "save_downsampled_well_images", False))
+        self.save_downsampled_checkbox.setChecked(control._def.SAVE_DOWNSAMPLED_WELL_IMAGES)
         self.save_downsampled_checkbox.setToolTip(
             "Save individual well TIFFs (e.g., wells/A1_5um.tiff, wells/A1_10um.tiff)"
         )
@@ -914,7 +920,7 @@ class PreferencesDialog(QDialog):
 
         # Display Plate View
         self.display_plate_view_checkbox = QCheckBox()
-        self.display_plate_view_checkbox.setChecked(self._get_config_bool("VIEWS", "display_plate_view", False))
+        self.display_plate_view_checkbox.setChecked(control._def.DISPLAY_PLATE_VIEW)
         self.display_plate_view_checkbox.setToolTip(
             "Show plate view tab in GUI during acquisition.\n"
             "Note: Plate view TIFF is always saved when either option is enabled."
@@ -923,7 +929,7 @@ class PreferencesDialog(QDialog):
 
         # Well Resolutions (comma-separated)
         self.well_resolutions_edit = QLineEdit()
-        default_resolutions = self._get_config_value("VIEWS", "downsampled_well_resolutions_um", "5.0, 10.0, 20.0")
+        default_resolutions = ", ".join(str(r) for r in control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM)
         self.well_resolutions_edit.setText(default_resolutions)
         self.well_resolutions_edit.setToolTip(
             "Comma-separated list of resolution values in micrometers (e.g., 5.0, 10.0, 20.0)"
@@ -940,7 +946,7 @@ class PreferencesDialog(QDialog):
         self.plate_resolution_spinbox = QDoubleSpinBox()
         self.plate_resolution_spinbox.setRange(1.0, 100.0)
         self.plate_resolution_spinbox.setSingleStep(1.0)
-        self.plate_resolution_spinbox.setValue(self._get_config_float("VIEWS", "downsampled_plate_resolution_um", 10.0))
+        self.plate_resolution_spinbox.setValue(control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM)
         self.plate_resolution_spinbox.setSuffix(" μm")
         self.plate_resolution_spinbox.setToolTip("Pixel size for the plate view overview image")
         plate_layout.addRow("Target Pixel Size:", self.plate_resolution_spinbox)
@@ -948,14 +954,14 @@ class PreferencesDialog(QDialog):
         # Z-Projection Mode
         self.z_projection_combo = QComboBox()
         self.z_projection_combo.addItems(["mip", "middle"])
-        current_projection = self._get_config_value("VIEWS", "downsampled_z_projection", "mip")
+        current_projection = control._def.DOWNSAMPLED_Z_PROJECTION.value
         self.z_projection_combo.setCurrentText(current_projection)
         plate_layout.addRow("Z-Projection Mode:", self.z_projection_combo)
 
         # Interpolation Method
         self.interpolation_method_combo = QComboBox()
         self.interpolation_method_combo.addItems(["inter_linear", "inter_area_fast", "inter_area"])
-        current_interp = self._get_config_value("VIEWS", "downsampled_interpolation_method", "inter_area_fast")
+        current_interp = control._def.DOWNSAMPLED_INTERPOLATION_METHOD.value
         self.interpolation_method_combo.setCurrentText(current_interp)
         self.interpolation_method_combo.setToolTip(
             "inter_linear: Fastest (~0.05ms), good for real-time previews\n"
@@ -973,16 +979,14 @@ class PreferencesDialog(QDialog):
 
         # Display Mosaic View
         self.display_mosaic_view_checkbox = QCheckBox()
-        self.display_mosaic_view_checkbox.setChecked(self._get_config_bool("VIEWS", "display_mosaic_view", True))
+        self.display_mosaic_view_checkbox.setChecked(control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY)
         mosaic_layout.addRow("Display Mosaic View:", self.display_mosaic_view_checkbox)
 
         # Mosaic Target Pixel Size
         self.mosaic_pixel_size_spinbox = QDoubleSpinBox()
         self.mosaic_pixel_size_spinbox.setRange(0.5, 20.0)
         self.mosaic_pixel_size_spinbox.setSingleStep(0.5)
-        self.mosaic_pixel_size_spinbox.setValue(
-            self._get_config_float("VIEWS", "mosaic_view_target_pixel_size_um", 2.0)
-        )
+        self.mosaic_pixel_size_spinbox.setValue(control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM)
         self.mosaic_pixel_size_spinbox.setSuffix(" μm")
         mosaic_layout.addRow("Target Pixel Size:", self.mosaic_pixel_size_spinbox)
 
@@ -1155,63 +1159,66 @@ class PreferencesDialog(QDialog):
 
     def _apply_live_settings(self):
         """Apply settings that can take effect without restart."""
-        # Local import to get the module reference for updating runtime values
-        import control._def as _def
-
         # File saving option
-        _def.FILE_SAVING_OPTION = _def.FileSavingOption.convert_to_enum(self.file_saving_combo.currentText())
+        control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.convert_to_enum(
+            self.file_saving_combo.currentText()
+        )
 
         # Default saving path
-        _def.DEFAULT_SAVING_PATH = self.saving_path_edit.text()
+        control._def.DEFAULT_SAVING_PATH = self.saving_path_edit.text()
 
         # Autofocus channel
-        _def.MULTIPOINT_AUTOFOCUS_CHANNEL = self.autofocus_channel_edit.text()
+        control._def.MULTIPOINT_AUTOFOCUS_CHANNEL = self.autofocus_channel_edit.text()
 
         # Flexible multipoint
-        _def.ENABLE_FLEXIBLE_MULTIPOINT = self.flexible_multipoint_checkbox.isChecked()
+        control._def.ENABLE_FLEXIBLE_MULTIPOINT = self.flexible_multipoint_checkbox.isChecked()
 
         # AF settings
-        _def.AF.STOP_THRESHOLD = self.af_stop_threshold.value()
-        _def.AF.CROP_WIDTH = self.af_crop_width.value()
-        _def.AF.CROP_HEIGHT = self.af_crop_height.value()
+        control._def.AF.STOP_THRESHOLD = self.af_stop_threshold.value()
+        control._def.AF.CROP_WIDTH = self.af_crop_width.value()
+        control._def.AF.CROP_HEIGHT = self.af_crop_height.value()
 
         # LED matrix factors
-        _def.LED_MATRIX_R_FACTOR = self.led_r_factor.value()
-        _def.LED_MATRIX_G_FACTOR = self.led_g_factor.value()
-        _def.LED_MATRIX_B_FACTOR = self.led_b_factor.value()
+        control._def.LED_MATRIX_R_FACTOR = self.led_r_factor.value()
+        control._def.LED_MATRIX_G_FACTOR = self.led_g_factor.value()
+        control._def.LED_MATRIX_B_FACTOR = self.led_b_factor.value()
 
         # Illumination intensity factor
-        _def.ILLUMINATION_INTENSITY_FACTOR = self.illumination_factor.value()
+        control._def.ILLUMINATION_INTENSITY_FACTOR = self.illumination_factor.value()
 
         # Software position limits
-        _def.SOFTWARE_POS_LIMIT.X_POSITIVE = self.limit_x_pos.value()
-        _def.SOFTWARE_POS_LIMIT.X_NEGATIVE = self.limit_x_neg.value()
-        _def.SOFTWARE_POS_LIMIT.Y_POSITIVE = self.limit_y_pos.value()
-        _def.SOFTWARE_POS_LIMIT.Y_NEGATIVE = self.limit_y_neg.value()
-        _def.SOFTWARE_POS_LIMIT.Z_POSITIVE = self.limit_z_pos.value()
-        _def.SOFTWARE_POS_LIMIT.Z_NEGATIVE = self.limit_z_neg.value()
+        control._def.SOFTWARE_POS_LIMIT.X_POSITIVE = self.limit_x_pos.value()
+        control._def.SOFTWARE_POS_LIMIT.X_NEGATIVE = self.limit_x_neg.value()
+        control._def.SOFTWARE_POS_LIMIT.Y_POSITIVE = self.limit_y_pos.value()
+        control._def.SOFTWARE_POS_LIMIT.Y_NEGATIVE = self.limit_y_neg.value()
+        control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE = self.limit_z_pos.value()
+        control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE = self.limit_z_neg.value()
 
         # Tracking settings
-        _def.ENABLE_TRACKING = self.enable_tracking_checkbox.isChecked()
-        _def.Tracking.DEFAULT_TRACKER = self.default_tracker_combo.currentText()
-        _def.Tracking.SEARCH_AREA_RATIO = self.search_area_ratio.value()
+        control._def.ENABLE_TRACKING = self.enable_tracking_checkbox.isChecked()
+        control._def.Tracking.DEFAULT_TRACKER = self.default_tracker_combo.currentText()
+        control._def.Tracking.SEARCH_AREA_RATIO = self.search_area_ratio.value()
 
         # Views settings
-        _def.SAVE_DOWNSAMPLED_WELL_IMAGES = self.save_downsampled_checkbox.isChecked()
-        _def.DISPLAY_PLATE_VIEW = self.display_plate_view_checkbox.isChecked()
+        control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = self.save_downsampled_checkbox.isChecked()
+        control._def.DISPLAY_PLATE_VIEW = self.display_plate_view_checkbox.isChecked()
         # Parse comma-separated resolutions
         resolutions_str = self.well_resolutions_edit.text()
         try:
-            _def.DOWNSAMPLED_WELL_RESOLUTIONS_UM = [float(x.strip()) for x in resolutions_str.split(",") if x.strip()]
+            control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM = [
+                float(x.strip()) for x in resolutions_str.split(",") if x.strip()
+            ]
         except ValueError:
             self._log.warning(f"Invalid well resolutions format: {resolutions_str}")
-        _def.DOWNSAMPLED_PLATE_RESOLUTION_UM = self.plate_resolution_spinbox.value()
-        _def.DOWNSAMPLED_Z_PROJECTION = _def.ZProjectionMode.convert_to_enum(self.z_projection_combo.currentText())
-        _def.DOWNSAMPLED_INTERPOLATION_METHOD = _def.DownsamplingMethod.convert_to_enum(
+        control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM = self.plate_resolution_spinbox.value()
+        control._def.DOWNSAMPLED_Z_PROJECTION = control._def.ZProjectionMode.convert_to_enum(
+            self.z_projection_combo.currentText()
+        )
+        control._def.DOWNSAMPLED_INTERPOLATION_METHOD = control._def.DownsamplingMethod.convert_to_enum(
             self.interpolation_method_combo.currentText()
         )
-        _def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
-        _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
+        control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
+        control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
 
     def _get_changes(self):
         """Get list of settings that have changed from current config.
@@ -1408,42 +1415,45 @@ class PreferencesDialog(QDialog):
             changes.append(("Search Area Ratio", str(old_val), str(new_val), False))
 
         # Views settings (live update)
-        old_val = self._get_config_bool("VIEWS", "save_downsampled_well_images", False)
+        # NOTE: Compare against control._def values (runtime state) since UI is initialized from control._def.
+        # This enables MCP commands to modify these settings for RAM usage diagnostics.
+        # See PR #424 for context. This pattern may change if settings architecture is refactored.
+        old_val = control._def.SAVE_DOWNSAMPLED_WELL_IMAGES
         new_val = self.save_downsampled_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Save Downsampled Well Images", str(old_val), str(new_val), False))
 
-        old_val = self._get_config_bool("VIEWS", "display_plate_view", False)
+        old_val = control._def.DISPLAY_PLATE_VIEW
         new_val = self.display_plate_view_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Display Plate View *", str(old_val), str(new_val), True))
 
-        old_val = self._get_config_value("VIEWS", "downsampled_well_resolutions_um", "5.0, 10.0, 20.0")
+        old_val = ", ".join(str(r) for r in control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM)
         new_val = self.well_resolutions_edit.text()
         if old_val != new_val:
             changes.append(("Well Resolutions", old_val, new_val, False))
 
-        old_val = self._get_config_float("VIEWS", "downsampled_plate_resolution_um", 10.0)
+        old_val = control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM
         new_val = self.plate_resolution_spinbox.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Target Pixel Size", f"{old_val} μm", f"{new_val} μm", False))
 
-        old_val = self._get_config_value("VIEWS", "downsampled_z_projection", "mip")
+        old_val = control._def.DOWNSAMPLED_Z_PROJECTION.value
         new_val = self.z_projection_combo.currentText()
         if old_val != new_val:
             changes.append(("Z-Projection Mode", old_val, new_val, False))
 
-        old_val = self._get_config_value("VIEWS", "downsampled_interpolation_method", "inter_area_fast")
+        old_val = control._def.DOWNSAMPLED_INTERPOLATION_METHOD.value
         new_val = self.interpolation_method_combo.currentText()
         if old_val != new_val:
             changes.append(("Interpolation Method", old_val, new_val, False))
 
-        old_val = self._get_config_bool("VIEWS", "display_mosaic_view", True)
+        old_val = control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY
         new_val = self.display_mosaic_view_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Display Mosaic View *", str(old_val), str(new_val), True))
 
-        old_val = self._get_config_float("VIEWS", "mosaic_view_target_pixel_size_um", 2.0)
+        old_val = control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM
         new_val = self.mosaic_pixel_size_spinbox.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Mosaic Target Pixel Size", f"{old_val} μm", f"{new_val} μm", False))
@@ -10018,6 +10028,11 @@ class NapariMosaicDisplayWidget(QWidget):
         return Colormap(colors=[c0, c1], controls=[0, 1], name=channel_info["name"])
 
     def updateMosaic(self, image, x_mm, y_mm, k, channel_name):
+        # NOTE: Check runtime flag to allow MCP to disable mosaic updates for RAM debugging.
+        # This enables toggling mosaic view without restarting the application.
+        if not control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
+            return
+
         # calculate pixel size
         pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
         downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um))
