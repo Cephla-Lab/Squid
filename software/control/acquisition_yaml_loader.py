@@ -24,6 +24,7 @@ class AcquisitionYAMLData:
     nz: int = 1
     delta_z_um: float = 1.0  # Stored in um (converted from mm when loading)
     z_stacking_config: str = "FROM BOTTOM"
+    use_piezo: bool = False
 
     # Time series
     nt: int = 1
@@ -119,6 +120,7 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
         nz=z_stack.get("nz", 1),
         delta_z_um=z_stack.get("delta_z_mm", 0.001) * 1000,
         z_stacking_config=z_stack.get("config", "FROM BOTTOM"),
+        use_piezo=z_stack.get("use_piezo", False),
         # Time series
         nt=time_series.get("nt", 1),
         delta_t_s=time_series.get("delta_t_s", 0.0),

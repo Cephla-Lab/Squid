@@ -142,8 +142,11 @@ The `python_exec` command is disabled by default for security. To enable it:
 | Command | Parameters | Description |
 |---------|------------|-------------|
 | `run_acquisition` | `wells`, `channels`, `nx`, `ny`, `wellplate_format`, `overlap_percent` | Run automated well plate scan |
+| `run_acquisition_from_yaml` | `yaml_path`, `wells`, `base_path` | Run acquisition from saved YAML config |
 | `get_acquisition_status` | - | Check acquisition progress |
 | `abort_acquisition` | - | Stop running acquisition |
+
+> **Note:** `run_acquisition_from_yaml` only supports wellplate mode. For scripted automation, see [Automation](automation.md).
 
 ### Performance
 

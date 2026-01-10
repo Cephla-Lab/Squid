@@ -4126,7 +4126,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.setAcceptDrops(True)  # Enable drag-and-drop for loading acquisition YAML
+        # Enable drag-and-drop so we can warn users that flexible YAML loading isn't supported yet.
+        self.setAcceptDrops(True)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.acquisition_start_time = None
         self.last_used_locations = None
@@ -5401,6 +5402,26 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
     # ========== Drag-and-Drop for Loading Acquisition YAML ==========
     # Uses AcquisitionYAMLDropMixin for drag-drop handling
+    def dropEvent(self, event):
+        if hasattr(self, "_original_stylesheet"):
+            self.setStyleSheet(self._original_stylesheet)
+
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+
+        paths = [url.toLocalFile() for url in event.mimeData().urls()]
+        yaml_paths = [self._resolve_yaml_path(path) for path in paths if self._is_valid_yaml_drop(path)]
+        if not yaml_paths:
+            event.ignore()
+            return
+
+        QMessageBox.information(
+            self,
+            "Not Supported",
+            "Flexible multipoint YAML drag-and-drop is not supported yet.",
+        )
+        event.acceptProposedAction()
 
     def _get_expected_widget_type(self) -> str:
         """Return the expected widget_type for this widget."""
@@ -5419,6 +5440,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.list_configurations,
             self.checkbox_withAutofocus,
             self.checkbox_withReflectionAutofocus,
+            self.checkbox_usePiezo,
         ]
 
         # Add optional widgets if they exist
@@ -5445,6 +5467,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # Z-stack settings
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+
+            # Piezo setting
+            self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
 
             # Time series settings
             self.entry_Nt.setValue(yaml_data.nt)
@@ -5546,6 +5571,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     signal_acquisition_shape = Signal(int, float)  # acquisition Nz, dz
     signal_manual_shape_mode = Signal(bool)  # enable manual shape layer on mosaic display
     signal_toggle_live_scan_grid = Signal(bool)  # enable/disable live scan grid
+    # Signal to set acquisition running state from any thread (used by TCP server)
+    signal_set_acquisition_running = Signal(bool, int, float)  # is_running, nz, delta_z_um
 
     def __init__(
         self,
@@ -6079,6 +6106,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
         self.signal_acquisition_started.connect(self.display_progress_bar)
+        # Connect signal for setting acquisition state from external sources (e.g., TCP server)
+        self.signal_set_acquisition_running.connect(self.set_acquisition_running_state)
         self.eta_timer.timeout.connect(self.update_eta_display)
         if not self.performance_mode and self.napariMosaicWidget is not None:
             self.napariMosaicWidget.signal_layers_initialized.connect(self.enable_manual_ROI)
@@ -6693,8 +6722,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             if widget:
                 widget.setVisible(visible)
 
-        # Show/hide Z-min/Z-max based on dropdown selection
-        self.toggle_z_range_controls(self.combobox_z_mode.currentText() == "Set Range")
+        # Show/hide Z-min/Z-max based on dropdown selection AND visibility
+        # Only show range controls if Z is enabled (visible=True) AND mode is "Set Range"
+        show_range = visible and self.combobox_z_mode.currentText() == "Set Range"
+        self.toggle_z_range_controls(show_range)
 
     def store_time_parameters(self):
         """Store current Time parameters before hiding controls"""
@@ -7232,13 +7263,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                 self._log.error("Failed to start acquisition.  Not enough RAM available.")
                 return
 
-            self.setEnabled_all(False)
-            self.is_current_acquisition_widget = True
-            self.btn_startAcquisition.setText("Stop\n Acquisition ")
-
-            # Emit signals
-            self.signal_acquisition_started.emit(True)
-            self.signal_acquisition_shape.emit(self.entry_NZ.value(), self.entry_deltaZ.value())
+            # Update UI to show acquisition is running
+            self._set_ui_acquisition_running(self.entry_NZ.value(), self.entry_deltaZ.value())
 
             # Start acquisition
             self.multipointController.run_acquisition()
@@ -7247,6 +7273,36 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             # This must eventually propagate through and call our aquisition_is_finished, or else we'll be left
             # in an odd state.
             self.multipointController.request_abort_aquisition()
+
+    def _set_ui_acquisition_running(self, nz: int, delta_z_um: float, set_button_checked: bool = False):
+        """Update UI to reflect that acquisition is running.
+
+        Args:
+            nz: Number of Z slices
+            delta_z_um: Z step size in microns
+            set_button_checked: If True, also set the button to checked state
+                (needed when called externally, not from button click)
+        """
+        self.is_current_acquisition_widget = True
+        self.setEnabled_all(False)
+        if set_button_checked:
+            self.btn_startAcquisition.setChecked(True)
+        self.btn_startAcquisition.setText("Stop\n Acquisition ")
+        # Emit signals to notify other components
+        self.signal_acquisition_started.emit(True)
+        self.signal_acquisition_shape.emit(nz, delta_z_um)
+
+    def set_acquisition_running_state(self, is_running: bool, nz: int = 1, delta_z_um: float = 1.0):
+        """Set the widget's acquisition state (thread-safe via signal).
+
+        This is called when acquisition is started from an external source (e.g., TCP server)
+        to update the GUI to reflect that an acquisition is in progress.
+        """
+        self._log.debug(f"set_acquisition_running_state: is_running={is_running}, nz={nz}, delta_z_um={delta_z_um}")
+        if is_running:
+            self._set_ui_acquisition_running(nz, delta_z_um, set_button_checked=True)
+        else:
+            self.acquisition_is_finished()
 
     def acquisition_is_finished(self):
         self._log.debug(
@@ -7545,6 +7601,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.checkbox_xy,
             self.checkbox_z,
             self.checkbox_time,
+            self.combobox_z_mode,
+            self.checkbox_usePiezo,
         ]
 
         for widget in widgets_to_block:
@@ -7555,6 +7613,17 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.checkbox_z.setChecked(yaml_data.nz > 1)
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+
+            # Z mode - map YAML config to combobox text
+            z_mode_map = {
+                "FROM BOTTOM": "From Bottom",
+                "SET RANGE": "Set Range",
+            }
+            z_mode = z_mode_map.get(yaml_data.z_stacking_config, "From Bottom")
+            self.combobox_z_mode.setCurrentText(z_mode)
+
+            # Piezo setting
+            self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
 
             # Time series settings
             self.checkbox_time.setChecked(yaml_data.nt > 1)
@@ -7600,10 +7669,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             for widget in widgets_to_block:
                 widget.blockSignals(False)
 
-            # Trigger UI updates that would normally be called by checkbox toggle handlers
+            # Enable/disable mode dropdowns based on checkbox states
+            self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
             self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
-            if hasattr(self, "combobox_z_mode"):
-                self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
+
+            # Update all UI components based on checkbox states and mode selections
             self.update_scan_control_ui()
             self.update_control_visibility()
             self.update_tab_styles()

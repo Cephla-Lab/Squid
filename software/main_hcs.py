@@ -36,6 +36,9 @@ if __name__ == "__main__":
     parser.add_argument("--simulation", help="Run the GUI with simulated hardware.", action="store_true")
     parser.add_argument("--live-only", help="Run the GUI only the live viewer.", action="store_true")
     parser.add_argument("--verbose", help="Turn on verbose logging (DEBUG level)", action="store_true")
+    parser.add_argument(
+        "--start-server", help="Auto-start the MCP control server for programmatic control", action="store_true"
+    )
     args = parser.parse_args()
 
     log = squid.logging.get_logger("main_hcs")
@@ -96,6 +99,10 @@ if __name__ == "__main__":
                 log.info(f"MCP control server started on {CONTROL_SERVER_HOST}:{CONTROL_SERVER_PORT}")
                 return True
             return False
+
+        # Auto-start server if --start-server flag is provided
+        if args.start_server:
+            start_control_server_if_needed()
 
         # Add MCP menu items to Settings menu
         settings_menu = None
