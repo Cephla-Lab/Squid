@@ -885,6 +885,18 @@ class HighContentScreeningGui(QMainWindow):
                 self.napariPlateViewWidget = widgets.NapariPlateViewWidget(self.contrastManager)
                 self.imageDisplayTabs.addTab(self.napariPlateViewWidget, "Plate View")
 
+            # Embedded NDViewer (lightweight) - initialized AFTER napari widgets to avoid conflicts
+            self.ndviewerTab = None
+            try:
+                self.ndviewerTab = widgets.NDViewerTab()
+                self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
+            except Exception:
+                self.log.exception("Failed to initialize NDViewer tab")
+
+            # Connect plate view double-click to NDViewer navigation and tab switch
+            if self.napariPlateViewWidget is not None and self.ndviewerTab is not None:
+                self.napariPlateViewWidget.signal_well_fov_clicked.connect(self._on_plate_view_fov_clicked)
+
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()
             dock_surface_plot = dock.Dock("Z Plot", autoOrientation=False)
@@ -1700,6 +1712,15 @@ class HighContentScreeningGui(QMainWindow):
         self.log.debug(f"toggleAcquisitionStarted({acquisition_started=})")
         if acquisition_started:
             self.log.info("STARTING ACQUISITION")
+            # Update NDViewer tab to point at the newly created experiment folder.
+            try:
+                if self.ndviewerTab is not None:
+                    base_path = getattr(self.multipointController, "base_path", None)
+                    experiment_id = getattr(self.multipointController, "experiment_ID", None)
+                    if base_path and experiment_id:
+                        self.ndviewerTab.set_dataset_path(os.path.join(base_path, experiment_id))
+            except Exception:
+                self.log.exception("Failed to update NDViewer tab for new acquisition")
             if self.is_live_scan_grid_on:
                 self.toggle_live_scan_grid(on=False)
                 self.live_scan_grid_was_on = True
@@ -1768,6 +1789,17 @@ class HighContentScreeningGui(QMainWindow):
     def move_to_mm(self, x_mm, y_mm):
         self.stage.move_x_to(x_mm)
         self.stage.move_y_to(y_mm)
+
+    def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int):
+        """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""
+        if self.ndviewerTab is None:
+            return
+
+        # Navigate to the FOV, only switch tab if successful
+        if self.ndviewerTab.go_to_fov(well_id, fov_index):
+            ndviewer_tab_idx = self.imageDisplayTabs.indexOf(self.ndviewerTab)
+            if ndviewer_tab_idx >= 0:
+                self.imageDisplayTabs.setCurrentIndex(ndviewer_tab_idx)
 
     def closeEvent(self, event):
         # Show confirmation dialog
