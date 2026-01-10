@@ -7669,19 +7669,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             for widget in widgets_to_block:
                 widget.blockSignals(False)
 
-            # Get final checkbox states
-            z_checked = self.checkbox_z.isChecked()
-            time_checked = self.checkbox_time.isChecked()
-            xy_checked = self.checkbox_xy.isChecked()
+            # Enable/disable mode dropdowns based on checkbox states
+            self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
+            self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
 
-            # Handle Z checkbox state - enable/disable z_mode dropdown
-            self.combobox_z_mode.setEnabled(z_checked)
-
-            # Handle XY checkbox state - enable/disable xy_mode dropdown
-            self.combobox_xy_mode.setEnabled(xy_checked)
-
-            # Update all UI components - this handles visibility correctly
-            # based on checkbox states and mode selections
+            # Update all UI components based on checkbox states and mode selections
             self.update_scan_control_ui()
             self.update_control_visibility()
             self.update_tab_styles()

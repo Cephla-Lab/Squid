@@ -8,13 +8,48 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 
-class TestRunAcquisitionFromYAML:
-    """Tests for _cmd_run_acquisition_from_yaml command."""
+def create_mock_channel(name: str) -> MagicMock:
+    """Create a mock channel configuration."""
+    mock = MagicMock()
+    mock.name = name
+    return mock
 
-    @pytest.fixture
-    def sample_yaml_content(self):
-        """Sample YAML content for testing."""
-        return """
+
+def create_mock_server(objective: str = "20x", channels: list = None):
+    """Create a mock MicroscopeControlServer with configurable attributes."""
+    from control.microscope_control_server import MicroscopeControlServer
+
+    if channels is None:
+        channels = ["BF LED matrix full", "Fluorescence 488 nm Ex"]
+
+    mock_microscope = MagicMock()
+    mock_microscope.objective_store.current_objective = objective
+    mock_microscope.stage.get_pos.return_value = MagicMock(z_mm=1.0)
+    mock_microscope.camera = MagicMock()
+    mock_microscope.camera.get_binning.return_value = (1, 1)
+
+    mock_channels = [create_mock_channel(name) for name in channels]
+    mock_microscope.channel_configuration_mananger.get_channel_configurations_for_objective.return_value = mock_channels
+
+    mock_multipoint = MagicMock()
+    mock_multipoint.acquisition_in_progress.return_value = False
+    mock_multipoint.experiment_ID = "test_experiment"
+
+    mock_scan_coords = MagicMock()
+    mock_scan_coords.region_fov_coordinates = {"B6": [(0, 0)], "B7": [(0, 0)]}
+
+    with patch.object(MicroscopeControlServer, "__init__", lambda self: None):
+        server = MicroscopeControlServer()
+        server._log = MagicMock()
+        server.microscope = mock_microscope
+        server.multipoint_controller = mock_multipoint
+        server.scan_coordinates = mock_scan_coords
+        server.gui = None
+
+    return server
+
+
+SAMPLE_WELLPLATE_YAML = """
 acquisition:
   widget_type: wellplate
   xy_mode: Select Wells
@@ -52,6 +87,15 @@ wellplate_scan:
       shape: Square
 """
 
+
+class TestRunAcquisitionFromYAML:
+    """Tests for _cmd_run_acquisition_from_yaml command."""
+
+    @pytest.fixture
+    def sample_yaml_content(self):
+        """Sample YAML content for testing."""
+        return SAMPLE_WELLPLATE_YAML
+
     @pytest.fixture
     def yaml_file(self, tmp_path, sample_yaml_content):
         """Create a temporary YAML file for testing."""
@@ -62,42 +106,7 @@ wellplate_scan:
     @pytest.fixture
     def mock_server(self):
         """Create a mock MicroscopeControlServer with necessary attributes."""
-        from control.microscope_control_server import MicroscopeControlServer
-
-        # Create mock objects
-        mock_microscope = MagicMock()
-        mock_microscope.objective_store.current_objective = "20x"
-        mock_microscope.stage.get_pos.return_value = MagicMock(z_mm=1.0)
-        mock_microscope.camera = MagicMock()
-        mock_microscope.camera.get_binning.return_value = (1, 1)
-
-        # Mock channel configuration manager
-        mock_channel = MagicMock()
-        mock_channel.name = "BF LED matrix full"
-        mock_channel2 = MagicMock()
-        mock_channel2.name = "Fluorescence 488 nm Ex"
-        mock_microscope.channel_configuration_mananger.get_channel_configurations_for_objective.return_value = [
-            mock_channel,
-            mock_channel2,
-        ]
-
-        mock_multipoint = MagicMock()
-        mock_multipoint.acquisition_in_progress.return_value = False
-        mock_multipoint.experiment_ID = "test_experiment"
-
-        mock_scan_coords = MagicMock()
-        mock_scan_coords.region_fov_coordinates = {"B6": [(0, 0)], "B7": [(0, 0)]}
-
-        # Create server instance with mocks
-        with patch.object(MicroscopeControlServer, "__init__", lambda self: None):
-            server = MicroscopeControlServer()
-            server._log = MagicMock()
-            server.microscope = mock_microscope
-            server.multipoint_controller = mock_multipoint
-            server.scan_coordinates = mock_scan_coords
-            server.gui = None  # No GUI for unit tests
-
-        return server
+        return create_mock_server()
 
     def test_file_not_found(self, mock_server):
         """Test that FileNotFoundError is raised for missing YAML file."""
@@ -263,54 +272,15 @@ flexible_scan:
     @pytest.fixture
     def mock_flexible_server(self):
         """Create a mock server for flexible widget tests."""
-        from control.microscope_control_server import MicroscopeControlServer
+        return create_mock_server(objective="10x", channels=["BF LED matrix full"])
 
-        mock_microscope = MagicMock()
-        mock_microscope.objective_store.current_objective = "10x"
-        mock_microscope.stage.get_pos.return_value = MagicMock(z_mm=1.0)
-        mock_microscope.camera = MagicMock()
-        mock_microscope.camera.get_binning.return_value = (1, 1)
-
-        mock_channel = MagicMock()
-        mock_channel.name = "BF LED matrix full"
-        mock_microscope.channel_configuration_mananger.get_channel_configurations_for_objective.return_value = [
-            mock_channel
-        ]
-
-        mock_multipoint = MagicMock()
-        mock_multipoint.acquisition_in_progress.return_value = False
-        mock_multipoint.experiment_ID = "flexible_test"
-
-        mock_scan_coords = MagicMock()
-        mock_scan_coords.region_fov_coordinates = {"pos1": [(0, 0)], "pos2": [(0, 0)]}
-
-        with patch.object(MicroscopeControlServer, "__init__", lambda self: None):
-            server = MicroscopeControlServer()
-            server._log = MagicMock()
-            server.microscope = mock_microscope
-            server.multipoint_controller = mock_multipoint
-            server.scan_coordinates = mock_scan_coords
-            server.gui = None
-
-        return server
-
-    def test_flexible_widget_type(self, mock_flexible_server, flexible_yaml_file):
-        """Test acquisition from flexible widget YAML."""
-        result = mock_flexible_server._cmd_run_acquisition_from_yaml(yaml_path=flexible_yaml_file)
-
-        assert result["started"] is True
-        assert result["widget_type"] == "flexible"
-        # Verify flexible positions were used
-        assert mock_flexible_server.scan_coordinates.add_flexible_region.call_count == 2
+    def test_flexible_widget_type_rejected(self, mock_flexible_server, flexible_yaml_file):
+        """Test that flexible widget YAML is rejected (TCP only supports wellplate)."""
+        with pytest.raises(ValueError, match="TCP command only supports wellplate mode"):
+            mock_flexible_server._cmd_run_acquisition_from_yaml(yaml_path=flexible_yaml_file)
 
 
-class TestRunAcquisitionFromYAMLOverrides:
-    """Tests for parameter overrides in run_acquisition_from_yaml."""
-
-    @pytest.fixture
-    def sample_yaml_content(self):
-        """Sample YAML content for testing."""
-        return """
+SIMPLE_WELLPLATE_YAML = """
 acquisition:
   widget_type: wellplate
   xy_mode: Select Wells
@@ -337,45 +307,22 @@ wellplate_scan:
       center_mm: [56.31, 19.75, 1.2]
 """
 
+
+class TestRunAcquisitionFromYAMLOverrides:
+    """Tests for parameter overrides in run_acquisition_from_yaml."""
+
     @pytest.fixture
-    def yaml_file(self, tmp_path, sample_yaml_content):
+    def yaml_file(self, tmp_path):
         """Create a temporary YAML file for testing."""
         yaml_path = tmp_path / "test_acquisition.yaml"
-        yaml_path.write_text(sample_yaml_content)
+        yaml_path.write_text(SIMPLE_WELLPLATE_YAML)
         return str(yaml_path)
 
     @pytest.fixture
     def mock_server(self):
         """Create a mock MicroscopeControlServer."""
-        from control.microscope_control_server import MicroscopeControlServer
-
-        mock_microscope = MagicMock()
-        mock_microscope.objective_store.current_objective = "20x"
-        mock_microscope.stage.get_pos.return_value = MagicMock(z_mm=1.0)
-        mock_microscope.camera = MagicMock()
-        mock_microscope.camera.get_binning.return_value = (1, 1)
-
-        mock_channel = MagicMock()
-        mock_channel.name = "BF LED matrix full"
-        mock_microscope.channel_configuration_mananger.get_channel_configurations_for_objective.return_value = [
-            mock_channel
-        ]
-
-        mock_multipoint = MagicMock()
-        mock_multipoint.acquisition_in_progress.return_value = False
-        mock_multipoint.experiment_ID = "test_experiment"
-
-        mock_scan_coords = MagicMock()
-        mock_scan_coords.region_fov_coordinates = {"B6": [(0, 0)]}
-
-        with patch.object(MicroscopeControlServer, "__init__", lambda self: None):
-            server = MicroscopeControlServer()
-            server._log = MagicMock()
-            server.microscope = mock_microscope
-            server.multipoint_controller = mock_multipoint
-            server.scan_coordinates = mock_scan_coords
-            server.gui = None
-
+        server = create_mock_server(channels=["BF LED matrix full"])
+        server.scan_coordinates.region_fov_coordinates = {"B6": [(0, 0)]}
         return server
 
     def test_experiment_id_override(self, mock_server, yaml_file):
@@ -411,32 +358,7 @@ class TestHelperMethods:
     @pytest.fixture
     def mock_server(self):
         """Create a mock MicroscopeControlServer."""
-        from control.microscope_control_server import MicroscopeControlServer
-
-        mock_microscope = MagicMock()
-        mock_microscope.objective_store.current_objective = "20x"
-
-        mock_channel = MagicMock()
-        mock_channel.name = "Channel1"
-        mock_channel2 = MagicMock()
-        mock_channel2.name = "Channel2"
-        mock_microscope.channel_configuration_mananger.get_channel_configurations_for_objective.return_value = [
-            mock_channel,
-            mock_channel2,
-        ]
-
-        mock_multipoint = MagicMock()
-        mock_scan_coords = MagicMock()
-
-        with patch.object(MicroscopeControlServer, "__init__", lambda self: None):
-            server = MicroscopeControlServer()
-            server._log = MagicMock()
-            server.microscope = mock_microscope
-            server.multipoint_controller = mock_multipoint
-            server.scan_coordinates = mock_scan_coords
-            server.gui = None
-
-        return server
+        return create_mock_server(channels=["Channel1", "Channel2"])
 
     def test_validate_channels_success(self, mock_server):
         """Test _validate_channels returns available channels when all requested exist."""

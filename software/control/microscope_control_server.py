@@ -920,29 +920,36 @@ class MicroscopeControlServer:
             self.multipoint_controller.request_abort_aquisition()
         return {"aborted": True}
 
+    def _get_widget_for_type(self, widget_type: str):
+        """Get the acquisition widget for a given widget type.
+
+        Returns None if GUI is not available or widget type is not found.
+        """
+        if not self.gui:
+            return None
+
+        if widget_type == "wellplate" and hasattr(self.gui, "wellplateMultiPointWidget"):
+            return self.gui.wellplateMultiPointWidget
+        if widget_type == "flexible" and hasattr(self.gui, "flexibleMultiPointWidget"):
+            return self.gui.flexibleMultiPointWidget
+        return None
+
     def _update_gui_from_yaml(self, yaml_data, yaml_path: str) -> None:
         """Update GUI widgets from YAML settings in a thread-safe manner.
 
         Uses a threading Event to ensure the GUI update completes before returning.
         """
-        if not self.gui or not QT_AVAILABLE:
-            self._log.debug("Skipping GUI update: GUI not available or Qt not available")
+        if not QT_AVAILABLE:
             return
 
-        widget = None
-        if yaml_data.widget_type == "wellplate" and hasattr(self.gui, "wellplateMultiPointWidget"):
-            widget = self.gui.wellplateMultiPointWidget
-        elif yaml_data.widget_type == "flexible" and hasattr(self.gui, "flexibleMultiPointWidget"):
-            widget = self.gui.flexibleMultiPointWidget
-
+        widget = self._get_widget_for_type(yaml_data.widget_type)
         if not widget:
             self._log.warning(f"Cannot update GUI: No widget found for type '{yaml_data.widget_type}'")
             return
         if not hasattr(widget, "_load_acquisition_yaml"):
-            self._log.warning(f"Cannot update GUI: Widget {type(widget).__name__} lacks _load_acquisition_yaml method")
+            self._log.warning(f"Widget {type(widget).__name__} lacks _load_acquisition_yaml method")
             return
 
-        # Use a threading Event to synchronize with the Qt main thread
         gui_update_complete = threading.Event()
 
         def update_gui():
@@ -953,50 +960,25 @@ class MicroscopeControlServer:
             finally:
                 gui_update_complete.set()
 
-        # Schedule GUI update on Qt main thread
         QTimer.singleShot(0, update_gui)
 
-        # Wait for GUI update to complete (with timeout)
         if not gui_update_complete.wait(timeout=5.0):
             self._log.warning("GUI update from YAML timed out after 5 seconds")
 
     def _set_gui_acquisition_state(self, yaml_data, is_running: bool) -> None:
         """Update GUI widget state to reflect acquisition running/stopped.
 
-        This mirrors what toggle_acquisition() does in the widget when the user
-        clicks the Start/Stop button, ensuring the GUI properly reflects the
-        acquisition state when started via TCP command.
-
         Uses Qt signal/slot mechanism which is thread-safe and automatically
         queues the call to the widget's thread.
         """
-        self._log.debug(f"_set_gui_acquisition_state called: is_running={is_running}, gui={self.gui is not None}")
-        if not self.gui:
-            self._log.debug("No GUI available, skipping GUI state update")
-            return
-
-        widget = None
-        if yaml_data.widget_type == "wellplate" and hasattr(self.gui, "wellplateMultiPointWidget"):
-            widget = self.gui.wellplateMultiPointWidget
-            self._log.debug("Found wellplateMultiPointWidget")
-        elif yaml_data.widget_type == "flexible" and hasattr(self.gui, "flexibleMultiPointWidget"):
-            widget = self.gui.flexibleMultiPointWidget
-            self._log.debug("Found flexibleMultiPointWidget")
-
+        widget = self._get_widget_for_type(yaml_data.widget_type)
         if not widget:
-            self._log.debug(f"No widget found for type {yaml_data.widget_type}")
             return
 
-        # Check if the widget has the signal (added for TCP server support)
         if not hasattr(widget, "signal_set_acquisition_running"):
-            self._log.warning(
-                f"Widget {type(widget).__name__} does not have signal_set_acquisition_running signal. "
-                "GUI will not reflect acquisition state. This may indicate a version mismatch."
-            )
+            self._log.warning(f"Widget {type(widget).__name__} lacks signal_set_acquisition_running signal")
             return
 
-        # Emit the signal - Qt will automatically queue this to the widget's thread
-        self._log.debug(f"Emitting signal_set_acquisition_running: is_running={is_running}")
         widget.signal_set_acquisition_running.emit(is_running, yaml_data.nz, yaml_data.delta_z_um)
 
     def _validate_channels(self, channel_names: List[str], current_objective: str) -> List[str]:
@@ -1016,30 +998,24 @@ class MicroscopeControlServer:
 
         return available_channel_names
 
+    def _get_z_from_center(self, center: list, default_z: float) -> float:
+        """Extract Z coordinate from center array, using default if not present."""
+        return center[2] if len(center) > 2 else default_z
+
     def _configure_regions_from_yaml(self, yaml_data, raw_yaml: dict, wells: Optional[str]) -> None:
         """Configure scan regions from YAML data or wells override.
 
-        Clears existing regions and adds new ones based on:
-        1. Wells override parameter (if provided)
-        2. Wellplate regions from YAML
-        3. Flexible positions from YAML
-
-        For wellplate mode, uses add_region() with scan_size_mm to calculate the grid.
-        For flexible mode, uses add_flexible_region() with explicit Nx/Ny.
-
-        Raises ValueError if no regions are specified.
+        Clears existing regions and adds new ones based on wells override,
+        wellplate regions from YAML, or flexible positions from YAML.
         """
         import control._def
 
-        # Clear existing regions
         self.scan_coordinates.clear_regions()
-
-        # Determine scan parameters for wellplate mode
-        scan_size_mm = yaml_data.scan_size_mm or 2.0  # Default scan size
+        current_z = self.microscope.stage.get_pos().z_mm
+        scan_size_mm = yaml_data.scan_size_mm or 2.0
         scan_shape = yaml_data.scan_shape or "Square"
 
         if wells:
-            # Wells override provided - parse them (wellplate mode)
             wellplate_format = raw_yaml.get("sample", {}).get("wellplate_format", "96 well plate")
             wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
             well_coords = self._parse_wells(wells, wellplate_settings)
@@ -1047,10 +1023,7 @@ class MicroscopeControlServer:
             if not well_coords:
                 raise ValueError(f"Could not parse wells: {wells}")
 
-            current_z = self.microscope.stage.get_pos().z_mm
-
             for well_id, (well_x, well_y) in well_coords.items():
-                # Use add_region for wellplate mode - calculates grid from scan_size_mm
                 self.scan_coordinates.add_region(
                     well_id=well_id,
                     center_x=well_x,
@@ -1059,18 +1032,15 @@ class MicroscopeControlServer:
                     overlap_percent=yaml_data.overlap_percent,
                     shape=scan_shape,
                 )
-                # Update z coordinate (add_region uses current stage z)
                 if well_id in self.scan_coordinates.region_centers:
                     self.scan_coordinates.region_centers[well_id][2] = current_z
 
         elif yaml_data.wellplate_regions:
-            # Use wellplate regions from YAML
             for region in yaml_data.wellplate_regions:
                 name = region.get("name", "region")
                 center = region.get("center_mm", [0, 0, 0])
-                region_z = center[2] if len(center) > 2 else self.microscope.stage.get_pos().z_mm
+                region_z = self._get_z_from_center(center, current_z)
 
-                # Use add_region for wellplate mode - calculates grid from scan_size_mm
                 self.scan_coordinates.add_region(
                     well_id=name,
                     center_x=center[0],
@@ -1079,12 +1049,10 @@ class MicroscopeControlServer:
                     overlap_percent=yaml_data.overlap_percent,
                     shape=region.get("shape", scan_shape),
                 )
-                # Update z coordinate from YAML (add_region uses current stage z)
                 if name in self.scan_coordinates.region_centers:
                     self.scan_coordinates.region_centers[name][2] = region_z
 
         elif yaml_data.flexible_positions:
-            # Use flexible positions from YAML
             for pos in yaml_data.flexible_positions:
                 name = pos.get("name", "position")
                 center = pos.get("center_mm", [0, 0, 0])
@@ -1092,7 +1060,7 @@ class MicroscopeControlServer:
                     region_id=name,
                     center_x=center[0],
                     center_y=center[1],
-                    center_z=center[2] if len(center) > 2 else self.microscope.stage.get_pos().z_mm,
+                    center_z=self._get_z_from_center(center, current_z),
                     Nx=yaml_data.nx,
                     Ny=yaml_data.ny,
                     overlap_percent=yaml_data.overlap_percent,
@@ -1100,7 +1068,6 @@ class MicroscopeControlServer:
         else:
             raise ValueError("No wells or regions specified in YAML and no wells override provided")
 
-        # Sort coordinates for efficient scanning pattern
         self.scan_coordinates.sort_coordinates()
 
     def _configure_controller_from_yaml(self, yaml_data) -> None:

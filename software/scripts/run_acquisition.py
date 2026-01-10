@@ -208,6 +208,50 @@ def monitor_acquisition(
         time.sleep(poll_interval)
 
 
+def handle_dry_run(yaml_path: str, wells: str = None) -> None:
+    """Validate YAML and print configuration without running acquisition."""
+    import yaml
+
+    print("\n=== DRY RUN MODE ===")
+    print("Validating YAML file...")
+
+    with open(yaml_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    print("\nAcquisition Configuration:")
+    print(f"  Widget type: {config.get('acquisition', {}).get('widget_type', 'unknown')}")
+    print(f"  Objective: {config.get('objective', {}).get('name', 'unknown')}")
+    print(f"  Channels: {[ch.get('name') for ch in config.get('channels', [])]}")
+    print(f"  Z-stack: nz={config.get('z_stack', {}).get('nz', 1)}")
+    print(f"  Time series: nt={config.get('time_series', {}).get('nt', 1)}")
+
+    regions = config.get("wellplate_scan", {}).get("regions", [])
+    if regions:
+        print(f"  Regions: {[r.get('name') for r in regions]}")
+    else:
+        positions = config.get("flexible_scan", {}).get("positions", [])
+        if positions:
+            print(f"  Positions: {[p.get('name') for p in positions]}")
+
+    if wells:
+        print(f"\n  Wells override: {wells}")
+
+    print("\nYAML validation: OK")
+    print("Dry run complete - no acquisition started.")
+
+
+def print_acquisition_result(result: dict) -> None:
+    """Print acquisition start result."""
+    print("Acquisition started!")
+    print(f"  Experiment ID: {result.get('experiment_id')}")
+    print(f"  Save directory: {result.get('save_dir')}")
+    print(f"  Regions: {result.get('region_count')}")
+    print(f"  Channels: {result.get('channels')}")
+    print(f"  Z-stack: {result.get('nz')} slices")
+    print(f"  Timepoints: {result.get('nt')}")
+    print(f"  Total images: {result.get('total_images')}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run automated acquisition on Squid microscope using saved YAML settings",
@@ -300,36 +344,9 @@ Examples:
 
     print(f"Using YAML config: {yaml_path}")
 
-    # Handle --dry-run mode
     if args.dry_run:
-        import yaml
-
-        print("\n=== DRY RUN MODE ===")
-        print("Validating YAML file...")
         try:
-            with open(yaml_path, "r") as f:
-                config = yaml.safe_load(f)
-
-            print(f"\nAcquisition Configuration:")
-            print(f"  Widget type: {config.get('acquisition', {}).get('widget_type', 'unknown')}")
-            print(f"  Objective: {config.get('objective', {}).get('name', 'unknown')}")
-            print(f"  Channels: {[ch.get('name') for ch in config.get('channels', [])]}")
-            print(f"  Z-stack: nz={config.get('z_stack', {}).get('nz', 1)}")
-            print(f"  Time series: nt={config.get('time_series', {}).get('nt', 1)}")
-
-            regions = config.get("wellplate_scan", {}).get("regions", [])
-            if regions:
-                print(f"  Regions: {[r.get('name') for r in regions]}")
-            else:
-                positions = config.get("flexible_scan", {}).get("positions", [])
-                if positions:
-                    print(f"  Positions: {[p.get('name') for p in positions]}")
-
-            if args.wells:
-                print(f"\n  Wells override: {args.wells}")
-
-            print("\nYAML validation: OK")
-            print("Dry run complete - no acquisition started.")
+            handle_dry_run(yaml_path, args.wells)
         except Exception as e:
             print(f"Error validating YAML: {e}")
             sys.exit(1)
@@ -412,14 +429,7 @@ Examples:
             cleanup()
 
         result = response.get("result", {})
-        print(f"Acquisition started!")
-        print(f"  Experiment ID: {result.get('experiment_id')}")
-        print(f"  Save directory: {result.get('save_dir')}")
-        print(f"  Regions: {result.get('region_count')}")
-        print(f"  Channels: {result.get('channels')}")
-        print(f"  Z-stack: {result.get('nz')} slices")
-        print(f"  Timepoints: {result.get('nt')}")
-        print(f"  Total images: {result.get('total_images')}")
+        print_acquisition_result(result)
 
         # Monitor if requested
         if args.wait:
