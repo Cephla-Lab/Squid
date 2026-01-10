@@ -63,7 +63,7 @@ def temp_config_file(sample_config):
         os.remove(filepath)
 
 
-# NOTE: This fixture was added to support MCP integration testing.
+# NOTE: This fixture was added to support RAM usage diagnostics via MCP.
 # It may be modified or removed if the _def/config architecture changes.
 # See PR #424 for context on why Views settings read from _def.
 @pytest.fixture
@@ -568,19 +568,19 @@ class TestViewsTab:
         assert validator.validate("", 0)[0] != QValidator.Acceptable
 
 
-# NOTE: This test class was added to verify MCP integration behavior.
+# NOTE: This test class was added to verify RAM usage diagnostics via MCP.
 # These tests may be modified or removed if the _def/config architecture changes.
 # See PR #424 for context on the design decisions.
 class TestViewsTabDefIntegration:
-    """Test that Views tab reads from _def runtime state (for MCP support).
+    """Test that Views tab reads from _def runtime state (for RAM usage diagnostics via MCP).
 
     The Views tab was changed to read from _def module variables instead of
-    config file. This enables MCP commands to modify view settings and have
-    the dialog reflect those changes when opened.
+    config file. This enables MCP commands to modify view settings for RAM
+    usage diagnostics, with changes reflected when the dialog opens.
 
-    NOTE: These tests verify behavior specific to MCP integration. If the
-    settings architecture is refactored (e.g., to use a Settings class with
-    Qt signals), these tests should be updated accordingly.
+    NOTE: These tests verify behavior specific to RAM usage diagnostics via MCP.
+    If the settings architecture is refactored (e.g., to use a Settings class
+    with Qt signals), these tests should be updated accordingly.
     """
 
     def test_ui_initializes_from_def_not_config(self, qtbot, sample_config, temp_config_file):

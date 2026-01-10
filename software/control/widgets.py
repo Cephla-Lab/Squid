@@ -896,6 +896,10 @@ class PreferencesDialog(QDialog):
         self.tab_widget.addTab(tab, "Advanced")
 
     def _create_views_tab(self):
+        # NOTE: Views settings read from _def (runtime state) instead of config file.
+        # This enables MCP commands to modify these settings for RAM usage diagnostics,
+        # with changes reflected when this dialog opens. See PR #424 for context.
+        # This pattern may be modified if the settings architecture is refactored.
         import control._def as _def  # Import module to read runtime state
 
         tab = QWidget()
@@ -907,7 +911,6 @@ class PreferencesDialog(QDialog):
         plate_layout = QFormLayout()
 
         # Save Downsampled Well Images
-        # Read from _def (runtime state) instead of config file for consistency with MCP changes
         self.save_downsampled_checkbox = QCheckBox()
         self.save_downsampled_checkbox.setChecked(_def.SAVE_DOWNSAMPLED_WELL_IMAGES)
         self.save_downsampled_checkbox.setToolTip(
@@ -1411,7 +1414,9 @@ class PreferencesDialog(QDialog):
             changes.append(("Search Area Ratio", str(old_val), str(new_val), False))
 
         # Views settings (live update)
-        # Compare against _def values (runtime state) since UI is initialized from _def
+        # NOTE: Compare against _def values (runtime state) since UI is initialized from _def.
+        # This enables MCP commands to modify these settings for RAM usage diagnostics.
+        # See PR #424 for context. This pattern may change if settings architecture is refactored.
         old_val = _def.SAVE_DOWNSAMPLED_WELL_IMAGES
         new_val = self.save_downsampled_checkbox.isChecked()
         if old_val != new_val:
