@@ -5,7 +5,8 @@ import stat
 def create_desktop_shortcut_simulation(directory_path, script_name):
     squid_suffix = script_name.replace("main_", "")
     icon_path = os.path.join(directory_path, "icon/cephla_logo.svg")
-    if squid_suffix != "main" and squid_suffix != "":
+    # Use just "Squid" for hcs, main, or empty suffix
+    if squid_suffix not in ("main", "", "hcs"):
         shortcut_content = f"""\
 [Desktop Entry]
 Name=Squid_{squid_suffix}_simulation
@@ -24,7 +25,7 @@ Type=Application
 Terminal=true
 """
 
-    if squid_suffix != "main" and squid_suffix != "":
+    if squid_suffix not in ("main", "", "hcs"):
         desktop_path_base = f"~/Desktop/Squid_{squid_suffix}_simulation.desktop"
     else:
         desktop_path_base = f"~/Desktop/Squid_simulation.desktop"
@@ -38,7 +39,8 @@ Terminal=true
 def create_desktop_shortcut(directory_path, script_name):
     squid_suffix = script_name.replace("main_", "")
     icon_path = os.path.join(directory_path, "icon/cephla_logo.svg")
-    if squid_suffix != "main" and squid_suffix != "":
+    # Use just "Squid" for hcs, main, or empty suffix
+    if squid_suffix not in ("main", "", "hcs"):
         shortcut_content = f"""\
 [Desktop Entry]
 Name=Squid_{squid_suffix}
@@ -57,7 +59,7 @@ Type=Application
 Terminal=true
 """
 
-    if squid_suffix != "main" and squid_suffix != "":
+    if squid_suffix not in ("main", "", "hcs"):
         desktop_path_base = f"~/Desktop/Squid_{squid_suffix}.desktop"
     else:
         desktop_path_base = f"~/Desktop/Squid.desktop"
