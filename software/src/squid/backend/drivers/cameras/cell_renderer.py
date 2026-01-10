@@ -67,10 +67,10 @@ class SimpleCellFieldRenderer:
 
     def __init__(
         self,
-        cell_density_per_um2: float = 0.000003,  # ~3 cells/mm² - sparse
-        cell_radius_um: float = 30.0,  # Large cells (~8 pixels at 2x2 binning)
-        z_focus_range_um: float = 20.0,  # Wide focus range
-        z_range_um: float = 50.0,  # Z range for cell distribution
+        cell_density_per_um2: float = 0.00005,  # ~50 cells/mm² - moderate density for visible coverage
+        cell_radius_um: float = 25.0,  # Slightly smaller cells
+        z_focus_range_um: float = 50.0,  # Wider focus range for smoother navigation
+        z_range_um: float = 200.0,  # Wider Z range for cell distribution
         z_center_um: float = 1200.0,  # Center Z around typical stage start
         seed: int = 42,
         chunk_size_um: float = 2000.0,  # Larger chunks = fewer lookups
@@ -242,8 +242,8 @@ class SimpleCellFieldRenderer:
         # Get cells in visible region
         cells = self._get_cells_in_region(x_min_um, x_max_um, y_min_um, y_max_um)
 
-        # Limit number of cells for performance
-        MAX_CELLS_PER_FRAME = 40
+        # Limit number of cells for performance (increased for higher density)
+        MAX_CELLS_PER_FRAME = 100
         if len(cells) > MAX_CELLS_PER_FRAME:
             # Use deterministic seed so same position shows same cells
             sample_seed = int(abs(stage_x_um * 1000 + stage_y_um * 7)) % (2**31)
@@ -267,7 +267,8 @@ class SimpleCellFieldRenderer:
             sigma_pixels = (cell_radius / pixel_size_um) * sigma_scale
 
             # Skip if sigma is too large (very defocused) or too small
-            if sigma_pixels > 100 or sigma_pixels < 1:
+            # Use higher threshold (200) so defocused cells blur out gradually instead of disappearing
+            if sigma_pixels > 200 or sigma_pixels < 1:
                 continue
 
             # Determine patch bounds (3 sigma radius)

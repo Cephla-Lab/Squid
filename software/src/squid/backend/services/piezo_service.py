@@ -234,9 +234,13 @@ class PiezoService(BaseService):
         This method skips state updates to minimize latency.
         Use sync_state() periodically to update state if needed.
 
+        In simulation mode, this publishes events since there's no real
+        performance constraint, allowing simulated cameras to track position.
+
         Args:
             position_um: Target position in micrometers
         """
+        is_simulated = False
         with self._lock:
             clamped = self._clamp_position(position_um)
             if self._piezo:
@@ -245,6 +249,12 @@ class PiezoService(BaseService):
                 # Simulated mode - add settling time to simulate physical piezo
                 time.sleep(_SIMULATED_SETTLE_TIME_S)
                 self._state = replace(self._state, position_um=clamped)
+                is_simulated = True
+
+        # In simulation, publish events so cameras can track position
+        # (publish outside lock to prevent deadlocks)
+        if is_simulated:
+            self.publish(PiezoPositionChanged(position_um=clamped))
 
     def sync_state(self) -> float:
         """Synchronize internal state with actual piezo position.

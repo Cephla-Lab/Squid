@@ -606,6 +606,8 @@ class SimulatedMainCamera(SimulatedCameraBase):
         self._stage_x_um = 0.0
         self._stage_y_um = 0.0
         self._stage_z_um = 0.0
+        self._piezo_z_um = 150.0  # Piezo position (home = 150um, center of 0-300um range)
+        self._piezo_home_um = 150.0  # Piezo home position (only deviation from home affects focus)
         self._event_bus = None
 
         # Objective tracking for FOV simulation
@@ -629,14 +631,15 @@ class SimulatedMainCamera(SimulatedCameraBase):
         return self._cell_renderer
 
     def set_event_bus(self, event_bus) -> None:
-        """Set the event bus for stage position and objective tracking."""
+        """Set the event bus for stage position, piezo, and objective tracking."""
         if self._event_bus is not None:
             return
         self._event_bus = event_bus
         if event_bus is not None:
-            from squid.core.events import StagePositionChanged, ObjectiveChanged
+            from squid.core.events import StagePositionChanged, ObjectiveChanged, PiezoPositionChanged
             event_bus.subscribe(StagePositionChanged, self._on_stage_position_changed)
             event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+            event_bus.subscribe(PiezoPositionChanged, self._on_piezo_position_changed)
 
     def set_cell_renderer(self, renderer) -> None:
         """Set a custom cell field renderer.
@@ -647,10 +650,16 @@ class SimulatedMainCamera(SimulatedCameraBase):
         self._cell_renderer = renderer
 
     def _on_stage_position_changed(self, event) -> None:
-        """Handle stage position change events."""
+        """Handle stage position change events (SimulatedMainCamera)."""
+        old_z = self._stage_z_um
         self._stage_x_um = event.x_mm * 1000.0
         self._stage_y_um = event.y_mm * 1000.0
         self._stage_z_um = event.z_mm * 1000.0
+        # Log significant Z changes
+        if abs(old_z - self._stage_z_um) > 1.0:
+            self._log.info(
+                f"SimulatedMainCamera: Stage Z changed: {old_z:.1f} -> {self._stage_z_um:.1f}um"
+            )
 
     def _on_objective_changed(self, event) -> None:
         """Handle objective change events."""
@@ -667,6 +676,26 @@ class SimulatedMainCamera(SimulatedCameraBase):
             f"pixel_size_factor={self._pixel_size_factor:.4f}, "
             f"effective_pixel_size={pixel_size:.3f}um"
         )
+
+    def _on_piezo_position_changed(self, event) -> None:
+        """Handle piezo position change events (SimulatedMainCamera)."""
+        old_piezo = self._piezo_z_um
+        self._piezo_z_um = event.position_um
+        if abs(old_piezo - self._piezo_z_um) > 0.1:
+            self._log.info(
+                f"SimulatedMainCamera: Piezo position changed: {old_piezo:.1f} -> {self._piezo_z_um:.1f}um, "
+                f"deviation from home: {self._piezo_z_um - self._piezo_home_um:+.1f}um"
+            )
+
+    def _get_total_z_um(self) -> float:
+        """Get total Z position (stage + piezo deviation from home).
+
+        Only the piezo's deviation from its home position affects focus,
+        not its absolute position. This ensures cells are in focus when
+        both stage and piezo are at their normal positions.
+        """
+        piezo_deviation = self._piezo_z_um - self._piezo_home_um
+        return self._stage_z_um + piezo_deviation
 
     def set_vignette_strength(self, strength: float) -> None:
         """Set the vignetting strength for tile boundary visualization.
@@ -745,6 +774,10 @@ class SimulatedMainCamera(SimulatedCameraBase):
         # Clamp to reasonable range
         brightness_scale = max(0.1, min(brightness_scale, 10.0))
 
+        # Get total Z position (stage + piezo deviation from home)
+        total_z_um = self._get_total_z_um()
+        piezo_deviation = self._piezo_z_um - self._piezo_home_um
+
         # Log first few frames at INFO level, then DEBUG
         if self._frame_id < 5:
             fov_width_um = width * pixel_size_um
@@ -752,19 +785,22 @@ class SimulatedMainCamera(SimulatedCameraBase):
             self._log.info(
                 f"Creating frame: {width}x{height}px, FOV={fov_width_um/1000:.2f}x{fov_height_um/1000:.2f}mm, "
                 f"stage=({self._stage_x_um:.1f}, {self._stage_y_um:.1f}, {self._stage_z_um:.1f})um, "
+                f"piezo={self._piezo_z_um:.1f}um (delta={piezo_deviation:+.1f}), total_z={total_z_um:.1f}um, "
                 f"pixel_size={pixel_size_um:.3f}um"
             )
         else:
             self._log.debug(
-                f"Creating frame: stage=({self._stage_x_um:.1f}, {self._stage_y_um:.1f})um"
+                f"Creating frame: stage_z={self._stage_z_um:.1f}um, piezo_delta={piezo_deviation:+.1f}um, total_z={total_z_um:.1f}um"
             )
 
         # Create background with noise (changes each frame like real camera)
-        # Scale background with brightness, but cap to avoid washing out image
-        base_background = 0.05 * min(brightness_scale, 2.0)
-        base_noise = 0.02 * min(brightness_scale, 2.0)
+        # Scale background with brightness, but cap to avoid washing out image.
+        # Use a minimum noise floor (0.5) so noise is always visible even at low exposure/gain.
+        noise_scale = max(0.5, min(brightness_scale, 2.0))
+        base_background = 0.05 * noise_scale
+        base_noise = 0.02 * noise_scale
         background_val = int(max_val * base_background)
-        noise_range = int(max_val * base_noise)
+        noise_range = max(1, int(max_val * base_noise))  # At least 1 level of noise
         frame = np.random.randint(
             max(0, background_val - noise_range),
             min(max_val, background_val + noise_range + 1),
@@ -772,14 +808,14 @@ class SimulatedMainCamera(SimulatedCameraBase):
             dtype=dtype
         )
 
-        # Render cells at current stage position
+        # Render cells at current position (using total Z = stage + piezo)
         try:
             renderer = self._get_cell_renderer()
             frame = renderer.render_frame(
                 frame=frame,
                 stage_x_um=self._stage_x_um,
                 stage_y_um=self._stage_y_um,
-                stage_z_um=self._stage_z_um,
+                stage_z_um=total_z_um,  # Use total Z (stage + piezo)
                 pixel_size_um=pixel_size_um,
                 max_val=max_val,
                 brightness_scale=brightness_scale,

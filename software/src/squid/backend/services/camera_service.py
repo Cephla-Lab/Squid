@@ -39,27 +39,40 @@ class CameraService(BaseService):
     Widgets should use this service instead of calling camera directly.
     """
 
-    def __init__(self, camera: "AbstractCamera", event_bus: EventBus, mode_gate=None):
+    def __init__(
+        self,
+        camera: "AbstractCamera",
+        event_bus: EventBus,
+        mode_gate=None,
+        subscribe_to_ui_commands: bool = True,
+    ):
         """
         Initialize camera service.
 
         Args:
             camera: AbstractCamera implementation
             event_bus: EventBus for communication
+            mode_gate: Global mode gate for blocking UI commands during acquisition
+            subscribe_to_ui_commands: If True, subscribe to camera commands from UI.
+                Set to False for secondary cameras (like focus camera) that should
+                only be controlled programmatically.
         """
         super().__init__(event_bus, mode_gate=mode_gate)
         self._camera = camera
         self._lock = threading.RLock()
 
-        # Subscribe to commands
-        self.subscribe(SetExposureTimeCommand, self._on_set_exposure_command)
-        self.subscribe(SetAnalogGainCommand, self._on_set_gain_command)
-        self.subscribe(SetROICommand, self._on_set_roi_command)
-        self.subscribe(SetBinningCommand, self._on_set_binning_command)
-        self.subscribe(SetPixelFormatCommand, self._on_set_pixel_format_command)
-        self.subscribe(SetCameraTemperatureCommand, self._on_set_temperature_command)
-        self.subscribe(SetBlackLevelCommand, self._on_set_black_level_command)
-        self.subscribe(SetAutoWhiteBalanceCommand, self._on_set_auto_wb_command)
+        # Subscribe to commands only if this camera should respond to UI events.
+        # Secondary cameras (focus camera) should not respond to UI camera commands
+        # as they are controlled programmatically by their respective controllers.
+        if subscribe_to_ui_commands:
+            self.subscribe(SetExposureTimeCommand, self._on_set_exposure_command)
+            self.subscribe(SetAnalogGainCommand, self._on_set_gain_command)
+            self.subscribe(SetROICommand, self._on_set_roi_command)
+            self.subscribe(SetBinningCommand, self._on_set_binning_command)
+            self.subscribe(SetPixelFormatCommand, self._on_set_pixel_format_command)
+            self.subscribe(SetCameraTemperatureCommand, self._on_set_temperature_command)
+            self.subscribe(SetBlackLevelCommand, self._on_set_black_level_command)
+            self.subscribe(SetAutoWhiteBalanceCommand, self._on_set_auto_wb_command)
 
     def _on_set_exposure_command(self, event: SetExposureTimeCommand):
         """Handle SetExposureTimeCommand event."""

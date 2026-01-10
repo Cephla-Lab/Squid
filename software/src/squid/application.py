@@ -696,11 +696,19 @@ class ApplicationContext:
             "camera", CameraService(self._microscope.camera, event_bus, mode_gate=self.mode_gate)
         )
 
-        # Focus camera service for laser autofocus
+        # Focus camera service for laser autofocus.
+        # subscribe_to_ui_commands=False prevents the focus camera from responding
+        # to UI commands intended for the main camera. The focus camera is controlled
+        # programmatically by the LaserAutoFocusController.
         if self._microscope.addons.camera_focus:
             self._services.register(
                 "camera_focus",
-                CameraService(self._microscope.addons.camera_focus, event_bus, mode_gate=self.mode_gate),
+                CameraService(
+                    self._microscope.addons.camera_focus,
+                    event_bus,
+                    mode_gate=self.mode_gate,
+                    subscribe_to_ui_commands=False,
+                ),
             )
 
         self._services.register(

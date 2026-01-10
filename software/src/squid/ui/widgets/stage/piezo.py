@@ -1,6 +1,6 @@
 from typing import Callable, List, Tuple, Type, TYPE_CHECKING
 from squid.ui.widgets.stage._common import *
-from squid.core.events import PiezoPositionChanged
+from squid.core.events import PiezoPositionChanged, SetPiezoPositionCommand
 
 if TYPE_CHECKING:
     from squid.ui.ui_event_bus import UIEventBus
@@ -112,7 +112,12 @@ class PiezoWidget(QFrame):
         self.slider.blockSignals(False)
 
     def update_piezo_position(self) -> None:
-        self.piezo.move_to(self.piezo_displacement_um)
+        # Publish command via event bus so all subscribers (including simulated camera) are notified
+        if self._event_bus is not None:
+            self._event_bus.publish(SetPiezoPositionCommand(position_um=self.piezo_displacement_um))
+        else:
+            # Fallback to direct driver call if no event bus
+            self.piezo.move_to(self.piezo_displacement_um)
 
     def adjust_position(self, up: bool) -> None:
         increment = self.increment_spinBox.value()
@@ -127,8 +132,14 @@ class PiezoWidget(QFrame):
         self.update_piezo_position()
 
     def home(self) -> None:
-        self.piezo.home()
-        self.piezo_displacement_um = self.piezo._home_position_um
+        home_position = self.piezo._home_position_um
+        self.piezo_displacement_um = home_position
+        # Publish command via event bus so all subscribers are notified
+        if self._event_bus is not None:
+            self._event_bus.publish(SetPiezoPositionCommand(position_um=home_position))
+        else:
+            # Fallback to direct driver call if no event bus
+            self.piezo.home()
         self.update_spinBox()
         self.update_slider()
 
