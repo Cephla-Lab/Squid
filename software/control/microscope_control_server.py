@@ -968,18 +968,37 @@ class MicroscopeControlServer:
     def _set_gui_acquisition_state(self, yaml_data, is_running: bool) -> None:
         """Update GUI widget state to reflect acquisition running/stopped.
 
-        Uses Qt signal/slot mechanism which is thread-safe and automatically
-        queues the call to the widget's thread.
+        Uses QTimer.singleShot with threading.Event to ensure the GUI update
+        completes before returning, matching the pattern in _update_gui_from_yaml.
         """
+        if not QT_AVAILABLE:
+            return
+
         widget = self._get_widget_for_type(yaml_data.widget_type)
         if not widget:
             return
 
-        if not hasattr(widget, "signal_set_acquisition_running"):
-            self._log.warning(f"Widget {type(widget).__name__} lacks signal_set_acquisition_running signal")
+        if not hasattr(widget, "set_acquisition_running_state"):
+            self._log.warning(f"Widget {type(widget).__name__} lacks set_acquisition_running_state method")
             return
 
-        widget.signal_set_acquisition_running.emit(is_running, yaml_data.nz, yaml_data.delta_z_um)
+        # Use threading.Event to wait for GUI update to complete
+        gui_update_complete = threading.Event()
+
+        def update_state():
+            try:
+                widget.set_acquisition_running_state(is_running, yaml_data.nz, yaml_data.delta_z_um)
+            except Exception as e:
+                self._log.error(f"Failed to update GUI acquisition state: {e}")
+            finally:
+                gui_update_complete.set()
+
+        # Schedule on Qt main thread
+        QTimer.singleShot(0, update_state)
+
+        # Wait for completion
+        if not gui_update_complete.wait(timeout=5.0):
+            self._log.warning("GUI acquisition state update timed out after 5 seconds")
 
     def _validate_channels(self, channel_names: List[str], current_objective: str) -> List[str]:
         """Validate that requested channels exist for the current objective.
