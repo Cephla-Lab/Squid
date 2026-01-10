@@ -16,6 +16,7 @@ from control.core.geometry_utils import get_effective_well_size, calculate_well_
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 import control.utils as utils
+import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
 from squid.config import CameraPixelFormat
@@ -9978,6 +9979,11 @@ class NapariMosaicDisplayWidget(QWidget):
         return Colormap(colors=[c0, c1], controls=[0, 1], name=channel_info["name"])
 
     def updateMosaic(self, image, x_mm, y_mm, k, channel_name):
+        # NOTE: Check runtime flag to allow MCP to disable mosaic updates for RAM debugging.
+        # This enables toggling mosaic view without restarting the application.
+        if not control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
+            return
+
         # calculate pixel size
         pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
         downsample_factor = max(1, int(MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM / pixel_size_um))
