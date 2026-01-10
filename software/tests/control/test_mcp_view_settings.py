@@ -228,6 +228,9 @@ class TestSetViewSettings:
         assert control._def.SAVE_DOWNSAMPLED_WELL_IMAGES is True
         assert control._def.DISPLAY_PLATE_VIEW is False
         assert control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY is True
+        # Verify return value reflects the change
+        assert result["display_plate_view"] is False
+        assert len(result["changes"]) == 1
 
     def test_none_values_are_ignored(self, mcp_server, save_and_restore_def_values):
         """Test that None values don't modify settings."""
@@ -242,6 +245,8 @@ class TestSetViewSettings:
         # Nothing should change
         assert control._def.SAVE_DOWNSAMPLED_WELL_IMAGES is True
         assert control._def.DISPLAY_PLATE_VIEW is True
+        # Verify return value shows no changes
+        assert result["changes"] == []
 
     def test_changes_list_reflects_modifications(self, mcp_server, save_and_restore_def_values):
         """Test that changes list correctly reports what was modified."""
