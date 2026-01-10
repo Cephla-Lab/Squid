@@ -113,6 +113,13 @@ class TestSetSaveDownsampledImages:
         result = mcp_server._cmd_set_save_downsampled_images(enabled=True)
         assert "next acquisition" in result["message"]
 
+    def test_rejects_non_boolean(self, mcp_server, save_and_restore_def_values):
+        """Test that non-boolean values raise TypeError."""
+        with pytest.raises(TypeError, match="enabled must be a boolean"):
+            mcp_server._cmd_set_save_downsampled_images(enabled="true")
+        with pytest.raises(TypeError, match="enabled must be a boolean"):
+            mcp_server._cmd_set_save_downsampled_images(enabled=1)
+
 
 class TestSetDisplayPlateView:
     """Tests for set_display_plate_view command."""
@@ -141,6 +148,13 @@ class TestSetDisplayPlateView:
         """Test that message indicates setting takes effect on next acquisition."""
         result = mcp_server._cmd_set_display_plate_view(enabled=True)
         assert "next acquisition" in result["message"]
+
+    def test_rejects_non_boolean(self, mcp_server, save_and_restore_def_values):
+        """Test that non-boolean values raise TypeError."""
+        with pytest.raises(TypeError, match="enabled must be a boolean"):
+            mcp_server._cmd_set_display_plate_view(enabled="false")
+        with pytest.raises(TypeError, match="enabled must be a boolean"):
+            mcp_server._cmd_set_display_plate_view(enabled=0)
 
 
 class TestSetDisplayMosaicView:
@@ -171,6 +185,13 @@ class TestSetDisplayMosaicView:
         result = mcp_server._cmd_set_display_mosaic_view(enabled=True)
         assert "immediately" in result["message"]
         assert "next acquisition" not in result["message"]
+
+    def test_rejects_non_boolean(self, mcp_server, save_and_restore_def_values):
+        """Test that non-boolean values raise TypeError."""
+        with pytest.raises(TypeError, match="enabled must be a boolean"):
+            mcp_server._cmd_set_display_mosaic_view(enabled="true")
+        with pytest.raises(TypeError, match="enabled must be a boolean"):
+            mcp_server._cmd_set_display_mosaic_view(enabled=None)
 
 
 class TestSetViewSettings:

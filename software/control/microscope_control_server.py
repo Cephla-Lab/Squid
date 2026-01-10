@@ -19,6 +19,8 @@ from typing import Any, Callable, Dict, List, Optional, get_type_hints
 
 import squid.logging
 
+import control._def  # Module import for runtime access to MCP-modifiable settings
+
 # Qt imports for thread-safe GUI operations
 try:
     from qtpy.QtCore import QTimer
@@ -944,8 +946,6 @@ class MicroscopeControlServer:
     @schema_method
     def _cmd_get_view_settings(self) -> Dict[str, Any]:
         """Get current view settings for RAM debugging (downsampled images, plate view, mosaic view)."""
-        import control._def
-
         return {
             "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
             "display_plate_view": control._def.DISPLAY_PLATE_VIEW,
@@ -962,8 +962,8 @@ class MicroscopeControlServer:
         enabled: bool = Field(..., description="Enable (true) or disable (false) saving downsampled well images"),
     ) -> Dict[str, Any]:
         """Enable or disable saving downsampled well images (affects next acquisition)."""
-        import control._def
-
+        if not isinstance(enabled, bool):
+            raise TypeError(f"enabled must be a boolean, got {type(enabled).__name__}")
         control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = enabled
         return {
             "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
@@ -976,8 +976,8 @@ class MicroscopeControlServer:
         enabled: bool = Field(..., description="Enable (true) or disable (false) plate view display"),
     ) -> Dict[str, Any]:
         """Enable or disable plate view display during acquisition (affects next acquisition)."""
-        import control._def
-
+        if not isinstance(enabled, bool):
+            raise TypeError(f"enabled must be a boolean, got {type(enabled).__name__}")
         control._def.DISPLAY_PLATE_VIEW = enabled
         return {
             "display_plate_view": control._def.DISPLAY_PLATE_VIEW,
@@ -990,8 +990,8 @@ class MicroscopeControlServer:
         enabled: bool = Field(..., description="Enable (true) or disable (false) mosaic view display"),
     ) -> Dict[str, Any]:
         """Enable or disable mosaic view display (takes effect immediately, checked on each updateMosaic call)."""
-        import control._def
-
+        if not isinstance(enabled, bool):
+            raise TypeError(f"enabled must be a boolean, got {type(enabled).__name__}")
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = enabled
         return {
             "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
@@ -1008,8 +1008,6 @@ class MicroscopeControlServer:
         display_mosaic_view: Optional[bool] = Field(None, description="Enable/disable mosaic view display"),
     ) -> Dict[str, Any]:
         """Set multiple view settings at once for RAM debugging (affects next acquisition)."""
-        import control._def
-
         changes = []
 
         # Note: Use isinstance(x, bool) instead of "x is not None" because Field(None, ...)
