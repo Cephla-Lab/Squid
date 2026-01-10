@@ -783,44 +783,50 @@ class HighContentScreeningGui(QMainWindow):
         if not cached_settings:
             return
 
-        # Restore binning
-        try:
-            self.camera.set_binning(*cached_settings.binning)
-            binning_text = f"{cached_settings.binning[0]}x{cached_settings.binning[1]}"
-            # Block signals to prevent redundant camera.set_binning() call from signal handler
-            self.cameraSettingWidget.dropdown_binning.blockSignals(True)
-            self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
-            self.cameraSettingWidget.dropdown_binning.blockSignals(False)
-        except ValueError as e:
-            self.log.warning(f"Cannot restore binning {cached_settings.binning} - not supported by camera: {e}")
-        except (AttributeError, RuntimeError) as e:
-            self.log.error(f"Camera error while restoring binning settings: {e}")
-
-        # Restore pixel format
-        if cached_settings.pixel_format:
-            try:
-                pixel_format = squid.config.CameraPixelFormat.from_string(cached_settings.pixel_format)
-            except KeyError:
-                self.log.warning(f"Cached pixel format '{cached_settings.pixel_format}' is not recognized")
-                pixel_format = None
-
-            if pixel_format:
-                try:
-                    self.camera.set_pixel_format(pixel_format)
-                    # Block signals to prevent redundant camera.set_pixel_format() call from signal handler
-                    self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(True)
-                    self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(cached_settings.pixel_format)
-                    self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(False)
-                except ValueError as e:
-                    self.log.warning(
-                        f"Cannot restore pixel format {cached_settings.pixel_format} - "
-                        f"not supported by this camera: {e}"
-                    )
+        self._restore_binning(cached_settings.binning)
+        self._restore_pixel_format(cached_settings.pixel_format)
 
         self.log.info(
             f"Restored camera settings: binning={cached_settings.binning}, "
             f"pixel_format={cached_settings.pixel_format}"
         )
+
+    def _restore_binning(self, binning: tuple) -> None:
+        """Apply binning setting to camera and sync UI dropdown."""
+        try:
+            self.camera.set_binning(*binning)
+        except ValueError as e:
+            self.log.warning(f"Cannot restore binning {binning} - not supported by camera: {e}")
+            return
+        except (AttributeError, RuntimeError) as e:
+            self.log.error(f"Camera error while restoring binning settings: {e}")
+            return
+
+        binning_text = f"{binning[0]}x{binning[1]}"
+        self.cameraSettingWidget.dropdown_binning.blockSignals(True)
+        self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
+        self.cameraSettingWidget.dropdown_binning.blockSignals(False)
+
+    def _restore_pixel_format(self, pixel_format_str: str) -> None:
+        """Apply pixel format setting to camera and sync UI dropdown."""
+        if not pixel_format_str:
+            return
+
+        try:
+            pixel_format = squid.config.CameraPixelFormat.from_string(pixel_format_str)
+        except KeyError:
+            self.log.warning(f"Cached pixel format '{pixel_format_str}' is not recognized")
+            return
+
+        try:
+            self.camera.set_pixel_format(pixel_format)
+        except ValueError as e:
+            self.log.warning(f"Cannot restore pixel format {pixel_format_str} - not supported by this camera: {e}")
+            return
+
+        self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(True)
+        self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(pixel_format_str)
+        self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(False)
 
     def setupImageDisplayTabs(self):
         if USE_NAPARI_FOR_LIVE_VIEW:

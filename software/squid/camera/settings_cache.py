@@ -105,7 +105,7 @@ def load_camera_settings(cache_path: Path = _DEFAULT_CACHE_PATH) -> Optional[Cac
             settings = json.load(f)
     except json.JSONDecodeError as e:
         _log.error(
-            f"Camera settings cache file is corrupted at {cache_path}: {e}. " f"Delete this file to reset to defaults."
+            f"Camera settings cache file is corrupted at {cache_path}: {e}. " "Delete this file to reset to defaults."
         )
         return None
     except PermissionError as e:
@@ -117,12 +117,11 @@ def load_camera_settings(cache_path: Path = _DEFAULT_CACHE_PATH) -> Optional[Cac
 
     try:
         binning_raw = settings.get("binning")
-        if binning_raw is None:
-            _log.warning("Camera settings cache missing 'binning' key - using default")
-            binning_raw = list(DEFAULT_BINNING)
-
         if not isinstance(binning_raw, list) or len(binning_raw) != 2:
-            _log.warning(f"Invalid binning format in cache: {binning_raw} - using default")
+            if binning_raw is not None:
+                _log.warning(f"Invalid binning format in cache: {binning_raw} - using default")
+            else:
+                _log.warning("Camera settings cache missing 'binning' key - using default")
             binning_raw = list(DEFAULT_BINNING)
 
         return CachedCameraSettings(
