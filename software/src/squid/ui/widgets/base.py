@@ -339,18 +339,18 @@ class CollapsibleGroupBox(QWidget):
     """A collapsible group box with arrow indicator for expand/collapse."""
 
     content: QVBoxLayout
-    content_widget: QFrame
+    content_widget: QWidget
 
     def __init__(self, title: str, collapsed: bool = False) -> None:
         super().__init__()
         self._collapsed = collapsed
         self._title = title
 
-        # Main layout
         from qtpy.QtWidgets import QPushButton
 
+        # Main layout - compact
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 8)
+        main_layout.setContentsMargins(0, 0, 0, 2)
         main_layout.setSpacing(0)
 
         # Header button with arrow
@@ -359,43 +359,19 @@ class CollapsibleGroupBox(QWidget):
             """
             QPushButton {
                 text-align: left;
-                padding: 8px;
+                padding: 4px 6px;
                 font-weight: bold;
-                background-color: palette(button);
-                border: 1px solid palette(mid);
-                border-bottom: none;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: palette(light);
             }
             """
         )
         self._header.clicked.connect(self._toggle)
         main_layout.addWidget(self._header)
 
-        # Content widget with border to show grouping
-        self.content_widget = QFrame()
-        self.content_widget.setObjectName("collapsibleContent")
-        self.content_widget.setFrameShape(QFrame.StyledPanel)
-        self.content_widget.setStyleSheet(
-            """
-            QFrame#collapsibleContent {
-                border: 1px solid palette(mid);
-                border-top: none;
-                border-bottom-left-radius: 4px;
-                border-bottom-right-radius: 4px;
-                background-color: palette(base);
-            }
-            QFrame#collapsibleContent QLabel {
-                border: none;
-                background: transparent;
-            }
-            """
-        )
+        # Content widget (no scroll area - parent handles scrolling)
+        self.content_widget = QWidget()
         self.content = QVBoxLayout(self.content_widget)
-        self.content.setContentsMargins(15, 10, 10, 10)
+        self.content.setContentsMargins(0, 0, 0, 0)
+        self.content.setSpacing(0)
         main_layout.addWidget(self.content_widget)
 
         # Set initial state

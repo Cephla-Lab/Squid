@@ -10,6 +10,7 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -365,17 +366,15 @@ class FocusLockStatusWidget(EventBusFrame):
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.setSpacing(4)
 
-        # Header
+        # Status bar (compact - no duplicate title since dock has one)
         header = QHBoxLayout()
         header.setSpacing(4)
+        header.setContentsMargins(0, 0, 0, 0)
 
         self._collapse_btn = QToolButton()
         self._collapse_btn.setArrowType(Qt.DownArrow)
         self._collapse_btn.setFixedSize(16, 16)
         self._collapse_btn.clicked.connect(self._toggle_collapsed)
-
-        title = QLabel("Focus Lock")
-        title.setStyleSheet("font-weight: bold;")
 
         self._led = QFrame()
         self._led.setFixedSize(10, 10)
@@ -385,42 +384,46 @@ class FocusLockStatusWidget(EventBusFrame):
         self._status_label.setStyleSheet("font-size: 10px; color: #888;")
 
         header.addWidget(self._collapse_btn)
-        header.addWidget(title)
-        header.addStretch()
         header.addWidget(self._led)
         header.addWidget(self._status_label)
+        header.addStretch()
 
-        # Content - vertical layout with wide spot preview on top
+        # Content - vertical layout with grouped sections
         self._content = QWidget()
         content_layout = QVBoxLayout(self._content)
         content_layout.setContentsMargins(0, 4, 0, 4)
         content_layout.setSpacing(6)
 
-        # AF Spot display - fills full width, fixed height
+        # AF Spot Preview - no frame, just the widget
         self._spot_preview = SpotPreviewWidget()
         content_layout.addWidget(self._spot_preview)
 
-        # Add spacing after video preview
-        content_layout.addSpacing(4)
+        # Status bars - grouped in a frame
+        bars_frame = QFrame()
+        bars_frame.setFrameStyle(QFrame.StyledPanel)
+        bars_layout = QVBoxLayout(bars_frame)
+        bars_layout.setContentsMargins(8, 8, 8, 8)
+        bars_layout.setSpacing(14)  # More space between bar rows
 
-        # Horizontal bars with consistent label widths
+        # Create bars
         self._offset_bar = HorizontalDisplacementBar(
             range_um=100.0,  # Large range to handle big offsets
             threshold_um=self._config.offset_threshold_um,
         )
         self._lock_bar = HorizontalLockBar(max_value=self._lock_buffer_length)
+        self._quality_bar = HorizontalQualityBar()
         self._piezo_bar = HorizontalPiezoBar(
             range_um=(0.0, float(_def.OBJECTIVE_PIEZO_RANGE_UM)),
             warning_margin_um=self._config.piezo_warning_margin_um,
         )
 
-        label_width = 40
-        value_width = 150  # Wider to fit "+54.14 um (+12.0 px)"
+        label_width = 50  # Wide enough for "Quality:"
+        value_width = 180  # Wide enough for values like "+0.00 um (+50.0 px)"
 
-        # Error row - shows error from target (what feedback loop minimizes to zero)
+        # Error row
         offset_row = QHBoxLayout()
         offset_row.setSpacing(4)
-        offset_lbl = QLabel("Error: ")
+        offset_lbl = QLabel("Error:")
         offset_lbl.setFixedWidth(label_width)
         offset_row.addWidget(offset_lbl)
         offset_row.addWidget(self._offset_bar, 1)
@@ -428,12 +431,12 @@ class FocusLockStatusWidget(EventBusFrame):
         self._err_label.setFixedWidth(value_width)
         self._err_label.setAlignment(Qt.AlignLeft)
         offset_row.addWidget(self._err_label)
-        content_layout.addLayout(offset_row)
+        bars_layout.addLayout(offset_row)
 
         # Lock row
         lock_row = QHBoxLayout()
         lock_row.setSpacing(4)
-        lock_lbl = QLabel("Lock: ")
+        lock_lbl = QLabel("Lock:")
         lock_lbl.setFixedWidth(label_width)
         lock_row.addWidget(lock_lbl)
         lock_row.addWidget(self._lock_bar, 1)
@@ -441,13 +444,12 @@ class FocusLockStatusWidget(EventBusFrame):
         self._lock_label.setFixedWidth(value_width)
         self._lock_label.setAlignment(Qt.AlignLeft)
         lock_row.addWidget(self._lock_label)
-        content_layout.addLayout(lock_row)
+        bars_layout.addLayout(lock_row)
 
-        # Quality row - smoothed RMS-based quality (0-100%)
-        self._quality_bar = HorizontalQualityBar()
+        # Quality row
         quality_row = QHBoxLayout()
         quality_row.setSpacing(4)
-        quality_lbl = QLabel("Quality: ")
+        quality_lbl = QLabel("Quality:")
         quality_lbl.setFixedWidth(label_width)
         quality_row.addWidget(quality_lbl)
         quality_row.addWidget(self._quality_bar, 1)
@@ -455,13 +457,13 @@ class FocusLockStatusWidget(EventBusFrame):
         self._quality_label.setFixedWidth(value_width)
         self._quality_label.setAlignment(Qt.AlignLeft)
         quality_row.addWidget(self._quality_label)
-        content_layout.addLayout(quality_row)
+        bars_layout.addLayout(quality_row)
 
-        # Piezo row - show position with units and range
+        # Piezo row
         self._piezo_range_um = float(_def.OBJECTIVE_PIEZO_RANGE_UM)
         piezo_row = QHBoxLayout()
         piezo_row.setSpacing(4)
-        piezo_lbl = QLabel("Piezo: ")
+        piezo_lbl = QLabel("Piezo:")
         piezo_lbl.setFixedWidth(label_width)
         piezo_row.addWidget(piezo_lbl)
         piezo_row.addWidget(self._piezo_bar, 1)
@@ -469,11 +471,11 @@ class FocusLockStatusWidget(EventBusFrame):
         self._z_label.setFixedWidth(value_width)
         self._z_label.setAlignment(Qt.AlignLeft)
         piezo_row.addWidget(self._z_label)
-        content_layout.addLayout(piezo_row)
+        bars_layout.addLayout(piezo_row)
 
-        # Compact metrics row - all four metrics on one line
+        # Compact metrics row - all four metrics on one line (inside bars frame)
         metrics_row = QHBoxLayout()
-        metrics_row.setSpacing(6)
+        metrics_row.setSpacing(8)
         self._delta_label = QLabel("D: --")
         self._delta_label.setToolTip("Piezo delta from lock position (um)")
         metrics_row.addWidget(self._delta_label)
@@ -487,49 +489,27 @@ class FocusLockStatusWidget(EventBusFrame):
         self._drift_label.setToolTip("Drift rate (um/s)")
         metrics_row.addWidget(self._drift_label)
         metrics_row.addStretch()
-        content_layout.addLayout(metrics_row)
+        bars_layout.addLayout(metrics_row)
 
-        # Controls row - action buttons and adjust
-        ctrl_row = QHBoxLayout()
-        ctrl_row.setSpacing(4)
+        content_layout.addWidget(bars_frame)
 
+        # Controls section with grid layout for better alignment
+        controls_frame = QFrame()
+        controls_frame.setFrameStyle(QFrame.StyledPanel)
+        controls_grid = QGridLayout(controls_frame)
+        controls_grid.setContentsMargins(6, 6, 6, 6)
+        controls_grid.setSpacing(6)
+
+        # Row 0: Start/Stop and Lock/Release buttons (same width)
         self._action_btn = QPushButton("Start")
-        self._action_btn.setFixedWidth(40)
+        self._action_btn.setFixedWidth(65)
         self._action_btn.clicked.connect(self._on_start_stop)
-        ctrl_row.addWidget(self._action_btn)
+        controls_grid.addWidget(self._action_btn, 0, 0)
 
         self._lock_btn = QPushButton("Lock")
-        self._lock_btn.setFixedWidth(58)
+        self._lock_btn.setFixedWidth(65)
         self._lock_btn.clicked.connect(self._on_lock_release)
-        ctrl_row.addWidget(self._lock_btn)
-
-        ctrl_row.addSpacing(8)
-
-        # Adjust controls for nudging the lock target
-        adjust_label = QLabel("Adjust:")
-        adjust_label.setToolTip("Nudge lock target position")
-        ctrl_row.addWidget(adjust_label)
-
-        self._nudge_step = QDoubleSpinBox()
-        self._nudge_step.setRange(0.01, 10.0)
-        self._nudge_step.setDecimals(2)
-        self._nudge_step.setValue(0.5)
-        self._nudge_step.setSuffix(" um")
-        self._nudge_step.setFixedWidth(70)
-        self._nudge_step.setKeyboardTracking(False)
-        ctrl_row.addWidget(self._nudge_step)
-
-        self._nudge_down = QPushButton("-")
-        self._nudge_down.setFixedWidth(24)
-        self._nudge_down.clicked.connect(lambda: self._nudge(-1.0))
-        ctrl_row.addWidget(self._nudge_down)
-
-        self._nudge_up = QPushButton("+")
-        self._nudge_up.setFixedWidth(24)
-        self._nudge_up.clicked.connect(lambda: self._nudge(1.0))
-        ctrl_row.addWidget(self._nudge_up)
-
-        ctrl_row.addSpacing(8)
+        controls_grid.addWidget(self._lock_btn, 0, 1)
 
         # Auto-recover checkbox
         self._auto_recover_checkbox = QCheckBox("Auto-recover")
@@ -538,43 +518,71 @@ class FocusLockStatusWidget(EventBusFrame):
             "Automatically search to recover focus when lock is lost"
         )
         self._auto_recover_checkbox.toggled.connect(self._on_auto_recover_toggled)
-        ctrl_row.addWidget(self._auto_recover_checkbox)
+        controls_grid.addWidget(self._auto_recover_checkbox, 0, 2, 1, 2)
 
-        ctrl_row.addStretch()
-        content_layout.addLayout(ctrl_row)
+        # Row 1: Adjust target (nudge) controls
+        adjust_label = QLabel("Adjust target:")
+        adjust_label.setToolTip("Nudge lock target position while locked")
+        controls_grid.addWidget(adjust_label, 1, 0, 1, 2)
 
-        # Piezo position controls - move piezo relative to center
-        piezo_ctrl_row = QHBoxLayout()
-        piezo_ctrl_row.setSpacing(4)
+        nudge_container = QHBoxLayout()
+        nudge_container.setSpacing(2)
+        self._nudge_down = QPushButton("-")
+        self._nudge_down.setFixedWidth(28)
+        self._nudge_down.clicked.connect(lambda: self._nudge(-1.0))
+        nudge_container.addWidget(self._nudge_down)
 
-        piezo_ctrl_label = QLabel("Move piezo (+/- center):")
-        piezo_ctrl_label.setToolTip("Move piezo to absolute position relative to center")
-        piezo_ctrl_row.addWidget(piezo_ctrl_label)
+        self._nudge_step = QDoubleSpinBox()
+        self._nudge_step.setRange(0.01, 10.0)
+        self._nudge_step.setDecimals(2)
+        self._nudge_step.setValue(0.5)
+        self._nudge_step.setSuffix(" um")
+        self._nudge_step.setFixedWidth(75)
+        self._nudge_step.setKeyboardTracking(False)
+        nudge_container.addWidget(self._nudge_step)
+
+        self._nudge_up = QPushButton("+")
+        self._nudge_up.setFixedWidth(28)
+        self._nudge_up.clicked.connect(lambda: self._nudge(1.0))
+        nudge_container.addWidget(self._nudge_up)
+        nudge_container.addStretch()
+
+        controls_grid.addLayout(nudge_container, 1, 2, 1, 2)
+
+        # Row 2: Piezo position controls
+        piezo_label = QLabel("Move piezo:")
+        piezo_label.setToolTip("Move piezo to absolute position (disabled while locked)")
+        controls_grid.addWidget(piezo_label, 2, 0, 1, 2)
+
+        piezo_container = QHBoxLayout()
+        piezo_container.setSpacing(2)
 
         self._jump_spinbox = QDoubleSpinBox()
         self._jump_spinbox.setRange(-150.0, 150.0)
         self._jump_spinbox.setDecimals(1)
         self._jump_spinbox.setValue(0.0)
         self._jump_spinbox.setSuffix(" um")
-        self._jump_spinbox.setFixedWidth(75)
-        self._jump_spinbox.setToolTip("Offset from piezo center")
+        self._jump_spinbox.setFixedWidth(80)
+        self._jump_spinbox.setToolTip("Offset from piezo center (150 um)")
         self._jump_spinbox.setKeyboardTracking(False)
-        piezo_ctrl_row.addWidget(self._jump_spinbox)
+        piezo_container.addWidget(self._jump_spinbox)
 
-        self._jump_btn = QPushButton("Set")
-        self._jump_btn.setFixedWidth(30)
+        self._jump_btn = QPushButton("Go")
+        self._jump_btn.setFixedWidth(50)
         self._jump_btn.setToolTip("Move piezo to center + offset")
         self._jump_btn.clicked.connect(self._on_jump_clicked)
-        piezo_ctrl_row.addWidget(self._jump_btn)
+        piezo_container.addWidget(self._jump_btn)
 
-        self._center_btn = QPushButton("Reset")
-        self._center_btn.setFixedWidth(45)
-        self._center_btn.setToolTip("Move piezo to center of range")
+        self._center_btn = QPushButton("Center")
+        self._center_btn.setFixedWidth(50)
+        self._center_btn.setToolTip("Move piezo to center of range (150 um)")
         self._center_btn.clicked.connect(self._on_center_clicked)
-        piezo_ctrl_row.addWidget(self._center_btn)
+        piezo_container.addWidget(self._center_btn)
+        piezo_container.addStretch()
 
-        piezo_ctrl_row.addStretch()
-        content_layout.addLayout(piezo_ctrl_row)
+        controls_grid.addLayout(piezo_container, 2, 2, 1, 2)
+
+        content_layout.addWidget(controls_frame)
 
         # Collapsed row - shows summary of all variables
         self._collapsed_row = QWidget()
@@ -633,6 +641,29 @@ class FocusLockStatusWidget(EventBusFrame):
         self._collapse_btn.setArrowType(Qt.RightArrow if self._collapsed else Qt.DownArrow)
         self._content.setVisible(not self._collapsed)
         self._collapsed_row.setVisible(self._collapsed)
+        # Notify parent layouts that size hint changed
+        self.updateGeometry()
+        self.adjustSize()
+
+    def sizeHint(self) -> "QSize":
+        """Return appropriate size hint based on collapsed state."""
+        from qtpy.QtCore import QSize
+
+        if self._collapsed:
+            # When collapsed, only need space for header + collapsed row
+            return QSize(480, 60)
+        else:
+            # When expanded, use default size calculation
+            return super().sizeHint()
+
+    def minimumSizeHint(self) -> "QSize":
+        """Return minimum size based on collapsed state."""
+        from qtpy.QtCore import QSize
+
+        if self._collapsed:
+            return QSize(300, 50)
+        else:
+            return super().minimumSizeHint()
 
     def _sync_mode_ui(self) -> None:
         self._update_buttons()
@@ -773,15 +804,15 @@ class FocusLockStatusWidget(EventBusFrame):
         # Update piezo delta (movement from locked position)
         piezo_delta = event.piezo_delta_um
         if not math.isnan(piezo_delta):
-            self._delta_label.setText(f"D:{piezo_delta:+.1f}")
-            self._collapsed_delta.setText(f"D:{piezo_delta:+.1f}")
+            self._delta_label.setText(f"D: {piezo_delta:+.1f}")
+            self._collapsed_delta.setText(f"D: {piezo_delta:+.1f}")
             # Calculate and show lock reference on piezo bar
             if self._z_position_um is not None:
                 lock_ref = self._z_position_um - piezo_delta
                 self._piezo_bar.set_lock_reference(lock_ref)
         else:
-            self._delta_label.setText("D:--")
-            self._collapsed_delta.setText("D:--")
+            self._delta_label.setText("D: --")
+            self._collapsed_delta.setText("D: --")
             self._piezo_bar.set_lock_reference(None)
 
         # Update displacement bar
