@@ -989,13 +989,13 @@ class MicroscopeControlServer:
         self,
         enabled: bool = Field(..., description="Enable (true) or disable (false) mosaic view display"),
     ) -> Dict[str, Any]:
-        """Enable or disable mosaic view display during acquisition (affects next acquisition)."""
+        """Enable or disable mosaic view display (takes effect immediately, checked on each updateMosaic call)."""
         import control._def
 
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = enabled
         return {
             "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
-            "message": f"Mosaic view display {'enabled' if enabled else 'disabled'} (takes effect on next acquisition)",
+            "message": f"Mosaic view display {'enabled' if enabled else 'disabled'} (takes effect immediately)",
         }
 
     @schema_method
@@ -1012,15 +1012,17 @@ class MicroscopeControlServer:
 
         changes = []
 
-        if save_downsampled_well_images is not None:
+        # Note: Use isinstance(x, bool) instead of "x is not None" because Field(None, ...)
+        # returns a FieldInfo object (not None) when called directly without JSON parsing.
+        if isinstance(save_downsampled_well_images, bool):
             control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = save_downsampled_well_images
             changes.append(f"save_downsampled_well_images={'enabled' if save_downsampled_well_images else 'disabled'}")
 
-        if display_plate_view is not None:
+        if isinstance(display_plate_view, bool):
             control._def.DISPLAY_PLATE_VIEW = display_plate_view
             changes.append(f"display_plate_view={'enabled' if display_plate_view else 'disabled'}")
 
-        if display_mosaic_view is not None:
+        if isinstance(display_mosaic_view, bool):
             control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = display_mosaic_view
             changes.append(f"display_mosaic_view={'enabled' if display_mosaic_view else 'disabled'}")
 
@@ -1029,7 +1031,7 @@ class MicroscopeControlServer:
             "display_plate_view": control._def.DISPLAY_PLATE_VIEW,
             "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
             "changes": changes,
-            "message": "Settings updated (takes effect on next acquisition)",
+            "message": "Settings updated (mosaic view: immediate; others: next acquisition)",
         }
 
     @schema_method
