@@ -3063,9 +3063,7 @@ class LiveControlWidget(QFrame):
         self.liveController.set_trigger_fps(self.fps_trigger)
         self.streamHandler.set_display_fps(self.fps_display)
 
-        self.currentConfiguration = self.channelConfigurationManager.get_channel_configurations_for_objective(
-            self.objectiveStore.current_objective
-        )[0]
+        self.currentConfiguration = self.liveController.get_channels(self.objectiveStore.current_objective)[0]
 
         self.add_components(show_trigger_options, show_display_options, show_autolevel, autolevel, stretch)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -3092,9 +3090,7 @@ class LiveControlWidget(QFrame):
         self.entry_triggerFPS.setDecimals(0)
 
         self.dropdown_modeSelection = QComboBox()
-        for microscope_configuration in self.channelConfigurationManager.get_enabled_configurations(
-            self.objectiveStore.current_objective
-        ):
+        for microscope_configuration in self.liveController.get_channels(self.objectiveStore.current_objective):
             self.dropdown_modeSelection.addItems([microscope_configuration.name])
         self.dropdown_modeSelection.setCurrentText(self.currentConfiguration.name)
         self.dropdown_modeSelection.setSizePolicy(sizePolicy)
@@ -3281,9 +3277,7 @@ class LiveControlWidget(QFrame):
         self.dropdown_modeSelection.blockSignals(True)
         self.dropdown_modeSelection.clear()
         first_config = None
-        for microscope_configuration in self.channelConfigurationManager.get_enabled_configurations(
-            self.objectiveStore.current_objective
-        ):
+        for microscope_configuration in self.liveController.get_channels(self.objectiveStore.current_objective):
             if not first_config:
                 first_config = microscope_configuration
             self.dropdown_modeSelection.addItem(microscope_configuration.name)
@@ -3295,9 +3289,7 @@ class LiveControlWidget(QFrame):
             self.liveController.set_microscope_mode(first_config)
 
     def select_new_microscope_mode_by_name(self, config_name):
-        maybe_new_config = self.channelConfigurationManager.get_channel_configuration_by_name(
-            self.objectiveStore.current_objective, config_name
-        )
+        maybe_new_config = self.liveController.get_channel_by_name(self.objectiveStore.current_objective, config_name)
 
         if not maybe_new_config:
             self._log.error(f"User attempted to select config named '{config_name}' but it does not exist!")
@@ -4431,7 +4423,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_Nt.setFixedWidth(max_num_width)
 
         self.list_configurations = QListWidget()
-        for microscope_configuration in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for microscope_configuration in self.multipointController.liveController.get_channels(
             self.objectiveStore.current_objective
         ):
             self.list_configurations.addItems([microscope_configuration.name])
@@ -5897,9 +5889,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.combobox_z_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.list_configurations = QListWidget()
-        for microscope_configuration in self.channelConfigurationManager.get_channel_configurations_for_objective(
-            self.objectiveStore.current_objective
-        ):
+        for microscope_configuration in self.liveController.get_channels(self.objectiveStore.current_objective):
             self.list_configurations.addItems([microscope_configuration.name])
         self.list_configurations.setSelectionMode(QAbstractItemView.MultiSelection)
 
@@ -7947,7 +7937,7 @@ class MultiPointWithFluidicsWidget(QFrame):
 
         # Channel configurations
         self.list_configurations = QListWidget()
-        for microscope_configuration in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for microscope_configuration in self.multipointController.liveController.get_channels(
             self.objectiveStore.current_objective
         ):
             self.list_configurations.addItems([microscope_configuration.name])
@@ -9387,9 +9377,7 @@ class NapariLiveWidget(QWidget):
 
         # Microscope Configuration (only enabled channels)
         self.dropdown_modeSelection = QComboBox()
-        for config in self.channelConfigurationManager.get_enabled_configurations(
-            self.objectiveStore.current_objective
-        ):
+        for config in self.liveController.get_channels(self.objectiveStore.current_objective):
             self.dropdown_modeSelection.addItem(config.name)
         self.dropdown_modeSelection.setCurrentText(self.live_configuration.name)
         self.dropdown_modeSelection.activated(self.select_new_microscope_mode_by_name)
@@ -9638,9 +9626,7 @@ class NapariLiveWidget(QWidget):
 
     def select_new_microscope_mode_by_name(self, config_index):
         config_name = self.dropdown_modeSelection.itemText(config_index)
-        maybe_new_config = self.channelConfigurationManager.get_channel_configuration_by_name(
-            self.objectiveStore.current_objective, config_name
-        )
+        maybe_new_config = self.liveController.get_channel_by_name(self.objectiveStore.current_objective, config_name)
 
         if not maybe_new_config:
             self._log.error(f"User attempted to select config named '{config_name}' but it does not exist!")
@@ -9687,9 +9673,7 @@ class NapariLiveWidget(QWidget):
         self.dropdown_modeSelection.blockSignals(True)
         self.dropdown_modeSelection.clear()
         first_config = None
-        for config in self.channelConfigurationManager.get_enabled_configurations(
-            self.objectiveStore.current_objective
-        ):
+        for config in self.liveController.get_channels(self.objectiveStore.current_objective):
             if not first_config:
                 first_config = config
             self.dropdown_modeSelection.addItem(config.name)
@@ -10786,7 +10770,7 @@ class TrackingControllerWidget(QFrame):
         self.entry_tracking_interval.setValue(0)
 
         self.list_configurations = QListWidget()
-        for microscope_configuration in self.channelConfigurationManager.get_channel_configurations_for_objective(
+        for microscope_configuration in self.trackingController.liveController.get_channels(
             self.objectiveStore.current_objective
         ):
             self.list_configurations.addItems([microscope_configuration.name])

@@ -1123,6 +1123,10 @@ class HighContentScreeningGui(QMainWindow):
             self.signal_performance_mode_changed.connect(self.multiPointWithFluidicsWidget.set_performance_mode)
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
+        # Sync config_repo profile when profile changes
+        self.profileWidget.signal_profile_changed.connect(
+            lambda: self.microscope.config_repo.set_profile(self.configurationManager.current_profile)
+        )
 
         self.liveControlWidget.signal_newExposureTime.connect(self.cameraSettingWidget.set_exposure_time)
         self.liveControlWidget.signal_newAnalogGain.connect(self.cameraSettingWidget.set_analog_gain)

@@ -1099,7 +1099,7 @@ class MultiPointWorker:
                 and (self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0)
             ):
                 configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
-                config_AF = self.channelConfigurationManager.get_channel_configuration_by_name(
+                config_AF = self.liveController.get_channel_by_name(
                     self.objectiveStore.current_objective, configuration_name_AF
                 )
                 self._select_config(config_AF)
@@ -1300,9 +1300,7 @@ class MultiPointWorker:
         rgb_channels = ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]
         images = {}
 
-        for config_ in self.channelConfigurationManager.get_channel_configurations_for_objective(
-            self.objectiveStore.current_objective
-        ):
+        for config_ in self.liveController.get_channels(self.objectiveStore.current_objective):
             if config_.name in rgb_channels:
                 self._select_config(config_)
 

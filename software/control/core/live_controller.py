@@ -131,9 +131,14 @@ class LiveController:
 
         Returns:
             List of AcquisitionChannel objects with confocal overrides applied if
-            in confocal mode.
+            in confocal mode. Returns empty list if no profile is set or no configs
+            are available.
         """
         config_repo = self.microscope.config_repo
+
+        # Check if a profile is set
+        if config_repo.current_profile is None:
+            return []
 
         # Get general config (shared settings)
         general = config_repo.get_general_config()

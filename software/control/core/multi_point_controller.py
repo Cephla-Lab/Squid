@@ -418,9 +418,7 @@ class MultiPointController:
     def set_selected_configurations(self, selected_configurations_name):
         self.selected_configurations = []
         for configuration_name in selected_configurations_name:
-            config = self.channelConfigurationManager.get_channel_configuration_by_name(
-                self.objectiveStore.current_objective, configuration_name
-            )
+            config = self.liveController.get_channel_by_name(self.objectiveStore.current_objective, configuration_name)
             if config:
                 self.selected_configurations.append(config)
 
@@ -463,7 +461,7 @@ class MultiPointController:
         if not was_streaming:
             self.camera.start_streaming()
         try:
-            config = self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)[0]
+            config = self.liveController.get_channels(self.objectiveStore.current_objective)[0]
             if (
                 self.liveController.trigger_mode == control._def.TriggerMode.SOFTWARE
                 or self.liveController.trigger_mode == control._def.TriggerMode.HARDWARE
@@ -483,9 +481,9 @@ class MultiPointController:
         when starting this acquisition, it is likely it will fail with an "out of disk space" error.
         """
         # TODO(imo): This needs updating for AbstractCamera
-        if not len(self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)):
+        if not len(self.liveController.get_channels(self.objectiveStore.current_objective)):
             raise ValueError("Cannot calculate disk space requirements without any valid configurations.")
-        first_config = self.channelConfigurationManager.get_configurations(self.objectiveStore.current_objective)[0]
+        first_config = self.liveController.get_channels(self.objectiveStore.current_objective)[0]
 
         # Our best bet is to grab an image, and use that for our size estimate.
         test_image = None

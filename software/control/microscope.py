@@ -344,6 +344,9 @@ class Microscope:
         self.configuration_mananger: ConfigurationManager = ConfigurationManager(
             self.channel_configuration_mananger, self.laser_af_settings_manager
         )
+        # Sync config_repo profile with ConfigurationManager's current profile
+        if self.configuration_mananger.current_profile:
+            self.config_repo.set_profile(self.configuration_mananger.current_profile)
         self.contrast_manager: ContrastManager = ContrastManager()
         self.stream_handler: StreamHandler = StreamHandler(handler_functions=stream_handler_callbacks)
 
@@ -409,8 +412,7 @@ class Microscope:
             self.live_controller.sync_confocal_mode_from_hardware(confocal_mode)
         else:
             self._log.warning(
-                "Confocal mode could not be synchronized from hardware; "
-                "keeping existing live controller state."
+                "Confocal mode could not be synchronized from hardware; " "keeping existing live controller state."
             )
         return sync_successful
 
