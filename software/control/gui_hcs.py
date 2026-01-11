@@ -975,7 +975,7 @@ class HighContentScreeningGui(QMainWindow):
 
         # RAM monitor widget (always create, visibility controlled by setting)
         self.ramMonitorWidget = widgets.RAMMonitorWidget()
-        self.ramMonitorWidget.setVisible(False)  # Initially hidden, shown during acquisition if enabled
+        self.ramMonitorWidget.setVisible(False)  # Initially hidden; shown when RAM monitoring setting is enabled
 
     def setup_layout(self):
         layout = QVBoxLayout()
@@ -1768,24 +1768,20 @@ class HighContentScreeningGui(QMainWindow):
         self.recordTabWidget.currentWidget().display_progress_bar(acquisition_started)
 
     def _update_ram_monitor_visibility(self):
-        """Update RAM monitor widget and status bar visibility based on setting."""
+        """Update RAM monitor widget visibility based on setting."""
         import control._def
 
         if self.ramMonitorWidget is None:
             return
 
         if control._def.ENABLE_MEMORY_PROFILING:
-            self.statusBar().setVisible(True)
             self.ramMonitorWidget.setVisible(True)
             self.ramMonitorWidget.start_monitoring()
-            self.log.info(
-                f"RAM monitor: enabled, widget visible={self.ramMonitorWidget.isVisible()}, statusbar visible={self.statusBar().isVisible()}"
-            )
+            self.log.info(f"RAM monitor: enabled, widget visible={self.ramMonitorWidget.isVisible()}")
         else:
             self.ramMonitorWidget.stop_monitoring()
             self.ramMonitorWidget.setVisible(False)
-            self.statusBar().setVisible(False)
-            self.log.debug("RAM monitor: disabled, hiding status bar")
+            self.log.debug("RAM monitor: disabled, hiding widget")
 
     def _connect_ram_monitor_widget(self):
         """Connect RAM monitor widget to memory monitor during acquisition."""
@@ -1808,9 +1804,15 @@ class HighContentScreeningGui(QMainWindow):
 
         if self.ramMonitorWidget is not None:
             self.ramMonitorWidget.disconnect_monitor()
-            # Keep showing if profiling is enabled (continuous monitoring continues)
+            # Control monitoring based on current profiling setting
             if control._def.ENABLE_MEMORY_PROFILING:
+                # Ensure background monitoring continues when profiling is enabled
+                self.ramMonitorWidget.start_monitoring()
                 self.log.debug("RAM monitor: disconnected from acquisition, continuing background monitoring")
+            else:
+                # Stop monitoring entirely when profiling is disabled
+                self.ramMonitorWidget.stop_monitoring()
+                self.log.debug("RAM monitor: disconnected from acquisition, monitoring stopped (profiling disabled)")
 
     def onStartLive(self):
         self.imageDisplayTabs.setCurrentIndex(0)
