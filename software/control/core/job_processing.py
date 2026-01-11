@@ -145,12 +145,18 @@ def _acquire_file_lock(lock_path: str, context: str = ""):
 
 
 class SaveImageJob(Job):
+    _log: ClassVar = squid.logging.get_logger("SaveImageJob")
+
     def run(self) -> bool:
         # Simulated disk I/O mode - encode to buffer, throttle, discard
         from control.core.io_simulation import is_simulation_enabled, simulated_tiff_write
 
         if is_simulation_enabled():
-            simulated_tiff_write(self.image_array())
+            bytes_written = simulated_tiff_write(self.image_array())
+            self._log.debug(
+                f"SaveImageJob {self.job_id}: simulated write of {bytes_written} bytes "
+                f"(image shape={self.image_array().shape})"
+            )
             return True
 
         is_color = len(self.image_array().shape) > 2
@@ -219,6 +225,7 @@ class SaveOMETiffJob(Job):
     The acquisition_info field is injected by JobRunner.dispatch() before the job runs.
     """
 
+    _log: ClassVar = squid.logging.get_logger("SaveOMETiffJob")
     acquisition_info: Optional[AcquisitionInfo] = field(default=None)
 
     def run(self) -> bool:
@@ -247,14 +254,17 @@ class SaveOMETiffJob(Job):
                 self.image_array().shape[1],
             )
 
-            simulated_ome_tiff_write(
+            bytes_written = simulated_ome_tiff_write(
                 image=self.image_array(),
                 stack_key=stack_key,
                 shape=shape,
-                dtype=self.image_array().dtype,
                 time_point=int(self.capture_info.time_point or 0),
                 z_index=int(self.capture_info.z_index),
                 channel_index=int(self.capture_info.configuration_idx),
+            )
+            self._log.debug(
+                f"SaveOMETiffJob {self.job_id}: simulated write of {bytes_written} bytes "
+                f"(image shape={self.image_array().shape})"
             )
             return True
 
