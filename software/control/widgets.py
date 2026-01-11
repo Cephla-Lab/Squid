@@ -13901,15 +13901,19 @@ class BackpressureMonitorWidget(QWidget):
     throttling is enabled. Shows a warning indicator when throttling is active.
 
     Attributes:
-        label_jobs: QLabel showing pending/max jobs
-        label_bytes: QLabel showing pending/max MB
+        label_jobs: QLabel showing pending jobs count
+        label_bytes: QLabel showing pending MB
         label_throttled: QLabel showing throttle status (hidden when not throttled)
     """
+
+    # How long to keep [THROTTLED] visible after throttle releases (in update cycles)
+    THROTTLE_STICKY_CYCLES = 4  # 4 cycles * 500ms = 2 seconds
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._controller = None
         self._log = logging.getLogger("squid." + self.__class__.__name__)
+        self._throttle_sticky_counter = 0  # Countdown for sticky throttle indicator
         self._setup_ui()
         self._setup_timer()
 
@@ -13928,9 +13932,8 @@ class BackpressureMonitorWidget(QWidget):
 
         self.label_bytes = QLabel("--")
 
-        self.label_throttled = QLabel("[THROTTLED]")
+        self.label_throttled = QLabel("")
         self.label_throttled.setStyleSheet("color: #e74c3c; font-weight: bold;")
-        self.label_throttled.setVisible(False)
 
         layout.addWidget(self.label_prefix)
         layout.addWidget(self.label_jobs)
@@ -13959,9 +13962,10 @@ class BackpressureMonitorWidget(QWidget):
         """Stop monitoring and reset display."""
         self._update_timer.stop()
         self._controller = None
+        self._throttle_sticky_counter = 0
         self.label_jobs.setText("--")
         self.label_bytes.setText("--")
-        self.label_throttled.setVisible(False)
+        self.label_throttled.setText("")
 
     def _update_display(self) -> None:
         """Update display with current backpressure stats."""
@@ -13971,14 +13975,26 @@ class BackpressureMonitorWidget(QWidget):
         try:
             stats = self._controller.get_stats()
 
-            # Update jobs display
-            self.label_jobs.setText(f"{stats.pending_jobs}/{stats.max_pending_jobs} jobs")
+            # Update jobs display (just current count, no max)
+            self.label_jobs.setText(f"{stats.pending_jobs} jobs")
 
-            # Update bytes display
-            self.label_bytes.setText(f"{stats.pending_bytes_mb:.1f}/{stats.max_pending_mb:.1f} MB")
+            # Update bytes display (just current count, no max)
+            self.label_bytes.setText(f"{stats.pending_bytes_mb:.1f} MB")
 
-            # Update throttle indicator
-            self.label_throttled.setVisible(stats.is_throttled)
+            # Update throttle indicator with sticky behavior
+            # Once throttled, keep showing for THROTTLE_STICKY_CYCLES even after release
+            if stats.is_throttled:
+                self._log.info(
+                    f"THROTTLED: jobs={stats.pending_jobs}/{stats.max_pending_jobs}, "
+                    f"MB={stats.pending_bytes_mb:.1f}/{stats.max_pending_mb:.1f}"
+                )
+                self._throttle_sticky_counter = self.THROTTLE_STICKY_CYCLES
+                self.label_throttled.setText("[THROTTLED]")
+            elif self._throttle_sticky_counter > 0:
+                self._throttle_sticky_counter -= 1
+                # Keep showing [THROTTLED] during sticky period
+            else:
+                self.label_throttled.setText("")
 
         except Exception as e:
             self._log.warning(f"Backpressure monitor update failed: {e}")
