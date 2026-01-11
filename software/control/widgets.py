@@ -1420,7 +1420,9 @@ class PreferencesDialog(QDialog):
         if not self._floats_equal(old_val, new_val):
             changes.append(("Illumination Intensity Factor", str(old_val), str(new_val), False))
 
-        # Advanced - Development Settings (all require restart due to subprocess propagation)
+        # Advanced - Development Settings
+        # Enable/disable requires restart (for warning banner/dialog), but speed/compression
+        # take effect on next acquisition since each acquisition starts a fresh subprocess
         old_val = self._get_config_bool("GENERAL", "simulated_disk_io_enabled", False)
         new_val = self.simulated_io_checkbox.isChecked()
         if old_val != new_val:
@@ -1429,12 +1431,12 @@ class PreferencesDialog(QDialog):
         old_val = self._get_config_float("GENERAL", "simulated_disk_io_speed_mb_s", 200.0)
         new_val = self.simulated_io_speed_spinbox.value()
         if not self._floats_equal(old_val, new_val):
-            changes.append(("Simulated Write Speed", f"{old_val} MB/s", f"{new_val} MB/s", True))
+            changes.append(("Simulated Write Speed", f"{old_val} MB/s", f"{new_val} MB/s", False))
 
         old_val = self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
         new_val = self.simulated_io_compression_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Exercise Compression", str(old_val), str(new_val), True))
+            changes.append(("Exercise Compression", str(old_val), str(new_val), False))
 
         # Advanced - Position Limits (live update)
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115)
