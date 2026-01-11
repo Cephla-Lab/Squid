@@ -112,13 +112,11 @@ class LaserAFConfig(BaseModel):
         None, description="Data type of intensity profile array"
     )
     reference_intensity_min: Optional[float] = Field(
-        None, description="Min intensity value used for reference normalization"
+        None, description="Min pixel value used for reference normalization"
     )
     reference_intensity_max: Optional[float] = Field(
-        None, description="Max intensity value used for reference normalization"
+        None, description="Max pixel value used for reference normalization"
     )
-    reference_crop_min: Optional[float] = Field(None, description="Min pixel value used for crop normalization")
-    reference_crop_max: Optional[float] = Field(None, description="Max pixel value used for crop normalization")
 
     model_config = {"extra": "forbid"}
 
