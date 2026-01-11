@@ -39,6 +39,12 @@ from squid.backend.controllers.multipoint.image_capture import (
     ImageCaptureExecutor,
     CaptureSequenceBuilder,
 )
+from squid.backend.controllers.multipoint.focus_operations import (
+    FocusMapConfig,
+    FocusMapState,
+    FocusMapGenerator,
+    AutofocusExecutor,
+)
 
 __all__ = [
     "CaptureInfo",
@@ -72,4 +78,9 @@ __all__ = [
     "build_capture_info",
     "ImageCaptureExecutor",
     "CaptureSequenceBuilder",
+    # Phase 3d exports
+    "FocusMapConfig",
+    "FocusMapState",
+    "FocusMapGenerator",
+    "AutofocusExecutor",
 ]
