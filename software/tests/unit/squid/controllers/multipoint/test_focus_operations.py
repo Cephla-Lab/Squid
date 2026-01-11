@@ -1,59 +1,23 @@
-"""Unit tests for FocusMapGenerator and AutofocusExecutor."""
+"""Unit tests for AutofocusExecutor."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from unittest.mock import MagicMock
 
 import pytest
 
 from squid.backend.controllers.multipoint.focus_operations import (
-    FocusMapConfig,
-    FocusMapState,
-    FocusMapGenerator,
     AutofocusExecutor,
 )
-
-
-class FakeStageService:
-    """Fake StageService for testing."""
-
-    def __init__(self):
-        self.move_calls = []
-
-    def move_x_to(self, x_mm: float) -> None:
-        self.move_calls.append(("x", x_mm))
-
-    def move_y_to(self, y_mm: float) -> None:
-        self.move_calls.append(("y", y_mm))
 
 
 class FakeAutofocusController:
     """Fake AutoFocusController for testing."""
 
     def __init__(self):
-        self.focus_map_coords: List[Tuple[float, float, float]] = []
-        self.use_focus_map: bool = False
-        self.gen_focus_map_calls = []
         self.autofocus_called = False
         self.autofocus_completed = True
-        self.cleared = False
-
-    def gen_focus_map(
-        self,
-        coord1: Tuple[float, float],
-        coord2: Tuple[float, float],
-        coord3: Tuple[float, float],
-    ) -> None:
-        self.gen_focus_map_calls.append((coord1, coord2, coord3))
-
-    def set_focus_map_use(self, use: bool) -> None:
-        self.use_focus_map = use
-
-    def clear_focus_map(self) -> None:
-        self.focus_map_coords.clear()
-        self.cleared = True
 
     def autofocus(self) -> None:
         self.autofocus_called = True
@@ -81,34 +45,22 @@ class FakeFocusLockController:
     def __init__(self):
         self.mode = "off"
         self.is_running = False
+        self.is_active = False  # New: tracks if started (even if paused)
         self.wait_result = True
+        self.pause_called = False
+        self.resume_called = False
+        self.should_fail_pause = False
 
     def wait_for_lock(self, timeout_s: float = 5.0) -> bool:
         return self.wait_result
 
+    def pause(self) -> None:
+        if self.should_fail_pause:
+            raise Exception("Pause failed")
+        self.pause_called = True
 
-class FakeScanCoordinates:
-    """Fake ScanCoordinates for testing."""
-
-    def __init__(self):
-        self.region_fov_coordinates: Dict[str, List[Tuple[float, ...]]] = {
-            "region_0": [(1.0, 2.0), (1.5, 2.0)],
-            "region_1": [(3.0, 4.0)],
-        }
-        self.updated_z_levels = []
-
-    def update_fov_z_level(self, region_id: str, fov: int, z: float) -> None:
-        self.updated_z_levels.append((region_id, fov, z))
-
-
-class FakeFocusMap:
-    """Fake focus map for testing."""
-
-    def __init__(self, z_value: float = 0.05):
-        self.z_value = z_value
-
-    def interpolate(self, x: float, y: float, region_id: str) -> float:
-        return self.z_value
+    def resume(self) -> None:
+        self.resume_called = True
 
 
 class FakeChannelConfigManager:
@@ -128,156 +80,6 @@ class FakeObjectiveStore:
 
     def __init__(self):
         self.current_objective = "10x"
-
-
-class TestFocusMapConfig:
-    """Tests for FocusMapConfig dataclass."""
-
-    def test_defaults(self):
-        """Test FocusMapConfig default values."""
-        config = FocusMapConfig(delta_x_mm=1.0, delta_y_mm=1.0)
-
-        assert config.delta_x_mm == 1.0
-        assert config.delta_y_mm == 1.0
-        assert config.max_grid_points == 4
-        assert config.min_grid_points == 2
-
-
-class TestFocusMapState:
-    """Tests for FocusMapState dataclass."""
-
-    def test_holds_state(self):
-        """Test FocusMapState holds correct values."""
-        state = FocusMapState(
-            coords=[(1.0, 2.0, 0.05), (3.0, 4.0, 0.06)],
-            use_focus_map=True,
-        )
-
-        assert len(state.coords) == 2
-        assert state.use_focus_map is True
-
-
-class TestFocusMapGenerator:
-    """Tests for FocusMapGenerator class."""
-
-    def test_init(self):
-        """Test FocusMapGenerator initialization."""
-        af = FakeAutofocusController()
-        stage = FakeStageService()
-        config = FocusMapConfig(delta_x_mm=1.0, delta_y_mm=1.0)
-
-        generator = FocusMapGenerator(af, stage, config)
-
-        assert generator._autofocus == af
-        assert generator._stage == stage
-        assert generator._config == config
-
-    def test_focus_map_context_saves_and_restores(self):
-        """Test that context manager saves and restores focus map state."""
-        af = FakeAutofocusController()
-        af.focus_map_coords = [(1.0, 2.0, 0.05)]
-        af.use_focus_map = True
-        stage = FakeStageService()
-        config = FocusMapConfig(delta_x_mm=1.0, delta_y_mm=1.0)
-
-        generator = FocusMapGenerator(af, stage, config)
-
-        with generator.focus_map_context():
-            # Modify focus map
-            af.focus_map_coords.clear()
-            af.focus_map_coords.append((5.0, 6.0, 0.1))
-            af.use_focus_map = False
-
-        # State should be restored
-        assert len(af.focus_map_coords) == 1
-        assert af.focus_map_coords[0] == (1.0, 2.0, 0.05)
-        assert af.use_focus_map is True
-
-    def test_generate_from_bounds(self):
-        """Test generating focus map from scan bounds."""
-        af = FakeAutofocusController()
-        stage = FakeStageService()
-        config = FocusMapConfig(delta_x_mm=1.0, delta_y_mm=1.0)
-
-        generator = FocusMapGenerator(af, stage, config)
-
-        bounds = {"x": (0.0, 4.0), "y": (0.0, 3.0)}
-        result = generator.generate_from_bounds(bounds)
-
-        assert result is True
-        assert len(af.gen_focus_map_calls) == 1
-        assert af.use_focus_map is True
-
-    def test_generate_from_bounds_returns_to_center(self):
-        """Test that generate_from_bounds returns stage to center."""
-        af = FakeAutofocusController()
-        stage = FakeStageService()
-        config = FocusMapConfig(delta_x_mm=1.0, delta_y_mm=1.0)
-
-        generator = FocusMapGenerator(af, stage, config)
-
-        bounds = {"x": (0.0, 4.0), "y": (0.0, 2.0)}
-        generator.generate_from_bounds(bounds)
-
-        # Should move to center (2.0, 1.0)
-        assert ("x", 2.0) in stage.move_calls
-        assert ("y", 1.0) in stage.move_calls
-
-    def test_generate_from_bounds_empty_returns_false(self):
-        """Test that empty bounds returns False."""
-        af = FakeAutofocusController()
-        stage = FakeStageService()
-        config = FocusMapConfig(delta_x_mm=1.0, delta_y_mm=1.0)
-
-        generator = FocusMapGenerator(af, stage, config)
-
-        result = generator.generate_from_bounds({})
-
-        assert result is False
-        assert len(af.gen_focus_map_calls) == 0
-
-    def test_interpolate_z_positions(self):
-        """Test interpolating z-positions using focus surface."""
-        af = FakeAutofocusController()
-        stage = FakeStageService()
-        config = FocusMapConfig(delta_x_mm=1.0, delta_y_mm=1.0)
-
-        generator = FocusMapGenerator(af, stage, config)
-
-        scan_coords = FakeScanCoordinates()
-        focus_map = FakeFocusMap(z_value=0.07)
-
-        generator.interpolate_z_positions(scan_coords, focus_map)
-
-        # All FOVs should have updated z-levels
-        assert len(scan_coords.updated_z_levels) == 3
-        for region_id, fov, z in scan_coords.updated_z_levels:
-            assert z == 0.07
-
-    def test_interpolate_z_positions_none_focus_map(self):
-        """Test that None focus map does nothing."""
-        af = FakeAutofocusController()
-        stage = FakeStageService()
-        config = FocusMapConfig(delta_x_mm=1.0, delta_y_mm=1.0)
-
-        generator = FocusMapGenerator(af, stage, config)
-
-        scan_coords = FakeScanCoordinates()
-        generator.interpolate_z_positions(scan_coords, None)
-
-        assert len(scan_coords.updated_z_levels) == 0
-
-    def test_clear_focus_map(self):
-        """Test clearing focus map."""
-        af = FakeAutofocusController()
-        af.focus_map_coords = [(1.0, 2.0, 0.05)]
-        stage = FakeStageService()
-        config = FocusMapConfig(delta_x_mm=1.0, delta_y_mm=1.0)
-
-        generator = FocusMapGenerator(af, stage, config)
-        generator.clear_focus_map()
-
-        assert af.cleared is True
 
 
 class TestAutofocusExecutor:
@@ -402,19 +204,147 @@ class TestAutofocusExecutor:
 
         assert result is False
 
-    def test_perform_autofocus_with_focus_lock(self):
-        """Test autofocus uses focus lock when active."""
+    def test_is_focus_lock_active_when_active(self):
+        """Test is_focus_lock_active returns True when focus lock is active."""
         focus_lock = FakeFocusLockController()
-        focus_lock.mode = "continuous"
-        focus_lock.is_running = True
-        focus_lock.wait_result = True
+        focus_lock.is_active = True
+
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+
+        assert executor.is_focus_lock_active() is True
+
+    def test_is_focus_lock_active_when_inactive(self):
+        """Test is_focus_lock_active returns False when focus lock is not active."""
+        focus_lock = FakeFocusLockController()
+        focus_lock.is_active = False
+
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+
+        assert executor.is_focus_lock_active() is False
+
+    def test_is_focus_lock_active_no_controller(self):
+        """Test is_focus_lock_active returns False when no controller."""
+        executor = AutofocusExecutor()
+
+        assert executor.is_focus_lock_active() is False
+
+    def test_should_perform_autofocus_skips_when_focus_lock_active(self):
+        """Test that autofocus is skipped when focus lock is active."""
+        focus_lock = FakeFocusLockController()
+        focus_lock.is_active = True
 
         executor = AutofocusExecutor(focus_lock_controller=focus_lock)
         executor.configure(do_reflection_af=True)
 
+        # Focus lock is active, so per-FOV AF should be skipped
+        assert executor.should_perform_autofocus() is False
+
+    def test_perform_autofocus_skips_when_focus_lock_active(self):
+        """Test perform_autofocus returns True (skip) when focus lock is active."""
+        focus_lock = FakeFocusLockController()
+        focus_lock.is_active = True
+        laser_af = FakeLaserAFController()
+
+        executor = AutofocusExecutor(
+            focus_lock_controller=focus_lock,
+            laser_af_controller=laser_af,
+        )
+        executor.configure(do_reflection_af=True)
+
+        # Should return True (skipped) without calling laser AF
         result = executor.perform_autofocus()
 
         assert result is True
+        assert len(laser_af.move_to_target_calls) == 0
+
+    def test_wait_for_focus_lock_success(self):
+        """Test waiting for focus lock to achieve lock."""
+        focus_lock = FakeFocusLockController()
+        focus_lock.is_active = True
+        focus_lock.wait_result = True
+
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+
+        result = executor.wait_for_focus_lock(timeout_s=5.0)
+
+        assert result is True
+
+    def test_wait_for_focus_lock_timeout(self):
+        """Test wait_for_focus_lock returns False on timeout."""
+        focus_lock = FakeFocusLockController()
+        focus_lock.is_active = True
+        focus_lock.wait_result = False
+
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+
+        result = executor.wait_for_focus_lock(timeout_s=1.0)
+
+        assert result is False
+
+    def test_wait_for_focus_lock_not_active(self):
+        """Test wait_for_focus_lock returns False when not active."""
+        focus_lock = FakeFocusLockController()
+        focus_lock.is_active = False
+
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+
+        result = executor.wait_for_focus_lock()
+
+        assert result is False
+
+    def test_pause_focus_lock_success(self):
+        """Test pausing focus lock."""
+        focus_lock = FakeFocusLockController()
+        focus_lock.is_active = True
+
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+
+        result = executor.pause_focus_lock()
+
+        assert result is True
+        assert focus_lock.pause_called is True
+
+    def test_pause_focus_lock_not_active(self):
+        """Test pause_focus_lock returns False when not active."""
+        focus_lock = FakeFocusLockController()
+        focus_lock.is_active = False
+
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+
+        result = executor.pause_focus_lock()
+
+        assert result is False
+        assert focus_lock.pause_called is False
+
+    def test_pause_focus_lock_failure(self):
+        """Test pause_focus_lock returns False on exception."""
+        focus_lock = FakeFocusLockController()
+        focus_lock.is_active = True
+        focus_lock.should_fail_pause = True
+
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+
+        result = executor.pause_focus_lock()
+
+        assert result is False
+
+    def test_resume_focus_lock(self):
+        """Test resuming focus lock."""
+        focus_lock = FakeFocusLockController()
+        focus_lock.is_active = True
+
+        executor = AutofocusExecutor(focus_lock_controller=focus_lock)
+
+        executor.resume_focus_lock()
+
+        assert focus_lock.resume_called is True
+
+    def test_resume_focus_lock_no_controller(self):
+        """Test resume_focus_lock handles no controller gracefully."""
+        executor = AutofocusExecutor()
+
+        # Should not raise
+        executor.resume_focus_lock()
 
     def test_increment_fov_count(self):
         """Test incrementing FOV counter."""

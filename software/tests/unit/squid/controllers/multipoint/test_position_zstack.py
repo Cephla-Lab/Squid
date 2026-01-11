@@ -1,4 +1,4 @@
-"""Unit tests for PositionController, ZStackExecutor, and FOVNavigator."""
+"""Unit tests for PositionController and ZStackExecutor."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from squid.backend.controllers.multipoint.position_zstack import (
     PositionController,
     ZStackConfig,
     ZStackExecutor,
-    FOVNavigator,
 )
 
 
@@ -358,143 +357,3 @@ class TestZStackExecutor:
 
         # Should return False because piezo_service is None
         assert executor.use_piezo is False
-
-
-class TestFOVNavigator:
-    """Tests for FOVNavigator class."""
-
-    def test_init(self):
-        """Test FOVNavigator initialization."""
-        stage = FakeStageService()
-        position = PositionController(stage)
-        navigator = FOVNavigator(position)
-
-        assert navigator._position == position
-
-    def test_move_to_fov_xy_only(self):
-        """Test moving to FOV with XY coordinates only."""
-        stage = FakeStageService()
-        position = PositionController(
-            stage,
-            stabilization_time_x_ms=0,
-            stabilization_time_y_ms=0,
-        )
-        navigator = FOVNavigator(position)
-
-        pos = navigator.move_to_fov(coordinate_mm=(1.0, 2.0))
-
-        assert pos.x_mm == 1.0
-        assert pos.y_mm == 2.0
-
-    def test_move_to_fov_xyz(self):
-        """Test moving to FOV with XYZ coordinates."""
-        stage = FakeStageService()
-        position = PositionController(
-            stage,
-            stabilization_time_x_ms=0,
-            stabilization_time_y_ms=0,
-            stabilization_time_z_ms=0,
-        )
-        navigator = FOVNavigator(position)
-
-        pos = navigator.move_to_fov(coordinate_mm=(1.0, 2.0, 0.05))
-
-        assert pos.x_mm == 1.0
-        assert pos.y_mm == 2.0
-        assert pos.z_mm == 0.05
-
-    def test_move_to_fov_uses_last_z(self):
-        """Test moving to FOV using last recorded z-position."""
-        stage = FakeStageService()
-        position = PositionController(
-            stage,
-            stabilization_time_x_ms=0,
-            stabilization_time_y_ms=0,
-            stabilization_time_z_ms=0,
-        )
-        navigator = FOVNavigator(position)
-
-        # Record a z-position
-        navigator.record_z_position("region_0", 1, z_mm=0.06)
-
-        # Move to FOV with use_last_z=True and timepoint > 0
-        pos = navigator.move_to_fov(
-            coordinate_mm=(1.0, 2.0, 0.05),  # Z in coord is 0.05
-            region_id="region_0",
-            fov=1,
-            use_last_z=True,
-            timepoint=1,
-        )
-
-        # Should use last z-position (0.06), not coordinate z (0.05)
-        assert pos.z_mm == 0.06
-
-    def test_move_to_fov_ignores_last_z_on_timepoint_0(self):
-        """Test that last z-position is ignored on timepoint 0."""
-        stage = FakeStageService()
-        position = PositionController(
-            stage,
-            stabilization_time_x_ms=0,
-            stabilization_time_y_ms=0,
-            stabilization_time_z_ms=0,
-        )
-        navigator = FOVNavigator(position)
-
-        navigator.record_z_position("region_0", 1, z_mm=0.06)
-
-        pos = navigator.move_to_fov(
-            coordinate_mm=(1.0, 2.0, 0.05),
-            region_id="region_0",
-            fov=1,
-            use_last_z=True,
-            timepoint=0,  # First timepoint
-        )
-
-        # Should use coordinate z (0.05), not last z-position
-        assert pos.z_mm == 0.05
-
-    def test_record_z_position(self):
-        """Test recording z-position."""
-        stage = FakeStageService()
-        position = PositionController(stage)
-        navigator = FOVNavigator(position)
-
-        navigator.record_z_position("region_0", 1, z_mm=0.05)
-        navigator.record_z_position("region_0", 2, z_mm=0.06)
-
-        assert navigator._last_z_positions[("region_0", 1)] == 0.05
-        assert navigator._last_z_positions[("region_0", 2)] == 0.06
-
-    def test_clear_z_positions(self):
-        """Test clearing z-positions."""
-        stage = FakeStageService()
-        position = PositionController(stage)
-        navigator = FOVNavigator(position)
-
-        navigator.record_z_position("region_0", 1, z_mm=0.05)
-        navigator.clear_z_positions()
-
-        assert len(navigator._last_z_positions) == 0
-
-    def test_move_to_fov_handles_missing_last_z(self):
-        """Test that missing last z-position falls back to coordinate."""
-        stage = FakeStageService()
-        position = PositionController(
-            stage,
-            stabilization_time_x_ms=0,
-            stabilization_time_y_ms=0,
-            stabilization_time_z_ms=0,
-        )
-        navigator = FOVNavigator(position)
-
-        # No z-position recorded for this FOV
-        pos = navigator.move_to_fov(
-            coordinate_mm=(1.0, 2.0, 0.05),
-            region_id="region_0",
-            fov=1,
-            use_last_z=True,
-            timepoint=1,
-        )
-
-        # Should fall back to coordinate z
-        assert pos.z_mm == 0.05

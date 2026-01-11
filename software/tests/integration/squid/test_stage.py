@@ -116,6 +116,45 @@ class TestSimulatedStage:
         assert pos.y_mm == pytest.approx(200.0)
         assert pos.z_mm == pytest.approx(50.0)
 
+    def test_default_speed_is_realistic(self, stage_config):
+        """Default stage speed should be 2.5 mm/s (typical hardware)."""
+        stage = SimulatedStage(stage_config, simulate_delays=False)
+        assert stage.DEFAULT_SPEED_MM_PER_S == 2.5
+        assert stage._speed_mm_per_s == 2.5
+        # 1/2.5 = 0.4 seconds per mm
+        assert stage._move_delay_per_mm == pytest.approx(0.4)
+
+    def test_simulate_delays_uses_realistic_timing(self, stage_config):
+        """With simulate_delays=True, movement should take realistic time."""
+        import time
+
+        stage = SimulatedStage(stage_config, simulate_delays=True, speed_mm_per_s=100.0)
+        # Start at middle of X range
+        mid_x = (stage_config.X_AXIS.MIN_POSITION + stage_config.X_AXIS.MAX_POSITION) / 2
+        stage.set_position(x_mm=mid_x)
+
+        # Move 10mm at 100 mm/s should take ~0.1 seconds
+        target_x = mid_x + 10.0
+        start = time.monotonic()
+        stage.move_x_to(target_x)
+        elapsed = time.monotonic() - start
+
+        # Should take at least 0.08s (allowing tolerance) but less than 0.3s
+        assert elapsed >= 0.08
+        assert elapsed < 0.3
+
+    def test_set_speed_updates_delay(self, stage_config):
+        """set_speed should update the movement delay calculation."""
+        stage = SimulatedStage(stage_config, simulate_delays=True)
+
+        # Default 2.5 mm/s
+        assert stage._move_delay_per_mm == pytest.approx(0.4)
+
+        # Change to 5 mm/s
+        stage.set_speed(5.0)
+        assert stage._speed_mm_per_s == 5.0
+        assert stage._move_delay_per_mm == pytest.approx(0.2)  # 1/5 = 0.2 s/mm
+
 
 # ============================================================================
 # CephlaStage Tests (with simulated microcontroller)

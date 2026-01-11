@@ -103,3 +103,115 @@ def test_laser_state_tracking():
 
     assert laser_af.on_calls == 1
     assert laser_af.off_calls == 1
+
+
+def test_pause_preserves_lock_state():
+    """Test that pause/resume preserves lock buffer and doesn't reset state."""
+    bus = EventBus()
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=bus,
+        config=FocusLockConfig(buffer_length=3),
+    )
+
+    events: list[FocusLockStatusChanged] = []
+    bus.subscribe(FocusLockStatusChanged, events.append)
+
+    # Simulate lock acquisition
+    controller._should_run = True
+    controller._set_status("ready")
+    controller._update_lock_state(True, 0.0)  # buffer_fill = 1
+    controller._update_lock_state(True, 0.0)  # buffer_fill = 2
+    controller._update_lock_state(True, 0.0)  # buffer_fill = 3 -> locked
+
+    bus.drain()
+    assert controller.status == "locked"
+    assert controller._lock_buffer_fill == 3
+
+    # Pause should preserve buffer
+    controller.pause()
+    bus.drain()
+    assert controller.status == "paused"
+    assert controller._lock_buffer_fill == 3  # Buffer preserved
+
+    # Resume should restore locked status
+    controller.resume()
+    bus.drain()
+    assert controller.status == "locked"
+    assert controller._lock_buffer_fill == 3  # Buffer still preserved
+
+
+def test_pause_does_not_reset_on_resume():
+    """Test that resume doesn't call _reset_lock_state."""
+    bus = EventBus()
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=bus,
+        config=FocusLockConfig(buffer_length=3),
+    )
+
+    # Set up a locked state with some history
+    controller._should_run = True
+    controller._lock_buffer_fill = 3
+    controller._set_status("locked")
+    controller._error_history.append(0.1)
+    controller._error_history.append(0.2)
+
+    # Pause
+    controller.pause()
+    assert controller.status == "paused"
+    assert len(controller._error_history) == 2  # History preserved
+
+    # Resume
+    controller.resume()
+    assert controller.status == "locked"
+    assert len(controller._error_history) == 2  # History still preserved
+
+
+def test_pause_when_not_started():
+    """Test that pause does nothing when not started."""
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=EventBus(),
+    )
+
+    # Not started yet
+    assert controller._should_run is False
+
+    # Pause should have no effect
+    controller.pause()
+    assert controller.status == "disabled"
+    assert controller._paused is False
+
+
+def test_resume_when_not_paused():
+    """Test that resume does nothing when not paused."""
+    bus = EventBus()
+    controller = ContinuousFocusLockController(
+        laser_af=_DummyLaserAF(),
+        piezo_service=_DummyPiezoService(),
+        event_bus=bus,
+    )
+
+    events: list[FocusLockStatusChanged] = []
+    bus.subscribe(FocusLockStatusChanged, events.append)
+
+    # Set up running but not paused
+    controller._should_run = True
+    controller._set_status("locked")
+    controller._lock_buffer_fill = 3
+
+    # Drain the event from _set_status
+    bus.drain()
+    events.clear()
+
+    # Resume should have no effect when not paused
+    controller.resume()
+    bus.drain()
+
+    # No status change events should have been published
+    assert len(events) == 0
+    assert controller.status == "locked"

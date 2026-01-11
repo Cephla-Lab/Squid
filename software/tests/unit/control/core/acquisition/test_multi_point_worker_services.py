@@ -1,4 +1,4 @@
-"""Tests for MultiPointWorker service routing and abort handling."""
+"""Tests for MultiPointWorker service usage and abort handling."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -87,39 +87,58 @@ def _make_worker(
     )
 
 
-def test_camera_helpers_use_service_not_hardware():
+def test_worker_instantiation():
+    """Test that MultiPointWorker can be instantiated without errors."""
     cam_service = MagicMock()
-    cam_service.add_frame_callback.return_value = "svc_cb"
     cam_service.get_pixel_size_binned_um.return_value = 1.0
+    cam_service.get_total_frame_time.return_value = 10.0
     stage_service = MagicMock()
     stage_service.get_position.return_value = SimpleNamespace(
         x_mm=0.0, y_mm=0.0, z_mm=0.0
     )
+
     worker = _make_worker(
-        camera_service=cam_service, stage_service=stage_service, peripheral_service=MagicMock()
+        camera_service=cam_service,
+        stage_service=stage_service,
+        peripheral_service=MagicMock(),
     )
 
-    cb_id = worker._camera_add_frame_callback(lambda *_: None)
-    worker._camera_start_streaming()
+    # Verify domain objects are created
+    assert worker._progress_tracker is not None
+    assert worker._coordinate_tracker is not None
+    assert worker._position_controller is not None
+    assert worker._zstack_executor is not None
+    assert worker._autofocus_executor is not None
 
+
+def test_run_uses_camera_service_directly():
+    """Test that run() uses camera service directly (not via wrappers)."""
+    cam_service = MagicMock()
+    cam_service.add_frame_callback.return_value = "cb_id"
+    cam_service.get_pixel_size_binned_um.return_value = 1.0
+    cam_service.get_total_frame_time.return_value = 10.0
+    stage_service = MagicMock()
+    stage_service.get_position.return_value = SimpleNamespace(
+        x_mm=0.0, y_mm=0.0, z_mm=0.0
+    )
+
+    worker = _make_worker(
+        camera_service=cam_service,
+        stage_service=stage_service,
+        peripheral_service=MagicMock(),
+    )
+    worker.request_abort()  # Abort immediately
+    worker.run()
+
+    # Verify camera service was called directly
     cam_service.add_frame_callback.assert_called_once()
     cam_service.start_streaming.assert_called_once()
-    assert cb_id == "svc_cb"
-
-
-def test_stage_helpers_wait_and_use_service():
-    stage_service = MagicMock()
-    stage_service.get_position.return_value = SimpleNamespace(
-        x_mm=0.0, y_mm=0.0, z_mm=0.0
-    )
-    worker = _make_worker(stage_service=stage_service)
-
-    worker._stage_move_x_to(1.0)
-    stage_service.move_x_to.assert_called_once_with(1.0)
-    stage_service.wait_for_idle.assert_called()
+    cam_service.stop_streaming.assert_called_once()
+    cam_service.remove_frame_callback.assert_called_once_with("cb_id")
 
 
 def test_abort_sets_finished_event_success_false():
+    """Test that aborting an acquisition publishes a failure event."""
     bus = EventBus()
     events: list[AcquisitionWorkerFinished] = []
     bus.subscribe(AcquisitionWorkerFinished, events.append)
@@ -148,6 +167,7 @@ def test_abort_sets_finished_event_success_false():
 
 
 def test_acquire_rgb_image_emits_stream_handler_frame(tmp_path):
+    """Test that RGB image acquisition emits proper stream handler frame."""
     cam_service = MagicMock()
     cam_service.get_pixel_size_binned_um.return_value = 1.0
     cam_service.get_total_frame_time.return_value = 10.0
