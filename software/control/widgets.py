@@ -13984,10 +13984,6 @@ class BackpressureMonitorWidget(QWidget):
             # Update throttle indicator with sticky behavior
             # Once throttled, keep showing for THROTTLE_STICKY_CYCLES even after release
             if stats.is_throttled:
-                self._log.info(
-                    f"THROTTLED: jobs={stats.pending_jobs}/{stats.max_pending_jobs}, "
-                    f"MB={stats.pending_bytes_mb:.1f}/{stats.max_pending_mb:.1f}"
-                )
                 self._throttle_sticky_counter = self.THROTTLE_STICKY_CYCLES
                 self.label_throttled.setText("[THROTTLED]")
             elif self._throttle_sticky_counter > 0:
