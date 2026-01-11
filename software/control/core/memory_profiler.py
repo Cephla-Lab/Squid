@@ -5,8 +5,8 @@ designed to capture actual peak memory usage that matches Activity Monitor readi
 
 Platform support:
     - macOS: Full support (RSS, kernel peak via ru_maxrss, physical footprint)
-    - Linux: Partial support (RSS, kernel peak via ru_maxrss, no footprint)
-    - Windows: Basic support (RSS only, no kernel peak or footprint)
+    - Linux: Full support (RSS, kernel peak via ru_maxrss, PSS from /proc/smaps)
+    - Windows: Full support (RSS, private bytes; no kernel peak)
 
 Usage:
     # In main process
@@ -149,21 +149,34 @@ def get_all_squid_memory_mb() -> Dict[str, float]:
         return {"main": 0.0, "children": 0.0, "total": 0.0, "child_details": []}
 
 
-def get_macos_memory_footprint_mb(pid: int) -> float:
-    """Get macOS physical footprint for a process (matches Activity Monitor).
+def get_memory_footprint_mb(pid: int) -> float:
+    """Get memory footprint for a process (matches system monitor on each platform).
 
-    On macOS, Activity Monitor shows 'Memory' which is the physical footprint,
-    not RSS. This can be significantly larger than RSS.
+    This returns the most accurate "memory usage" metric for each platform:
+    - macOS: Physical footprint (Activity Monitor's "Memory" column)
+    - Linux: PSS (Proportional Set Size) from /proc/[pid]/smaps
+    - Windows: Private bytes from memory_full_info()
 
     Args:
         pid: Process ID
 
     Returns:
-        Physical footprint in MB, or 0.0 if unavailable.
+        Memory footprint in MB, or 0.0 if unavailable.
     """
-    if platform.system() != "Darwin":
-        return 0.0
+    system = platform.system()
 
+    if system == "Darwin":
+        return _get_macos_footprint_mb(pid)
+    elif system == "Linux":
+        return _get_linux_pss_mb(pid)
+    elif system == "Windows":
+        return _get_windows_private_mb(pid)
+
+    return 0.0
+
+
+def _get_macos_footprint_mb(pid: int) -> float:
+    """Get macOS physical footprint using the footprint command."""
     try:
         result = subprocess.run(
             ["footprint", "-p", str(pid)],
@@ -174,7 +187,6 @@ def get_macos_memory_footprint_mb(pid: int) -> float:
         if result.returncode == 0:
             # Parse output like "python [17890]: 64-bit    Footprint: 6641 KB"
             for line in result.stdout.split("\n"):
-                # Look for "Footprint: XXXX KB" or "Footprint: XXXX MB" or "Footprint: X.X GB"
                 match = re.search(r"Footprint:\s*([\d.]+)\s*(KB|MB|GB)", line)
                 if match:
                     value = float(match.group(1))
@@ -187,14 +199,64 @@ def get_macos_memory_footprint_mb(pid: int) -> float:
                         return value * 1024
     except (subprocess.TimeoutExpired, FileNotFoundError, ValueError, AttributeError):
         pass
+    return 0.0
 
+
+def _get_linux_pss_mb(pid: int) -> float:
+    """Get Linux PSS (Proportional Set Size) from /proc/[pid]/smaps_rollup.
+
+    PSS accounts for shared memory proportionally, giving a more accurate
+    picture of actual memory usage than RSS.
+    """
+    try:
+        # Try smaps_rollup first (faster, available on Linux 4.14+)
+        smaps_path = f"/proc/{pid}/smaps_rollup"
+        if not os.path.exists(smaps_path):
+            smaps_path = f"/proc/{pid}/smaps"
+
+        with open(smaps_path, "r") as f:
+            content = f.read()
+
+        # Look for "Pss:" line and sum all values
+        pss_total_kb = 0
+        for line in content.split("\n"):
+            if line.startswith("Pss:"):
+                # Format: "Pss:                 1234 kB"
+                parts = line.split()
+                if len(parts) >= 2:
+                    pss_total_kb += int(parts[1])
+
+        return pss_total_kb / 1024
+    except (FileNotFoundError, PermissionError, ValueError):
+        pass
+    return 0.0
+
+
+def _get_windows_private_mb(pid: int) -> float:
+    """Get Windows private bytes using psutil.memory_full_info().
+
+    Private bytes represent memory that cannot be shared with other processes,
+    which is closest to the "footprint" concept.
+    """
+    try:
+        proc = psutil.Process(pid)
+        # memory_full_info() gives us private bytes on Windows
+        mem_info = proc.memory_full_info()
+        # Use 'private' if available, otherwise fall back to 'uss'
+        if hasattr(mem_info, "private"):
+            return mem_info.private / (1024 * 1024)
+        elif hasattr(mem_info, "uss"):
+            return mem_info.uss / (1024 * 1024)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+        pass
     return 0.0
 
 
 def get_all_python_processes_mb() -> Dict[str, float]:
     """Get memory for ALL Python processes on the system.
 
-    This helps compare with Activity Monitor which may show combined Python memory.
+    This helps compare with system monitor (Activity Monitor on macOS, htop on Linux,
+    Task Manager on Windows) which may show combined Python memory.
 
     Returns:
         Dict with 'total', 'count', 'footprint_total', and 'processes' list.
@@ -211,7 +273,7 @@ def get_all_python_processes_mb() -> Dict[str, float]:
 
             if "python" in name.lower() or "Python" in name:
                 mem_mb = proc.memory_info().rss / (1024 * 1024)
-                footprint_mb = get_macos_memory_footprint_mb(proc.info["pid"])
+                footprint_mb = get_memory_footprint_mb(proc.info["pid"])
                 total_mb += mem_mb
                 footprint_total_mb += footprint_mb if footprint_mb > 0 else mem_mb
                 processes.append(
