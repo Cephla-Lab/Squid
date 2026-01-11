@@ -48,6 +48,7 @@ from squid.core.events import (
     LoadScanCoordinatesCommand,
     RequestScanCoordinatesSnapshotCommand,
     ScanCoordinatesSnapshot,
+    FocusLockModeChanged,
 )
 
 if TYPE_CHECKING:
@@ -201,6 +202,21 @@ class WellplateMultiPointWidget(QFrame):
         self._event_bus.subscribe(ActiveAcquisitionTabChanged, self._on_active_tab_changed)
         self._event_bus.subscribe(ManualShapesChanged, self._on_manual_shapes_changed)
         self._event_bus.subscribe(MosaicLayersInitialized, lambda _e: self.enable_manual_ROI())
+        self._event_bus.subscribe(FocusLockModeChanged, self._on_focus_lock_mode_changed)
+
+    def _on_focus_lock_mode_changed(self, event: FocusLockModeChanged) -> None:
+        """Disable AF checkboxes when focus lock is active."""
+        focus_lock_active = event.mode == "on"
+
+        # Disable and uncheck Contrast AF
+        self.checkbox_withAutofocus.setEnabled(not focus_lock_active)
+        if focus_lock_active and self.checkbox_withAutofocus.isChecked():
+            self.checkbox_withAutofocus.setChecked(False)
+
+        # Disable and uncheck Laser AF (uses same system as focus lock)
+        self.checkbox_withReflectionAutofocus.setEnabled(not focus_lock_active)
+        if focus_lock_active and self.checkbox_withReflectionAutofocus.isChecked():
+            self.checkbox_withReflectionAutofocus.setChecked(False)
 
     def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
         self._wellplate_format = event.format_name
