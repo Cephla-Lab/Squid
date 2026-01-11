@@ -63,12 +63,10 @@ class LaserAFConfig(BaseModel):
     reference_image: Optional[str] = None  # Stores base64 encoded reference image for cross-correlation check
     reference_image_shape: Optional[tuple] = None
     reference_image_dtype: Optional[str] = None
-    reference_crop_min: Optional[float] = None  # Min pixel value used for crop normalization
-    reference_crop_max: Optional[float] = None  # Max pixel value used for crop normalization
     reference_intensity_profile: Optional[str] = None  # Base64 encoded 1D intensity profile for CC check
     reference_intensity_profile_dtype: Optional[str] = None
-    reference_intensity_min: Optional[float] = None  # Min intensity value used for reference normalization
-    reference_intensity_max: Optional[float] = None  # Max intensity value used for reference normalization
+    reference_intensity_min: Optional[float] = None  # Min pixel value used for reference normalization
+    reference_intensity_max: Optional[float] = None  # Max pixel value used for reference normalization
     initialize_crop_width: int = 1200  # Width of the center crop used for initialization
     initialize_crop_height: int = 800  # Height of the center crop used for initialization
 

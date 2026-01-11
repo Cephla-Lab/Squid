@@ -553,9 +553,9 @@ class LaserAutofocusController(QObject):
         )
 
         reference_crop = reference_image[y_start:y_end, x_start:x_end].astype(np.float32)
-        reference_crop_min = float(np.min(reference_crop))
-        reference_crop_max = float(np.max(reference_crop))
-        self.reference_crop = (reference_crop - reference_crop_min) / (reference_crop_max - reference_crop_min)
+        self.reference_crop = (reference_crop - reference_intensity_min) / (
+            reference_intensity_max - reference_intensity_min
+        )
         self.reference_intensity_profile = reference_intensity_profile
 
         self._log.info(
@@ -566,14 +566,7 @@ class LaserAutofocusController(QObject):
         self.signal_displacement_um.emit(0)
         self._log.info(f"Set reference position to ({x:.1f}, {y:.1f})")
 
-        self.laser_af_properties = self.laser_af_properties.model_copy(
-            update={
-                "x_reference": x,
-                "has_reference": True,
-                "reference_crop_min": reference_crop_min,
-                "reference_crop_max": reference_crop_max,
-            }
-        )
+        self.laser_af_properties = self.laser_af_properties.model_copy(update={"x_reference": x, "has_reference": True})
         # Also update the reference image and intensity profile in laser_af_properties
         # so that self.laser_af_properties.reference_image_cropped stays in sync with self.reference_crop
         self.laser_af_properties.set_reference_image(self.reference_crop)
@@ -590,8 +583,6 @@ class LaserAutofocusController(QObject):
             {
                 "x_reference": x + self.laser_af_properties.x_offset,
                 "has_reference": True,
-                "reference_crop_min": reference_crop_min,
-                "reference_crop_max": reference_crop_max,
             },
             crop_image=self.reference_crop,
             intensity_profile=reference_intensity_profile,
@@ -671,8 +662,8 @@ class LaserAutofocusController(QObject):
         y_end = min(current_image.shape[0], center_y + self.laser_af_properties.spot_crop_size // 2)
 
         current_crop = current_image[y_start:y_end, x_start:x_end].astype(np.float32)
-        ref_min = self.laser_af_properties.reference_crop_min
-        ref_max = self.laser_af_properties.reference_crop_max
+        ref_min = self.laser_af_properties.reference_intensity_min
+        ref_max = self.laser_af_properties.reference_intensity_max
         current_norm = (current_crop - ref_min) / (ref_max - ref_min)
 
         # Calculate normalized cross correlation
