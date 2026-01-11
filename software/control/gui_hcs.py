@@ -354,7 +354,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.stage,
                 self.piezo,
                 self.objectiveStore,
-                self.laserAFSettingManager,
             )
 
         self.live_only_mode = live_only_mode or LIVE_ONLY_MODE

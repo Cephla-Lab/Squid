@@ -9,7 +9,7 @@ from qtpy.QtCore import QObject, Signal
 
 from control import utils
 import control._def
-from control.core.laser_af_settings_manager import LaserAFSettingManager
+from control.core.config import ConfigRepository
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
 from control.microcontroller import Microcontroller
@@ -33,7 +33,6 @@ class LaserAutofocusController(QObject):
         stage: AbstractStage,
         piezo: Optional[PiezoStage] = None,
         objectiveStore: Optional[ObjectiveStore] = None,
-        laserAFSettingManager: Optional[LaserAFSettingManager] = None,
     ):
         QObject.__init__(self)
         self._log = squid.logging.get_logger(__class__.__name__)
@@ -43,7 +42,6 @@ class LaserAutofocusController(QObject):
         self.stage = stage
         self.piezo = piezo
         self.objectiveStore = objectiveStore
-        self.laserAFSettingManager = laserAFSettingManager
         self.characterization_mode = control._def.LASER_AF_CHARACTERIZATION_MODE
 
         self.is_initialized = False
@@ -55,9 +53,18 @@ class LaserAutofocusController(QObject):
 
         self.image = None  # for saving the focus camera image for debugging when centroid cannot be found
 
-        # Load configurations if provided
-        if self.laserAFSettingManager:
-            self.load_cached_configuration()
+        # Load configurations if available
+        self.load_cached_configuration()
+
+    @property
+    def _config_repo(self) -> ConfigRepository:
+        """Access ConfigRepository via LiveController's microscope."""
+        return self.liveController.microscope.config_repo
+
+    @property
+    def _current_profile(self) -> Optional[str]:
+        """Get current profile from ConfigRepository."""
+        return self._config_repo.current_profile
 
     def initialize_manual(self, config: LaserAFConfig) -> None:
         """Initialize laser autofocus with manual parameters."""
@@ -86,28 +93,35 @@ class LaserAutofocusController(QObject):
 
         self.is_initialized = True
 
-        # Update cache if objective store and laser_af_settings is available
-        if self.objectiveStore and self.laserAFSettingManager and self.objectiveStore.current_objective:
-            self.laserAFSettingManager.update_laser_af_settings(
-                self.objectiveStore.current_objective, config.model_dump()
+        # Update cache if objective store and profile is available
+        if self.objectiveStore and self._current_profile and self.objectiveStore.current_objective:
+            updated_config = LaserAFConfig(**config.model_dump())
+            self._config_repo.save_laser_af_config(
+                self._current_profile, self.objectiveStore.current_objective, updated_config
             )
 
     def load_cached_configuration(self):
         """Load configuration from the cache if available."""
-        laser_af_settings = self.laserAFSettingManager.get_laser_af_settings()
+        if not self._current_profile:
+            return
+
         current_objective = self.objectiveStore.current_objective if self.objectiveStore else None
-        if current_objective and current_objective in laser_af_settings:
-            config = self.laserAFSettingManager.get_settings_for_objective(current_objective)
+        if not current_objective:
+            return
 
-            # Update camera settings
-            self.camera.set_exposure_time(config.focus_camera_exposure_time_ms)
-            try:
-                self.camera.set_analog_gain(config.focus_camera_analog_gain)
-            except NotImplementedError:
-                pass
+        config = self._config_repo.get_laser_af_config(current_objective)
+        if config is None:
+            return
 
-            # Initialize with loaded config
-            self.initialize_manual(config)
+        # Update camera settings
+        self.camera.set_exposure_time(config.focus_camera_exposure_time_ms)
+        try:
+            self.camera.set_analog_gain(config.focus_camera_analog_gain)
+        except NotImplementedError:
+            pass
+
+        # Initialize with loaded config
+        self.initialize_manual(config)
 
     def initialize_auto(self) -> bool:
         """Automatically initialize laser autofocus by finding the spot and calibrating.
@@ -169,7 +183,11 @@ class LaserAutofocusController(QObject):
             self._log.error("Failed to calibrate pixel-to-um conversion")
             return False
 
-        self.laserAFSettingManager.save_configurations(self.objectiveStore.current_objective)
+        # Save configuration
+        if self._current_profile:
+            self._config_repo.save_laser_af_config(
+                self._current_profile, self.objectiveStore.current_objective, self.laser_af_properties
+            )
 
         return True
 
@@ -248,9 +266,9 @@ class LaserAutofocusController(QObject):
         )
 
         # Update cache
-        if self.objectiveStore and self.laserAFSettingManager:
-            self.laserAFSettingManager.update_laser_af_settings(
-                self.objectiveStore.current_objective, self.laser_af_properties.model_dump()
+        if self.objectiveStore and self._current_profile:
+            self._config_repo.save_laser_af_config(
+                self._current_profile, self.objectiveStore.current_objective, self.laser_af_properties
             )
 
         return True
@@ -263,8 +281,10 @@ class LaserAutofocusController(QObject):
     def update_threshold_properties(self, updates: dict) -> None:
         """Update threshold properties. Save settings without re-initializing."""
         self.laser_af_properties = self.laser_af_properties.model_copy(update=updates)
-        self.laserAFSettingManager.update_laser_af_settings(self.objectiveStore.current_objective, updates)
-        self.laserAFSettingManager.save_configurations(self.objectiveStore.current_objective)
+        if self._current_profile and self.objectiveStore:
+            self._config_repo.save_laser_af_config(
+                self._current_profile, self.objectiveStore.current_objective, self.laser_af_properties
+            )
         self._log.info("Updated threshold properties")
 
     def measure_displacement(self) -> float:
@@ -413,12 +433,15 @@ class LaserAutofocusController(QObject):
         )  # We don't keep reference_crop here to avoid serializing it
 
         # Update cached file. reference_crop needs to be saved.
-        self.laserAFSettingManager.update_laser_af_settings(
-            self.objectiveStore.current_objective,
-            {"x_reference": x + self.laser_af_properties.x_offset, "has_reference": True},
-            crop_image=self.reference_crop,
-        )
-        self.laserAFSettingManager.save_configurations(self.objectiveStore.current_objective)
+        if self._current_profile and self.objectiveStore:
+            # Create config for saving with reference image encoded
+            save_config = self.laser_af_properties.model_copy(
+                update={"x_reference": x + self.laser_af_properties.x_offset, "has_reference": True}
+            )
+            save_config.set_reference_image(self.reference_crop)
+            self._config_repo.save_laser_af_config(
+                self._current_profile, self.objectiveStore.current_objective, save_config
+            )
 
         self._log.info("Reference spot position set")
 

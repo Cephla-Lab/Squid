@@ -159,9 +159,7 @@ class ChannelConfigurationManager:
             self._config_repo.save_objective_config(self._current_profile, objective, obj_config)
             self._log.debug(f"Saved config for objective '{objective}'")
 
-    def get_merged_acquisition_channels(
-        self, objective: str, confocal_mode: bool = False
-    ) -> List[AcquisitionChannel]:
+    def get_merged_acquisition_channels(self, objective: str, confocal_mode: bool = False) -> List[AcquisitionChannel]:
         """Get merged acquisition channels for an objective.
 
         Args:

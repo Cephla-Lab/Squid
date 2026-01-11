@@ -57,7 +57,6 @@ def get_test_laser_autofocus_controller(microscope: Microscope):
         stage=microscope.stage,
         piezo=microscope.addons.piezo_stage,
         objectiveStore=microscope.objective_store,
-        laserAFSettingManager=microscope.laser_af_settings_manager,
     )
 
 
