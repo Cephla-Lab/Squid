@@ -685,6 +685,10 @@ RESUME_LIVE_AFTER_ACQUISITION = True
 #   <base_path>/<experiment_ID>/acquisition.log
 ENABLE_PER_ACQUISITION_LOG = False
 
+# Memory profiling - when enabled, shows real-time RAM usage in status bar during acquisition
+# and logs periodic memory snapshots to help diagnose memory issues
+ENABLE_MEMORY_PROFILING = False
+
 CAMERA_SN = {"ch 1": "SN1", "ch 2": "SN2"}  # for multiple cameras, to be overwritten in the configuration file
 
 ENABLE_STROBE_OUTPUT = False
@@ -1227,3 +1231,18 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
                     pass
     except Exception as e:
         log.warning(f"Failed to load Views settings from config: {e}")
+
+    # Load GENERAL settings from config file
+    try:
+        _general_config = ConfigParser()
+        _general_config.read(CACHED_CONFIG_FILE_PATH)
+        if _general_config.has_section("GENERAL"):
+            if _general_config.has_option("GENERAL", "enable_memory_profiling"):
+                ENABLE_MEMORY_PROFILING = _general_config.get("GENERAL", "enable_memory_profiling").lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
+                log.info(f"Loaded ENABLE_MEMORY_PROFILING={ENABLE_MEMORY_PROFILING} from config")
+    except Exception as e:
+        log.warning(f"Failed to load GENERAL settings from config: {e}")

@@ -884,6 +884,21 @@ class PreferencesDialog(QDialog):
         tracking_group.content.addLayout(tracking_layout)
         layout.addWidget(tracking_group)
 
+        # Diagnostics section
+        diagnostics_group = CollapsibleGroupBox("Diagnostics")
+        diagnostics_layout = QFormLayout()
+
+        self.enable_memory_profiling_checkbox = QCheckBox()
+        self.enable_memory_profiling_checkbox.setChecked(control._def.ENABLE_MEMORY_PROFILING)
+        self.enable_memory_profiling_checkbox.setToolTip(
+            "Show real-time RAM usage in status bar during acquisition.\n"
+            "Also logs periodic memory snapshots to help diagnose memory issues."
+        )
+        diagnostics_layout.addRow("Enable RAM Monitoring:", self.enable_memory_profiling_checkbox)
+
+        diagnostics_group.content.addLayout(diagnostics_layout)
+        layout.addWidget(diagnostics_group)
+
         # Legend for restart indicator
         legend_label = QLabel("* Requires software restart to take effect")
         legend_label.setStyleSheet("color: #666; font-style: italic;")
@@ -1105,6 +1120,13 @@ class PreferencesDialog(QDialog):
         self.config.set("TRACKING", "default_tracker", self.default_tracker_combo.currentText())
         self.config.set("TRACKING", "search_area_ratio", str(self.search_area_ratio.value()))
 
+        # Advanced - Diagnostics
+        self.config.set(
+            "GENERAL",
+            "enable_memory_profiling",
+            "true" if self.enable_memory_profiling_checkbox.isChecked() else "false",
+        )
+
         # Views settings
         self.config.set(
             "VIEWS",
@@ -1198,6 +1220,9 @@ class PreferencesDialog(QDialog):
         control._def.ENABLE_TRACKING = self.enable_tracking_checkbox.isChecked()
         control._def.Tracking.DEFAULT_TRACKER = self.default_tracker_combo.currentText()
         control._def.Tracking.SEARCH_AREA_RATIO = self.search_area_ratio.value()
+
+        # Diagnostics settings
+        control._def.ENABLE_MEMORY_PROFILING = self.enable_memory_profiling_checkbox.isChecked()
 
         # Views settings
         control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = self.save_downsampled_checkbox.isChecked()
@@ -1413,6 +1438,12 @@ class PreferencesDialog(QDialog):
         new_val = self.search_area_ratio.value()
         if old_val != new_val:
             changes.append(("Search Area Ratio", str(old_val), str(new_val), False))
+
+        # Advanced - Diagnostics (live update)
+        old_val = self._get_config_bool("GENERAL", "enable_memory_profiling", False)
+        new_val = self.enable_memory_profiling_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Enable RAM Monitoring", str(old_val), str(new_val), False))
 
         # Views settings (live update)
         # NOTE: Compare against control._def values (runtime state) since UI is initialized from control._def.
@@ -13583,3 +13614,138 @@ class AdvancedChannelMappingDialog(QDialog):
         self.channel_manager.save_channel_definitions()
         self.signal_mappings_updated.emit()
         self.accept()
+
+
+class RAMMonitorWidget(QWidget):
+    """Compact RAM monitor widget for status bar.
+
+    Displays current RAM usage continuously when enabled. During acquisition,
+    connects to MemoryMonitor for more detailed tracking including peak values.
+
+    Attributes:
+        label_current: QLabel showing current RAM usage
+        label_peak: QLabel showing peak RAM usage (during acquisition)
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._memory_monitor = None
+        self._session_peak_mb = 0.0  # Track peak across the session
+        self._setup_ui()
+        self._setup_timer()
+
+    def _setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 0, 4, 0)
+        layout.setSpacing(4)
+
+        self.label_icon = QLabel("RAM usage:")
+        self.label_icon.setStyleSheet("font-weight: bold;")
+        self.label_current = QLabel("--")
+        self.label_separator = QLabel("|")
+        self.label_separator.setStyleSheet("color: #666;")
+        self.label_available_label = QLabel("available:")
+        self.label_available_label.setStyleSheet("color: #666;")
+        self.label_available = QLabel("--")
+
+        layout.addWidget(self.label_icon)
+        layout.addWidget(self.label_current)
+        layout.addWidget(self.label_separator)
+        layout.addWidget(self.label_available_label)
+        layout.addWidget(self.label_available)
+
+    def _setup_timer(self):
+        """Setup timer for periodic memory updates when not connected to monitor."""
+        from PyQt5.QtCore import QTimer
+
+        self._update_timer = QTimer(self)
+        self._update_timer.timeout.connect(self._update_memory_display)
+        self._update_timer.setInterval(1000)  # Update every 1 second
+
+    def start_monitoring(self):
+        """Start continuous memory monitoring."""
+        import logging
+
+        log = logging.getLogger("squid." + self.__class__.__name__)
+        log.info("Starting continuous RAM monitoring timer")
+        self._session_peak_mb = 0.0
+        self._update_memory_display()  # Initial update
+        self._update_timer.start()
+        log.debug(f"Timer active: {self._update_timer.isActive()}")
+        log.debug(f"Widget visible: {self.isVisible()}, label text: {self.label_current.text()}")
+
+    def stop_monitoring(self):
+        """Stop continuous memory monitoring."""
+        self._update_timer.stop()
+        self.label_current.setText("--")
+        self.label_available.setText("--")
+
+    def _update_memory_display(self):
+        """Update memory display using direct measurement."""
+        import logging
+
+        log = logging.getLogger("squid." + self.__class__.__name__)
+
+        if self._memory_monitor is not None:
+            # During acquisition, let the monitor signals handle updates
+            return
+
+        try:
+            from control.core.memory_profiler import get_memory_footprint_mb
+            import os
+            import psutil
+
+            # Get current process memory usage
+            footprint_mb = get_memory_footprint_mb(os.getpid())
+            log.debug(f"RAM monitor update: footprint={footprint_mb:.1f} MB")
+            if footprint_mb > 0:
+                self._session_peak_mb = max(self._session_peak_mb, footprint_mb)
+                current_gb = footprint_mb / 1024
+                self.label_current.setText(f"{current_gb:.2f} GB")
+
+            # Get system available memory
+            mem_info = psutil.virtual_memory()
+            available_gb = mem_info.available / (1024**3)
+            self.label_available.setText(f"{available_gb:.1f} GB")
+        except Exception as e:
+            log.warning(f"RAM monitor update failed: {e}")
+
+    def connect_monitor(self, memory_monitor):
+        """Connect to a MemoryMonitor's signals for live updates during acquisition.
+
+        Args:
+            memory_monitor: MemoryMonitor instance with signals attribute.
+        """
+        self._memory_monitor = memory_monitor
+        if memory_monitor is not None and memory_monitor.signals is not None:
+            memory_monitor.signals.footprint_updated.connect(self._on_footprint_updated)
+
+    def disconnect_monitor(self):
+        """Disconnect from acquisition monitor, continue with timer-based updates."""
+        if self._memory_monitor is not None and self._memory_monitor.signals is not None:
+            try:
+                self._memory_monitor.signals.footprint_updated.disconnect(self._on_footprint_updated)
+            except (TypeError, RuntimeError):
+                # Already disconnected or signal doesn't exist
+                pass
+        self._memory_monitor = None
+
+    def _on_footprint_updated(self, footprint_mb):
+        """Handle footprint update signal from MemoryMonitor.
+
+        Args:
+            footprint_mb: Current memory footprint in megabytes.
+        """
+        import psutil
+
+        # Display in GB for readability
+        current_gb = footprint_mb / 1024
+        self.label_current.setText(f"{current_gb:.2f} GB")
+
+        # Also update available RAM
+        try:
+            mem_info = psutil.virtual_memory()
+            available_gb = mem_info.available / (1024**3)
+            self.label_available.setText(f"{available_gb:.1f} GB")
+        except Exception:
+            pass

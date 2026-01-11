@@ -602,14 +602,16 @@ class MultiPointController:
             return
         self._start_per_acquisition_log()
 
-        # Start memory monitoring for the acquisition
-        self._memory_monitor = MemoryMonitor(
-            sample_interval_ms=200,
-            process_name="main",
-            track_children=True,
-        )
-        self._memory_monitor.start("ACQUISITION_START")
-        log_memory("ACQUISITION START", include_children=True)
+        # Start memory monitoring for the acquisition (if enabled)
+        if control._def.ENABLE_MEMORY_PROFILING:
+            self._memory_monitor = MemoryMonitor(
+                sample_interval_ms=200,
+                process_name="main",
+                track_children=True,
+                log_interval_s=30.0,  # Log every 30 seconds during acquisition
+            )
+            self._memory_monitor.start("ACQUISITION_START")
+            log_memory("ACQUISITION START", include_children=True)
 
         thread_started = False
         try:
@@ -884,7 +886,8 @@ class MultiPointController:
 
         # Stop memory monitoring and log final report
         if self._memory_monitor is not None:
-            log_memory("ACQUISITION COMPLETE", include_children=True)
+            if control._def.ENABLE_MEMORY_PROFILING:
+                log_memory("ACQUISITION COMPLETE", include_children=True)
             self._memory_monitor.stop()
             self._memory_monitor = None
 

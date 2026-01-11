@@ -53,6 +53,26 @@ try:
 except ImportError:
     resource = None  # type: ignore
 
+# Qt imports for signals (optional - works without Qt in worker processes)
+try:
+    from PyQt5.QtCore import QObject, pyqtSignal
+
+    class MemorySignals(QObject):
+        """Qt signals for live memory updates.
+
+        Signals:
+            memory_updated(main_mb, children_mb, total_mb): Emitted after each sample.
+            footprint_updated(footprint_mb): Emitted when footprint is sampled.
+        """
+
+        memory_updated = pyqtSignal(float, float, float)  # main_mb, children_mb, total_mb
+        footprint_updated = pyqtSignal(float)  # footprint_mb
+
+    HAS_QT = True
+except ImportError:
+    MemorySignals = None  # type: ignore
+    HAS_QT = False
+
 
 @dataclass
 class MemorySnapshot:
@@ -333,6 +353,12 @@ class MemoryMonitor:
 
     Runs a daemon background thread that samples memory at regular intervals,
     tracking the peak RSS observed during the monitoring period.
+
+    Features:
+        - Background sampling at configurable intervals (default 200ms)
+        - Peak RSS tracking with operation attribution
+        - Optional periodic logging during long acquisitions
+        - Qt signals for live GUI updates (when Qt available)
     """
 
     def __init__(
@@ -340,6 +366,8 @@ class MemoryMonitor:
         sample_interval_ms: int = 200,
         process_name: str = "main",
         track_children: bool = True,
+        log_interval_s: float = 30.0,
+        enable_signals: bool = True,
     ):
         """Initialize memory monitor.
 
@@ -347,12 +375,23 @@ class MemoryMonitor:
             sample_interval_ms: Sampling interval in milliseconds (default 200ms = 5/sec).
             process_name: Name for this monitor (used in logs).
             track_children: If True, also track child process memory (main process only).
+            log_interval_s: Interval for periodic memory logging (0 to disable).
+            enable_signals: If True and Qt available, create signals for GUI updates.
         """
         self._sample_interval_s = sample_interval_ms / 1000.0
         self._process_name = process_name
         self._track_children = track_children
+        self._log_interval_s = log_interval_s
 
         self._log = squid.logging.get_logger(f"MemoryMonitor.{process_name}")
+
+        # Qt signals for live GUI updates (optional)
+        self.signals: Optional["MemorySignals"] = None
+        if enable_signals and HAS_QT and MemorySignals is not None:
+            try:
+                self.signals = MemorySignals()
+            except Exception as e:
+                self._log.debug(f"Could not create MemorySignals: {e}")
 
         # Thread control
         self._thread: Optional[threading.Thread] = None
@@ -370,6 +409,7 @@ class MemoryMonitor:
         self._footprint_peak_mb = 0.0  # Track physical footprint (Activity Monitor)
         self._samples_count = 0
         self._start_time = 0.0
+        self._last_log_time = 0.0  # For periodic logging
 
     def start(self, initial_operation: str = "") -> None:
         """Start continuous memory sampling in background thread.
@@ -394,6 +434,7 @@ class MemoryMonitor:
             self._footprint_peak_mb = 0.0
             self._samples_count = 0
             self._start_time = time.time()
+            self._last_log_time = self._start_time  # Start periodic logging from now
 
         self._thread = threading.Thread(target=self._sample_loop, daemon=True)
         self._thread.start()
@@ -480,6 +521,12 @@ class MemoryMonitor:
         with self._lock:
             return (self._peak_rss_mb, self._total_peak_mb)
 
+    @property
+    def footprint_peak(self) -> float:
+        """Get current peak footprint in MB (Activity Monitor metric)."""
+        with self._lock:
+            return self._footprint_peak_mb
+
     def _sample_loop(self) -> None:
         """Background thread loop that samples memory at regular intervals."""
         while not self._stop_event.is_set():
@@ -534,6 +581,27 @@ class MemoryMonitor:
             # Track peak for physical footprint (Activity Monitor metric)
             if footprint_mb > self._footprint_peak_mb:
                 self._footprint_peak_mb = footprint_mb
+
+            current_footprint_peak = self._footprint_peak_mb
+
+        # Emit Qt signals for live GUI updates (outside lock)
+        if self.signals is not None:
+            try:
+                self.signals.memory_updated.emit(main_mb, children_mb, total_mb)
+                if footprint_mb > 0:
+                    self.signals.footprint_updated.emit(footprint_mb)
+            except RuntimeError:
+                # Signal may be disconnected if widget was destroyed
+                pass
+
+        # Periodic logging (outside lock)
+        if self._log_interval_s > 0 and (timestamp - self._last_log_time) >= self._log_interval_s:
+            self._last_log_time = timestamp
+            self._log.info(
+                f"[MEM] PERIODIC {self._process_name}: "
+                f"footprint={footprint_mb:.1f}MB, rss={main_mb:.1f}MB, "
+                f"peak_footprint={current_footprint_peak:.1f}MB"
+            )
 
 
 # Module-level worker monitor for convenience
