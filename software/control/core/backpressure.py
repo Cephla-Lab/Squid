@@ -49,7 +49,6 @@ class BackpressureController:
 
         # Event for signaling capacity available (starts cleared)
         self._capacity_event = multiprocessing.Event()
-        # Event starts cleared - will block until a job completion signals capacity
 
     @property
     def enabled(self) -> bool:
@@ -116,7 +115,13 @@ class BackpressureController:
         return True
 
     def job_dispatched(self, image_bytes: int) -> None:
-        """Track dispatched job. For testing/debugging - actual tracking is in JobRunner.dispatch()."""
+        """Manually increment job/byte counters.
+
+        NOTE: This method is for unit testing and debugging only. In production,
+        counter tracking is handled automatically by JobRunner.dispatch() and the
+        JobRunner.run() finally block. Do not call this method during normal
+        acquisition - it would double-count jobs.
+        """
         if not self._enabled:
             return
         with self._pending_jobs.get_lock():

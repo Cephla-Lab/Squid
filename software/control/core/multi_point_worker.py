@@ -1229,7 +1229,11 @@ class MultiPointWorker:
         # This is when we know the previous image's jobs have been dispatched (and counters incremented)
         if self._backpressure.should_throttle():
             with self._timing.get_timer("backpressure.wait_for_capacity"):
-                self._backpressure.wait_for_capacity()
+                got_capacity = self._backpressure.wait_for_capacity()
+                if not got_capacity:
+                    self._log.error(
+                        f"Backpressure timeout - disk I/O cannot keep up. " f"Stats: {self._backpressure.get_stats()}"
+                    )
 
         with self._timing.get_timer("get_ready_for_trigger re-check"):
             # This should be a noop - we have the frame already.  Still, check!

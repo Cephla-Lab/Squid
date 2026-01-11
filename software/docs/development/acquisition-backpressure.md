@@ -151,9 +151,12 @@ dispatch():
   └─ Put job in queue (with rollback on failure)
 
 run() finally block:
-  ├─ Decrement pending_jobs
-  ├─ Decrement pending_bytes (or accumulate for DownsampledViewJob)
-  └─ Signal capacity_event
+  ├─ Decrement pending_jobs (always)
+  ├─ For normal jobs: decrement pending_bytes immediately
+  ├─ For DownsampledViewJob:
+  │     ├─ Intermediate FOV: accumulate bytes (don't decrement)
+  │     └─ Final FOV: decrement ALL accumulated bytes for the well
+  └─ Signal capacity_event (always, for all job types)
 ```
 
 ### Thread Safety

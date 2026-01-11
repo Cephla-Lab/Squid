@@ -709,16 +709,22 @@ class JobRunner(multiprocessing.Process):
 
         try:
             self._input_queue.put_nowait(job)
-        except Exception:
+        except Exception as original_exc:
             # Roll back ALL counters if enqueue fails
-            with self._pending_count.get_lock():
-                self._pending_count.value -= 1
-            if self._bp_pending_jobs is not None:
-                with self._bp_pending_jobs.get_lock():
-                    self._bp_pending_jobs.value = max(0, self._bp_pending_jobs.value - 1)
-                with self._bp_pending_bytes.get_lock():
-                    self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - image_bytes)
-            raise
+            try:
+                with self._pending_count.get_lock():
+                    self._pending_count.value -= 1
+                if self._bp_pending_jobs is not None:
+                    with self._bp_pending_jobs.get_lock():
+                        self._bp_pending_jobs.value = max(0, self._bp_pending_jobs.value - 1)
+                    with self._bp_pending_bytes.get_lock():
+                        self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - image_bytes)
+            except Exception as rollback_exc:
+                self._log.error(
+                    f"Failed to rollback counters after dispatch failure: {rollback_exc}. "
+                    f"Counters may be inconsistent. Original error: {original_exc}"
+                )
+            raise original_exc
         return True
 
     def output_queue(self) -> multiprocessing.Queue:
@@ -826,6 +832,10 @@ class JobRunner(multiprocessing.Process):
                         image_bytes = 0
                         if job.capture_image and job.capture_image.image_array is not None:
                             image_bytes = job.capture_image.image_array.nbytes
+                        else:
+                            self._log.debug(
+                                f"Job {job.job_id} has no capture_image or image_array, " f"byte tracking skipped"
+                            )
 
                         # Byte tracking: DownsampledViewJob needs special handling
                         # because images are held in accumulator until well completes
@@ -840,6 +850,8 @@ class JobRunner(multiprocessing.Process):
                             # (last FOV index, last channel, last z-level)
                             # We use indices instead of checking result because:
                             # - If exception occurs, result is None but accumulator IS cleared
+                            #   (DownsampledViewJob.run() has a finally block that pops the accumulator
+                            #    when is_complete() returns True, regardless of success/exception)
                             # - We must decrement bytes when accumulator is cleared (final FOV)
                             is_final_fov = (
                                 job.fov_index == job.total_fovs_in_well - 1
@@ -849,15 +861,14 @@ class JobRunner(multiprocessing.Process):
 
                             if is_final_fov:
                                 # Final FOV: decrement ALL accumulated bytes for this well
-                                # (accumulator is cleared in DownsampledViewJob.finally, regardless of success/exception)
                                 total_well_bytes = self._well_accumulated_bytes.pop(well_id, 0)
                                 with self._bp_pending_bytes.get_lock():
                                     self._bp_pending_bytes.value = max(
                                         0, self._bp_pending_bytes.value - total_well_bytes
                                     )
-                                if self._bp_capacity_event is not None:
-                                    self._bp_capacity_event.set()
-                            # Intermediate FOVs: bytes stay tracked (image in accumulator)
+                            # Signal capacity available - job count decreased even for intermediate FOVs
+                            if self._bp_capacity_event is not None:
+                                self._bp_capacity_event.set()
                         else:
                             # Normal jobs: decrement bytes immediately
                             with self._bp_pending_bytes.get_lock():

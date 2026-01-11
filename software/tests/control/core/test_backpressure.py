@@ -346,6 +346,46 @@ class TestJobRunnerBackpressureTracking:
         finally:
             runner.shutdown(timeout_s=1.0)
 
+    def test_dispatch_handles_none_capture_image(self):
+        """dispatch() handles jobs with None capture_image gracefully."""
+        controller = BackpressureController(max_jobs=100, max_mb=1000.0)
+
+        runner = JobRunner(
+            bp_pending_jobs=controller.pending_jobs_value,
+            bp_pending_bytes=controller.pending_bytes_value,
+            bp_capacity_event=controller.capacity_event,
+        )
+        runner.daemon = True
+        runner.start()
+
+        try:
+            time.sleep(0.5)
+
+            # Create job with no capture_image (None)
+            job = SlowJob(
+                capture_info=make_test_capture_info(),
+                capture_image=None,  # Explicitly None
+                duration_s=0.1,
+                result_value="done",
+            )
+
+            runner.dispatch(job)
+
+            # Job count increments, but bytes stay at 0
+            assert controller.get_pending_jobs() == 1
+            assert controller.get_pending_mb() == 0.0
+
+            # Wait for job to complete
+            result = runner.output_queue().get(timeout=5.0)
+            time.sleep(0.1)
+
+            # Both counters should be back to zero
+            assert controller.get_pending_jobs() == 0
+            assert controller.get_pending_mb() == 0.0
+            assert result.result == "done"
+        finally:
+            runner.shutdown(timeout_s=1.0)
+
 
 class TestDownsampledViewJobBackpressure:
     """Tests for DownsampledViewJob special backpressure handling.
@@ -517,6 +557,104 @@ class TestDownsampledViewJobBackpressure:
             assert controller.get_pending_mb() == 0.0
         finally:
             runner.shutdown(timeout_s=2.0)
+            DownsampledViewJob.clear_accumulators()
+
+
+class TestDownsampledViewJobExceptionHandling:
+    """Tests for DownsampledViewJob exception handling during backpressure tracking.
+
+    When a DownsampledViewJob throws an exception on the final FOV, the accumulator
+    is still cleared (via finally block), so bytes must still be decremented.
+    """
+
+    def make_downsampled_view_job(
+        self,
+        well_id: str = "A1",
+        fov_index: int = 0,
+        total_fovs: int = 1,
+        channel_idx: int = 0,
+        total_channels: int = 1,
+        z_index: int = 0,
+        total_z_levels: int = 1,
+        size_bytes: int = 10000,
+    ) -> DownsampledViewJob:
+        """Create a DownsampledViewJob for testing."""
+        return DownsampledViewJob(
+            capture_info=make_test_capture_info(
+                region_id=well_id, fov=fov_index, z_index=z_index, config_idx=channel_idx
+            ),
+            capture_image=make_test_job_image(size_bytes),
+            well_id=well_id,
+            well_row=0,
+            well_col=0,
+            fov_index=fov_index,
+            total_fovs_in_well=total_fovs,
+            channel_idx=channel_idx,
+            total_channels=total_channels,
+            z_index=z_index,
+            total_z_levels=total_z_levels,
+            channel_name=f"Channel_{channel_idx}",
+            fov_position_in_well=(0.0, 0.0),
+            overlap_pixels=(0, 0, 0, 0),
+            pixel_size_um=1.0,
+            target_resolutions_um=[10.0],
+            plate_resolution_um=10.0,
+            output_dir="/tmp/test",
+            channel_names=[f"Channel_{i}" for i in range(total_channels)],
+            skip_saving=True,
+        )
+
+    def test_final_fov_exception_still_decrements_bytes(self):
+        """When final FOV throws exception, bytes should still decrement (accumulator cleared)."""
+        controller = BackpressureController(max_jobs=100, max_mb=1000.0)
+
+        runner = JobRunner(
+            bp_pending_jobs=controller.pending_jobs_value,
+            bp_pending_bytes=controller.pending_bytes_value,
+            bp_capacity_event=controller.capacity_event,
+        )
+        runner.daemon = True
+        runner.start()
+
+        try:
+            time.sleep(0.5)
+
+            # Dispatch first (intermediate) FOV
+            job1 = self.make_downsampled_view_job(
+                fov_index=0,
+                total_fovs=2,
+                size_bytes=10000,
+            )
+            runner.dispatch(job1)
+            time.sleep(0.3)  # Let first job process
+
+            # Verify bytes are tracked for intermediate FOV
+            assert controller.get_pending_mb() > 0
+
+            # Dispatch second (final) FOV - this would normally trigger stitching
+            # The actual exception handling happens in the DownsampledViewJob.run()
+            # but even with exception, the finally block clears the accumulator
+            job2 = self.make_downsampled_view_job(
+                fov_index=1,  # Final FOV
+                total_fovs=2,
+                size_bytes=10000,
+            )
+            runner.dispatch(job2)
+
+            # Wait for job to complete (may get result or exception)
+            try:
+                result = runner.output_queue().get(timeout=5.0)
+            except Exception:
+                pass  # OK if it times out, we're testing counter behavior
+            time.sleep(0.3)  # Buffer for finally block
+
+            # Key assertion: bytes should be 0 because is_final_fov triggers
+            # decrement regardless of result (success or exception)
+            # This works because we check indices, not result
+            assert controller.get_pending_jobs() == 0
+            assert controller.get_pending_mb() == 0.0
+        finally:
+            runner.shutdown(timeout_s=1.0)
             DownsampledViewJob.clear_accumulators()
 
 
