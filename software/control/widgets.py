@@ -13892,3 +13892,101 @@ class RAMMonitorWidget(QWidget):
             self._log.debug(f"Error disconnecting monitor on close: {e}")
 
         super().closeEvent(event)
+
+
+class BackpressureMonitorWidget(QWidget):
+    """Compact backpressure monitor widget for status bar.
+
+    Displays pending jobs and bytes during acquisition when backpressure
+    throttling is enabled. Shows a warning indicator when throttling is active.
+
+    Attributes:
+        label_jobs: QLabel showing pending/max jobs
+        label_bytes: QLabel showing pending/max MB
+        label_throttled: QLabel showing throttle status (hidden when not throttled)
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._controller = None
+        self._log = logging.getLogger("squid." + self.__class__.__name__)
+        self._setup_ui()
+        self._setup_timer()
+
+    def _setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 0, 4, 0)
+        layout.setSpacing(4)
+
+        self.label_prefix = QLabel("Queue:")
+        self.label_prefix.setStyleSheet("font-weight: bold;")
+
+        self.label_jobs = QLabel("--")
+
+        self.label_separator = QLabel("|")
+        self.label_separator.setStyleSheet("color: #666;")
+
+        self.label_bytes = QLabel("--")
+
+        self.label_throttled = QLabel("[THROTTLED]")
+        self.label_throttled.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        self.label_throttled.setVisible(False)
+
+        layout.addWidget(self.label_prefix)
+        layout.addWidget(self.label_jobs)
+        layout.addWidget(self.label_separator)
+        layout.addWidget(self.label_bytes)
+        layout.addWidget(self.label_throttled)
+
+    def _setup_timer(self):
+        """Setup timer for periodic backpressure updates."""
+        self._update_timer = QTimer(self)
+        self._update_timer.timeout.connect(self._update_display)
+        self._update_timer.setInterval(500)  # Update every 500ms
+
+    def start_monitoring(self, controller) -> None:
+        """Start monitoring backpressure stats.
+
+        Args:
+            controller: BackpressureController instance to monitor.
+        """
+        self._controller = controller
+        self._log.info("Starting backpressure monitoring")
+        self._update_display()  # Initial update
+        self._update_timer.start()
+
+    def stop_monitoring(self) -> None:
+        """Stop monitoring and reset display."""
+        self._update_timer.stop()
+        self._controller = None
+        self.label_jobs.setText("--")
+        self.label_bytes.setText("--")
+        self.label_throttled.setVisible(False)
+
+    def _update_display(self) -> None:
+        """Update display with current backpressure stats."""
+        if self._controller is None:
+            return
+
+        try:
+            stats = self._controller.get_stats()
+
+            # Update jobs display
+            self.label_jobs.setText(f"{stats.pending_jobs}/{stats.max_pending_jobs} jobs")
+
+            # Update bytes display
+            self.label_bytes.setText(f"{stats.pending_bytes_mb:.1f}/{stats.max_pending_mb:.1f} MB")
+
+            # Update throttle indicator
+            self.label_throttled.setVisible(stats.is_throttled)
+
+        except Exception as e:
+            self._log.warning(f"Backpressure monitor update failed: {e}")
+
+    def closeEvent(self, event):
+        """Ensure monitoring resources are cleaned up when the widget closes."""
+        try:
+            self.stop_monitoring()
+        except Exception as e:
+            self._log.debug(f"Error stopping monitoring on close: {e}")
+        super().closeEvent(event)

@@ -412,6 +412,7 @@ class HighContentScreeningGui(QMainWindow):
         self.imageArrayDisplayWindow: Optional[core.ImageArrayDisplayWindow] = None
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
         self.ramMonitorWidget: Optional[widgets.RAMMonitorWidget] = None
+        self.backpressureMonitorWidget: Optional[widgets.BackpressureMonitorWidget] = None
 
         self.recordTabWidget: QTabWidget = QTabWidget()
         self.cameraTabWidget: QTabWidget = QTabWidget()
@@ -977,6 +978,12 @@ class HighContentScreeningGui(QMainWindow):
         self.ramMonitorWidget = widgets.RAMMonitorWidget()
         self.ramMonitorWidget.setVisible(False)  # Initially hidden; shown when RAM monitoring setting is enabled
 
+        # Backpressure monitor widget (always create, visibility controlled during acquisition)
+        self.backpressureMonitorWidget = widgets.BackpressureMonitorWidget()
+        self.backpressureMonitorWidget.setVisible(
+            False
+        )  # Initially hidden; shown during acquisition when throttling enabled
+
     def setup_layout(self):
         layout = QVBoxLayout()
 
@@ -1042,6 +1049,11 @@ class HighContentScreeningGui(QMainWindow):
         # Visibility update is deferred to showEvent since status bar isn't visible until window is shown
         if self.ramMonitorWidget is not None:
             self.statusBar().addWidget(self.ramMonitorWidget)  # Left-aligned
+
+        # Add backpressure monitor widget to status bar (next to RAM monitor)
+        # Only visible during acquisition when throttling is enabled
+        if self.backpressureMonitorWidget is not None:
+            self.statusBar().addWidget(self.backpressureMonitorWidget)  # Left-aligned
 
     def _getMainWindowMinimumSize(self):
         """
@@ -1136,6 +1148,10 @@ class HighContentScreeningGui(QMainWindow):
         # RAM monitor widget connections - use controller signals which fire AFTER memory monitor is created
         self.multipointController.signal_acquisition_start.connect(self._connect_ram_monitor_widget)
         self.multipointController.acquisition_finished.connect(self._disconnect_ram_monitor_widget)
+
+        # Backpressure monitor widget connections - fires AFTER worker is created
+        self.multipointController.signal_acquisition_start.connect(self._connect_backpressure_monitor_widget)
+        self.multipointController.acquisition_finished.connect(self._disconnect_backpressure_monitor_widget)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
@@ -1813,6 +1829,30 @@ class HighContentScreeningGui(QMainWindow):
                 # Stop monitoring entirely when profiling is disabled
                 self.ramMonitorWidget.stop_monitoring()
                 self.log.debug("RAM monitor: disconnected from acquisition, monitoring stopped (profiling disabled)")
+
+    def _connect_backpressure_monitor_widget(self):
+        """Connect backpressure monitor widget during acquisition."""
+        import control._def
+
+        if not control._def.ACQUISITION_THROTTLING_ENABLED:
+            return
+
+        if self.backpressureMonitorWidget is None:
+            return
+
+        # Get the backpressure controller from the multipoint worker
+        bp_controller = self.multipointController.backpressure_controller
+        if bp_controller is not None and bp_controller.enabled:
+            self.log.info("Backpressure monitor: connecting widget to backpressure controller")
+            self.backpressureMonitorWidget.start_monitoring(bp_controller)
+            self.backpressureMonitorWidget.setVisible(True)
+
+    def _disconnect_backpressure_monitor_widget(self):
+        """Disconnect backpressure monitor widget after acquisition."""
+        if self.backpressureMonitorWidget is not None:
+            self.backpressureMonitorWidget.stop_monitoring()
+            self.backpressureMonitorWidget.setVisible(False)
+            self.log.debug("Backpressure monitor: disconnected from acquisition")
 
     def onStartLive(self):
         self.imageDisplayTabs.setCurrentIndex(0)

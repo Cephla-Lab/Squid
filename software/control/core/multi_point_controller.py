@@ -938,3 +938,14 @@ class MultiPointController:
         if self.multiPointWorker is not None:
             return self.multiPointWorker.get_plate_view()
         return None
+
+    @property
+    def backpressure_controller(self):
+        """Get the backpressure controller from the current worker.
+
+        Returns:
+            BackpressureController if worker exists, None otherwise.
+        """
+        if self.multiPointWorker is not None:
+            return self.multiPointWorker._backpressure
+        return None
