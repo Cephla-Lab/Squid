@@ -118,6 +118,31 @@ def check_ram_available_with_error_dialog(
     return True
 
 
+def get_last_used_saving_path() -> str:
+    """Get the last used saving path from cache file, or return the default."""
+    cache_file = "cache/last_saving_path.txt"
+    try:
+        with open(cache_file, "r") as f:
+            path = f.read().strip()
+            if path and os.path.isdir(path):
+                return path
+    except OSError:
+        pass
+    return DEFAULT_SAVING_PATH
+
+
+def save_last_used_saving_path(path: str) -> None:
+    """Save the last used saving path to cache file."""
+    if path:  # Only save non-empty paths
+        cache_file = "cache/last_saving_path.txt"
+        try:
+            os.makedirs("cache", exist_ok=True)
+            with open(cache_file, "w") as f:
+                f.write(path)
+        except OSError:
+            pass  # Silently fail - caching is a convenience feature
+
+
 class WrapperWindow(QMainWindow):
     def __init__(self, content_widget, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -4159,10 +4184,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         self.lineEdit_savingDir = QLineEdit()
         self.lineEdit_savingDir.setReadOnly(True)
-        self.lineEdit_savingDir.setText("Choose a base saving directory")
 
-        self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
-        self.multipointController.set_base_path(DEFAULT_SAVING_PATH)
+        last_path = get_last_used_saving_path()
+        self.lineEdit_savingDir.setText(last_path)
+        self.multipointController.set_base_path(last_path)
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
@@ -4839,9 +4864,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def set_saving_dir(self):
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self.multipointController.set_base_path(save_dir_base)
-        self.lineEdit_savingDir.setText(save_dir_base)
-        self.base_path_is_set = True
+        if save_dir_base:  # Only update if user didn't cancel
+            self.multipointController.set_base_path(save_dir_base)
+            self.lineEdit_savingDir.setText(save_dir_base)
+            self.base_path_is_set = True
+            save_last_used_saving_path(save_dir_base)
 
     def emit_selected_channels(self):
         selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
@@ -5667,8 +5694,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.btn_setSavingDir.setFixedWidth(btn_width)
 
         self.lineEdit_savingDir = QLineEdit()
-        self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
-        self.multipointController.set_base_path(DEFAULT_SAVING_PATH)
+        last_path = get_last_used_saving_path()
+        self.lineEdit_savingDir.setText(last_path)
+        self.multipointController.set_base_path(last_path)
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
@@ -7367,9 +7395,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def set_saving_dir(self):
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self.multipointController.set_base_path(save_dir_base)
-        self.lineEdit_savingDir.setText(save_dir_base)
-        self.base_path_is_set = True
+        if save_dir_base:  # Only update if user didn't cancel
+            self.multipointController.set_base_path(save_dir_base)
+            self.lineEdit_savingDir.setText(save_dir_base)
+            self.base_path_is_set = True
+            save_last_used_saving_path(save_dir_base)
 
     def on_snap_images(self):
         if not self.list_configurations.selectedItems():
