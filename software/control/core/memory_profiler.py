@@ -40,8 +40,8 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
 
 import psutil
 
@@ -157,6 +157,8 @@ def get_all_squid_memory_mb() -> Dict[str, float]:
                 children_mb += child_mb
                 child_details.append((child.pid, child_mb))
             except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # Child process may have terminated between enumeration and inspection.
+                # This is expected and can be safely ignored.
                 pass
 
         return {
@@ -202,7 +204,7 @@ def _get_macos_footprint_mb(pid: int) -> float:
             ["footprint", "-p", str(pid)],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=1,  # Short timeout to avoid blocking during frequent sampling
         )
         if result.returncode == 0:
             # Parse output like "python [17890]: 64-bit    Footprint: 6641 KB"
@@ -218,6 +220,8 @@ def _get_macos_footprint_mb(pid: int) -> float:
                     elif unit == "GB":
                         return value * 1024
     except (subprocess.TimeoutExpired, FileNotFoundError, ValueError, AttributeError):
+        # Footprint command unavailable, timed out, or returned unexpected output.
+        # Fall back to reporting 0.0 MB to avoid breaking memory profiling.
         pass
     return 0.0
 
@@ -268,6 +272,8 @@ def _get_windows_private_mb(pid: int) -> float:
         elif hasattr(mem_info, "uss"):
             return mem_info.uss / (1024 * 1024)
     except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+        # Process may have terminated or memory info unavailable on this platform.
+        # Fall back to reporting 0.0 MB.
         pass
     return 0.0
 
@@ -306,6 +312,8 @@ def get_all_python_processes_mb() -> Dict[str, float]:
                     }
                 )
         except (psutil.NoSuchProcess, psutil.AccessDenied):
+            # Process may have terminated or become inaccessible between iteration and inspection.
+            # This is expected during system-wide enumeration and can be safely ignored.
             pass
 
     return {
@@ -377,7 +385,12 @@ class MemoryMonitor:
             track_children: If True, also track child process memory (main process only).
             log_interval_s: Interval for periodic memory logging (0 to disable).
             enable_signals: If True and Qt available, create signals for GUI updates.
+
+        Raises:
+            ValueError: If sample_interval_ms is not a positive integer.
         """
+        if sample_interval_ms <= 0:
+            raise ValueError(f"sample_interval_ms must be a positive integer, got {sample_interval_ms!r}")
         self._sample_interval_s = sample_interval_ms / 1000.0
         self._process_name = process_name
         self._track_children = track_children
@@ -549,16 +562,12 @@ class MemoryMonitor:
 
         children_mb = 0.0
         total_mb = main_mb
-        all_python_mb = 0.0
-        footprint_mb = 0.0
+        # Get footprint for current process only (fast) - used for GUI updates
+        footprint_mb = get_memory_footprint_mb(os.getpid())
         if self._track_children:
             mem = get_all_squid_memory_mb()
             children_mb = mem["children"]
             total_mb = mem["total"]
-            # Also track ALL Python processes (for Activity Monitor comparison)
-            all_python = get_all_python_processes_mb()
-            all_python_mb = all_python["total"]
-            footprint_mb = all_python["footprint_total"]
 
         with self._lock:
             self._samples_count += 1
@@ -578,10 +587,6 @@ class MemoryMonitor:
             if total_mb > self._total_peak_mb:
                 self._total_peak_mb = total_mb
 
-            # Track peak for ALL Python processes (RSS)
-            if all_python_mb > self._all_python_peak_mb:
-                self._all_python_peak_mb = all_python_mb
-
             # Track peak for physical footprint (Activity Monitor metric)
             if footprint_mb > self._footprint_peak_mb:
                 self._footprint_peak_mb = footprint_mb
@@ -598,9 +603,17 @@ class MemoryMonitor:
                 # Signal may be disconnected if widget was destroyed
                 self._log.debug(f"Signal emission failed (widget likely destroyed): {e}")
 
-        # Periodic logging (outside lock)
+        # Periodic logging (outside lock) - includes expensive system-wide stats
         if self._log_interval_s > 0 and (timestamp - self._last_log_time) >= self._log_interval_s:
             self._last_log_time = timestamp
+            # Only fetch all Python processes during periodic logging (expensive operation)
+            all_python_mb = 0.0
+            if self._track_children:
+                all_python = get_all_python_processes_mb()
+                all_python_mb = all_python["total"]
+                with self._lock:
+                    if all_python_mb > self._all_python_peak_mb:
+                        self._all_python_peak_mb = all_python_mb
             self._log.info(
                 f"[MEM] PERIODIC {self._process_name}: "
                 f"footprint={footprint_mb:.1f}MB, rss={main_mb:.1f}MB, "
