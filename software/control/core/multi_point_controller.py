@@ -25,6 +25,7 @@ from control.core.live_controller import LiveController
 from control.microscope import Microscope
 from control.core.multi_point_worker import MultiPointWorker
 from control.core.objective_store import ObjectiveStore
+from control.core.memory_profiler import MemoryMonitor, log_memory
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
@@ -212,6 +213,7 @@ class MultiPointController:
         self.fluidics: Optional[Any] = microscope.addons.fluidics
         self.thread: Optional[Thread] = None
         self._per_acq_log_handler = None
+        self._memory_monitor: Optional[MemoryMonitor] = None
 
         self.NX = 1
         self.deltaX = control._def.Acquisition.DX
@@ -599,6 +601,16 @@ class MultiPointController:
             self.callbacks.signal_acquisition_finished()
             return
         self._start_per_acquisition_log()
+
+        # Start memory monitoring for the acquisition
+        self._memory_monitor = MemoryMonitor(
+            sample_interval_ms=200,
+            process_name="main",
+            track_children=True,
+        )
+        self._memory_monitor.start("ACQUISITION_START")
+        log_memory("ACQUISITION START", include_children=True)
+
         thread_started = False
         try:
             self._log.info("start multipoint")
@@ -869,6 +881,12 @@ class MultiPointController:
         # re-enable live if it's previously on
         if self.liveController_was_live_before_multipoint and control._def.RESUME_LIVE_AFTER_ACQUISITION:
             self.liveController.start_live()
+
+        # Stop memory monitoring and log final report
+        if self._memory_monitor is not None:
+            log_memory("ACQUISITION COMPLETE", include_children=True)
+            self._memory_monitor.stop()
+            self._memory_monitor = None
 
         # emit the acquisition finished signal to enable the UI
         self._log.info(f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}")
