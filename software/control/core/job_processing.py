@@ -859,27 +859,15 @@ class JobRunner(multiprocessing.Process):
                         image_bytes = 0
                         if job.capture_image and job.capture_image.image_array is not None:
                             image_bytes = job.capture_image.image_array.nbytes
-                        else:
-                            self._log.debug(
-                                f"Job {job.job_id} has no capture_image or image_array, byte tracking skipped"
-                            )
 
-                        # Byte tracking: DownsampledViewJob needs special handling
-                        # because images are held in accumulator until well completes
+                        # DownsampledViewJob: images stay in accumulator until well completes
                         if isinstance(job, DownsampledViewJob):
-                            # Track accumulated bytes per well
                             well_id = job.well_id
                             self._well_accumulated_bytes[well_id] = (
                                 self._well_accumulated_bytes.get(well_id, 0) + image_bytes
                             )
 
-                            # Check if this is the final FOV for the well
-                            # (last FOV index, last channel, last z-level)
-                            # We use indices instead of checking result because:
-                            # - If exception occurs, result is None but accumulator IS cleared
-                            #   (DownsampledViewJob.run() has a finally block that pops the accumulator
-                            #    when is_complete() returns True, regardless of success/exception)
-                            # - We must decrement bytes when accumulator is cleared (final FOV)
+                            # Use indices to detect final FOV (not result) - handles exceptions correctly
                             is_final_fov = (
                                 job.fov_index == job.total_fovs_in_well - 1
                                 and job.channel_idx == job.total_channels - 1
@@ -887,21 +875,19 @@ class JobRunner(multiprocessing.Process):
                             )
 
                             if is_final_fov:
-                                # Final FOV: decrement ALL accumulated bytes for this well
                                 total_well_bytes = self._well_accumulated_bytes.pop(well_id, 0)
                                 with self._bp_pending_bytes.get_lock():
                                     self._bp_pending_bytes.value = max(
                                         0, self._bp_pending_bytes.value - total_well_bytes
                                     )
-                            # Signal capacity available - job count decreased even for intermediate FOVs
-                            if self._bp_capacity_event is not None:
-                                self._bp_capacity_event.set()
                         else:
                             # Normal jobs: decrement bytes immediately
                             with self._bp_pending_bytes.get_lock():
                                 self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - image_bytes)
-                            if self._bp_capacity_event is not None:
-                                self._bp_capacity_event.set()
+
+                        # Signal capacity available for all job completions
+                        if self._bp_capacity_event is not None:
+                            self._bp_capacity_event.set()
         # Stop memory monitoring and log final report
         log_memory("WORKER_SHUTDOWN", include_children=False)
         stop_worker_monitoring()

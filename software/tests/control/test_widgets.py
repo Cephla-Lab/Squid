@@ -358,6 +358,7 @@ class TestRAMMonitorWidget:
         assert widget._memory_monitor is None
         assert widget._session_peak_mb == 0.0
         assert widget.label_current.text() == "--"
+        assert widget.label_peak.text() == "--"
         assert widget.label_available.text() == "--"
         assert not widget._update_timer.isActive()
 
@@ -367,9 +368,6 @@ class TestRAMMonitorWidget:
         widget.start_monitoring()
 
         assert widget._update_timer.isActive()
-        # start_monitoring resets _session_peak_mb to 0, then immediately calls _update_memory_display
-        # which updates it based on current memory usage
-        assert widget._session_peak_mb >= 0.0
 
         # Clean up
         widget.stop_monitoring()
@@ -384,6 +382,7 @@ class TestRAMMonitorWidget:
 
         assert not widget._update_timer.isActive()
         assert widget.label_current.text() == "--"
+        assert widget.label_peak.text() == "--"
         assert widget.label_available.text() == "--"
 
     def test_start_monitoring_updates_display(self, ram_monitor_widget, qtbot):
@@ -447,20 +446,6 @@ class TestRAMMonitorWidget:
         # Timer should NOT be restarted by disconnect_monitor
         assert not widget._update_timer.isActive()
 
-    def test_session_peak_tracking(self, ram_monitor_widget, qtbot):
-        """Test that session peak is tracked during monitoring."""
-        widget = ram_monitor_widget
-        widget.start_monitoring()
-
-        # Wait for at least one update
-        qtbot.wait(1100)
-
-        # Session peak should be updated if footprint is available
-        # (may be 0.0 if footprint unavailable on this platform)
-        assert widget._session_peak_mb >= 0.0
-
-        widget.stop_monitoring()
-
     def test_update_memory_display_skipped_when_connected(self, ram_monitor_widget):
         """Test that timer updates are skipped when connected to a monitor."""
         widget = ram_monitor_widget
@@ -502,6 +487,40 @@ class TestRAMMonitorWidget:
 
         assert widget._memory_monitor is None
 
+    def test_session_peak_tracking(self, ram_monitor_widget, qtbot):
+        """Test that session peak is tracked and displayed during monitoring."""
+        widget = ram_monitor_widget
+        widget.start_monitoring()
+
+        # Let it run briefly to get some measurements
+        qtbot.wait(100)
+
+        # Session peak should be updated (may be 0.0 if footprint unavailable on this platform)
+        assert widget._session_peak_mb >= 0.0
+        # Peak label should show a value (or "N/A" if unavailable)
+        assert widget.label_peak.text() != "--"
+
+        widget.stop_monitoring()
+
+    def test_start_monitoring_reset_peak_false(self, ram_monitor_widget, qtbot):
+        """Test that reset_peak=False preserves the session peak."""
+        widget = ram_monitor_widget
+
+        # Start monitoring and let it record a peak
+        widget.start_monitoring()
+        qtbot.wait(100)
+        initial_peak = widget._session_peak_mb
+
+        widget.stop_monitoring()
+
+        # Restart without resetting peak
+        widget.start_monitoring(reset_peak=False)
+
+        # Peak should be preserved (may increase but not decrease)
+        assert widget._session_peak_mb >= initial_peak
+
+        widget.stop_monitoring()
+
 
 class TestRAMMonitorWidgetSignals:
     """Tests for RAMMonitorWidget signal handling (requires Qt signals)."""
@@ -514,24 +533,31 @@ class TestRAMMonitorWidgetSignals:
         widget._on_footprint_updated(2048.0)  # 2 GB in MB
 
         assert widget.label_current.text() == "2.00 GB"
+        assert widget.label_peak.text() == "2.00 GB"
+        assert widget._session_peak_mb == 2048.0
         # Available RAM should also be updated
         assert widget.label_available.text() != "--"
 
     def test_footprint_signal_various_values(self, ram_monitor_widget):
-        """Test footprint signal with various values."""
+        """Test footprint signal with various values and peak tracking."""
         widget = ram_monitor_widget
 
         # Test small value
         widget._on_footprint_updated(512.0)  # 0.5 GB
         assert widget.label_current.text() == "0.50 GB"
+        assert widget.label_peak.text() == "0.50 GB"
 
-        # Test larger value
+        # Test larger value - peak should update
         widget._on_footprint_updated(8192.0)  # 8 GB
         assert widget.label_current.text() == "8.00 GB"
+        assert widget.label_peak.text() == "8.00 GB"
+        assert widget._session_peak_mb == 8192.0
 
-        # Test very small value
+        # Test smaller value - peak should stay at 8 GB
         widget._on_footprint_updated(10.24)  # ~10 MB = 0.01 GB
         assert widget.label_current.text() == "0.01 GB"
+        assert widget.label_peak.text() == "8.00 GB"  # Peak unchanged
+        assert widget._session_peak_mb == 8192.0
 
 
 # ============================================================================

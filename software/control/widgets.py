@@ -13731,7 +13731,6 @@ class RAMMonitorWidget(QWidget):
     State Invariants:
         - When _memory_monitor is set, updates come via signals (timer is paused)
         - When _memory_monitor is None, updates come via timer
-        - _session_peak_mb tracks the peak across the entire session
 
     Attributes:
         label_current: QLabel showing current RAM usage
@@ -13741,7 +13740,7 @@ class RAMMonitorWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._memory_monitor = None
-        self._session_peak_mb = 0.0  # Track peak across the session
+        self._session_peak_mb = 0.0  # Track peak RAM usage across the session
         self._log = logging.getLogger("squid." + self.__class__.__name__)
         self._setup_ui()
         self._setup_timer()
@@ -13754,21 +13753,28 @@ class RAMMonitorWidget(QWidget):
         self.label_icon = QLabel("RAM usage:")
         self.label_icon.setStyleSheet("font-weight: bold;")
         self.label_current = QLabel("--")
-        self.label_separator = QLabel("|")
-        self.label_separator.setStyleSheet("color: #666;")
+        self.label_separator1 = QLabel("|")
+        self.label_separator1.setStyleSheet("color: #666;")
+        self.label_peak_label = QLabel("peak:")
+        self.label_peak_label.setStyleSheet("color: #666;")
+        self.label_peak = QLabel("--")
+        self.label_separator2 = QLabel("|")
+        self.label_separator2.setStyleSheet("color: #666;")
         self.label_available_label = QLabel("available:")
         self.label_available_label.setStyleSheet("color: #666;")
         self.label_available = QLabel("--")
 
         layout.addWidget(self.label_icon)
         layout.addWidget(self.label_current)
-        layout.addWidget(self.label_separator)
+        layout.addWidget(self.label_separator1)
+        layout.addWidget(self.label_peak_label)
+        layout.addWidget(self.label_peak)
+        layout.addWidget(self.label_separator2)
         layout.addWidget(self.label_available_label)
         layout.addWidget(self.label_available)
 
     def _setup_timer(self):
         """Setup timer for periodic memory updates when not connected to monitor."""
-        # Note: QTimer is imported via qtpy at the top of the file
         self._update_timer = QTimer(self)
         self._update_timer.timeout.connect(self._update_memory_display)
         self._update_timer.setInterval(1000)  # Update every 1 second
@@ -13787,15 +13793,15 @@ class RAMMonitorWidget(QWidget):
         self._log.info("Starting continuous RAM monitoring timer")
         if reset_peak:
             self._session_peak_mb = 0.0
+            self.label_peak.setText("--")
         self._update_memory_display()  # Initial update
         self._update_timer.start()
-        self._log.debug(f"Timer active: {self._update_timer.isActive()}")
-        self._log.debug(f"Widget visible: {self.isVisible()}, label text: {self.label_current.text()}")
 
     def stop_monitoring(self):
         """Stop continuous memory monitoring."""
         self._update_timer.stop()
         self.label_current.setText("--")
+        self.label_peak.setText("--")
         self.label_available.setText("--")
 
     def _update_memory_display(self):
@@ -13813,10 +13819,13 @@ class RAMMonitorWidget(QWidget):
             if footprint_mb > 0:
                 self._session_peak_mb = max(self._session_peak_mb, footprint_mb)
                 current_gb = footprint_mb / 1024
+                peak_gb = self._session_peak_mb / 1024
                 self.label_current.setText(f"{current_gb:.2f} GB")
+                self.label_peak.setText(f"{peak_gb:.2f} GB")
             else:
                 # Footprint unavailable on this platform/configuration
                 self.label_current.setText("N/A")
+                self.label_peak.setText("N/A")
                 self._log.debug("Memory footprint unavailable (platform may not support this metric)")
 
             # Get system available memory
@@ -13866,9 +13875,12 @@ class RAMMonitorWidget(QWidget):
         Args:
             footprint_mb: Current memory footprint in megabytes.
         """
-        # Display in GB for readability
+        # Track peak and display in GB for readability
+        self._session_peak_mb = max(self._session_peak_mb, footprint_mb)
         current_gb = footprint_mb / 1024
+        peak_gb = self._session_peak_mb / 1024
         self.label_current.setText(f"{current_gb:.2f} GB")
+        self.label_peak.setText(f"{peak_gb:.2f} GB")
 
         # Also update available RAM
         try:
@@ -13881,16 +13893,8 @@ class RAMMonitorWidget(QWidget):
 
     def closeEvent(self, event):
         """Ensure monitoring resources are cleaned up when the widget closes."""
-        try:
-            self.stop_monitoring()
-        except Exception as e:
-            self._log.debug(f"Error stopping monitoring on close: {e}")
-
-        try:
-            self.disconnect_monitor()
-        except Exception as e:
-            self._log.debug(f"Error disconnecting monitor on close: {e}")
-
+        self.stop_monitoring()
+        self.disconnect_monitor()
         super().closeEvent(event)
 
 
@@ -13908,9 +13912,12 @@ class BackpressureMonitorWidget(QWidget):
         super().__init__(parent)
         self._controller = None
         self._log = logging.getLogger("squid." + self.__class__.__name__)
-        self._throttle_sticky_counter = 0  # Countdown for sticky throttle indicator
+        self._throttle_sticky_counter = 0
         self._setup_ui()
-        self._setup_timer()
+
+        self._update_timer = QTimer(self)
+        self._update_timer.timeout.connect(self._update_display)
+        self._update_timer.setInterval(500)
 
     def _setup_ui(self):
         layout = QHBoxLayout(self)
@@ -13936,18 +13943,8 @@ class BackpressureMonitorWidget(QWidget):
         layout.addWidget(self.label_bytes)
         layout.addWidget(self.label_throttled)
 
-    def _setup_timer(self):
-        """Setup timer for periodic backpressure updates."""
-        self._update_timer = QTimer(self)
-        self._update_timer.timeout.connect(self._update_display)
-        self._update_timer.setInterval(500)  # Update every 500ms
-
     def start_monitoring(self, controller: "BackpressureController") -> None:
-        """Start monitoring backpressure stats.
-
-        Args:
-            controller: BackpressureController instance to monitor.
-        """
+        """Start monitoring backpressure stats."""
         if controller is None:
             self._log.warning("start_monitoring called with None controller")
             return
@@ -13989,15 +13986,14 @@ class BackpressureMonitorWidget(QWidget):
                     self.label_throttled.setText("")
 
         except (BrokenPipeError, EOFError) as e:
-            # Multiprocessing communication ended - acquisition likely finished
+            # Multiprocessing communication ended - acquisition finished
             self._log.debug(f"Backpressure controller communication ended: {e}")
+            self.stop_monitoring()
         except Exception as e:
             self._log.warning(f"Backpressure monitor update failed: {e}")
+            self.stop_monitoring()
 
     def closeEvent(self, event):
         """Ensure monitoring resources are cleaned up when the widget closes."""
-        try:
-            self.stop_monitoring()
-        except Exception as e:
-            self._log.debug(f"Error stopping monitoring on close: {e}")
+        self.stop_monitoring()
         super().closeEvent(event)
