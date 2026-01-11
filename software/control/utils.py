@@ -285,8 +285,19 @@ def find_spot_location(
         local_min = np.min(x_intensity_profile_raw)
         local_max = np.max(x_intensity_profile_raw)
 
-        # Normalize intensity profile for peak detection (always use local normalization)
-        x_intensity_profile = (x_intensity_profile_raw - local_min) / (local_max - local_min)
+        # Determine normalization values: use reference if provided, otherwise local
+        if reference_intensity_min is not None and reference_intensity_max is not None:
+            norm_min = reference_intensity_min
+            norm_max = reference_intensity_max
+        else:
+            norm_min = local_min
+            norm_max = local_max
+
+        # Normalize intensity profile for peak detection
+        if norm_max - norm_min > 0:
+            x_intensity_profile = (x_intensity_profile_raw - norm_min) / (norm_max - norm_min)
+        else:
+            raise ValueError("Cannot normalize: norm_max equals norm_min")
 
         # Find all peaks
         peaks = signal.find_peaks(
@@ -338,15 +349,7 @@ def find_spot_location(
         else:
             centered_profile_raw = x_intensity_profile_raw[profile_start:profile_end].copy()
 
-        # Normalize the centered profile
-        # Use reference min/max if provided (for measurement), otherwise use local (for initialization)
-        if reference_intensity_min is not None and reference_intensity_max is not None:
-            norm_min = reference_intensity_min
-            norm_max = reference_intensity_max
-        else:
-            norm_min = local_min
-            norm_max = local_max
-
+        # Normalize the centered profile (using same norm_min/norm_max as peak detection)
         # Avoid division by zero
         if norm_max - norm_min > 0:
             centered_profile = (centered_profile_raw - norm_min) / (norm_max - norm_min)
