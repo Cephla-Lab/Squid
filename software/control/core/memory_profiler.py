@@ -54,8 +54,9 @@ except ImportError:
     resource = None  # type: ignore
 
 # Qt imports for signals (optional - works without Qt in worker processes)
+# Use qtpy for Qt binding compatibility (supports PyQt5, PyQt6, PySide2, PySide6)
 try:
-    from PyQt5.QtCore import QObject, pyqtSignal
+    from qtpy.QtCore import QObject, Signal
 
     class MemorySignals(QObject):
         """Qt signals for live memory updates.
@@ -65,8 +66,8 @@ try:
             footprint_updated(footprint_mb): Emitted when footprint is sampled.
         """
 
-        memory_updated = pyqtSignal(float, float, float)  # main_mb, children_mb, total_mb
-        footprint_updated = pyqtSignal(float)  # footprint_mb
+        memory_updated = Signal(float, float, float)  # main_mb, children_mb, total_mb
+        footprint_updated = Signal(float)  # footprint_mb
 
     HAS_QT = True
 except ImportError:
@@ -74,9 +75,9 @@ except ImportError:
     HAS_QT = False
 
 
-@dataclass
+@dataclass(frozen=True)
 class MemorySnapshot:
-    """A single memory measurement."""
+    """A single memory measurement (immutable)."""
 
     timestamp: float
     rss_mb: float
@@ -84,9 +85,9 @@ class MemorySnapshot:
     process_name: str = "main"
 
 
-@dataclass
+@dataclass(frozen=True)
 class MemoryReport:
-    """Summary of memory usage during a monitoring period."""
+    """Summary of memory usage during a monitoring period (immutable)."""
 
     start_time: float
     end_time: float
@@ -109,10 +110,15 @@ def get_process_memory_mb(pid: Optional[int] = None) -> float:
     Returns:
         Resident Set Size in megabytes.
     """
+    log = squid.logging.get_logger("MemoryProfiler")
     try:
         process = psutil.Process(pid) if pid else psutil.Process()
         return process.memory_info().rss / (1024 * 1024)
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
+    except psutil.NoSuchProcess:
+        log.debug(f"Process {pid} no longer exists")
+        return 0.0
+    except psutil.AccessDenied:
+        log.warning(f"Access denied reading memory for process {pid}")
         return 0.0
 
 
@@ -145,6 +151,7 @@ def get_all_squid_memory_mb() -> Dict[str, float]:
         Dict with 'main', 'children', 'total', and 'child_pids' keys.
         Memory values are in MB.
     """
+    log = squid.logging.get_logger("MemoryProfiler")
     try:
         process = psutil.Process()
         main_mb = process.memory_info().rss / (1024 * 1024)
@@ -167,7 +174,8 @@ def get_all_squid_memory_mb() -> Dict[str, float]:
             "total": main_mb + children_mb,
             "child_details": child_details,
         }
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
+    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+        log.warning(f"Failed to get main process memory info: {e}")
         return {"main": 0.0, "children": 0.0, "total": 0.0, "child_details": []}
 
 
@@ -549,8 +557,12 @@ class MemoryMonitor:
         while not self._stop_event.is_set():
             try:
                 self._take_sample()
+            except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                # Expected during process termination or permission issues
+                self._log.debug(f"Sample skipped (process state changed): {e}")
             except Exception as e:
-                self._log.debug(f"Sample error: {e}")
+                # Unexpected error - log at warning level but don't crash the monitor
+                self._log.warning(f"Unexpected error during memory sampling: {e}", exc_info=True)
 
             # Use wait() instead of sleep() so we can respond to stop quickly
             self._stop_event.wait(timeout=self._sample_interval_s)

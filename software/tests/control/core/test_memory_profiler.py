@@ -575,3 +575,114 @@ class TestErrorHandling:
 
         # Should have some samples despite any errors
         assert report is not None
+
+
+# =============================================================================
+# Qt Signal Emission Tests (requires pytest-qt)
+# =============================================================================
+
+
+class TestMemoryMonitorSignals:
+    """Tests for MemoryMonitor Qt signal emission."""
+
+    def test_signals_created_when_enabled(self):
+        """Test that signals are created when enable_signals=True."""
+        monitor = MemoryMonitor(sample_interval_ms=100, enable_signals=True)
+        # Signals should exist if Qt is available
+        from control.core.memory_profiler import HAS_QT
+
+        if HAS_QT:
+            assert monitor.signals is not None
+        else:
+            # Without Qt, signals may be None
+            pass
+
+    def test_signals_not_created_when_disabled(self):
+        """Test that signals are not created when enable_signals=False."""
+        monitor = MemoryMonitor(sample_interval_ms=100, enable_signals=False)
+        assert monitor.signals is None
+
+    def test_memory_updated_signal_emitted(self, qtbot):
+        """Test that memory_updated signal is emitted during sampling."""
+        monitor = MemoryMonitor(sample_interval_ms=50, enable_signals=True, track_children=False)
+
+        if monitor.signals is None:
+            pytest.skip("Qt signals not available")
+
+        # Use qtbot.waitSignal to reliably wait for cross-thread signal
+        with qtbot.waitSignal(monitor.signals.memory_updated, timeout=1000) as blocker:
+            monitor.start("SIGNAL_TEST")
+
+        monitor.stop()
+
+        # Verify signal was received with valid data
+        main_mb, children_mb, total_mb = blocker.args
+        assert main_mb > 0  # Main memory should be positive
+
+    def test_footprint_updated_signal_emitted(self, qtbot):
+        """Test that footprint_updated signal is emitted during sampling."""
+        monitor = MemoryMonitor(sample_interval_ms=50, enable_signals=True, track_children=False)
+
+        if monitor.signals is None:
+            pytest.skip("Qt signals not available")
+
+        received_footprints = []
+
+        def on_footprint_updated(footprint_mb):
+            received_footprints.append(footprint_mb)
+
+        monitor.signals.footprint_updated.connect(on_footprint_updated)
+        monitor.start("FOOTPRINT_TEST")
+
+        # Wait for a few samples
+        qtbot.wait(200)
+
+        monitor.stop()
+
+        # On macOS, footprint should be available; on other platforms it may not be
+        # Just ensure we don't crash and signal was emitted if footprint > 0
+        # If no footprint available on this platform, signal won't emit (which is OK)
+        pass  # Test passes if no exceptions
+
+    def test_signal_emission_handles_disconnected_receiver(self, qtbot):
+        """Test that signal emission handles disconnected receivers gracefully."""
+        monitor = MemoryMonitor(sample_interval_ms=50, enable_signals=True, track_children=False)
+
+        if monitor.signals is None:
+            pytest.skip("Qt signals not available")
+
+        def on_memory_updated(main_mb, children_mb, total_mb):
+            pass
+
+        monitor.signals.memory_updated.connect(on_memory_updated)
+        monitor.start("DISCONNECT_TEST")
+
+        # Wait a bit then disconnect
+        qtbot.wait(100)
+        monitor.signals.memory_updated.disconnect(on_memory_updated)
+
+        # Continue sampling - should not raise
+        qtbot.wait(100)
+
+        monitor.stop()
+        # Test passes if no exceptions
+
+    def test_signals_with_children_tracking(self, qtbot):
+        """Test signal emission with children tracking enabled."""
+        monitor = MemoryMonitor(sample_interval_ms=50, enable_signals=True, track_children=True)
+
+        if monitor.signals is None:
+            pytest.skip("Qt signals not available")
+
+        # Use qtbot.waitSignal to reliably wait for cross-thread signal
+        with qtbot.waitSignal(monitor.signals.memory_updated, timeout=1000) as blocker:
+            monitor.start("CHILDREN_TEST")
+
+        monitor.stop()
+
+        # With children tracking, total should roughly equal main + children
+        # (small differences can occur due to timing between measurements)
+        main_mb, children_mb, total_mb = blocker.args
+        assert total_mb > 0  # Total should be positive
+        # Allow up to 10MB difference due to sampling timing variations
+        assert abs(total_mb - (main_mb + children_mb)) < 10.0

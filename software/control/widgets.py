@@ -13768,16 +13768,25 @@ class RAMMonitorWidget(QWidget):
 
     def _setup_timer(self):
         """Setup timer for periodic memory updates when not connected to monitor."""
-        from PyQt5.QtCore import QTimer
-
+        # Note: QTimer is imported via qtpy at the top of the file
         self._update_timer = QTimer(self)
         self._update_timer.timeout.connect(self._update_memory_display)
         self._update_timer.setInterval(1000)  # Update every 1 second
 
-    def start_monitoring(self):
-        """Start continuous memory monitoring."""
+    def start_monitoring(self, reset_peak: bool = True):
+        """Start continuous memory monitoring.
+
+        Args:
+            reset_peak: If True, reset session peak tracking. Set to False when
+                       resuming monitoring after disconnecting from an acquisition monitor.
+        """
+        if self._memory_monitor is not None:
+            self._log.warning("Cannot start timer while connected to external monitor")
+            return
+
         self._log.info("Starting continuous RAM monitoring timer")
-        self._session_peak_mb = 0.0
+        if reset_peak:
+            self._session_peak_mb = 0.0
         self._update_memory_display()  # Initial update
         self._update_timer.start()
         self._log.debug(f"Timer active: {self._update_timer.isActive()}")
@@ -13842,9 +13851,12 @@ class RAMMonitorWidget(QWidget):
         if self._memory_monitor is not None and self._memory_monitor.signals is not None:
             try:
                 self._memory_monitor.signals.footprint_updated.disconnect(self._on_footprint_updated)
-            except (TypeError, RuntimeError) as e:
-                # Already disconnected or signal doesn't exist
-                self._log.debug(f"Signal disconnect skipped (may already be disconnected): {e}")
+            except RuntimeError:
+                # Already disconnected - this is expected
+                self._log.debug("Signal already disconnected")
+            except TypeError as e:
+                # Unexpected - slot signature mismatch could indicate a bug
+                self._log.warning(f"Signal disconnect type error (possible bug): {e}")
         self._memory_monitor = None
         # Timer is NOT started here - caller decides via start_monitoring()/stop_monitoring()
 
