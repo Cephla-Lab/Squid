@@ -261,9 +261,9 @@ class SaveOMETiffJob(Job):
                 image=image,
                 stack_key=stack_key,
                 shape=shape,
-                time_point=int(self.capture_info.time_point or 0),
-                z_index=int(self.capture_info.z_index),
-                channel_index=int(self.capture_info.configuration_idx),
+                time_point=self.capture_info.time_point or 0,
+                z_index=self.capture_info.z_index,
+                channel_index=self.capture_info.configuration_idx,
             )
             self._log.debug(
                 f"SaveOMETiffJob {self.job_id}: simulated write of {bytes_written} bytes "
