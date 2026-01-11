@@ -80,10 +80,10 @@ This location ensures:
 
 `DownsampledViewJob` accumulates tiles in memory until a well completes, then generates stitched images. The backpressure tracking handles this specially:
 
-- **Intermediate FOVs**: Bytes stay tracked (image held in accumulator)
-- **Final FOV**: ALL accumulated bytes for the well are decremented
+- **Intermediate FOVs**: Job count decrements, but bytes stay tracked (image held in accumulator). Capacity event IS signaled (allows wait loop to re-check).
+- **Final FOV**: ALL accumulated bytes for the well are decremented. Capacity event signaled.
 
-This prevents false "capacity available" signals while images are still held in the accumulator.
+The byte tracking accurately reflects memory usage - bytes aren't freed until the well's accumulator is cleared on final FOV.
 
 ## Logging
 
@@ -103,6 +103,7 @@ If timeout is reached:
 
 ```
 WARNING:control.core.backpressure:Backpressure timeout after 30.0s, continuing
+ERROR:control.core.multi_point_worker:Backpressure timeout - disk I/O cannot keep up. Stats: BackpressureStats(...)
 ```
 
 ## Monitoring
