@@ -7,7 +7,6 @@ acquisition when limits are exceeded.
 import multiprocessing
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 import squid.logging
 

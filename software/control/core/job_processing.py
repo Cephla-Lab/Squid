@@ -834,7 +834,7 @@ class JobRunner(multiprocessing.Process):
                             image_bytes = job.capture_image.image_array.nbytes
                         else:
                             self._log.debug(
-                                f"Job {job.job_id} has no capture_image or image_array, " f"byte tracking skipped"
+                                f"Job {job.job_id} has no capture_image or image_array, byte tracking skipped"
                             )
 
                         # Byte tracking: DownsampledViewJob needs special handling

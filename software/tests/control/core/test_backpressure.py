@@ -4,10 +4,8 @@ These tests verify the BackpressureController and JobRunner integration for
 preventing RAM exhaustion when acquisition speed exceeds disk write speed.
 """
 
-import multiprocessing
 import time
-from dataclasses import dataclass, field
-from typing import Optional, Dict, List, Tuple
+from dataclasses import dataclass
 
 import numpy as np
 import pytest
@@ -17,11 +15,9 @@ from control.core.backpressure import BackpressureController, BackpressureStats
 from control.core.job_processing import (
     Job,
     JobRunner,
-    JobResult,
     JobImage,
     CaptureInfo,
     DownsampledViewJob,
-    DownsampledViewResult,
 )
 from control.utils_config import ChannelMode
 
@@ -264,7 +260,6 @@ class TestJobRunnerBackpressureTracking:
             # Create job with known image size
             image_size = 100 * 100 * 2  # 100x100 uint16 = 20000 bytes
             job = make_slow_job(duration_s=1.0, size_bytes=image_size)
-            actual_bytes = job.capture_image.image_array.nbytes
 
             runner.dispatch(job)
 
@@ -296,7 +291,7 @@ class TestJobRunnerBackpressureTracking:
             assert controller.get_pending_jobs() == 1
 
             # Wait for job to complete
-            result = runner.output_queue().get(timeout=5.0)
+            runner.output_queue().get(timeout=5.0)
             time.sleep(0.1)  # Buffer for finally block
 
             assert controller.get_pending_jobs() == 0
@@ -501,7 +496,7 @@ class TestDownsampledViewJobBackpressure:
             runner.dispatch(job2)
 
             # Wait for final job to complete and return result
-            result = runner.output_queue().get(timeout=5.0)
+            runner.output_queue().get(timeout=5.0)
             time.sleep(0.2)  # Buffer for finally block
 
             # All counters should be zero after final FOV
@@ -549,7 +544,7 @@ class TestDownsampledViewJobBackpressure:
                         time.sleep(0.1)
 
             # Wait for final job to complete
-            result = runner.output_queue().get(timeout=10.0)
+            runner.output_queue().get(timeout=10.0)
             time.sleep(0.3)
 
             # All bytes should be decremented after final FOV
@@ -643,7 +638,7 @@ class TestDownsampledViewJobExceptionHandling:
 
             # Wait for job to complete (may get result or exception)
             try:
-                result = runner.output_queue().get(timeout=5.0)
+                runner.output_queue().get(timeout=5.0)
             except Exception:
                 pass  # OK if it times out, we're testing counter behavior
             time.sleep(0.3)  # Buffer for finally block
@@ -684,7 +679,7 @@ class TestBackpressureSharedValues:
             assert controller.get_pending_jobs() == 1
 
             # Wait for subprocess to complete job and decrement
-            result = runner.output_queue().get(timeout=5.0)
+            runner.output_queue().get(timeout=5.0)
             time.sleep(0.1)
 
             # Counter decremented by subprocess
@@ -716,7 +711,7 @@ class TestBackpressureSharedValues:
             runner.dispatch(job)
 
             # Wait for job to complete
-            result = runner.output_queue().get(timeout=5.0)
+            runner.output_queue().get(timeout=5.0)
             time.sleep(0.1)
 
             # Event should be set by subprocess

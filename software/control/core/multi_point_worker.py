@@ -1232,7 +1232,7 @@ class MultiPointWorker:
                 got_capacity = self._backpressure.wait_for_capacity()
                 if not got_capacity:
                     self._log.error(
-                        f"Backpressure timeout - disk I/O cannot keep up. " f"Stats: {self._backpressure.get_stats()}"
+                        f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
                     )
 
         with self._timing.get_timer("get_ready_for_trigger re-check"):
