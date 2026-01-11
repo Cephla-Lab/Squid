@@ -815,6 +815,10 @@ class MultiPointController:
         finally:
             if not thread_started:
                 self._stop_per_acquisition_log()
+                # Stop memory monitor if acquisition setup failed
+                if self._memory_monitor is not None:
+                    self._memory_monitor.stop()
+                    self._memory_monitor = None
 
     def build_params(self, scan_position_information: ScanPositionInformation) -> AcquisitionParameters:
         # Determine plate dimensions from wellplate format if available
