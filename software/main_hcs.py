@@ -18,6 +18,7 @@ squid.logging.setup_uncaught_exception_logging()
 # app specific libraries
 import control.gui_hcs as gui
 from control._def import USE_TERMINAL_CONSOLE, ENABLE_MCP_SERVER_SUPPORT, CONTROL_SERVER_HOST, CONTROL_SERVER_PORT
+import control._def
 import control.utils
 import control.microscope
 
@@ -72,6 +73,20 @@ if __name__ == "__main__":
 
     menu_bar = win.menuBar()
     menu_bar.addMenu(microscope_utils_menu)
+
+    # Show startup warning if simulated disk I/O mode is enabled
+    if control._def.SIMULATED_DISK_IO_ENABLED:
+        QMessageBox.warning(
+            None,
+            "Development Mode Active",
+            "SIMULATED DISK I/O IS ENABLED\n\n"
+            "Images are encoded to memory (exercises RAM/CPU) but NOT saved to disk.\n"
+            f"Simulated write speed: {control._def.SIMULATED_DISK_IO_SPEED_MB_S} MB/s\n\n"
+            "This mode is for development/testing only.\n\n"
+            "To disable: Settings > Preferences > Advanced",
+            QMessageBox.Ok,
+        )
+
     win.show()
 
     if USE_TERMINAL_CONSOLE:

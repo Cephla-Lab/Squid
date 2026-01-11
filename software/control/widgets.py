@@ -123,6 +123,31 @@ def check_ram_available_with_error_dialog(
     return True
 
 
+def get_last_used_saving_path() -> str:
+    """Get the last used saving path from cache file, or return the default."""
+    cache_file = "cache/last_saving_path.txt"
+    try:
+        with open(cache_file, "r") as f:
+            path = f.read().strip()
+            if path and os.path.isdir(path):
+                return path
+    except OSError:
+        pass
+    return DEFAULT_SAVING_PATH
+
+
+def save_last_used_saving_path(path: str) -> None:
+    """Save the last used saving path to cache file."""
+    if path:  # Only save non-empty paths
+        cache_file = "cache/last_saving_path.txt"
+        try:
+            os.makedirs("cache", exist_ok=True)
+            with open(cache_file, "w") as f:
+                f.write(path)
+        except OSError:
+            pass  # Silently fail - caching is a convenience feature
+
+
 class WrapperWindow(QMainWindow):
     def __init__(self, content_widget, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -824,6 +849,41 @@ class PreferencesDialog(QDialog):
         hw_group.content.addLayout(hw_layout)
         layout.addWidget(hw_group)
 
+        # Development Settings section
+        dev_group = CollapsibleGroupBox("Development Settings")
+        dev_layout = QFormLayout()
+
+        self.simulated_io_checkbox = QCheckBox()
+        self.simulated_io_checkbox.setChecked(self._get_config_bool("GENERAL", "simulated_disk_io_enabled", False))
+        self.simulated_io_checkbox.setToolTip(
+            "When enabled, images are encoded to memory but NOT saved to disk.\n"
+            "Use this for development/testing to avoid SSD wear."
+        )
+        dev_layout.addRow("Simulated Disk I/O *:", self.simulated_io_checkbox)
+
+        self.simulated_io_speed_spinbox = QDoubleSpinBox()
+        self.simulated_io_speed_spinbox.setRange(10.0, 3000.0)
+        self.simulated_io_speed_spinbox.setValue(
+            self._get_config_float("GENERAL", "simulated_disk_io_speed_mb_s", 200.0)
+        )
+        self.simulated_io_speed_spinbox.setSuffix(" MB/s")
+        self.simulated_io_speed_spinbox.setToolTip(
+            "Simulated write speed: HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000 MB/s"
+        )
+        dev_layout.addRow("Simulated Write Speed:", self.simulated_io_speed_spinbox)
+
+        self.simulated_io_compression_checkbox = QCheckBox()
+        self.simulated_io_compression_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
+        )
+        self.simulated_io_compression_checkbox.setToolTip(
+            "When enabled, images are compressed during simulation (more realistic CPU/RAM usage)"
+        )
+        dev_layout.addRow("Simulate Compression:", self.simulated_io_compression_checkbox)
+
+        dev_group.content.addLayout(dev_layout)
+        layout.addWidget(dev_group)
+
         # Software Position Limits section
         limits_group = CollapsibleGroupBox("Software Position Limits")
         limits_layout = QFormLayout()
@@ -1112,6 +1172,19 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
         self.config.set("GENERAL", "illumination_intensity_factor", str(self.illumination_factor.value()))
 
+        # Advanced - Development Settings
+        self.config.set(
+            "GENERAL",
+            "simulated_disk_io_enabled",
+            "true" if self.simulated_io_checkbox.isChecked() else "false",
+        )
+        self.config.set("GENERAL", "simulated_disk_io_speed_mb_s", str(self.simulated_io_speed_spinbox.value()))
+        self.config.set(
+            "GENERAL",
+            "simulated_disk_io_compression",
+            "true" if self.simulated_io_compression_checkbox.isChecked() else "false",
+        )
+
         # Advanced - Position Limits
         self.config.set("SOFTWARE_POS_LIMIT", "x_positive", str(self.limit_x_pos.value()))
         self.config.set("SOFTWARE_POS_LIMIT", "x_negative", str(self.limit_x_neg.value()))
@@ -1212,6 +1285,11 @@ class PreferencesDialog(QDialog):
 
         # Illumination intensity factor
         control._def.ILLUMINATION_INTENSITY_FACTOR = self.illumination_factor.value()
+
+        # Development settings - simulated disk I/O
+        control._def.SIMULATED_DISK_IO_ENABLED = self.simulated_io_checkbox.isChecked()
+        control._def.SIMULATED_DISK_IO_SPEED_MB_S = self.simulated_io_speed_spinbox.value()
+        control._def.SIMULATED_DISK_IO_COMPRESSION = self.simulated_io_compression_checkbox.isChecked()
 
         # Software position limits
         control._def.SOFTWARE_POS_LIMIT.X_POSITIVE = self.limit_x_pos.value()
@@ -1396,6 +1474,24 @@ class PreferencesDialog(QDialog):
         new_val = self.illumination_factor.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Illumination Intensity Factor", str(old_val), str(new_val), False))
+
+        # Advanced - Development Settings
+        # Enable/disable requires restart (for warning banner/dialog), but speed/compression
+        # take effect on next acquisition since each acquisition starts a fresh subprocess
+        old_val = self._get_config_bool("GENERAL", "simulated_disk_io_enabled", False)
+        new_val = self.simulated_io_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulated Disk I/O", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_float("GENERAL", "simulated_disk_io_speed_mb_s", 200.0)
+        new_val = self.simulated_io_speed_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Simulated Write Speed", f"{old_val} MB/s", f"{new_val} MB/s", False))
+
+        old_val = self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
+        new_val = self.simulated_io_compression_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulate Compression", str(old_val), str(new_val), False))
 
         # Advanced - Position Limits (live update)
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115)
@@ -4195,10 +4291,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
 
         self.lineEdit_savingDir = QLineEdit()
         self.lineEdit_savingDir.setReadOnly(True)
-        self.lineEdit_savingDir.setText("Choose a base saving directory")
 
-        self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
-        self.multipointController.set_base_path(DEFAULT_SAVING_PATH)
+        last_path = get_last_used_saving_path()
+        self.lineEdit_savingDir.setText(last_path)
+        self.multipointController.set_base_path(last_path)
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
@@ -4875,9 +4971,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def set_saving_dir(self):
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self.multipointController.set_base_path(save_dir_base)
-        self.lineEdit_savingDir.setText(save_dir_base)
-        self.base_path_is_set = True
+        if save_dir_base:  # Only update if user didn't cancel
+            self.multipointController.set_base_path(save_dir_base)
+            self.lineEdit_savingDir.setText(save_dir_base)
+            self.base_path_is_set = True
+            save_last_used_saving_path(save_dir_base)
 
     def emit_selected_channels(self):
         selected_channels = [item.text() for item in self.list_configurations.selectedItems()]
@@ -5703,8 +5801,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.btn_setSavingDir.setFixedWidth(btn_width)
 
         self.lineEdit_savingDir = QLineEdit()
-        self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
-        self.multipointController.set_base_path(DEFAULT_SAVING_PATH)
+        last_path = get_last_used_saving_path()
+        self.lineEdit_savingDir.setText(last_path)
+        self.multipointController.set_base_path(last_path)
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
@@ -7403,9 +7502,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def set_saving_dir(self):
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self.multipointController.set_base_path(save_dir_base)
-        self.lineEdit_savingDir.setText(save_dir_base)
-        self.base_path_is_set = True
+        if save_dir_base:  # Only update if user didn't cancel
+            self.multipointController.set_base_path(save_dir_base)
+            self.lineEdit_savingDir.setText(save_dir_base)
+            self.base_path_is_set = True
+            save_last_used_saving_path(save_dir_base)
 
     def on_snap_images(self):
         if not self.list_configurations.selectedItems():

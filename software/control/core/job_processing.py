@@ -151,9 +151,23 @@ def _acquire_file_lock(lock_path: str, context: str = ""):
 
 
 class SaveImageJob(Job):
+    _log: ClassVar = squid.logging.get_logger("SaveImageJob")
+
     def run(self) -> bool:
-        is_color = len(self.image_array().shape) > 2
-        return self.save_image(self.image_array(), self.capture_info, is_color)
+        from control.core.io_simulation import is_simulation_enabled, simulated_tiff_write
+
+        image = self.image_array()
+
+        # Simulated disk I/O mode - encode to buffer, throttle, discard
+        if is_simulation_enabled():
+            bytes_written = simulated_tiff_write(image)
+            self._log.debug(
+                f"SaveImageJob {self.job_id}: simulated write of {bytes_written} bytes " f"(image shape={image.shape})"
+            )
+            return True
+
+        is_color = len(image.shape) > 2
+        return self.save_image(image, self.capture_info, is_color)
 
     def save_image(self, image: np.array, info: CaptureInfo, is_color: bool):
         # NOTE(imo): We silently fall back to individual image saving here.  We should warn or do something.
@@ -218,6 +232,7 @@ class SaveOMETiffJob(Job):
     The acquisition_info field is injected by JobRunner.dispatch() before the job runs.
     """
 
+    _log: ClassVar = squid.logging.get_logger("SaveOMETiffJob")
     acquisition_info: Optional[AcquisitionInfo] = field(default=None)
 
     def run(self) -> bool:
@@ -227,7 +242,42 @@ class SaveOMETiffJob(Job):
                 "This job must be dispatched via JobRunner.dispatch(), which injects acquisition_info. "
                 "If running directly, set job.acquisition_info before calling run()."
             )
-        self._save_ome_tiff(self.image_array(), self.capture_info)
+
+        from control.core.io_simulation import is_simulation_enabled, simulated_ome_tiff_write
+
+        image = self.image_array()
+
+        # Simulated disk I/O mode - encode to buffer, throttle, discard
+        if is_simulation_enabled():
+            # Build stack key from output path
+            ome_folder = ome_tiff_writer.ome_output_folder(self.acquisition_info, self.capture_info)
+            base_name = ome_tiff_writer.ome_base_name(self.capture_info)
+            stack_key = os.path.join(ome_folder, base_name)
+
+            # Determine 5D shape (T, Z, C, Y, X)
+            shape = (
+                self.acquisition_info.total_time_points,
+                self.acquisition_info.total_z_levels,
+                self.acquisition_info.total_channels,
+                image.shape[0],
+                image.shape[1],
+            )
+
+            bytes_written = simulated_ome_tiff_write(
+                image=image,
+                stack_key=stack_key,
+                shape=shape,
+                time_point=self.capture_info.time_point or 0,
+                z_index=self.capture_info.z_index,
+                channel_index=self.capture_info.configuration_idx,
+            )
+            self._log.debug(
+                f"SaveOMETiffJob {self.job_id}: simulated write of {bytes_written} bytes "
+                f"(image shape={image.shape})"
+            )
+            return True
+
+        self._save_ome_tiff(image, self.capture_info)
         return True
 
     def _save_ome_tiff(self, image: np.ndarray, info: CaptureInfo) -> None:
