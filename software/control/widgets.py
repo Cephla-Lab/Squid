@@ -847,9 +847,9 @@ class PreferencesDialog(QDialog):
             self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
         )
         self.simulated_io_compression_checkbox.setToolTip(
-            "Enable to exercise compression CPU/RAM for more realistic simulation"
+            "When enabled, images are compressed during simulation (more realistic CPU/RAM usage)"
         )
-        dev_layout.addRow("Exercise Compression:", self.simulated_io_compression_checkbox)
+        dev_layout.addRow("Simulate Compression:", self.simulated_io_compression_checkbox)
 
         dev_group.content.addLayout(dev_layout)
         layout.addWidget(dev_group)
@@ -1436,7 +1436,7 @@ class PreferencesDialog(QDialog):
         old_val = self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
         new_val = self.simulated_io_compression_checkbox.isChecked()
         if old_val != new_val:
-            changes.append(("Exercise Compression", str(old_val), str(new_val), False))
+            changes.append(("Simulate Compression", str(old_val), str(new_val), False))
 
         # Advanced - Position Limits (live update)
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115)
