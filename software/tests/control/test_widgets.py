@@ -694,3 +694,318 @@ class TestMultiPointControllerMemoryMonitoring:
             monitor.stop()
         finally:
             control._def.ENABLE_MEMORY_PROFILING = original_value
+
+
+# ============================================================================
+# BackpressureMonitorWidget Tests
+# ============================================================================
+
+from control.widgets import BackpressureMonitorWidget
+from control.core.backpressure import BackpressureStats
+from unittest.mock import Mock, PropertyMock
+
+
+@pytest.fixture
+def bp_monitor_widget(qtbot):
+    """Create a BackpressureMonitorWidget instance for testing."""
+    widget = BackpressureMonitorWidget()
+    qtbot.addWidget(widget)
+    return widget
+
+
+@pytest.fixture
+def mock_bp_controller():
+    """Create a mock BackpressureController for testing."""
+    controller = Mock()
+    controller.enabled = True
+    controller.get_stats.return_value = BackpressureStats(
+        pending_jobs=5,
+        pending_bytes_mb=125.5,
+        max_pending_jobs=10,
+        max_pending_mb=500.0,
+        is_throttled=False,
+    )
+    return controller
+
+
+class TestBackpressureMonitorWidget:
+    """Tests for BackpressureMonitorWidget lifecycle and state management."""
+
+    def test_initial_state(self, bp_monitor_widget):
+        """Test that widget initializes with correct state."""
+        widget = bp_monitor_widget
+        assert widget._controller is None
+        assert widget._throttle_sticky_counter == 0
+        assert widget.label_jobs.text() == "--"
+        assert widget.label_bytes.text() == "--"
+        assert widget.label_throttled.text() == ""
+        assert not widget._update_timer.isActive()
+
+    def test_start_monitoring_starts_timer(self, bp_monitor_widget, mock_bp_controller):
+        """Test that start_monitoring starts the update timer."""
+        widget = bp_monitor_widget
+        widget.start_monitoring(mock_bp_controller)
+
+        assert widget._update_timer.isActive()
+        assert widget._controller is mock_bp_controller
+
+        # Clean up
+        widget.stop_monitoring()
+
+    def test_start_monitoring_with_none_controller(self, bp_monitor_widget):
+        """Test that start_monitoring with None controller is handled gracefully."""
+        widget = bp_monitor_widget
+
+        # Should not raise, but should log a warning
+        widget.start_monitoring(None)
+
+        assert widget._controller is None
+        assert not widget._update_timer.isActive()
+
+    def test_stop_monitoring_stops_timer(self, bp_monitor_widget, mock_bp_controller):
+        """Test that stop_monitoring stops timer and clears display."""
+        widget = bp_monitor_widget
+        widget.start_monitoring(mock_bp_controller)
+        assert widget._update_timer.isActive()
+
+        widget.stop_monitoring()
+
+        assert not widget._update_timer.isActive()
+        assert widget._controller is None
+        assert widget._throttle_sticky_counter == 0
+        assert widget.label_jobs.text() == "--"
+        assert widget.label_bytes.text() == "--"
+        assert widget.label_throttled.text() == ""
+
+    def test_start_monitoring_updates_display(self, bp_monitor_widget, mock_bp_controller, qtbot):
+        """Test that start_monitoring triggers an immediate display update."""
+        widget = bp_monitor_widget
+        widget.start_monitoring(mock_bp_controller)
+
+        # Labels should be updated immediately
+        assert widget.label_jobs.text() == "5/10 jobs"
+        assert widget.label_bytes.text() == "125.5/500.0 MB"
+
+        widget.stop_monitoring()
+
+    def test_start_monitoring_resets_sticky_counter(self, bp_monitor_widget, mock_bp_controller):
+        """Test that start_monitoring resets the sticky throttle counter."""
+        widget = bp_monitor_widget
+        widget._throttle_sticky_counter = 3  # Simulate leftover state
+
+        widget.start_monitoring(mock_bp_controller)
+
+        assert widget._throttle_sticky_counter == 0
+
+        widget.stop_monitoring()
+
+    def test_display_format_with_max_values(self, bp_monitor_widget, mock_bp_controller):
+        """Test that display shows current/max format."""
+        widget = bp_monitor_widget
+        mock_bp_controller.get_stats.return_value = BackpressureStats(
+            pending_jobs=3,
+            pending_bytes_mb=200.0,
+            max_pending_jobs=20,
+            max_pending_mb=1000.0,
+            is_throttled=False,
+        )
+
+        widget.start_monitoring(mock_bp_controller)
+
+        assert widget.label_jobs.text() == "3/20 jobs"
+        assert widget.label_bytes.text() == "200.0/1000.0 MB"
+
+        widget.stop_monitoring()
+
+
+class TestBackpressureMonitorWidgetThrottling:
+    """Tests for BackpressureMonitorWidget throttle indicator behavior."""
+
+    def test_throttled_indicator_shown_when_throttled(self, bp_monitor_widget, mock_bp_controller):
+        """Test that [THROTTLED] appears when is_throttled is True."""
+        widget = bp_monitor_widget
+        mock_bp_controller.get_stats.return_value = BackpressureStats(
+            pending_jobs=10,
+            pending_bytes_mb=500.0,
+            max_pending_jobs=10,
+            max_pending_mb=500.0,
+            is_throttled=True,
+        )
+
+        widget.start_monitoring(mock_bp_controller)
+
+        assert widget.label_throttled.text() == "[THROTTLED]"
+        assert widget._throttle_sticky_counter == BackpressureMonitorWidget.THROTTLE_STICKY_CYCLES
+
+        widget.stop_monitoring()
+
+    def test_throttled_indicator_hidden_when_not_throttled(self, bp_monitor_widget, mock_bp_controller):
+        """Test that [THROTTLED] is hidden when is_throttled is False."""
+        widget = bp_monitor_widget
+        mock_bp_controller.get_stats.return_value = BackpressureStats(
+            pending_jobs=5,
+            pending_bytes_mb=125.5,
+            max_pending_jobs=10,
+            max_pending_mb=500.0,
+            is_throttled=False,
+        )
+
+        widget.start_monitoring(mock_bp_controller)
+
+        assert widget.label_throttled.text() == ""
+
+        widget.stop_monitoring()
+
+    def test_sticky_throttle_countdown(self, bp_monitor_widget, mock_bp_controller):
+        """Test that [THROTTLED] stays visible for THROTTLE_STICKY_CYCLES after release."""
+        widget = bp_monitor_widget
+
+        # First: throttled
+        mock_bp_controller.get_stats.return_value = BackpressureStats(
+            pending_jobs=10,
+            pending_bytes_mb=500.0,
+            max_pending_jobs=10,
+            max_pending_mb=500.0,
+            is_throttled=True,
+        )
+        widget.start_monitoring(mock_bp_controller)
+        assert widget.label_throttled.text() == "[THROTTLED]"
+        initial_counter = widget._throttle_sticky_counter
+
+        # Now: not throttled - simulate countdown
+        mock_bp_controller.get_stats.return_value = BackpressureStats(
+            pending_jobs=5,
+            pending_bytes_mb=250.0,
+            max_pending_jobs=10,
+            max_pending_mb=500.0,
+            is_throttled=False,
+        )
+
+        # Each update should decrement the counter but keep [THROTTLED] visible
+        for i in range(initial_counter - 1):
+            widget._update_display()
+            assert widget.label_throttled.text() == "[THROTTLED]"
+            assert widget._throttle_sticky_counter == initial_counter - 1 - i
+
+        # Final update should clear [THROTTLED]
+        widget._update_display()
+        assert widget.label_throttled.text() == ""
+        assert widget._throttle_sticky_counter == 0
+
+        widget.stop_monitoring()
+
+    def test_throttle_reactivation_resets_counter(self, bp_monitor_widget, mock_bp_controller):
+        """Test that re-throttling during countdown resets the counter."""
+        widget = bp_monitor_widget
+
+        # Start throttled
+        mock_bp_controller.get_stats.return_value = BackpressureStats(
+            pending_jobs=10, pending_bytes_mb=500.0, max_pending_jobs=10, max_pending_mb=500.0, is_throttled=True
+        )
+        widget.start_monitoring(mock_bp_controller)
+
+        # Release throttle and count down partially
+        mock_bp_controller.get_stats.return_value = BackpressureStats(
+            pending_jobs=5, pending_bytes_mb=250.0, max_pending_jobs=10, max_pending_mb=500.0, is_throttled=False
+        )
+        widget._update_display()
+        widget._update_display()
+        assert widget._throttle_sticky_counter == BackpressureMonitorWidget.THROTTLE_STICKY_CYCLES - 2
+
+        # Re-throttle - counter should reset to max
+        mock_bp_controller.get_stats.return_value = BackpressureStats(
+            pending_jobs=10, pending_bytes_mb=500.0, max_pending_jobs=10, max_pending_mb=500.0, is_throttled=True
+        )
+        widget._update_display()
+        assert widget._throttle_sticky_counter == BackpressureMonitorWidget.THROTTLE_STICKY_CYCLES
+
+        widget.stop_monitoring()
+
+
+class TestBackpressureMonitorWidgetErrorHandling:
+    """Tests for BackpressureMonitorWidget error handling."""
+
+    def test_broken_pipe_error_handled(self, bp_monitor_widget, mock_bp_controller):
+        """Test that BrokenPipeError is handled gracefully."""
+        widget = bp_monitor_widget
+        mock_bp_controller.get_stats.side_effect = BrokenPipeError("Connection closed")
+
+        widget.start_monitoring(mock_bp_controller)
+
+        # Should not raise - display should show initial values from start_monitoring's first call
+        # (which raises), but widget should continue working
+        widget._update_display()
+
+        widget.stop_monitoring()
+
+    def test_eof_error_handled(self, bp_monitor_widget, mock_bp_controller):
+        """Test that EOFError is handled gracefully."""
+        widget = bp_monitor_widget
+        mock_bp_controller.get_stats.side_effect = EOFError("End of file")
+
+        widget._controller = mock_bp_controller  # Bypass start_monitoring
+
+        # Should not raise
+        widget._update_display()
+
+        widget.stop_monitoring()
+
+    def test_generic_exception_handled(self, bp_monitor_widget, mock_bp_controller):
+        """Test that generic exceptions are handled gracefully."""
+        widget = bp_monitor_widget
+        mock_bp_controller.get_stats.side_effect = RuntimeError("Unexpected error")
+
+        widget._controller = mock_bp_controller  # Bypass start_monitoring
+
+        # Should not raise
+        widget._update_display()
+
+        widget.stop_monitoring()
+
+    def test_update_display_with_no_controller(self, bp_monitor_widget):
+        """Test that _update_display does nothing when controller is None."""
+        widget = bp_monitor_widget
+        widget.label_jobs.setText("TEST")
+
+        widget._update_display()
+
+        # Label should not change since there's no controller
+        assert widget.label_jobs.text() == "TEST"
+
+
+class TestBackpressureMonitorWidgetTimer:
+    """Tests for BackpressureMonitorWidget timer behavior."""
+
+    def test_timer_interval(self, bp_monitor_widget):
+        """Test that timer is configured with correct interval."""
+        widget = bp_monitor_widget
+        assert widget._update_timer.interval() == 500  # 500ms
+
+    def test_timer_updates_periodically(self, bp_monitor_widget, mock_bp_controller, qtbot):
+        """Test that timer triggers periodic updates."""
+        widget = bp_monitor_widget
+
+        # Track get_stats calls
+        call_count_before = mock_bp_controller.get_stats.call_count
+
+        widget.start_monitoring(mock_bp_controller)
+        initial_calls = mock_bp_controller.get_stats.call_count
+
+        # Wait for timer to fire at least once
+        qtbot.wait(600)
+
+        assert mock_bp_controller.get_stats.call_count > initial_calls
+
+        widget.stop_monitoring()
+
+    def test_double_stop_safe(self, bp_monitor_widget, mock_bp_controller):
+        """Test that stopping twice is safe."""
+        widget = bp_monitor_widget
+        widget.start_monitoring(mock_bp_controller)
+
+        widget.stop_monitoring()
+        # Second stop should not raise
+        widget.stop_monitoring()
+
+        assert widget._controller is None
+        assert not widget._update_timer.isActive()
