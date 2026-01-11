@@ -553,9 +553,7 @@ class LaserAutofocusController(QObject):
         )
 
         reference_crop = reference_image[y_start:y_end, x_start:x_end].astype(np.float32)
-        self.reference_crop = (reference_crop - reference_intensity_min) / (
-            reference_intensity_max - reference_intensity_min
-        )
+        self.reference_crop = (reference_crop - np.mean(reference_crop)) / np.max(reference_crop)
         self.reference_intensity_profile = reference_intensity_profile
 
         self._log.info(
@@ -662,9 +660,7 @@ class LaserAutofocusController(QObject):
         y_end = min(current_image.shape[0], center_y + self.laser_af_properties.spot_crop_size // 2)
 
         current_crop = current_image[y_start:y_end, x_start:x_end].astype(np.float32)
-        ref_min = self.laser_af_properties.reference_intensity_min
-        ref_max = self.laser_af_properties.reference_intensity_max
-        current_norm = (current_crop - ref_min) / (ref_max - ref_min)
+        current_norm = (current_crop - np.mean(current_crop)) / np.max(current_crop)
 
         # Calculate normalized cross correlation
         correlation = np.corrcoef(current_norm.ravel(), self.reference_crop.ravel())[0, 1]

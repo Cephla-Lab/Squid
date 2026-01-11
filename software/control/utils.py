@@ -281,27 +281,15 @@ def find_spot_location(
         # Get signal along x (raw intensities)
         x_intensity_profile_raw = np.sum(cropped_image, axis=0).astype(float)
 
-        # Compute local min/max for normalization (pixel values)
-        local_min = float(np.min(cropped_image))
-        local_max = float(np.max(cropped_image))
+        # Compute local min/max for normalization (from sums)
+        local_min = np.min(x_intensity_profile_raw)
+        local_max = np.max(x_intensity_profile_raw)
 
-        # Determine normalization values: use reference if provided, otherwise local
-        if reference_intensity_min is not None and reference_intensity_max is not None:
-            norm_min = reference_intensity_min
-            norm_max = reference_intensity_max
+        # Normalize intensity profile for peak detection (always use local normalization)
+        if local_max - local_min > 0:
+            x_intensity_profile = (x_intensity_profile_raw - local_min) / (local_max - local_min)
         else:
-            norm_min = local_min
-            norm_max = local_max
-
-        # Normalize intensity profile for peak detection
-        # Scale pixel min/max by y_window size since profile values are sums over 2*y_window pixels
-        y_window_size = 2 * p["y_window"]
-        profile_norm_min = norm_min * y_window_size
-        profile_norm_max = norm_max * y_window_size
-        if profile_norm_max - profile_norm_min > 0:
-            x_intensity_profile = (x_intensity_profile_raw - profile_norm_min) / (profile_norm_max - profile_norm_min)
-        else:
-            raise ValueError("Cannot normalize: norm_max equals norm_min")
+            raise ValueError("Cannot normalize: local_max equals local_min")
 
         # Find all peaks
         peaks = signal.find_peaks(
@@ -353,10 +341,18 @@ def find_spot_location(
         else:
             centered_profile_raw = x_intensity_profile_raw[profile_start:profile_end].copy()
 
-        # Normalize the centered profile (using same scaled values as peak detection)
+        # Normalize the centered profile
+        # Use reference min/max if provided (for measurement), otherwise use local (for initialization)
+        if reference_intensity_min is not None and reference_intensity_max is not None:
+            norm_min = reference_intensity_min
+            norm_max = reference_intensity_max
+        else:
+            norm_min = local_min
+            norm_max = local_max
+
         # Avoid division by zero
-        if profile_norm_max - profile_norm_min > 0:
-            centered_profile = (centered_profile_raw - profile_norm_min) / (profile_norm_max - profile_norm_min)
+        if norm_max - norm_min > 0:
+            centered_profile = (centered_profile_raw - norm_min) / (norm_max - norm_min)
         else:
             centered_profile = np.zeros_like(centered_profile_raw)
 
