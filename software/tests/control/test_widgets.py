@@ -702,7 +702,7 @@ class TestMultiPointControllerMemoryMonitoring:
 
 from control.widgets import BackpressureMonitorWidget
 from control.core.backpressure import BackpressureStats
-from unittest.mock import Mock, PropertyMock
+from unittest.mock import Mock
 
 
 @pytest.fixture
@@ -984,9 +984,6 @@ class TestBackpressureMonitorWidgetTimer:
     def test_timer_updates_periodically(self, bp_monitor_widget, mock_bp_controller, qtbot):
         """Test that timer triggers periodic updates."""
         widget = bp_monitor_widget
-
-        # Track get_stats calls
-        call_count_before = mock_bp_controller.get_stats.call_count
 
         widget.start_monitoring(mock_bp_controller)
         initial_calls = mock_bp_controller.get_stats.call_count
