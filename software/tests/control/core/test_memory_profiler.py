@@ -642,7 +642,8 @@ class TestMemoryMonitorSignals:
         # On macOS, footprint should be available; on other platforms it may not be
         # Just ensure we don't crash and signal was emitted if footprint > 0
         # If no footprint available on this platform, signal won't emit (which is OK)
-        pass  # Test passes if no exceptions
+        if received_footprints:
+            assert all(f >= 0 for f in received_footprints)
 
     def test_signal_emission_handles_disconnected_receiver(self, qtbot):
         """Test that signal emission handles disconnected receivers gracefully."""

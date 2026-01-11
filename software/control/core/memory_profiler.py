@@ -212,7 +212,7 @@ def _get_macos_footprint_mb(pid: int) -> float:
             ["footprint", "-p", str(pid)],
             capture_output=True,
             text=True,
-            timeout=1,  # Short timeout to avoid blocking during frequent sampling
+            timeout=0.2,  # Short timeout (< sampling interval) to avoid blocking during frequent sampling
         )
         if result.returncode == 0:
             # Parse output like "python [17890]: 64-bit    Footprint: 6641 KB"
@@ -479,7 +479,13 @@ class MemoryMonitor:
         self._stop_event.set()
 
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            thread = self._thread
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                self._log.warning(
+                    f"Memory monitor thread did not stop within 2.0s timeout; "
+                    f"it may continue running. Report data may be incomplete."
+                )
             self._thread = None
 
         end_time = time.time()
@@ -619,7 +625,6 @@ class MemoryMonitor:
         if self._log_interval_s > 0 and (timestamp - self._last_log_time) >= self._log_interval_s:
             self._last_log_time = timestamp
             # Only fetch all Python processes during periodic logging (expensive operation)
-            all_python_mb = 0.0
             if self._track_children:
                 all_python = get_all_python_processes_mb()
                 all_python_mb = all_python["total"]

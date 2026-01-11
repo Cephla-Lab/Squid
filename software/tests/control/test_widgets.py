@@ -395,8 +395,8 @@ class TestRAMMonitorWidget:
         # Give a moment for the update to process
         qtbot.wait(100)
 
-        # Either shows a value or "N/A" if footprint unavailable
-        assert widget.label_current.text() != "--" or widget.label_available.text() != "--"
+        # Both labels should show a value (or "N/A" if footprint unavailable)
+        assert widget.label_current.text() != "--" and widget.label_available.text() != "--"
 
         widget.stop_monitoring()
 

@@ -1806,8 +1806,8 @@ class HighContentScreeningGui(QMainWindow):
             self.ramMonitorWidget.disconnect_monitor()
             # Control monitoring based on current profiling setting
             if control._def.ENABLE_MEMORY_PROFILING:
-                # Ensure background monitoring continues when profiling is enabled
-                self.ramMonitorWidget.start_monitoring()
+                # Resume background monitoring, preserving session peak from acquisition
+                self.ramMonitorWidget.start_monitoring(reset_peak=False)
                 self.log.debug("RAM monitor: disconnected from acquisition, continuing background monitoring")
             else:
                 # Stop monitoring entirely when profiling is disabled

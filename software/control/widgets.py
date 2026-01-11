@@ -13878,3 +13878,17 @@ class RAMMonitorWidget(QWidget):
         except Exception as e:
             self._log.debug(f"Failed to read available RAM: {e}")
             self.label_available.setText("--")
+
+    def closeEvent(self, event):
+        """Ensure monitoring resources are cleaned up when the widget closes."""
+        try:
+            self.stop_monitoring()
+        except Exception as e:
+            self._log.debug(f"Error stopping monitoring on close: {e}")
+
+        try:
+            self.disconnect_monitor()
+        except Exception as e:
+            self._log.debug(f"Error disconnecting monitor on close: {e}")
+
+        super().closeEvent(event)
