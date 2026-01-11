@@ -13975,8 +13975,8 @@ class BackpressureMonitorWidget(QWidget):
         try:
             stats = self._controller.get_stats()
 
-            self.label_jobs.setText(f"{stats.pending_jobs} jobs")
-            self.label_bytes.setText(f"{stats.pending_bytes_mb:.1f} MB")
+            self.label_jobs.setText(f"{stats.pending_jobs}/{stats.max_pending_jobs} jobs")
+            self.label_bytes.setText(f"{stats.pending_bytes_mb:.1f}/{stats.max_pending_mb:.1f} MB")
 
             # Sticky throttle indicator: show [THROTTLED] and keep visible for
             # THROTTLE_STICKY_CYCLES after throttling releases
