@@ -24,7 +24,8 @@ def get_stage(
         stage_config: StageConfig containing axis configurations
         microcontroller: Microcontroller instance (required for CephlaStage)
         simulated: If True, return a SimulatedStage regardless of other config
-        simulate_delays: If simulated=True, whether to simulate movement delays
+        simulate_delays: If simulated=True, whether to simulate realistic movement
+                         delays (at 2.5 mm/s)
 
     Returns:
         AbstractStage instance

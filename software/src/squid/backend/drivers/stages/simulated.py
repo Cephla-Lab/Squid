@@ -28,11 +28,14 @@ class SimulatedStage(AbstractStage):
         - Test helper methods for setting position and state
     """
 
+    # Default stage speed based on typical hardware (2.5 mm/s)
+    DEFAULT_SPEED_MM_PER_S: float = 2.5
+
     def __init__(
         self,
         stage_config: StageConfig,
         simulate_delays: bool = False,
-        move_delay_per_mm: float = 0.01,  # seconds per mm of movement
+        speed_mm_per_s: float = DEFAULT_SPEED_MM_PER_S,
     ):
         """
         Initialize the simulated stage.
@@ -40,7 +43,7 @@ class SimulatedStage(AbstractStage):
         Args:
             stage_config: Stage configuration containing axis limits
             simulate_delays: If True, simulate realistic movement delays
-            move_delay_per_mm: Delay in seconds per mm of movement (when simulate_delays=True)
+            speed_mm_per_s: Stage movement speed in mm/s (default 2.5 mm/s, typical for real hardware)
         """
         super().__init__(stage_config)
 
@@ -56,7 +59,8 @@ class SimulatedStage(AbstractStage):
 
         # Delay configuration
         self._simulate_delays = simulate_delays
-        self._move_delay_per_mm = move_delay_per_mm
+        self._speed_mm_per_s = speed_mm_per_s
+        self._move_delay_per_mm = 1.0 / speed_mm_per_s if speed_mm_per_s > 0 else 0.0
 
         # Software limits (can be modified via set_limits)
         self._x_pos_limit: Optional[float] = stage_config.X_AXIS.MAX_POSITION
@@ -362,3 +366,14 @@ class SimulatedStage(AbstractStage):
     def set_simulate_delays(self, simulate: bool):
         """Enable or disable delay simulation."""
         self._simulate_delays = simulate
+
+    def set_speed(self, speed_mm_per_s: float):
+        """Set stage movement speed in mm/s.
+
+        Args:
+            speed_mm_per_s: Stage speed (default hardware is ~2.5 mm/s)
+        """
+        if speed_mm_per_s <= 0:
+            raise ValueError("Speed must be positive")
+        self._speed_mm_per_s = speed_mm_per_s
+        self._move_delay_per_mm = 1.0 / speed_mm_per_s
