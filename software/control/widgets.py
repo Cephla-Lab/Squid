@@ -13832,7 +13832,13 @@ class RAMMonitorWidget(QWidget):
             memory_monitor.signals.footprint_updated.connect(self._on_footprint_updated)
 
     def disconnect_monitor(self) -> None:
-        """Disconnect from acquisition monitor, resume timer-based updates."""
+        """Disconnect from acquisition monitor.
+
+        Note: This method only disconnects from the monitor and clears the reference.
+        It does NOT restart the timer - the caller is responsible for deciding whether
+        to call start_monitoring() or stop_monitoring() based on the current settings.
+        This avoids coupling the widget to control._def settings.
+        """
         if self._memory_monitor is not None and self._memory_monitor.signals is not None:
             try:
                 self._memory_monitor.signals.footprint_updated.disconnect(self._on_footprint_updated)
@@ -13840,7 +13846,7 @@ class RAMMonitorWidget(QWidget):
                 # Already disconnected or signal doesn't exist
                 self._log.debug(f"Signal disconnect skipped (may already be disconnected): {e}")
         self._memory_monitor = None
-        self._update_timer.start()  # Resume timer-based updates
+        # Timer is NOT started here - caller decides via start_monitoring()/stop_monitoring()
 
     def _on_footprint_updated(self, footprint_mb: float) -> None:
         """Handle footprint update signal from MemoryMonitor.
