@@ -27,6 +27,12 @@ from squid.backend.controllers.multipoint.progress_tracking import (
     ProgressState,
     CoordinateTracker,
 )
+from squid.backend.controllers.multipoint.position_zstack import (
+    PositionController,
+    ZStackConfig,
+    ZStackExecutor,
+    FOVNavigator,
+)
 
 __all__ = [
     "CaptureInfo",
@@ -50,4 +56,9 @@ __all__ = [
     "ProgressTracker",
     "ProgressState",
     "CoordinateTracker",
+    # Phase 3b exports
+    "PositionController",
+    "ZStackConfig",
+    "ZStackExecutor",
+    "FOVNavigator",
 ]
