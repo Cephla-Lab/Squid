@@ -271,10 +271,10 @@ def convert_xml_channels_to_acquisition_config(
     Convert parsed XML channels to ObjectiveChannelConfig.
 
     Args:
-        xml_channels: Channels from widefield_configurations.xml
+        xml_channels: Channels from channel_configurations.xml
         illumination_config: Illumination channel config for name lookup
-        include_confocal: Whether to include confocal settings
-        confocal_channels: Channels from confocal_configurations.xml (for overrides)
+        include_confocal: Whether to include confocal settings (currently unused)
+        confocal_channels: Channels for confocal overrides (currently unused)
         include_illumination_channels: Whether to include illumination_channels field
             (True for general.yaml, False for objective-specific files)
     """
@@ -486,31 +486,26 @@ def migrate_profile(
         obj_target_channel = target_path / "channel_configs" / f"{objective}.yaml"
         obj_target_laser = target_path / "laser_af_configs" / f"{objective}.yaml"
 
-        # Parse widefield XML
-        widefield_xml = obj_source / "widefield_configurations.xml"
-        widefield_channels = parse_xml_config(widefield_xml)
+        # Parse channel configurations XML
+        channel_xml = obj_source / "channel_configurations.xml"
+        xml_channels = parse_xml_config(channel_xml)
 
-        # Parse confocal XML (if exists)
-        confocal_xml = obj_source / "confocal_configurations.xml"
-        confocal_channels = parse_xml_config(confocal_xml)
-        has_confocal = len(confocal_channels) > 0
-
-        if widefield_channels:
+        if xml_channels:
             # Convert to new format (objective files don't have illumination_channels)
             obj_config = convert_xml_channels_to_acquisition_config(
-                widefield_channels,
+                xml_channels,
                 illumination_config,
-                include_confocal=has_confocal,
-                confocal_channels=confocal_channels if has_confocal else None,
+                include_confocal=False,
+                confocal_channels=None,
                 include_illumination_channels=False,  # Objective files don't have illumination_channels
             )
             save_yaml(obj_target_channel, obj_config, dry_run)
 
             # Collect channels for general.yaml (from first objective)
             if not all_channels:
-                all_channels = widefield_channels
+                all_channels = xml_channels
 
-        # Migrate laser AF settings
+        # Migrate laser AF settings (optional, only exists when channel XML exists)
         laser_af_json = obj_source / "laser_af_settings.json"
         if laser_af_json.exists():
             laser_af_config = convert_laser_af_json_to_yaml(laser_af_json)
@@ -519,8 +514,8 @@ def migrate_profile(
 
     # Create general.yaml from collected channels
     if all_channels:
-        # For general.yaml: illumination_channels, display_color, emission_filter_wheel_position
-        # Does NOT include intensity, exposure, gain (those are in objective files)
+        # For general.yaml: illumination_channels, display_color, z_offset_um,
+        # emission_filter_wheel_position, intensity, exposure, gain
         general_channels = []
         for xml_ch in all_channels:
             # Use old channel name as the acquisition channel name
@@ -533,34 +528,23 @@ def migrate_profile(
                 illumination_config=illumination_config,
             )
 
-            # Determine if any objective has confocal
-            has_any_confocal = any((source_path / obj / "confocal_configurations.xml").exists() for obj in objectives)
-
             # general.yaml has illumination_channels, display_color, z_offset_um
-            # emission_filter_wheel_position at channel level
+            # emission_filter_wheel_position with filter_wheel_id=1 (only one filter wheel in legacy)
             acq_channel = AcquisitionChannel(
                 name=name,
                 illumination_settings=IlluminationSettings(
                     illumination_channels=[ill_name],
-                    intensity={ill_name: xml_ch["illumination_intensity"]},  # Preserved from XML
-                    z_offset_um=xml_ch["z_offset"],  # Preserved from XML, z_offset is in general.yaml only
+                    intensity={ill_name: xml_ch["illumination_intensity"]},
+                    z_offset_um=xml_ch["z_offset"],
                 ),
                 camera_settings={
                     "1": CameraSettings(
                         display_color=xml_ch["display_color"],
-                        exposure_time_ms=xml_ch["exposure_time_ms"],  # Preserved from XML
-                        gain_mode=xml_ch["analog_gain"],  # Preserved from XML
+                        exposure_time_ms=xml_ch["exposure_time_ms"],
+                        gain_mode=xml_ch["analog_gain"],
                     )
                 },
                 emission_filter_wheel_position={1: xml_ch["emission_filter_position"]},
-                confocal_settings=(
-                    ConfocalSettings(
-                        filter_wheel_id=1,
-                        emission_filter_wheel_position=xml_ch["emission_filter_position"],
-                    )
-                    if has_any_confocal
-                    else None
-                ),
             )
             general_channels.append(acq_channel)
 

@@ -198,7 +198,7 @@ class TestMigrationIntegration:
         xml_content = """<modes>
   <mode ID="1" Name="BF LED matrix full" ExposureTime="12.0" AnalogGain="0.0" IlluminationSource="0" IlluminationIntensity="5.0" CameraSN="" ZOffset="0.0" EmissionFilterPosition="1" Selected="false">16777215</mode>
 </modes>"""
-        (source_dir / "widefield_configurations.xml").write_text(xml_content)
+        (source_dir / "channel_configurations.xml").write_text(xml_content)
 
         # Create laser AF JSON
         laser_af_data = {
@@ -248,7 +248,7 @@ class TestMigrationIntegration:
         save_yaml(machine_configs / "illumination_channel_config.yaml", illumination_config)
 
         # Parse and convert XML
-        xml_channels = parse_xml_config(source_dir / "widefield_configurations.xml")
+        xml_channels = parse_xml_config(source_dir / "channel_configurations.xml")
         obj_config = convert_xml_channels_to_acquisition_config(xml_channels, illumination_config)
 
         # Save objective config
@@ -303,7 +303,7 @@ class TestMigrationIntegration:
         xml_content = """<modes>
   <mode ID="1" Name="BF LED matrix full" ExposureTime="12.0" AnalogGain="0.0" IlluminationSource="0" IlluminationIntensity="5.0" CameraSN="" ZOffset="0.0" EmissionFilterPosition="1" Selected="false">16777215</mode>
 </modes>"""
-        (source_dir / "widefield_configurations.xml").write_text(xml_content)
+        (source_dir / "channel_configurations.xml").write_text(xml_content)
 
         # Create channel definitions
         configs_dir = temp_dir / "configurations"

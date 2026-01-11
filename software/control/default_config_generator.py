@@ -7,6 +7,7 @@ for available channels and creates appropriate defaults.
 """
 
 import logging
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from control.core.config import ConfigRepository
@@ -292,6 +293,40 @@ def generate_default_configs(
     return general_config, objective_configs
 
 
+def has_legacy_configs_to_migrate(profile: str, base_path: Optional[Path] = None) -> bool:
+    """
+    Check if there are legacy configs (XML/JSON) that need migration.
+
+    Legacy configs are in acquisition_configurations/{profile}/{objective}/ with:
+    - channel_configurations.xml (required)
+    - laser_af_settings.json (optional)
+
+    If these exist, we should NOT generate default configs - migration should run first.
+
+    Args:
+        profile: Profile name to check
+        base_path: Base path to software directory (auto-detected if None)
+
+    Returns:
+        True if legacy configs exist that need migration
+    """
+    if base_path is None:
+        base_path = Path(__file__).parent.parent
+
+    legacy_path = base_path / "acquisition_configurations" / profile
+
+    if not legacy_path.exists():
+        return False
+
+    # Check for channel_configurations.xml in any subdirectory (objective folders)
+    for item in legacy_path.iterdir():
+        if item.is_dir() and not item.name.startswith("."):
+            if (item / "channel_configurations.xml").exists():
+                return True
+
+    return False
+
+
 def ensure_default_configs(
     config_repo: ConfigRepository,
     profile: str,
@@ -303,17 +338,28 @@ def ensure_default_configs(
     If the profile doesn't have a general.yaml, generates default configs
     for all objectives based on the illumination_channel_config.
 
+    NOTE: This function will NOT generate defaults if there are legacy
+    configs (XML/JSON) that need migration. The migration script should run first.
+
     Args:
         config_repo: ConfigRepository instance
         profile: Profile name
         objectives: List of objectives (default: standard set)
 
     Returns:
-        True if configs were generated, False if they already existed
+        True if configs were generated, False if they already existed or migration is pending
     """
     # Check if configs already exist
     if config_repo.profile_has_configs(profile):
         logger.debug(f"Profile '{profile}' already has configs")
+        return False
+
+    # Check if there are legacy configs to migrate - don't generate defaults if so
+    if has_legacy_configs_to_migrate(profile):
+        logger.info(
+            f"Profile '{profile}' has legacy configs pending migration. "
+            "Skipping default generation - run migration first."
+        )
         return False
 
     # Load illumination config
