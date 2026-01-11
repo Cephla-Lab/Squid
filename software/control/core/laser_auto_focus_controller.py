@@ -389,23 +389,32 @@ class LaserAutofocusController(QObject):
             # Move to target position
             move_um = target_pos_um - current_pos_um
             if move_um != 0:
+                self._log.info(f"Z search: moving to {target_pos_um:.1f} um (delta: {move_um:+.1f} um)")
                 self._move_z(move_um)
                 current_pos_um = target_pos_um
+            else:
+                self._log.info(f"Z search: checking current position {target_pos_um:.1f} um")
 
             # Attempt spot detection
             result = self._get_laser_spot_centroid(check_intensity_correlation=True)
 
-            if result is not None:
-                displacement_um = self._get_displacement_from_centroid(result)
-                if abs(displacement_um) <= search_step_um + 4:
-                    self._log.info(
-                        f"Spot found at z position {target_pos_um} um, displacement {displacement_um:.1f} um"
-                    )
-                    try:
-                        self._turn_off_laser()
-                    except TimeoutError:
-                        self._log.exception("Turning off AF laser timed out! Laser may still be on.")
-                    return finish_with(displacement_um)
+            if result is None:
+                self._log.info(f"Z search: no valid spot at {target_pos_um:.1f} um")
+                continue
+
+            displacement_um = self._get_displacement_from_centroid(result)
+            if abs(displacement_um) > search_step_um + 4:
+                self._log.info(
+                    f"Z search: spot at {target_pos_um:.1f} um has displacement {displacement_um:.1f} um (out of range)"
+                )
+                continue
+
+            self._log.info(f"Z search: spot found at {target_pos_um:.1f} um, displacement {displacement_um:.1f} um")
+            try:
+                self._turn_off_laser()
+            except TimeoutError:
+                self._log.exception("Turning off AF laser timed out! Laser may still be on.")
+            return finish_with(displacement_um)
 
         # Spot not found - move back to original position
         self._restore_to_position(current_z_um)
