@@ -13953,6 +13953,7 @@ class BackpressureMonitorWidget(QWidget):
             return
 
         self._controller = controller
+        self._throttle_sticky_counter = 0  # Reset state for clean start
         self._log.info("Starting backpressure monitoring")
         self._update_display()  # Initial update
         self._update_timer.start()

@@ -1794,7 +1794,7 @@ class HighContentScreeningGui(QMainWindow):
             self._ram_monitor_should_show = True
             self.ramMonitorWidget.setVisible(True)
             self.ramMonitorWidget.start_monitoring()
-            self.log.info("RAM monitor: enabled")
+            self.log.info("RAM monitor: enabled, showing widget")
         else:
             self._ram_monitor_should_show = False
             self.ramMonitorWidget.stop_monitoring()
