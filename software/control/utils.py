@@ -281,9 +281,9 @@ def find_spot_location(
         # Get signal along x (raw intensities)
         x_intensity_profile_raw = np.sum(cropped_image, axis=0).astype(float)
 
-        # Compute local min/max for normalization
-        local_min = np.min(x_intensity_profile_raw)
-        local_max = np.max(x_intensity_profile_raw)
+        # Compute local min/max for normalization (pixel values, not sums)
+        local_min = float(np.min(cropped_image))
+        local_max = float(np.max(cropped_image))
 
         # Determine normalization values: use reference if provided, otherwise local
         if reference_intensity_min is not None and reference_intensity_max is not None:
@@ -294,8 +294,12 @@ def find_spot_location(
             norm_max = local_max
 
         # Normalize intensity profile for peak detection
-        if norm_max - norm_min > 0:
-            x_intensity_profile = (x_intensity_profile_raw - norm_min) / (norm_max - norm_min)
+        # Scale pixel min/max by y_window size since profile values are sums over 2*y_window pixels
+        y_window_size = 2 * p["y_window"]
+        profile_norm_min = norm_min * y_window_size
+        profile_norm_max = norm_max * y_window_size
+        if profile_norm_max - profile_norm_min > 0:
+            x_intensity_profile = (x_intensity_profile_raw - profile_norm_min) / (profile_norm_max - profile_norm_min)
         else:
             raise ValueError("Cannot normalize: norm_max equals norm_min")
 
@@ -349,10 +353,10 @@ def find_spot_location(
         else:
             centered_profile_raw = x_intensity_profile_raw[profile_start:profile_end].copy()
 
-        # Normalize the centered profile (using same norm_min/norm_max as peak detection)
+        # Normalize the centered profile (using same scaled values as peak detection)
         # Avoid division by zero
-        if norm_max - norm_min > 0:
-            centered_profile = (centered_profile_raw - norm_min) / (norm_max - norm_min)
+        if profile_norm_max - profile_norm_min > 0:
+            centered_profile = (centered_profile_raw - profile_norm_min) / (profile_norm_max - profile_norm_min)
         else:
             centered_profile = np.zeros_like(centered_profile_raw)
 
