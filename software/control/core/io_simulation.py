@@ -10,9 +10,9 @@ Usage:
     performing real disk I/O.
 """
 
+import time
 from io import BytesIO
 from typing import Dict
-import time
 
 import numpy as np
 import tifffile
@@ -109,8 +109,6 @@ def simulated_ome_tiff_write(
     Returns:
         Bytes "written" for this operation
     """
-    global _simulated_ome_stacks
-
     # First plane for this stack - simulate initialization
     if stack_key not in _simulated_ome_stacks:
         expected_count = shape[0] * shape[1] * shape[2]  # T * Z * C
