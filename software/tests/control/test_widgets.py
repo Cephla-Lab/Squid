@@ -356,7 +356,6 @@ class TestRAMMonitorWidget:
         """Test that widget initializes with correct state."""
         widget = ram_monitor_widget
         assert widget._memory_monitor is None
-        assert widget._session_peak_mb == 0.0
         assert widget.label_current.text() == "--"
         assert widget.label_available.text() == "--"
         assert not widget._update_timer.isActive()
@@ -367,9 +366,6 @@ class TestRAMMonitorWidget:
         widget.start_monitoring()
 
         assert widget._update_timer.isActive()
-        # start_monitoring resets _session_peak_mb to 0, then immediately calls _update_memory_display
-        # which updates it based on current memory usage
-        assert widget._session_peak_mb >= 0.0
 
         # Clean up
         widget.stop_monitoring()
@@ -446,20 +442,6 @@ class TestRAMMonitorWidget:
 
         # Timer should NOT be restarted by disconnect_monitor
         assert not widget._update_timer.isActive()
-
-    def test_session_peak_tracking(self, ram_monitor_widget, qtbot):
-        """Test that session peak is tracked during monitoring."""
-        widget = ram_monitor_widget
-        widget.start_monitoring()
-
-        # Wait for at least one update
-        qtbot.wait(1100)
-
-        # Session peak should be updated if footprint is available
-        # (may be 0.0 if footprint unavailable on this platform)
-        assert widget._session_peak_mb >= 0.0
-
-        widget.stop_monitoring()
 
     def test_update_memory_display_skipped_when_connected(self, ram_monitor_widget):
         """Test that timer updates are skipped when connected to a monitor."""

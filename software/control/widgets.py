@@ -13731,7 +13731,6 @@ class RAMMonitorWidget(QWidget):
     State Invariants:
         - When _memory_monitor is set, updates come via signals (timer is paused)
         - When _memory_monitor is None, updates come via timer
-        - _session_peak_mb tracks the peak across the entire session
 
     Attributes:
         label_current: QLabel showing current RAM usage
@@ -13741,7 +13740,6 @@ class RAMMonitorWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._memory_monitor = None
-        self._session_peak_mb = 0.0  # Track peak across the session
         self._log = logging.getLogger("squid." + self.__class__.__name__)
         self._setup_ui()
         self._setup_timer()
@@ -13773,20 +13771,13 @@ class RAMMonitorWidget(QWidget):
         self._update_timer.timeout.connect(self._update_memory_display)
         self._update_timer.setInterval(1000)  # Update every 1 second
 
-    def start_monitoring(self, reset_peak: bool = True):
-        """Start continuous memory monitoring.
-
-        Args:
-            reset_peak: If True, reset session peak tracking. Set to False when
-                       resuming monitoring after disconnecting from an acquisition monitor.
-        """
+    def start_monitoring(self):
+        """Start continuous memory monitoring."""
         if self._memory_monitor is not None:
             self._log.warning("Cannot start timer while connected to external monitor")
             return
 
         self._log.info("Starting continuous RAM monitoring timer")
-        if reset_peak:
-            self._session_peak_mb = 0.0
         self._update_memory_display()  # Initial update
         self._update_timer.start()
         self._log.debug(f"Timer active: {self._update_timer.isActive()}")
@@ -13811,7 +13802,6 @@ class RAMMonitorWidget(QWidget):
             footprint_mb = get_memory_footprint_mb(os.getpid())
             self._log.debug(f"RAM monitor update: footprint={footprint_mb:.1f} MB")
             if footprint_mb > 0:
-                self._session_peak_mb = max(self._session_peak_mb, footprint_mb)
                 current_gb = footprint_mb / 1024
                 self.label_current.setText(f"{current_gb:.2f} GB")
             else:
@@ -13881,16 +13871,8 @@ class RAMMonitorWidget(QWidget):
 
     def closeEvent(self, event):
         """Ensure monitoring resources are cleaned up when the widget closes."""
-        try:
-            self.stop_monitoring()
-        except Exception as e:
-            self._log.debug(f"Error stopping monitoring on close: {e}")
-
-        try:
-            self.disconnect_monitor()
-        except Exception as e:
-            self._log.debug(f"Error disconnecting monitor on close: {e}")
-
+        self.stop_monitoring()
+        self.disconnect_monitor()
         super().closeEvent(event)
 
 
@@ -13908,9 +13890,12 @@ class BackpressureMonitorWidget(QWidget):
         super().__init__(parent)
         self._controller = None
         self._log = logging.getLogger("squid." + self.__class__.__name__)
-        self._throttle_sticky_counter = 0  # Countdown for sticky throttle indicator
+        self._throttle_sticky_counter = 0
         self._setup_ui()
-        self._setup_timer()
+
+        self._update_timer = QTimer(self)
+        self._update_timer.timeout.connect(self._update_display)
+        self._update_timer.setInterval(500)
 
     def _setup_ui(self):
         layout = QHBoxLayout(self)
@@ -13936,18 +13921,8 @@ class BackpressureMonitorWidget(QWidget):
         layout.addWidget(self.label_bytes)
         layout.addWidget(self.label_throttled)
 
-    def _setup_timer(self):
-        """Setup timer for periodic backpressure updates."""
-        self._update_timer = QTimer(self)
-        self._update_timer.timeout.connect(self._update_display)
-        self._update_timer.setInterval(500)  # Update every 500ms
-
     def start_monitoring(self, controller: "BackpressureController") -> None:
-        """Start monitoring backpressure stats.
-
-        Args:
-            controller: BackpressureController instance to monitor.
-        """
+        """Start monitoring backpressure stats."""
         if controller is None:
             self._log.warning("start_monitoring called with None controller")
             return
@@ -13989,15 +13964,14 @@ class BackpressureMonitorWidget(QWidget):
                     self.label_throttled.setText("")
 
         except (BrokenPipeError, EOFError) as e:
-            # Multiprocessing communication ended - acquisition likely finished
+            # Multiprocessing communication ended - acquisition finished
             self._log.debug(f"Backpressure controller communication ended: {e}")
+            self.stop_monitoring()
         except Exception as e:
             self._log.warning(f"Backpressure monitor update failed: {e}")
+            self.stop_monitoring()
 
     def closeEvent(self, event):
         """Ensure monitoring resources are cleaned up when the widget closes."""
-        try:
-            self.stop_monitoring()
-        except Exception as e:
-            self._log.debug(f"Error stopping monitoring on close: {e}")
+        self.stop_monitoring()
         super().closeEvent(event)
