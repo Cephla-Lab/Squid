@@ -1804,7 +1804,7 @@ class HighContentScreeningGui(QMainWindow):
         self._update_status_bar_visibility()
 
     def _update_status_bar_visibility(self):
-        """Hide status bar when no widgets are visible."""
+        """Show or hide status bar based on whether any monitor widgets should be visible."""
         # Use tracked intent flags instead of isVisible() which depends on parent visibility
         ram_should_show = getattr(self, "_ram_monitor_should_show", False)
         bp_should_show = getattr(self, "_bp_monitor_should_show", False)
@@ -1848,19 +1848,28 @@ class HighContentScreeningGui(QMainWindow):
         import control._def
 
         if not control._def.ACQUISITION_THROTTLING_ENABLED:
+            self.log.debug("Backpressure monitor: throttling disabled, skipping")
             return
 
         if self.backpressureMonitorWidget is None:
+            self.log.warning("Backpressure monitor: widget not initialized")
             return
 
         # Get the backpressure controller from the multipoint worker
         bp_controller = self.multipointController.backpressure_controller
-        if bp_controller is not None and bp_controller.enabled:
-            self.log.info("Backpressure monitor: connecting widget to backpressure controller")
-            self._bp_monitor_should_show = True
-            self.backpressureMonitorWidget.start_monitoring(bp_controller)
-            self.backpressureMonitorWidget.setVisible(True)
-            self._update_status_bar_visibility()
+        if bp_controller is None:
+            self.log.debug("Backpressure monitor: no controller available from worker")
+            return
+
+        if not bp_controller.enabled:
+            self.log.debug("Backpressure monitor: controller exists but is disabled")
+            return
+
+        self.log.info("Backpressure monitor: connecting widget to backpressure controller")
+        self._bp_monitor_should_show = True
+        self.backpressureMonitorWidget.start_monitoring(bp_controller)
+        self.backpressureMonitorWidget.setVisible(True)
+        self._update_status_bar_visibility()
 
     def _disconnect_backpressure_monitor_widget(self):
         """Disconnect backpressure monitor widget after acquisition."""

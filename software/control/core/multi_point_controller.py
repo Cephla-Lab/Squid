@@ -942,12 +942,12 @@ class MultiPointController:
         return None
 
     @property
-    def backpressure_controller(self):
+    def backpressure_controller(self) -> Optional["BackpressureController"]:
         """Get the backpressure controller from the current worker.
 
         Returns:
             BackpressureController if worker exists, None otherwise.
         """
         if self.multiPointWorker is not None:
-            return self.multiPointWorker._backpressure
+            return getattr(self.multiPointWorker, "_backpressure", None)
         return None

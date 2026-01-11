@@ -13899,11 +13899,6 @@ class BackpressureMonitorWidget(QWidget):
 
     Displays pending jobs and bytes during acquisition when backpressure
     throttling is enabled. Shows a warning indicator when throttling is active.
-
-    Attributes:
-        label_jobs: QLabel showing pending jobs count
-        label_bytes: QLabel showing pending MB
-        label_throttled: QLabel showing throttle status (hidden when not throttled)
     """
 
     # How long to keep [THROTTLED] visible after throttle releases (in update cycles)
@@ -13947,12 +13942,16 @@ class BackpressureMonitorWidget(QWidget):
         self._update_timer.timeout.connect(self._update_display)
         self._update_timer.setInterval(500)  # Update every 500ms
 
-    def start_monitoring(self, controller) -> None:
+    def start_monitoring(self, controller: "BackpressureController") -> None:
         """Start monitoring backpressure stats.
 
         Args:
             controller: BackpressureController instance to monitor.
         """
+        if controller is None:
+            self._log.warning("start_monitoring called with None controller")
+            return
+
         self._controller = controller
         self._log.info("Starting backpressure monitoring")
         self._update_display()  # Initial update
@@ -13975,10 +13974,7 @@ class BackpressureMonitorWidget(QWidget):
         try:
             stats = self._controller.get_stats()
 
-            # Update jobs display (just current count, no max)
             self.label_jobs.setText(f"{stats.pending_jobs} jobs")
-
-            # Update bytes display (just current count, no max)
             self.label_bytes.setText(f"{stats.pending_bytes_mb:.1f} MB")
 
             # Update throttle indicator with sticky behavior
@@ -13988,10 +13984,12 @@ class BackpressureMonitorWidget(QWidget):
                 self.label_throttled.setText("[THROTTLED]")
             elif self._throttle_sticky_counter > 0:
                 self._throttle_sticky_counter -= 1
-                # Keep showing [THROTTLED] during sticky period
             else:
                 self.label_throttled.setText("")
 
+        except (BrokenPipeError, EOFError) as e:
+            # Multiprocessing communication ended - acquisition likely finished
+            self._log.debug(f"Backpressure controller communication ended: {e}")
         except Exception as e:
             self._log.warning(f"Backpressure monitor update failed: {e}")
 
