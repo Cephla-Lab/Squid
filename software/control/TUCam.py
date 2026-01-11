@@ -12,9 +12,11 @@ import time
 
 #加载SDK动态库
 # 32bit
-#TUSDKdll = OleDLL("./lib/x86/TUCam.dll")
+#TUSDKdll = OleDLL("./control/TUCam.dll")
+#64bit Windows
+TUSDKdll = cdll.LoadLibrary(".\control\TUCam\TUCam.dll")
 # 64bit
-TUSDKdll = cdll.LoadLibrary("libTUCam.so.1")
+#TUSDKdll = cdll.LoadLibrary("libTUCam.so.1")
 
 #  class typedef enum TUCAM status:
 class TUCAMRET(Enum):
@@ -926,3 +928,4 @@ TUCAM_Cap_ClearBuffer.restype  = TUCAMRET
 #TUCAM_File_SaveFFCCoefficient    = TUSDKdll.TUCAM_File_SaveFFCCoefficient
 #TUCAM_File_SaveFFCCoefficient.argtypes = [c_void_p, c_void_p]
 #TUCAM_File_SaveFFCCoefficient.restype  = TUCAMRET
+

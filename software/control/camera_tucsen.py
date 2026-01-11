@@ -37,6 +37,42 @@ class ModeFL26BW(Enum):
     LOW_NOISE = (1, 0)
     SENBIN = (0, 1)
 
+class ModeLibra25(Enum):
+    # TODO: Add support for Libra25 model
+    """
+    Libra-25 modes values are a combination of image mode and binning.
+    Libra-25 does not use TUIDC_IMGMODESELECT.
+    Store setting values for (TUCIDC_GLOBALGAIN, TUIDC_RESOLUTION) here.
+    The camera has two binning modes: Sensitive (2600 x 2048), and Resolution (5200 x 4096).
+    These 4 modes should be available in each of the binning modes as well.
+    """
+    RESOLUTION_GAIN0 = (0, 0)
+    RESOLUTION_GAIN1 = (1, 0)
+    RESOLUTION_GAIN2 = (2, 0)
+    RESOLUTION_GAIN3 = (3, 0)
+    SENSITIVE_GAIN0 = (0, 1)
+    SENSITIVE_GAIN1 = (1, 1)
+    SENSITIVE_GAIN2 = (2, 1)
+    SENSITIVE_GAIN3 = (3, 1)
+
+class ModeLibra22(Enum):
+    # TODO: Add support for Libra25 model
+    """
+    Libra-22 modes values are a combination of image mode and binning.
+    Libra-22 does not use TUIDC_IMGMODESELECT.
+    Store setting values for (TUCIDC_GLOBALGAIN, TUIDC_RESOLUTION) here.
+    The camera has two binning modes: Sensitive (2048 x 2048), and Resolution (4096 x 4096).
+    These 4 modes should be available in each of the binning modes as well.
+    """
+    RESOLUTION_GAIN0 = (0, 0)
+    RESOLUTION_GAIN1 = (1, 0)
+    RESOLUTION_GAIN2 = (2, 0)
+    RESOLUTION_GAIN3 = (3, 0)
+    SENSITIVE_GAIN0 = (0, 1)
+    SENSITIVE_GAIN1 = (1, 1)
+    SENSITIVE_GAIN2 = (2, 1)
+    SENSITIVE_GAIN3 = (3, 1)
+
 
 class ModeAries(Enum):
     """
@@ -52,7 +88,7 @@ class ModeAries(Enum):
 class TucsenModelProperties(pydantic.BaseModel):
     binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
     binning_to_set_value: Dict[Tuple[int, int], int]
-    mode_to_line_rate_us: Dict[Union[Mode400BSIV3, ModeFL26BW, ModeAries], float]
+    mode_to_line_rate_us: Dict[Union[Mode400BSIV3, ModeFL26BW, ModeAries, ModeLibra25], float]
     pixel_size_um: float
     has_temperature_control: bool
     is_genicam: bool
@@ -162,6 +198,10 @@ class TucsenCamera(AbstractCamera):
             # Low noise mode is not supported for FL26BW model yet.
         elif self._config.camera_model == TucsenCameraModel.DHYANA_400BSI_V3:
             self._camera_mode = Mode400BSIV3.HDR  # HDR as default
+        elif self._config.camera_model == TucsenCameraModel.LIBRA_25:
+            self._camera_mode = ModeLibra25.SENSITIVE_GAIN0  # SENSITIVE_GAIN0 as default
+        elif self._config.camera_model == TucsenCameraModel.LIBRA_22:
+            self._camera_mode = ModeLibra22.SENSITIVE_GAIN0  # SENSITIVE_GAIN0 as default
         elif (
             self._config.camera_model == TucsenCameraModel.ARIES_6506
             or self._config.camera_model == TucsenCameraModel.ARIES_6510
@@ -252,6 +292,52 @@ class TucsenCamera(AbstractCamera):
                     (2, 2): (1600, 1600),
                     (4, 4): (800, 800),
                 }
+        elif camera_model == TucsenCameraModel.LIBRA_25:
+            # TODO: Support binning for LIBRA_25 model
+            binning_to_resolution = {
+                (1, 1): (5200, 4096),
+                (2, 2): (2600, 2048), # 2x2 binning should be the default
+            }
+            binning_to_set_value = {
+                (1, 1): 0,
+                (2, 2): 1,
+            }
+            mode_to_line_rate_us = {
+                ModeLibra25.RESOLUTION_GAIN0: 34.67,
+                ModeLibra25.RESOLUTION_GAIN1: 34.67,
+                ModeLibra25.RESOLUTION_GAIN2: 34.67,
+                ModeLibra25.RESOLUTION_GAIN3: 34.67,
+                ModeLibra25.SENSITIVE_GAIN0: 6.31,
+                ModeLibra25.SENSITIVE_GAIN1: 6.31,
+                ModeLibra25.SENSITIVE_GAIN2: 6.31,
+                ModeLibra25.SENSITIVE_GAIN3: 6.31
+            }
+            pixel_size_um = 3.76
+            has_temperature_control = True
+            is_genicam = False
+        elif camera_model == TucsenCameraModel.LIBRA_22:
+            # TODO: Support binning for LIBRA_22 model
+            binning_to_resolution = {
+                (1, 1): (4096, 4096),
+                (2, 2): (2048, 2048), # 2x2 binning should be the default
+            }
+            binning_to_set_value = {
+                (1, 1): 0,
+                (2, 2): 1,
+            }
+            mode_to_line_rate_us = {
+                ModeLibra22.RESOLUTION_GAIN0: 34.67,
+                ModeLibra22.RESOLUTION_GAIN1: 34.67,
+                ModeLibra22.RESOLUTION_GAIN2: 34.67,
+                ModeLibra22.RESOLUTION_GAIN3: 34.67,
+                ModeLibra22.SENSITIVE_GAIN0: 6.31,
+                ModeLibra22.SENSITIVE_GAIN1: 6.31,
+                ModeLibra22.SENSITIVE_GAIN2: 6.31,
+                ModeLibra22.SENSITIVE_GAIN3: 6.31
+            }
+            pixel_size_um = 3.76
+            has_temperature_control = True
+            is_genicam = False
         else:
             raise ValueError(f"Unsupported camera model: {camera_model}")
 
