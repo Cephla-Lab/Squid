@@ -11,6 +11,7 @@ import pandas as pd
 
 from control._def import *
 from control._def import DOWNSAMPLED_VIEW_JOB_TIMEOUT_S, DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S
+import control._def
 from control import utils
 from control.core.auto_focus_controller import AutoFocusController
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
@@ -744,7 +745,9 @@ class MultiPointWorker:
             total_z_levels=self.NZ,
             z_projection_mode=self._downsampled_z_projection,
             interpolation_method=self._downsampled_interpolation_method,
-            skip_saving=self.skip_saving or not self._save_downsampled_well_images,
+            skip_saving=self.skip_saving
+            or not self._save_downsampled_well_images
+            or control._def.SIMULATED_DISK_IO_ENABLED,
         )
 
     def _initialize_downsampled_view_manager(self, image: np.ndarray) -> None:

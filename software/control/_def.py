@@ -685,6 +685,12 @@ RESUME_LIVE_AFTER_ACQUISITION = True
 #   <base_path>/<experiment_ID>/acquisition.log
 ENABLE_PER_ACQUISITION_LOG = False
 
+# Simulated disk I/O for development (RAM/speed optimization)
+# When enabled, images are encoded to memory buffers but NOT saved to disk
+SIMULATED_DISK_IO_ENABLED = False
+SIMULATED_DISK_IO_SPEED_MB_S = 200.0  # Target write speed in MB/s (HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000)
+SIMULATED_DISK_IO_COMPRESSION = True  # Exercise compression CPU/RAM for realistic simulation
+
 CAMERA_SN = {"ch 1": "SN1", "ch 2": "SN2"}  # for multiple cameras, to be overwritten in the configuration file
 
 ENABLE_STROBE_OUTPUT = False

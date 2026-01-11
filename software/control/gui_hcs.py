@@ -975,6 +975,17 @@ class HighContentScreeningGui(QMainWindow):
     def setup_layout(self):
         layout = QVBoxLayout()
 
+        # Add warning banner if simulated disk I/O mode is enabled
+        import control._def
+
+        if control._def.SIMULATED_DISK_IO_ENABLED:
+            simulated_io_banner = QLabel("  SIMULATED DISK I/O - Images are encoded but NOT saved to disk  ")
+            simulated_io_banner.setStyleSheet(
+                "background-color: #FF6B6B; color: white; font-weight: bold; padding: 8px;"
+            )
+            simulated_io_banner.setAlignment(Qt.AlignCenter)
+            layout.addWidget(simulated_io_banner)
+
         if USE_NAPARI_FOR_LIVE_CONTROL and not self.live_only_mode:
             layout.addWidget(self.navigationWidget)
         else:

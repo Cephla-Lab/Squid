@@ -819,6 +819,41 @@ class PreferencesDialog(QDialog):
         hw_group.content.addLayout(hw_layout)
         layout.addWidget(hw_group)
 
+        # Development Settings section
+        dev_group = CollapsibleGroupBox("Development Settings")
+        dev_layout = QFormLayout()
+
+        self.simulated_io_checkbox = QCheckBox()
+        self.simulated_io_checkbox.setChecked(self._get_config_bool("GENERAL", "simulated_disk_io_enabled", False))
+        self.simulated_io_checkbox.setToolTip(
+            "When enabled, images are encoded to memory but NOT saved to disk.\n"
+            "Use this for development/testing to avoid SSD wear."
+        )
+        dev_layout.addRow("Simulated Disk I/O *:", self.simulated_io_checkbox)
+
+        self.simulated_io_speed_spinbox = QDoubleSpinBox()
+        self.simulated_io_speed_spinbox.setRange(10.0, 3000.0)
+        self.simulated_io_speed_spinbox.setValue(
+            self._get_config_float("GENERAL", "simulated_disk_io_speed_mb_s", 200.0)
+        )
+        self.simulated_io_speed_spinbox.setSuffix(" MB/s")
+        self.simulated_io_speed_spinbox.setToolTip(
+            "Simulated write speed: HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000 MB/s"
+        )
+        dev_layout.addRow("Simulated Write Speed:", self.simulated_io_speed_spinbox)
+
+        self.simulated_io_compression_checkbox = QCheckBox()
+        self.simulated_io_compression_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
+        )
+        self.simulated_io_compression_checkbox.setToolTip(
+            "Enable to exercise compression CPU/RAM for more realistic simulation"
+        )
+        dev_layout.addRow("Exercise Compression:", self.simulated_io_compression_checkbox)
+
+        dev_group.content.addLayout(dev_layout)
+        layout.addWidget(dev_group)
+
         # Software Position Limits section
         limits_group = CollapsibleGroupBox("Software Position Limits")
         limits_layout = QFormLayout()
@@ -1092,6 +1127,19 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
         self.config.set("GENERAL", "illumination_intensity_factor", str(self.illumination_factor.value()))
 
+        # Advanced - Development Settings
+        self.config.set(
+            "GENERAL",
+            "simulated_disk_io_enabled",
+            "true" if self.simulated_io_checkbox.isChecked() else "false",
+        )
+        self.config.set("GENERAL", "simulated_disk_io_speed_mb_s", str(self.simulated_io_speed_spinbox.value()))
+        self.config.set(
+            "GENERAL",
+            "simulated_disk_io_compression",
+            "true" if self.simulated_io_compression_checkbox.isChecked() else "false",
+        )
+
         # Advanced - Position Limits
         self.config.set("SOFTWARE_POS_LIMIT", "x_positive", str(self.limit_x_pos.value()))
         self.config.set("SOFTWARE_POS_LIMIT", "x_negative", str(self.limit_x_neg.value()))
@@ -1185,6 +1233,11 @@ class PreferencesDialog(QDialog):
 
         # Illumination intensity factor
         control._def.ILLUMINATION_INTENSITY_FACTOR = self.illumination_factor.value()
+
+        # Development settings - simulated disk I/O
+        control._def.SIMULATED_DISK_IO_ENABLED = self.simulated_io_checkbox.isChecked()
+        control._def.SIMULATED_DISK_IO_SPEED_MB_S = self.simulated_io_speed_spinbox.value()
+        control._def.SIMULATED_DISK_IO_COMPRESSION = self.simulated_io_compression_checkbox.isChecked()
 
         # Software position limits
         control._def.SOFTWARE_POS_LIMIT.X_POSITIVE = self.limit_x_pos.value()
@@ -1366,6 +1419,22 @@ class PreferencesDialog(QDialog):
         new_val = self.illumination_factor.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Illumination Intensity Factor", str(old_val), str(new_val), False))
+
+        # Advanced - Development Settings (require restart for simulated I/O)
+        old_val = self._get_config_bool("GENERAL", "simulated_disk_io_enabled", False)
+        new_val = self.simulated_io_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Simulated Disk I/O", str(old_val), str(new_val), True))
+
+        old_val = self._get_config_float("GENERAL", "simulated_disk_io_speed_mb_s", 200.0)
+        new_val = self.simulated_io_speed_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Simulated Write Speed", f"{old_val} MB/s", f"{new_val} MB/s", False))
+
+        old_val = self._get_config_bool("GENERAL", "simulated_disk_io_compression", True)
+        new_val = self.simulated_io_compression_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Exercise Compression", str(old_val), str(new_val), False))
 
         # Advanced - Position Limits (live update)
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115)
