@@ -691,6 +691,13 @@ SIMULATED_DISK_IO_ENABLED = False
 SIMULATED_DISK_IO_SPEED_MB_S = 200.0  # Target write speed in MB/s (HDD: 50-100, SATA SSD: 200-500, NVMe: 1000-3000)
 SIMULATED_DISK_IO_COMPRESSION = True  # Exercise compression CPU/RAM for realistic simulation
 
+# Acquisition Backpressure Settings
+# Prevents RAM exhaustion when acquisition speed exceeds disk write speed
+ACQUISITION_THROTTLING_ENABLED = True
+ACQUISITION_MAX_PENDING_JOBS = 10  # Max jobs in flight before throttling
+ACQUISITION_MAX_PENDING_MB = 500.0  # Max pending MB before throttling
+ACQUISITION_THROTTLE_TIMEOUT_S = 30.0  # Max wait time when throttled
+
 CAMERA_SN = {"ch 1": "SN1", "ch 2": "SN2"}  # for multiple cameras, to be overwritten in the configuration file
 
 ENABLE_STROBE_OUTPUT = False
