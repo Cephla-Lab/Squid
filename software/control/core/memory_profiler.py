@@ -390,8 +390,12 @@ class MemoryMonitor:
         if enable_signals and HAS_QT and MemorySignals is not None:
             try:
                 self.signals = MemorySignals()
+            except RuntimeError as e:
+                # Expected during Qt app initialization or in worker processes
+                self._log.debug(f"Could not create MemorySignals (expected in some contexts): {e}")
             except Exception as e:
-                self._log.debug(f"Could not create MemorySignals: {e}")
+                # Unexpected error - log at warning level
+                self._log.warning(f"Unexpected error creating MemorySignals: {e}")
 
         # Thread control
         self._thread: Optional[threading.Thread] = None
@@ -590,9 +594,9 @@ class MemoryMonitor:
                 self.signals.memory_updated.emit(main_mb, children_mb, total_mb)
                 if footprint_mb > 0:
                     self.signals.footprint_updated.emit(footprint_mb)
-            except RuntimeError:
+            except RuntimeError as e:
                 # Signal may be disconnected if widget was destroyed
-                pass
+                self._log.debug(f"Signal emission failed (widget likely destroyed): {e}")
 
         # Periodic logging (outside lock)
         if self._log_interval_s > 0 and (timestamp - self._last_log_time) >= self._log_interval_s:
