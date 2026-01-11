@@ -1,13 +1,10 @@
 import os
 import queue
 import time
-from typing import Dict, List, NamedTuple, Optional, Tuple, Type, TYPE_CHECKING
-from typing import Callable
-from datetime import datetime
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Type, TYPE_CHECKING
 
 import imageio as iio
 import numpy as np
-import pandas as pd
 
 from _def import *
 import squid.core.utils.hardware_utils as utils
@@ -17,7 +14,7 @@ from squid.backend.controllers.autofocus import LaserAutofocusController
 from squid.backend.controllers.multipoint.multi_point_utils import AcquisitionParameters
 from squid.backend.managers import ObjectiveStore
 from squid.core.utils.config_utils import ChannelMode
-from squid.core.abc import CameraFrame, CameraFrameFormat
+from squid.core.abc import CameraFrame
 import squid.core.logging
 import squid.backend.controllers.multipoint.job_processing
 from squid.backend.controllers.multipoint.job_processing import (
@@ -37,31 +34,17 @@ from squid.backend.controllers.multipoint.downsampled_views import (
     calculate_overlap_pixels,
     parse_well_id,
 )
-from squid.core.config import CameraPixelFormat
 from squid.core.utils.thread_safe_state import ThreadSafeValue, ThreadSafeFlag
 from squid.backend.controllers.multipoint.progress_tracking import (
     ProgressTracker,
-    ProgressState,
     CoordinateTracker,
 )
 from squid.backend.controllers.multipoint.position_zstack import (
     PositionController,
     ZStackConfig,
     ZStackExecutor,
-    FOVNavigator,
 )
-from squid.backend.controllers.multipoint.image_capture import (
-    CaptureContext,
-    build_capture_info,
-    ImageCaptureExecutor,
-    CaptureSequenceBuilder,
-)
-from squid.backend.controllers.multipoint.focus_operations import (
-    FocusMapConfig,
-    FocusMapState,
-    FocusMapGenerator,
-    AutofocusExecutor,
-)
+from squid.backend.controllers.multipoint.focus_operations import AutofocusExecutor
 
 if TYPE_CHECKING:
     from squid.backend.services import (
@@ -74,19 +57,11 @@ if TYPE_CHECKING:
         IlluminationService,
         FilterWheelService,
     )
-    from squid.backend.controllers import MicroscopeModeController
     from squid.core.events import EventBus
     from squid.backend.controllers.autofocus.continuous_focus_lock import ContinuousFocusLockController
     from squid.backend.controllers.autofocus.focus_lock_simulator import FocusLockSimulator
 
-from squid.core.events import (
-    AcquisitionStarted,
-    AcquisitionProgress,
-    AcquisitionWorkerFinished,
-    AcquisitionWorkerProgress,
-    PlateViewInit,
-    PlateViewUpdate,
-)
+from squid.core.events import PlateViewInit, PlateViewUpdate
 
 
 class SummarizeResult(NamedTuple):
@@ -314,8 +289,11 @@ class MultiPointWorker:
         # Initialize domain objects (Phase 4 integration)
         # =========================================================================
         # Progress and coordinate tracking
-        self._progress_tracker = ProgressTracker(event_bus=self._event_bus)
-        self._coordinate_tracker = CoordinateTracker()
+        self._progress_tracker = ProgressTracker(
+            event_bus=self._event_bus,
+            experiment_id=self.experiment_ID or "",
+        )
+        self._coordinate_tracker = CoordinateTracker(use_piezo=self.use_piezo)
 
         # Autofocus executor
         self._autofocus_executor = AutofocusExecutor(
@@ -335,9 +313,9 @@ class MultiPointWorker:
 
         # Z-stack executor
         self._zstack_config = ZStackConfig(
-            nz=self.NZ,
-            delta_z_mm=self.deltaZ / 1000.0,  # Convert from um to mm
-            z_stacking_config=self.z_stacking_config,
+            num_z_levels=self.NZ,
+            delta_z_um=self.deltaZ,
+            stacking_direction=self.z_stacking_config,
             z_range=self.z_range,
             use_piezo=self.use_piezo,
         )
@@ -350,23 +328,16 @@ class MultiPointWorker:
         # Position controller
         self._position_controller = PositionController(
             stage_service=stage_service,
-            piezo_service=piezo_service if self.use_piezo else None,
             stabilization_time_x_ms=SCAN_STABILIZATION_TIME_MS_X,
             stabilization_time_y_ms=SCAN_STABILIZATION_TIME_MS_Y,
             stabilization_time_z_ms=SCAN_STABILIZATION_TIME_MS_Z,
         )
 
-        # Image capture executor
-        self._image_capture_executor = ImageCaptureExecutor(
-            camera_service=camera_service,
-            acquisition_service=None,  # Will be wired in Phase 5 when we add AcquisitionService
-            trigger_mode=trigger_mode,
-        )
-
     # =========================================================================
-    # Service helper methods
+    # Helper methods
     # =========================================================================
     def _camera_get_pixel_size_binned_um(self) -> Optional[float]:
+        """Get binned pixel size from camera service."""
         return self._camera_service.get_pixel_size_binned_um() if self._camera_service else None
 
     def _get_current_fov_dimensions(self) -> Tuple[float, float]:
@@ -388,71 +359,8 @@ class MultiPointWorker:
 
         return fov_width_mm, fov_height_mm
 
-    def _camera_add_frame_callback(self, callback: Callable) -> str:
-        return self._camera_service.add_frame_callback(callback)
-
-    def _camera_remove_frame_callback(self, callback_id: str) -> None:
-        self._camera_service.remove_frame_callback(callback_id)
-
-    def _camera_start_streaming(self) -> None:
-        self._camera_service.start_streaming()
-
-    def _camera_stop_streaming(self) -> None:
-        self._camera_service.stop_streaming()
-
-    def _camera_send_trigger(self, illumination_time: Optional[float]) -> None:
-        self._camera_service.send_trigger(illumination_time=illumination_time)
-
-    def _camera_get_ready_for_trigger(self) -> bool:
-        return self._camera_service.get_ready_for_trigger()
-
-    def _camera_get_total_frame_time(self) -> float:
-        return self._camera_service.get_total_frame_time()
-
-    def _camera_get_strobe_time(self) -> float:
-        return self._camera_service.get_strobe_time()
-
-    def _camera_read_frame(self):
-        return self._camera_service.read_frame()
-
-    def _camera_get_exposure_time(self) -> Optional[float]:
-        return self._camera_service.get_exposure_time()
-
-    def _stage_get_pos(self) -> "squid.core.abc.Pos":
-        return self._stage_service.get_position()
-
-    def _stage_move_x_to(self, x_mm: float) -> None:
-        self._stage_service.move_x_to(x_mm)
-        self._stage_service.wait_for_idle()
-
-    def _stage_move_y_to(self, y_mm: float) -> None:
-        self._stage_service.move_y_to(y_mm)
-        self._stage_service.wait_for_idle()
-
-    def _stage_move_z_to(self, z_mm: float) -> None:
-        self._stage_service.move_z_to(z_mm)
-        self._stage_service.wait_for_idle()
-
-    def _stage_move_z(self, delta_mm: float) -> None:
-        self._stage_service.move_z(delta_mm)
-        self._stage_service.wait_for_idle()
-
-    def _peripheral_enable_joystick(self, enabled: bool) -> None:
-        self._peripheral_service.enable_joystick(enabled)
-
-    def _peripheral_wait_till_operation_is_completed(self) -> None:
-        self._peripheral_service.wait_till_operation_is_completed()
-
-    def _piezo_get_position(self) -> float:
-        if self._piezo_service:
-            return self._piezo_service.get_position()
-        return 0.0
-
-    def _piezo_move_to(self, position_um: float) -> None:
-        if self._piezo_service:
-            self._piezo_service.move_to(position_um)
-
     def _is_simulated_camera(self) -> bool:
+        """Check if using simulated camera (for test purposes)."""
         camera = getattr(self._camera_service, "_camera", None)
         if camera is None:
             return False
@@ -460,6 +368,7 @@ class MultiPointWorker:
         return "cameras.simulated" in module_name
 
     def update_use_piezo(self, value: bool) -> None:
+        """Update piezo usage flag."""
         self.use_piezo = value
         self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
 
@@ -467,124 +376,19 @@ class MultiPointWorker:
         self._aborted = True
         self._abort_requested.set()
 
-    def _require_experiment_id(self) -> str:
-        """Ensure we have a valid experiment ID before publishing events."""
-        if not self.experiment_ID:
-            raise RuntimeError("Experiment ID is not set; call start_new_experiment before running acquisition")
-        return self.experiment_ID
-
-    def _publish_acquisition_started(self) -> None:
-        """Publish AcquisitionStarted event via EventBus."""
-        if not self._event_bus:
-            return
-        self._acquisition_start_time = time.time()
-        experiment_id = self._require_experiment_id()
-        self._event_bus.publish(
-            AcquisitionStarted(
-                experiment_id=experiment_id,
-                timestamp=self._acquisition_start_time,
-            )
-        )
-
-    def _publish_acquisition_finished(self, success: bool, error: Optional[Exception] = None) -> None:
-        """Publish AcquisitionWorkerFinished event via EventBus."""
-        if not self._event_bus:
-            return
-        experiment_id = self._require_experiment_id()
-
-        # Publish AcquisitionWorkerFinished for controller state machine
-        self._event_bus.publish(
-            AcquisitionWorkerFinished(
-                experiment_id=experiment_id,
-                success=success,
-                error=str(error) if error else None,
-                final_fov_count=self.af_fov_count,
-            )
-        )
-
-    def _publish_acquisition_progress(
-        self,
-        current_fov: int,
-        total_fovs: int,
-        current_region: int,
-        total_regions: int,
-        current_channel: str,
-    ) -> None:
-        """Publish AcquisitionProgress event via EventBus."""
-        if not self._event_bus:
-            return
-        experiment_id = self._require_experiment_id()
-
-        # Calculate overall progress percentage
-        if total_fovs > 0 and total_regions > 0:
-            # Progress across all regions and FOVs
-            region_progress = (current_region - 1) / total_regions
-            fov_progress_in_region = current_fov / total_fovs
-            progress_percent = (region_progress + fov_progress_in_region / total_regions) * 100.0
-        else:
-            progress_percent = 0.0
-
-        # Calculate ETA based on elapsed time and progress
-        eta_seconds: Optional[float] = None
-        if self._acquisition_start_time and progress_percent > 0:
-            elapsed = time.time() - self._acquisition_start_time
-            total_estimated = elapsed * 100.0 / progress_percent
-            eta_seconds = total_estimated - elapsed
-
-        self._event_bus.publish(
-            AcquisitionProgress(
-                current_fov=current_fov,
-                total_fovs=total_fovs,
-                current_round=current_region,
-                total_rounds=total_regions,
-                current_channel=current_channel,
-                progress_percent=progress_percent,
-                experiment_id=experiment_id,
-                eta_seconds=eta_seconds,
-            )
-        )
-
-    def _publish_worker_progress(
-        self,
-        current_region: int,
-        total_regions: int,
-        current_fov: int,
-        total_fovs: int,
-    ) -> None:
-        """Publish AcquisitionWorkerProgress event for controller state tracking.
-
-        This event provides detailed progress information that the controller
-        can use for internal tracking and validation.
-        """
-        if not self._event_bus:
-            return
-        experiment_id = self._require_experiment_id()
-
-        self._event_bus.publish(
-            AcquisitionWorkerProgress(
-                experiment_id=experiment_id,
-                current_region=current_region,
-                total_regions=total_regions,
-                current_fov=current_fov,
-                total_fovs=total_fovs,
-                current_timepoint=self.time_point + 1,  # 1-indexed for display
-                total_timepoints=self.Nt,
-            )
-        )
-
     def run(self) -> None:
         this_image_callback_id: Optional[str] = None
         acquisition_error: Optional[Exception] = None
         try:
-            # Publish acquisition started event
-            self._publish_acquisition_started()
+            # Publish acquisition started event via ProgressTracker
+            self._progress_tracker.start()
 
             start_time: int = time.perf_counter_ns()
             # Register callback before starting streaming to avoid missing initial frames
-            this_image_callback_id = self._camera_add_frame_callback(
+            this_image_callback_id = self._camera_service.add_frame_callback(
                 self._image_callback
             )
-            self._camera_start_streaming()
+            self._camera_service.start_streaming()
             sleep_time: float = min(self.dt / 20.0, 0.5)
 
             while self.time_point < self.Nt:
@@ -594,20 +398,43 @@ class MultiPointWorker:
                     break
 
                 if self._fluidics_service and self.use_fluidics:
-                    self._fluidics_service.update_port(
-                        self.time_point
-                    )  # use the port in PORT_LIST
-                    # For MERFISH, before imaging, run the first 3 sequences (Add probe, wash buffer, imaging buffer)
-                    self._fluidics_service.run_before_imaging()
-                    self._fluidics_service.wait_for_completion()
+                    # Pause focus lock to prevent corrections during fluid motion
+                    fluidics_focus_paused = False
+                    if self._autofocus_executor.is_focus_lock_active():
+                        fluidics_focus_paused = self._autofocus_executor.pause_focus_lock()
+
+                    try:
+                        self._fluidics_service.update_port(
+                            self.time_point
+                        )  # use the port in PORT_LIST
+                        # For MERFISH, before imaging, run the first 3 sequences (Add probe, wash buffer, imaging buffer)
+                        self._fluidics_service.run_before_imaging()
+                        self._fluidics_service.wait_for_completion()
+                    finally:
+                        # Resume focus lock before imaging
+                        if fluidics_focus_paused:
+                            self._autofocus_executor.resume_focus_lock()
+                            # Wait for focus lock to re-establish after fluid exchange
+                            if not self._autofocus_executor.wait_for_focus_lock(timeout_s=5.0):
+                                self._log.warning("Focus lock re-acquisition failed after fluidics setup")
 
                 with self._timing.get_timer("run_single_time_point"):
                     self.run_single_time_point()
 
                 if self._fluidics_service and self.use_fluidics:
-                    # For MERFISH, after imaging, run the following 2 sequences (Cleavage buffer, SSC rinse)
-                    self._fluidics_service.run_after_imaging()
-                    self._fluidics_service.wait_for_completion()
+                    # Pause focus lock during post-imaging fluidics
+                    fluidics_focus_paused = False
+                    if self._autofocus_executor.is_focus_lock_active():
+                        fluidics_focus_paused = self._autofocus_executor.pause_focus_lock()
+
+                    try:
+                        # For MERFISH, after imaging, run the following 2 sequences (Cleavage buffer, SSC rinse)
+                        self._fluidics_service.run_after_imaging()
+                        self._fluidics_service.wait_for_completion()
+                    finally:
+                        # Resume focus lock for next timepoint
+                        if fluidics_focus_paused:
+                            self._autofocus_executor.resume_focus_lock()
 
                 self.time_point = self.time_point + 1
                 if self.dt == 0:  # continous acquisition
@@ -665,14 +492,14 @@ class MultiPointWorker:
             # Stop camera streaming before removing callback to ensure clean state.
             # Without this, the camera continues streaming after acquisition, causing
             # issues on subsequent acquisitions (e.g., GUI freeze).
-            self._camera_stop_streaming()
+            self._camera_service.stop_streaming()
 
             if this_image_callback_id:
-                self._camera_remove_frame_callback(this_image_callback_id)
+                self._camera_service.remove_frame_callback(this_image_callback_id)
 
             self._finish_jobs()
-            # Publish acquisition finished event via EventBus
-            self._publish_acquisition_finished(
+            # Publish acquisition finished event via ProgressTracker
+            self._progress_tracker.finish(
                 success=(acquisition_error is None and not self._aborted),
                 error=acquisition_error,
             )
@@ -732,7 +559,7 @@ class MultiPointWorker:
                 job_runner.shutdown(time_left())
 
     def wait_till_operation_is_completed(self) -> None:
-        self._peripheral_wait_till_operation_is_completed()
+        self._peripheral_service.wait_till_operation_is_completed()
 
     def get_plate_view(self) -> Optional[np.ndarray]:
         """Get a copy of the current plate view array.
@@ -981,7 +808,7 @@ class MultiPointWorker:
     def run_single_time_point(self) -> None:
         try:
             start: float = time.time()
-            self._peripheral_enable_joystick(False)
+            self._peripheral_service.enable_joystick(False)
 
             self._log.debug(
                 "multipoint acquisition - time point " + str(self.time_point + 1)
@@ -1027,22 +854,20 @@ class MultiPointWorker:
             utils.create_done_file(current_path)
             self._log.debug(f"Single time point took: {time.time() - start} [s]")
         finally:
-            self._peripheral_enable_joystick(True)
+            self._peripheral_service.enable_joystick(True)
 
     def initialize_z_stack(self) -> None:
-        # z stacking config
+        """Initialize z-stack using ZStackExecutor."""
+        # Use ZStackExecutor for z-stack initialization
+        self.z_pos = self._zstack_executor.initialize()
+
+        # Keep deltaZ in sync for other code that uses it
         if self.z_stacking_config == "FROM TOP":
             self.deltaZ = -abs(self.deltaZ)
-            self.move_to_z_level(self.z_range[1])
-        else:
-            self.move_to_z_level(self.z_range[0])
-
-        # Get z position at the beginning of the scan
-        self.z_pos = self._stage_get_pos().z_mm
 
     def initialize_coordinates_dataframe(self) -> None:
         """Initialize coordinates tracking via CoordinateTracker."""
-        self._coordinate_tracker.initialize(use_piezo=self.use_piezo)
+        self._coordinate_tracker.initialize()
         # Also keep legacy attribute for backwards compatibility
         self.coordinates_pd = self._coordinate_tracker._coordinates_df
 
@@ -1060,7 +885,7 @@ class MultiPointWorker:
             fov=fov if fov is not None else 0,
             z_level=z_level,
             pos=pos,
-            piezo_um=piezo_um,
+            z_piezo_um=piezo_um,
         )
         # Update legacy attribute reference
         self.coordinates_pd = self._coordinate_tracker._coordinates_df
@@ -1068,46 +893,40 @@ class MultiPointWorker:
     def move_to_coordinate(
         self, coordinate_mm: Tuple[float, ...], region_id: str, fov: int
     ) -> None:
+        """Move to a coordinate using PositionController."""
         self._log.info(f"moving to coordinate {coordinate_mm}")
         x_mm: float = coordinate_mm[0]
-        self._stage_move_x_to(x_mm)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_X / 1000)
-
         y_mm: float = coordinate_mm[1]
-        self._stage_move_y_to(y_mm)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
 
-        # check if z is included in the coordinate
+        # Use PositionController for X/Y movement with stabilization
+        self._position_controller.move_to_coordinate(x_mm=x_mm, y_mm=y_mm)
+
+        # Handle Z positioning based on autofocus mode and timepoint
         if (self.do_reflection_af or self.do_autofocus) and self.time_point > 0:
             if (region_id, fov) in self._last_time_point_z_pos:
                 last_z_mm: float = self._last_time_point_z_pos[(region_id, fov)]
-                self.move_to_z_level(last_z_mm)
+                self._position_controller.move_to_z(last_z_mm)
                 self._log.info(f"Moved to last z position {last_z_mm} [mm]")
             else:
                 self._log.warning(
                     f"No last z position found for region {region_id}, fov {fov}"
                 )
-        elif len(coordinate_mm) == 3:
+        elif len(coordinate_mm) >= 3:
             z_mm: float = coordinate_mm[2]
-            self.move_to_z_level(z_mm)
+            self._position_controller.move_to_z(z_mm)
 
-        if self._event_bus is not None:
-            from squid.core.events import CurrentFOVRegistered
-
-            fov_width_mm, fov_height_mm = self._get_current_fov_dimensions()
-            self._event_bus.publish(
-                CurrentFOVRegistered(
-                    x_mm=x_mm,
-                    y_mm=y_mm,
-                    fov_width_mm=fov_width_mm,
-                    fov_height_mm=fov_height_mm,
-                )
-            )
+        # Register FOV position via ProgressTracker
+        fov_width_mm, fov_height_mm = self._get_current_fov_dimensions()
+        self._progress_tracker.register_fov(
+            x_mm=x_mm,
+            y_mm=y_mm,
+            fov_width_mm=fov_width_mm,
+            fov_height_mm=fov_height_mm,
+        )
 
     def move_to_z_level(self, z_mm: float) -> None:
-        print("moving z")
-        self._stage_move_z_to(z_mm)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+        """Move to a Z level using PositionController."""
+        self._position_controller.move_to_z(z_mm)
 
     def _summarize_runner_outputs(self, drain_all: bool = True) -> SummarizeResult:
         """Process job results from output queues.
@@ -1282,7 +1101,7 @@ class MultiPointWorker:
 
     def acquire_at_position(self, region_id: str, current_path: str, fov: int) -> None:
         if not self.perform_autofocus(region_id, fov):
-            current_z = self._stage_get_pos().z_mm
+            current_z = self._stage_service.get_position().z_mm
             self._log.error(
                 f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={current_z} [mm])"
             )
@@ -1291,21 +1110,22 @@ class MultiPointWorker:
             self.prepare_z_stack()
 
         if self.use_piezo:
-            self.z_piezo_um: float = self._piezo_get_position()
+            self.z_piezo_um: float = self._piezo_service.get_position() if self._piezo_service else 0.0
+            # Sync piezo position to ZStackExecutor for coordinated z-stack movement
+            self._zstack_executor.z_piezo_um = self.z_piezo_um
 
-        pause_focus_lock = (
-            self._focus_lock_controller is not None
-            and self._focus_lock_controller.is_running
-            and self.use_piezo
-            and self.NZ > 1
-        )
+        # Check if focus lock is active (handles focus continuously)
+        focus_lock_active = self._autofocus_executor.is_focus_lock_active()
+
+        # Verify focus lock before capture (replaces per-FOV laser AF when focus lock is active)
+        if focus_lock_active:
+            if not self._autofocus_executor.wait_for_focus_lock(timeout_s=5.0):
+                self._log.warning("Focus lock verification failed, continuing anyway")
+
+        # Pause focus lock for ALL captures (prevents piezo jitter during exposure)
         focus_lock_paused = False
-        if pause_focus_lock:
-            try:
-                self._focus_lock_controller.pause()
-                focus_lock_paused = True
-            except Exception:
-                self._log.exception("Failed to pause focus lock for Z-stack")
+        if focus_lock_active:
+            focus_lock_paused = self._autofocus_executor.pause_focus_lock()
 
         try:
             for z_level in range(self.NZ):
@@ -1313,7 +1133,7 @@ class MultiPointWorker:
                     f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
                 )
 
-                acquire_pos: squid.core.abc.Pos = self._stage_get_pos()
+                acquire_pos: squid.core.abc.Pos = self._stage_service.get_position()
                 metadata: Dict[str, float] = {
                     "x": acquire_pos.x_mm,
                     "y": acquire_pos.y_mm,
@@ -1372,21 +1192,15 @@ class MultiPointWorker:
                         + config_idx
                         + 1
                     )
-                    # Publish progress event via EventBus
-                    self._publish_acquisition_progress(
+                    # Publish progress events via ProgressTracker
+                    self._progress_tracker.update(
                         current_fov=current_image,
                         total_fovs=self.total_scans,
                         current_region=getattr(self, "_current_region", 1),
                         total_regions=getattr(self, "_total_regions", 1),
+                        current_timepoint=self.time_point + 1,
+                        total_timepoints=self.Nt,
                         current_channel=config.name,
-                    )
-
-                    # Publish worker progress event for controller state tracking
-                    self._publish_worker_progress(
-                        current_region=getattr(self, "_current_region", 1),
-                        total_regions=getattr(self, "_total_regions", 1),
-                        current_fov=current_image,
-                        total_fovs=self.total_scans,
                     )
 
                 # updates coordinates df
@@ -1404,10 +1218,7 @@ class MultiPointWorker:
             if self.NZ > 1:
                 self.move_z_back_after_stack()
             if focus_lock_paused:
-                try:
-                    self._focus_lock_controller.resume()
-                except Exception:
-                    self._log.exception("Failed to resume focus lock after Z-stack")
+                self._autofocus_executor.resume_focus_lock()
 
     def _select_config(self, config: ChannelMode) -> None:
         self._apply_channel_mode(config)
@@ -1443,7 +1254,7 @@ class MultiPointWorker:
                 try:
                     delay = 0
                     if self._trigger_mode == TriggerMode.HARDWARE:
-                        delay = -int(self._camera_get_strobe_time())
+                        delay = -int(self._camera_service.get_strobe_time())
                     self._filter_wheel_service.set_delay_offset_ms(delay)
                 except Exception:
                     pass
@@ -1512,12 +1323,11 @@ class MultiPointWorker:
             return False
 
     def prepare_z_stack(self) -> None:
-        # move to bottom of the z stack
+        """Prepare for z-stack by moving to start position (FROM CENTER mode)."""
+        # For FROM CENTER mode, move to bottom of z-stack
         if self.z_stacking_config == "FROM CENTER":
             z_delta = -self.deltaZ * round((self.NZ - 1) / 2.0)
-            self._stage_move_z(z_delta)
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._position_controller.move_z_relative(z_delta)
 
     def handle_z_offset(self, config: ChannelMode, not_offset: bool) -> None:
         if (
@@ -1527,9 +1337,7 @@ class MultiPointWorker:
                 direction: int = 1 if not_offset else -1
                 self._log.info("Moving Z offset" + str(config.z_offset * direction))
                 z_delta = config.z_offset / 1000 * direction
-                self._stage_move_z(z_delta)
-                self.wait_till_operation_is_completed()
-                self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+                self._position_controller.move_z_relative(z_delta)
 
     def _image_callback(self, camera_frame: CameraFrame) -> None:
         """
@@ -1704,7 +1512,7 @@ class MultiPointWorker:
         override = getattr(self, "frame_wait_timeout_override_s", None)
         if override is not None:
             return override
-        return (self._camera_get_total_frame_time() / 1e3) + 10
+        return (self._camera_service.get_total_frame_time() / 1e3) + 10
 
     def acquire_camera_image(
         self,
@@ -1719,7 +1527,7 @@ class MultiPointWorker:
         self._select_config(config)
 
         # trigger acquisition (including turning on the illumination) and read frame
-        camera_illumination_time: Optional[float] = self._camera_get_exposure_time()
+        camera_illumination_time: Optional[float] = self._camera_service.get_exposure_time()
         if self._trigger_mode == TriggerMode.SOFTWARE:
             self._turn_on_illumination(config)
             self.wait_till_operation_is_completed()
@@ -1746,7 +1554,7 @@ class MultiPointWorker:
                 self._ready_for_next_trigger.set()
         with self._timing.get_timer("get_ready_for_trigger re-check"):
             # This should be a noop - we have the frame already.  Still, check!
-            while not self._camera_get_ready_for_trigger():
+            while not self._camera_service.get_ready_for_trigger():
                 self._sleep(0.001)
 
             self._ready_for_next_trigger.clear()
@@ -1756,7 +1564,7 @@ class MultiPointWorker:
             # NOTE(imo): One level up from acquire_camera_image, we have acquire_pos.  We're careful to use that as
             # much as we can, but don't use it here because we'd rather take the position as close as possible to the
             # real capture time for the image info.  Ideally we'd use this position for the caller's acquire_pos as well.
-            current_position = self._stage_get_pos()
+            current_position = self._stage_service.get_position()
             current_capture_info: CaptureInfo = CaptureInfo(
                 position=current_position,
                 z_index=k,
@@ -1773,10 +1581,10 @@ class MultiPointWorker:
             )
             self._current_capture_info.set(current_capture_info)
         with self._timing.get_timer("send_trigger"):
-            self._camera_send_trigger(illumination_time=camera_illumination_time)
+            self._camera_service.send_trigger(illumination_time=camera_illumination_time)
 
         with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
-            total_frame_time = self._camera_get_total_frame_time()
+            total_frame_time = self._camera_service.get_total_frame_time()
             if self._trigger_mode == TriggerMode.HARDWARE:
                 exposure_done_time: float = time.time() + total_frame_time / 1e3
                 # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
@@ -1797,7 +1605,7 @@ class MultiPointWorker:
                         f"Timed out waiting {non_hw_frame_timeout} [s] for a frame, trying synchronous read."
                     )
                     try:
-                        fallback_frame = self._camera_read_frame()
+                        fallback_frame = self._camera_service.read_frame()
                         if fallback_frame is not None:
                             # Process immediately to keep pipeline moving.
                             self._process_camera_frame(fallback_frame)
@@ -1847,9 +1655,9 @@ class MultiPointWorker:
                     self.wait_till_operation_is_completed()
 
                 # read camera frame
-                exposure_time = self._camera_get_exposure_time()
-                self._camera_send_trigger(illumination_time=exposure_time)
-                image: Optional[np.ndarray] = self._camera_read_frame()
+                exposure_time = self._camera_service.get_exposure_time()
+                self._camera_service.send_trigger(illumination_time=exposure_time)
+                image: Optional[np.ndarray] = self._camera_service.read_frame()
                 if image is None:
                     print("camera.read_frame() returned None")
                     continue
@@ -1865,7 +1673,7 @@ class MultiPointWorker:
         # Check if the image is RGB or monochrome
         i_size: Tuple[int, ...] = images["BF LED matrix full_R"].shape
 
-        rgb_position = self._stage_get_pos()
+        rgb_position = self._stage_service.get_position()
         current_capture_info: CaptureInfo = CaptureInfo(
             position=rgb_position,
             z_index=k,
@@ -2023,37 +1831,20 @@ class MultiPointWorker:
             os.path.join(current_path, "coordinates.csv"), index=False, header=True
         )
         self._aborted = True
-        self._peripheral_enable_joystick(True)
+        self._peripheral_service.enable_joystick(True)
 
         self._wait_for_outstanding_callback_images()
 
     def move_z_for_stack(self) -> None:
+        """Move to next z-level in stack using ZStackExecutor."""
+        self._zstack_executor.step()
+        # Keep z_piezo_um in sync for backward compatibility
         if self.use_piezo:
-            self.z_piezo_um += self.deltaZ * 1000
-            self._piezo_move_to(self.z_piezo_um)
-            if (
-                self._trigger_mode == TriggerMode.SOFTWARE
-            ):  # for hardware trigger, delay is in waiting for the last row to start exposure
-                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-        else:
-            self._stage_move_z(self.deltaZ)
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self.z_piezo_um = self._zstack_executor.z_piezo_um
 
     def move_z_back_after_stack(self) -> None:
+        """Return to stack start position using ZStackExecutor."""
+        self._zstack_executor.return_to_start()
+        # Keep z_piezo_um in sync for backward compatibility
         if self.use_piezo:
-            self.z_piezo_um = self.z_piezo_um - self.deltaZ * 1000 * (self.NZ - 1)
-            self._piezo_move_to(self.z_piezo_um)
-            if (
-                self._trigger_mode == TriggerMode.SOFTWARE
-            ):  # for hardware trigger, delay is in waiting for the last row to start exposure
-                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
-        else:
-            rel_z_to_start: float
-            if self.z_stacking_config == "FROM CENTER":
-                rel_z_to_start = -self.deltaZ * (self.NZ - 1) + self.deltaZ * round(
-                    (self.NZ - 1) / 2
-                )
-            else:
-                rel_z_to_start = -self.deltaZ * (self.NZ - 1)
-
-            self._stage_move_z(rel_z_to_start)
+            self.z_piezo_um = self._zstack_executor.z_piezo_um

@@ -12,16 +12,6 @@ from squid.backend.controllers.multipoint.multi_point_utils import (
     AcquisitionParameters,
 )
 from squid.backend.controllers.multipoint.multi_point_worker import MultiPointWorker
-from squid.backend.controllers.multipoint.experiment_manager import (
-    ExperimentManager,
-    ExperimentContext,
-    build_acquisition_parameters,
-)
-from squid.backend.controllers.multipoint.acquisition_planner import (
-    AcquisitionPlanner,
-    AcquisitionEstimate,
-    ValidationResult,
-)
 from squid.backend.controllers.multipoint.progress_tracking import (
     ProgressTracker,
     ProgressState,
@@ -31,18 +21,12 @@ from squid.backend.controllers.multipoint.position_zstack import (
     PositionController,
     ZStackConfig,
     ZStackExecutor,
-    FOVNavigator,
 )
 from squid.backend.controllers.multipoint.image_capture import (
     CaptureContext,
     build_capture_info,
-    ImageCaptureExecutor,
-    CaptureSequenceBuilder,
 )
 from squid.backend.controllers.multipoint.focus_operations import (
-    FocusMapConfig,
-    FocusMapState,
-    FocusMapGenerator,
     AutofocusExecutor,
 )
 
@@ -57,30 +41,17 @@ __all__ = [
     "ScanPositionInformation",
     "AcquisitionParameters",
     "MultiPointWorker",
-    # New Phase 2 exports
-    "ExperimentManager",
-    "ExperimentContext",
-    "build_acquisition_parameters",
-    "AcquisitionPlanner",
-    "AcquisitionEstimate",
-    "ValidationResult",
-    # Phase 3a exports
+    # Progress tracking
     "ProgressTracker",
     "ProgressState",
     "CoordinateTracker",
-    # Phase 3b exports
+    # Position and z-stack
     "PositionController",
     "ZStackConfig",
     "ZStackExecutor",
-    "FOVNavigator",
-    # Phase 3c exports
+    # Image capture
     "CaptureContext",
     "build_capture_info",
-    "ImageCaptureExecutor",
-    "CaptureSequenceBuilder",
-    # Phase 3d exports
-    "FocusMapConfig",
-    "FocusMapState",
-    "FocusMapGenerator",
+    # Autofocus
     "AutofocusExecutor",
 ]

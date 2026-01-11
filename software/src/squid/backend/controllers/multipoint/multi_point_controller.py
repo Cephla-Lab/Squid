@@ -1170,6 +1170,8 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self.set_use_fluidics(cmd.use_fluidics)
         if cmd.skip_saving is not None:
             self.set_skip_saving(cmd.skip_saving)
+        if cmd.z_stacking_config is not None:
+            self.set_z_stacking_config(cmd.z_stacking_config)
 
     def _on_set_acquisition_path(self, cmd: SetAcquisitionPathCommand) -> None:
         """Handle SetAcquisitionPathCommand from EventBus."""

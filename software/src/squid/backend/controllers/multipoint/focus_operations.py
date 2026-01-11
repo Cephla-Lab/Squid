@@ -1,267 +1,24 @@
 """
-Focus map generation and autofocus execution for multipoint acquisitions.
+Autofocus execution for multipoint acquisitions.
 
 This module provides:
-- FocusMapGenerator: Focus map generation with save/restore context management
 - AutofocusExecutor: Autofocus decision logic and execution
-- FocusMapConfig: Configuration for focus map generation
 
-These classes encapsulate focus-related logic previously embedded in
-MultiPointController and MultiPointWorker.
+This class encapsulates autofocus logic previously embedded in
+MultiPointWorker.
 """
 
-from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 import squid.core.logging
 from _def import Acquisition, MULTIPOINT_AUTOFOCUS_CHANNEL
 
 if TYPE_CHECKING:
     from squid.backend.controllers.autofocus import AutoFocusController, LaserAutofocusController
-    from squid.backend.services import StageService
-    from squid.backend.managers import ChannelConfigurationManager, ObjectiveStore, ScanCoordinates
-    from squid.core.utils.config_utils import ChannelMode
+    from squid.backend.managers import ChannelConfigurationManager, ObjectiveStore
 
 
 _log = squid.core.logging.get_logger(__name__)
-
-
-@dataclass
-class FocusMapConfig:
-    """Configuration for focus map generation."""
-
-    delta_x_mm: float
-    delta_y_mm: float
-    max_grid_points: int = 4
-    min_grid_points: int = 2
-
-
-@dataclass
-class FocusMapState:
-    """State of focus map before/after generation."""
-
-    coords: List[Tuple[float, float, float]]
-    use_focus_map: bool
-
-
-class FocusMapGenerator:
-    """
-    Generates focus maps for multipoint acquisitions.
-
-    Handles:
-    - Grid-based focus map generation from scan bounds
-    - Save/restore of existing focus map state
-    - Focus surface interpolation for z-positions
-
-    Usage:
-        generator = FocusMapGenerator(
-            autofocus_controller=af_controller,
-            stage_service=stage,
-            config=FocusMapConfig(delta_x_mm=1.0, delta_y_mm=1.0),
-        )
-
-        # Generate focus map from scan bounds
-        with generator.focus_map_context():
-            generator.generate_from_bounds(bounds)
-
-        # Or use existing focus surface
-        generator.interpolate_z_positions(scan_coordinates, focus_map)
-    """
-
-    def __init__(
-        self,
-        autofocus_controller: "AutoFocusController",
-        stage_service: "StageService",
-        config: FocusMapConfig,
-    ):
-        """
-        Initialize the focus map generator.
-
-        Args:
-            autofocus_controller: AutoFocus controller for focus map operations
-            stage_service: Stage service for movement during generation
-            config: Focus map configuration
-        """
-        self._autofocus = autofocus_controller
-        self._stage = stage_service
-        self._config = config
-        self._saved_state: Optional[FocusMapState] = None
-
-    @contextmanager
-    def focus_map_context(self) -> Iterator[None]:
-        """
-        Context manager that saves and restores focus map state.
-
-        Saves the current focus map state on entry, and restores it
-        on exit (whether by normal completion or exception).
-
-        Usage:
-            with generator.focus_map_context():
-                generator.generate_from_bounds(bounds)
-                # ... use generated focus map ...
-            # Original focus map is restored here
-        """
-        self._save_focus_map_state()
-        try:
-            yield
-        finally:
-            self._restore_focus_map_state()
-
-    def generate_from_bounds(
-        self,
-        bounds: Dict[str, Tuple[float, float]],
-        return_to_center: bool = True,
-    ) -> bool:
-        """
-        Generate a focus map from scan bounds.
-
-        Args:
-            bounds: Dictionary with "x" and "y" keys containing (min, max) tuples
-            return_to_center: Whether to return stage to center after generation
-
-        Returns:
-            True if focus map was generated successfully
-        """
-        if not bounds:
-            _log.error("Cannot generate focus map: no bounds provided")
-            return False
-
-        x_min, x_max = bounds["x"]
-        y_min, y_max = bounds["y"]
-
-        # Calculate scan dimensions and center
-        x_span = abs(x_max - x_min)
-        y_span = abs(y_max - y_min)
-        x_center = (x_max + x_min) / 2
-        y_center = (y_max + y_min) / 2
-
-        # Calculate grid parameters
-        grid_nx, grid_dx = self._calculate_grid_params(
-            x_span, self._config.delta_x_mm
-        )
-        grid_ny, grid_dy = self._calculate_grid_params(
-            y_span, self._config.delta_y_mm
-        )
-
-        # Calculate starting corner position (top-left of the AF map grid)
-        starting_x_mm = x_center - (grid_nx - 1) * grid_dx / 2
-        starting_y_mm = y_center - (grid_ny - 1) * grid_dy / 2
-
-        _log.info(f"Generating AF Map: Nx={grid_nx}, Ny={grid_ny}")
-        _log.info(f"Spacing: dx={grid_dx:.3f}mm, dy={grid_dy:.3f}mm")
-        _log.info(f"Center: x={x_center:.3f}mm, y={y_center:.3f}mm")
-
-        # Define grid corners for AF map
-        coord1 = (starting_x_mm, starting_y_mm)  # Starting corner
-        coord2 = (
-            starting_x_mm + (grid_nx - 1) * grid_dx,
-            starting_y_mm,
-        )  # X-axis corner
-        coord3 = (
-            starting_x_mm,
-            starting_y_mm + (grid_ny - 1) * grid_dy,
-        )  # Y-axis corner
-
-        try:
-            # Generate and enable the AF map
-            self._autofocus.gen_focus_map(coord1, coord2, coord3)
-            self._autofocus.set_focus_map_use(True)
-
-            # Return to center position
-            if return_to_center:
-                self._stage.move_x_to(x_center)
-                self._stage.move_y_to(y_center)
-
-            return True
-
-        except ValueError as exc:
-            _log.error(f"Invalid coordinates for autofocus plane: {exc}")
-            return False
-
-    def interpolate_z_positions(
-        self,
-        scan_coordinates: "ScanCoordinates",
-        focus_map: Any,
-    ) -> None:
-        """
-        Interpolate z-positions for all FOVs using a focus surface.
-
-        Args:
-            scan_coordinates: Scan coordinates to update
-            focus_map: Focus map/surface with interpolate method
-        """
-        if focus_map is None:
-            return
-
-        _log.info("Using focus surface for Z interpolation")
-
-        for region_id in scan_coordinates.region_fov_coordinates.keys():
-            region_fov_coords = scan_coordinates.region_fov_coordinates.get(region_id, [])
-
-            for i, coord in enumerate(region_fov_coords):
-                x, y = coord[0], coord[1]
-                try:
-                    z = focus_map.interpolate(x, y, region_id)
-                    # Update coordinate with interpolated z
-                    region_fov_coords[i] = (x, y, z)
-                    scan_coordinates.update_fov_z_level(region_id, i, z)
-                except Exception as exc:
-                    _log.warning(f"Failed to interpolate z for ({x}, {y}): {exc}")
-
-    def clear_focus_map(self) -> None:
-        """Clear the current focus map."""
-        self._autofocus.clear_focus_map()
-
-    def _calculate_grid_params(
-        self,
-        span: float,
-        delta: float,
-    ) -> Tuple[int, float]:
-        """
-        Calculate grid parameters for focus map.
-
-        Args:
-            span: Total span in mm
-            delta: Step size in mm
-
-        Returns:
-            Tuple of (num_points, spacing)
-        """
-        min_points = self._config.min_grid_points
-        max_points = self._config.max_grid_points
-
-        if span < delta:
-            return min_points, delta
-
-        num_points = min(max_points, max(min_points, int(span / delta) + 1))
-        spacing = max(delta, span / (num_points - 1))
-        return num_points, spacing
-
-    def _save_focus_map_state(self) -> None:
-        """Save current focus map state."""
-        coords = []
-        for x, y, z in self._autofocus.focus_map_coords:
-            coords.append((x, y, z))
-
-        self._saved_state = FocusMapState(
-            coords=coords,
-            use_focus_map=self._autofocus.use_focus_map,
-        )
-        _log.debug(f"Saved focus map state: {len(coords)} coordinates")
-
-    def _restore_focus_map_state(self) -> None:
-        """Restore previously saved focus map state."""
-        if self._saved_state is None:
-            return
-
-        self._autofocus.clear_focus_map()
-        for x, y, z in self._saved_state.coords:
-            self._autofocus.focus_map_coords.append((x, y, z))
-        self._autofocus.use_focus_map = self._saved_state.use_focus_map
-
-        _log.debug(f"Restored focus map state: {len(self._saved_state.coords)} coordinates")
-        self._saved_state = None
 
 
 class AutofocusExecutor:
@@ -368,6 +125,21 @@ class AutofocusExecutor:
         """
         self._apply_config_callback = callback
 
+    def is_focus_lock_active(self) -> bool:
+        """
+        Check if continuous focus lock is in use (started, possibly paused).
+
+        When focus lock is active, it handles focus continuously and
+        traditional per-FOV autofocus should be skipped.
+
+        Returns:
+            True if focus lock is active
+        """
+        return (
+            self._focus_lock is not None
+            and getattr(self._focus_lock, "is_active", False)
+        )
+
     def should_perform_autofocus(self) -> bool:
         """
         Check if autofocus should be performed based on current state.
@@ -375,6 +147,10 @@ class AutofocusExecutor:
         Returns:
             True if autofocus should be performed
         """
+        # Focus lock handles focus continuously - skip per-FOV AF
+        if self.is_focus_lock_active():
+            return False
+
         if self._do_reflection_af:
             return True
 
@@ -454,22 +230,16 @@ class AutofocusExecutor:
 
     def _perform_laser_af(self) -> bool:
         """
-        Perform laser reflection autofocus.
+        Perform traditional per-FOV laser reflection autofocus.
+
+        Note: Focus lock is handled separately at the worker level.
+        This method is only called when focus lock is NOT active.
 
         Returns:
             True if autofocus succeeded
         """
         _log.info("Performing laser reflection AF")
 
-        # Check if focus lock is active
-        if (
-            self._focus_lock is not None
-            and getattr(self._focus_lock, "mode", "off") != "off"
-            and getattr(self._focus_lock, "is_running", False)
-        ):
-            return self._focus_lock.wait_for_lock(timeout_s=5.0)
-
-        # Use laser AF controller
         if self._laser_af is None:
             _log.warning("Laser autofocus controller not available")
             return False
@@ -480,6 +250,55 @@ class AutofocusExecutor:
         except Exception as exc:
             _log.error(f"Laser AF failed: {exc}")
             return False
+
+    # Focus lock helper methods for MultiPointWorker
+
+    def wait_for_focus_lock(self, timeout_s: float = 5.0) -> bool:
+        """
+        Wait for continuous focus lock to achieve lock.
+
+        Args:
+            timeout_s: Maximum time to wait for lock
+
+        Returns:
+            True if locked, False if timeout or not active
+        """
+        if self._focus_lock is None or not self.is_focus_lock_active():
+            return False
+
+        return self._focus_lock.wait_for_lock(timeout_s=timeout_s)
+
+    def pause_focus_lock(self) -> bool:
+        """
+        Pause focus lock for image capture.
+
+        Call this before capturing images to prevent piezo corrections
+        during exposure.
+
+        Returns:
+            True if paused (caller should resume), False if not active
+        """
+        if self._focus_lock is None or not self.is_focus_lock_active():
+            return False
+
+        try:
+            self._focus_lock.pause()
+            return True
+        except Exception:
+            _log.exception("Failed to pause focus lock")
+            return False
+
+    def resume_focus_lock(self) -> None:
+        """
+        Resume focus lock after image capture.
+
+        Call this after capturing images to restart focus corrections.
+        """
+        if self._focus_lock is not None:
+            try:
+                self._focus_lock.resume()
+            except Exception:
+                _log.exception("Failed to resume focus lock")
 
     def increment_fov_count(self) -> None:
         """Increment the FOV counter for AF interval tracking."""

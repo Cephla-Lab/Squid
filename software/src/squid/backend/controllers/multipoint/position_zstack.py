@@ -3,11 +3,11 @@ Position control and z-stack execution for multipoint acquisitions.
 
 This module provides:
 - PositionController: Coordinate-based stage movement with stabilization
+- ZStackConfig: Configuration dataclass for z-stack acquisition
 - ZStackExecutor: Z-stack lifecycle management (init, step, return)
 
 These classes encapsulate position movement patterns previously embedded
-in MultiPointWorker, consolidating 4 duplicated movement patterns into
-a single source of truth.
+in MultiPointWorker.
 """
 
 from dataclasses import dataclass
@@ -341,99 +341,3 @@ class ZStackExecutor:
         self._z_piezo_um = initial_position_um
         if self.use_piezo and self._piezo is not None:
             self._piezo.move_to(self._z_piezo_um)
-
-
-class FOVNavigator:
-    """
-    Helper for navigating between FOVs during acquisition.
-
-    Combines position control with FOV tracking for multi-timepoint
-    acquisitions where returning to previous z-positions is needed.
-
-    Usage:
-        navigator = FOVNavigator(position_controller, coordinate_tracker)
-
-        # Move to FOV with optional z-tracking
-        navigator.move_to_fov(
-            coordinate_mm=(1.0, 2.0),
-            region_id="region_0",
-            fov=1,
-            use_last_z=True,
-            timepoint=1,
-        )
-    """
-
-    def __init__(
-        self,
-        position_controller: PositionController,
-    ):
-        """
-        Initialize the FOV navigator.
-
-        Args:
-            position_controller: Position controller for stage movement
-        """
-        self._position = position_controller
-        self._last_z_positions: dict = {}
-
-    def move_to_fov(
-        self,
-        coordinate_mm: Tuple[float, ...],
-        region_id: str = "",
-        fov: int = 0,
-        use_last_z: bool = False,
-        timepoint: int = 0,
-    ) -> squid.core.abc.Pos:
-        """
-        Move to a FOV coordinate.
-
-        Args:
-            coordinate_mm: (x, y) or (x, y, z) coordinate in mm
-            region_id: Region identifier (for z-position tracking)
-            fov: FOV index (for z-position tracking)
-            use_last_z: If True, use last recorded z-position for this FOV
-            timepoint: Current timepoint (z-tracking only used for timepoint > 0)
-
-        Returns:
-            Final position after movement
-        """
-        _log.info(f"Moving to coordinate {coordinate_mm}")
-
-        # Move X, Y
-        x_mm = coordinate_mm[0]
-        y_mm = coordinate_mm[1]
-        self._position.move_to_coordinate(x_mm=x_mm, y_mm=y_mm)
-
-        # Handle Z movement
-        z_moved = False
-        if use_last_z and timepoint > 0:
-            # Try to use last recorded z-position
-            last_z = self._last_z_positions.get((region_id, fov))
-            if last_z is not None:
-                _log.info(f"Moving to last z position {last_z} mm")
-                self._position.move_to_z(last_z)
-                z_moved = True
-            else:
-                _log.warning(f"No last z position found for region {region_id}, fov {fov}")
-
-        if not z_moved and len(coordinate_mm) >= 3:
-            # Use z from coordinate if provided
-            z_mm = coordinate_mm[2]
-            self._position.move_to_z(z_mm)
-
-        return self._position.get_position()
-
-    def record_z_position(self, region_id: str, fov: int, z_mm: float) -> None:
-        """
-        Record z-position for returning to on next timepoint.
-
-        Args:
-            region_id: Region identifier
-            fov: FOV index
-            z_mm: Z position in mm
-        """
-        self._last_z_positions[(region_id, fov)] = z_mm
-
-    def clear_z_positions(self) -> None:
-        """Clear all recorded z-positions."""
-        self._last_z_positions.clear()
