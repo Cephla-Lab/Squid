@@ -22,6 +22,11 @@ from squid.backend.controllers.multipoint.acquisition_planner import (
     AcquisitionEstimate,
     ValidationResult,
 )
+from squid.backend.controllers.multipoint.progress_tracking import (
+    ProgressTracker,
+    ProgressState,
+    CoordinateTracker,
+)
 
 __all__ = [
     "CaptureInfo",
@@ -41,4 +46,8 @@ __all__ = [
     "AcquisitionPlanner",
     "AcquisitionEstimate",
     "ValidationResult",
+    # Phase 3a exports
+    "ProgressTracker",
+    "ProgressState",
+    "CoordinateTracker",
 ]
