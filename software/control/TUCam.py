@@ -928,4 +928,3 @@ TUCAM_Cap_ClearBuffer.restype  = TUCAMRET
 #TUCAM_File_SaveFFCCoefficient    = TUSDKdll.TUCAM_File_SaveFFCCoefficient
 #TUCAM_File_SaveFFCCoefficient.argtypes = [c_void_p, c_void_p]
 #TUCAM_File_SaveFFCCoefficient.restype  = TUCAMRET
-
