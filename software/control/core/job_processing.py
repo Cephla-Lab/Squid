@@ -22,6 +22,12 @@ import squid.abc
 import squid.logging
 from control.utils_config import ChannelMode
 from control.core import utils_ome_tiff_writer as ome_tiff_writer
+from control.core.memory_profiler import (
+    start_worker_monitoring,
+    stop_worker_monitoring,
+    set_worker_operation,
+    log_memory,
+)
 
 
 @dataclass
@@ -535,6 +541,9 @@ class DownsampledViewJob(Job):
         try:
             t_stitch_start = time.perf_counter()
 
+            # Memory tracking: stitching is memory-intensive
+            set_worker_operation(f"STITCH_{self.well_id}")
+
             # Stitch all channels
             stitched_channels = accumulator.stitch_all_channels()
 
@@ -550,6 +559,9 @@ class DownsampledViewJob(Job):
                 else self.interpolation_method
             )
 
+            # Memory tracking: downsampling phase
+            set_worker_operation(f"DOWNSAMPLE_{self.well_id}")
+
             # Generate plate view images first (at plate resolution only)
             t_downsample_plate_start = time.perf_counter()
             well_images_for_plate: Dict[int, np.ndarray] = {}
@@ -559,6 +571,9 @@ class DownsampledViewJob(Job):
                 )
                 well_images_for_plate[ch_idx] = downsampled
             t_downsample_plate_end = time.perf_counter()
+
+            # Memory tracking: save phase
+            set_worker_operation(f"SAVE_{self.well_id}")
 
             # Save TIFFs only if not skipping
             t_save_start = time.perf_counter()
@@ -785,6 +800,10 @@ class JobRunner(multiprocessing.Process):
         # Clear any stale tracking from previous acquisition (defensive)
         self._well_accumulated_bytes = {}
 
+        # Start memory monitoring for the worker process
+        start_worker_monitoring(sample_interval_ms=200)
+        log_memory("WORKER_START", include_children=False)
+
         while not self._shutdown_event.is_set():
             job = None
             try:
@@ -793,6 +812,12 @@ class JobRunner(multiprocessing.Process):
                 t_got_job = time.perf_counter()
 
                 self._log.info(f"Running job {job.job_id} (waited {(t_got_job - t_wait_start)*1000:.1f}ms in queue)...")
+
+                # Set operation context for memory tracking
+                if isinstance(job, DownsampledViewJob):
+                    set_worker_operation(f"DOWNSAMPLE_{job.well_id}")
+                else:
+                    set_worker_operation(job.__class__.__name__)
 
                 t_run_start = time.perf_counter()
                 result = job.run()
@@ -817,6 +842,8 @@ class JobRunner(multiprocessing.Process):
                     self._log.exception(f"Job {job.job_id} failed! Returning exception result.")
                     self._output_queue.put_nowait(JobResult(job_id=job.job_id, result=None, exception=e))
             finally:
+                # Clear operation context after job completes
+                set_worker_operation("")
                 # Decrement pending count when job completes (success, None result, or exception)
                 if job is not None:
                     with self._pending_count.get_lock():
@@ -875,4 +902,7 @@ class JobRunner(multiprocessing.Process):
                                 self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - image_bytes)
                             if self._bp_capacity_event is not None:
                                 self._bp_capacity_event.set()
+        # Stop memory monitoring and log final report
+        log_memory("WORKER_SHUTDOWN", include_children=False)
+        stop_worker_monitoring()
         self._log.info("Shutdown request received, exiting run.")

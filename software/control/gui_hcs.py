@@ -411,6 +411,7 @@ class HighContentScreeningGui(QMainWindow):
         self.napariMultiChannelWidget: Optional[widgets.NapariMultiChannelWidget] = None
         self.imageArrayDisplayWindow: Optional[core.ImageArrayDisplayWindow] = None
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
+        self.ramMonitorWidget: Optional[widgets.RAMMonitorWidget] = None
 
         self.recordTabWidget: QTabWidget = QTabWidget()
         self.cameraTabWidget: QTabWidget = QTabWidget()
@@ -972,6 +973,10 @@ class HighContentScreeningGui(QMainWindow):
         self.cameraTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.cameraTabWidget))
         self.resizeCurrentTab(self.cameraTabWidget)
 
+        # RAM monitor widget (always create, visibility controlled by setting)
+        self.ramMonitorWidget = widgets.RAMMonitorWidget()
+        self.ramMonitorWidget.setVisible(False)  # Initially hidden; shown when RAM monitoring setting is enabled
+
     def setup_layout(self):
         layout = QVBoxLayout()
 
@@ -1031,6 +1036,12 @@ class HighContentScreeningGui(QMainWindow):
             self.setupSingleWindowLayout()
         else:
             self.setupMultiWindowLayout()
+
+        # Add RAM monitor widget to left side of status bar
+        # Status bar is hidden when RAM monitoring is disabled
+        # Visibility update is deferred to showEvent since status bar isn't visible until window is shown
+        if self.ramMonitorWidget is not None:
+            self.statusBar().addWidget(self.ramMonitorWidget)  # Left-aligned
 
     def _getMainWindowMinimumSize(self):
         """
@@ -1121,6 +1132,10 @@ class HighContentScreeningGui(QMainWindow):
         if self.piezoWidget:
             self.movement_updater.piezo_z_um.connect(self.piezoWidget.update_displacement_um_display)
         self.multipointController.signal_set_display_tabs.connect(self.setAcquisitionDisplayTabs)
+
+        # RAM monitor widget connections - use controller signals which fire AFTER memory monitor is created
+        self.multipointController.signal_acquisition_start.connect(self._connect_ram_monitor_widget)
+        self.multipointController.acquisition_finished.connect(self._disconnect_ram_monitor_widget)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
@@ -1525,6 +1540,7 @@ class HighContentScreeningGui(QMainWindow):
             config = ConfigParser()
             config.read(CACHED_CONFIG_FILE_PATH)
             dialog = widgets.PreferencesDialog(config, CACHED_CONFIG_FILE_PATH, self)
+            dialog.signal_config_changed.connect(self._update_ram_monitor_visibility)
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")
@@ -1716,11 +1732,14 @@ class HighContentScreeningGui(QMainWindow):
                 self.live_scan_grid_was_on = True
             else:
                 self.live_scan_grid_was_on = False
+            # NOTE: RAM monitor widget is connected via multipointController.signal_acquisition_start
+            # which fires AFTER the memory monitor is created (see make_connections)
         else:
             self.log.info("FINISHED ACQUISITION")
             if self.live_scan_grid_was_on:
                 self.toggle_live_scan_grid(on=True)
                 self.live_scan_grid_was_on = False
+            # NOTE: RAM monitor widget is disconnected via multipointController.acquisition_finished
 
         # click to move off during acquisition
         self.navigationWidget.set_click_to_move(not acquisition_started)
@@ -1747,6 +1766,53 @@ class HighContentScreeningGui(QMainWindow):
 
         # display acquisition progress bar during acquisition
         self.recordTabWidget.currentWidget().display_progress_bar(acquisition_started)
+
+    def _update_ram_monitor_visibility(self):
+        """Update RAM monitor widget visibility based on setting."""
+        import control._def
+
+        if self.ramMonitorWidget is None:
+            return
+
+        if control._def.ENABLE_MEMORY_PROFILING:
+            self.ramMonitorWidget.setVisible(True)
+            self.ramMonitorWidget.start_monitoring()
+            self.log.info(f"RAM monitor: enabled, widget visible={self.ramMonitorWidget.isVisible()}")
+        else:
+            self.ramMonitorWidget.stop_monitoring()
+            self.ramMonitorWidget.setVisible(False)
+            self.log.debug("RAM monitor: disabled, hiding widget")
+
+    def _connect_ram_monitor_widget(self):
+        """Connect RAM monitor widget to memory monitor during acquisition."""
+        import control._def
+
+        if not control._def.ENABLE_MEMORY_PROFILING:
+            return
+
+        if self.ramMonitorWidget is None:
+            return
+
+        # Connect to the memory monitor from the multipointController for more detailed acquisition tracking
+        if self.multipointController is not None and self.multipointController._memory_monitor is not None:
+            self.log.info("RAM monitor: connecting widget to memory monitor for acquisition")
+            self.ramMonitorWidget.connect_monitor(self.multipointController._memory_monitor)
+
+    def _disconnect_ram_monitor_widget(self):
+        """Disconnect RAM monitor widget from acquisition memory monitor."""
+        import control._def
+
+        if self.ramMonitorWidget is not None:
+            self.ramMonitorWidget.disconnect_monitor()
+            # Control monitoring based on current profiling setting
+            if control._def.ENABLE_MEMORY_PROFILING:
+                # Resume background monitoring, preserving session peak from acquisition
+                self.ramMonitorWidget.start_monitoring(reset_peak=False)
+                self.log.debug("RAM monitor: disconnected from acquisition, continuing background monitoring")
+            else:
+                # Stop monitoring entirely when profiling is disabled
+                self.ramMonitorWidget.stop_monitoring()
+                self.log.debug("RAM monitor: disconnected from acquisition, monitoring stopped (profiling disabled)")
 
     def onStartLive(self):
         self.imageDisplayTabs.setCurrentIndex(0)
@@ -1779,6 +1845,15 @@ class HighContentScreeningGui(QMainWindow):
     def move_to_mm(self, x_mm, y_mm):
         self.stage.move_x_to(x_mm)
         self.stage.move_y_to(y_mm)
+
+    def showEvent(self, event):
+        """Handle window show event to initialize visibility-dependent widgets."""
+        super().showEvent(event)
+        # Initialize RAM monitor visibility now that window is shown
+        if hasattr(self, "_ram_monitor_initialized") and self._ram_monitor_initialized:
+            return  # Only initialize once
+        self._ram_monitor_initialized = True
+        self._update_ram_monitor_visibility()
 
     def closeEvent(self, event):
         # Show confirmation dialog
