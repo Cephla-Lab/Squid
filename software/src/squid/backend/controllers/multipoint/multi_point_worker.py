@@ -39,6 +39,29 @@ from squid.backend.controllers.multipoint.downsampled_views import (
 )
 from squid.core.config import CameraPixelFormat
 from squid.core.utils.thread_safe_state import ThreadSafeValue, ThreadSafeFlag
+from squid.backend.controllers.multipoint.progress_tracking import (
+    ProgressTracker,
+    ProgressState,
+    CoordinateTracker,
+)
+from squid.backend.controllers.multipoint.position_zstack import (
+    PositionController,
+    ZStackConfig,
+    ZStackExecutor,
+    FOVNavigator,
+)
+from squid.backend.controllers.multipoint.image_capture import (
+    CaptureContext,
+    build_capture_info,
+    ImageCaptureExecutor,
+    CaptureSequenceBuilder,
+)
+from squid.backend.controllers.multipoint.focus_operations import (
+    FocusMapConfig,
+    FocusMapState,
+    FocusMapGenerator,
+    AutofocusExecutor,
+)
 
 if TYPE_CHECKING:
     from squid.backend.services import (
@@ -286,6 +309,59 @@ class MultiPointWorker:
                 job_runner.start()
             self._job_runners.append((job_class, job_runner))
         self._abort_on_failed_job = abort_on_failed_jobs
+
+        # =========================================================================
+        # Initialize domain objects (Phase 4 integration)
+        # =========================================================================
+        # Progress and coordinate tracking
+        self._progress_tracker = ProgressTracker(event_bus=self._event_bus)
+        self._coordinate_tracker = CoordinateTracker()
+
+        # Autofocus executor
+        self._autofocus_executor = AutofocusExecutor(
+            autofocus_controller=auto_focus_controller,
+            laser_af_controller=laser_auto_focus_controller,
+            focus_lock_controller=focus_lock_controller,
+            channel_config_manager=channel_configuration_mananger,
+            objective_store=objective_store,
+        )
+        self._autofocus_executor.configure(
+            do_autofocus=self.do_autofocus,
+            do_reflection_af=self.do_reflection_af,
+            nz=self.NZ,
+            z_stacking_config=self.z_stacking_config,
+        )
+        self._autofocus_executor.set_apply_config_callback(self._select_config)
+
+        # Z-stack executor
+        self._zstack_config = ZStackConfig(
+            nz=self.NZ,
+            delta_z_mm=self.deltaZ / 1000.0,  # Convert from um to mm
+            z_stacking_config=self.z_stacking_config,
+            z_range=self.z_range,
+            use_piezo=self.use_piezo,
+        )
+        self._zstack_executor = ZStackExecutor(
+            stage_service=stage_service,
+            piezo_service=piezo_service,
+            config=self._zstack_config,
+        )
+
+        # Position controller
+        self._position_controller = PositionController(
+            stage_service=stage_service,
+            piezo_service=piezo_service if self.use_piezo else None,
+            stabilization_time_x_ms=SCAN_STABILIZATION_TIME_MS_X,
+            stabilization_time_y_ms=SCAN_STABILIZATION_TIME_MS_Y,
+            stabilization_time_z_ms=SCAN_STABILIZATION_TIME_MS_Z,
+        )
+
+        # Image capture executor
+        self._image_capture_executor = ImageCaptureExecutor(
+            camera_service=camera_service,
+            acquisition_service=None,  # Will be wired in Phase 5 when we add AcquisitionService
+            trigger_mode=trigger_mode,
+        )
 
     # =========================================================================
     # Service helper methods
@@ -965,11 +1041,10 @@ class MultiPointWorker:
         self.z_pos = self._stage_get_pos().z_mm
 
     def initialize_coordinates_dataframe(self) -> None:
-        base_columns: List[str] = ["z_level", "x (mm)", "y (mm)", "z (um)", "time"]
-        piezo_column: List[str] = ["z_piezo (um)"] if self.use_piezo else []
-        self.coordinates_pd: pd.DataFrame = pd.DataFrame(
-            columns=["region", "fov"] + base_columns + piezo_column
-        )
+        """Initialize coordinates tracking via CoordinateTracker."""
+        self._coordinate_tracker.initialize(use_piezo=self.use_piezo)
+        # Also keep legacy attribute for backwards compatibility
+        self.coordinates_pd = self._coordinate_tracker._coordinates_df
 
     def update_coordinates_dataframe(
         self,
@@ -978,22 +1053,17 @@ class MultiPointWorker:
         pos: squid.core.abc.Pos,
         fov: Optional[int] = None,
     ) -> None:
-        base_data = {
-            "z_level": [z_level],
-            "x (mm)": [pos.x_mm],
-            "y (mm)": [pos.y_mm],
-            "z (um)": [pos.z_mm * 1000],
-            "time": [datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")],
-        }
-        piezo_data = {"z_piezo (um)": [self.z_piezo_um]} if self.use_piezo else {}
-
-        new_row: pd.DataFrame = pd.DataFrame(
-            {"region": [region_id], "fov": [fov], **base_data, **piezo_data}
+        """Record coordinate via CoordinateTracker."""
+        piezo_um = self.z_piezo_um if self.use_piezo else None
+        self._coordinate_tracker.record(
+            region_id=region_id,
+            fov=fov if fov is not None else 0,
+            z_level=z_level,
+            pos=pos,
+            piezo_um=piezo_um,
         )
-
-        self.coordinates_pd = pd.concat(
-            [self.coordinates_pd, new_row], ignore_index=True
-        )
+        # Update legacy attribute reference
+        self.coordinates_pd = self._coordinate_tracker._coordinates_df
 
     def move_to_coordinate(
         self, coordinate_mm: Tuple[float, ...], region_id: str, fov: int
@@ -1405,52 +1475,41 @@ class MultiPointWorker:
             pass
 
     def perform_autofocus(self, region_id: str, fov: int) -> bool:
-        if not self.do_reflection_af:
-            # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
-            if (
-                ((self.NZ == 1) or self.z_stacking_config == "FROM CENTER")
-                and (self.do_autofocus)
-                and (self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0)
-            ):
-                configuration_name_AF = MULTIPOINT_AUTOFOCUS_CHANNEL
-                config_AF = (
-                    self.channelConfigurationManager.get_channel_configuration_by_name(
-                        self.objectiveStore.current_objective, configuration_name_AF
-                    )
-                )
-                self._select_config(config_AF)
-                if (
-                    self.af_fov_count % Acquisition.NUMBER_OF_FOVS_PER_AF == 0
-                ) or self.autofocusController.use_focus_map:
-                    self.autofocusController.autofocus()
-                    timeout_s = 2.0 if self._is_simulated_camera() else None
-                    if not self.autofocusController.wait_till_autofocus_has_completed(
-                        timeout_s=timeout_s
-                    ):
-                        self._log.warning("Autofocus timed out; continuing acquisition")
-                        return False
-        else:
-            self._log.info("laser reflection af")
-            try:
-                if (
-                    self._focus_lock_controller is not None
-                    and self._focus_lock_controller.mode != "off"
-                    and self._focus_lock_controller.is_running
-                ):
-                    return self._focus_lock_controller.wait_for_lock(timeout_s=5.0)
-                self.laser_auto_focus_controller.move_to_target(0)
-            except Exception as e:
+        """Perform autofocus using the AutofocusExecutor.
+
+        Delegates to AutofocusExecutor for the core logic while keeping
+        worker-specific error handling (saving laser AF camera image on failure).
+        """
+        # Sync the FOV count to the executor
+        self._autofocus_executor.af_fov_count = self.af_fov_count
+
+        # Use shorter timeout for simulated camera
+        timeout_s = 2.0 if self._is_simulated_camera() else None
+
+        # Try the standard autofocus path via executor
+        try:
+            result = self._autofocus_executor.perform_autofocus(
+                region_id=region_id,
+                fov=fov,
+                timeout_s=timeout_s,
+            )
+            return result
+        except Exception as e:
+            # Save laser AF camera image on failure (worker-specific behavior)
+            if self.do_reflection_af and self.laser_auto_focus_controller is not None:
                 file_ID: str = f"{region_id}_focus_camera.bmp"
                 saving_path: str = os.path.join(
                     self.base_path, self.experiment_ID, str(self.time_point), file_ID
                 )
-                iio.imwrite(saving_path, self.laser_auto_focus_controller.image)
+                try:
+                    iio.imwrite(saving_path, self.laser_auto_focus_controller.image)
+                except Exception:
+                    pass  # Don't fail if we can't save the debug image
                 self._log.error(
                     "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
                     exc_info=e,
                 )
-                return False
-        return True
+            return False
 
     def prepare_z_stack(self) -> None:
         # move to bottom of the z stack
