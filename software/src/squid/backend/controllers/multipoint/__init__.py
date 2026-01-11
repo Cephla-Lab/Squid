@@ -33,6 +33,12 @@ from squid.backend.controllers.multipoint.position_zstack import (
     ZStackExecutor,
     FOVNavigator,
 )
+from squid.backend.controllers.multipoint.image_capture import (
+    CaptureContext,
+    build_capture_info,
+    ImageCaptureExecutor,
+    CaptureSequenceBuilder,
+)
 
 __all__ = [
     "CaptureInfo",
@@ -61,4 +67,9 @@ __all__ = [
     "ZStackConfig",
     "ZStackExecutor",
     "FOVNavigator",
+    # Phase 3c exports
+    "CaptureContext",
+    "build_capture_info",
+    "ImageCaptureExecutor",
+    "CaptureSequenceBuilder",
 ]
