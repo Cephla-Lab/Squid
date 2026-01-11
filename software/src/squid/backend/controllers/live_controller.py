@@ -12,6 +12,7 @@ from squid.backend.services.peripheral_service import PeripheralService
 from squid.backend.services.illumination_service import IlluminationService
 from squid.backend.services.filter_wheel_service import FilterWheelService
 from squid.backend.services.nl5_service import NL5Service
+from squid.backend.services.acquisition_service import AcquisitionService
 from squid.core.events import (
     EventBus,
     StartLiveCommand,
@@ -71,6 +72,7 @@ class LiveController(StateMachine[LiveControllerState]):
         for_displacement_measurement: bool = False,
         *,
         camera: str = "main",
+        acquisition_service: Optional[AcquisitionService] = None,
     ) -> None:
         # Initialize state machine with transitions
         transitions = {
@@ -97,6 +99,7 @@ class LiveController(StateMachine[LiveControllerState]):
         self._filter_wheel_service = filter_wheel_service
         self._nl5_service = nl5_service
         self._mode_gate = mode_gate
+        self._acquisition_service = acquisition_service
         self.currentConfiguration: Optional["ChannelMode"] = None
         self.trigger_mode: Optional[TriggerMode] = (
             TriggerMode.SOFTWARE
@@ -213,6 +216,14 @@ class LiveController(StateMachine[LiveControllerState]):
     def turn_on_illumination(self) -> None:
         if self.currentConfiguration is None:
             return
+
+        # Use AcquisitionService if available (preferred path)
+        if self._acquisition_service is not None:
+            if self._acquisition_service.turn_on_illumination(self.currentConfiguration):
+                self.illumination_on = True
+            return
+
+        # Fallback to direct service access
         if self._illumination_service is None:
             return
         channel = self._get_illumination_channel()
@@ -231,6 +242,14 @@ class LiveController(StateMachine[LiveControllerState]):
     def turn_off_illumination(self) -> None:
         if self.currentConfiguration is None:
             return
+
+        # Use AcquisitionService if available (preferred path)
+        if self._acquisition_service is not None:
+            if self._acquisition_service.turn_off_illumination(self.currentConfiguration):
+                self.illumination_on = False
+            return
+
+        # Fallback to direct service access
         if self._illumination_service is None:
             return
         channel = self._get_illumination_channel()

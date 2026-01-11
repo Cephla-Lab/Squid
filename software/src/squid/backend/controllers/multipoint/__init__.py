@@ -12,6 +12,16 @@ from squid.backend.controllers.multipoint.multi_point_utils import (
     AcquisitionParameters,
 )
 from squid.backend.controllers.multipoint.multi_point_worker import MultiPointWorker
+from squid.backend.controllers.multipoint.experiment_manager import (
+    ExperimentManager,
+    ExperimentContext,
+    build_acquisition_parameters,
+)
+from squid.backend.controllers.multipoint.acquisition_planner import (
+    AcquisitionPlanner,
+    AcquisitionEstimate,
+    ValidationResult,
+)
 
 __all__ = [
     "CaptureInfo",
@@ -24,4 +34,11 @@ __all__ = [
     "ScanPositionInformation",
     "AcquisitionParameters",
     "MultiPointWorker",
+    # New Phase 2 exports
+    "ExperimentManager",
+    "ExperimentContext",
+    "build_acquisition_parameters",
+    "AcquisitionPlanner",
+    "AcquisitionEstimate",
+    "ValidationResult",
 ]

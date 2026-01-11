@@ -15,6 +15,7 @@ from squid.backend.services.objective_changer_service import ObjectiveChangerSer
 from squid.backend.services.spinning_disk_service import SpinningDiskService
 from squid.backend.services.nl5_service import NL5Service
 from squid.backend.services.movement_service import MovementService
+from squid.backend.services.acquisition_service import AcquisitionService
 from squid.core.events import EventBus
 
 if TYPE_CHECKING:
@@ -105,4 +106,5 @@ __all__ = [
     "SpinningDiskService",
     "NL5Service",
     "MovementService",
+    "AcquisitionService",
 ]
