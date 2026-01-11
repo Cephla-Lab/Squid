@@ -380,7 +380,7 @@ class Microscope:
         """Sync confocal mode state from spinning disk hardware.
 
         Queries the actual hardware state (XLight disk position or Dragonfly modality)
-        and updates the channel configuration manager accordingly.
+        and updates the live controller accordingly.
         This ensures correct channel settings are used in both GUI and headless modes.
 
         Returns:
@@ -406,11 +406,11 @@ class Microscope:
                 sync_successful = False
 
         if sync_successful:
-            self.channel_configuration_mananger.sync_confocal_mode_from_hardware(confocal_mode)
+            self.live_controller.sync_confocal_mode_from_hardware(confocal_mode)
         else:
             self._log.warning(
                 "Confocal mode could not be synchronized from hardware; "
-                "keeping existing channel configuration manager state."
+                "keeping existing live controller state."
             )
         return sync_successful
 
@@ -418,7 +418,7 @@ class Microscope:
         """Set confocal/widefield mode and move the spinning disk.
 
         This is the preferred method for headless scripts to switch imaging modes.
-        It updates both the hardware and the channel configuration manager.
+        It updates both the hardware and the live controller.
 
         Args:
             confocal: True for confocal mode, False for widefield mode.
@@ -438,7 +438,7 @@ class Microscope:
         else:
             raise RuntimeError("No spinning disk hardware available")
 
-        self.channel_configuration_mananger.toggle_confocal_widefield(confocal)
+        self.live_controller.toggle_confocal_widefield(confocal)
 
     def is_confocal_mode(self) -> bool:
         """Check if currently in confocal mode.
@@ -446,7 +446,7 @@ class Microscope:
         Returns:
             True if in confocal mode, False if in widefield mode.
         """
-        return self.channel_configuration_mananger.is_confocal_mode()
+        return self.live_controller.is_confocal_mode()
 
     def update_camera_functions(self, functions: StreamHandlerFunctions) -> None:
         """Update the stream handler callback functions for the main camera.

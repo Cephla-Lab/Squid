@@ -1261,7 +1261,7 @@ class HighContentScreeningGui(QMainWindow):
 
         if ENABLE_SPINNING_DISK_CONFOCAL:
             self.spinningDiskConfocalWidget.signal_toggle_confocal_widefield.connect(
-                self.channelConfigurationManager.toggle_confocal_widefield
+                self.liveController.toggle_confocal_widefield
             )
             self.spinningDiskConfocalWidget.signal_toggle_confocal_widefield.connect(
                 lambda: self.liveControlWidget.select_new_microscope_mode_by_name(
@@ -1270,7 +1270,7 @@ class HighContentScreeningGui(QMainWindow):
             )
             # INITIALIZATION ORDER: Confocal state sync happens in Microscope.__init__ BEFORE
             # this GUI code runs. The microscope queries hardware state and calls
-            # channel_configuration_mananger.sync_confocal_mode_from_hardware() during init.
+            # live_controller.sync_confocal_mode_from_hardware() during init.
             # The signal connection above handles subsequent user-initiated toggles only.
             # See Microscope._sync_confocal_mode_from_hardware() for the initial sync logic.
 

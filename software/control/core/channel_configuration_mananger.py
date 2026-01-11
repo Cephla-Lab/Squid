@@ -11,7 +11,7 @@ for UI and acquisition use.
 """
 
 from pathlib import Path
-from typing import Any, List, Dict, Optional, Union
+from typing import Any, List, Dict, Optional
 
 import yaml
 
@@ -49,9 +49,6 @@ class ChannelConfigurationManager:
         """
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config_root: Optional[Path] = None
-
-        # Confocal mode flag - when True, use confocal_override from acquisition configs
-        self.confocal_mode: bool = False
 
         # YAML-based acquisition configs
         self._general_config: Optional[GeneralChannelConfig] = None
@@ -163,13 +160,13 @@ class ChannelConfigurationManager:
             self._log.debug(f"Saved config for objective '{objective}'")
 
     def get_merged_acquisition_channels(
-        self, objective: str, confocal_mode: Optional[bool] = None
+        self, objective: str, confocal_mode: bool = False
     ) -> List[AcquisitionChannel]:
         """Get merged acquisition channels for an objective.
 
         Args:
             objective: Objective name
-            confocal_mode: Override confocal mode (uses self.confocal_mode if None)
+            confocal_mode: Whether to apply confocal overrides (default: False)
 
         Returns:
             List of merged AcquisitionChannel objects
@@ -180,8 +177,7 @@ class ChannelConfigurationManager:
         channels = self._merged_channels.get(objective, [])
 
         # Apply confocal mode if needed
-        use_confocal = confocal_mode if confocal_mode is not None else self.confocal_mode
-        if use_confocal:
+        if confocal_mode:
             channels = [ch.get_effective_settings(confocal_mode=True) for ch in channels]
 
         return channels
@@ -302,13 +298,23 @@ class ChannelConfigurationManager:
         return None
 
     def write_configuration_selected(
-        self, objective: str, selected_configurations: List[AcquisitionChannel], filename: str
+        self,
+        objective: str,
+        selected_configurations: List[AcquisitionChannel],
+        filename: str,
+        confocal_mode: bool = False,
     ) -> None:
         """Write selected configurations to YAML file for acquisition.
 
         Saves acquisition channel settings as YAML in the acquisition output directory.
         The filename parameter determines the output directory (filename itself is ignored,
         YAML is saved as acquisition_channels.yaml).
+
+        Args:
+            objective: Objective name
+            selected_configurations: List of AcquisitionChannel objects to save
+            filename: Path that determines output directory
+            confocal_mode: Whether confocal mode is active
         """
         output_dir = Path(filename).parent
 
@@ -322,7 +328,7 @@ class ChannelConfigurationManager:
         yaml_data = {
             "version": 1,
             "objective": objective,
-            "confocal_mode": self.confocal_mode,
+            "confocal_mode": confocal_mode,
             "channels": [],
         }
 
@@ -363,23 +369,6 @@ class ChannelConfigurationManager:
         yaml_path = output_dir / "acquisition_channels.yaml"
         with open(yaml_path, "w") as f:
             yaml.dump(yaml_data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-
-    def toggle_confocal_widefield(self, confocal: Union[bool, int]) -> None:
-        """Toggle between confocal and widefield modes.
-
-        Args:
-            confocal: Whether to enable confocal mode
-        """
-        self.confocal_mode = bool(confocal)
-        self._log.info(f"Imaging mode set to: {'confocal' if self.confocal_mode else 'widefield'}")
-
-    def is_confocal_mode(self) -> bool:
-        """Check if currently in confocal mode."""
-        return self.confocal_mode
-
-    def sync_confocal_mode_from_hardware(self, confocal: Union[bool, int]) -> None:
-        """Sync confocal mode state from hardware."""
-        self.toggle_confocal_widefield(confocal)
 
     def has_yaml_configs(self) -> bool:
         """Check if YAML acquisition configs are available."""

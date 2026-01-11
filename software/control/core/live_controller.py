@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 import squid.logging
 from control.microcontroller import Microcontroller
@@ -10,6 +10,8 @@ from squid.abc import CameraAcquisitionMode, AbstractCamera
 
 from control._def import *
 from control import utils_channel
+from control.core.config.utils import apply_confocal_override
+from control.models import merge_channel_configs
 
 if TYPE_CHECKING:
     from control.models import AcquisitionChannel, IlluminationChannelConfig
@@ -53,6 +55,9 @@ class LiveController:
 
         self.enable_channel_auto_filter_switching: bool = True
 
+        # Confocal mode state - when True, use confocal_override from acquisition configs
+        self._confocal_mode: bool = False
+
     # ─────────────────────────────────────────────────────────────────────────────
     # Illumination config helpers
     # ─────────────────────────────────────────────────────────────────────────────
@@ -82,6 +87,83 @@ class LiveController:
     def _is_led_matrix(self) -> bool:
         """Check if current configuration is LED matrix (source code < 10)."""
         return self._get_illumination_source() < 10
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Confocal mode
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def toggle_confocal_widefield(self, confocal: bool) -> None:
+        """Toggle between confocal and widefield modes.
+
+        This only updates the internal state. Hardware control (spinning disk position)
+        should be handled separately by the microscope or widget.
+
+        Args:
+            confocal: Whether to enable confocal mode
+        """
+        self._confocal_mode = bool(confocal)
+        self._log.info(f"Imaging mode set to: {'confocal' if self._confocal_mode else 'widefield'}")
+
+    def is_confocal_mode(self) -> bool:
+        """Check if currently in confocal mode."""
+        return self._confocal_mode
+
+    def sync_confocal_mode_from_hardware(self, confocal: bool) -> None:
+        """Sync confocal mode state from hardware.
+
+        Called during initialization to sync state with actual hardware position.
+        """
+        self.toggle_confocal_widefield(confocal)
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Channel configuration access
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def get_channels(self, objective: str) -> List["AcquisitionChannel"]:
+        """Get acquisition channels for an objective, with confocal mode applied.
+
+        This method provides channels with the current confocal_mode state applied.
+        It uses ConfigRepository for config I/O and applies confocal overrides
+        based on this controller's confocal_mode state.
+
+        Args:
+            objective: Objective name (e.g., "10x", "20x")
+
+        Returns:
+            List of AcquisitionChannel objects with confocal overrides applied if
+            in confocal mode.
+        """
+        config_repo = self.microscope.config_repo
+
+        # Get general config (shared settings)
+        general = config_repo.get_general_config()
+        if not general:
+            return []
+
+        # Get objective-specific config
+        obj_config = config_repo.get_objective_config(objective)
+
+        # Merge configs (if no objective config, use general channels)
+        if obj_config:
+            channels = merge_channel_configs(general, obj_config)
+        else:
+            channels = list(general.channels)
+
+        # Apply confocal mode if active
+        return apply_confocal_override(channels, self._confocal_mode)
+
+    def get_channel_by_name(self, objective: str, name: str) -> Optional["AcquisitionChannel"]:
+        """Get a specific channel by name.
+
+        Args:
+            objective: Objective name
+            name: Channel name to find
+
+        Returns:
+            AcquisitionChannel if found, None otherwise
+        """
+        channels = self.get_channels(objective)
+        return next((ch for ch in channels if ch.name == name), None)
 
     # ─────────────────────────────────────────────────────────────────────────────
     # Illumination control
