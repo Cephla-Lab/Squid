@@ -123,6 +123,12 @@ class ContinuousFocusLockController:
         with self._lock:
             return self._running
 
+    @property
+    def is_active(self) -> bool:
+        """True if focus lock was started and should be used (even if paused)."""
+        with self._lock:
+            return self._should_run
+
     def set_mode(self, mode: FocusLockMode) -> None:
         if mode not in ("off", "on"):
             raise ValueError(f"Invalid focus lock mode: {mode}")
@@ -172,30 +178,44 @@ class ContinuousFocusLockController:
         self._set_status("disabled")
 
     def pause(self) -> None:
-        thread = None
+        """Pause focus corrections without stopping the control loop.
+
+        The control loop continues running to monitor focus state, but no
+        piezo corrections are applied. The laser stays on for sensing.
+        Use this during image capture to prevent piezo jitter.
+        """
         with self._lock:
-            if not self._running:
-                self._set_status("paused")
+            if not self._should_run:
+                # Not started, nothing to pause
+                return
+            if self._paused:
+                # Already paused
                 return
             self._paused = True
-            self._running = False
-            self._stop_event.set()
-            thread = self._thread
-            self._thread = None
-        if thread and thread.is_alive():
-            thread.join(timeout=2.0)
-        self._cleanup()
         self._set_status("paused")
 
     def resume(self) -> None:
+        """Resume focus corrections after a pause.
+
+        Resumes piezo corrections without resetting lock state.
+        The lock continues from where it was before pause.
+        """
         with self._lock:
             if not self._should_run:
                 self._log.debug("resume() called but lock is not running, ignoring")
                 return
-            if self._status != "paused":
+            if not self._paused:
+                # Not paused, nothing to resume
                 return
-            target_um = self._target_um
-        self.start(target_um=target_um)
+            self._paused = False
+            # Restore status based on lock state
+            if self._lock_buffer_fill >= self._config.buffer_length:
+                new_status = "locked"
+            elif self._lock_buffer_fill > 0:
+                new_status = "ready"
+            else:
+                new_status = "ready"
+        self._set_status(new_status)
 
     def shutdown(self) -> None:
         self.stop()
@@ -280,8 +300,23 @@ class ContinuousFocusLockController:
             while not self._stop_event.is_set():
                 start = time.monotonic()
 
-                # Handle search mode separately
-                if self._status == "searching":
+                # Check if paused - skip corrections but keep monitoring
+                with self._lock:
+                    is_paused = self._paused
+
+                if is_paused:
+                    # When paused: still measure and publish metrics for monitoring,
+                    # but don't apply corrections or update lock state
+                    result = self._laser_af.measure_displacement_continuous()
+                    error_um = self._compute_error(result)
+                    is_good = self._is_good_reading(result, error_um)
+
+                    now = time.monotonic()
+                    if now - last_metrics_time >= metrics_period:
+                        self._publish_metrics(result, error_um, is_good)
+                        last_metrics_time = now
+                elif self._status == "searching":
+                    # Handle search mode separately
                     self._search_step()
                 else:
                     # Normal operation

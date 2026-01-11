@@ -73,6 +73,8 @@ class FocusLockSimulator:
         self._keep_running = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._is_running = False
+        self._should_run = False  # True when started (even if paused)
+        self._paused = False  # True when paused (loop keeps running, corrections skipped)
 
         self._lock = threading.RLock()
         self._lock_buffer_fill = 0
@@ -161,6 +163,7 @@ class FocusLockSimulator:
             if self._is_running:
                 return
             self._reset_lock_state()
+            self._paused = False
             self._status = "ready"
             self._keep_running.set()
             self._thread = threading.Thread(
@@ -169,6 +172,7 @@ class FocusLockSimulator:
                 daemon=True,
             )
             self._is_running = True
+            self._should_run = True
             self._thread.start()
         self._publish_status_if_needed()
 
@@ -180,6 +184,8 @@ class FocusLockSimulator:
             thread = self._thread
             self._thread = None
             self._is_running = False
+            self._should_run = False
+            self._paused = False
             self._status = "disabled"
             self._reset_lock_state()
         if thread and thread.is_alive():
@@ -187,27 +193,45 @@ class FocusLockSimulator:
         self._publish_status_if_needed()
 
     def pause(self) -> None:
-        """Pause the simulator loop."""
-        thread = None
+        """Pause focus corrections without stopping the control loop.
+
+        The control loop continues running to monitor focus state, but no
+        piezo corrections are applied. Use this during image capture to
+        prevent piezo jitter.
+        """
         with self._lock:
-            if not self._is_running:
-                self._status = "paused"
+            if not self._should_run:
+                # Not started, nothing to pause
                 return
-            self._keep_running.clear()
-            thread = self._thread
-            self._thread = None
-            self._is_running = False
+            if self._paused:
+                # Already paused
+                return
+            self._paused = True
             self._status = "paused"
-        if thread and thread.is_alive():
-            thread.join(timeout=2.0)
         self._publish_status_if_needed()
 
     def resume(self) -> None:
-        """Resume the simulator loop."""
+        """Resume focus corrections after a pause.
+
+        Resumes piezo corrections without resetting lock state.
+        The lock continues from where it was before pause.
+        """
         with self._lock:
-            if self._status != "paused":
+            if not self._should_run:
+                self._log.debug("resume() called but lock is not running, ignoring")
                 return
-        self.start()
+            if not self._paused:
+                # Not paused, nothing to resume
+                return
+            self._paused = False
+            # Restore status based on lock state
+            if self._lock_buffer_fill >= self._buffer_length:
+                self._status = "locked"
+            elif self._lock_buffer_fill > 0:
+                self._status = "ready"
+            else:
+                self._status = "ready"
+        self._publish_status_if_needed()
 
     def shutdown(self) -> None:
         """Shutdown simulator and stop background thread."""
@@ -269,6 +293,12 @@ class FocusLockSimulator:
         """Whether the lock loop is active."""
         with self._lock:
             return self._is_running
+
+    @property
+    def is_active(self) -> bool:
+        """True if focus lock was started and should be used (even if paused)."""
+        with self._lock:
+            return self._should_run
 
     @property
     def status(self) -> str:
@@ -522,8 +552,24 @@ class FocusLockSimulator:
         while self._keep_running.is_set():
             start = time.monotonic()
 
-            # Handle search mode separately
-            if self._status == "searching":
+            # Check if paused - skip corrections but keep monitoring
+            with self._lock:
+                is_paused = self._paused
+
+            if is_paused:
+                # When paused: still measure for monitoring,
+                # but don't apply corrections or update lock state
+                if self._laser_af is not None:
+                    result = self._laser_af.measure_displacement_continuous()
+                    # Update spot position for display only
+                    with self._lock:
+                        if result.spot_x_px is not None and result.spot_y_px is not None:
+                            self._latest_spot_x = result.spot_x_px
+                            self._latest_spot_y = result.spot_y_px
+                        self._spot_snr = result.spot_snr if result.spot_snr else 0.0
+                        self._spot_intensity = result.spot_intensity if result.spot_intensity else 0.0
+            elif self._status == "searching":
+                # Handle search mode separately
                 self._search_step()
             elif self._laser_af is not None:
                 # Normal operation: get measurement from laser AF
@@ -534,6 +580,7 @@ class FocusLockSimulator:
                 if not math.isnan(result.displacement_um):
                     self._apply_piezo_correction(result.displacement_um)
 
+            # Publish metrics at configured rate (always, regardless of pause state)
             now = time.monotonic()
             if now - last_metrics_time >= metrics_period:
                 self._publish_metrics()
