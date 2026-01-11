@@ -976,13 +976,13 @@ class HighContentScreeningGui(QMainWindow):
 
         # RAM monitor widget (always create, visibility controlled by setting)
         self.ramMonitorWidget = widgets.RAMMonitorWidget()
-        self.ramMonitorWidget.setVisible(False)  # Initially hidden; shown when RAM monitoring setting is enabled
+        self.ramMonitorWidget.setVisible(False)
+        self._ram_monitor_should_show = False
 
         # Backpressure monitor widget (always create, visibility controlled during acquisition)
         self.backpressureMonitorWidget = widgets.BackpressureMonitorWidget()
-        self.backpressureMonitorWidget.setVisible(
-            False
-        )  # Initially hidden; shown during acquisition when throttling enabled
+        self.backpressureMonitorWidget.setVisible(False)
+        self._bp_monitor_should_show = False
 
     def setup_layout(self):
         layout = QVBoxLayout()
@@ -1805,12 +1805,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def _update_status_bar_visibility(self):
         """Show or hide status bar based on whether any monitor widgets should be visible."""
-        # Use tracked intent flags instead of isVisible() which depends on parent visibility
-        ram_should_show = getattr(self, "_ram_monitor_should_show", False)
-        bp_should_show = getattr(self, "_bp_monitor_should_show", False)
-
-        # Show status bar only if at least one widget should be visible
-        self.statusBar().setVisible(ram_should_show or bp_should_show)
+        self.statusBar().setVisible(self._ram_monitor_should_show or self._bp_monitor_should_show)
 
     def _connect_ram_monitor_widget(self):
         """Connect RAM monitor widget to memory monitor during acquisition."""
@@ -1873,12 +1868,14 @@ class HighContentScreeningGui(QMainWindow):
 
     def _disconnect_backpressure_monitor_widget(self):
         """Disconnect backpressure monitor widget after acquisition."""
-        if self.backpressureMonitorWidget is not None:
-            self._bp_monitor_should_show = False
-            self.backpressureMonitorWidget.stop_monitoring()
-            self.backpressureMonitorWidget.setVisible(False)
-            self.log.debug("Backpressure monitor: disconnected from acquisition")
-            self._update_status_bar_visibility()
+        if self.backpressureMonitorWidget is None:
+            return
+
+        self._bp_monitor_should_show = False
+        self.backpressureMonitorWidget.stop_monitoring()
+        self.backpressureMonitorWidget.setVisible(False)
+        self.log.debug("Backpressure monitor: disconnected from acquisition")
+        self._update_status_bar_visibility()
 
     def onStartLive(self):
         self.imageDisplayTabs.setCurrentIndex(0)

@@ -13977,15 +13977,15 @@ class BackpressureMonitorWidget(QWidget):
             self.label_jobs.setText(f"{stats.pending_jobs} jobs")
             self.label_bytes.setText(f"{stats.pending_bytes_mb:.1f} MB")
 
-            # Update throttle indicator with sticky behavior
-            # Once throttled, keep showing for THROTTLE_STICKY_CYCLES even after release
+            # Sticky throttle indicator: show [THROTTLED] and keep visible for
+            # THROTTLE_STICKY_CYCLES after throttling releases
             if stats.is_throttled:
                 self._throttle_sticky_counter = self.THROTTLE_STICKY_CYCLES
                 self.label_throttled.setText("[THROTTLED]")
             elif self._throttle_sticky_counter > 0:
                 self._throttle_sticky_counter -= 1
-            else:
-                self.label_throttled.setText("")
+                if self._throttle_sticky_counter == 0:
+                    self.label_throttled.setText("")
 
         except (BrokenPipeError, EOFError) as e:
             # Multiprocessing communication ended - acquisition likely finished
