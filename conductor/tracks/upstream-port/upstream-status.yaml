@@ -13,14 +13,9 @@ commits:
     skip_date: '2026-01-12'
   47e7aff7:
     title: 'feat: Add alignment button for sample registration with previous acquisitions (#448)'
-    status: skipped
-    skip_reason: deferred
-    skip_justification: |
-      Substantial feature (433 lines) that adds sample registration with previous acquisitions.
-      Requires UI elements, core acquisition logic changes, and coordinate offset management.
-      Would be valuable to port but needs dedicated effort. Marking as deferred for future
-      consideration when alignment workflows become a priority.
-    skip_date: '2026-01-12'
+    status: ported
+    ported_in: b4aa7255
+    ported_date: '2026-01-12'
   c3322bb1:
     title: 'fix: Resolve backpressure deadlock with z-stack acquisitions (#446)'
     status: ported
