@@ -7373,6 +7373,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
             self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
             self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+            self.multipointController.set_base_path(self.lineEdit_savingDir.text())
             self.multipointController.set_use_fluidics(False)
             self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
             self.multipointController.set_widget_type("wellplate")
@@ -8130,6 +8131,7 @@ class MultiPointWithFluidicsWidget(QFrame):
             self.multipointController.set_NZ(self.entry_NZ.value())
             self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
             self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+            self.multipointController.set_base_path(self.lineEdit_savingDir.text())
             self.multipointController.set_use_fluidics(True)  # may be set to False from other widgets
             self.multipointController.set_selected_configurations(
                 [item.text() for item in self.list_configurations.selectedItems()]
@@ -13746,23 +13748,40 @@ class RAMMonitorWidget(QWidget):
         self._setup_timer()
 
     def _setup_ui(self):
+        from qtpy.QtCore import Qt
+        from qtpy.QtGui import QFontMetrics
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(4)
 
         self.label_icon = QLabel("RAM usage:")
         self.label_icon.setStyleSheet("font-weight: bold;")
+
         self.label_current = QLabel("--")
+        self.label_peak = QLabel("--")
+        self.label_available = QLabel("--")
+
+        # Fixed widths with left alignment - keeps positions stable
+        fm = QFontMetrics(self.label_current.font())
+        current_peak_width = fm.horizontalAdvance("88.88 GB")
+        available_width = fm.horizontalAdvance("888.8 GB")
+
+        self.label_current.setFixedWidth(current_peak_width)
+        self.label_current.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.label_peak.setFixedWidth(current_peak_width)
+        self.label_peak.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.label_available.setFixedWidth(available_width)
+        self.label_available.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
         self.label_separator1 = QLabel("|")
         self.label_separator1.setStyleSheet("color: #666;")
         self.label_peak_label = QLabel("peak:")
         self.label_peak_label.setStyleSheet("color: #666;")
-        self.label_peak = QLabel("--")
         self.label_separator2 = QLabel("|")
         self.label_separator2.setStyleSheet("color: #666;")
         self.label_available_label = QLabel("available:")
         self.label_available_label.setStyleSheet("color: #666;")
-        self.label_available = QLabel("--")
 
         layout.addWidget(self.label_icon)
         layout.addWidget(self.label_current)
@@ -13912,14 +13931,14 @@ class BackpressureMonitorWidget(QWidget):
         super().__init__(parent)
         self._controller = None
         self._log = logging.getLogger("squid." + self.__class__.__name__)
-        self._throttle_sticky_counter = 0
+        self._throttle_sticky_counter = 0  # Countdown for sticky throttle indicator
         self._setup_ui()
-
-        self._update_timer = QTimer(self)
-        self._update_timer.timeout.connect(self._update_display)
-        self._update_timer.setInterval(500)
+        self._setup_timer()
 
     def _setup_ui(self):
+        from qtpy.QtCore import Qt
+        from qtpy.QtGui import QFontMetrics
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(4)
@@ -13928,11 +13947,20 @@ class BackpressureMonitorWidget(QWidget):
         self.label_prefix.setStyleSheet("font-weight: bold;")
 
         self.label_jobs = QLabel("--")
+        self.label_bytes = QLabel("--")
+
+        # Fixed widths with left alignment - keeps positions stable
+        fm = QFontMetrics(self.label_jobs.font())
+        jobs_width = fm.horizontalAdvance("888/888 jobs")
+        bytes_width = fm.horizontalAdvance("8888.8/8888.8 MB")
+
+        self.label_jobs.setFixedWidth(jobs_width)
+        self.label_jobs.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.label_bytes.setFixedWidth(bytes_width)
+        self.label_bytes.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         self.label_separator = QLabel("|")
         self.label_separator.setStyleSheet("color: #666;")
-
-        self.label_bytes = QLabel("--")
 
         self.label_throttled = QLabel("")
         self.label_throttled.setStyleSheet("color: #e74c3c; font-weight: bold;")
@@ -13943,8 +13971,18 @@ class BackpressureMonitorWidget(QWidget):
         layout.addWidget(self.label_bytes)
         layout.addWidget(self.label_throttled)
 
+    def _setup_timer(self):
+        """Setup timer for periodic backpressure updates."""
+        self._update_timer = QTimer(self)
+        self._update_timer.timeout.connect(self._update_display)
+        self._update_timer.setInterval(500)  # Update every 500ms
+
     def start_monitoring(self, controller: "BackpressureController") -> None:
-        """Start monitoring backpressure stats."""
+        """Start monitoring backpressure stats.
+
+        Args:
+            controller: BackpressureController instance to monitor.
+        """
         if controller is None:
             self._log.warning("start_monitoring called with None controller")
             return
