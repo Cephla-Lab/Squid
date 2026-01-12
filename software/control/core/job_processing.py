@@ -895,20 +895,20 @@ class JobRunner(multiprocessing.Process):
         try:
             if self._bp_pending_bytes is not None and self._well_accumulated_bytes:
                 total_unreleased = sum(self._well_accumulated_bytes.values())
+                well_count = len(self._well_accumulated_bytes)
+                self._well_accumulated_bytes.clear()
+
                 if total_unreleased > 0:
                     self._log.info(
-                        f"Releasing {total_unreleased / (1024*1024):.1f}MB from {len(self._well_accumulated_bytes)} "
-                        f"incomplete wells on shutdown"
+                        f"Releasing {total_unreleased / (1024*1024):.1f}MB from "
+                        f"{well_count} incomplete wells on shutdown"
                     )
                     with self._bp_pending_bytes.get_lock():
                         self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - total_unreleased)
                     if self._bp_capacity_event is not None:
                         self._bp_capacity_event.set()
-                self._well_accumulated_bytes.clear()
         except Exception:
-            self._log.exception(
-                f"Failed to release bytes from {len(self._well_accumulated_bytes)} incomplete wells during shutdown"
-            )
+            self._log.exception("Failed to release bytes for incomplete wells during shutdown")
 
         # Stop memory monitoring and log final report
         log_memory("WORKER_SHUTDOWN", include_children=False)

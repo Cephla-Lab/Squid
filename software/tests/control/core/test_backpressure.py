@@ -81,6 +81,41 @@ def make_slow_job(duration_s: float = 0.1, result_value: str = "done", size_byte
     )
 
 
+def make_downsampled_view_job(
+    well_id: str = "A1",
+    fov_index: int = 0,
+    total_fovs: int = 1,
+    channel_idx: int = 0,
+    total_channels: int = 1,
+    z_index: int = 0,
+    total_z_levels: int = 1,
+    size_bytes: int = 10000,
+) -> DownsampledViewJob:
+    """Create a DownsampledViewJob for testing."""
+    return DownsampledViewJob(
+        capture_info=make_test_capture_info(region_id=well_id, fov=fov_index, z_index=z_index, config_idx=channel_idx),
+        capture_image=make_test_job_image(size_bytes),
+        well_id=well_id,
+        well_row=0,
+        well_col=0,
+        fov_index=fov_index,
+        total_fovs_in_well=total_fovs,
+        channel_idx=channel_idx,
+        total_channels=total_channels,
+        z_index=z_index,
+        total_z_levels=total_z_levels,
+        channel_name=f"Channel_{channel_idx}",
+        fov_position_in_well=(0.0, 0.0),
+        overlap_pixels=(0, 0, 0, 0),
+        pixel_size_um=1.0,
+        target_resolutions_um=[10.0],
+        plate_resolution_um=10.0,
+        output_dir="/tmp/test",
+        channel_names=[f"Channel_{i}" for i in range(total_channels)],
+        skip_saving=True,
+    )
+
+
 class TestBackpressureController:
     """Tests for BackpressureController in isolation."""
 
@@ -393,43 +428,6 @@ class TestDownsampledViewJobBackpressure:
     so bytes should not be decremented until the final FOV.
     """
 
-    def make_downsampled_view_job(
-        self,
-        well_id: str = "A1",
-        fov_index: int = 0,
-        total_fovs: int = 1,
-        channel_idx: int = 0,
-        total_channels: int = 1,
-        z_index: int = 0,
-        total_z_levels: int = 1,
-        size_bytes: int = 10000,
-    ) -> DownsampledViewJob:
-        """Create a DownsampledViewJob for testing."""
-        return DownsampledViewJob(
-            capture_info=make_test_capture_info(
-                region_id=well_id, fov=fov_index, z_index=z_index, config_idx=channel_idx
-            ),
-            capture_image=make_test_job_image(size_bytes),
-            well_id=well_id,
-            well_row=0,
-            well_col=0,
-            fov_index=fov_index,
-            total_fovs_in_well=total_fovs,
-            channel_idx=channel_idx,
-            total_channels=total_channels,
-            z_index=z_index,
-            total_z_levels=total_z_levels,
-            channel_name=f"Channel_{channel_idx}",
-            fov_position_in_well=(0.0, 0.0),
-            overlap_pixels=(0, 0, 0, 0),
-            pixel_size_um=1.0,
-            target_resolutions_um=[10.0],
-            plate_resolution_um=10.0,
-            output_dir="/tmp/test",
-            channel_names=[f"Channel_{i}" for i in range(total_channels)],
-            skip_saving=True,  # Don't actually save files in tests
-        )
-
     def test_intermediate_fov_does_not_decrement_bytes(self):
         """Intermediate FOVs should NOT decrement bytes (still in accumulator)."""
         controller = BackpressureController(max_jobs=100, max_mb=1000.0)
@@ -446,7 +444,7 @@ class TestDownsampledViewJobBackpressure:
             time.sleep(0.5)
 
             # Dispatch intermediate FOV (not final)
-            job = self.make_downsampled_view_job(
+            job = make_downsampled_view_job(
                 fov_index=0,
                 total_fovs=2,  # 2 FOVs total, this is first
                 size_bytes=10000,
@@ -483,12 +481,12 @@ class TestDownsampledViewJobBackpressure:
             time.sleep(0.5)
 
             # Dispatch two FOVs for same well
-            job1 = self.make_downsampled_view_job(
+            job1 = make_downsampled_view_job(
                 fov_index=0,
                 total_fovs=2,
                 size_bytes=10000,
             )
-            job2 = self.make_downsampled_view_job(
+            job2 = make_downsampled_view_job(
                 fov_index=1,  # Final FOV
                 total_fovs=2,
                 size_bytes=10000,
@@ -534,7 +532,7 @@ class TestDownsampledViewJobBackpressure:
             for fov in range(total_fovs):
                 for ch in range(total_channels):
                     for z in range(total_z_levels):
-                        job = self.make_downsampled_view_job(
+                        job = make_downsampled_view_job(
                             fov_index=fov,
                             total_fovs=total_fovs,
                             channel_idx=ch,
@@ -566,43 +564,6 @@ class TestDownsampledViewJobExceptionHandling:
     is still cleared (via finally block), so bytes must still be decremented.
     """
 
-    def make_downsampled_view_job(
-        self,
-        well_id: str = "A1",
-        fov_index: int = 0,
-        total_fovs: int = 1,
-        channel_idx: int = 0,
-        total_channels: int = 1,
-        z_index: int = 0,
-        total_z_levels: int = 1,
-        size_bytes: int = 10000,
-    ) -> DownsampledViewJob:
-        """Create a DownsampledViewJob for testing."""
-        return DownsampledViewJob(
-            capture_info=make_test_capture_info(
-                region_id=well_id, fov=fov_index, z_index=z_index, config_idx=channel_idx
-            ),
-            capture_image=make_test_job_image(size_bytes),
-            well_id=well_id,
-            well_row=0,
-            well_col=0,
-            fov_index=fov_index,
-            total_fovs_in_well=total_fovs,
-            channel_idx=channel_idx,
-            total_channels=total_channels,
-            z_index=z_index,
-            total_z_levels=total_z_levels,
-            channel_name=f"Channel_{channel_idx}",
-            fov_position_in_well=(0.0, 0.0),
-            overlap_pixels=(0, 0, 0, 0),
-            pixel_size_um=1.0,
-            target_resolutions_um=[10.0],
-            plate_resolution_um=10.0,
-            output_dir="/tmp/test",
-            channel_names=[f"Channel_{i}" for i in range(total_channels)],
-            skip_saving=True,
-        )
-
     def test_final_fov_exception_still_decrements_bytes(self):
         """When final FOV throws exception, bytes should still decrement (accumulator cleared)."""
         controller = BackpressureController(max_jobs=100, max_mb=1000.0)
@@ -619,7 +580,7 @@ class TestDownsampledViewJobExceptionHandling:
             time.sleep(0.5)
 
             # Dispatch first (intermediate) FOV
-            job1 = self.make_downsampled_view_job(
+            job1 = make_downsampled_view_job(
                 fov_index=0,
                 total_fovs=2,
                 size_bytes=10000,
@@ -633,7 +594,7 @@ class TestDownsampledViewJobExceptionHandling:
             # Dispatch second (final) FOV - this would normally trigger stitching
             # The actual exception handling happens in the DownsampledViewJob.run()
             # but even with exception, the finally block clears the accumulator
-            job2 = self.make_downsampled_view_job(
+            job2 = make_downsampled_view_job(
                 fov_index=1,  # Final FOV
                 total_fovs=2,
                 size_bytes=10000,
@@ -731,43 +692,6 @@ class TestDownsampledViewJobShutdownCleanup:
     wells must be released on shutdown to prevent backpressure leaks.
     """
 
-    def make_downsampled_view_job(
-        self,
-        well_id: str = "A1",
-        fov_index: int = 0,
-        total_fovs: int = 1,
-        channel_idx: int = 0,
-        total_channels: int = 1,
-        z_index: int = 0,
-        total_z_levels: int = 1,
-        size_bytes: int = 10000,
-    ) -> DownsampledViewJob:
-        """Create a DownsampledViewJob for testing."""
-        return DownsampledViewJob(
-            capture_info=make_test_capture_info(
-                region_id=well_id, fov=fov_index, z_index=z_index, config_idx=channel_idx
-            ),
-            capture_image=make_test_job_image(size_bytes),
-            well_id=well_id,
-            well_row=0,
-            well_col=0,
-            fov_index=fov_index,
-            total_fovs_in_well=total_fovs,
-            channel_idx=channel_idx,
-            total_channels=total_channels,
-            z_index=z_index,
-            total_z_levels=total_z_levels,
-            channel_name=f"Channel_{channel_idx}",
-            fov_position_in_well=(0.0, 0.0),
-            overlap_pixels=(0, 0, 0, 0),
-            pixel_size_um=1.0,
-            target_resolutions_um=[10.0],
-            plate_resolution_um=10.0,
-            output_dir="/tmp/test",
-            channel_names=[f"Channel_{i}" for i in range(total_channels)],
-            skip_saving=True,
-        )
-
     def test_shutdown_releases_incomplete_well_bytes(self):
         """Bytes for incomplete wells should be released on shutdown."""
         controller = BackpressureController(max_jobs=100, max_mb=1000.0)
@@ -785,7 +709,7 @@ class TestDownsampledViewJobShutdownCleanup:
 
             # Dispatch several intermediate FOVs (well won't complete)
             for fov_idx in range(3):
-                job = self.make_downsampled_view_job(
+                job = make_downsampled_view_job(
                     fov_index=fov_idx,
                     total_fovs=10,  # 10 FOVs total, we only send 3
                     size_bytes=100000,  # ~100KB each
