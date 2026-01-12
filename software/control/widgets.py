@@ -9628,17 +9628,8 @@ class AlignmentWidget(QWidget):
         """Get Y offset in mm (0 if no offset)."""
         return self._offset_y_mm if self._has_offset else 0.0
 
-    def apply_offset(self, x_mm: float, y_mm: float):
-        """
-        Apply the current alignment offset to coordinates.
-
-        Args:
-            x_mm: Original X coordinate
-            y_mm: Original Y coordinate
-
-        Returns:
-            Tuple of (offset_x_mm, offset_y_mm)
-        """
+    def apply_offset(self, x_mm: float, y_mm: float) -> tuple[float, float]:
+        """Apply the current alignment offset to coordinates."""
         return (x_mm + self.offset_x_mm, y_mm + self.offset_y_mm)
 
     def set_current_position(self, x_mm: float, y_mm: float):
@@ -9706,32 +9697,18 @@ class AlignmentWidget(QWidget):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _start_alignment(self, folder_path: str):
-        """
-        Start alignment workflow with selected folder.
-
-        Args:
-            folder_path: Path to past acquisition folder
-        """
+        """Start alignment workflow with selected folder."""
         try:
-            # Load acquisition info
             info = self._load_acquisition_info(folder_path)
-
             self._current_folder = folder_path
-
-            # Store reference position
             ref_x, ref_y = info["middle_fov_position"]
             self._reference_fov_position = (ref_x, ref_y)
 
-            # Update button state
             self.state = self.STATE_CONFIRM
             self.btn_align.setText("Confirm Offset")
 
-            # Request stage move to reference position
             self.signal_move_to_position.emit(ref_x, ref_y)
-
-            # Load and display reference image
             self._load_reference_image(info["image_path"])
-
             self._log.info(f"Alignment started: ref_pos=({ref_x:.4f}, {ref_y:.4f})")
 
         except Exception as e:
@@ -9740,13 +9717,7 @@ class AlignmentWidget(QWidget):
             self.reset()
 
     def _complete_confirmation(self, current_x: float, current_y: float):
-        """
-        Complete the confirmation step with current position.
-
-        Args:
-            current_x: Current stage X position in mm
-            current_y: Current stage Y position in mm
-        """
+        """Complete the confirmation step with current position."""
         if self._reference_fov_position is None:
             self._log.error("Cannot confirm: no reference position set")
             return
@@ -9759,16 +9730,12 @@ class AlignmentWidget(QWidget):
         self._offset_y_mm = offset_y
         self._has_offset = True
 
-        # Remove reference layer and restore opacity
         self._remove_reference_layer()
 
-        # Update button state
         self.state = self.STATE_CLEAR
         self.btn_align.setText("Clear Offset")
 
-        # Emit signal with calculated offset
         self.signal_offset_set.emit(offset_x, offset_y)
-
         self._log.info(f"Alignment confirmed: offset=({offset_x:.4f}, {offset_y:.4f})mm")
 
         QMessageBox.information(
@@ -9785,83 +9752,24 @@ class AlignmentWidget(QWidget):
         """
         Load acquisition info from a past acquisition folder.
 
-        Args:
-            folder_path: Path to acquisition folder
-
-        Returns:
-            dict with keys:
-                - 'coordinates': DataFrame of all coordinates
-                - 'first_region': ID of first region
-                - 'middle_fov_index': Index of middle FOV
-                - 'middle_fov_position': (x_mm, y_mm) of middle FOV
-                - 'image_path': Path to reference image
-
-        Raises:
-            FileNotFoundError: If required files not found
+        Returns dict with: coordinates, first_region, middle_fov_index, middle_fov_position, image_path
         """
         folder = Path(folder_path)
 
-        # Load coordinates.csv from root folder
         coords_file = folder / "coordinates.csv"
         if not coords_file.exists():
             raise FileNotFoundError(f"coordinates.csv not found in {folder_path}")
 
         coords_df = pd.read_csv(coords_file)
-
-        # Get first region
         first_region = coords_df["region"].iloc[0]
         region_coords = coords_df[coords_df["region"] == first_region]
 
-        # Calculate middle FOV index
         num_fovs = len(region_coords)
         middle_idx = num_fovs // 2
-
         middle_fov = region_coords.iloc[middle_idx]
         middle_fov_position = (float(middle_fov["x (mm)"]), float(middle_fov["y (mm)"]))
 
-        # Try to find image in multiple possible locations/formats
-        image_path = None
-
-        # Option 1: OME-TIFF format in ome_tiff folder
-        # Pattern: ome_tiff/{region}_{fov}.ome.tiff
-        ome_tiff_folder = folder / "ome_tiff"
-        if ome_tiff_folder.exists():
-            ome_pattern = f"{first_region}_{middle_idx}.ome.tiff"
-            ome_images = list(ome_tiff_folder.glob(ome_pattern))
-            if ome_images:
-                image_path = ome_images[0]
-                self._log.info(f"Found OME-TIFF image: {image_path}")
-
-        # Option 2: Traditional format in timepoint folders
-        # Pattern: {timepoint}/{region}_{fov}_{z}_{channel}.tiff
-        if image_path is None:
-            timepoint_folders = sorted(
-                [d for d in folder.iterdir() if d.is_dir() and d.name.isdigit()], key=lambda x: int(x.name)
-            )
-
-            if timepoint_folders:
-                last_timepoint = timepoint_folders[-1]
-
-                # Try various patterns
-                patterns = [
-                    f"{first_region}_{middle_idx}_0_*.tiff",
-                    f"{first_region}_{middle_idx}_0_*.tif",
-                    f"{first_region}_{middle_idx}_0_*.bmp",
-                ]
-
-                for pattern in patterns:
-                    images = list(last_timepoint.glob(pattern))
-                    if images:
-                        images.sort()
-                        image_path = images[0]
-                        self._log.info(f"Found traditional format image: {image_path}")
-                        break
-
-        if image_path is None:
-            raise FileNotFoundError(
-                f"No images found for region={first_region}, FOV={middle_idx} in {folder_path}. "
-                f"Checked ome_tiff folder and timepoint folders."
-            )
+        image_path = self._find_reference_image(folder, first_region, middle_idx)
 
         self._log.info(
             f"Loaded acquisition info: region={first_region}, "
@@ -9877,33 +9785,48 @@ class AlignmentWidget(QWidget):
             "image_path": str(image_path),
         }
 
+    def _find_reference_image(self, folder: Path, region: str, fov_idx: int) -> Path:
+        """Find reference image in OME-TIFF or traditional timepoint folders."""
+        # Try OME-TIFF folder first
+        ome_tiff_folder = folder / "ome_tiff"
+        if ome_tiff_folder.exists():
+            ome_images = list(ome_tiff_folder.glob(f"{region}_{fov_idx}.ome.tiff"))
+            if ome_images:
+                self._log.info(f"Found OME-TIFF image: {ome_images[0]}")
+                return ome_images[0]
+
+        # Try traditional timepoint folders
+        timepoint_folders = sorted(
+            [d for d in folder.iterdir() if d.is_dir() and d.name.isdigit()],
+            key=lambda x: int(x.name),
+        )
+        if timepoint_folders:
+            last_timepoint = timepoint_folders[-1]
+            for ext in ("tiff", "tif", "bmp"):
+                images = sorted(last_timepoint.glob(f"{region}_{fov_idx}_0_*.{ext}"))
+                if images:
+                    self._log.info(f"Found traditional format image: {images[0]}")
+                    return images[0]
+
+        raise FileNotFoundError(
+            f"No images found for region={region}, FOV={fov_idx} in {folder}. "
+            f"Checked ome_tiff folder and timepoint folders."
+        )
+
     # ─────────────────────────────────────────────────────────────────────────
     # Napari Layer Management
     # ─────────────────────────────────────────────────────────────────────────
 
     def _load_reference_image(self, image_path: str):
-        """
-        Load reference image and add to napari viewer.
-
-        Args:
-            image_path: Path to reference image file
-        """
+        """Load reference image and add to napari viewer."""
         import tifffile
 
-        # Load image
-        if image_path.endswith(".ome.tiff") or image_path.endswith(".ome.tif"):
-            # OME-TIFF may have multiple dimensions (T, C, Z, Y, X)
-            # Extract first timepoint, first channel, first z-slice
+        if image_path.endswith((".tiff", ".tif", ".ome.tiff", ".ome.tif")):
             ref_image = tifffile.imread(image_path)
-            # Reduce to 2D by taking first slice of each extra dimension
+            # Reduce multi-dimensional images (T, C, Z, Y, X) to 2D
             while ref_image.ndim > 2:
                 ref_image = ref_image[0]
-            self._log.info(f"Loaded OME-TIFF reference image, shape: {ref_image.shape}")
-        elif image_path.endswith(".tiff") or image_path.endswith(".tif"):
-            ref_image = tifffile.imread(image_path)
-            # Handle potential extra dimensions
-            while ref_image.ndim > 2:
-                ref_image = ref_image[0]
+            self._log.info(f"Loaded TIFF reference image, shape: {ref_image.shape}")
         else:
             ref_image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
             if ref_image is None:
@@ -9912,24 +9835,18 @@ class AlignmentWidget(QWidget):
         self._add_reference_layer(ref_image)
 
     def _add_reference_layer(self, image: np.ndarray):
-        """
-        Add reference image as a napari layer with translucent blending.
-
-        Args:
-            image: Reference image array
-        """
-        # Store and reduce live view opacity if Live View exists
+        """Add reference image as a napari layer with translucent blending."""
         self._modified_live_view = False
         if "Live View" in self.viewer.layers:
-            self._original_live_opacity = self.viewer.layers["Live View"].opacity
-            self._original_live_blending = self.viewer.layers["Live View"].blending
-            self.viewer.layers["Live View"].opacity = 0.5
-            self.viewer.layers["Live View"].blending = "translucent"
+            live_layer = self.viewer.layers["Live View"]
+            self._original_live_opacity = live_layer.opacity
+            self._original_live_blending = live_layer.blending
+            live_layer.opacity = 0.5
+            live_layer.blending = "translucent"
             self._modified_live_view = True
         else:
             self._log.warning("Live View layer not found - reference image will be shown alone")
 
-        # Add or update reference layer
         if self.REFERENCE_LAYER_NAME in self.viewer.layers:
             self.viewer.layers[self.REFERENCE_LAYER_NAME].data = image
         else:
@@ -9941,20 +9858,18 @@ class AlignmentWidget(QWidget):
                 colormap="magenta",
                 blending="translucent",
             )
-
         self._log.debug("Reference layer added to napari viewer")
 
     def _remove_reference_layer(self):
         """Remove reference layer and restore live view opacity."""
-        # Remove reference layer if exists
         if self.REFERENCE_LAYER_NAME in self.viewer.layers:
             self.viewer.layers.remove(self.REFERENCE_LAYER_NAME)
             self._log.debug("Reference layer removed from napari viewer")
 
-        # Restore live view opacity only if we modified it
         if getattr(self, "_modified_live_view", False) and "Live View" in self.viewer.layers:
-            self.viewer.layers["Live View"].opacity = self._original_live_opacity
-            self.viewer.layers["Live View"].blending = self._original_live_blending
+            live_layer = self.viewer.layers["Live View"]
+            live_layer.opacity = self._original_live_opacity
+            live_layer.blending = self._original_live_blending
             self._modified_live_view = False
 
 

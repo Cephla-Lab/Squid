@@ -541,7 +541,6 @@ class MultiPointWorker:
         x_mm = coordinate_mm[0]
         y_mm = coordinate_mm[1]
 
-        # Apply alignment offset if available
         if self._alignment_widget is not None and self._alignment_widget.has_offset:
             x_mm, y_mm = self._alignment_widget.apply_offset(x_mm, y_mm)
             self._log.info(

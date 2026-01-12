@@ -254,12 +254,7 @@ class MultiPointController:
         self._start_position: Optional[squid.abc.Pos] = None
 
     def set_alignment_widget(self, alignment_widget):
-        """
-        Set the alignment widget for coordinate offset during acquisitions.
-
-        Args:
-            alignment_widget: An AlignmentWidget instance that provides coordinate offset
-        """
+        """Set the alignment widget for coordinate offset during acquisitions."""
         self._alignment_widget = alignment_widget
 
     def _start_per_acquisition_log(self) -> None:

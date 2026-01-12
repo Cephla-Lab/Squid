@@ -966,23 +966,16 @@ class HighContentScreeningGui(QMainWindow):
         self.resizeCurrentTab(self.recordTabWidget)
 
     def _setup_alignment_widget(self):
-        """
-        Setup the alignment widget for aligning current sample with past acquisition.
-
-        Creates the AlignmentWidget, connects its signals, and attaches it to
-        the navigation viewer and multipoint controller.
-        """
+        """Setup alignment widget and connect to navigation viewer and multipoint controller."""
         if self.napariLiveWidget is None:
             self.log.warning("Cannot setup alignment widget: napariLiveWidget not available")
             return
 
-        # Create alignment widget with napari viewer
         self.alignmentWidget = widgets.AlignmentWidget(
             napari_viewer=self.napariLiveWidget.viewer,
-            parent=None,  # Will be reparented to navigation viewer
+            parent=None,
         )
 
-        # Connect signals
         self.alignmentWidget.signal_move_to_position.connect(self._alignment_move_to)
         self.alignmentWidget.signal_request_current_position.connect(self._alignment_provide_position)
         self.alignmentWidget.signal_offset_set.connect(
@@ -990,12 +983,8 @@ class HighContentScreeningGui(QMainWindow):
         )
         self.alignmentWidget.signal_offset_cleared.connect(lambda: self.log.info("Alignment offset cleared"))
 
-        # Set alignment widget on multipoint controller
         self.multipointController.set_alignment_widget(self.alignmentWidget)
-
-        # Attach to navigation viewer
         self.navigationViewer.set_alignment_widget(self.alignmentWidget)
-
         self.log.info("Alignment widget setup complete")
 
     def _alignment_move_to(self, x_mm: float, y_mm: float):

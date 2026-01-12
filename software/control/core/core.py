@@ -1410,12 +1410,7 @@ class NavigationViewer(QFrame):
             self.alignment_widget.raise_()
 
     def set_alignment_widget(self, alignment_widget):
-        """
-        Set the alignment widget to be displayed in the navigation viewer.
-
-        Args:
-            alignment_widget: An AlignmentWidget instance
-        """
+        """Set the alignment widget to be displayed in the navigation viewer."""
         self.alignment_widget = alignment_widget
         self.alignment_widget.setParent(self.graphics_widget)
         self.alignment_widget.adjustSize()
