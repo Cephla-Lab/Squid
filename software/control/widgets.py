@@ -9847,14 +9847,16 @@ class AlignmentWidget(QWidget):
         self._add_reference_layer(ref_image)
 
     def _add_reference_layer(self, image: np.ndarray):
-        """Add reference image as a napari layer with translucent blending."""
+        """Add reference image as a napari layer with magenta/green overlay."""
         self._modified_live_view = False
         if "Live View" in self.viewer.layers:
             live_layer = self.viewer.layers["Live View"]
             self._original_live_opacity = live_layer.opacity
             self._original_live_blending = live_layer.blending
+            self._original_live_colormap = live_layer.colormap
             live_layer.opacity = 0.5
             live_layer.blending = "translucent"
+            live_layer.colormap = "green"
             self._modified_live_view = True
         else:
             self._log.warning("Live View layer not found - reference image will be shown alone")
@@ -9867,7 +9869,7 @@ class AlignmentWidget(QWidget):
                 name=self.REFERENCE_LAYER_NAME,
                 visible=True,
                 opacity=0.5,
-                colormap="gray",
+                colormap="magenta",
                 blending="translucent",
             )
         self._log.debug("Reference layer added to napari viewer")
@@ -9882,6 +9884,7 @@ class AlignmentWidget(QWidget):
             live_layer = self.viewer.layers["Live View"]
             live_layer.opacity = self._original_live_opacity
             live_layer.blending = self._original_live_blending
+            live_layer.colormap = self._original_live_colormap
             self._modified_live_view = False
 
 
