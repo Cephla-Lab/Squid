@@ -1,5 +1,27 @@
 #include "serial_communication.h"
 
+#ifdef USE_PROTOCOL_V2
+
+void init_protocol()
+{
+    protocol_v2_init();
+}
+
+void process_serial_message()
+{
+    protocol_v2_process();
+}
+
+#else // Legacy v1 protocol
+
+#include "utils/crc8.h"
+#include "commands/commands.h"
+
+void init_protocol()
+{
+    // V1 protocol has no special initialization
+}
+
 void process_serial_message()
 {
   while (SerialUSB.available())
@@ -34,6 +56,23 @@ void process_serial_message()
     }
   }
 }
+
+#endif // USE_PROTOCOL_V2
+
+#ifdef USE_PROTOCOL_V2
+
+void send_position_update()
+{
+    // In v2 protocol, state is included in every response.
+    // Software polls with CMD_GET_STATE for periodic updates.
+    // No unsolicited updates are sent.
+
+    // Still handle joystick button timeout for consistency
+    if (joystick_button_pressed && millis() - joystick_button_pressed_timestamp > 1000)
+        joystick_button_pressed = false;
+}
+
+#else // Legacy v1 protocol
 
 void send_position_update()
 {
@@ -93,6 +132,8 @@ void send_position_update()
       SerialUSB.println(digitalRead(pin_PG));
     }
     flag_send_pos_update = false;
-    
+
   }
 }
+
+#endif // USE_PROTOCOL_V2

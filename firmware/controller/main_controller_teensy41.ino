@@ -12,6 +12,7 @@ void setup() {
   init_io();
   init_stages();
   init_callbacks();
+  init_protocol();  // Initialize communication protocol (v1 or v2 based on USE_PROTOCOL_V2)
 }
 
 void loop() {

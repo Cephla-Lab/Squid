@@ -11,6 +11,13 @@
 #define STAGE_AXES 3
 #define DEBUG_MODE false
 
+/***************************************************************************************************/
+/**************************************** Protocol Version *****************************************/
+/***************************************************************************************************/
+// Uncomment to use protocol v2 (variable-length packets with CRC-16)
+// Comment out to use legacy protocol v1 (8-byte fixed packets with CRC-8)
+#define USE_PROTOCOL_V2
+
 // PID arguments
 typedef struct pid_arguments {
 	uint16_t 	p;
