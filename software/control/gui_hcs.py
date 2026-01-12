@@ -888,13 +888,18 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageDisplayTabs.addTab(self.napariPlateViewWidget, "Plate View")
 
             # Embedded NDViewer (lightweight) - initialized AFTER napari widgets because
-            # NDV's vispy backend can conflict with napari's if initialized first
+            # NDV and napari both use vispy for OpenGL rendering. Initializing NDV first
+            # can cause OpenGL context conflicts since both libraries share vispy state.
             self.ndviewerTab = None
             try:
                 self.ndviewerTab = widgets.NDViewerTab()
                 self.imageDisplayTabs.addTab(self.ndviewerTab, "NDViewer")
+            except ImportError:
+                self.log.warning("NDViewer tab unavailable: ndviewer_light module not installed")
+            except (RuntimeError, OSError) as e:
+                self.log.exception(f"Failed to initialize NDViewer tab due to system error: {e}")
             except Exception:
-                self.log.exception("Failed to initialize NDViewer tab")
+                self.log.exception("Failed to initialize NDViewer tab - unexpected error")
 
             # Connect plate view double-click to NDViewer navigation and tab switch
             if self.napariPlateViewWidget is not None and self.ndviewerTab is not None:
@@ -1961,14 +1966,18 @@ class HighContentScreeningGui(QMainWindow):
     def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int) -> None:
         """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""
         if self.ndviewerTab is None:
+            self.log.debug("FOV click ignored: NDViewer tab not available")
             return
 
         if not self.ndviewerTab.go_to_fov(well_id, fov_index):
+            self.log.debug(f"Could not navigate to FOV well={well_id}, fov={fov_index} - may not exist in dataset")
             return
 
         ndviewer_tab_idx = self.imageDisplayTabs.indexOf(self.ndviewerTab)
         if ndviewer_tab_idx >= 0:
             self.imageDisplayTabs.setCurrentIndex(ndviewer_tab_idx)
+        else:
+            self.log.warning("NDViewer tab exists but not found in tab widget")
 
     def closeEvent(self, event):
         # Show confirmation dialog
@@ -1992,7 +2001,7 @@ class HighContentScreeningGui(QMainWindow):
         # Save camera settings (binning, pixel format)
         squid.camera.settings_cache.save_camera_settings(self.camera)
 
-        # Stop any running acquisition and clean up multiprocessing resources
+        # Clean up multipoint controller resources (queues, timers, process pools)
         if self.multipointController is not None:
             try:
                 self.multipointController.close()

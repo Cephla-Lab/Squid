@@ -287,8 +287,9 @@ class NDViewerTab(QWidget):
             - "region": str - The well ID (e.g., "A1", "B2")
             - "fov": int - The FOV index within that well
 
-        Raises:
-            Exception: If get_fov_list() fails (caller should handle).
+        Returns:
+            The flat index if found, None otherwise. Returns None if the FOV list
+            is empty (e.g., when get_fov_list() catches an internal error).
         """
         fovs = self._viewer.get_fov_list()
         return next(
@@ -300,7 +301,8 @@ class NDViewerTab(QWidget):
         """Clean up viewer resources."""
         if self._viewer is not None:
             try:
-                # LightweightViewer has a closeEvent that stops timers and closes file handles
+                # Calling close() triggers LightweightViewer.closeEvent(),
+                # which stops refresh timers and closes open file handles
                 self._viewer.close()
             except Exception:
                 self._log.exception("Error closing LightweightViewer")
