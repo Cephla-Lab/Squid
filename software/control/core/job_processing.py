@@ -688,9 +688,6 @@ class JobRunner(multiprocessing.Process):
         self._bp_pending_jobs = bp_pending_jobs
         self._bp_pending_bytes = bp_pending_bytes
         self._bp_capacity_event = bp_capacity_event
-        # Track accumulated bytes per well for DownsampledViewJob
-        # (image stays in accumulator until well completes)
-        self._well_accumulated_bytes: Dict[str, int] = {}
 
         # Clean up stale metadata files from previous crashed acquisitions
         # Only run when explicitly requested (i.e., when OME-TIFF saving is being used)
@@ -802,9 +799,6 @@ class JobRunner(multiprocessing.Process):
         worker_log_msg = f", worker_log={worker_log_path}" if worker_log_path else ""
         self._log.info(f"JobRunner subprocess started (PID={os.getpid()}{worker_log_msg})")
 
-        # Clear any stale tracking from previous acquisition (defensive)
-        self._well_accumulated_bytes = {}
-
         # Start memory monitoring for the worker process
         start_worker_monitoring(sample_interval_ms=200)
         log_memory("WORKER_START", include_children=False)
@@ -854,69 +848,26 @@ class JobRunner(multiprocessing.Process):
                     with self._pending_count.get_lock():
                         self._pending_count.value -= 1
 
-                    # Backpressure tracking
+                    # Backpressure tracking: decrement counters immediately when job completes.
+                    # Note: For DownsampledViewJob, the image data moves to subprocess memory
+                    # (the accumulator) when the job is processed. Backpressure tracks queue
+                    # memory, not subprocess memory, so it's correct to release bytes here
+                    # rather than waiting for well completion.
                     if self._bp_pending_jobs is not None:
-                        # Job count decrements for all jobs
                         with self._bp_pending_jobs.get_lock():
                             self._bp_pending_jobs.value = max(0, self._bp_pending_jobs.value - 1)
 
-                        # Calculate image bytes
+                        # Calculate and decrement image bytes
                         image_bytes = 0
                         if job.capture_image and job.capture_image.image_array is not None:
                             image_bytes = job.capture_image.image_array.nbytes
 
-                        # DownsampledViewJob: images stay in accumulator until well completes
-                        if isinstance(job, DownsampledViewJob):
-                            well_id = job.well_id
-                            self._well_accumulated_bytes[well_id] = (
-                                self._well_accumulated_bytes.get(well_id, 0) + image_bytes
-                            )
-
-                            # Use indices to detect final FOV (not result) - handles exceptions correctly
-                            is_final_fov = (
-                                job.fov_index == job.total_fovs_in_well - 1
-                                and job.channel_idx == job.total_channels - 1
-                                and job.z_index == job.total_z_levels - 1
-                            )
-
-                            if is_final_fov:
-                                total_well_bytes = self._well_accumulated_bytes.pop(well_id, 0)
-                                with self._bp_pending_bytes.get_lock():
-                                    self._bp_pending_bytes.value = max(
-                                        0, self._bp_pending_bytes.value - total_well_bytes
-                                    )
-                        else:
-                            # Normal jobs: decrement bytes immediately
-                            with self._bp_pending_bytes.get_lock():
-                                self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - image_bytes)
+                        with self._bp_pending_bytes.get_lock():
+                            self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - image_bytes)
 
                         # Signal capacity available for all job completions
                         if self._bp_capacity_event is not None:
                             self._bp_capacity_event.set()
-
-        # Release accumulated bytes for incomplete wells on shutdown
-        # (prevents bytes from being permanently "leaked" if acquisition is interrupted mid-well)
-        # Note: Forced termination (SIGTERM/SIGKILL) may skip this cleanup.
-        # Concurrency note: This code runs after the main while loop exits, so no concurrent
-        # access to _well_accumulated_bytes is possible within this process - all job
-        # processing has stopped. The _well_accumulated_bytes dict is process-local.
-        try:
-            if self._bp_pending_bytes is not None and self._well_accumulated_bytes:
-                total_unreleased = sum(self._well_accumulated_bytes.values())
-                well_count = len(self._well_accumulated_bytes)
-                self._well_accumulated_bytes.clear()
-
-                if total_unreleased > 0:
-                    self._log.info(
-                        f"Releasing {total_unreleased / (1024*1024):.1f}MB from "
-                        f"{well_count} incomplete wells on shutdown"
-                    )
-                    with self._bp_pending_bytes.get_lock():
-                        self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - total_unreleased)
-                    if self._bp_capacity_event is not None:
-                        self._bp_capacity_event.set()
-        except Exception:
-            self._log.exception("Failed to release bytes for incomplete wells during shutdown")
 
         # Stop memory monitoring and log final report
         log_memory("WORKER_SHUTDOWN", include_children=False)

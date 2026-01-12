@@ -410,14 +410,15 @@ class TestJobRunnerBackpressureTracking:
 
 
 class TestDownsampledViewJobBackpressure:
-    """Tests for DownsampledViewJob special backpressure handling.
+    """Tests for DownsampledViewJob backpressure handling.
 
-    DownsampledViewJob holds images in accumulator until well completes,
-    so bytes should not be decremented until the final FOV.
+    Bytes are released immediately when each job completes, not when the well
+    completes. This prevents deadlock when z-stack acquisitions exceed the
+    byte limit before a single well can finish.
     """
 
-    def test_intermediate_fov_does_not_decrement_bytes(self):
-        """Intermediate FOVs should NOT decrement bytes (still in accumulator)."""
+    def test_intermediate_fov_decrements_bytes_immediately(self):
+        """Intermediate FOVs should decrement bytes immediately (not wait for well completion)."""
         controller = BackpressureController(max_jobs=100, max_mb=1000.0)
         runner = _create_runner_with_backpressure(controller)
         runner.start()
@@ -430,15 +431,15 @@ class TestDownsampledViewJobBackpressure:
             assert controller.get_pending_mb() > 0
             time.sleep(0.5)
 
-            # Job count decrements, but bytes stay (image in accumulator)
+            # Both job count AND bytes decrement immediately when job completes
             assert controller.get_pending_jobs() == 0
-            assert controller.get_pending_mb() > 0
+            assert controller.get_pending_mb() == 0.0
         finally:
             runner.shutdown(timeout_s=1.0)
             DownsampledViewJob.clear_accumulators()
 
-    def test_final_fov_decrements_all_accumulated_bytes(self):
-        """Final FOV should decrement ALL accumulated bytes for the well."""
+    def test_complete_well_all_bytes_released(self):
+        """After all FOVs complete, all bytes should be released."""
         controller = BackpressureController(max_jobs=100, max_mb=1000.0)
         runner = _create_runner_with_backpressure(controller)
         runner.start()
@@ -496,22 +497,22 @@ class TestDownsampledViewJobBackpressure:
 class TestDownsampledViewJobExceptionHandling:
     """Tests for DownsampledViewJob exception handling during backpressure tracking.
 
-    When a DownsampledViewJob throws an exception on the final FOV, the accumulator
-    is still cleared (via finally block), so bytes must still be decremented.
+    When a DownsampledViewJob completes (success or exception), bytes are released
+    immediately via the finally block in JobRunner's run loop.
     """
 
-    def test_final_fov_exception_still_decrements_bytes(self):
-        """When final FOV throws exception, bytes should still decrement (accumulator cleared)."""
+    def test_job_exception_still_decrements_bytes(self):
+        """When job completes (even with exception), bytes should still decrement."""
         controller = BackpressureController(max_jobs=100, max_mb=1000.0)
         runner = _create_runner_with_backpressure(controller)
         runner.start()
 
         try:
             time.sleep(0.5)
+
+            # Dispatch jobs and wait for completion
             runner.dispatch(make_downsampled_view_job(fov_index=0, total_fovs=2, size_bytes=10000))
             time.sleep(0.3)
-            assert controller.get_pending_mb() > 0
-
             runner.dispatch(make_downsampled_view_job(fov_index=1, total_fovs=2, size_bytes=10000))
 
             try:
@@ -520,7 +521,7 @@ class TestDownsampledViewJobExceptionHandling:
                 pass
             time.sleep(0.3)
 
-            # Bytes decrement regardless of success/exception (based on indices, not result)
+            # Bytes decrement immediately when each job completes, regardless of success/exception
             assert controller.get_pending_jobs() == 0
             assert controller.get_pending_mb() == 0.0
         finally:
@@ -571,41 +572,37 @@ class TestBackpressureSharedValues:
             runner.shutdown(timeout_s=1.0)
 
 
-class TestDownsampledViewJobShutdownCleanup:
-    """Tests for DownsampledViewJob byte cleanup on shutdown.
+class TestDownsampledViewJobImmediateByteRelease:
+    """Tests verifying DownsampledViewJob releases bytes immediately.
 
-    When acquisition is interrupted mid-well, accumulated bytes for incomplete
-    wells must be released on shutdown to prevent backpressure leaks.
+    This is the key behavior change that prevents deadlock with z-stacks:
+    bytes are released when each job completes, not when the well completes.
     """
 
-    def test_shutdown_releases_incomplete_well_bytes(self):
-        """Bytes for incomplete wells should be released on shutdown."""
+    def test_incomplete_well_bytes_released_immediately(self):
+        """Bytes are released as each job completes, even for incomplete wells."""
         controller = BackpressureController(max_jobs=100, max_mb=1000.0)
         runner = _create_runner_with_backpressure(controller)
         runner.start()
 
         try:
             time.sleep(0.5)
+            # Dispatch 3 FOVs of a 10-FOV well (incomplete)
             for fov_idx in range(3):
                 runner.dispatch(make_downsampled_view_job(fov_index=fov_idx, total_fovs=10, size_bytes=100000))
             time.sleep(0.5)
 
+            # With immediate byte release, bytes should already be 0
+            # (jobs completed, bytes released, even though well is incomplete)
             assert controller.get_pending_jobs() == 0
-            bytes_before_shutdown = controller.get_pending_mb()
-            assert bytes_before_shutdown > 0.2
+            assert controller.get_pending_mb() == 0.0
 
         finally:
             runner.shutdown(timeout_s=2.0)
+            DownsampledViewJob.clear_accumulators()
 
-        time.sleep(0.2)
-        bytes_after_shutdown = controller.get_pending_mb()
-        assert bytes_after_shutdown < 0.01, (
-            f"Bytes not released on shutdown: before={bytes_before_shutdown:.3f}MB, "
-            f"after={bytes_after_shutdown:.3f}MB"
-        )
-
-    def test_shutdown_releases_multiple_incomplete_wells(self):
-        """Bytes from multiple incomplete wells should all be released on shutdown."""
+    def test_multiple_incomplete_wells_bytes_released_immediately(self):
+        """Bytes from multiple incomplete wells are released as jobs complete."""
         controller = BackpressureController(max_jobs=100, max_mb=1000.0)
         runner = _create_runner_with_backpressure(controller)
         runner.start()
@@ -624,23 +621,14 @@ class TestDownsampledViewJobShutdownCleanup:
 
             time.sleep(0.5)
 
-            # Jobs should be done, but bytes from all wells still tracked
+            # With immediate byte release, all bytes should be released
+            # even though wells are incomplete
             assert controller.get_pending_jobs() == 0
-            bytes_before_shutdown = controller.get_pending_mb()
-            # 3 wells x 2 FOVs x ~50KB = ~300KB
-            assert bytes_before_shutdown > 0.2
+            assert controller.get_pending_mb() == 0.0
 
         finally:
             runner.shutdown(timeout_s=2.0)
             DownsampledViewJob.clear_accumulators()
-
-        # After shutdown, bytes from ALL wells should be released
-        time.sleep(0.2)
-        bytes_after_shutdown = controller.get_pending_mb()
-        assert bytes_after_shutdown < 0.01, (
-            f"Bytes not released on shutdown: before={bytes_before_shutdown:.3f}MB, "
-            f"after={bytes_after_shutdown:.3f}MB"
-        )
 
 
 class TestMultiPointControllerCloseMethod:
