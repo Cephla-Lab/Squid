@@ -668,7 +668,10 @@ class JobRunner(multiprocessing.Process):
         bp_capacity_event: Optional[multiprocessing.Event] = None,
     ):
         super().__init__()
-        # Daemon processes are terminated when the main process exits
+        # Daemon processes are terminated when the main process exits, ensuring
+        # cleanup even if the main process crashes. Note: forceful termination
+        # means the shutdown cleanup code (releasing incomplete well bytes) may
+        # be skipped - see the cleanup block after the main while loop in run().
         self.daemon = True
         self._log = squid.logging.get_logger(__class__.__name__)
         self._acquisition_info = acquisition_info
@@ -894,8 +897,9 @@ class JobRunner(multiprocessing.Process):
         # Release accumulated bytes for incomplete wells on shutdown
         # (prevents bytes from being permanently "leaked" if acquisition is interrupted mid-well)
         # Note: Forced termination (SIGTERM/SIGKILL) may skip this cleanup.
-        # Thread safety: This code runs after the main while loop exits, so no concurrent
-        # access to _well_accumulated_bytes is possible - all job processing has stopped.
+        # Concurrency note: This code runs after the main while loop exits, so no concurrent
+        # access to _well_accumulated_bytes is possible within this process - all job
+        # processing has stopped. The _well_accumulated_bytes dict is process-local.
         try:
             if self._bp_pending_bytes is not None and self._well_accumulated_bytes:
                 total_unreleased = sum(self._well_accumulated_bytes.values())

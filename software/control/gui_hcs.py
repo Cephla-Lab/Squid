@@ -1945,7 +1945,10 @@ class HighContentScreeningGui(QMainWindow):
 
         # Stop any running acquisition and clean up multiprocessing resources
         if self.multipointController is not None:
-            self.multipointController.close()
+            try:
+                self.multipointController.close()
+            except Exception:
+                self.log.exception("Error closing multipoint controller during shutdown")
 
         self.movement_update_timer.stop()
 
