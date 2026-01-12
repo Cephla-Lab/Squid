@@ -169,6 +169,8 @@ class NDViewerTab(QWidget):
     This is designed to live inside an existing QTabWidget (no separate QApplication / process).
     """
 
+    _PLACEHOLDER_WAITING = "NDViewer: waiting for an acquisition to start..."
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -179,7 +181,7 @@ class NDViewerTab(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(self._layout)
 
-        self._placeholder = QLabel("NDViewer: waiting for an acquisition to start...")
+        self._placeholder = QLabel(self._PLACEHOLDER_WAITING)
         self._placeholder.setAlignment(Qt.AlignCenter)
         self._layout.addWidget(self._placeholder, 1)
 
@@ -204,7 +206,7 @@ class NDViewerTab(QWidget):
         self._dataset_path = dataset_path
 
         if not dataset_path:
-            self._show_placeholder("NDViewer: waiting for an acquisition to start...")
+            self._show_placeholder(self._PLACEHOLDER_WAITING)
             return
 
         if not os.path.isdir(dataset_path):

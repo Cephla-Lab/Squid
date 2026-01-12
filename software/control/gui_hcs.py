@@ -887,7 +887,8 @@ class HighContentScreeningGui(QMainWindow):
                 self.napariPlateViewWidget = widgets.NapariPlateViewWidget(self.contrastManager)
                 self.imageDisplayTabs.addTab(self.napariPlateViewWidget, "Plate View")
 
-            # Embedded NDViewer (lightweight) - initialized AFTER napari widgets to avoid conflicts
+            # Embedded NDViewer (lightweight) - initialized AFTER napari widgets because
+            # NDV's vispy backend can conflict with napari's if initialized first
             self.ndviewerTab = None
             try:
                 self.ndviewerTab = widgets.NDViewerTab()
@@ -898,6 +899,10 @@ class HighContentScreeningGui(QMainWindow):
             # Connect plate view double-click to NDViewer navigation and tab switch
             if self.napariPlateViewWidget is not None and self.ndviewerTab is not None:
                 self.napariPlateViewWidget.signal_well_fov_clicked.connect(self._on_plate_view_fov_clicked)
+            elif self.napariPlateViewWidget is None:
+                self.log.debug("Plate view not available, FOV click navigation disabled")
+            elif self.ndviewerTab is None:
+                self.log.debug("NDViewer tab not available, FOV click navigation disabled")
 
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()
