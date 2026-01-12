@@ -9858,7 +9858,7 @@ class AlignmentWidget(QWidget):
                 name=self.REFERENCE_LAYER_NAME,
                 visible=True,
                 opacity=0.5,
-                colormap="magenta",
+                colormap="gray",
                 blending="translucent",
             )
         self._log.debug("Reference layer added to napari viewer")
