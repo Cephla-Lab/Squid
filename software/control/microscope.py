@@ -329,10 +329,11 @@ class Microscope:
         if profiles:
             self.config_repo.load_profile(profiles[0])
         else:
-            self._log.warning(
-                "No configuration profiles found in user_profiles/. "
-                "Channel configurations will not be available until a profile is created."
-            )
+            # Create a default profile if none exist - load_profile() will call
+            # ensure_default_configs() to generate configs from illumination_channel_config.yaml
+            self._log.info("No profiles found, creating 'default' profile")
+            self.config_repo.create_profile("default")
+            self.config_repo.load_profile("default")
 
         self.contrast_manager: ContrastManager = ContrastManager()
         self.stream_handler: StreamHandler = StreamHandler(handler_functions=stream_handler_callbacks)
