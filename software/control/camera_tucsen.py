@@ -64,7 +64,7 @@ class ModeAries(Enum):
 class TucsenModelProperties(pydantic.BaseModel):
     binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
     binning_to_set_value: Dict[Tuple[int, int], int]
-    mode_to_line_rate_us: Dict[Union[Mode400BSIV3, ModeFL26BW, ModeAries, ModeLibra25], float]
+    mode_to_line_rate_us: Dict[Union[Mode400BSIV3, ModeFL26BW, ModeAries, ModeLibra], float]
     pixel_size_um: float
     has_temperature_control: bool
     is_genicam: bool
