@@ -307,13 +307,11 @@ class TestBackpressureController:
 
 def _create_runner_with_backpressure(controller: BackpressureController) -> JobRunner:
     """Create a JobRunner connected to a BackpressureController."""
-    runner = JobRunner(
+    return JobRunner(
         bp_pending_jobs=controller.pending_jobs_value,
         bp_pending_bytes=controller.pending_bytes_value,
         bp_capacity_event=controller.capacity_event,
     )
-    runner.daemon = True
-    return runner
 
 
 class TestJobRunnerBackpressureTracking:
@@ -372,7 +370,6 @@ class TestJobRunnerBackpressureTracking:
     def test_no_backpressure_tracking_without_shared_values(self):
         """JobRunner works normally when backpressure values not provided."""
         runner = JobRunner()
-        runner.daemon = True
         runner.start()
 
         try:
