@@ -1062,6 +1062,7 @@ class PreferencesDialog(QDialog):
 
         self.max_pending_mb_spinbox = QDoubleSpinBox()
         self.max_pending_mb_spinbox.setRange(100.0, 10000.0)
+        self.max_pending_mb_spinbox.setSingleStep(100.0)
         self.max_pending_mb_spinbox.setValue(
             self._get_config_float("GENERAL", "acquisition_max_pending_mb", control._def.ACQUISITION_MAX_PENDING_MB)
         )
@@ -1074,6 +1075,7 @@ class PreferencesDialog(QDialog):
 
         self.throttle_timeout_spinbox = QDoubleSpinBox()
         self.throttle_timeout_spinbox.setRange(5.0, 300.0)
+        self.throttle_timeout_spinbox.setSingleStep(5.0)
         self.throttle_timeout_spinbox.setValue(
             self._get_config_float(
                 "GENERAL", "acquisition_throttle_timeout_s", control._def.ACQUISITION_THROTTLE_TIMEOUT_S
@@ -1081,8 +1083,8 @@ class PreferencesDialog(QDialog):
         )
         self.throttle_timeout_spinbox.setSuffix(" s")
         self.throttle_timeout_spinbox.setToolTip(
-            "Maximum time to wait when throttled before reporting an error.\n"
-            "If disk I/O cannot keep up within this time, acquisition logs an error."
+            "Maximum time to wait when throttled before reporting a warning.\n"
+            "If disk I/O cannot keep up within this time, acquisition logs a warning."
         )
         throttle_layout.addRow("Throttle Timeout:", self.throttle_timeout_spinbox)
 
