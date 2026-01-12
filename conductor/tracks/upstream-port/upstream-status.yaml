@@ -146,7 +146,9 @@ commits:
     title: 'docs: Add simulated disk I/O documentation (#432)'
     status: skipped
     skip_reason: not-applicable
-    skip_justification: Documentation for simulated disk I/O feature (b91694f1) which is deferred.
+    skip_justification: |
+      Documentation for upstream repo. arch_v2 has inline docstrings and tooltips
+      in the implementation. No separate docs file needed.
     skip_date: '2026-01-12'
   0ce8d626:
     title: 'docs: Move dynamic-widget-visibility.md to software/docs/pending (#433)'
@@ -156,13 +158,12 @@ commits:
     skip_date: '2026-01-12'
   b91694f1:
     title: 'feat: Add simulated disk I/O mode for development (#431)'
-    status: skipped
-    skip_reason: deferred
-    skip_justification: |
-      Development feature (318 lines) for testing without disk writes. Simulates I/O
-      latency by encoding to memory buffers then discarding. Useful for throughput testing
-      without SSD wear. Deferred - lower priority development tooling that can be ported
-      when needed for performance testing work.
+    status: ported
+    ported_in: a8121d30
+    ported_date: '2026-01-12'
+    notes: |
+      Ported simulated disk I/O mode with arch_v2 adaptations. Uses lazy imports
+      to avoid circular dependencies. Settings UI in Preferences > Advanced.
     skip_date: '2026-01-12'
   fc57e3da:
     title: 'feat: Persist last used base saving path for multipoint widgets (#430)'
