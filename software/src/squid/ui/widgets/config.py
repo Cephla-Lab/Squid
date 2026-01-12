@@ -785,6 +785,52 @@ class PreferencesDialog(QDialog):
         throttle_group.content.addLayout(throttle_layout)
         layout.addWidget(throttle_group)
 
+        # Development Settings section
+        dev_group = CollapsibleGroupBox("Development Settings")
+        dev_layout = QFormLayout()
+
+        # Warning label for simulated disk I/O
+        sim_warning_label = QLabel("Simulated disk I/O encodes images but does NOT save to disk!")
+        sim_warning_label.setStyleSheet("color: #cc0000; font-weight: bold;")
+        dev_layout.addRow(sim_warning_label)
+
+        self.simulated_disk_io_checkbox = QCheckBox()
+        self.simulated_disk_io_checkbox.setChecked(
+            self._get_config_bool("DEVELOPMENT", "simulated_disk_io_enabled", False)
+        )
+        self.simulated_disk_io_checkbox.setToolTip(
+            "When enabled, images are encoded to memory but NOT saved to disk.\n"
+            "Use this mode for testing acquisition speed without wearing SSD.\n"
+            "WARNING: No data will be saved during acquisitions!"
+        )
+        dev_layout.addRow("Enable Simulated Disk I/O:", self.simulated_disk_io_checkbox)
+
+        self.simulated_speed_spinbox = QDoubleSpinBox()
+        self.simulated_speed_spinbox.setRange(10.0, 3000.0)
+        self.simulated_speed_spinbox.setSingleStep(50.0)
+        self.simulated_speed_spinbox.setValue(
+            self._get_config_float("DEVELOPMENT", "simulated_disk_io_speed_mb_s", 200.0)
+        )
+        self.simulated_speed_spinbox.setSuffix(" MB/s")
+        self.simulated_speed_spinbox.setToolTip(
+            "Simulated disk write speed in MB/s.\n"
+            "HDD: 50-100 MB/s, SATA SSD: 200-500 MB/s, NVMe: 1000-3000 MB/s"
+        )
+        dev_layout.addRow("Simulated Write Speed:", self.simulated_speed_spinbox)
+
+        self.simulated_compression_checkbox = QCheckBox()
+        self.simulated_compression_checkbox.setChecked(
+            self._get_config_bool("DEVELOPMENT", "simulated_disk_io_compression", True)
+        )
+        self.simulated_compression_checkbox.setToolTip(
+            "When enabled, simulate compression to exercise CPU/RAM realistically.\n"
+            "Disable for faster simulation with less CPU load."
+        )
+        dev_layout.addRow("Simulate Compression:", self.simulated_compression_checkbox)
+
+        dev_group.content.addLayout(dev_layout)
+        layout.addWidget(dev_group)
+
         # Legend for restart indicator
         legend_label = QLabel("* Requires software restart to take effect")
         legend_label.setStyleSheet("color: #666; font-style: italic;")
@@ -841,7 +887,7 @@ class PreferencesDialog(QDialog):
 
     def _apply_settings(self) -> None:
         # Ensure all required sections exist
-        for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS"]:
+        for section in ["GENERAL", "CAMERA_CONFIG", "AF", "SOFTWARE_POS_LIMIT", "TRACKING", "VIEWS", "DEVELOPMENT"]:
             self._ensure_section(section)
 
         # General settings
@@ -937,6 +983,19 @@ class PreferencesDialog(QDialog):
             "true" if self.display_mosaic_view_checkbox.isChecked() else "false",
         )
         self.config.set("VIEWS", "mosaic_view_target_pixel_size_um", str(self.mosaic_pixel_size_spinbox.value()))
+
+        # Development settings
+        self.config.set(
+            "DEVELOPMENT",
+            "simulated_disk_io_enabled",
+            "true" if self.simulated_disk_io_checkbox.isChecked() else "false",
+        )
+        self.config.set("DEVELOPMENT", "simulated_disk_io_speed_mb_s", str(self.simulated_speed_spinbox.value()))
+        self.config.set(
+            "DEVELOPMENT",
+            "simulated_disk_io_compression",
+            "true" if self.simulated_compression_checkbox.isChecked() else "false",
+        )
 
         # Save to file
         try:
@@ -1061,6 +1120,14 @@ class PreferencesDialog(QDialog):
             _def.USE_NAPARI_FOR_MOSAIC_DISPLAY = self.display_mosaic_view_checkbox.isChecked()
         if hasattr(_def, "MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM"):
             _def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = self.mosaic_pixel_size_spinbox.value()
+
+        # Development settings (live update)
+        if hasattr(_def, "SIMULATED_DISK_IO_ENABLED"):
+            _def.SIMULATED_DISK_IO_ENABLED = self.simulated_disk_io_checkbox.isChecked()
+        if hasattr(_def, "SIMULATED_DISK_IO_SPEED_MB_S"):
+            _def.SIMULATED_DISK_IO_SPEED_MB_S = self.simulated_speed_spinbox.value()
+        if hasattr(_def, "SIMULATED_DISK_IO_COMPRESSION"):
+            _def.SIMULATED_DISK_IO_COMPRESSION = self.simulated_compression_checkbox.isChecked()
 
     def _get_changes(self) -> List[Tuple[str, str, str, bool]]:
         """Get list of settings that have changed from current config.
@@ -1297,6 +1364,22 @@ class PreferencesDialog(QDialog):
         new_float = self.mosaic_pixel_size_spinbox.value()
         if not self._floats_equal(old_float, new_float):
             changes.append(("Mosaic Target Pixel Size", f"{old_float} μm", f"{new_float} μm", False))
+
+        # Development settings (live update)
+        old_val_bool = self._get_config_bool("DEVELOPMENT", "simulated_disk_io_enabled", False)
+        new_val_bool = self.simulated_disk_io_checkbox.isChecked()
+        if old_val_bool != new_val_bool:
+            changes.append(("Simulated Disk I/O", str(old_val_bool), str(new_val_bool), False))
+
+        old_float = self._get_config_float("DEVELOPMENT", "simulated_disk_io_speed_mb_s", 200.0)
+        new_float = self.simulated_speed_spinbox.value()
+        if not self._floats_equal(old_float, new_float):
+            changes.append(("Simulated Write Speed", f"{old_float} MB/s", f"{new_float} MB/s", False))
+
+        old_val_bool = self._get_config_bool("DEVELOPMENT", "simulated_disk_io_compression", True)
+        new_val_bool = self.simulated_compression_checkbox.isChecked()
+        if old_val_bool != new_val_bool:
+            changes.append(("Simulate Compression", str(old_val_bool), str(new_val_bool), False))
 
         return changes
 

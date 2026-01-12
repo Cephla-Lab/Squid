@@ -18,6 +18,7 @@ from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QAction,
     QDockWidget,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QTabWidget,
@@ -34,6 +35,7 @@ from _def import (
     LIVE_ONLY_MODE,
     RUN_FLUIDICS,
     SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS,
+    SIMULATED_DISK_IO_ENABLED,
     SUPPORT_SCIMICROSCOPY_LED_ARRAY,
     USE_JUPYTER_CONSOLE,
     USE_NAPARI_WELL_SELECTION,
@@ -336,6 +338,19 @@ class HighContentScreeningGui(QMainWindow):
 
         self.recordTabWidget: QTabWidget = QTabWidget()
         self.cameraTabWidget: QTabWidget = QTabWidget()
+
+        # Warning banner for simulated disk I/O mode
+        self.simulated_io_warning_banner: Optional[QLabel] = None
+        if SIMULATED_DISK_IO_ENABLED:
+            self.simulated_io_warning_banner = QLabel(
+                "SIMULATED DISK I/O: Images are NOT being saved to disk!"
+            )
+            self.simulated_io_warning_banner.setStyleSheet(
+                "background-color: #cc0000; color: white; font-weight: bold; "
+                "padding: 8px; font-size: 14px;"
+            )
+            self.simulated_io_warning_banner.setAlignment(Qt.AlignCenter)
+
         self.load_widgets()
         self.setup_layout()
         self.make_connections()
@@ -1158,30 +1173,20 @@ class HighContentScreeningGui(QMainWindow):
     @handles(AcquisitionStarted)
     def _on_acquisition_started(self, event: AcquisitionStarted) -> None:
         """Update NDViewer tab when acquisition starts."""
-        self._update_ndviewer_for_acquisition()
-
-    def _update_ndviewer_for_acquisition(self) -> None:
-        """Update NDViewer tab to point at the current acquisition folder."""
         if getattr(self, "ndviewerTab", None) is None:
             return
 
         try:
-            # Get path info from multipoint controller
-            multipoint = getattr(self._controllers, "multipoint", None) if self._controllers else None
-            if multipoint is None:
-                self.log.debug("_update_ndviewer_for_acquisition: no multipoint controller")
-                return
-
-            base_path = getattr(multipoint, "base_path", None)
-            experiment_id = getattr(multipoint, "experiment_ID", None)
-            self.log.debug(f"_update_ndviewer_for_acquisition: base_path={base_path}, experiment_id={experiment_id}")
+            base_path = event.base_path
+            experiment_id = event.experiment_id
+            self.log.debug(f"_on_acquisition_started: base_path={base_path}, experiment_id={experiment_id}")
 
             if base_path and experiment_id:
                 dataset_path = os.path.join(base_path, experiment_id)
                 self.log.debug(f"Setting NDViewer dataset path to: {dataset_path}")
                 self.ndviewerTab.set_dataset_path(dataset_path)
             else:
-                self.log.debug("_update_ndviewer_for_acquisition: base_path or experiment_id not set")
+                self.log.debug("_on_acquisition_started: base_path or experiment_id not set in event")
         except Exception:
             self.log.exception("Failed to update NDViewer tab for new acquisition")
 

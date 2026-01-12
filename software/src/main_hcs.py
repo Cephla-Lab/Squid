@@ -26,6 +26,7 @@ squid.core.logging.setup_uncaught_exception_logging()
 import squid.ui.main_window as gui
 from _def import USE_TERMINAL_CONSOLE
 from _def import SQUID_ICON_PATH
+from _def import SIMULATED_DISK_IO_ENABLED
 import squid.core.utils.hardware_utils
 from squid.application import ApplicationContext
 
@@ -275,6 +276,18 @@ if __name__ == "__main__":
             log.info(f"TCP control server started on port {args.server_port}")
         except Exception as e:
             log.error(f"Failed to start TCP control server: {e}")
+
+    # Show startup warning if simulated disk I/O is enabled
+    if SIMULATED_DISK_IO_ENABLED:
+        QMessageBox.warning(
+            win,
+            "Simulated Disk I/O Mode",
+            "SIMULATED DISK I/O IS ENABLED\n\n"
+            "Images are encoded but NOT saved to disk!\n\n"
+            "This mode is for testing acquisition speed only.\n"
+            "NO DATA WILL BE SAVED during acquisitions.\n\n"
+            "To disable: Configuration > Advanced > Development Settings",
+        )
 
     win.show()
 

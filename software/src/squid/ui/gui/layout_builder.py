@@ -151,7 +151,9 @@ def setup_single_window_layout(gui: "HighContentScreeningGui") -> None:
             # Connect collapse to change height
             _setup_focus_lock_collapse(gui, focus_lock_widget)
 
-    gui.setCentralWidget(main_dockArea)
+    # Wrap with warning banner if simulated disk I/O is enabled
+    central_widget = _wrap_with_warning_banner(gui, main_dockArea)
+    gui.setCentralWidget(central_widget)
 
     gui.setMinimumSize(*get_main_window_minimum_size())
     gui.onTabChanged(gui.recordTabWidget.currentIndex())
@@ -178,6 +180,21 @@ def _setup_focus_lock_collapse(gui: "HighContentScreeningGui", focus_lock_widget
 
         focus_lock_widget._collapse_btn.clicked.disconnect()
         focus_lock_widget._collapse_btn.clicked.connect(on_collapse_toggle)
+
+
+def _wrap_with_warning_banner(gui: "HighContentScreeningGui", main_widget: QWidget) -> QWidget:
+    """Wrap main widget with a warning banner if simulated disk I/O is enabled."""
+    if getattr(gui, "simulated_io_warning_banner", None) is None:
+        return main_widget
+
+    # Create container with banner on top
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    layout.addWidget(gui.simulated_io_warning_banner)
+    layout.addWidget(main_widget)
+    return container
 
 
 def setup_multi_window_layout(gui: "HighContentScreeningGui") -> None:

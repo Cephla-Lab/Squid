@@ -21,6 +21,7 @@ from _def import (
     SCAN_STABILIZATION_TIME_MS_Y,
     SCAN_STABILIZATION_TIME_MS_Z,
     SEGMENTATION_CROP,
+    SIMULATED_DISK_IO_ENABLED,
     TriggerMode,
 )
 import squid.core.utils.hardware_utils as utils
@@ -351,6 +352,7 @@ class MultiPointWorker:
         self._progress_tracker = ProgressTracker(
             event_bus=self._event_bus,
             experiment_id=self.experiment_ID or "",
+            base_path=self.base_path or "",
         )
         self._coordinate_tracker = CoordinateTracker(use_piezo=self.use_piezo)
 
@@ -1588,7 +1590,7 @@ class MultiPointWorker:
             total_z_levels=self.NZ,
             z_projection_mode=self._downsampled_z_projection,
             skip_saving=self.skip_saving,
-            save_well_images=self._save_downsampled_well_images,
+            save_well_images=self._save_downsampled_well_images and not SIMULATED_DISK_IO_ENABLED,
             interpolation_method=self._downsampled_interpolation_method,
         )
 
