@@ -462,6 +462,9 @@ class MultiPointWorker:
         # Final drain of all output queues
         self._summarize_runner_outputs(drain_all=True)
 
+        # Release backpressure resources now that all job runners are shut down
+        self._backpressure.close()
+
     def wait_till_operation_is_completed(self):
         self.microcontroller.wait_till_operation_is_completed()
 

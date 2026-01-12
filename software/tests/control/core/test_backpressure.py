@@ -276,6 +276,22 @@ class TestBackpressureController:
         assert result is True
         assert elapsed < 1.0  # Should release quickly after job completion
 
+    def test_close_releases_resources(self):
+        """close() releases multiprocessing resources to avoid semaphore leaks."""
+        controller = BackpressureController(max_jobs=10, max_mb=500.0)
+
+        # Verify resources exist before close
+        assert controller._pending_jobs is not None
+        assert controller._pending_bytes is not None
+        assert controller._capacity_event is not None
+
+        controller.close()
+
+        # Verify resources are released after close
+        assert controller._pending_jobs is None
+        assert controller._pending_bytes is None
+        assert controller._capacity_event is None
+
 
 class TestJobRunnerBackpressureTracking:
     """Tests for JobRunner backpressure tracking integration."""

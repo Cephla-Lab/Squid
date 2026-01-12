@@ -135,3 +135,9 @@ class BackpressureController:
             self._pending_jobs.value = 0
         with self._pending_bytes.get_lock():
             self._pending_bytes.value = 0
+
+    def close(self) -> None:
+        """Release multiprocessing resources to avoid semaphore leaks."""
+        self._pending_jobs = None
+        self._pending_bytes = None
+        self._capacity_event = None
