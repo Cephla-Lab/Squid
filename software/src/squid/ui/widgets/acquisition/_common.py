@@ -6,4 +6,3 @@ if TYPE_CHECKING:
     pass
 
 
-from _def import *

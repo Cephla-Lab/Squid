@@ -23,6 +23,8 @@ from qtpy.QtWidgets import (
 import _def
 from squid.core.config.focus_lock import FocusLockConfig
 from squid.core.events import (
+    auto_subscribe,
+    handles,
     FocusLockFrameUpdated,
     FocusLockMetricsUpdated,
     FocusLockModeChanged,
@@ -626,12 +628,7 @@ class FocusLockStatusWidget(EventBusFrame):
         self._update_collapsed_ui()
 
     def _connect_events(self) -> None:
-        self._subscribe(FocusLockStatusChanged, self._on_status_changed)
-        self._subscribe(FocusLockMetricsUpdated, self._on_metrics_updated)
-        self._subscribe(FocusLockFrameUpdated, self._on_frame_updated)
-        self._subscribe(FocusLockWarning, self._on_warning)
-        self._subscribe(FocusLockModeChanged, self._on_mode_changed)
-        self._subscribe(FocusLockSearchProgress, self._on_search_progress)
+        self._subscriptions = auto_subscribe(self, self._bus)
 
     def _toggle_collapsed(self) -> None:
         self._collapsed = not self._collapsed
@@ -716,10 +713,12 @@ class FocusLockStatusWidget(EventBusFrame):
         if delta != 0.0:
             self._publish(AdjustFocusLockTargetCommand(delta_um=delta))
 
+    @handles(FocusLockModeChanged)
     def _on_mode_changed(self, event: FocusLockModeChanged) -> None:
         self._mode = event.mode
         self._sync_mode_ui()
 
+    @handles(FocusLockStatusChanged)
     def _on_status_changed(self, event: FocusLockStatusChanged) -> None:
         self._status = event.status
         self._is_running = event.status in ("ready", "locked", "recovering", "searching", "lost")
@@ -727,6 +726,7 @@ class FocusLockStatusWidget(EventBusFrame):
         self._lock_buffer_length = event.lock_buffer_length
         self._sync_status_ui()
 
+    @handles(FocusLockMetricsUpdated)
     def _on_metrics_updated(self, event: FocusLockMetricsUpdated) -> None:
         self._z_position_um = event.z_position_um
         self._z_error_um = event.z_error_um
@@ -837,6 +837,7 @@ class FocusLockStatusWidget(EventBusFrame):
         self._lock_label.setText(lock_text)
         self._collapsed_lock.setText(f"Lock: {lock_text}")
 
+    @handles(FocusLockFrameUpdated)
     def _on_frame_updated(self, event: FocusLockFrameUpdated) -> None:
         """Handle frame update events from focus lock controller."""
         self._spot_preview.set_frame(
@@ -867,6 +868,7 @@ class FocusLockStatusWidget(EventBusFrame):
             self._jump_btn.setToolTip("Move piezo to center + offset")
             self._center_btn.setToolTip("Move piezo to center of range")
 
+    @handles(FocusLockWarning)
     def _on_warning(self, event: FocusLockWarning) -> None:
         # Log warnings from backend but no separate indicator
         pass
@@ -889,6 +891,7 @@ class FocusLockStatusWidget(EventBusFrame):
         center = self._piezo_range_um / 2.0
         self._publish(SetPiezoPositionCommand(position_um=center))
 
+    @handles(FocusLockSearchProgress)
     def _on_search_progress(self, event: FocusLockSearchProgress) -> None:
         """Handle search progress events."""
         # Update status label to show search progress

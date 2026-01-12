@@ -1,4 +1,38 @@
-from squid.ui.widgets.camera._common import *
+from squid.ui.widgets.camera._common import (
+    Any,
+    AutoLevelCommand,
+    ChannelConfigurationsChanged,
+    EventBusFrame,
+    List,
+    LiveStateChanged,
+    MicroscopeModeChanged,
+    ObjectiveChanged,
+    Optional,
+    ProfileChanged,
+    QComboBox,
+    QDoubleSpinBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QSlider,
+    QVBoxLayout,
+    Qt,
+    SetMicroscopeModeCommand,
+    SetTriggerFPSCommand,
+    SetTriggerModeCommand,
+    StartLiveCommand,
+    StopLiveCommand,
+    StreamHandler,
+    TriggerFPSChanged,
+    TriggerMode,
+    TriggerModeChanged,
+    UpdateChannelConfigurationCommand,
+    auto_subscribe,
+    handles,
+    squid,
+)
 
 
 class LiveControlWidget(EventBusFrame):
@@ -66,16 +100,10 @@ class LiveControlWidget(EventBusFrame):
 
         self.is_switching_mode = False  # flag used to prevent from settings being set by twice - from both mode change slot and value change slot; another way is to use blockSignals(True)
 
-        # Subscribe to state changes using base class helper
-        self._subscribe(LiveStateChanged, self._on_live_state_changed)
-        self._subscribe(TriggerModeChanged, self._on_trigger_mode_changed)
-        self._subscribe(TriggerFPSChanged, self._on_trigger_fps_changed)
-        self._subscribe(MicroscopeModeChanged, self._on_microscope_mode_changed)
-        self._subscribe(AutoLevelCommand, self._on_autolevel_command)
-        self._subscribe(ObjectiveChanged, self._on_objective_changed)
-        self._subscribe(ChannelConfigurationsChanged, self._on_channel_configs_changed)
-        self._subscribe(ProfileChanged, self._on_profile_changed)
+        # Subscribe to state changes using @handles decorators
+        self._subscriptions = auto_subscribe(self, self._bus)
 
+    @handles(AutoLevelCommand)
     def _on_autolevel_command(self, event: AutoLevelCommand) -> None:
         self.toggle_autolevel(event.enabled)
 
@@ -245,6 +273,7 @@ class LiveControlWidget(EventBusFrame):
             self._log.info("Publishing StopLiveCommand")
             self._publish(StopLiveCommand())
 
+    @handles(LiveStateChanged)
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Handle live state changes from the event bus."""
         if getattr(event, "camera", "main") != "main":
@@ -257,6 +286,7 @@ class LiveControlWidget(EventBusFrame):
             self.btn_live.setChecked(False)
             self.btn_live.setText("Start Live")
 
+    @handles(TriggerModeChanged)
     def _on_trigger_mode_changed(self, event: TriggerModeChanged) -> None:
         """Handle trigger mode change from service."""
         if getattr(event, "camera", "main") != "main":
@@ -265,6 +295,7 @@ class LiveControlWidget(EventBusFrame):
         self.dropdown_triggerManu.setCurrentText(event.mode)
         self.dropdown_triggerManu.blockSignals(False)
 
+    @handles(TriggerFPSChanged)
     def _on_trigger_fps_changed(self, event: TriggerFPSChanged) -> None:
         """Handle trigger FPS change from service."""
         if getattr(event, "camera", "main") != "main":
@@ -273,6 +304,7 @@ class LiveControlWidget(EventBusFrame):
         self.entry_triggerFPS.setValue(event.fps)
         self.entry_triggerFPS.blockSignals(False)
 
+    @handles(MicroscopeModeChanged)
     def _on_microscope_mode_changed(self, event: MicroscopeModeChanged) -> None:
         """Handle microscope mode change from service."""
         self.dropdown_modeSelection.blockSignals(True)
@@ -300,6 +332,7 @@ class LiveControlWidget(EventBusFrame):
             self.entry_illuminationIntensity.setValue(event.illumination_intensity)
             self.entry_illuminationIntensity.blockSignals(False)
 
+    @handles(ObjectiveChanged)
     def _on_objective_changed(self, event: ObjectiveChanged) -> None:
         """Handle objective change event."""
         if event.objective_name:
@@ -312,12 +345,14 @@ class LiveControlWidget(EventBusFrame):
                 )
             )
 
+    @handles(ChannelConfigurationsChanged)
     def _on_channel_configs_changed(self, event: ChannelConfigurationsChanged) -> None:
         """Handle channel configurations changed event."""
         if event.objective_name == self._current_objective:
             self._channel_config_names = list(event.configuration_names)
             self.refresh_mode_list()
 
+    @handles(ProfileChanged)
     def _on_profile_changed(self, event: ProfileChanged) -> None:
         """Handle profile changed event - refresh mode list and reselect current mode."""
         self.refresh_mode_list()

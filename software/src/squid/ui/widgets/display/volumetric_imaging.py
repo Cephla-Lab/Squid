@@ -4,12 +4,16 @@ import os
 os.environ["QT_API"] = "pyqt5"
 
 # qt libraries
-from qtpy.QtCore import *
-from qtpy.QtWidgets import *
-from qtpy.QtGui import *
+from qtpy.QtCore import QObject, Qt, Signal
+from qtpy.QtWidgets import (
+    QApplication,
+    QGridLayout,
+    QMainWindow,
+    QWidget,
+)
 
 import squid.core.utils.hardware_utils as utils
-from _def import *
+from _def import AF, VOLUMETRIC_IMAGING
 
 from typing import Any
 import time

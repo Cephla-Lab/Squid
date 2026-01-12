@@ -11,25 +11,23 @@ if TYPE_CHECKING:
 
 from _def import (
     CAMERA_TYPE,
-    ENABLE_SPINNING_DISK_CONFOCAL,
-    ENABLE_NL5,
-    USE_DRAGONFLY,
-    USE_XERYON,
-    SUPPORT_LASER_AUTOFOCUS,
-    RUN_FLUIDICS,
     WELLPLATE_FORMAT,
     TUBE_LENS_MM,
     DEFAULT_OBJECTIVE,
 )
 import squid.ui.widgets as widgets
 from squid.core.utils.config_utils import ChannelMode
+from squid.core.config.feature_flags import get_feature_flags
+
+
+_FEATURE_FLAGS = get_feature_flags()
 
 
 def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
     """Create hardware control widgets (confocal, DAC, objectives, etc.)."""
     # Spinning disk confocal widget
-    if ENABLE_SPINNING_DISK_CONFOCAL:
-        if USE_DRAGONFLY:
+    if _FEATURE_FLAGS.is_enabled("ENABLE_SPINNING_DISK_CONFOCAL"):
+        if _FEATURE_FLAGS.is_enabled("USE_DRAGONFLY"):
             gui.spinningDiskConfocalWidget = widgets.DragonflyConfocalWidget(
                 gui.dragonfly,
                 event_bus=gui._ui_event_bus,
@@ -43,7 +41,7 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
             )
 
     # NL5 widget
-    if ENABLE_NL5:
+    if _FEATURE_FLAGS.is_enabled("ENABLE_NL5"):
         import squid.ui.widgets.nl5 as NL5Widget
 
         gui.nl5Wdiget = NL5Widget.NL5Widget(gui.nl5)
@@ -196,7 +194,7 @@ def create_hardware_widgets(gui: "HighContentScreeningGui") -> None:
         gui.piezoWidget = widgets.PiezoWidget(gui.piezo, event_bus=gui._ui_event_bus)
 
     # Objectives widget
-    if USE_XERYON:
+    if _FEATURE_FLAGS.is_enabled("USE_XERYON"):
         gui.objectivesWidget = widgets.ObjectivesWidget(
             gui.objectiveStore, gui.objective_changer, gui._ui_event_bus
         )
@@ -292,7 +290,7 @@ def create_laser_autofocus_widgets(gui: "HighContentScreeningGui") -> None:
     """Create laser autofocus widgets if supported."""
     from squid.ui.widgets.display.image_display import ImageDisplayWindow
 
-    if not SUPPORT_LASER_AUTOFOCUS:
+    if not _FEATURE_FLAGS.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
         return
 
     # Focus camera uses its own service for exposure/gain limits
@@ -336,17 +334,13 @@ def create_laser_autofocus_widgets(gui: "HighContentScreeningGui") -> None:
 
 def create_fluidics_widget(gui: "HighContentScreeningGui") -> None:
     """Create fluidics widget if enabled."""
-    if RUN_FLUIDICS:
+    if _FEATURE_FLAGS.is_enabled("RUN_FLUIDICS"):
         gui.fluidicsWidget = widgets.FluidicsWidget(gui.fluidics, event_bus=gui._ui_event_bus)
 
 
 def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
     """Create acquisition widgets (multipoint, tracking, etc.)."""
-    from _def import (
-        ENABLE_TRACKING,
-        USE_TEMPLATE_MULTIPOINT,
-        TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
-    )
+    from _def import TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS
     from squid.ui.widgets.custom_multipoint import TemplateMultiPointWidget
 
     # Seed initial state for acquisition widgets
@@ -394,7 +388,7 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
         z_ustep_per_mm=z_ustep_per_mm,
         initial_z_mm=initial_z_mm,
     )
-    if USE_TEMPLATE_MULTIPOINT:
+    if _FEATURE_FLAGS.is_enabled("USE_TEMPLATE_MULTIPOINT"):
         gui.templateMultiPointWidget = TemplateMultiPointWidget(
             gui.focusMapWidget,
             gui._ui_event_bus,
@@ -411,7 +405,7 @@ def create_acquisition_widgets(gui: "HighContentScreeningGui") -> None:
         gui.objectivesWidget, gui.wellplateFormatWidget, event_bus=gui._ui_event_bus
     )
 
-    if ENABLE_TRACKING:
+    if _FEATURE_FLAGS.is_enabled("ENABLE_TRACKING"):
         if not hasattr(gui, "imageDisplayWindow") or gui.imageDisplayWindow is None:
             raise RuntimeError("Tracking requires ImageDisplayWindow for ROI selection")
         gui.trackingControlWidget = widgets.TrackingControllerWidget(

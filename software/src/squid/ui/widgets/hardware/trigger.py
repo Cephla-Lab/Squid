@@ -13,6 +13,8 @@ from qtpy.QtWidgets import (
 from _def import TriggerMode
 from squid.ui.widgets.base import EventBusFrame
 from squid.core.events import (
+    auto_subscribe,
+    handles,
     SetTriggerModeCommand,
     SetTriggerFPSCommand,
     SetCameraTriggerFrequencyCommand,
@@ -43,8 +45,7 @@ class TriggerControlWidget(EventBusFrame):
         self.triggerMode: Optional[str] = TriggerMode.SOFTWARE
         self.add_components()
         self.setFrameStyle(self.Panel | self.Raised)
-        self._subscribe(TriggerModeChanged, self._on_trigger_mode_changed)
-        self._subscribe(TriggerFPSChanged, self._on_trigger_fps_changed)
+        self._subscriptions = auto_subscribe(self, self._bus)
 
     def add_components(self) -> None:
         # line 0: trigger mode
@@ -96,6 +97,7 @@ class TriggerControlWidget(EventBusFrame):
         self._publish(SetCameraTriggerFrequencyCommand(fps=self.fps_trigger))
         self._publish(SetTriggerFPSCommand(fps=self.fps_trigger))
 
+    @handles(TriggerModeChanged)
     def _on_trigger_mode_changed(self, event: TriggerModeChanged) -> None:
         """Sync UI from trigger mode state changes."""
         if getattr(event, "camera", "main") != "main":
@@ -104,6 +106,7 @@ class TriggerControlWidget(EventBusFrame):
         self.dropdown_triggerManu.setCurrentText(event.mode)
         self.dropdown_triggerManu.blockSignals(False)
 
+    @handles(TriggerFPSChanged)
     def _on_trigger_fps_changed(self, event: TriggerFPSChanged) -> None:
         """Sync UI from trigger FPS state changes."""
         if getattr(event, "camera", "main") != "main":

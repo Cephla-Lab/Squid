@@ -1,0 +1,35 @@
+{
+  "name": "Cross-Cutting Infrastructure Patterns",
+  "created": "2026-01-10",
+  "status": "planning",
+  "priority": "medium",
+  "description": "Systematic infrastructure improvements addressing common anti-patterns across the codebase: event subscription boilerplate, feature flag sprawl, axis method repetition, and mixed widget concerns.",
+  "dependencies": ["multipoint-refactor-20251230"],
+  "key_deliverables": [
+    "@handles event decorator and EventSubscriberMixin",
+    "FeatureFlags centralized registry",
+    "Microcontroller axis parameterization",
+    "ScanCoordinates decomposition",
+    "LaserSpotDetector extraction",
+    "ControllerFactory for application.py",
+    "Presenter base class for MVP pattern"
+  ],
+  "files_to_create": [
+    "software/src/squid/core/config/feature_flags.py",
+    "software/src/squid/backend/factories/controller_factory.py",
+    "software/src/squid/backend/processing/laser_spot_detection.py",
+    "software/src/squid/backend/managers/scan_coordinates/__init__.py",
+    "software/src/squid/backend/managers/scan_coordinates/region_store.py",
+    "software/src/squid/backend/managers/scan_coordinates/grid_generator.py",
+    "software/src/squid/backend/managers/scan_coordinates/wellplate_generator.py",
+    "software/src/squid/ui/presenters/base.py"
+  ],
+  "files_to_modify": [
+    "software/src/squid/core/events.py",
+    "software/src/squid/backend/microcontroller.py",
+    "software/src/squid/backend/services/base.py",
+    "software/src/squid/application.py",
+    "software/src/squid/backend/controllers/autofocus/laser_auto_focus_controller.py",
+    "software/src/squid/ui/gui/widget_factory.py"
+  ]
+}

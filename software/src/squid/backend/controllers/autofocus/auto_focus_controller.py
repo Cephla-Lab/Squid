@@ -15,6 +15,15 @@ from squid.backend.controllers.autofocus.auto_focus_worker import AutofocusWorke
 from squid.backend.controllers.live_controller import LiveController
 from squid.core.state_machine import StateMachine
 from squid.core.mode_gate import GlobalMode, GlobalModeGate
+from squid.core.events import (
+    AutofocusWorkerFinished,
+    SetAutofocusParamsCommand,
+    StartAutofocusCommand,
+    StopAutofocusCommand,
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
+)
 
 if TYPE_CHECKING:
     from squid.backend.services import (
@@ -94,27 +103,13 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
         self._autofocus_abort_requested: bool = False
         self.focus_map_coords: List[Tuple[float, float, float]] = []
         self.use_focus_map: bool = False
+        self._focus_map_surface: Optional[object] = None
         self.was_live_before_autofocus: bool = False
         self.callback_was_enabled_before_autofocus: bool = False
 
-        self._subscribe_to_bus()
-
-    def _subscribe_to_bus(self) -> None:
-        if self._event_bus is None:
-            return
-        from squid.core.events import (
-            StartAutofocusCommand,
-            StopAutofocusCommand,
-            SetAutofocusParamsCommand,
-            AutofocusWorkerFinished,
-        )
-
-        self._event_bus.subscribe(StartAutofocusCommand, self._on_start_command)
-        self._event_bus.subscribe(StopAutofocusCommand, self._on_stop_command)
-        self._event_bus.subscribe(
-            SetAutofocusParamsCommand, self._on_set_params_command
-        )
-        self._event_bus.subscribe(AutofocusWorkerFinished, self._on_worker_finished)
+        self._subscriptions = []
+        if self._event_bus:
+            self._subscriptions = auto_subscribe(self, self._event_bus)
 
     def _publish_state_changed(
         self, old_state: AutofocusControllerState, new_state: AutofocusControllerState
@@ -146,6 +141,15 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
         self.crop_width = crop_width
         self.crop_height = crop_height
 
+    def set_focus_map_surface(self, focus_map: Optional[object]) -> None:
+        """Attach an optional focus map surface for interpolation."""
+        self._focus_map_surface = focus_map
+
+    @property
+    def focus_map_surface(self) -> Optional[object]:
+        """Return the currently configured focus map surface, if any."""
+        return self._focus_map_surface
+
     def autofocus(self, focus_map_override: bool = False) -> None:
         # Check we're in IDLE state
         if not self._is_in_state(AutofocusControllerState.IDLE):
@@ -163,13 +167,32 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
             self._stage_service.wait_for_idle(1.0)
             pos = self._stage_service.get_position()
 
-            # z here is in mm because that's how the navigation controller stores it
-            target_z = utils.interpolate_plane(
-                *self.focus_map_coords[:3], (pos.x_mm, pos.y_mm)
-            )
-            self._log.info(
-                f"Interpolated target z as {target_z} mm from focus map, moving there."
-            )
+            target_z: Optional[float] = None
+            if self._focus_map_surface is not None:
+                try:
+                    target_z = float(self._focus_map_surface.interpolate(pos.x_mm, pos.y_mm))
+                    self._log.info(
+                        f"Interpolated target z as {target_z} mm from focus surface map, moving there."
+                    )
+                except Exception:
+                    self._log.exception(
+                        "Focus map surface interpolation failed; falling back to plane interpolation"
+                    )
+                    target_z = None
+
+            if target_z is None:
+                if len(self.focus_map_coords) < 3:
+                    self._log.error(
+                        "Not enough focus map coordinates for plane interpolation; skipping focus map move."
+                    )
+                    target_z = pos.z_mm
+                else:
+                    target_z = utils.interpolate_plane(
+                        *self.focus_map_coords[:3], (pos.x_mm, pos.y_mm)
+                    )
+                    self._log.info(
+                        f"Interpolated target z as {target_z} mm from focus map plane, moving there."
+                    )
             self._stage_service.move_z_to(target_z)
             self._transition_to(AutofocusControllerState.COMPLETED)
             self._publish_completed(success=True, error=None)
@@ -260,6 +283,7 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
         self._autofocus_abort_requested = True
         self._keep_running.clear()
 
+    @handles(AutofocusWorkerFinished)
     def _on_worker_finished(self, event) -> None:
         if not self.autofocus_in_progress:
             return
@@ -330,6 +354,7 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
     # ============================================================
     # EventBus command handlers
     # ============================================================
+    @handles(StartAutofocusCommand)
     def _on_start_command(self, _cmd) -> None:
         """Handle StartAutofocusCommand."""
         if self.autofocus_in_progress:
@@ -337,10 +362,12 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
             return
         self.autofocus()
 
+    @handles(StopAutofocusCommand)
     def _on_stop_command(self, _cmd) -> None:
         """Handle StopAutofocusCommand."""
         self.stop_autofocus()
 
+    @handles(SetAutofocusParamsCommand)
     def _on_set_params_command(self, cmd) -> None:
         """Handle SetAutofocusParamsCommand."""
         if cmd.n_planes is not None:
@@ -353,31 +380,97 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
             self._log.info("Disabling focus map.")
             self.use_focus_map = False
             return
+        if self._focus_map_surface is not None:
+            if getattr(self._focus_map_surface, "is_fitted", True):
+                self._log.info("Enabling focus map surface.")
+                self.use_focus_map = True
+                return
+            self._log.warning("Focus map surface is not fitted; falling back to plane checks.")
+
         if len(self.focus_map_coords) < 3:
             self._log.error(
                 "Not enough coordinates (less than 3) for focus map generation, disabling focus map."
             )
             self.use_focus_map = False
             return
-        x1, y1, _ = self.focus_map_coords[0]
-        x2, y2, _ = self.focus_map_coords[1]
-        x3, y3, _ = self.focus_map_coords[2]
 
-        detT = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
-        if detT == 0:
+        non_collinear_indices = None
+        for i in range(len(self.focus_map_coords) - 2):
+            x1, y1, _ = self.focus_map_coords[i]
+            for j in range(i + 1, len(self.focus_map_coords) - 1):
+                x2, y2, _ = self.focus_map_coords[j]
+                for k in range(j + 1, len(self.focus_map_coords)):
+                    x3, y3, _ = self.focus_map_coords[k]
+                    detT = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
+                    if detT != 0:
+                        non_collinear_indices = (i, j, k)
+                        break
+                if non_collinear_indices is not None:
+                    break
+            if non_collinear_indices is not None:
+                break
+
+        if non_collinear_indices is None:
             self._log.error(
-                "Your 3 x-y coordinates are linear, cannot use to interpolate, disabling focus map."
+                "Your x-y coordinates are linear, cannot use to interpolate, disabling focus map."
             )
             self.use_focus_map = False
             return
 
-        if enable:
-            self._log.info("Enabling focus map.")
-            self.use_focus_map = True
+        i, j, k = non_collinear_indices
+        if (i, j, k) != (0, 1, 2):
+            reordered = [
+                self.focus_map_coords[i],
+                self.focus_map_coords[j],
+                self.focus_map_coords[k],
+            ]
+            reordered.extend(
+                coord
+                for idx, coord in enumerate(self.focus_map_coords)
+                if idx not in (i, j, k)
+            )
+            self.focus_map_coords = reordered
+
+        self._log.info("Enabling focus map.")
+        self.use_focus_map = True
 
     def clear_focus_map(self) -> None:
         self.focus_map_coords = []
+        self._focus_map_surface = None
         self.set_focus_map_use(False)
+
+    def sample_focus_point(
+        self, x_mm: float, y_mm: float, timeout_s: Optional[float] = None
+    ) -> Tuple[float, float, float]:
+        """Move to a coordinate, autofocus, and return the focused position."""
+        self._log.info(f"Navigating to coordinates ({x_mm},{y_mm}) to sample for focus map")
+        self._stage_service.move_x_to(x_mm)
+        self._stage_service.move_y_to(y_mm)
+
+        self._log.info("Autofocusing")
+        self.autofocus(True)
+        if not self.wait_till_autofocus_has_completed(timeout_s=timeout_s):
+            self._log.warning("Autofocus did not complete while sampling focus map")
+
+        pos = self._stage_service.get_position()
+        self._log.info(
+            f"Adding coordinates ({pos.x_mm},{pos.y_mm},{pos.z_mm}) to focus map"
+        )
+        return (pos.x_mm, pos.y_mm, pos.z_mm)
+
+    def sample_focus_map_points(
+        self,
+        coords: List[Tuple[float, float]],
+        timeout_s: Optional[float] = None,
+    ) -> List[Tuple[float, float, float]]:
+        """Sample multiple focus points by moving and autofocusing at each coordinate."""
+        self.focus_map_coords = []
+        for x_mm, y_mm in coords:
+            self.focus_map_coords.append(
+                self.sample_focus_point(x_mm, y_mm, timeout_s=timeout_s)
+            )
+        self._log.info("Generated focus map.")
+        return list(self.focus_map_coords)
 
     def gen_focus_map(
         self,
@@ -398,29 +491,11 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
         if detT == 0:
             raise ValueError("Your 3 x-y coordinates are linear")
 
-        self.focus_map_coords = []
-
-        for coord in [coord1, coord2, coord3]:
-            self._log.info(
-                f"Navigating to coordinates ({coord[0]},{coord[1]}) to sample for focus map"
-            )
-            self._stage_service.move_x_to(coord[0])
-            self._stage_service.move_y_to(coord[1])
-
-            self._log.info("Autofocusing")
-            self.autofocus(True)
-            self.wait_till_autofocus_has_completed()
-
-            pos = self._stage_service.get_position()
-
-            self._log.info(
-                f"Adding coordinates ({pos.x_mm},{pos.y_mm},{pos.z_mm}) to focus map"
-            )
-            self.focus_map_coords.append((pos.x_mm, pos.y_mm, pos.z_mm))
-
-        self._log.info("Generated focus map.")
+        self._focus_map_surface = None
+        self.sample_focus_map_points([coord1, coord2, coord3])
 
     def add_current_coords_to_focus_map(self) -> None:
+        self._focus_map_surface = None
         if len(self.focus_map_coords) >= 3:
             self._log.info("Replacing last coordinate on focus map.")
         self._stage_service.wait_for_idle(timeout_s=0.5)
@@ -446,3 +521,8 @@ class AutoFocusController(StateMachine[AutofocusControllerState]):
             self.focus_map_coords.pop()
         self.focus_map_coords.append((x, y, z))
         self._log.info(f"Added triple ({x},{y},{z}) to focus map")
+
+    def shutdown(self) -> None:
+        if self._event_bus:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+        self._subscriptions = []

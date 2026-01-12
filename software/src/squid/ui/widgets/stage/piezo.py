@@ -1,6 +1,23 @@
 from typing import Callable, List, Tuple, Type, TYPE_CHECKING
-from squid.ui.widgets.stage._common import *
-from squid.core.events import PiezoPositionChanged, SetPiezoPositionCommand
+from squid.ui.widgets.stage._common import (
+    Any,
+    Optional,
+    PiezoStage,
+    QDoubleSpinBox,
+    QFrame,
+    QHBoxLayout,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    Qt,
+)
+from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
+    PiezoPositionChanged,
+    SetPiezoPositionCommand,
+)
 
 if TYPE_CHECKING:
     from squid.ui.ui_event_bus import UIEventBus
@@ -22,7 +39,7 @@ class PiezoWidget(QFrame):
 
         # Subscribe to piezo position events via UIEventBus (thread-safe)
         if self._event_bus is not None:
-            self._subscribe(PiezoPositionChanged, self._on_piezo_position_changed)
+            self._subscriptions = auto_subscribe(self, self._event_bus)
 
         # UI components
         self.slider: QSlider
@@ -152,28 +169,14 @@ class PiezoWidget(QFrame):
         self.update_spinBox()
         self.update_slider()
 
-    # -------------------------------------------------------------------------
-    # EventBus subscription methods
-    # -------------------------------------------------------------------------
-
-    def _subscribe(self, event_type: Type, handler: Callable) -> None:
-        """Subscribe to an event type with automatic cleanup tracking."""
-        if self._event_bus is not None:
-            self._event_bus.subscribe(event_type, handler)
-            self._subscriptions.append((event_type, handler))
-
-    def _cleanup_subscriptions(self) -> None:
-        """Unsubscribe all tracked subscriptions."""
-        if self._event_bus is not None:
-            for event_type, handler in self._subscriptions:
-                self._event_bus.unsubscribe(event_type, handler)
-        self._subscriptions.clear()
-
+    @handles(PiezoPositionChanged)
     def _on_piezo_position_changed(self, event: PiezoPositionChanged) -> None:
         """Handle piezo position changed event - update display."""
         self.update_displacement_um_display(event.position_um)
 
     def closeEvent(self, event: Any) -> None:
         """Clean up subscriptions when widget is closed."""
-        self._cleanup_subscriptions()
+        if self._event_bus is not None and self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
         super().closeEvent(event)

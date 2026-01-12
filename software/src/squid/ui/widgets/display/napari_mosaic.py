@@ -19,6 +19,9 @@ from _def import CHANNEL_COLORS_MAP, MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM, SQUID_ICO
 from squid.backend.managers import ContrastManager
 from squid.backend.controllers.multipoint.job_processing import CaptureInfo
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     EventBus,
     ClickToMoveEnabledChanged,
     MoveStageToCommand,
@@ -359,6 +362,7 @@ class NapariMosaicDisplayWidget(QWidget):
         super().__init__(parent)
 
         self._event_bus = event_bus
+        self._subscriptions: List[Tuple[type, object]] = []
         self.contrastManager = contrastManager
         self.viewer = napari.Viewer(show=False)
         _layout = QVBoxLayout()
@@ -395,18 +399,25 @@ class NapariMosaicDisplayWidget(QWidget):
         self._refresh_timer.start(100)  # 100ms = 10 FPS max
 
         if self._event_bus is not None:
-            self._event_bus.subscribe(
-                ManualShapeDrawingEnabledChanged,
-                lambda e: self.enable_shape_drawing(e.enabled),
-            )
-            self._event_bus.subscribe(
-                SetAcquisitionChannelsCommand,
-                lambda e: self.initChannels(list(e.channel_names)),
-            )
-            self._event_bus.subscribe(
-                ClickToMoveEnabledChanged,
-                lambda e: setattr(self, "_click_to_move_enabled", bool(e.enabled)),
-            )
+            self._subscriptions = auto_subscribe(self, self._event_bus)
+
+    @handles(ManualShapeDrawingEnabledChanged)
+    def _on_manual_shape_drawing_enabled(
+        self, event: ManualShapeDrawingEnabledChanged
+    ) -> None:
+        self.enable_shape_drawing(event.enabled)
+
+    @handles(SetAcquisitionChannelsCommand)
+    def _on_set_acquisition_channels(
+        self, event: SetAcquisitionChannelsCommand
+    ) -> None:
+        self.initChannels(list(event.channel_names))
+
+    @handles(ClickToMoveEnabledChanged)
+    def _on_click_to_move_enabled_changed(
+        self, event: ClickToMoveEnabledChanged
+    ) -> None:
+        self._click_to_move_enabled = bool(event.enabled)
 
     def customizeViewer(self) -> None:
         # Set Squid/Cephla branding on napari viewer
@@ -954,3 +965,9 @@ class NapariMosaicDisplayWidget(QWidget):
 
     def activate(self) -> None:
         self.viewer.window.activate()
+
+    def closeEvent(self, event) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)

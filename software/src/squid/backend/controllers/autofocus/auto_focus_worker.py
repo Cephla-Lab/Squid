@@ -9,6 +9,7 @@ import numpy as np
 import squid.core.logging
 import squid.core.utils.hardware_utils as utils
 import _def
+from squid.core.config.feature_flags import get_feature_flags
 
 if TYPE_CHECKING:
     from squid.core.utils.config_utils import ChannelMode
@@ -52,6 +53,7 @@ class AutofocusWorker:
         self._event_bus = event_bus
         self._stream_handler = stream_handler
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
+        self._feature_flags = get_feature_flags()
 
         self.N: int = n_planes
         self.deltaZ: float = delta_z_mm
@@ -154,14 +156,12 @@ class AutofocusWorker:
             elif self._trigger_mode == _def.TriggerMode.HARDWARE:
                 if (
                     "Fluorescence" in getattr(self._configuration, "name", "")
-                    and _def.ENABLE_NL5
-                    and _def.NL5_USE_DOUT
+                    and self._feature_flags.is_enabled("ENABLE_NL5")
+                    and self._feature_flags.is_enabled("NL5_USE_DOUT")
                 ):
                     if self._nl5_service is None:
                         raise RuntimeError("NL5Service required for NL5-triggered autofocus")
                     self._nl5_service.start_acquisition()
-                    # TODO(imo): This used to use the "reset_image_ready_flag=False" arg, but oinly the toupcam camera implementation had the
-                    #  "reset_image_ready_flag" arg, so this is broken for all other cameras.
                     image = self._read_frame()
                 else:
                     self._send_hardware_trigger(

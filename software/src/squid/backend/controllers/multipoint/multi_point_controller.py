@@ -22,6 +22,10 @@ from squid.backend.controllers.multipoint.multi_point_utils import (
     ScanPositionInformation,
     AcquisitionParameters,
 )
+from squid.backend.controllers.multipoint.acquisition_config import AcquisitionConfig
+from squid.backend.controllers.multipoint.acquisition_context import acquisition_context, AcquisitionContext
+from squid.backend.controllers.multipoint.focus_operations import AutofocusExecutor
+from squid.backend.controllers.multipoint.dependencies import AcquisitionDependencies
 from squid.backend.managers import ScanCoordinates
 from squid.backend.controllers.autofocus import LaserAutofocusController
 from squid.backend.controllers.live_controller import LiveController
@@ -29,11 +33,15 @@ from squid.backend.controllers.multipoint.multi_point_worker import MultiPointWo
 from squid.backend.managers import ObjectiveStore
 from squid.core.state_machine import StateMachine, InvalidStateTransition
 from squid.core.mode_gate import GlobalMode, GlobalModeGate
+from squid.core.config.feature_flags import get_feature_flags
 import squid.core.logging
 
 from typing import TYPE_CHECKING
 
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     SetFluidicsRoundsCommand,
     SetAcquisitionParametersCommand,
     SetAcquisitionPathCommand,
@@ -134,8 +142,12 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             name="MultiPointController",
         )
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
+        self._feature_flags = get_feature_flags()
         self.liveController: LiveController = live_controller
         self.autofocusController: AutoFocusController = autofocus_controller
+        self._autofocus_executor = AutofocusExecutor(
+            autofocus_controller=self.autofocusController
+        )
         self.laserAutoFocusController: LaserAutofocusController = (
             laser_autofocus_controller
         )
@@ -164,62 +176,28 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 "MultiPointController requires StageService, CameraService, and PeripheralService"
             )
 
-        self.NX: int = 1
-        self.deltaX: float = _def.Acquisition.DX
-        self.NY: int = 1
-        self.deltaY: float = _def.Acquisition.DY
-        self.NZ: int = 1
-        # TODO(imo): Switch all to consistent mm units
-        self.deltaZ: float = _def.Acquisition.DZ / 1000
-        self.Nt: int = 1
-        self.deltat: float = 0
-
-        self.do_autofocus: bool = False
-        self.do_reflection_af: bool = False
-        self.display_resolution_scaling: float = (
-            _def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
-        )
-        self.use_piezo: bool = _def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
+        self._config = AcquisitionConfig()
         self.experiment_ID: Optional[str] = None
-        self.use_manual_focus_map: bool = False
         self.base_path: Optional[str] = None
-        self.use_fluidics: bool = False
-        self.skip_saving: bool = False
-        self.xy_mode: str = "Current Position"
 
-        self.focus_map: Optional[Any] = None
-        self.gen_focus_map: bool = False
+        self._focus_map: Optional[Any] = None
         self.focus_map_storage: List[Tuple[float, float, float]] = []
+        self.focus_map_surface_storage: Optional[Any] = None
         self.already_using_fmap: bool = False
         self.selected_configurations: List[Any] = []
         self.scanCoordinates: Optional[ScanCoordinates] = scan_coordinates
         # Expose stage for convenience (delegates to scanCoordinates)
         self.stage = scan_coordinates.stage if scan_coordinates else None
         self.old_images_per_page: int = 1
-        self.z_range: Optional[Tuple[float, float]] = None
-        self.z_stacking_config: str = _def.Z_STACKING_CONFIG
+        self._subscriptions = []
 
         self._start_position: Optional[squid.core.abc.Pos] = None
+        self._acquisition_context: Optional[AcquisitionContext] = None
         self._per_acq_log_handler: Optional[Any] = None
 
         # Subscribe to EventBus commands
         if self._event_bus:
-            self._subscribe_to_bus()
-
-    def _subscribe_to_bus(self) -> None:
-        if self._event_bus is None:
-            return
-        # Command handlers
-        self._event_bus.subscribe(SetFluidicsRoundsCommand, self._on_set_fluidics_rounds)
-        self._event_bus.subscribe(SetAcquisitionParametersCommand, self._on_set_acquisition_parameters)
-        self._event_bus.subscribe(SetAcquisitionPathCommand, self._on_set_acquisition_path)
-        self._event_bus.subscribe(SetAcquisitionChannelsCommand, self._on_set_acquisition_channels)
-        self._event_bus.subscribe(StartNewExperimentCommand, self._on_start_new_experiment)
-        self._event_bus.subscribe(StartAcquisitionCommand, self._on_start_acquisition)
-        self._event_bus.subscribe(StopAcquisitionCommand, self._on_stop_acquisition)
-        # Worker event handlers
-        self._event_bus.subscribe(AcquisitionWorkerFinished, self._on_worker_finished)
-        self._event_bus.subscribe(AcquisitionWorkerProgress, self._on_worker_progress)
+            self._subscriptions = auto_subscribe(self, self._event_bus)
 
     def _start_per_acquisition_log(self) -> None:
         """Start per-acquisition logging if enabled.
@@ -227,7 +205,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         Creates a log file in the acquisition folder that captures all log messages
         during this acquisition. This is useful for debugging and audit trail purposes.
         """
-        if not _def.ENABLE_PER_ACQUISITION_LOG:
+        if not self._feature_flags.is_enabled("ENABLE_PER_ACQUISITION_LOG"):
             return
         if self._per_acq_log_handler is not None:
             return
@@ -299,76 +277,179 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             AcquisitionControllerState.ABORTING,
         )
 
+    def update_config(self, **updates: Any) -> None:
+        """Update acquisition configuration and apply runtime updates if possible."""
+        new_config = self._config.with_updates(**updates)
+        new_config.validate()
+        self._config = new_config
+
+        if not self.multiPointWorker or not self.acquisition_in_progress():
+            return
+
+        runtime_keys = set(updates.keys())
+        if "zstack.use_piezo" in runtime_keys:
+            self.multiPointWorker.update_use_piezo(self._config.zstack.use_piezo)
+            runtime_keys.remove("zstack.use_piezo")
+
+        if runtime_keys:
+            self._log.warning(
+                "Ignored runtime updates during acquisition: %s",
+                sorted(runtime_keys),
+            )
+
+    @property
+    def NX(self) -> int:  # legacy attribute
+        return self._config.grid.nx
+
+    @property
+    def NY(self) -> int:  # legacy attribute
+        return self._config.grid.ny
+
+    @property
+    def NZ(self) -> int:  # legacy attribute
+        return self._config.zstack.nz
+
+    @property
+    def Nt(self) -> int:  # legacy attribute
+        return self._config.timing.nt
+
+    @property
+    def deltaX(self) -> float:  # legacy attribute (mm)
+        return self._config.grid.dx_mm
+
+    @property
+    def deltaY(self) -> float:  # legacy attribute (mm)
+        return self._config.grid.dy_mm
+
+    @property
+    def deltaZ(self) -> float:  # legacy attribute (mm)
+        return self._config.zstack.delta_z_mm
+
+    @property
+    def deltat(self) -> float:  # legacy attribute (s)
+        return self._config.timing.dt_s
+
+    @property
+    def do_autofocus(self) -> bool:  # legacy attribute
+        return self._config.focus.do_contrast_af
+
+    @property
+    def do_reflection_af(self) -> bool:  # legacy attribute
+        return self._config.focus.do_reflection_af
+
+    @property
+    def display_resolution_scaling(self) -> float:  # legacy attribute
+        return self._config.display_resolution_scaling
+
+    @property
+    def use_piezo(self) -> bool:  # legacy attribute
+        return self._config.zstack.use_piezo
+
+    @property
+    def use_manual_focus_map(self) -> bool:  # legacy attribute
+        return self._config.focus.use_manual_focus_map
+
+    @property
+    def gen_focus_map(self) -> bool:  # legacy attribute
+        return self._config.focus.gen_focus_map
+
+    @property
+    def z_range(self) -> Optional[Tuple[float, float]]:  # legacy attribute
+        return self._config.zstack.z_range
+
+    @property
+    def z_stacking_config(self) -> str:  # legacy attribute
+        return self._config.zstack.stacking_direction
+
+    @property
+    def use_fluidics(self) -> bool:  # legacy attribute
+        return self._config.use_fluidics
+
+    @property
+    def skip_saving(self) -> bool:  # legacy attribute
+        return self._config.skip_saving
+
+    @property
+    def xy_mode(self) -> str:  # legacy attribute
+        return self._config.xy_mode
+
+    @property
+    def focus_map(self) -> Optional[Any]:  # legacy attribute
+        return self._focus_map
+
     def set_use_piezo(self, checked: bool) -> None:
         if checked and (self._piezo_service is None or not self._piezo_service.is_available):
             raise ValueError("Cannot enable piezo - no piezo stage configured")
-        self.use_piezo = checked
-        # TODO(imo): Why do we only allow runtime updates of use_piezo (not all the other params?)
-        if self.multiPointWorker:
-            self.multiPointWorker.update_use_piezo(checked)
+        self.update_config(**{"zstack.use_piezo": checked})
 
     def set_z_stacking_config(self, z_stacking_config_index: int) -> None:
         if z_stacking_config_index in _def.Z_STACKING_CONFIG_MAP:
-            self.z_stacking_config = _def.Z_STACKING_CONFIG_MAP[
-                z_stacking_config_index
-            ]
-        print(f"z-stacking configuration set to {self.z_stacking_config}")
+            self.update_config(
+                **{
+                    "zstack.stacking_direction": _def.Z_STACKING_CONFIG_MAP[
+                        z_stacking_config_index
+                    ]
+                }
+            )
+        print(f"z-stacking configuration set to {self._config.zstack.stacking_direction}")
 
     def set_z_range(self, minZ: float, maxZ: float) -> None:
-        self.z_range = (minZ, maxZ)
+        self.update_config(**{"zstack.z_range": (minZ, maxZ)})
 
     def set_NX(self, N: int) -> None:
-        self.NX = N
+        self.update_config(**{"grid.nx": N})
 
     def set_NY(self, N: int) -> None:
-        self.NY = N
+        self.update_config(**{"grid.ny": N})
 
     def set_NZ(self, N: int) -> None:
-        self.NZ = N
+        self.update_config(**{"zstack.nz": N})
 
     def set_Nt(self, N: int) -> None:
-        self.Nt = N
+        self.update_config(**{"timing.nt": N})
 
     def set_deltaX(self, delta: float) -> None:
-        self.deltaX = delta
+        self.update_config(**{"grid.dx_mm": delta})
 
     def set_deltaY(self, delta: float) -> None:
-        self.deltaY = delta
+        self.update_config(**{"grid.dy_mm": delta})
 
     def set_deltaZ(self, delta_um: float) -> None:
-        self.deltaZ = delta_um / 1000
+        self.update_config(**{"zstack.delta_z_um": delta_um})
 
     def set_deltat(self, delta: float) -> None:
-        self.deltat = delta
+        self.update_config(**{"timing.dt_s": delta})
 
     def set_af_flag(self, flag: bool) -> None:
-        self.do_autofocus = flag
+        self.update_config(**{"focus.do_contrast_af": flag})
 
     def set_reflection_af_flag(self, flag: bool) -> None:
-        self.do_reflection_af = flag
+        self.update_config(**{"focus.do_reflection_af": flag})
 
     def set_manual_focus_map_flag(self, flag: bool) -> None:
-        self.use_manual_focus_map = flag
+        self.update_config(**{"focus.use_manual_focus_map": flag})
 
     def set_gen_focus_map_flag(self, flag: bool) -> None:
-        self.gen_focus_map = flag
+        self.update_config(**{"focus.gen_focus_map": flag})
         if not flag:
             self.autofocusController.set_focus_map_use(False)
 
     def set_focus_map(self, focusMap: Optional[Any]) -> None:
-        self.focus_map = focusMap  # None if dont use focusMap
+        self._focus_map = focusMap  # None if dont use focusMap
 
     def set_base_path(self, path: str) -> None:
         self.base_path = path
 
     def set_use_fluidics(self, use_fluidics: bool) -> None:
-        self.use_fluidics = use_fluidics
+        self.update_config(**{"use_fluidics": use_fluidics})
 
     def set_skip_saving(self, skip_saving: bool) -> None:
-        self.skip_saving = skip_saving
+        self.update_config(**{"skip_saving": skip_saving})
 
-    def set_xy_mode(self, xy_mode: str) -> None:
-        self.xy_mode = xy_mode
+    def set_xy_mode(self, xy_mode: Optional[str]) -> None:
+        if xy_mode is None:
+            return
+        self.update_config(**{"xy_mode": xy_mode})
 
     def get_plate_view(self) -> Optional[np.ndarray]:
         """Get the current plate view array from the acquisition.
@@ -399,39 +480,25 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         )  # save the configuration for the experiment
         # Prepare acquisition parameters
         acquisition_parameters = {
-            "dx(mm)": self.deltaX,
-            "Nx": self.NX,
-            "dy(mm)": self.deltaY,
-            "Ny": self.NY,
-            "dz(um)": self.deltaZ * 1000 if self.deltaZ != 0 else 1,
-            "Nz": self.NZ,
-            "dt(s)": self.deltat,
-            "Nt": self.Nt,
-            "with AF": self.do_autofocus,
-            "with reflection AF": self.do_reflection_af,
-            "with manual focus map": self.use_manual_focus_map,
+            "dx(mm)": self._config.grid.dx_mm,
+            "Nx": self._config.grid.nx,
+            "dy(mm)": self._config.grid.dy_mm,
+            "Ny": self._config.grid.ny,
+            "dz(um)": self._config.zstack.delta_z_um,
+            "Nz": self._config.zstack.nz,
+            "dt(s)": self._config.timing.dt_s,
+            "Nt": self._config.timing.nt,
+            "with AF": self._config.focus.do_contrast_af,
+            "with reflection AF": self._config.focus.do_reflection_af,
+            "with manual focus map": self._config.focus.use_manual_focus_map,
         }
         try:  # write objective data if it is available
             current_objective = self.objectiveStore.current_objective
-            objective_info = self.objectiveStore.objectives_dict.get(
-                current_objective, {}
-            )
-            acquisition_parameters["objective"] = {}
-            for k in objective_info.keys():
-                acquisition_parameters["objective"][k] = objective_info[k]
+            objective_info = self.objectiveStore.get_current_objective_info()
+            acquisition_parameters["objective"] = dict(objective_info)
             acquisition_parameters["objective"]["name"] = current_objective
         except Exception:
-            try:
-                objective_info = _def.OBJECTIVES[_def.DEFAULT_OBJECTIVE]
-                acquisition_parameters["objective"] = {}
-                for k in objective_info.keys():
-                    acquisition_parameters["objective"][k] = objective_info[k]
-                acquisition_parameters["objective"]["name"] = (
-                    _def.DEFAULT_OBJECTIVE
-                )
-            except Exception:
-                pass
-        # TODO: USE OBJECTIVE STORE DATA
+            self._log.exception("Failed to attach objective metadata to acquisition parameters")
         acquisition_parameters["sensor_pixel_size_um"] = (
             self._camera_service.get_pixel_size_binned_um()
         )
@@ -454,6 +521,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             )
             if config:
                 self.selected_configurations.append(config)
+        self.update_config(selected_channels=tuple(selected_configurations_name))
 
     def get_acquisition_image_count(self) -> int:
         """
@@ -481,15 +549,15 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             all_regions_coord_count = sum(coords_per_region)
 
             non_merged_images = (
-                self.Nt
-                * self.NZ
+                self._config.timing.nt
+                * self._config.zstack.nz
                 * all_regions_coord_count
                 * len(self.selected_configurations)
             )
             # When capturing merged images, we capture 1 per fov (where all the configurations are merged)
             merged_images = (
-                self.Nt * self.NZ * all_regions_coord_count
-                if _def.MERGE_CHANNELS
+                self._config.timing.nt * self._config.zstack.nz * all_regions_coord_count
+                if self._feature_flags.is_enabled("MERGE_CHANNELS")
                 else 0
             )
 
@@ -529,7 +597,6 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         configured acquisition on disk.  If you don't have at least this amount of disk space available
         when starting this acquisition, it is likely it will fail with an "out of disk space" error.
         """
-        # TODO(imo): This needs updating for AbstractCamera
         if not len(
             self.channelConfigurationManager.get_configurations(
                 self.objectiveStore.current_objective
@@ -559,8 +626,11 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 self._camera_service.get_pixel_format()
             )
             # Do our best to create a fake image with the correct properties.
-            # TODO(imo): It'd be better to pull this from our camera but need to wait for AbstractCamera for a consistent way to do that.
             width, height = self._camera_service.get_crop_size()
+            if width is None or height is None:
+                width, height = self._camera_service.get_resolution()
+            if width is None or height is None:
+                raise RuntimeError("Camera resolution unavailable for disk usage estimate")
             test_image = np.random.randint(
                 2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16
             )
@@ -603,11 +673,11 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         * Each mosaic pixel is stored as a 16-bit unsigned integer (2 bytes per pixel).
         * The returned value includes memory for all mosaic channel layers, by
           multiplying by ``len(self.selected_configurations)``.
-        * The estimate only applies when ``_def.USE_NAPARI_FOR_MOSAIC_DISPLAY``
+        * The estimate only applies when ``USE_NAPARI_FOR_MOSAIC_DISPLAY``
           is enabled and when valid scan coordinates with regions are available;
           otherwise, it returns 0.
         """
-        if not _def.USE_NAPARI_FOR_MOSAIC_DISPLAY:
+        if not self._feature_flags.is_enabled("USE_NAPARI_FOR_MOSAIC_DISPLAY"):
             return 0
 
         if not self.scanCoordinates or not self.scanCoordinates.has_regions():
@@ -699,13 +769,24 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self._log.info(f"run_acquisition: published in_progress=True ({(_time.perf_counter()-_t0)*1000:.1f}ms)")
 
             self._log.info("start multipoint")
-            self._start_position = self._stage_service.get_position()
+            self._acquisition_context = acquisition_context(
+                self.liveController,
+                self._camera_service,
+                self._stage_service,
+            )
+            self.liveController_was_live_before_multipoint = self._acquisition_context.was_live
+            self.camera_callback_was_enabled_before_multipoint = (
+                self._acquisition_context.callbacks_enabled
+            )
+            self._start_position = self._acquisition_context.start_position
 
-            if self.z_range is None:
-                self.z_range = (
+            if self._config.zstack.z_range is None:
+                z_range = (
                     self._start_position.z_mm,
-                    self._start_position.z_mm + self.deltaZ * (self.NZ - 1),
+                    self._start_position.z_mm
+                    + self._config.zstack.delta_z_mm * (self._config.zstack.nz - 1),
                 )
+                self._config = self._config.with_updates(**{"zstack.z_range": z_range})
 
             acquisition_scan_coordinates: ScanCoordinates = self.scanCoordinates
             self.run_acquisition_current_fov: bool = False
@@ -770,24 +851,11 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self.configuration_before_running_multipoint: Any = (
                 self.liveController.currentConfiguration
             )
-            # stop live
-            if self.liveController.is_live:
-                self.liveController_was_live_before_multipoint: bool = True
-                self.liveController.stop_live()  # @@@ to do: also uncheck the live button
-            else:
-                self.liveController_was_live_before_multipoint: bool = False
-
-            self.camera_callback_was_enabled_before_multipoint: bool = (
-                self._camera_service.get_callbacks_enabled()
-            )
-            # We need callbacks, because we trigger and then use callbacks for image processing.  This
-            # lets us do overlapping triggering (soon).
-            self._camera_service.enable_callbacks(True)
 
             # run the acquisition
             self.timestamp_acquisition_started: float = time.time()
 
-            if self.focus_map:
+            if self._focus_map:
                 self._log.info("Using focus surface for Z interpolation")
                 for region_id in scan_position_information.scan_region_names:
                     region_fov_coords = scan_position_information.scan_region_fov_coords_mm[
@@ -796,12 +864,12 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                     # Convert each tuple to list for modification
                     for i, coords in enumerate(region_fov_coords):
                         x, y = coords[:2]  # This handles both (x,y) and (x,y,z) formats
-                        z = self.focus_map.interpolate(x, y, region_id)
+                        z = self._focus_map.interpolate(x, y, region_id)
                         # Modify the list directly
                         region_fov_coords[i] = (x, y, z)
                         scan_coordinates_target.update_fov_z_level(region_id, i, z)
 
-            elif self.gen_focus_map and not self.do_reflection_af:
+            elif self._config.focus.gen_focus_map and not self._config.focus.do_reflection_af:
                 self._log.info("Generating autofocus plane for multipoint grid")
                 bounds = self.scanCoordinates.get_scan_bounds()
                 if not bounds:
@@ -824,69 +892,48 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                     self._transition_to(AcquisitionControllerState.FAILED)
                     self._transition_to(AcquisitionControllerState.IDLE)
                     return
-                x_min, x_max = bounds["x"]
-                y_min, y_max = bounds["y"]
-
-                # Calculate scan dimensions and center
-                x_span = abs(x_max - x_min)
-                y_span = abs(y_max - y_min)
-                x_center = (x_max + x_min) / 2
-                y_center = (y_max + y_min) / 2
-
-                # Determine grid size based on scan dimensions
-                if x_span < self.deltaX:
-                    fmap_Nx = 2
-                    fmap_dx = self.deltaX  # Force deltaX spacing for small scans
-                else:
-                    fmap_Nx = min(4, max(2, int(x_span / self.deltaX) + 1))
-                    fmap_dx = max(self.deltaX, x_span / (fmap_Nx - 1))
-
-                if y_span < self.deltaY:
-                    fmap_Ny = 2
-                    fmap_dy = self.deltaY  # Force deltaY spacing for small scans
-                else:
-                    fmap_Ny = min(4, max(2, int(y_span / self.deltaY) + 1))
-                    fmap_dy = max(self.deltaY, y_span / (fmap_Ny - 1))
-
-                # Calculate starting corner position (top-left of the AF map grid)
-                starting_x_mm = x_center - (fmap_Nx - 1) * fmap_dx / 2
-                starting_y_mm = y_center - (fmap_Ny - 1) * fmap_dy / 2
-                # TODO(sm): af map should be a grid mapped to a surface, instead of just corners mapped to a plane
                 try:
                     # Store existing AF map if any
                     self.focus_map_storage = []
                     self.already_using_fmap = self.autofocusController.use_focus_map
+                    self.focus_map_surface_storage = getattr(
+                        self.autofocusController, "focus_map_surface", None
+                    )
                     for x, y, z in self.autofocusController.focus_map_coords:
                         self.focus_map_storage.append((x, y, z))
 
-                    # Define grid corners for AF map
-                    coord1 = (starting_x_mm, starting_y_mm)  # Starting corner
-                    coord2 = (
-                        starting_x_mm + (fmap_Nx - 1) * fmap_dx,
-                        starting_y_mm,
-                    )  # X-axis corner
-                    coord3 = (
-                        starting_x_mm,
-                        starting_y_mm + (fmap_Ny - 1) * fmap_dy,
-                    )  # Y-axis corner
-
-                    self._log.info(f"Generating AF Map: Nx={fmap_Nx}, Ny={fmap_Ny}")
-                    self._log.info(f"Spacing: dx={fmap_dx:.3f}mm, dy={fmap_dy:.3f}mm")
-                    self._log.info(f"Center:  x=({x_center:.3f}mm, y={y_center:.3f}mm)")
-
-                    # Generate and enable the AF map
-                    self.autofocusController.gen_focus_map(coord1, coord2, coord3)
-                    self.autofocusController.set_focus_map_use(True)
+                    center = self._autofocus_executor.generate_focus_map_for_acquisition(
+                        bounds,
+                        dx_mm=self._config.focus.focus_map_dx_mm,
+                        dy_mm=self._config.focus.focus_map_dy_mm,
+                    )
+                    if center is None:
+                        raise RuntimeError("Autofocus controller unavailable for focus map")
 
                     # Return to center position
-                    self._stage_service.move_x_to(x_center)
-                    self._stage_service.move_y_to(y_center)
+                    self._stage_service.move_x_to(center[0])
+                    self._stage_service.move_y_to(center[1])
 
                 except ValueError as exc:
                     raise RuntimeError("Invalid coordinates for autofocus plane") from exc
 
             acquisition_params: AcquisitionParameters = self.build_params(
                 scan_position_information=scan_position_information
+            )
+            dependencies = AcquisitionDependencies.create(
+                camera=self._camera_service,
+                stage=self._stage_service,
+                peripheral=self._peripheral_service,
+                event_bus=self._event_bus,
+                illumination=self._illumination_service,
+                filter_wheel=self._filter_wheel_service,
+                piezo=self._piezo_service,
+                fluidics=self._fluidics_service,
+                nl5=self._nl5_service,
+                stream_handler=self._stream_handler,
+                autofocus=self.autofocusController,
+                laser_autofocus=self.laserAutoFocusController,
+                focus_lock=self._focus_lock_controller,
             )
             self.multiPointWorker = MultiPointWorker(
                 auto_focus_controller=self.autofocusController,
@@ -911,6 +958,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 event_bus=self._event_bus,
                 stream_handler=self._stream_handler,
                 focus_lock_controller=self._focus_lock_controller,
+                dependencies=dependencies,
             )
             # Allow tests/simulation to override long frame wait timeouts.
             if hasattr(self, "frame_wait_timeout_override_s"):
@@ -930,6 +978,10 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self._log.exception("Failed to start acquisition")
             # Stop per-acquisition logging if it was started
             self._stop_per_acquisition_log()
+            if self._acquisition_context is not None:
+                self._acquisition_context.restore(resume_live=False)
+                self._acquisition_context = None
+                self._start_position = None
             # Always try to notify listeners that we're no longer running
             self._publish_acquisition_state(in_progress=False, allow_missing_experiment_id=True)
             if self._mode_gate:
@@ -979,32 +1031,35 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             selected_configurations=self.selected_configurations,
             acquisition_start_time=self.timestamp_acquisition_started,
             scan_position_information=scan_position_information,
-            NX=self.NX,
-            deltaX=self.deltaX,
-            NY=self.NY,
-            deltaY=self.deltaY,
-            NZ=self.NZ,
-            deltaZ=self.deltaZ,
-            Nt=self.Nt,
-            deltat=self.deltat,
-            do_autofocus=self.do_autofocus,
-            do_reflection_autofocus=self.do_reflection_af,
-            use_piezo=self.use_piezo,
-            display_resolution_scaling=self.display_resolution_scaling,
-            z_stacking_config=self.z_stacking_config,
-            z_range=self.z_range,
-            use_fluidics=self.use_fluidics,
-            skip_saving=self.skip_saving,
+            NX=self._config.grid.nx,
+            deltaX=self._config.grid.dx_mm,
+            NY=self._config.grid.ny,
+            deltaY=self._config.grid.dy_mm,
+            NZ=self._config.zstack.nz,
+            deltaZ=self._config.zstack.delta_z_um,
+            Nt=self._config.timing.nt,
+            deltat=self._config.timing.dt_s,
+            do_autofocus=self._config.focus.do_contrast_af,
+            do_reflection_autofocus=self._config.focus.do_reflection_af,
+            use_piezo=self._config.zstack.use_piezo,
+            display_resolution_scaling=self._config.display_resolution_scaling,
+            z_stacking_config=self._config.zstack.stacking_direction,
+            z_range=self._config.zstack.z_range,
+            use_fluidics=self._config.use_fluidics,
+            skip_saving=self._config.skip_saving,
             # Downsampled view generation parameters
-            generate_downsampled_views=_def.SAVE_DOWNSAMPLED_WELL_IMAGES or _def.DISPLAY_PLATE_VIEW,
-            save_downsampled_well_images=_def.SAVE_DOWNSAMPLED_WELL_IMAGES,
+            generate_downsampled_views=(
+                self._feature_flags.is_enabled("SAVE_DOWNSAMPLED_WELL_IMAGES")
+                or self._feature_flags.is_enabled("DISPLAY_PLATE_VIEW")
+            ),
+            save_downsampled_well_images=self._feature_flags.is_enabled("SAVE_DOWNSAMPLED_WELL_IMAGES"),
             downsampled_well_resolutions_um=_def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
             downsampled_plate_resolution_um=_def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
             downsampled_z_projection=_def.DOWNSAMPLED_Z_PROJECTION,
             downsampled_interpolation_method=_def.DOWNSAMPLED_INTERPOLATION_METHOD,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
-            xy_mode=self.xy_mode,
+            xy_mode=self._config.xy_mode,
         )
 
     def _on_acquisition_completed(
@@ -1023,18 +1078,23 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
                 self._camera_service.stop_streaming()
 
             # restore the previous selected mode
-            if self.gen_focus_map:
+            if self._config.focus.gen_focus_map:
                 self.autofocusController.clear_focus_map()
                 for x, y, z in self.focus_map_storage:
                     self.autofocusController.focus_map_coords.append((x, y, z))
-                self.autofocusController.use_focus_map = self.already_using_fmap
+                if hasattr(self.autofocusController, "set_focus_map_surface"):
+                    self.autofocusController.set_focus_map_surface(self.focus_map_surface_storage)
+                self.autofocusController.set_focus_map_use(self.already_using_fmap)
             if self.configuration_before_running_multipoint is not None:
                 self.liveController.set_microscope_mode(
                     self.configuration_before_running_multipoint
                 )
 
-            # Restore callbacks to pre-acquisition state
-            self._camera_service.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
+            # Restore callbacks and stage position to pre-acquisition state
+            if self._acquisition_context is not None:
+                self._acquisition_context.restore(resume_live=False)
+                self._acquisition_context = None
+                self._start_position = None
 
             self._log.info(
                 f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}"
@@ -1044,26 +1104,12 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             if self.run_acquisition_current_fov:
                 self.run_acquisition_current_fov = False
 
-            # Move stage back to start position BEFORE re-enabling live mode
-            # This prevents live frames from being captured at intermediate positions
-            if self._start_position:
-                x_mm: float = self._start_position.x_mm
-                y_mm: float = self._start_position.y_mm
-                z_mm: float = self._start_position.z_mm
-                self._log.info(
-                    f"Moving back to start position: (x,y,z) [mm] = ({x_mm}, {y_mm}, {z_mm})"
-                )
-                self._stage_service.move_x_to(x_mm)
-                self._stage_service.move_y_to(y_mm)
-                self._stage_service.move_z_to(z_mm)
-                self._start_position = None
-
             # re-enable live AFTER stage has returned to start position
             if self._mode_gate and self._mode_gate.get_mode() in (GlobalMode.ACQUIRING, GlobalMode.ABORTING):
                 self._mode_gate.set_mode(GlobalMode.IDLE, reason="acquisition complete")
             if (
                 self.liveController_was_live_before_multipoint
-                and _def.RESUME_LIVE_AFTER_ACQUISITION
+                and self._feature_flags.is_enabled("RESUME_LIVE_AFTER_ACQUISITION")
             ):
                 self.liveController.start_live()
         except Exception:
@@ -1111,7 +1157,12 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
 
     def validate_acquisition_settings(self) -> bool:
         """Validate settings before starting acquisition"""
-        if self.do_reflection_af:
+        try:
+            self._config.validate()
+        except ValueError as exc:
+            self._log.error("Invalid acquisition configuration: %s", exc)
+            return False
+        if self._config.focus.do_reflection_af:
             if self.laserAutoFocusController is None:
                 self._log.error(
                     "Laser Autofocus Not Ready - Laser AF controller not configured."
@@ -1129,11 +1180,13 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
     # EventBus Command Handlers
     # =========================================================================
 
+    @handles(SetFluidicsRoundsCommand)
     def _on_set_fluidics_rounds(self, cmd: SetFluidicsRoundsCommand) -> None:
         """Handle SetFluidicsRoundsCommand from EventBus."""
         if self._fluidics_service is not None:
             self._fluidics_service.set_rounds(cmd.rounds)
 
+    @handles(SetAcquisitionParametersCommand)
     def _on_set_acquisition_parameters(self, cmd: SetAcquisitionParametersCommand) -> None:
         """Handle SetAcquisitionParametersCommand from EventBus."""
         if cmd.delta_z_um is not None:
@@ -1173,18 +1226,22 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         if cmd.z_stacking_config is not None:
             self.set_z_stacking_config(cmd.z_stacking_config)
 
+    @handles(SetAcquisitionPathCommand)
     def _on_set_acquisition_path(self, cmd: SetAcquisitionPathCommand) -> None:
         """Handle SetAcquisitionPathCommand from EventBus."""
         self.set_base_path(cmd.base_path)
 
+    @handles(SetAcquisitionChannelsCommand)
     def _on_set_acquisition_channels(self, cmd: SetAcquisitionChannelsCommand) -> None:
         """Handle SetAcquisitionChannelsCommand from EventBus."""
         self.set_selected_configurations(cmd.channel_names)
 
+    @handles(StartNewExperimentCommand)
     def _on_start_new_experiment(self, cmd: StartNewExperimentCommand) -> None:
         """Handle StartNewExperimentCommand from EventBus."""
         self.start_new_experiment(cmd.experiment_id)
 
+    @handles(StartAcquisitionCommand)
     def _on_start_acquisition(self, cmd: StartAcquisitionCommand) -> None:
         """Handle StartAcquisitionCommand from EventBus."""
         self._log.info(f"_on_start_acquisition: received command with xy_mode={cmd.xy_mode}")
@@ -1203,10 +1260,12 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self._ensure_experiment_ready(cmd.experiment_id)
         self.run_acquisition(acquire_current_fov=cmd.acquire_current_fov)
 
+    @handles(StopAcquisitionCommand)
     def _on_stop_acquisition(self, cmd: StopAcquisitionCommand) -> None:
         """Handle StopAcquisitionCommand from EventBus."""
         self.request_abort_aquisition()
 
+    @handles(AcquisitionWorkerFinished)
     def _on_worker_finished(self, event: AcquisitionWorkerFinished) -> None:
         """Handle AcquisitionWorkerFinished event from worker thread.
 
@@ -1236,6 +1295,7 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         # Call cleanup logic with success flag from worker
         self._on_acquisition_completed(success=event.success, error=event.error)
 
+    @handles(AcquisitionWorkerProgress)
     def _on_worker_progress(self, event: AcquisitionWorkerProgress) -> None:
         """Handle AcquisitionWorkerProgress event from worker thread.
 
@@ -1255,6 +1315,12 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             f"fov {event.current_fov}/{event.total_fovs}, "
             f"timepoint {event.current_timepoint}/{event.total_timepoints}"
         )
+
+    def shutdown(self) -> None:
+        """Unsubscribe from EventBus handlers."""
+        if self._event_bus:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+        self._subscriptions = []
 
     def _publish_acquisition_state(
         self,

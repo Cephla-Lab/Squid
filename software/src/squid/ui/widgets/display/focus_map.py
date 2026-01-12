@@ -27,6 +27,9 @@ from qtpy.QtWidgets import (
 
 from _def import SOFTWARE_POS_LIMIT
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     StagePositionChanged,
     MoveStageToCommand,
     ScanCoordinatesUpdated,
@@ -83,6 +86,7 @@ class FocusMapWidget(QFrame):
 
         # Store event bus and cached position
         self._event_bus = event_bus
+        self._subscriptions: List[Tuple[type, object]] = []
         self._cached_x_mm = 0.0
         self._cached_y_mm = 0.0
         self._cached_z_mm = initial_z_mm
@@ -105,11 +109,10 @@ class FocusMapWidget(QFrame):
         self.add_margin = True  # margin for focus grid makes it smaller, but will avoid points at the borders
 
         # Subscribe to stage position events
-        self._event_bus.subscribe(StagePositionChanged, self._on_stage_position_changed)
-        self._event_bus.subscribe(ScanCoordinatesUpdated, self._on_scan_coordinates_updated)
-        self._event_bus.subscribe(ScanCoordinatesSnapshot, self._on_scan_coordinates_snapshot)
+        self._subscriptions = auto_subscribe(self, self._event_bus)
         self._request_scan_snapshot()
 
+    @handles(ScanCoordinatesUpdated)
     def _on_scan_coordinates_updated(self, event: ScanCoordinatesUpdated) -> None:
         """Handle scan coordinate changes by refreshing cached snapshot."""
         self._refresh_on_snapshot = True
@@ -120,6 +123,7 @@ class FocusMapWidget(QFrame):
         self._scan_snapshot_request_id = request_id
         self._event_bus.publish(RequestScanCoordinatesSnapshotCommand(request_id=request_id))
 
+    @handles(ScanCoordinatesSnapshot)
     def _on_scan_coordinates_snapshot(self, event: ScanCoordinatesSnapshot) -> None:
         if self._scan_snapshot_request_id is None:
             return
@@ -138,6 +142,7 @@ class FocusMapWidget(QFrame):
             self._refresh_on_snapshot = False
             self.on_regions_updated()
 
+    @handles(StagePositionChanged)
     def _on_stage_position_changed(self, event: StagePositionChanged) -> None:
         """Cache stage position from EventBus."""
         self._cached_x_mm = event.x_mm
@@ -660,3 +665,9 @@ class FocusMapWidget(QFrame):
         """Handle resize events to maintain button sizing"""
         super().resizeEvent(event)  # type: ignore[arg-type]
         self.update_z_btn.setFixedWidth(self.edit_point_btn.width())
+
+    def closeEvent(self, event) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)

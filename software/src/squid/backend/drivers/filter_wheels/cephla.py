@@ -1,7 +1,18 @@
 import time
 from typing import List, Dict, Optional
 
-from _def import *
+from _def import (
+    ENABLE_PID_W,
+    ENCODER_FLIP_DIR_W,
+    FULLSTEPS_PER_REV_W,
+    HAS_ENCODER_W,
+    MICROSTEPPING_DEFAULT_W,
+    PID_D_W,
+    PID_I_W,
+    PID_P_W,
+    SCREW_PITCH_W_MM,
+    STAGE_MOVEMENT_SIGN_W,
+)
 from squid.backend.microcontroller import Microcontroller
 from squid.core.abc import AbstractFilterWheelController, FilterWheelInfo
 from squid.core.config import SquidFilterWheelConfig

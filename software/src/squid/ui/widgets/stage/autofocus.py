@@ -1,4 +1,19 @@
-from squid.ui.widgets.stage._common import *
+from squid.ui.widgets.stage._common import (
+    Any,
+    EventBusFrame,
+    QDoubleSpinBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    Signal,
+    auto_subscribe,
+    handles,
+    squid,
+)
 from squid.core.events import (
     StartAutofocusCommand,
     StopAutofocusCommand,
@@ -23,8 +38,7 @@ class AutoFocusWidget(EventBusFrame):
         self.grid: QVBoxLayout
 
         # Subscribe to autofocus state events
-        self._subscribe(AutofocusProgress, self._on_autofocus_progress)
-        self._subscribe(AutofocusCompleted, self._on_autofocus_completed)
+        self._subscriptions = auto_subscribe(self, self._bus)
 
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -98,6 +112,7 @@ class AutoFocusWidget(EventBusFrame):
         else:
             self._publish(StopAutofocusCommand())
 
+    @handles(AutofocusProgress)
     def _on_autofocus_progress(self, event: AutofocusProgress) -> None:
         """Handle progress updates (placeholder for future UI)."""
         # No progress bar present; keep hook for future use.
@@ -105,6 +120,7 @@ class AutoFocusWidget(EventBusFrame):
             f"Autofocus progress: step {event.current_step}/{event.total_steps}"
         )
 
+    @handles(AutofocusCompleted)
     def _on_autofocus_completed(self, event: AutofocusCompleted) -> None:
         """Re-enable controls after autofocus finishes."""
         self.btn_autofocus.setChecked(False)

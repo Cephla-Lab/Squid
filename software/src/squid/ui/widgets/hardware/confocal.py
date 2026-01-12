@@ -16,6 +16,9 @@ from qtpy.QtWidgets import (
 )
 
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     ObjectiveChanged,
     SetConfocalModeCommand,
 )
@@ -37,6 +40,7 @@ class SpinningDiskConfocalWidget(QWidget):
         self.xlight: Any = xlight
         self._event_bus = event_bus
         self._current_objective = initial_objective
+        self._subscriptions = []
 
         self.init_ui()
 
@@ -68,8 +72,9 @@ class SpinningDiskConfocalWidget(QWidget):
         self.dropdown_filter_slider.valueChanged.connect(self.set_filter_slider)
 
         if self._event_bus is not None:
-            self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+            self._subscriptions = auto_subscribe(self, self._event_bus)
 
+    @handles(ObjectiveChanged)
     def _on_objective_changed(self, event: ObjectiveChanged) -> None:
         if event.objective_name:
             self._current_objective = event.objective_name
@@ -267,6 +272,12 @@ class SpinningDiskConfocalWidget(QWidget):
         self.xlight.set_filter_slider(position)
         self.enable_all_buttons(True)
 
+    def closeEvent(self, event) -> None:
+        if self._event_bus is not None and self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)
+
 
 class DragonflyConfocalWidget(QWidget):
     def __init__(
@@ -281,6 +292,7 @@ class DragonflyConfocalWidget(QWidget):
         self.confocal_mode: bool = False
         self._event_bus = event_bus
         self._current_objective = initial_objective
+        self._subscriptions = []
 
         self.init_ui()
 
@@ -346,8 +358,9 @@ class DragonflyConfocalWidget(QWidget):
                     is_confocal=self.confocal_mode,
                 )
             )
-            self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+            self._subscriptions = auto_subscribe(self, self._event_bus)
 
+    @handles(ObjectiveChanged)
     def _on_objective_changed(self, event: ObjectiveChanged) -> None:
         if event.objective_name:
             self._current_objective = event.objective_name
@@ -499,3 +512,9 @@ class DragonflyConfocalWidget(QWidget):
             print(f"Error setting port 1 field aperture: {e}")
         finally:
             self.enable_all_buttons(True)
+
+    def closeEvent(self, event) -> None:
+        if self._event_bus is not None and self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)

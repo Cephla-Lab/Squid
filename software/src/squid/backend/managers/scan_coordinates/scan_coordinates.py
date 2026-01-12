@@ -8,7 +8,44 @@ import numpy as np
 
 import _def
 from squid.backend.managers.objective_store import ObjectiveStore
-from squid.core.events import Event
+from squid.backend.managers.scan_coordinates.grid import (
+    GridConfig,
+    filter_coordinates_in_bounds,
+    generate_circular_grid,
+    generate_grid_by_count,
+    generate_grid_by_step_size,
+    generate_polygon_grid,
+    generate_rectangular_grid,
+    generate_square_grid,
+)
+from squid.backend.managers.scan_coordinates.geometry import point_in_circle
+from squid.backend.managers.scan_coordinates.wellplate import (
+    row_col_to_well_id,
+    well_id_to_position,
+)
+from squid.core.events import (
+    AddFlexibleRegionCommand,
+    AddFlexibleRegionWithStepSizeCommand,
+    AddTemplateRegionCommand,
+    ClearScanCoordinatesCommand,
+    Event,
+    LoadScanCoordinatesCommand,
+    RemoveScanCoordinateRegionCommand,
+    RenameScanCoordinateRegionCommand,
+    RequestScanCoordinatesSnapshotCommand,
+    ScanCoordinatesSnapshot,
+    ScanCoordinatesUpdated,
+    SelectedWellsChanged,
+    SetLiveScanCoordinatesCommand,
+    SetManualScanCoordinatesCommand,
+    SetWellSelectionScanCoordinatesCommand,
+    SortScanCoordinatesCommand,
+    UpdateScanCoordinateRegionZCommand,
+    WellplateFormatChanged,
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
+)
 from squid.core.abc import AbstractStage, AbstractCamera
 import squid.core.logging
 
@@ -75,6 +112,7 @@ class ScanCoordinates:
         self.camera: AbstractCamera = camera
         self._event_bus: Optional["EventBus"] = event_bus
         self._commands_subscribed: bool = False
+        self._subscriptions: List[Tuple[type, Callable]] = []
         self.acquisition_pattern: str = _def.ACQUISITION_PATTERN
         self.fov_pattern: str = _def.FOV_PATTERN
         self.format: str = _def.WELLPLATE_FORMAT
@@ -105,8 +143,13 @@ class ScanCoordinates:
 
     def set_event_bus(self, event_bus: Optional["EventBus"]) -> None:
         """Set the event bus for publishing ScanCoordinatesUpdated events."""
+        if self._event_bus is event_bus:
+            return
+        if self._event_bus is not None and self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions = []
+            self._commands_subscribed = False
         self._event_bus = event_bus
-        self._commands_subscribed = False
         self._subscribe_to_commands()
 
     def _get_current_fov_dimensions(self) -> Tuple[float, float]:
@@ -128,64 +171,34 @@ class ScanCoordinates:
             return
         if self._commands_subscribed:
             return
-        from squid.core.events import (
-            ClearScanCoordinatesCommand,
-            SortScanCoordinatesCommand,
-            SetLiveScanCoordinatesCommand,
-            SelectedWellsChanged,
-            SetWellSelectionScanCoordinatesCommand,
-            SetManualScanCoordinatesCommand,
-            LoadScanCoordinatesCommand,
-            RequestScanCoordinatesSnapshotCommand,
-            AddTemplateRegionCommand,
-            AddFlexibleRegionCommand,
-            AddFlexibleRegionWithStepSizeCommand,
-            RemoveScanCoordinateRegionCommand,
-            RenameScanCoordinateRegionCommand,
-            UpdateScanCoordinateRegionZCommand,
-            WellplateFormatChanged,
-        )
-
-        self._event_bus.subscribe(ClearScanCoordinatesCommand, self._on_clear_scan_coordinates)
-        self._event_bus.subscribe(SortScanCoordinatesCommand, self._on_sort_scan_coordinates)
-        self._event_bus.subscribe(SetLiveScanCoordinatesCommand, self._on_set_live_scan_coordinates)
-        self._event_bus.subscribe(SelectedWellsChanged, self._on_selected_wells_changed)
-        self._event_bus.subscribe(
-            SetWellSelectionScanCoordinatesCommand, self._on_set_well_selection_scan_coordinates
-        )
-        self._event_bus.subscribe(SetManualScanCoordinatesCommand, self._on_set_manual_scan_coordinates)
-        self._event_bus.subscribe(LoadScanCoordinatesCommand, self._on_load_scan_coordinates)
-        self._event_bus.subscribe(
-            RequestScanCoordinatesSnapshotCommand, self._on_request_scan_coordinates_snapshot
-        )
-        self._event_bus.subscribe(AddTemplateRegionCommand, self._on_add_template_region)
-        self._event_bus.subscribe(AddFlexibleRegionCommand, self._on_add_flexible_region)
-        self._event_bus.subscribe(
-            AddFlexibleRegionWithStepSizeCommand, self._on_add_flexible_region_with_step_size
-        )
-        self._event_bus.subscribe(RemoveScanCoordinateRegionCommand, self._on_remove_region_command)
-        self._event_bus.subscribe(RenameScanCoordinateRegionCommand, self._on_rename_region_command)
-        self._event_bus.subscribe(UpdateScanCoordinateRegionZCommand, self._on_update_region_z_command)
-        self._event_bus.subscribe(WellplateFormatChanged, self._on_wellplate_format_changed)
+        self._subscriptions = auto_subscribe(self, self._event_bus)
         self._commands_subscribed = True
 
+    def shutdown(self) -> None:
+        """Unsubscribe handlers from the EventBus."""
+        if self._event_bus is None or not self._subscriptions:
+            return
+        auto_unsubscribe(self._subscriptions, self._event_bus)
+        self._subscriptions = []
+        self._commands_subscribed = False
+
+    @handles(ClearScanCoordinatesCommand)
     def _on_clear_scan_coordinates(self, _cmd: Event) -> None:
         self.clear_regions()
 
+    @handles(SortScanCoordinatesCommand)
     def _on_sort_scan_coordinates(self, _cmd: Event) -> None:
         self.sort_coordinates()
 
+    @handles(SetLiveScanCoordinatesCommand)
     def _on_set_live_scan_coordinates(self, cmd: Event) -> None:
-        from squid.core.events import SetLiveScanCoordinatesCommand
-
         assert isinstance(cmd, SetLiveScanCoordinatesCommand)
         self.set_live_scan_coordinates(
             cmd.x_mm, cmd.y_mm, cmd.scan_size_mm, cmd.overlap_percent, cmd.shape
         )
 
+    @handles(AddTemplateRegionCommand)
     def _on_add_template_region(self, cmd: Event) -> None:
-        from squid.core.events import AddTemplateRegionCommand
-
         assert isinstance(cmd, AddTemplateRegionCommand)
         if len(cmd.x_offsets_mm) != len(cmd.y_offsets_mm):
             self._log.warning(
@@ -202,9 +215,8 @@ class ScanCoordinates:
             cmd.region_id,
         )
 
+    @handles(SelectedWellsChanged)
     def _on_selected_wells_changed(self, event: Event) -> None:
-        from squid.core.events import SelectedWellsChanged
-
         assert isinstance(event, SelectedWellsChanged)
         self._selected_well_cells = tuple(event.selected_cells)
         self._log.info(f"_on_selected_wells_changed: {len(self._selected_well_cells)} wells selected")
@@ -214,9 +226,8 @@ class ScanCoordinates:
         else:
             self._log.info("_on_selected_wells_changed: scan_size_mm=0, not applying coordinates yet")
 
+    @handles(SetWellSelectionScanCoordinatesCommand)
     def _on_set_well_selection_scan_coordinates(self, cmd: Event) -> None:
-        from squid.core.events import SetWellSelectionScanCoordinatesCommand
-
         assert isinstance(cmd, SetWellSelectionScanCoordinatesCommand)
         self._log.info(f"_on_set_well_selection_scan_coordinates: scan_size={cmd.scan_size_mm}mm, overlap={cmd.overlap_percent}%, shape={cmd.shape}")
         self._well_selection_scan_size_mm = float(cmd.scan_size_mm)
@@ -238,18 +249,16 @@ class ScanCoordinates:
             shape=self._well_selection_shape,
         )
 
+    @handles(SetManualScanCoordinatesCommand)
     def _on_set_manual_scan_coordinates(self, cmd: Event) -> None:
-        from squid.core.events import SetManualScanCoordinatesCommand
-
         assert isinstance(cmd, SetManualScanCoordinatesCommand)
         manual_shapes = None
         if cmd.manual_shapes_mm is not None:
             manual_shapes = [np.array(shape, dtype=float) for shape in cmd.manual_shapes_mm]
         self.set_manual_coordinates(manual_shapes, cmd.overlap_percent)
 
+    @handles(LoadScanCoordinatesCommand)
     def _on_load_scan_coordinates(self, cmd: Event) -> None:
-        from squid.core.events import LoadScanCoordinatesCommand
-
         assert isinstance(cmd, LoadScanCoordinatesCommand)
         self.clear_regions()
 
@@ -281,9 +290,8 @@ class ScanCoordinates:
                 )
             )
 
+    @handles(RequestScanCoordinatesSnapshotCommand)
     def _on_request_scan_coordinates_snapshot(self, cmd: Event) -> None:
-        from squid.core.events import RequestScanCoordinatesSnapshotCommand, ScanCoordinatesSnapshot
-
         assert isinstance(cmd, RequestScanCoordinatesSnapshotCommand)
         region_fov_coordinates = {
             region_id: tuple(tuple(float(v) for v in coord) for coord in coords)
@@ -302,9 +310,8 @@ class ScanCoordinates:
                 )
             )
 
+    @handles(AddFlexibleRegionCommand)
     def _on_add_flexible_region(self, cmd: Event) -> None:
-        from squid.core.events import AddFlexibleRegionCommand
-
         assert isinstance(cmd, AddFlexibleRegionCommand)
         self.add_flexible_region(
             region_id=cmd.region_id,
@@ -316,9 +323,8 @@ class ScanCoordinates:
             overlap_percent=cmd.overlap_percent,
         )
 
+    @handles(AddFlexibleRegionWithStepSizeCommand)
     def _on_add_flexible_region_with_step_size(self, cmd: Event) -> None:
-        from squid.core.events import AddFlexibleRegionWithStepSizeCommand
-
         assert isinstance(cmd, AddFlexibleRegionWithStepSizeCommand)
         self.add_flexible_region_with_step_size(
             region_id=cmd.region_id,
@@ -331,27 +337,23 @@ class ScanCoordinates:
             dy=cmd.delta_y_mm,
         )
 
+    @handles(RemoveScanCoordinateRegionCommand)
     def _on_remove_region_command(self, cmd: Event) -> None:
-        from squid.core.events import RemoveScanCoordinateRegionCommand
-
         assert isinstance(cmd, RemoveScanCoordinateRegionCommand)
         self.remove_region(cmd.region_id)
 
+    @handles(RenameScanCoordinateRegionCommand)
     def _on_rename_region_command(self, cmd: Event) -> None:
-        from squid.core.events import RenameScanCoordinateRegionCommand
-
         assert isinstance(cmd, RenameScanCoordinateRegionCommand)
         self.rename_region(cmd.old_region_id, cmd.new_region_id)
 
+    @handles(UpdateScanCoordinateRegionZCommand)
     def _on_update_region_z_command(self, cmd: Event) -> None:
-        from squid.core.events import UpdateScanCoordinateRegionZCommand
-
         assert isinstance(cmd, UpdateScanCoordinateRegionZCommand)
         self.update_region_z_level(cmd.region_id, cmd.z_mm)
 
+    @handles(WellplateFormatChanged)
     def _on_wellplate_format_changed(self, event: Event) -> None:
-        from squid.core.events import WellplateFormatChanged
-
         assert isinstance(event, WellplateFormatChanged)
         self.update_wellplate_settings(
             format_=event.format_name,
@@ -378,8 +380,6 @@ class ScanCoordinates:
         """Publish ScanCoordinatesUpdated event if event_bus is configured."""
         if self._event_bus is None:
             return
-        from squid.core.events import ScanCoordinatesUpdated
-
         self._event_bus.publish(
             ScanCoordinatesUpdated(
                 total_regions=len(self.region_fov_coordinates),
@@ -407,15 +407,6 @@ class ScanCoordinates:
         self.well_size_mm = size_mm
         self.well_spacing_mm = spacing_mm
         self.number_of_skip = number_of_skip
-
-    def _index_to_row(self, index: int) -> str:
-        index += 1
-        row = ""
-        while index > 0:
-            index -= 1
-            row = chr(index % 26 + ord("A")) + row
-            index //= 26
-        return row
 
     def rename_region(self, old_region_id: str, new_region_id: str) -> None:
         if old_region_id == new_region_id:
@@ -469,18 +460,19 @@ class ScanCoordinates:
         # Replace entire region set for "select wells" mode.
         selected_ids: Dict[str, Tuple[float, float]] = {}
         for row, col in selected_cells:
-            well_id = self._index_to_row(int(row)) + str(int(col) + 1)
-            x_mm = (
-                float(self.a1_x_mm)
-                + (float(col) * float(self.well_spacing_mm))
-                + float(self.wellplate_offset_x_mm)
+            well_id = row_col_to_well_id(int(row), int(col))
+            position = well_id_to_position(
+                well_id,
+                a1_x_mm=float(self.a1_x_mm),
+                a1_y_mm=float(self.a1_y_mm),
+                well_spacing_mm=float(self.well_spacing_mm),
+                offset_x_mm=float(self.wellplate_offset_x_mm),
+                offset_y_mm=float(self.wellplate_offset_y_mm),
             )
-            y_mm = (
-                float(self.a1_y_mm)
-                + (float(row) * float(self.well_spacing_mm))
-                + float(self.wellplate_offset_y_mm)
-            )
-            selected_ids[well_id] = (x_mm, y_mm)
+            if position is None:
+                self._log.warning("Invalid well identifier for row=%s col=%s", row, col)
+                continue
+            selected_ids[well_id] = position
 
         # Remove regions not selected (including any non-well regions)
         for region_id in list(self.region_centers.keys()):
@@ -617,95 +609,35 @@ class ScanCoordinates:
             f"actual_overlap={overlap_x_mm:.3f}x{overlap_y_mm:.3f}mm ({100*overlap_x_mm/fov_width_mm:.1f}%x{100*overlap_y_mm/fov_height_mm:.1f}%)"
         )
 
-        scan_coordinates = []
+        config = GridConfig(
+            fov_width_mm=fov_width_mm,
+            fov_height_mm=fov_height_mm,
+            overlap_percent=overlap_percent,
+            fov_pattern=self.fov_pattern,
+        )
 
         if shape == "Rectangle":
-            # Use scan_size_mm as width, height is 0.6 * width (landscape orientation)
             width_mm = scan_size_mm
             height_mm = scan_size_mm * 0.6
-
-            # Calculate number of tiles to cover the scan area
-            # n tiles cover: (n-1) * step + fov >= scan_size
-            # n = ceil((scan_size - fov) / step) + 1
-            tiles_x = max(1, math.ceil((width_mm - fov_width_mm) / step_x_mm) + 1) if step_x_mm > 0 else 1
-            tiles_y = max(1, math.ceil((height_mm - fov_height_mm) / step_y_mm) + 1) if step_y_mm > 0 else 1
-
-            # Calculate actual coverage
-            actual_width = (tiles_x - 1) * step_x_mm + fov_width_mm
-            actual_height = (tiles_y - 1) * step_y_mm + fov_height_mm
-
-            self._log.info(
-                f"Rectangle: {tiles_x}x{tiles_y} tiles, "
-                f"actual coverage={actual_width:.3f}x{actual_height:.3f}mm"
+            scan_coordinates = generate_rectangular_grid(
+                center_x, center_y, width_mm, height_mm, config
             )
-
-            half_tiles_x = (tiles_x - 1) / 2
-            half_tiles_y = (tiles_y - 1) / 2
-
-            for i in range(tiles_y):
-                row = []
-                y = center_y + (i - half_tiles_y) * step_y_mm
-                for j in range(tiles_x):
-                    x = center_x + (j - half_tiles_x) * step_x_mm
-                    if self.validate_coordinates(x, y):
-                        row.append((x, y))
-                if self.fov_pattern == "S-Pattern" and i % 2 == 1:
-                    row.reverse()
-                scan_coordinates.extend(row)
+        elif shape == "Circle":
+            scan_coordinates = generate_circular_grid(
+                center_x, center_y, scan_size_mm, config
+            )
         else:
-            # For Square and Circle shapes
-            # Calculate number of tiles to cover the scan area in each dimension
-            # n tiles cover: (n-1) * step + fov >= scan_size
-            # n = ceil((scan_size - fov) / step) + 1
-            tiles_x = max(1, math.ceil((scan_size_mm - fov_width_mm) / step_x_mm) + 1) if step_x_mm > 0 else 1
-            tiles_y = max(1, math.ceil((scan_size_mm - fov_height_mm) / step_y_mm) + 1) if step_y_mm > 0 else 1
-
-            # Calculate actual coverage
-            actual_width = (tiles_x - 1) * step_x_mm + fov_width_mm
-            actual_height = (tiles_y - 1) * step_y_mm + fov_height_mm
-
-            if shape == "Circle":
-                # For circles, we need to ensure tiles fit within the circular area
-                # Use the larger of the two tile counts to ensure coverage
-                # but filter out tiles outside the circle
-                pass  # The circle filtering happens in the loop below
-
-            self._log.info(
-                f"{shape}: {tiles_x}x{tiles_y} tiles, "
-                f"actual coverage={actual_width:.3f}x{actual_height:.3f}mm"
+            scan_coordinates = generate_square_grid(
+                center_x, center_y, scan_size_mm, config
             )
 
-            half_tiles_x = (tiles_x - 1) / 2
-            half_tiles_y = (tiles_y - 1) / 2
-            radius_squared = (scan_size_mm / 2) ** 2
-            # Use the larger FOV dimension for circle boundary checking
-            fov_size_mm_half = max(fov_width_mm, fov_height_mm) / 2
-
-            for i in range(tiles_y):
-                row = []
-                y = center_y + (i - half_tiles_y) * step_y_mm
-                for j in range(tiles_x):
-                    x = center_x + (j - half_tiles_x) * step_x_mm
-                    if (
-                        shape == "Square"
-                        or (
-                            shape == "Circle"
-                            and self._is_in_circle(
-                                x,
-                                y,
-                                center_x,
-                                center_y,
-                                radius_squared,
-                                fov_size_mm_half,
-                            )
-                        )
-                    ):
-                        if self.validate_coordinates(x, y):
-                            row.append((x, y))
-
-                if self.fov_pattern == "S-Pattern" and i % 2 == 1:
-                    row.reverse()
-                scan_coordinates.extend(row)
+        x_min = _def.SOFTWARE_POS_LIMIT.X_NEGATIVE
+        x_max = _def.SOFTWARE_POS_LIMIT.X_POSITIVE
+        y_min = _def.SOFTWARE_POS_LIMIT.Y_NEGATIVE
+        y_max = _def.SOFTWARE_POS_LIMIT.Y_POSITIVE
+        scan_coordinates = filter_coordinates_in_bounds(
+            scan_coordinates, x_min, x_max, y_min, y_max
+        )
 
         if not scan_coordinates and shape == "Circle":
             if self.validate_coordinates(center_x, center_y):
@@ -786,25 +718,22 @@ class ScanCoordinates:
         else:
             fov_height_mm = fov_width_mm
 
-        step_x_mm = fov_width_mm * (1 - overlap_percent / 100)
-        step_y_mm = fov_height_mm * (1 - overlap_percent / 100)
-
-        # Calculate total grid size
-        grid_width_mm = (Nx - 1) * step_x_mm
-        grid_height_mm = (Ny - 1) * step_y_mm
-
-        scan_coordinates = []
-        for i in range(Ny):
-            row = []
-            y = center_y - grid_height_mm / 2 + i * step_y_mm
-            for j in range(Nx):
-                x = center_x - grid_width_mm / 2 + j * step_x_mm
-                if self.validate_coordinates(x, y):
-                    row.append((x, y, center_z))
-
-            if self.fov_pattern == "S-Pattern" and i % 2 == 1:  # reverse even rows
-                row.reverse()
-            scan_coordinates.extend(row)
+        config = GridConfig(
+            fov_width_mm=fov_width_mm,
+            fov_height_mm=fov_height_mm,
+            overlap_percent=overlap_percent,
+            fov_pattern=self.fov_pattern,
+        )
+        scan_coordinates = generate_grid_by_count(
+            center_x, center_y, center_z, Nx, Ny, config
+        )
+        x_min = _def.SOFTWARE_POS_LIMIT.X_NEGATIVE
+        x_max = _def.SOFTWARE_POS_LIMIT.X_POSITIVE
+        y_min = _def.SOFTWARE_POS_LIMIT.Y_NEGATIVE
+        y_max = _def.SOFTWARE_POS_LIMIT.Y_POSITIVE
+        scan_coordinates = filter_coordinates_in_bounds(
+            scan_coordinates, x_min, x_max, y_min, y_max
+        )
 
         # Region coordinates are already centered since center_x, center_y is grid center
         if scan_coordinates:  # Only add region if there are valid coordinates
@@ -867,21 +796,23 @@ class ScanCoordinates:
         dy: float,
     ) -> None:
         """Convert grid parameters NX, NY to FOV coordinates based on dx, dy"""
-        grid_width_mm = (Nx - 1) * dx
-        grid_height_mm = (Ny - 1) * dy
-
-        # Pre-calculate step sizes and ranges
-        x_steps = [center_x - grid_width_mm / 2 + j * dx for j in range(Nx)]
-        y_steps = [center_y - grid_height_mm / 2 + i * dy for i in range(Ny)]
-
-        scan_coordinates = []
-        for i, y in enumerate(y_steps):
-            row = []
-            x_range = x_steps if i % 2 == 0 else reversed(x_steps)
-            for x in x_range:
-                if self.validate_coordinates(x, y):
-                    row.append((x, y))
-            scan_coordinates.extend(row)
+        scan_coordinates = generate_grid_by_step_size(
+            center_x=center_x,
+            center_y=center_y,
+            center_z=center_z,
+            nx=Nx,
+            ny=Ny,
+            dx=dx,
+            dy=dy,
+            fov_pattern=self.fov_pattern,
+        )
+        x_min = _def.SOFTWARE_POS_LIMIT.X_NEGATIVE
+        x_max = _def.SOFTWARE_POS_LIMIT.X_POSITIVE
+        y_min = _def.SOFTWARE_POS_LIMIT.Y_NEGATIVE
+        y_max = _def.SOFTWARE_POS_LIMIT.Y_POSITIVE
+        scan_coordinates = filter_coordinates_in_bounds(
+            scan_coordinates, x_min, x_max, y_min, y_max
+        )
 
         if scan_coordinates:  # Only add region if there are valid coordinates
             self._log.info(f"Added Flexible Region: {region_id}")
@@ -917,9 +848,6 @@ class ScanCoordinates:
         else:
             fov_height_mm = fov_width_mm
 
-        step_x_mm = fov_width_mm * (1 - overlap_percent / 100)
-        step_y_mm = fov_height_mm * (1 - overlap_percent / 100)
-
         # Ensure shape_coords is a numpy array
         shape_coords = np.array(shape_coords)
         if shape_coords.ndim == 1:
@@ -927,72 +855,21 @@ class ScanCoordinates:
         elif shape_coords.ndim > 2:
             self._log.error(f"Unexpected shape of manual_shape: {shape_coords.shape}")
             return []
-
-        # Calculate bounding box
-        x_min, y_min = np.min(shape_coords, axis=0)
-        x_max, y_max = np.max(shape_coords, axis=0)
-
-        # Create a grid of points within the bounding box
-        x_range = np.arange(x_min, x_max + step_x_mm, step_x_mm)
-        y_range = np.arange(y_min, y_max + step_y_mm, step_y_mm)
-        xx, yy = np.meshgrid(x_range, y_range)
-        grid_points = np.column_stack((xx.ravel(), yy.ravel()))
-
-        # # Use Delaunay triangulation for efficient point-in-polygon test
-        # # hull = Delaunay(shape_coords)
-        # # mask = hull.find_simplex(grid_points) >= 0
-        # # or
-        # # Use Ray Casting for point-in-polygon test
-        # mask = np.array([self._is_in_polygon(x, y, shape_coords) for x, y in grid_points])
-
-        # # Filter points inside the polygon
-        # valid_points = grid_points[mask]
-
-        def corners(x_mm, y_mm, fov_w, fov_h):
-            half_w = fov_w / 2
-            half_h = fov_h / 2
-            return (
-                (x_mm + half_w, y_mm + half_h),
-                (x_mm - half_w, y_mm + half_h),
-                (x_mm - half_w, y_mm - half_h),
-                (x_mm + half_w, y_mm - half_h),
-            )
-
-        valid_points = []
-        for x_center, y_center in grid_points:
-            if not self.validate_coordinates(x_center, y_center):
-                self._log.debug(
-                    f"Manual coords: ignoring {x_center=},{y_center=} because it is outside our movement range."
-                )
-                continue
-            if not self._is_in_polygon(x_center, y_center, shape_coords) and not any(
-                [
-                    self._is_in_polygon(x_corner, y_corner, shape_coords)
-                    for (x_corner, y_corner) in corners(x_center, y_center, fov_width_mm, fov_height_mm)
-                ]
-            ):
-                self._log.debug(
-                    f"Manual coords: ignoring {x_center=},{y_center=} because no corners or center are in poly. (corners={corners(x_center, y_center, fov_width_mm, fov_height_mm)}"
-                )
-                continue
-
-            valid_points.append((x_center, y_center))
-        if not valid_points:
+        config = GridConfig(
+            fov_width_mm=fov_width_mm,
+            fov_height_mm=fov_height_mm,
+            overlap_percent=overlap_percent,
+            fov_pattern=self.fov_pattern,
+        )
+        scan_coordinates = generate_polygon_grid(shape_coords, config)
+        if not scan_coordinates:
             return []
-        valid_points = np.array(valid_points)
 
-        # Sort points
-        sorted_indices = np.lexsort((valid_points[:, 0], valid_points[:, 1]))
-        sorted_points = valid_points[sorted_indices]
-
-        # Apply S-Pattern if needed
-        if self.fov_pattern == "S-Pattern":
-            unique_y = np.unique(sorted_points[:, 1])
-            for i in range(1, len(unique_y), 2):
-                mask = sorted_points[:, 1] == unique_y[i]
-                sorted_points[mask] = sorted_points[mask][::-1]
-
-        return sorted_points.tolist()
+        x_min = _def.SOFTWARE_POS_LIMIT.X_NEGATIVE
+        x_max = _def.SOFTWARE_POS_LIMIT.X_POSITIVE
+        y_min = _def.SOFTWARE_POS_LIMIT.Y_NEGATIVE
+        y_max = _def.SOFTWARE_POS_LIMIT.Y_POSITIVE
+        return filter_coordinates_in_bounds(scan_coordinates, x_min, x_max, y_min, y_max)
 
     def add_template_region(
         self,
@@ -1022,7 +899,6 @@ class ScanCoordinates:
         )
 
     def region_contains_coordinate(self, region_id: str, x: float, y: float) -> bool:
-        # TODO: check for manual region
         if not self.validate_region(region_id):
             return False
 
@@ -1036,51 +912,24 @@ class ScanCoordinates:
         ):
             return False
 
+        if shape == "Manual":
+            fov_width_mm, fov_height_mm = self._get_current_fov_dimensions()
+            half_w = fov_width_mm / 2
+            half_h = fov_height_mm / 2
+            for coord in self.region_fov_coordinates.get(region_id, []):
+                if abs(x - coord[0]) <= half_w and abs(y - coord[1]) <= half_h:
+                    return True
+            return False
+
         # For circle regions
         if shape == "Circle":
             center_x = (bounds["max_x"] + bounds["min_x"]) / 2
             center_y = (bounds["max_y"] + bounds["min_y"]) / 2
             radius = (bounds["max_x"] - bounds["min_x"]) / 2
-            if (x - center_x) ** 2 + (y - center_y) ** 2 > radius**2:
+            if not point_in_circle(x, y, center_x, center_y, radius):
                 return False
 
         return True
-
-    def _is_in_polygon(self, x: float, y: float, poly: np.ndarray) -> bool:
-        n = len(poly)
-        inside = False
-        p1x, p1y = poly[0]
-        for i in range(n + 1):
-            p2x, p2y = poly[i % n]
-            if y > min(p1y, p2y):
-                if y <= max(p1y, p2y):
-                    if x <= max(p1x, p2x):
-                        if p1y != p2y:
-                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                        if p1x == p2x or x <= xinters:
-                            inside = not inside
-            p1x, p1y = p2x, p2y
-        return inside
-
-    def _is_in_circle(
-        self,
-        x: float,
-        y: float,
-        center_x: float,
-        center_y: float,
-        radius_squared: float,
-        fov_size_mm_half: float,
-    ) -> bool:
-        corners = [
-            (x - fov_size_mm_half, y - fov_size_mm_half),
-            (x + fov_size_mm_half, y - fov_size_mm_half),
-            (x - fov_size_mm_half, y + fov_size_mm_half),
-            (x + fov_size_mm_half, y + fov_size_mm_half),
-        ]
-        return all(
-            (cx - center_x) ** 2 + (cy - center_y) ** 2 <= radius_squared
-            for cx, cy in corners
-        )
 
     def has_regions(self) -> bool:
         """Check if any regions exist"""

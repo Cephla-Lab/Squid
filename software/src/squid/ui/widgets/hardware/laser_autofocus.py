@@ -22,6 +22,9 @@ from qtpy.QtWidgets import (
 from _def import SpotDetectionMode
 import squid.core.utils.hardware_utils as utils
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     EventBus,
     StartLiveCommand,
     StopLiveCommand,
@@ -92,6 +95,7 @@ class LaserAutofocusSettingWidget(QWidget):
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self.streamHandler: "StreamHandler" = streamHandler
         self._event_bus = event_bus
+        self._subscriptions = []
         self.spot_result_label: Optional[QLabel] = None
         self.spot_detection_error_label: Optional[QLabel] = None
         self._exposure_limits = exposure_limits
@@ -123,13 +127,7 @@ class LaserAutofocusSettingWidget(QWidget):
         self.update_calibration_label()
 
         # Subscribe to state events (UIEventBus handles thread marshalling automatically)
-        self._event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
-        self._event_bus.subscribe(LaserAFInitialized, self._on_laser_af_initialized)
-        self._event_bus.subscribe(LaserAFSpotCentroidMeasured, self._on_spot_centroid_measured)
-        self._event_bus.subscribe(LaserAFCrossCorrelationMeasured, self._on_cross_correlation_measured)
-        self._event_bus.subscribe(LaserAFPropertiesChanged, self._on_properties_changed)
-        self._event_bus.subscribe(ProfileChanged, self._on_profile_or_objective_changed)
-        self._event_bus.subscribe(ObjectiveChanged, self._on_profile_or_objective_changed)
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
         # Keep the most recent displayed focus-camera frame for spot marking.
         if hasattr(self.streamHandler, "image_to_display"):
@@ -138,6 +136,7 @@ class LaserAutofocusSettingWidget(QWidget):
             except Exception:  # pragma: no cover - defensive
                 pass
 
+    @handles(LaserAFPropertiesChanged)
     def _on_properties_changed(self, event: LaserAFPropertiesChanged) -> None:
         """Handle laser AF properties change from EventBus."""
         # Update cached properties with changes
@@ -146,6 +145,7 @@ class LaserAutofocusSettingWidget(QWidget):
         if "pixel_to_um" in event.properties or "calibration_timestamp" in event.properties:
             self.update_calibration_label()
 
+    @handles(LiveStateChanged)
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Handle live state changes from EventBus."""
         if getattr(event, "camera", "main") != "focus":
@@ -174,6 +174,7 @@ class LaserAutofocusSettingWidget(QWidget):
             if self._image_display_window is not None:
                 self._image_display_window.set_spot_tracking(enabled=False)
 
+    @handles(LaserAFInitialized)
     def _on_laser_af_initialized(self, event: LaserAFInitialized) -> None:
         """Handle laser AF initialization from EventBus."""
         # Update cached state
@@ -208,6 +209,7 @@ class LaserAutofocusSettingWidget(QWidget):
     def _on_new_frame(self, frame: np.ndarray) -> None:
         self._last_frame = frame
 
+    @handles(LaserAFSpotCentroidMeasured)
     def _on_spot_centroid_measured(self, event: LaserAFSpotCentroidMeasured) -> None:
         """Handle spot centroid measurement event.
 
@@ -247,9 +249,11 @@ class LaserAutofocusSettingWidget(QWidget):
         except Exception as e:
             self._log.exception(f"Failed to display spot location: {e}")
 
+    @handles(LaserAFCrossCorrelationMeasured)
     def _on_cross_correlation_measured(self, event: LaserAFCrossCorrelationMeasured) -> None:
         self.show_cross_correlation_result(event.correlation)
 
+    @handles(ProfileChanged, ObjectiveChanged)
     def _on_profile_or_objective_changed(self, event) -> None:
         """Handle profile or objective changes - refresh widget values."""
         self.update_values()
@@ -700,6 +704,12 @@ class LaserAutofocusSettingWidget(QWidget):
         if layout is not None:
             layout.addWidget(self.correlation_label)
 
+    def closeEvent(self, event) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)
+
 
 class LaserAutofocusControlWidget(QFrame):
     """Widget for controlling laser autofocus operations.
@@ -730,6 +740,7 @@ class LaserAutofocusControlWidget(QFrame):
         """
         super().__init__(*args, **kwargs)
         self._event_bus = event_bus
+        self._subscriptions = []
         self._is_live = False
 
         # Cached state from events
@@ -747,21 +758,16 @@ class LaserAutofocusControlWidget(QFrame):
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
         # Subscribe to state events (UIEventBus handles thread marshalling automatically)
-        self._event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
-        self._event_bus.subscribe(LaserAFReferenceSet, self._on_reference_set)
-        self._event_bus.subscribe(LaserAFInitialized, self._on_initialized)
-        self._event_bus.subscribe(LaserAFDisplacementMeasured, self._on_displacement_measured)
-        self._event_bus.subscribe(LaserAFMoveCompleted, self._on_move_completed)
-        self._event_bus.subscribe(ProfileChanged, self._on_profile_or_objective_changed)
-        self._event_bus.subscribe(ObjectiveChanged, self._on_profile_or_objective_changed)
-        self._event_bus.subscribe(FocusLockStatusChanged, self._on_focus_lock_status_changed)
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
+    @handles(LiveStateChanged)
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Track live state for stop/start around operations."""
         if getattr(event, "camera", "main") != "focus":
             return
         self._is_live = event.is_live
 
+    @handles(LaserAFReferenceSet)
     def _on_reference_set(self, event: LaserAFReferenceSet) -> None:
         """Handle reference set event."""
         if event.success:
@@ -769,16 +775,19 @@ class LaserAutofocusControlWidget(QFrame):
             self.btn_measure_displacement.setEnabled(True)
             self.btn_move_to_target.setEnabled(True)
 
+    @handles(LaserAFInitialized)
     def _on_initialized(self, event: LaserAFInitialized) -> None:
         """Handle initialization event."""
         self._is_initialized = event.is_initialized
         self.update_init_state()
 
+    @handles(LaserAFDisplacementMeasured)
     def _on_displacement_measured(self, event: LaserAFDisplacementMeasured) -> None:
         """Handle displacement measurement event."""
         if event.success and event.displacement_um is not None:
             self.label_displacement.setNum(event.displacement_um)
 
+    @handles(LaserAFMoveCompleted)
     def _on_move_completed(self, event: LaserAFMoveCompleted) -> None:
         """Handle move to target completion event."""
         if event.success:
@@ -793,10 +802,12 @@ class LaserAutofocusControlWidget(QFrame):
                 f"Failed to move to target {event.target_um:.2f} μm:\n{error_msg}"
             )
 
+    @handles(ProfileChanged, ObjectiveChanged)
     def _on_profile_or_objective_changed(self, event) -> None:
         """Handle profile or objective changes - refresh init state."""
         self.update_init_state()
 
+    @handles(FocusLockStatusChanged)
     def _on_focus_lock_status_changed(self, event: FocusLockStatusChanged) -> None:
         """Disable laser AF controls while focus lock is active.
 
@@ -916,3 +927,9 @@ class LaserAutofocusControlWidget(QFrame):
         self._event_bus.publish(MeasureLaserAFDisplacementCommand())
         if was_live:
             self._event_bus.publish(StartLiveCommand(camera="focus"))
+
+    def closeEvent(self, event) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)

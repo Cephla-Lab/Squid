@@ -4,7 +4,7 @@ from squid.backend.managers.scan_coordinates import (
     RemovedScanCoordinateRegion,
     ClearedScanCoordinates,
 )
-from squid.core.events import EventBus, ScanCoordinatesUpdated
+from squid.core.events import EventBus, ScanCoordinatesUpdated, ClearScanCoordinatesCommand
 from squid.backend.microscope import Microscope
 
 
@@ -107,3 +107,27 @@ def test_scan_coordinates_basic_operation():
 
     assert len(scan_coordinates.region_centers.keys()) == 0
     assert len(scan_coordinates.region_centers.values()) == 0
+
+
+def test_scan_coordinates_shutdown_unsubscribes() -> None:
+    scope = Microscope.build_from_global_config(simulated=True)
+    bus = EventBus()
+    scan_coordinates = ScanCoordinates(
+        scope.objective_store, scope.stage, scope.camera, event_bus=bus
+    )
+
+    scan_coordinates.add_single_fov_region("single_fov", 50.0, 50.0, 3.0)
+    bus.drain()
+
+    bus.publish(ClearScanCoordinatesCommand())
+    bus.drain()
+    assert len(scan_coordinates.region_centers.keys()) == 0
+
+    scan_coordinates.add_single_fov_region("single_fov", 50.0, 50.0, 3.0)
+    bus.drain()
+
+    scan_coordinates.shutdown()
+    bus.publish(ClearScanCoordinatesCommand())
+    bus.drain()
+
+    assert len(scan_coordinates.region_centers.keys()) == 1

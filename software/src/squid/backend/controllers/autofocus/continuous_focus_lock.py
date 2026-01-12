@@ -32,6 +32,9 @@ from squid.core.events import (
     SetFocusLockReferenceCommand,
     StartFocusLockCommand,
     StopFocusLockCommand,
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
 )
 
 
@@ -87,26 +90,7 @@ class ContinuousFocusLockController:
         # Reference piezo position when lock was set (for search recovery)
         self._locked_piezo_um: float = 0.0
 
-        self._subscribe_to_bus()
-
-    def _subscribe_to_bus(self) -> None:
-        self._event_bus.subscribe(SetFocusLockModeCommand, self._on_set_mode_command)
-        self._event_bus.subscribe(StartFocusLockCommand, self._on_start_command)
-        self._event_bus.subscribe(StopFocusLockCommand, self._on_stop_command)
-        self._event_bus.subscribe(PauseFocusLockCommand, self._on_pause_command)
-        self._event_bus.subscribe(ResumeFocusLockCommand, self._on_resume_command)
-        self._event_bus.subscribe(
-            AdjustFocusLockTargetCommand, self._on_adjust_target_command
-        )
-        self._event_bus.subscribe(
-            SetFocusLockReferenceCommand, self._on_set_reference_command
-        )
-        self._event_bus.subscribe(
-            ReleaseFocusLockReferenceCommand, self._on_release_reference_command
-        )
-        self._event_bus.subscribe(
-            SetFocusLockAutoSearchCommand, self._on_auto_search_command
-        )
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
     @property
     def mode(self) -> FocusLockMode:
@@ -236,34 +220,47 @@ class ContinuousFocusLockController:
         with self._lock:
             self._target_um += float(delta_um)
 
+    @handles(SetFocusLockModeCommand)
     def _on_set_mode_command(self, cmd: SetFocusLockModeCommand) -> None:
         self.set_mode(cmd.mode)
 
+    @handles(StartFocusLockCommand)
     def _on_start_command(self, cmd: StartFocusLockCommand) -> None:
         self.start(target_um=cmd.target_um)
 
+    @handles(StopFocusLockCommand)
     def _on_stop_command(self, cmd: StopFocusLockCommand) -> None:
         self.stop()
 
+    @handles(PauseFocusLockCommand)
     def _on_pause_command(self, cmd: PauseFocusLockCommand) -> None:
         self.pause()
 
+    @handles(ResumeFocusLockCommand)
     def _on_resume_command(self, cmd: ResumeFocusLockCommand) -> None:
         self.resume()
 
+    @handles(AdjustFocusLockTargetCommand)
     def _on_adjust_target_command(self, cmd: AdjustFocusLockTargetCommand) -> None:
         self.adjust_target(cmd.delta_um)
 
+    @handles(SetFocusLockReferenceCommand)
     def _on_set_reference_command(self, cmd: SetFocusLockReferenceCommand) -> None:
         self._set_lock_reference()
 
+    @handles(ReleaseFocusLockReferenceCommand)
     def _on_release_reference_command(self, cmd: ReleaseFocusLockReferenceCommand) -> None:
         self._release_lock_reference()
 
+    @handles(SetFocusLockAutoSearchCommand)
     def _on_auto_search_command(self, cmd: SetFocusLockAutoSearchCommand) -> None:
         with self._lock:
             self._auto_search_enabled = cmd.enabled
         self._log.info(f"Auto-search {'enabled' if cmd.enabled else 'disabled'}")
+
+    def shutdown(self) -> None:
+        auto_unsubscribe(self._subscriptions, self._event_bus)
+        self._subscriptions = []
 
     def _set_lock_reference(self) -> None:
         """Set the lock reference at current position."""
@@ -597,7 +594,7 @@ class ContinuousFocusLockController:
 
     def _publish_frame(self, result: LaserAFResult) -> None:
         """Crop and publish the AF spot frame for preview."""
-        frame = getattr(self._laser_af, "image", None)
+        frame = result.image
         if frame is None:
             return
 

@@ -1,7 +1,7 @@
 import serial
 
 from squid.backend.drivers.peripherals.xeryon import Xeryon, Stage
-from _def import *  # to remove once we create ObjectiveChangerConfig
+from _def import XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM
 import squid.core.abc
 from typing import Optional
 

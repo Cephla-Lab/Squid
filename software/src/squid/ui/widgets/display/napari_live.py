@@ -1,6 +1,6 @@
 # Napari live view widget
 import numpy as np
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 from squid.backend.managers import ContrastManager
 from squid.backend.io.stream_handler import StreamHandler
@@ -28,14 +28,16 @@ from qtpy.QtWidgets import (
 
 from _def import (
     TriggerMode,
-    USE_NAPARI_FOR_LIVE_CONTROL,
-    USE_NAPARI_WELL_SELECTION,
     SQUID_ICON_PATH,
 )
+from squid.core.config.feature_flags import get_feature_flags
 
 from squid.core.utils.config_utils import ChannelMode as ChannelConfiguration
 
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     StartLiveCommand,
     StopLiveCommand,
     LiveStateChanged,
@@ -54,6 +56,9 @@ from squid.core.events import (
 
 if TYPE_CHECKING:
     from squid.ui.ui_event_bus import UIEventBus
+
+
+_FEATURE_FLAGS = get_feature_flags()
 
 
 class NapariLiveWidget(QWidget):
@@ -77,6 +82,7 @@ class NapariLiveWidget(QWidget):
         super().__init__(parent)
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self._event_bus = event_bus
+        self._subscriptions: List[Tuple[type, Any]] = []
         self.streamHandler = streamHandler
         self.wellSelectionWidget = wellSelectionWidget
         self._exposure_limits = exposure_limits
@@ -108,13 +114,9 @@ class NapariLiveWidget(QWidget):
         self.update_ui_for_mode(self.live_configuration)
 
         # Subscribe to state changes from the bus
-        self._event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
-        self._event_bus.subscribe(TriggerFPSChanged, self._on_trigger_fps_changed)
-        self._event_bus.subscribe(MicroscopeModeChanged, self._on_microscope_mode_changed)
-        self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
-        self._event_bus.subscribe(ChannelConfigurationsChanged, self._on_channel_configs_changed)
-        self._event_bus.subscribe(AutoLevelCommand, self._on_autolevel_command)
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
+    @handles(AutoLevelCommand)
     def _on_autolevel_command(self, event: AutoLevelCommand) -> None:
         self.btn_autolevel.blockSignals(True)
         self.btn_autolevel.setChecked(bool(event.enabled))
@@ -372,7 +374,7 @@ class NapariLiveWidget(QWidget):
         control_layout.addStretch(1)
 
         add_live_controls = False
-        if USE_NAPARI_FOR_LIVE_CONTROL or add_live_controls:
+        if _FEATURE_FLAGS.is_enabled("USE_NAPARI_FOR_LIVE_CONTROL") or add_live_controls:
             live_controls_widget = QWidget()
             live_controls_widget.setLayout(control_layout)
 
@@ -404,7 +406,7 @@ class NapariLiveWidget(QWidget):
                 self.dock_live_controls.toggleViewAction()
             )
 
-        if USE_NAPARI_WELL_SELECTION:
+        if _FEATURE_FLAGS.is_enabled("USE_NAPARI_WELL_SELECTION"):
             well_selector_layout = QVBoxLayout()
 
             well_selector_row = QHBoxLayout()
@@ -451,6 +453,7 @@ class NapariLiveWidget(QWidget):
         else:
             self._event_bus.publish(StopLiveCommand())
 
+    @handles(LiveStateChanged)
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Handle live state changes from the event bus."""
         if getattr(event, "camera", "main") != "main":
@@ -462,6 +465,7 @@ class NapariLiveWidget(QWidget):
             self.btn_live.setChecked(False)
             self.btn_live.setText("Start Live")
 
+    @handles(TriggerFPSChanged)
     def _on_trigger_fps_changed(self, event: TriggerFPSChanged) -> None:
         """Handle trigger FPS change from service."""
         if getattr(event, "camera", "main") != "main":
@@ -470,6 +474,7 @@ class NapariLiveWidget(QWidget):
         self.entry_triggerFPS.setValue(event.fps)
         self.entry_triggerFPS.blockSignals(False)
 
+    @handles(MicroscopeModeChanged)
     def _on_microscope_mode_changed(self, event: MicroscopeModeChanged) -> None:
         """Handle microscope mode change from service."""
         self.dropdown_modeSelection.blockSignals(True)
@@ -494,6 +499,7 @@ class NapariLiveWidget(QWidget):
             self.slider_illuminationIntensity.setValue(int(event.illumination_intensity))
             self.slider_illuminationIntensity.blockSignals(False)
 
+    @handles(ObjectiveChanged)
     def _on_objective_changed(self, event: ObjectiveChanged) -> None:
         """Handle objective change event."""
         if event.objective_name:
@@ -506,6 +512,7 @@ class NapariLiveWidget(QWidget):
                 )
             )
 
+    @handles(ChannelConfigurationsChanged)
     def _on_channel_configs_changed(self, event: ChannelConfigurationsChanged) -> None:
         """Handle channel configurations changed event."""
         if event.objective_name == self._current_objective:
@@ -801,3 +808,9 @@ class NapariLiveWidget(QWidget):
     def activate(self) -> None:
         print("ACTIVATING NAPARI LIVE WIDGET")
         self.viewer.window.activate()
+
+    def closeEvent(self, event) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)

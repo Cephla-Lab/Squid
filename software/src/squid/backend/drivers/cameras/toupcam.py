@@ -16,7 +16,6 @@ from squid.core.abc import (
     CameraFrame,
 )
 from squid.core.config import CameraConfig, ToupcamCameraModel
-from _def import *
 
 import threading
 import squid.backend.drivers.cameras.toupcam_sdk as toupcam

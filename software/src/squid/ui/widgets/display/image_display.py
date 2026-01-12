@@ -26,11 +26,23 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from _def import ENABLE_TRACKING, SpotDetectionMode
+from _def import SpotDetectionMode
+from squid.core.config.feature_flags import get_feature_flags
 from squid.backend.managers import ContrastManager
 import squid.core.utils.hardware_utils as utils
 import squid.core.logging
-from squid.core.events import AutoLevelCommand, LiveStateChanged, MicroscopeModeChanged
+from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
+    AutoLevelCommand,
+    LiveStateChanged,
+    MicroscopeModeChanged,
+    PiezoPositionChanged,
+    StagePositionChanged,
+)
+
+_FEATURE_FLAGS = get_feature_flags()
 
 
 class ImageDisplay(QObject):
@@ -100,6 +112,7 @@ class ImageDisplayWindow(QMainWindow):
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self.contrastManager: Optional[ContrastManager] = contrastManager
         self._event_bus: Optional["EventBus"] = event_bus
+        self._subscriptions: List[Tuple[type, object]] = []
         self._current_configuration_name: str = "Unknown"
         self.setWindowTitle(window_title)
         self.setWindowFlags(self.windowFlags() | Qt.CustomizeWindowHint)
@@ -111,13 +124,7 @@ class ImageDisplayWindow(QMainWindow):
         self.first_image: bool = True
         if self._event_bus is not None:
             try:
-                self._event_bus.subscribe(
-                    AutoLevelCommand, lambda e: self.set_autolevel(e.enabled)
-                )
-                self._event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
-                self._event_bus.subscribe(
-                    MicroscopeModeChanged, self._on_microscope_mode_changed
-                )
+                self._subscriptions = auto_subscribe(self, self._event_bus)
             except Exception:
                 pass
 
@@ -315,12 +322,13 @@ class ImageDisplayWindow(QMainWindow):
                 self.handle_mouse_move
             )
 
-        if self._event_bus is not None:
-            from squid.core.events import StagePositionChanged, PiezoPositionChanged
+        if self._event_bus is not None and not self._subscriptions:
+            try:
+                self._subscriptions = auto_subscribe(self, self._event_bus)
+            except Exception:
+                pass
 
-            self._event_bus.subscribe(StagePositionChanged, self._on_stage_position_changed)
-            self._event_bus.subscribe(PiezoPositionChanged, self._on_piezo_position_changed)
-
+    @handles(StagePositionChanged)
     def _on_stage_position_changed(self, event: Any) -> None:
         try:
             self.stage_position_label.setText(
@@ -329,6 +337,7 @@ class ImageDisplayWindow(QMainWindow):
         except Exception:
             self.stage_position_label.setText("Stage: Error")
 
+    @handles(PiezoPositionChanged)
     def _on_piezo_position_changed(self, event: Any) -> None:
         try:
             self.piezo_position_label.setText(f"Piezo: {event.position_um:.1f} µm")
@@ -712,7 +721,7 @@ class ImageDisplayWindow(QMainWindow):
             self.first_image = False
             self.btn_line_profiler.setEnabled(True)
 
-        if ENABLE_TRACKING:
+        if _FEATURE_FLAGS.is_enabled("ENABLE_TRACKING"):
             image = np.copy(image)
             self.image_height, self.image_width = image.shape[:2]
             if self.draw_rectangle:
@@ -935,15 +944,21 @@ class ImageDisplayWindow(QMainWindow):
             channel_name = self._current_configuration_name or "Unknown"
             self.contrastManager.update_limits(channel_name, min_val, max_val)
 
+    @handles(LiveStateChanged)
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         if getattr(event, "camera", "main") != "main":
             return
         if event.configuration:
             self._current_configuration_name = event.configuration
 
+    @handles(MicroscopeModeChanged)
     def _on_microscope_mode_changed(self, event: MicroscopeModeChanged) -> None:
         if event.configuration_name:
             self._current_configuration_name = event.configuration_name
+
+    @handles(AutoLevelCommand)
+    def _on_autolevel_command(self, event: AutoLevelCommand) -> None:
+        self.set_autolevel(event.enabled)
 
     def update_ROI(self) -> None:
         self.roi_pos = self.ROI.pos()
@@ -974,6 +989,12 @@ class ImageDisplayWindow(QMainWindow):
     def set_autolevel(self, enabled: bool) -> None:
         self.autoLevels = enabled
         self._log.info("set autolevel to " + str(enabled))
+
+    def closeEvent(self, event: Any) -> None:
+        if self._event_bus is not None and self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)
 
 
 class ImageArrayDisplayWindow(QMainWindow):

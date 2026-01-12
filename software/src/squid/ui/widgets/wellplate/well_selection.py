@@ -1,10 +1,28 @@
-from squid.ui.widgets.wellplate._common import *
+from squid.ui.widgets.wellplate._common import (
+    Any,
+    List,
+    Optional,
+    QAbstractItemView,
+    QFont,
+    QHeaderView,
+    QModelIndex,
+    QResizeEvent,
+    QTableWidget,
+    QTableWidgetItem,
+    QWheelEvent,
+    Qt,
+    TYPE_CHECKING,
+    Tuple,
+)
 from _def import WELLPLATE_OFFSET_X_mm, WELLPLATE_OFFSET_Y_mm
 
 if TYPE_CHECKING:
     from squid.ui.ui_event_bus import UIEventBus
 
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     ClickToMoveEnabledChanged,
     MoveStageToCommand,
     SelectedWellsChanged,
@@ -32,6 +50,7 @@ class WellSelectionWidget(QTableWidget):
         super(WellSelectionWidget, self).__init__(*args, **kwargs)
         self._bus = event_bus
         self._click_to_move_enabled: bool = True
+        self._subscriptions: List[Tuple[type, Any]] = []
         self.cellDoubleClicked.connect(self.onDoubleClick)
         self.itemSelectionChanged.connect(self.onSelectionChanged)
         self.fixed_height: int = 400
@@ -46,9 +65,9 @@ class WellSelectionWidget(QTableWidget):
         self.a1_y_pixel: int = int(a1_y_pixel)
         self.well_size_mm: float = float(well_size_mm)
         self._apply_format()
-        self._bus.subscribe(ClickToMoveEnabledChanged, self._on_click_to_move_enabled_changed)
-        self._bus.subscribe(WellplateFormatChanged, self._on_wellplate_format_changed)
+        self._subscriptions = auto_subscribe(self, self._bus)
 
+    @handles(ClickToMoveEnabledChanged)
     def _on_click_to_move_enabled_changed(self, event: ClickToMoveEnabledChanged) -> None:
         self._click_to_move_enabled = event.enabled
 
@@ -138,6 +157,7 @@ class WellSelectionWidget(QTableWidget):
         if viewport is not None:
             viewport.update()
 
+    @handles(WellplateFormatChanged)
     def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
         # If the app switches to the 1536 selector widget, main_window replaces this widget.
         if event.format_name == "1536 well plate":
@@ -197,6 +217,12 @@ class WellSelectionWidget(QTableWidget):
                                 item_right.flags() & ~Qt.ItemFlag.ItemIsSelectable
                             )
                         )
+
+    def closeEvent(self, event: Any) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)
 
         # Update row headers
         row_headers = []

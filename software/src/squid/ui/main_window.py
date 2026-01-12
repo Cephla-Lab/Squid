@@ -10,11 +10,35 @@ os.environ["QT_API"] = "pyqt5"
 from typing import Any, Optional
 
 # qt libraries
-from qtpy.QtCore import *
-from qtpy.QtWidgets import *
-from qtpy.QtGui import *
+from qtpy.QtCore import Qt
+from qtpy.QtWidgets import (
+    QAction,
+    QDockWidget,
+    QMainWindow,
+    QMessageBox,
+    QTabWidget,
+)
+from qtpy.QtGui import QCloseEvent
 
-from _def import *
+from _def import (
+    ENABLE_NL5,
+    ENABLE_WELLPLATE_MULTIPOINT,
+    HOMING_ENABLED_X,
+    HOMING_ENABLED_Y,
+    HOMING_ENABLED_Z,
+    IS_HCS,
+    LIVE_ONLY_MODE,
+    RUN_FLUIDICS,
+    SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS,
+    SUPPORT_SCIMICROSCOPY_LED_ARRAY,
+    USE_JUPYTER_CONSOLE,
+    USE_NAPARI_WELL_SELECTION,
+    USE_PRIOR_STAGE,
+    USE_TEMPLATE_MULTIPOINT,
+    USE_XERYON,
+    WELLPLATE_FORMAT,
+)
+from squid.core.config.feature_flags import get_feature_flags
 
 # app specific libraries
 from squid.ui.widgets.nl5 import NL5Widget
@@ -36,7 +60,11 @@ import squid.core.config
 import squid.core.logging
 import squid.backend.drivers.stages.stage_utils
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     event_bus,
+    AcquisitionCoordinates,
     MoveStageCommand,
     MoveStageToCommand,
     HomeStageCommand,
@@ -45,13 +73,17 @@ from squid.core.events import (
     ClickToMoveEnabledChanged,
     WellplateFormatChanged,
     AcquisitionStateChanged,
+    AcquisitionWorkerFinished,
     ClearScanCoordinatesCommand,
     ActiveAcquisitionTabChanged,
     AutoLevelCommand,
     LiveStateChanged,
+    PlateViewInit,
+    PlateViewUpdate,
 )
 
 log = squid.core.logging.get_logger(__name__)
+_FEATURE_FLAGS = get_feature_flags()
 
 if USE_PRIOR_STAGE:
     import squid.backend.drivers.stages.prior
@@ -74,7 +106,7 @@ if TYPE_CHECKING:
     from squid.backend.controllers.tracking_controller import TrackingControllerCore
 import squid.backend.drivers.lighting as serial_peripherals
 
-if SUPPORT_LASER_AUTOFOCUS:
+if _FEATURE_FLAGS.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
     import squid.ui.displacement_measurement as core_displacement_measurement
 
 SINGLE_WINDOW = True  # set to False if use separate windows for display and control
@@ -121,6 +153,7 @@ class HighContentScreeningGui(QMainWindow):
         )
 
         self.log = squid.core.logging.get_logger(self.__class__.__name__)
+        self._feature_flags = get_feature_flags()
         self._services = services  # Store for passing to widgets
         self._controllers = controllers
         # Use the registry's bus if it exposes one, otherwise fall back to the global instance
@@ -139,6 +172,7 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self._qt_dispatcher = None  # Owned by ApplicationContext
             self.log.info("Using UIEventBus from ServiceRegistry")
+        self._subscriptions = []
 
         self.microscope: squid.backend.microscope.Microscope = microscope
         self.stage: AbstractStage = microscope.stage
@@ -190,7 +224,7 @@ class HighContentScreeningGui(QMainWindow):
         ] = None
         self.laserAutofocusController: Optional[LaserAutofocusController] = None
 
-        if SUPPORT_LASER_AUTOFOCUS:
+        if self._feature_flags.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
             if self._controllers and self._controllers.live_focus:
                 self.liveController_focus_camera = self._controllers.live_focus
             else:
@@ -201,8 +235,8 @@ class HighContentScreeningGui(QMainWindow):
                 else None
             )
             self.streamHandler_focus_camera = QtStreamHandler(
-                # Focus camera frames are streamed continuously (used by laser AF); do not gate on LiveController.is_live.
-                accept_new_frame_fn=lambda: True,
+                # Gate on focus camera live view - Focus Lock widget has its own preview
+                accept_new_frame_fn=lambda: self.liveController_focus_camera.is_live if self.liveController_focus_camera else False,
                 handler=core_focus_stream,
             )
             self.imageDisplayWindow_focus = ImageDisplayWindow(
@@ -296,15 +330,8 @@ class HighContentScreeningGui(QMainWindow):
         self.setup_layout()
         self.make_connections()
 
-        # Acquisition UI should follow backend truth via AcquisitionStateChanged
-        self._ui_event_bus.subscribe(
-            AcquisitionStateChanged, self._on_acquisition_state_changed
-        )
-
-        # Subscribe to WellplateFormatChanged for event-driven wellplate handling (Phase 8)
-        self._ui_event_bus.subscribe(
-            WellplateFormatChanged, self._on_wellplate_format_changed
-        )
+        if self._ui_event_bus is not None:
+            self._subscriptions = auto_subscribe(self, self._ui_event_bus)
 
         if HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
             # Hardware-owned cached-position restore runs in ApplicationContext._initialize_hardware().
@@ -362,7 +389,7 @@ class HighContentScreeningGui(QMainWindow):
             raise RuntimeError(
                 "AutoFocusController must be constructed in ApplicationContext"
             )
-        if ENABLE_TRACKING:
+        if self._feature_flags.is_enabled("ENABLE_TRACKING"):
             # TrackingControllerCore is constructed in ApplicationContext; UI only publishes commands.
             tracking = getattr(self._controllers, "tracking", None) if self._controllers else None
             if tracking is None:
@@ -401,7 +428,7 @@ class HighContentScreeningGui(QMainWindow):
         # Setup image display tabs
         self.imageDisplayTabs = QTabWidget(parent=self)
         if self.live_only_mode:
-            if ENABLE_TRACKING:
+            if self._feature_flags.is_enabled("ENABLE_TRACKING"):
                 self.imageDisplayWindow = ImageDisplayWindow(
                     contrastManager=self.contrastManager, event_bus=self._ui_event_bus
                 )
@@ -425,7 +452,7 @@ class HighContentScreeningGui(QMainWindow):
         self.setupCameraTabWidget()
 
     def setupImageDisplayTabs(self) -> None:
-        if USE_NAPARI_FOR_LIVE_VIEW:
+        if self._feature_flags.is_enabled("USE_NAPARI_FOR_LIVE_VIEW"):
             # Get exposure limits from camera service for widget initialization
             camera_service = self._services.get("camera") if self._services else None
             exposure_limits = camera_service.get_exposure_limits() if camera_service else (0.1, 1000.0)
@@ -453,7 +480,7 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.imageDisplayTabs.addTab(self.napariLiveWidget, "Live View")
         else:
-            if ENABLE_TRACKING:
+            if self._feature_flags.is_enabled("ENABLE_TRACKING"):
                 self.imageDisplayWindow = ImageDisplayWindow(
                     contrastManager=self.contrastManager, event_bus=self._ui_event_bus
                 )
@@ -468,7 +495,7 @@ class HighContentScreeningGui(QMainWindow):
             self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
 
         if not self.live_only_mode:
-            if USE_NAPARI_FOR_MULTIPOINT:
+            if self._feature_flags.is_enabled("USE_NAPARI_FOR_MULTIPOINT"):
                 # Get initial values for pixel size calculation
                 camera_service = self._services.get("camera")
                 initial_pixel_size_binned = (
@@ -492,7 +519,7 @@ class HighContentScreeningGui(QMainWindow):
                     self.imageArrayDisplayWindow.widget, "Multichannel Acquisition"
                 )
 
-            if USE_NAPARI_FOR_MOSAIC_DISPLAY:
+            if self._feature_flags.is_enabled("USE_NAPARI_FOR_MOSAIC_DISPLAY"):
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
                     contrastManager=self.contrastManager,
                     event_bus=self._ui_event_bus,
@@ -502,7 +529,7 @@ class HighContentScreeningGui(QMainWindow):
                 )
 
             # Plate view for well-based acquisitions (only if enabled)
-            if DISPLAY_PLATE_VIEW:
+            if self._feature_flags.is_enabled("DISPLAY_PLATE_VIEW"):
                 self.napariPlateViewWidget = widgets.NapariPlateViewWidget(
                     contrastManager=self.contrastManager,
                 )
@@ -525,7 +552,7 @@ class HighContentScreeningGui(QMainWindow):
             # Connect the point clicked signal to move the stage
             self.zPlotWidget.signal_point_clicked.connect(self.move_to_mm)
 
-        if SUPPORT_LASER_AUTOFOCUS:
+        if self._feature_flags.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
             dock_laserfocus_image_display = dock.Dock(
                 "Focus Camera Image Display", autoOrientation=False
             )
@@ -588,7 +615,7 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.addTab(
                 self.wellplateMultiPointWidget, "Wellplate Multipoint"
             )
-        if ENABLE_FLEXIBLE_MULTIPOINT:
+        if self._feature_flags.is_enabled("ENABLE_FLEXIBLE_MULTIPOINT"):
             self.recordTabWidget.addTab(
                 self.flexibleMultiPointWidget, "Flexible Multipoint"
             )
@@ -600,9 +627,9 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.addTab(
                 self.multiPointWithFluidicsWidget, "Multipoint with Fluidics"
             )
-        if ENABLE_TRACKING:
+        if self._feature_flags.is_enabled("ENABLE_TRACKING"):
             self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
-        if ENABLE_RECORDING:
+        if self._feature_flags.is_enabled("ENABLE_RECORDING"):
             self.recordTabWidget.addTab(self.recordingControlWidget, "Simple Recording")
         self.recordTabWidget.currentChanged.connect(
             lambda: self.resizeCurrentTab(self.recordTabWidget)
@@ -610,19 +637,19 @@ class HighContentScreeningGui(QMainWindow):
         self.resizeCurrentTab(self.recordTabWidget)
 
     def setupCameraTabWidget(self) -> None:
-        if not USE_NAPARI_FOR_LIVE_CONTROL or self.live_only_mode:
+        if not self._feature_flags.is_enabled("USE_NAPARI_FOR_LIVE_CONTROL") or self.live_only_mode:
             self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
         if self.piezoWidget:
             self.cameraTabWidget.addTab(self.piezoWidget, "Piezo")
         if ENABLE_NL5:
             self.cameraTabWidget.addTab(self.nl5Wdiget, "NL5")
-        if ENABLE_SPINNING_DISK_CONFOCAL:
+        if self._feature_flags.is_enabled("ENABLE_SPINNING_DISK_CONFOCAL"):
             self.cameraTabWidget.addTab(self.spinningDiskConfocalWidget, "Confocal")
         if self.emission_filter_wheel:
             self.cameraTabWidget.addTab(self.filterControllerWidget, "Emission Filter")
         self.cameraTabWidget.addTab(self.cameraSettingWidget, "Camera")
         self.cameraTabWidget.addTab(self.autofocusWidget, "Contrast AF")
-        if SUPPORT_LASER_AUTOFOCUS:
+        if self._feature_flags.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
             self.cameraTabWidget.addTab(self.laserAutofocusControlWidget, "Laser AF")
         self.cameraTabWidget.addTab(self.focusMapWidget, "Focus Map")
         self.cameraTabWidget.currentChanged.connect(
@@ -653,54 +680,19 @@ class HighContentScreeningGui(QMainWindow):
         self._connect_laser_autofocus_signals()
         # Confocal widgets publish commands/events directly.
 
-        # UI nicety: switch to live tab when live starts.
-        self._ui_event_bus.subscribe(
-            LiveStateChanged,
-            lambda e: self.imageDisplayTabs.setCurrentIndex(0)
-            if (getattr(e, "camera", "main") == "main" and e.is_live)
-            else None,
-        )
-
     def _connect_tab_signals(self) -> None:
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
             self.imageDisplayTabs.currentChanged.connect(self.onDisplayTabChanged)
 
     def _connect_plot_signals(self) -> None:
-        if self._ui_event_bus is None or getattr(self, "zPlotWidget", None) is None:
-            return
-        from squid.core.events import AcquisitionCoordinates, AcquisitionWorkerFinished
-
-        self._ui_event_bus.subscribe(
-            AcquisitionCoordinates,
-            lambda e: self.zPlotWidget.add_point(e.x_mm, e.y_mm, e.z_mm, e.region_id),
-        )
-        self._ui_event_bus.subscribe(
-            AcquisitionWorkerFinished,
-            lambda _e: self.zPlotWidget.plot(),
-        )
+        # EventBus subscriptions handled via @handles methods.
+        return
 
     def _connect_plate_view_signals(self) -> None:
         """Connect PlateViewInit and PlateViewUpdate events to the plate view widget."""
-        if self._ui_event_bus is None:
-            return
-        if not getattr(self, "napariPlateViewWidget", None):
-            return
-
-        from squid.core.events import PlateViewInit, PlateViewUpdate
-
-        self._ui_event_bus.subscribe(
-            PlateViewInit,
-            lambda e: self.napariPlateViewWidget.initPlateLayout(
-                e.num_rows, e.num_cols, e.well_slot_shape, e.fov_grid_shape, e.channel_names
-            ),
-        )
-        self._ui_event_bus.subscribe(
-            PlateViewUpdate,
-            lambda e: self.napariPlateViewWidget.updatePlateView(
-                e.channel_idx, e.channel_name, e.plate_image
-            ),
-        )
+        # EventBus subscriptions handled via @handles methods.
+        return
 
     def _connect_well_selector_button(self) -> None:
         if hasattr(self.imageDisplayWindow, "btn_well_selector"):
@@ -709,7 +701,7 @@ class HighContentScreeningGui(QMainWindow):
             )
 
     def _connect_laser_autofocus_signals(self) -> None:
-        if not SUPPORT_LASER_AUTOFOCUS:
+        if not self._feature_flags.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
             return
 
         if self.cameraSettingWidget_focus_camera:
@@ -751,7 +743,7 @@ class HighContentScreeningGui(QMainWindow):
         # Keep capture fanout as QObject methods to ensure queued delivery on the GUI thread.
 
         # Setup live view connections
-        if USE_NAPARI_FOR_LIVE_VIEW and not self.live_only_mode:
+        if self._feature_flags.is_enabled("USE_NAPARI_FOR_LIVE_VIEW") and not self.live_only_mode:
             self.napari_connections["napariLiveWidget"] = [
                 (
                     self.streamHandler.image_to_display,
@@ -761,7 +753,7 @@ class HighContentScreeningGui(QMainWindow):
                 ),
             ]
 
-            if USE_NAPARI_FOR_LIVE_CONTROL:
+            if self._feature_flags.is_enabled("USE_NAPARI_FOR_LIVE_CONTROL"):
                 self.napari_connections["napariLiveWidget"].extend(
                     [
                         # Napari live control publishes commands/events directly.
@@ -787,7 +779,7 @@ class HighContentScreeningGui(QMainWindow):
 
         if not self.live_only_mode:
             # Setup multichannel widget connections
-            if USE_NAPARI_FOR_MULTIPOINT:
+            if self._feature_flags.is_enabled("USE_NAPARI_FOR_MULTIPOINT"):
                 self.napari_connections["napariMultiChannelWidget"] = [
                     (
                         self.streamHandler.capture,
@@ -802,7 +794,7 @@ class HighContentScreeningGui(QMainWindow):
                 )
 
             # Setup mosaic display widget connections
-            if USE_NAPARI_FOR_MOSAIC_DISPLAY:
+            if self._feature_flags.is_enabled("USE_NAPARI_FOR_MOSAIC_DISPLAY"):
                 self.napari_connections["napariMosaicDisplayWidget"] = []
                 self.napari_connections["napariMosaicDisplayWidget"].append(
                     (
@@ -894,10 +886,10 @@ class HighContentScreeningGui(QMainWindow):
         elif not self.live_only_mode:
             configs = [config.name for config in selected_configurations]
             print(configs)
-            if USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
+            if self._feature_flags.is_enabled("USE_NAPARI_FOR_MOSAIC_DISPLAY") and Nz == 1:
                 self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
 
-            elif USE_NAPARI_FOR_MULTIPOINT:
+            elif self._feature_flags.is_enabled("USE_NAPARI_FOR_MULTIPOINT"):
                 self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
             else:
                 self.imageDisplayTabs.setCurrentIndex(0)
@@ -923,7 +915,7 @@ class HighContentScreeningGui(QMainWindow):
     def onTabChanged(self, index: int) -> None:
         is_flexible_acquisition = (
             (index == self.recordTabWidget.indexOf(self.flexibleMultiPointWidget))
-            if ENABLE_FLEXIBLE_MULTIPOINT
+            if self._feature_flags.is_enabled("ENABLE_FLEXIBLE_MULTIPOINT")
             else False
         )
         is_wellplate_acquisition = (
@@ -970,7 +962,7 @@ class HighContentScreeningGui(QMainWindow):
             current_widget.activate()
 
         # Stop focus camera live if not on laser focus tab
-        if SUPPORT_LASER_AUTOFOCUS:
+        if self._feature_flags.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
             is_laser_focus_tab = (
                 self.imageDisplayTabs.tabText(index) == self.LASER_BASED_FOCUS_TAB_NAME
             )
@@ -989,6 +981,7 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.toggleWellSelector(False)
 
+    @handles(WellplateFormatChanged)
     def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
         """Handle WellplateFormatChanged from EventBus.
 
@@ -1072,9 +1065,52 @@ class HighContentScreeningGui(QMainWindow):
                 "Hide Well Selector" if show else "Show Well Selector"
             )
 
+    @handles(AcquisitionStateChanged)
     def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
         """Handle backend acquisition state changes (UI truth-from-backend)."""
         self._apply_acquisition_ui_state(event.in_progress)
+
+    @handles(LiveStateChanged)
+    def _on_live_state_changed(self, event: LiveStateChanged) -> None:
+        """Switch to live tab when main camera goes live."""
+        if getattr(event, "camera", "main") != "main" or not event.is_live:
+            return
+        if hasattr(self, "imageDisplayTabs"):
+            self.imageDisplayTabs.setCurrentIndex(0)
+
+    @handles(AcquisitionCoordinates)
+    def _on_acquisition_coordinates(self, event: AcquisitionCoordinates) -> None:
+        if getattr(self, "zPlotWidget", None) is None:
+            return
+        self.zPlotWidget.add_point(event.x_mm, event.y_mm, event.z_mm, event.region_id)
+
+    @handles(AcquisitionWorkerFinished)
+    def _on_acquisition_worker_finished(self, _event: AcquisitionWorkerFinished) -> None:
+        if getattr(self, "zPlotWidget", None) is None:
+            return
+        self.zPlotWidget.plot()
+
+    @handles(PlateViewInit)
+    def _on_plate_view_init(self, event: PlateViewInit) -> None:
+        if not getattr(self, "napariPlateViewWidget", None):
+            return
+        self.napariPlateViewWidget.initPlateLayout(
+            event.num_rows,
+            event.num_cols,
+            event.well_slot_shape,
+            event.fov_grid_shape,
+            event.channel_names,
+        )
+
+    @handles(PlateViewUpdate)
+    def _on_plate_view_update(self, event: PlateViewUpdate) -> None:
+        if not getattr(self, "napariPlateViewWidget", None):
+            return
+        self.napariPlateViewWidget.updatePlateView(
+            event.channel_idx,
+            event.channel_name,
+            event.plate_image,
+        )
 
     def _apply_acquisition_ui_state(self, acquisition_started: bool) -> None:
         """Apply acquisition start/stop UI state changes from backend truth."""
@@ -1135,10 +1171,14 @@ class HighContentScreeningGui(QMainWindow):
                 event.ignore()
                 return
 
+        if self._subscriptions and self._ui_event_bus is not None:
+            auto_unsubscribe(self._subscriptions, self._ui_event_bus)
+            self._subscriptions.clear()
+
         # UI publishes commands only; hardware cleanup is handled by ApplicationContext.shutdown().
         self._ui_event_bus.publish(StopLiveCommand())
 
-        if SUPPORT_LASER_AUTOFOCUS and self.imageDisplayWindow_focus is not None:
+        if self._feature_flags.is_enabled("SUPPORT_LASER_AUTOFOCUS") and self.imageDisplayWindow_focus is not None:
             try:
                 self.imageDisplayWindow_focus.close()
             except Exception:

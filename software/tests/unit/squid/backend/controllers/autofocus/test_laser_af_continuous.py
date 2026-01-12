@@ -10,6 +10,7 @@ from squid.backend.controllers.autofocus.laser_auto_focus_controller import (
     LaserAutofocusController,
     LaserAFResult,
 )
+from squid.backend.processing.laser_spot import SpotDetectionResult
 
 
 class DummyCameraService:
@@ -73,7 +74,9 @@ def test_measure_displacement_continuous_returns_result(monkeypatch):
     monkeypatch.setattr(
         controller,
         "_detect_spot_in_frame",
-        lambda *_args, **_kwargs: (100.0, 50.0),
+        lambda *_args, **_kwargs: SpotDetectionResult(
+            x=100.0, y=50.0, intensity=50.0, snr=2.0, background=10.0
+        ),
     )
 
     def _fake_metrics(_frame, _x, _y):

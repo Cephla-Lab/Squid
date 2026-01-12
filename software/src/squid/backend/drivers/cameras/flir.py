@@ -1,7 +1,12 @@
 import time
 import numpy as np
 import PySpin
-from _def import *
+try:
+    from _def import CHOSEN_READ
+except ImportError:
+    CHOSEN_READ = None
+
+from _def import TriggerMode
 
 
 class ReadType:

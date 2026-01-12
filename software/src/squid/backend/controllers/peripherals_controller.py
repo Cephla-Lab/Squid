@@ -22,6 +22,9 @@ from squid.core.events import (
     SpinningDiskStateChanged,
     PiezoPositionChanged,
     PixelSizeChanged,
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
 )
 
 if TYPE_CHECKING:
@@ -82,21 +85,9 @@ class PeripheralsController:
         self._state = self._read_initial_state()
 
         # Subscribe to commands
-        self._subscribe_to_bus()
-
-    def _subscribe_to_bus(self) -> None:
-        if self._bus is None:
-            return
-        if self._objective_service:
-            self._bus.subscribe(SetObjectiveCommand, self._on_set_objective)
-        if self._spinning_disk_service:
-            self._bus.subscribe(SetSpinningDiskPositionCommand, self._on_set_disk_position)
-            self._bus.subscribe(SetSpinningDiskSpinningCommand, self._on_set_spinning)
-            self._bus.subscribe(SetDiskDichroicCommand, self._on_set_dichroic)
-            self._bus.subscribe(SetDiskEmissionFilterCommand, self._on_set_emission)
-        if self._piezo_service:
-            self._bus.subscribe(SetPiezoPositionCommand, self._on_set_piezo)
-            self._bus.subscribe(MovePiezoRelativeCommand, self._on_move_piezo_relative)
+        self._subscriptions = []
+        if self._bus:
+            self._subscriptions = auto_subscribe(self, self._bus)
 
     @property
     def state(self) -> PeripheralsState:
@@ -147,6 +138,7 @@ class PeripheralsController:
 
     # --- Objective ---
 
+    @handles(SetObjectiveCommand)
     def _on_set_objective(self, cmd: SetObjectiveCommand) -> None:
         """Handle SetObjectiveCommand."""
         if not self._objective_service:
@@ -192,6 +184,7 @@ class PeripheralsController:
 
     # --- Spinning Disk ---
 
+    @handles(SetSpinningDiskPositionCommand)
     def _on_set_disk_position(self, cmd: SetSpinningDiskPositionCommand) -> None:
         if not self._spinning_disk_service:
             return
@@ -200,6 +193,7 @@ class PeripheralsController:
             self._spinning_disk_service.set_disk_position(cmd.in_beam)
         self._update_disk_state()
 
+    @handles(SetSpinningDiskSpinningCommand)
     def _on_set_spinning(self, cmd: SetSpinningDiskSpinningCommand) -> None:
         if not self._spinning_disk_service:
             return
@@ -208,6 +202,7 @@ class PeripheralsController:
             self._spinning_disk_service.set_spinning(cmd.spinning)
         self._update_disk_state()
 
+    @handles(SetDiskDichroicCommand)
     def _on_set_dichroic(self, cmd: SetDiskDichroicCommand) -> None:
         if not self._spinning_disk_service:
             return
@@ -216,6 +211,7 @@ class PeripheralsController:
             self._spinning_disk_service.set_dichroic(cmd.position)
         self._update_disk_state()
 
+    @handles(SetDiskEmissionFilterCommand)
     def _on_set_emission(self, cmd: SetDiskEmissionFilterCommand) -> None:
         if not self._spinning_disk_service:
             return
@@ -253,6 +249,7 @@ class PeripheralsController:
 
     # --- Piezo ---
 
+    @handles(SetPiezoPositionCommand)
     def _on_set_piezo(self, cmd: SetPiezoPositionCommand) -> None:
         if not self._piezo_service:
             return
@@ -268,6 +265,7 @@ class PeripheralsController:
         # Publish outside lock
         self._bus.publish(PiezoPositionChanged(position_um=actual))
 
+    @handles(MovePiezoRelativeCommand)
     def _on_move_piezo_relative(self, cmd: MovePiezoRelativeCommand) -> None:
         if not self._piezo_service:
             return
@@ -280,6 +278,11 @@ class PeripheralsController:
 
         # Publish outside lock
         self._bus.publish(PiezoPositionChanged(position_um=actual))
+
+    def shutdown(self) -> None:
+        if self._bus:
+            auto_unsubscribe(self._subscriptions, self._bus)
+        self._subscriptions = []
 
     # --- Convenience methods ---
 

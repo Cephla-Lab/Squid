@@ -1,4 +1,19 @@
-from squid.ui.widgets.stage._common import *
+from squid.ui.widgets.stage._common import (
+    EventBusDialog,
+    HOMING_ENABLED_X,
+    HOMING_ENABLED_Y,
+    HOMING_ENABLED_Z,
+    Optional,
+    QGroupBox,
+    QHBoxLayout,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+    auto_subscribe,
+    handles,
+    squid,
+)
 from squid.core.events import (
     HomeStageCommand,
     MoveStageToCommand,
@@ -42,13 +57,7 @@ class StageUtils(EventBusDialog):
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
         self.setup_ui()
-        self._subscribe(LiveStateChanged, self._on_live_state_changed)
-        self._subscribe(
-            StageMoveToLoadingPositionFinished, self._on_loading_position_finished
-        )
-        self._subscribe(
-            StageMoveToScanningPositionFinished, self._on_scanning_position_finished
-        )
+        self._subscriptions = auto_subscribe(self, self._bus)
 
     def setup_ui(self) -> None:
         """Setup the UI components."""
@@ -182,6 +191,7 @@ class StageUtils(EventBusDialog):
             )
         self.btn_load_slide.setEnabled(False)
 
+    @handles(StageMoveToLoadingPositionFinished)
     def _on_loading_position_finished(self, event: StageMoveToLoadingPositionFinished) -> None:
         self.slide_position = "loading"
         self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
@@ -192,6 +202,7 @@ class StageUtils(EventBusDialog):
         if not event.success:
             QMessageBox.warning(self, "Error", event.error_message or "Stage move failed")
 
+    @handles(StageMoveToScanningPositionFinished)
     def _on_scanning_position_finished(
         self, event: StageMoveToScanningPositionFinished
     ) -> None:
@@ -204,6 +215,7 @@ class StageUtils(EventBusDialog):
         if not event.success:
             QMessageBox.warning(self, "Error", event.error_message or "Stage move failed")
 
+    @handles(LiveStateChanged)
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Track live state from bus."""
         if getattr(event, "camera", "main") != "main":

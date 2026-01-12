@@ -1,8 +1,27 @@
-from squid.ui.widgets.tracking._common import *
+from squid.ui.widgets.tracking._common import (
+    Any,
+    DEFAULT_SAVING_PATH,
+    Optional,
+    PLATE_READER,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QWidget,
+    Qt,
+)
 from qtpy.QtWidgets import QListWidget, QAbstractItemView, QMessageBox
 from qtpy.QtGui import QIcon
 from typing import TYPE_CHECKING, List
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     EventBus,
     SetPlateReaderParametersCommand,
     SetPlateReaderPathCommand,
@@ -42,13 +61,14 @@ class PlateReaderAcquisitionWidget(QFrame):
     ) -> None:
         super().__init__(*args, **kwargs)
         self._event_bus = event_bus
+        self._subscriptions = []
         self._channel_configs = list(initial_channel_configs)
         self.base_path_is_set = False
         self.add_components(show_configurations)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
         # Subscribe to acquisition state events
-        self._event_bus.subscribe(PlateReaderAcquisitionFinished, self._on_acquisition_finished)
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
     def add_components(self, show_configurations: bool) -> None:
         self.btn_setSavingDir = QPushButton("Browse")
@@ -172,10 +192,17 @@ class PlateReaderAcquisitionWidget(QFrame):
             use_autofocus=state == Qt.Checked
         ))
 
+    @handles(PlateReaderAcquisitionFinished)
     def _on_acquisition_finished(self, event: PlateReaderAcquisitionFinished) -> None:
         """Handle acquisition finished event from controller."""
         self.btn_startAcquisition.setChecked(False)
         self.setEnabled_all(True)
+
+    def closeEvent(self, event) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)
 
     def setEnabled_all(
         self, enabled: bool, exclude_btn_startAcquisition: bool = False
@@ -210,12 +237,12 @@ class PlateReaderNavigationWidget(QFrame):
     ) -> None:
         super().__init__(*args, **kwargs)
         self._event_bus = event_bus
+        self._subscriptions = []
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
         # Subscribe to events
-        self._event_bus.subscribe(PlateReaderHomingComplete, self._on_homing_complete)
-        self._event_bus.subscribe(PlateReaderLocationChanged, self._on_location_changed)
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
     def add_components(self) -> None:
         self.dropdown_column = QComboBox()
@@ -276,12 +303,14 @@ class PlateReaderNavigationWidget(QFrame):
             row=self.dropdown_row.currentText()
         ))
 
+    @handles(PlateReaderHomingComplete)
     def _on_homing_complete(self, event: PlateReaderHomingComplete) -> None:
         """Handle homing complete event."""
         self.dropdown_column.setEnabled(True)
         self.dropdown_row.setEnabled(True)
         self.btn_moveto.setEnabled(True)
 
+    @handles(PlateReaderLocationChanged)
     def _on_location_changed(self, event: PlateReaderLocationChanged) -> None:
         """Handle location changed event."""
         self.label_current_location.setText(event.location_str)
@@ -289,6 +318,12 @@ class PlateReaderNavigationWidget(QFrame):
         column = event.location_str[1:]
         self.dropdown_row.setCurrentText(row)
         self.dropdown_column.setCurrentText(column)
+
+    def closeEvent(self, event) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)
 
     # Keep legacy slot for backwards compatibility during transition
     def slot_homing_complete(self) -> None:

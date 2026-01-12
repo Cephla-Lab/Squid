@@ -1,4 +1,43 @@
-from squid.ui.widgets.wellplate._common import *
+from squid.ui.widgets.wellplate._common import (
+    CAMERA_CONFIG,
+    EventBusDialog,
+    INVERTED_OBJECTIVE,
+    Image,
+    ImageDraw,
+    ImageFont,
+    List,
+    Optional,
+    QButtonGroup,
+    QCheckBox,
+    QColor,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPen,
+    QPushButton,
+    QRadioButton,
+    QSlider,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    Signal,
+    TYPE_CHECKING,
+    Tuple,
+    Union,
+    WELLPLATE_FORMAT_SETTINGS,
+    auto_subscribe,
+    handles,
+    math,
+    np,
+    os,
+    pg,
+)
 from squid.core.events import (
     MoveStageRelativeCommand,
     StartLiveCommand,
@@ -48,9 +87,8 @@ class WellplateCalibration(EventBusDialog):
         self.corners: List[Optional[Tuple[float, float]]] = [None, None, None]
         self.show_virtual_joystick: bool = True  # FLAG
 
-        # Subscribe to state events using base class helper
-        self._subscribe(LiveStateChanged, self._on_live_state_changed)
-        self._subscribe(StagePositionChanged, self._on_stage_position_changed)
+        # Subscribe to state events using @handles decorators
+        self._subscriptions = auto_subscribe(self, self._bus)
 
         # Cache current position for setCorner
         self._current_position: Optional[Tuple[float, float]] = None
@@ -332,6 +370,7 @@ class WellplateCalibration(EventBusDialog):
         """Move stage by relative distance via EventBus."""
         self._publish(MoveStageRelativeCommand(x_mm=dx, y_mm=dy))
 
+    @handles(StagePositionChanged)
     def _on_stage_position_changed(self, event: StagePositionChanged) -> None:
         """Cache current position from event."""
         self._current_position = (event.x_mm, event.y_mm)
@@ -633,6 +672,7 @@ class WellplateCalibration(EventBusDialog):
 
         return center, radius
 
+    @handles(LiveStateChanged)
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Track live state from the event bus."""
         if getattr(event, "camera", "main") != "main":

@@ -130,11 +130,11 @@ def _get_valid_coordinates(mpc: MultiPointController):
     stage = mpc.stage
     cfg = stage.get_config()
 
-    x_min = cfg.X_AXIS.MIN_POSITION + 1.0
-    y_min = cfg.Y_AXIS.MIN_POSITION + 1.0
+    x_center = (cfg.X_AXIS.MIN_POSITION + cfg.X_AXIS.MAX_POSITION) / 2.0
+    y_center = (cfg.Y_AXIS.MIN_POSITION + cfg.Y_AXIS.MAX_POSITION) / 2.0
     z_mid = (cfg.Z_AXIS.MIN_POSITION + cfg.Z_AXIS.MAX_POSITION) / 2.0
 
-    return x_min, y_min, z_mid
+    return x_center, y_center, z_mid
 
 
 def _select_channels(mpc: MultiPointController, count: int = 1):

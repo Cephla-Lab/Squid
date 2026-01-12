@@ -1,4 +1,22 @@
-from squid.ui.widgets.tracking._common import *
+from squid.ui.widgets.tracking._common import (
+    Any,
+    DEFAULT_SAVING_PATH,
+    DEFAULT_TRACKER,
+    List,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    Qt,
+    TRACKERS,
+)
 from squid.backend.services import PeripheralService
 from typing import Callable, Tuple
 import numpy as np
@@ -7,6 +25,9 @@ from qtpy.QtGui import QIcon
 from qtpy.QtCore import QMetaObject
 from squid.ui.widgets.hardware.objectives import ObjectivesWidget
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     EventBus,
     ObjectiveChanged,
     SetTrackingParametersCommand,
@@ -49,6 +70,7 @@ class TrackingControllerWidget(QFrame):
     ) -> None:
         super().__init__(*args, **kwargs)
         self._event_bus = event_bus
+        self._subscriptions = []
         self._channel_configs = list(initial_channel_configs)
         self.peripheral_service = peripheral_service
         self.objectivesWidget = objectivesWidget
@@ -64,8 +86,7 @@ class TrackingControllerWidget(QFrame):
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
         # Subscribe to tracking state events
-        self._event_bus.subscribe(TrackingStateChanged, self._on_tracking_state_changed)
-        self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
         self.peripheral_service.add_joystick_button_listener(
             lambda button_pressed: self.handle_button_pressed(button_pressed)
@@ -290,6 +311,7 @@ class TrackingControllerWidget(QFrame):
             time_interval_s=value
         ))
 
+    @handles(TrackingStateChanged)
     def _on_tracking_state_changed(self, event: TrackingStateChanged) -> None:
         """Handle tracking state change from controller."""
         self._is_tracking = event.is_tracking
@@ -299,9 +321,16 @@ class TrackingControllerWidget(QFrame):
             self.setEnabled_all(True)
             print("tracking stopped")
 
+    @handles(ObjectiveChanged)
     def _on_objective_changed(self, event: ObjectiveChanged) -> None:
         """Cache objective and pixel size from events."""
         if event.objective_name is not None:
             self._current_objective = event.objective_name
         if event.pixel_size_um is not None:
             self._pixel_size_um = event.pixel_size_um
+
+    def closeEvent(self, event) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)

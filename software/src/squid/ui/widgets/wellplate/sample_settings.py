@@ -1,4 +1,11 @@
-from squid.ui.widgets.wellplate._common import *
+from squid.ui.widgets.wellplate._common import (
+    CACHE_DIR,
+    QGridLayout,
+    WELLPLATE_FORMAT,
+    auto_subscribe,
+    handles,
+    json,
+)
 from squid.ui.widgets.base import EventBusWidget
 from squid.core.events import ObjectiveChanged, WellplateFormatChanged
 
@@ -27,15 +34,16 @@ class SampleSettingsWidget(EventBusWidget):
         self.setLayout(top_row_layout)
 
         # Subscribe to event-driven updates.
-        self._subscribe(ObjectiveChanged, self._on_objective_changed)
-        self._subscribe(WellplateFormatChanged, self._on_wellplate_format_changed)
+        self._subscriptions = auto_subscribe(self, self._bus)
 
         self.save_settings()
 
+    @handles(ObjectiveChanged)
     def _on_objective_changed(self, event: ObjectiveChanged) -> None:
         self._current_objective = event.objective_name
         self.save_settings()
 
+    @handles(WellplateFormatChanged)
     def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
         self._current_format = event.format_name
         self.save_settings()

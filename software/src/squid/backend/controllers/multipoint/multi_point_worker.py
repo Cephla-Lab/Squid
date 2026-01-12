@@ -6,12 +6,25 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Type, TYPE
 import imageio as iio
 import numpy as np
 
-from _def import *
+from _def import (
+    Acquisition,
+    DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S,
+    DOWNSAMPLED_VIEW_JOB_TIMEOUT_S,
+    FILE_ID_PADDING,
+    FILE_SAVING_OPTION,
+    FileSavingOption,
+    SCAN_STABILIZATION_TIME_MS_X,
+    SCAN_STABILIZATION_TIME_MS_Y,
+    SCAN_STABILIZATION_TIME_MS_Z,
+    SEGMENTATION_CROP,
+    TriggerMode,
+)
 import squid.core.utils.hardware_utils as utils
 from squid.backend.controllers.autofocus import AutoFocusController
 from squid.backend.managers import ChannelConfigurationManager
 from squid.backend.controllers.autofocus import LaserAutofocusController
 from squid.backend.controllers.multipoint.multi_point_utils import AcquisitionParameters
+from squid.backend.controllers.multipoint.dependencies import AcquisitionDependencies
 from squid.backend.managers import ObjectiveStore
 from squid.core.utils.config_utils import ChannelMode
 from squid.core.abc import CameraFrame
@@ -45,6 +58,7 @@ from squid.backend.controllers.multipoint.position_zstack import (
     ZStackExecutor,
 )
 from squid.backend.controllers.multipoint.focus_operations import AutofocusExecutor
+from squid.core.config.feature_flags import get_feature_flags
 
 if TYPE_CHECKING:
     from squid.backend.services import (
@@ -89,6 +103,7 @@ class MultiPointWorker:
         enable_channel_auto_filter_switching: bool = True,
         focus_lock_controller: Optional["ContinuousFocusLockController | FocusLockSimulator"] = None,
         *,
+        dependencies: Optional[AcquisitionDependencies] = None,
         extra_job_classes: list[type[Job]] | None = None,
         abort_on_failed_jobs: bool = True,
         piezo_service: Optional["PiezoService"] = None,
@@ -98,6 +113,23 @@ class MultiPointWorker:
     ):
         self._log = squid.core.logging.get_logger(__class__.__name__)
         self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
+        if dependencies is not None:
+            dependencies.validate()
+            auto_focus_controller = dependencies.controllers.autofocus
+            laser_auto_focus_controller = dependencies.controllers.laser_autofocus
+            focus_lock_controller = dependencies.controllers.focus_lock
+            camera_service = dependencies.services.camera
+            stage_service = dependencies.services.stage
+            peripheral_service = dependencies.services.peripheral
+            event_bus = dependencies.services.event_bus
+            illumination_service = dependencies.services.illumination
+            filter_wheel_service = dependencies.services.filter_wheel
+            piezo_service = dependencies.services.piezo
+            fluidics_service = dependencies.services.fluidics
+            nl5_service = dependencies.services.nl5
+            stream_handler = dependencies.services.stream_handler
+
+        self._feature_flags = get_feature_flags()
         self._camera_service: "CameraService" = camera_service
         self._stage_service: "StageService" = stage_service
         self._peripheral_service: "PeripheralService" = peripheral_service
@@ -370,6 +402,8 @@ class MultiPointWorker:
     def update_use_piezo(self, value: bool) -> None:
         """Update piezo usage flag."""
         self.use_piezo = value
+        self._zstack_config.use_piezo = value
+        self._zstack_executor._config.use_piezo = value
         self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
 
     def request_abort(self) -> None:
@@ -440,23 +474,15 @@ class MultiPointWorker:
                 if self.dt == 0:  # continous acquisition
                     pass
                 else:  # timed acquisition
-                    # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
-                    while (
-                        time.time()
-                        > self.timestamp_acquisition_started + self.time_point * self.dt
-                    ):
-                        self._log.info("skip time point " + str(self.time_point + 1))
-                        self.time_point = self.time_point + 1
-
                     # check if it has reached Nt
                     if self.time_point == self.Nt:
                         break  # no waiting after taking the last time point
 
                     # wait until it's time to do the next acquisition
-                    while (
-                        time.time()
-                        < self.timestamp_acquisition_started + self.time_point * self.dt
-                    ):
+                    target_time = (
+                        self.timestamp_acquisition_started + self.time_point * self.dt
+                    )
+                    while time.time() < target_time:
                         if self._abort_requested.is_set():
                             self._log.debug(
                                 "In run wait loop, abort_acquisition_requested=True"
@@ -939,6 +965,7 @@ class MultiPointWorker:
         """
         none_failed: bool = True
         had_results: bool = False
+        had_failure: bool = False
         self._log.debug(f"_summarize_runner_outputs: checking {len(self._job_runners)} runners")
         for job_class, job_runner in self._job_runners:
             if job_runner is None:
@@ -956,8 +983,10 @@ class MultiPointWorker:
                     job_result: JobResult = out_queue.get_nowait()
                     result_count += 1
                     had_results = True
-                    # TODO(imo): Should we abort if there is a failure?
-                    none_failed = none_failed and self._summarize_job_result(job_result)
+                    result_ok = self._summarize_job_result(job_result)
+                    none_failed = none_failed and result_ok
+                    if not result_ok:
+                        had_failure = True
 
                     # Handle DownsampledViewResult specially
                     if job_result.result is not None and isinstance(
@@ -978,6 +1007,13 @@ class MultiPointWorker:
                     # Queue was closed during shutdown
                     self._log.debug(f"  {job_class.__name__}: queue closed, stopping drain")
                     break
+
+            if had_failure and self._abort_on_failed_job:
+                self._log.error(
+                    "Some jobs failed, aborting acquisition because abort_on_failed_job=True"
+                )
+                self.request_abort()
+                break
 
         return SummarizeResult(none_failed=none_failed, had_results=had_results)
 
@@ -1080,14 +1116,8 @@ class MultiPointWorker:
             for fov, coordinate_mm in enumerate(coordinates):
                 # Just so the job result queues don't get too big, check and print a summary of intermediate results here
                 with self._timing.get_timer("job result summaries"):
-                    if (
-                        not self._summarize_runner_outputs().none_failed
-                        and self._abort_on_failed_job
-                    ):
-                        self._log.error(
-                            "Some jobs failed, aborting acquisition because abort_on_failed_job=True"
-                        )
-                        self.request_abort()
+                    self._summarize_runner_outputs()
+                    if self._abort_requested.is_set():
                         return
 
                 with self._timing.get_timer("move_to_coordinate"):
@@ -1161,14 +1191,11 @@ class MultiPointWorker:
 
                 # iterate through selected modes
                 for config_idx, config in enumerate(self.selected_configurations):
-                    if self.NZ == 1:  # TODO: handle z offset for z stack
-                        self.handle_z_offset(config, True)
+                    self.handle_z_offset(config, True)
 
                     # acquire image
                     with self._timing.get_timer("acquire_camera_image"):
-                        # TODO(imo): This really should not look for a string in a user configurable name.  We
-                        # need some proper flag on the config to signal this instead...
-                        if "RGB" in config.name:
+                        if self._is_rgb_config(config):
                             self.acquire_rgb_image(
                                 config, file_ID, current_path, z_level, region_id, fov
                             )
@@ -1183,8 +1210,7 @@ class MultiPointWorker:
                                 config_idx=config_idx,
                             )
 
-                    if self.NZ == 1:  # TODO: handle z offset for z stack
-                        self.handle_z_offset(config, False)
+                    self.handle_z_offset(config, False)
 
                     current_image: int = (
                         fov * self.NZ * len(self.selected_configurations)
@@ -1209,11 +1235,11 @@ class MultiPointWorker:
                 if self._abort_requested.is_set():
                     self.handle_acquisition_abort(current_path)
 
-                # update FOV counter
-                self.af_fov_count = self.af_fov_count + 1
-
                 if z_level < self.NZ - 1:
                     self.move_z_for_stack()
+            # update FOV counter after completing all z-levels for this FOV
+            self.af_fov_count += 1
+            self._progress_tracker.af_fov_count = self.af_fov_count
         finally:
             if self.NZ > 1:
                 self.move_z_back_after_stack()
@@ -1223,6 +1249,9 @@ class MultiPointWorker:
     def _select_config(self, config: ChannelMode) -> None:
         self._apply_channel_mode(config)
         self.wait_till_operation_is_completed()
+
+    def _is_rgb_config(self, config: ChannelMode) -> bool:
+        return bool(getattr(config, "is_rgb", False))
 
     def _apply_channel_mode(self, config: ChannelMode) -> None:
         exposure = getattr(config, "exposure_time", None)
@@ -1313,7 +1342,10 @@ class MultiPointWorker:
                     self.base_path, self.experiment_ID, str(self.time_point), file_ID
                 )
                 try:
-                    iio.imwrite(saving_path, self.laser_auto_focus_controller.image)
+                    frame = self.laser_auto_focus_controller.get_last_frame()
+                    if frame is None:
+                        raise ValueError("No laser AF frame available to save")
+                    iio.imwrite(saving_path, frame)
                 except Exception:
                     pass  # Don't fail if we can't save the debug image
                 self._log.error(
@@ -1326,8 +1358,8 @@ class MultiPointWorker:
         """Prepare for z-stack by moving to start position (FROM CENTER mode)."""
         # For FROM CENTER mode, move to bottom of z-stack
         if self.z_stacking_config == "FROM CENTER":
-            z_delta = -self.deltaZ * round((self.NZ - 1) / 2.0)
-            self._position_controller.move_z_relative(z_delta)
+            z_delta_mm = -(self.deltaZ / 1000.0) * round((self.NZ - 1) / 2.0)
+            self._position_controller.move_z_relative(z_delta_mm)
 
     def handle_z_offset(self, config: ChannelMode, not_offset: bool) -> None:
         if (
@@ -1533,10 +1565,11 @@ class MultiPointWorker:
             self.wait_till_operation_is_completed()
             camera_illumination_time = None
         elif self._trigger_mode == TriggerMode.HARDWARE:
-            if "Fluorescence" in config.name and ENABLE_NL5 and NL5_USE_DOUT:
-                # TODO(imo): This used to use the "reset_image_ready_flag=False" on the read_frame, but oinly the toupcam camera implementation had the
-                #  "reset_image_ready_flag" arg, so this is broken for all other cameras.  Also this used to do some other funky stuff like setting internal camera flags.
-                #   I am pretty sure this is broken!
+            if (
+                "Fluorescence" in config.name
+                and self._feature_flags.is_enabled("ENABLE_NL5")
+                and self._feature_flags.is_enabled("NL5_USE_DOUT")
+            ):
                 if self._nl5_service:
                     try:
                         self._nl5_service.start_acquisition()
@@ -1662,7 +1695,6 @@ class MultiPointWorker:
                     print("camera.read_frame() returned None")
                     continue
 
-                # TODO(imo): use illum controller
                 # turn off the illumination if using software trigger
                 if self._trigger_mode == TriggerMode.SOFTWARE:
                     self._turn_off_illumination(config_)
@@ -1747,7 +1779,7 @@ class MultiPointWorker:
             rgb_image[:, :, 1] = current_round_images["BF LED matrix full_G"]
             rgb_image[:, :, 2] = current_round_images["BF LED matrix full_B"]
 
-            # TODO(imo): There used to be a "display image" comment here, and then an unused cropped image.  Do we need to emit an image here?
+            # Display emission is handled by StreamHandler in acquire_rgb_image.
 
             # write the image
             if len(rgb_image.shape) == 3:

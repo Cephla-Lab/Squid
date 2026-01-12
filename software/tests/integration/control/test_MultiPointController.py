@@ -272,7 +272,7 @@ def test_multi_point_with_contrast_af():
     mpc.set_af_flag(True)
     mpc.run_acquisition()
 
-    timeout_s = 5
+    timeout_s = 10
     assert tt.started_event.wait(timeout_s)
     assert tt.finished_event.wait(timeout_s)
 

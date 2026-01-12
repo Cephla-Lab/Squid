@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Dict, Optional, Protocol, runtime_checkable, Any
 
-from squid.backend.services.base import BaseService
+from squid.backend.services.base import BaseService, gated_command
 from squid.core.events import (
     EventBus,
     SetIlluminationCommand,
@@ -49,11 +49,9 @@ class IlluminationService(BaseService):
         # Subscribe to commands
         self.subscribe(SetIlluminationCommand, self._on_set_illumination)
 
+    @gated_command
     def _on_set_illumination(self, cmd: SetIlluminationCommand) -> None:
         """Handle SetIlluminationCommand."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(cmd).__name__)
-            return
         with self._lock:
             self._set_intensity(cmd.channel, cmd.intensity)
             self._set_on(cmd.channel, cmd.on)

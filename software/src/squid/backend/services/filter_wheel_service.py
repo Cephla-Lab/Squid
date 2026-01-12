@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from typing import Optional
 
-from squid.backend.services.base import BaseService
+from squid.backend.services.base import BaseService, gated_command
 from squid.core.events import (
     EventBus,
     SetFilterPositionCommand,
@@ -46,11 +46,9 @@ class FilterWheelService(BaseService):
             )
             break
 
+    @gated_command
     def _on_set_position(self, cmd: SetFilterPositionCommand) -> None:
         """Handle SetFilterPositionCommand from EventBus."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(cmd).__name__)
-            return
         if self._wheel is None:
             return
         with self._lock:
@@ -60,11 +58,9 @@ class FilterWheelService(BaseService):
             FilterPositionChanged(position=actual, wheel_index=cmd.wheel_index)
         )
 
+    @gated_command
     def _on_home(self, cmd: HomeFilterWheelCommand) -> None:
         """Handle HomeFilterWheelCommand from EventBus."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(cmd).__name__)
-            return
         if self._wheel is None:
             return
         with self._lock:

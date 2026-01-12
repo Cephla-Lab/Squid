@@ -13,7 +13,14 @@ from squid.core.abc import (
     CameraAcquisitionMode,
 )
 from squid.backend.drivers.cameras.dcam import Dcam, Dcamapi
-from squid.backend.drivers.cameras.dcamapi4 import *
+from squid.backend.drivers.cameras.dcamapi4 import (
+    DCAMERR,
+    DCAMPROP,
+    DCAMWAIT_CAPEVENT,
+    DCAM_IDPROP,
+    DCAM_IDSTR,
+    DCAM_PIXELTYPE,
+)
 import squid.core.utils.hardware_utils
 
 

@@ -8,7 +8,7 @@ This class encapsulates autofocus logic previously embedded in
 MultiPointWorker.
 """
 
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING, Dict, Tuple
 
 import squid.core.logging
 from _def import Acquisition, MULTIPOINT_AUTOFOCUS_CHANNEL
@@ -195,6 +195,95 @@ class AutofocusExecutor:
             return self._perform_laser_af()
         else:
             return self._perform_contrast_af(timeout_s)
+
+    def generate_focus_map_for_acquisition(
+        self,
+        scan_bounds: Dict[str, Tuple[float, float]],
+        dx_mm: float,
+        dy_mm: float,
+    ) -> Optional[Tuple[float, float]]:
+        """Generate autofocus map for the acquisition region.
+
+        Args:
+            scan_bounds: Bounds dict with "x" and "y" min/max entries.
+            dx_mm: X spacing used for estimating focus map grid.
+            dy_mm: Y spacing used for estimating focus map grid.
+
+        Returns:
+            (x_center, y_center) of the scan region if map generated, else None.
+        """
+        if self._autofocus is None:
+            _log.warning("Autofocus controller not available for focus map generation")
+            return None
+        if not scan_bounds:
+            return None
+
+        x_min, x_max = scan_bounds["x"]
+        y_min, y_max = scan_bounds["y"]
+
+        # Calculate scan dimensions and center
+        x_span = abs(x_max - x_min)
+        y_span = abs(y_max - y_min)
+        x_center = (x_max + x_min) / 2
+        y_center = (y_max + y_min) / 2
+
+        # Determine grid size based on scan dimensions
+        if x_span < dx_mm:
+            fmap_nx = 2
+            fmap_dx = dx_mm  # Force spacing for small scans
+        else:
+            fmap_nx = min(4, max(2, int(x_span / dx_mm) + 1))
+            fmap_dx = max(dx_mm, x_span / (fmap_nx - 1))
+
+        if y_span < dy_mm:
+            fmap_ny = 2
+            fmap_dy = dy_mm  # Force spacing for small scans
+        else:
+            fmap_ny = min(4, max(2, int(y_span / dy_mm) + 1))
+            fmap_dy = max(dy_mm, y_span / (fmap_ny - 1))
+
+        # Calculate starting corner position (top-left of the AF map grid)
+        starting_x_mm = x_center - (fmap_nx - 1) * fmap_dx / 2
+        starting_y_mm = y_center - (fmap_ny - 1) * fmap_dy / 2
+
+        coord1 = (starting_x_mm, starting_y_mm)  # Starting corner
+        coord2 = (
+            starting_x_mm + (fmap_nx - 1) * fmap_dx,
+            starting_y_mm,
+        )  # X-axis corner
+        coord3 = (
+            starting_x_mm,
+            starting_y_mm + (fmap_ny - 1) * fmap_dy,
+        )  # Y-axis corner
+
+        x_positions = [starting_x_mm + j * fmap_dx for j in range(fmap_nx)]
+        y_positions = [starting_y_mm + i * fmap_dy for i in range(fmap_ny)]
+        focus_coords = [coord1, coord2, coord3]
+        for y in y_positions:
+            for x in x_positions:
+                candidate = (x, y)
+                if candidate not in focus_coords:
+                    focus_coords.append(candidate)
+
+        _log.info("Generating AF Map: Nx=%s, Ny=%s", fmap_nx, fmap_ny)
+        _log.info("Spacing: dx=%.3fmm, dy=%.3fmm", fmap_dx, fmap_dy)
+        _log.info("Center:  x=(%.3fmm), y=(%.3fmm)", x_center, y_center)
+
+        self._autofocus.sample_focus_map_points(focus_coords)
+        if len(self._autofocus.focus_map_coords) >= 4:
+            try:
+                from squid.backend.managers.focus_map import FocusMap
+
+                focus_map = FocusMap()
+                focus_map.fit({"global": self._autofocus.focus_map_coords})
+                self._autofocus.set_focus_map_surface(focus_map)
+            except Exception:
+                _log.exception("Failed to fit focus map surface; falling back to plane interpolation")
+                self._autofocus.set_focus_map_surface(None)
+        else:
+            self._autofocus.set_focus_map_surface(None)
+        self._autofocus.set_focus_map_use(True)
+        return x_center, y_center
 
     def _perform_contrast_af(self, timeout_s: Optional[float] = None) -> bool:
         """

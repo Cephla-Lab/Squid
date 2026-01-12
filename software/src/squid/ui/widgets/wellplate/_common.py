@@ -50,6 +50,7 @@ except ImportError:
     ImageFont = None  # type: ignore[misc, assignment]
 
 import squid.core.logging
+from squid.core.events import auto_subscribe, handles
 from squid.core.abc import AbstractStage
 from squid.backend.services import StageService
 from _def import (

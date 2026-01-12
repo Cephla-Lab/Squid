@@ -2,7 +2,7 @@ import time
 import numpy as np
 import threading
 
-from _def import *
+from _def import TriggerMode
 
 from ids_peak import ids_peak
 from ids_peak_ipl import ids_peak_ipl

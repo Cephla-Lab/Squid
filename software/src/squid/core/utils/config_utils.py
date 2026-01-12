@@ -135,11 +135,14 @@ class ChannelMode(BaseXmlModel, tag="mode"):
     z_offset: float = attr(name="ZOffset")
     emission_filter_position: int = attr(name="EmissionFilterPosition", default=1)
     selected: bool = attr(name="Selected", default=False)
+    is_rgb: Optional[bool] = attr(name="IsRGB", default=None)
     color: Optional[str] = None  # Not stored in XML but computed from name
 
     def __init__(self, **data):
         super().__init__(**data)
         self.color = utils_channel.get_channel_color(self.name)
+        if self.is_rgb is None:
+            self.is_rgb = self.name.endswith("_RGB")
 
 
 class ChannelConfig(BaseXmlModel, tag="modes"):
@@ -162,6 +165,7 @@ def get_attr_name(attr_name: str) -> str:
         "EmissionFilterPosition": "emission_filter_position",
         "Selected": "selected",
         "Color": "color",
+        "IsRGB": "is_rgb",
     }
     return attr_map[attr_name]
 
@@ -349,6 +353,7 @@ def generate_default_configuration(filename: str) -> None:
             illumination_intensity=5,
             camera_sn="",
             z_offset=0.0,
+            is_rgb=True,
         ),
     ]
 

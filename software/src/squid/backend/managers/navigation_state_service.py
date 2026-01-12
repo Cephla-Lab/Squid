@@ -11,6 +11,9 @@ from squid.core.events import (
     BinningChanged,
     WellplateFormatChanged,
     NavigationViewerStateChanged,
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
 )
 
 if TYPE_CHECKING:
@@ -52,25 +55,29 @@ class NavigationViewerStateService:
 
         self._last_published: Optional[_NavState] = None
 
-        self._bus.subscribe(StagePositionChanged, self._on_stage_position_changed)
-        self._bus.subscribe(ObjectiveChanged, lambda _e: self._publish_if_changed())
-        self._bus.subscribe(BinningChanged, self._on_binning_changed)
-        self._bus.subscribe(WellplateFormatChanged, self._on_wellplate_format_changed)
+        self._subscriptions = auto_subscribe(self, self._bus)
 
         self._publish_if_changed()
 
+    @handles(StagePositionChanged)
     def _on_stage_position_changed(self, event: StagePositionChanged) -> None:
         self._x_mm = float(event.x_mm)
         self._y_mm = float(event.y_mm)
         self._publish_if_changed()
 
+    @handles(BinningChanged)
     def _on_binning_changed(self, event: BinningChanged) -> None:
         if event.pixel_size_binned_um is not None:
             self._pixel_size_binned_um = float(event.pixel_size_binned_um)
         self._publish_if_changed()
 
+    @handles(WellplateFormatChanged)
     def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
         self._wellplate_format = str(event.format_name)
+        self._publish_if_changed()
+
+    @handles(ObjectiveChanged)
+    def _on_objective_changed(self, _event: ObjectiveChanged) -> None:
         self._publish_if_changed()
 
     def _get_fov_size_mm(self) -> Tuple[float, float]:
@@ -119,3 +126,6 @@ class NavigationViewerStateService:
             )
         )
 
+    def shutdown(self) -> None:
+        auto_unsubscribe(self._subscriptions, self._bus)
+        self._subscriptions = []

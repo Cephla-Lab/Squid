@@ -3,7 +3,18 @@
 # -*-mode:python ; tab-width:4 -*- ex:set tabstop=4 shiftwidth=4 expandtab: -*-
 #
 
-from ctypes import *
+from ctypes import (
+    CDLL,
+    WinDLL,
+    byref,
+    c_bool,
+    c_double,
+    c_int,
+    c_int64,
+    c_ubyte,
+    c_uint,
+    c_void_p,
+)
 import sys
 
 if sys.platform == "linux2" or sys.platform == "linux":

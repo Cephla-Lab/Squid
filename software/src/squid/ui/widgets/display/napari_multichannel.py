@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import DTypeLike
-from typing import Optional, Set, Tuple, TYPE_CHECKING
+from typing import List, Optional, Set, Tuple, TYPE_CHECKING
 
 import napari
 from napari.utils.colormaps import Colormap, AVAILABLE_COLORMAPS
@@ -12,10 +12,14 @@ from napari.utils.events import Event
 from qtpy.QtGui import QIcon
 from qtpy.QtWidgets import QWidget, QVBoxLayout
 
-from _def import CHANNEL_COLORS_MAP, USE_NAPARI_FOR_LIVE_VIEW, SQUID_ICON_PATH
+from _def import CHANNEL_COLORS_MAP, SQUID_ICON_PATH
+from squid.core.config.feature_flags import get_feature_flags
 
 from squid.backend.managers import ContrastManager
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     EventBus,
     BinningChanged,
     ObjectiveChanged,
@@ -25,6 +29,9 @@ from squid.core.events import (
 
 if TYPE_CHECKING:
     pass
+
+
+_FEATURE_FLAGS = get_feature_flags()
 
 
 class NapariMultiChannelWidget(QWidget):
@@ -62,6 +69,7 @@ class NapariMultiChannelWidget(QWidget):
     ) -> None:
         super().__init__(parent)
         self._event_bus = event_bus
+        self._subscriptions: List[Tuple[type, object]] = []
 
         # Cached values from events (initialized with provided initial values)
         self._pixel_size_factor = initial_pixel_size_factor
@@ -83,31 +91,28 @@ class NapariMultiChannelWidget(QWidget):
         self.grid_enabled = grid_enabled
 
         # Subscribe to events for dynamic values
-        self._event_bus.subscribe(BinningChanged, self._on_binning_changed)
-        self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
-        self._event_bus.subscribe(
-            SetAcquisitionChannelsCommand, self._on_set_acquisition_channels
-        )
-        self._event_bus.subscribe(
-            SetAcquisitionParametersCommand, self._on_set_acquisition_parameters
-        )
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
         # Initialize a napari Viewer without showing its standalone window.
         self.initNapariViewer()
 
+    @handles(BinningChanged)
     def _on_binning_changed(self, event: BinningChanged) -> None:
         """Update cached pixel size when binning changes."""
         if event.pixel_size_binned_um is not None:
             self._pixel_size_binned_um = event.pixel_size_binned_um
 
+    @handles(ObjectiveChanged)
     def _on_objective_changed(self, event: ObjectiveChanged) -> None:
         """Update cached pixel size factor when objective changes."""
         if event.pixel_size_um is not None:
             self._pixel_size_factor = event.pixel_size_um
 
+    @handles(SetAcquisitionChannelsCommand)
     def _on_set_acquisition_channels(self, event: SetAcquisitionChannelsCommand) -> None:
         self.initChannels(set(event.channel_names))
 
+    @handles(SetAcquisitionParametersCommand)
     def _on_set_acquisition_parameters(
         self, event: SetAcquisitionParametersCommand
     ) -> None:
@@ -183,7 +188,7 @@ class NapariMultiChannelWidget(QWidget):
         else:
             self.viewer.layers.clear()
             self.acquisition_initialized = True
-            if self.dtype != np.dtype(image_dtype) and not USE_NAPARI_FOR_LIVE_VIEW:
+            if self.dtype != np.dtype(image_dtype) and not _FEATURE_FLAGS.is_enabled("USE_NAPARI_FOR_LIVE_VIEW"):
                 self.contrastManager.scale_contrast_limits(image_dtype)
 
         self.image_width = image_width
@@ -274,3 +279,9 @@ class NapariMultiChannelWidget(QWidget):
 
     def activate(self) -> None:
         self.viewer.window.activate()
+
+    def closeEvent(self, event) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)

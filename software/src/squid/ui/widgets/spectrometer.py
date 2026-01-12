@@ -5,10 +5,21 @@ os.environ["QT_API"] = "pyqt5"
 
 # qt libraries
 from qtpy.QtCore import *  # type: ignore[assignment, misc]
-from qtpy.QtWidgets import *
+from qtpy.QtWidgets import (
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+)
 from qtpy.QtGui import *  # type: ignore[assignment, misc]
 import pyqtgraph as pg
-from _def import *
 
 
 class SpectrometerControlWidget(QFrame):

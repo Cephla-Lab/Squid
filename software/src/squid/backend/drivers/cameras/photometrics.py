@@ -14,7 +14,6 @@ from squid.core.abc import (
     CameraGainRange,
     CameraError,
 )
-from _def import *
 
 
 class PhotometricsCamera(AbstractCamera):

@@ -21,13 +21,10 @@ from qtpy.QtWidgets import (
 )
 import pyqtgraph.dockarea as dock
 
-from _def import (
-    USE_NAPARI_FOR_LIVE_CONTROL,
-    USE_NAPARI_WELL_SELECTION,
-    SHOW_DAC_CONTROL,
-    SUPPORT_LASER_AUTOFOCUS,
-)
+from squid.core.config.feature_flags import get_feature_flags
 from squid.ui.widgets import CollapsibleGroupBox
+
+_FEATURE_FLAGS = get_feature_flags()
 
 # Fixed width for the right control panel
 CONTROL_PANEL_WIDTH = 500
@@ -41,7 +38,7 @@ def setup_control_panel_layout(gui: "HighContentScreeningGui") -> None:
     layout.setSpacing(4)
 
     # Top section (Profile/Live Control) - always visible, not collapsible
-    if USE_NAPARI_FOR_LIVE_CONTROL and not gui.live_only_mode:
+    if _FEATURE_FLAGS.is_enabled("USE_NAPARI_FOR_LIVE_CONTROL") and not gui.live_only_mode:
         layout.addWidget(gui.navigationWidget)
     else:
         layout.addWidget(gui.profileWidget)
@@ -53,7 +50,7 @@ def setup_control_panel_layout(gui: "HighContentScreeningGui") -> None:
     layout.addWidget(camera_group)
 
     # DAC Control section - collapsible (if enabled)
-    if SHOW_DAC_CONTROL:
+    if _FEATURE_FLAGS.is_enabled("SHOW_DAC_CONTROL"):
         dac_group = CollapsibleGroupBox("DAC Control")
         dac_group.content.addWidget(gui.dacControlWidget)
         layout.addWidget(dac_group)
@@ -123,7 +120,7 @@ def setup_single_window_layout(gui: "HighContentScreeningGui") -> None:
     # Well Selector dock (bottom)
     gui.dock_wellSelection = dock.Dock("Well Selector", autoOrientation=False)
     gui.dock_wellSelection.showTitleBar()
-    if not USE_NAPARI_WELL_SELECTION or gui.live_only_mode:
+    if not _FEATURE_FLAGS.is_enabled("USE_NAPARI_WELL_SELECTION") or gui.live_only_mode:
         gui.dock_wellSelection.addWidget(gui.wellSelectionWidget)
         gui.dock_wellSelection.setFixedHeight(
             gui.dock_wellSelection.minimumSizeHint().height()
@@ -140,7 +137,7 @@ def setup_single_window_layout(gui: "HighContentScreeningGui") -> None:
     main_dockArea.addDock(gui.dock_controls, "right")
 
     # Focus Lock dock (below Controls, if available)
-    if SUPPORT_LASER_AUTOFOCUS:
+    if _FEATURE_FLAGS.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
         focus_lock_widget = getattr(gui, "focusLockStatusWidget", None)
         if focus_lock_widget is not None:
             gui.dock_focusLock = dock.Dock("Focus Lock", autoOrientation=False)

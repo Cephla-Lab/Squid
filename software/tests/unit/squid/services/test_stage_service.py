@@ -258,6 +258,64 @@ class TestStageService:
         mock_stage.move_y_to.assert_called_with(_def.SLIDE_POSITION.SCANNING_Y_MM)
         mock_stage.move_x_to.assert_called_with(_def.SLIDE_POSITION.SCANNING_X_MM)
 
+    def test_blocked_move_to_loading_position_publishes_failure(self):
+        """Blocked loading position command publishes failure event."""
+        from squid.backend.services.stage_service import StageService
+        from squid.core.events import (
+            EventBus,
+            MoveStageToLoadingPositionCommand,
+            StageMoveToLoadingPositionFinished,
+        )
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        mode_gate = Mock()
+        mode_gate.blocked_for_ui_hardware_commands.return_value = True
+        bus = EventBus()
+
+        StageService(mock_stage, bus, mode_gate=mode_gate)
+
+        finished_events = []
+        bus.subscribe(StageMoveToLoadingPositionFinished, finished_events.append)
+
+        bus.publish(MoveStageToLoadingPositionCommand(blocking=False, is_wellplate=False))
+        bus.drain()
+
+        assert len(finished_events) == 1
+        assert finished_events[0].success is False
+        assert "Blocked" in (finished_events[0].error_message or "")
+        mock_stage.move_x_to.assert_not_called()
+        mock_stage.move_y_to.assert_not_called()
+
+    def test_blocked_move_to_scanning_position_publishes_failure(self):
+        """Blocked scanning position command publishes failure event."""
+        from squid.backend.services.stage_service import StageService
+        from squid.core.events import (
+            EventBus,
+            MoveStageToScanningPositionCommand,
+            StageMoveToScanningPositionFinished,
+        )
+
+        mock_stage = Mock()
+        mock_stage.get_pos.return_value = MockPos(0.0, 0.0, 0.0)
+        mode_gate = Mock()
+        mode_gate.blocked_for_ui_hardware_commands.return_value = True
+        bus = EventBus()
+
+        StageService(mock_stage, bus, mode_gate=mode_gate)
+
+        finished_events = []
+        bus.subscribe(StageMoveToScanningPositionFinished, finished_events.append)
+
+        bus.publish(MoveStageToScanningPositionCommand(blocking=False, is_wellplate=False))
+        bus.drain()
+
+        assert len(finished_events) == 1
+        assert finished_events[0].success is False
+        assert "Blocked" in (finished_events[0].error_message or "")
+        mock_stage.move_x_to.assert_not_called()
+        mock_stage.move_y_to.assert_not_called()
+
     def test_move_to_calls_stage(self):
         """move_to should call stage.move_x_to/move_y_to/move_z_to."""
         from squid.backend.services.stage_service import StageService

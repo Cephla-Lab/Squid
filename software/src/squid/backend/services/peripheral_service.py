@@ -3,7 +3,7 @@
 
 import threading
 
-from squid.backend.services.base import BaseService
+from squid.backend.services.base import BaseService, gated_command
 from squid.core.events import (
     EventBus,
     SetDACCommand,
@@ -47,11 +47,9 @@ class PeripheralService(BaseService):
         self.subscribe(TurnOnAFLaserCommand, self._on_turn_on_af_laser_command)
         self.subscribe(TurnOffAFLaserCommand, self._on_turn_off_af_laser_command)
 
+    @gated_command
     def _on_set_dac_command(self, event: SetDACCommand):
         """Handle SetDACCommand event."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         self.set_dac(event.channel, event.value)
 
     def set_dac(self, channel: int, percentage: float) -> None:
@@ -78,47 +76,37 @@ class PeripheralService(BaseService):
         # Notify listeners
         self.publish(DACValueChanged(channel=channel, value=percentage))
 
+    @gated_command
     def _on_start_trigger_command(self, event: StartCameraTriggerCommand) -> None:
         """Handle start trigger command."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         with self._lock:
             self._microcontroller.start_camera_trigger()
 
+    @gated_command
     def _on_stop_trigger_command(self, event: StopCameraTriggerCommand) -> None:
         """Handle stop trigger command."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         with self._lock:
             self._microcontroller.stop_camera_trigger()
 
+    @gated_command
     def _on_set_trigger_frequency_command(
         self, event: SetCameraTriggerFrequencyCommand
     ) -> None:
         """Handle trigger frequency command."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         with self._lock:
             self._microcontroller.set_camera_trigger_frequency(event.fps)
 
+    @gated_command
     def _on_turn_on_af_laser_command(self, event: TurnOnAFLaserCommand) -> None:
         """Handle AF laser on command."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         with self._lock:
             self._microcontroller.turn_on_AF_laser()
             if event.wait_for_completion:
                 self._microcontroller.wait_till_operation_is_completed()
 
+    @gated_command
     def _on_turn_off_af_laser_command(self, event: TurnOffAFLaserCommand) -> None:
         """Handle AF laser off command."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         with self._lock:
             self._microcontroller.turn_off_AF_laser()
             if event.wait_for_completion:

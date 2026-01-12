@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 import squid.core.logging
+from squid.core.config.feature_flags import get_feature_flags
 
 from squid.backend.microscope import Microscope
 from squid.backend.controllers.live_controller import LiveController
@@ -28,7 +29,13 @@ from squid.backend.managers.scan_coordinates import ScanCoordinates
 from squid.backend.managers.navigation_state_service import NavigationViewerStateService
 from squid.backend.services import ServiceRegistry
 from squid.backend.controllers import MicroscopeModeController, PeripheralsController, ImageClickController
-from squid.core.events import event_bus
+from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
+    event_bus,
+    ObjectiveChanged,
+)
 from squid.core.mode_gate import GlobalModeGate
 from squid.backend.controllers.autofocus import AutoFocusController, LaserAutofocusController
 
@@ -109,6 +116,7 @@ class ApplicationContext:
         self._navigation_state_service: Optional[NavigationViewerStateService] = None
         self._camera_frame_callback_id: Optional[str] = None
         self._camera_focus_frame_callback_id: Optional[str] = None
+        self._subscriptions: list[tuple[type, object]] = []
 
         self._log.info(
             f"Creating ApplicationContext (simulation={simulation})"
@@ -128,9 +136,7 @@ class ApplicationContext:
         self._build_controllers()
         self._initialize_hardware()
         # Subscribe to objective changes to refresh channel configs
-        from squid.core.events import ObjectiveChanged
-
-        event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
+        self._subscriptions = auto_subscribe(self, event_bus)
 
     def _initialize_hardware(self) -> None:
         """Backend-owned one-time hardware initialization.
@@ -253,10 +259,10 @@ class ApplicationContext:
 
     def _build_microscope(self) -> None:
         """Build the microscope from configuration."""
-        from squid.backend.microscope import Microscope
+        from squid.backend import microscope_factory
 
         self._log.info("Building microscope...")
-        self._microscope = Microscope.build_from_global_config(
+        self._microscope = microscope_factory.build_microscope(
             simulated=self._simulation,
             skip_controller_creation=True,
         )
@@ -394,14 +400,9 @@ class ApplicationContext:
 
     def _build_tracking_controller(self) -> Optional["TrackingControllerCore"]:
         """Create TrackingControllerCore (backend-only, services-only)."""
-        try:
-            import _def as _config  # Local import to avoid circularity at module import time
-        except Exception:
-            _config = None
-
-        if self._microscope is None or self._services is None or _config is None:
+        if self._microscope is None or self._services is None:
             return None
-        if not getattr(_config, "ENABLE_TRACKING", False):
+        if not get_feature_flags().is_enabled("ENABLE_TRACKING"):
             return None
 
         from squid.backend.controllers.tracking_controller import TrackingControllerCore
@@ -510,14 +511,9 @@ class ApplicationContext:
 
     def _build_laser_autofocus_controller(self) -> Optional[LaserAutofocusController]:
         """Create LaserAutofocusController core without Qt dependencies."""
-        try:
-            import _def as _config  # Local import to avoid circularity at module import time
-        except Exception:
-            _config = None
-
-        if self._microscope is None or _config is None:
+        if self._microscope is None:
             return None
-        if not getattr(_config, "SUPPORT_LASER_AUTOFOCUS", False):
+        if not get_feature_flags().is_enabled("SUPPORT_LASER_AUTOFOCUS"):
             return None
         if self._services is None:
             return None
@@ -663,7 +659,8 @@ class ApplicationContext:
         )
 
     # Event handlers
-    def _on_objective_changed(self, event) -> None:
+    @handles(ObjectiveChanged)
+    def _on_objective_changed(self, event: ObjectiveChanged) -> None:
         """Refresh channel configs when objective changes."""
         if self._controllers and self._controllers.microscope_mode:
             self._refresh_channel_configs(self._controllers.microscope_mode)
@@ -928,6 +925,9 @@ class ApplicationContext:
         self._controllers = None
 
         # Stop the global EventBus dispatch thread
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, event_bus)
+            self._subscriptions.clear()
         event_bus.stop()
         # Clear subscribers to avoid leaking old controller/service handlers across tests/runs.
         event_bus.clear()

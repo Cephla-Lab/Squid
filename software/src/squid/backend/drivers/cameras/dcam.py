@@ -9,7 +9,57 @@ are subject to change without notice.
 __date__ = "2021-06-30"
 __copyright__ = "Copyright (C) 2021-2024 Hamamatsu Photonics K.K."
 
-from squid.backend.drivers.cameras.dcamapi4 import *
+from ctypes import (
+    byref,
+    c_double,
+    c_int32,
+    c_void_p,
+    create_string_buffer,
+    sizeof,
+)
+
+from squid.backend.drivers.cameras.dcamapi4 import (
+    DCAMAPI_INIT,
+    DCAMBUF_FRAME,
+    DCAMCAP_START,
+    DCAMCAP_TRANSFERINFO,
+    DCAMDEV_OPEN,
+    DCAMDEV_STRING,
+    DCAMERR,
+    DCAMPROP,
+    DCAMPROP_ATTR,
+    DCAMPROP_VALUETEXT,
+    DCAMWAIT_CAPEVENT,
+    DCAMWAIT_OPEN,
+    DCAMWAIT_START,
+    DCAM_IDPROP,
+    DCAM_IDSTR,
+    DCAM_PIXELTYPE,
+    dcamapi_init,
+    dcamapi_uninit,
+    dcambuf_alloc,
+    dcambuf_copyframe,
+    dcambuf_release,
+    dcamcap_firetrigger,
+    dcamcap_start,
+    dcamcap_status,
+    dcamcap_stop,
+    dcamcap_transferinfo,
+    dcamdev_close,
+    dcamdev_getstring,
+    dcamdev_open,
+    dcamprop_getattr,
+    dcamprop_getname,
+    dcamprop_getnextid,
+    dcamprop_getvalue,
+    dcamprop_getvaluetext,
+    dcamprop_queryvalue,
+    dcamprop_setgetvalue,
+    dcamprop_setvalue,
+    dcamwait_close,
+    dcamwait_open,
+    dcamwait_start,
+)
 # DCAM-API v4 module
 
 import numpy as np

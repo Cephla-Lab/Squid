@@ -1,4 +1,38 @@
-from squid.ui.widgets.camera._common import *
+from squid.ui.widgets.camera._common import (
+    AnalogGainChanged,
+    Any,
+    AutoWhiteBalanceChanged,
+    BinningChanged,
+    BlackLevelChanged,
+    CameraPixelFormat,
+    DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS,
+    EventBusFrame,
+    ExposureTimeChanged,
+    Optional,
+    PixelFormatChanged,
+    QComboBox,
+    QDoubleSpinBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    ROIChanged,
+    SetAnalogGainCommand,
+    SetAutoWhiteBalanceCommand,
+    SetBinningCommand,
+    SetBlackLevelCommand,
+    SetCameraTemperatureCommand,
+    SetExposureTimeCommand,
+    SetPixelFormatCommand,
+    SetROICommand,
+    Signal,
+    auto_subscribe,
+    handles,
+    squid,
+)
 
 
 class CameraSettingsWidget(EventBusFrame):
@@ -49,14 +83,8 @@ class CameraSettingsWidget(EventBusFrame):
         self._binning_options = binning_options or []
         self._current_binning = current_binning
 
-        # Subscribe to state updates using base class helper
-        self._subscribe(ExposureTimeChanged, self._on_exposure_changed)
-        self._subscribe(AnalogGainChanged, self._on_gain_changed)
-        self._subscribe(ROIChanged, self._on_roi_changed)
-        self._subscribe(BinningChanged, self._on_binning_changed)
-        self._subscribe(PixelFormatChanged, self._on_pixel_format_changed)
-        self._subscribe(BlackLevelChanged, self._on_black_level_changed)
-        self._subscribe(AutoWhiteBalanceChanged, self._on_auto_wb_changed)
+        # Subscribe to state updates using @handles decorators
+        self._subscriptions = auto_subscribe(self, self._bus)
 
         self.add_components(
             include_gain_exposure_time,
@@ -262,18 +290,21 @@ class CameraSettingsWidget(EventBusFrame):
     # Event handlers (state events from services)
     # ============================================================
 
+    @handles(ExposureTimeChanged)
     def _on_exposure_changed(self, event: ExposureTimeChanged) -> None:
         """Handle exposure time changed event."""
         self.entry_exposureTime.blockSignals(True)
         self.entry_exposureTime.setValue(event.exposure_time_ms)
         self.entry_exposureTime.blockSignals(False)
 
+    @handles(AnalogGainChanged)
     def _on_gain_changed(self, event: AnalogGainChanged) -> None:
         """Handle analog gain changed event."""
         self.entry_analogGain.blockSignals(True)
         self.entry_analogGain.setValue(event.gain)
         self.entry_analogGain.blockSignals(False)
 
+    @handles(ROIChanged)
     def _on_roi_changed(self, event: ROIChanged) -> None:
         """Handle ROI changed event."""
         self.entry_ROI_offset_x.blockSignals(True)
@@ -291,6 +322,7 @@ class CameraSettingsWidget(EventBusFrame):
         self.entry_ROI_width.blockSignals(False)
         self.entry_ROI_height.blockSignals(False)
 
+    @handles(BinningChanged)
     def _on_binning_changed(self, event: BinningChanged) -> None:
         """Handle binning changed event."""
         binning_string = f"{event.binning_x}x{event.binning_y}"
@@ -299,12 +331,14 @@ class CameraSettingsWidget(EventBusFrame):
         self.dropdown_binning.blockSignals(False)
         self.signal_binning_changed.emit()
 
+    @handles(PixelFormatChanged)
     def _on_pixel_format_changed(self, event: PixelFormatChanged) -> None:
         """Handle pixel format changed event."""
         self.dropdown_pixelFormat.blockSignals(True)
         self.dropdown_pixelFormat.setCurrentText(event.pixel_format.name)
         self.dropdown_pixelFormat.blockSignals(False)
 
+    @handles(BlackLevelChanged)
     def _on_black_level_changed(self, event: BlackLevelChanged) -> None:
         """Handle black level changed event."""
         if hasattr(self, "label_blackLevel"):
@@ -312,6 +346,7 @@ class CameraSettingsWidget(EventBusFrame):
             self.label_blackLevel.setValue(event.level)
             self.label_blackLevel.blockSignals(False)
 
+    @handles(AutoWhiteBalanceChanged)
     def _on_auto_wb_changed(self, event: AutoWhiteBalanceChanged) -> None:
         """Handle auto white balance changed event."""
         if hasattr(self, "btn_auto_wb"):

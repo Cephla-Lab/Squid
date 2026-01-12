@@ -1,4 +1,28 @@
-from squid.ui.widgets.camera._common import *
+from __future__ import annotations
+
+import os
+from datetime import datetime
+
+from squid.core.utils.hardware_utils import ensure_directory_exists
+from squid.ui.widgets.camera._common import (
+    Any,
+    DEFAULT_SAVING_PATH,
+    Dict,
+    List,
+    Optional,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QIcon,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -232,7 +256,7 @@ class MultiCameraRecordingWidget(QFrame):
             experiment_ID = (
                 experiment_ID + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
             )
-            utils.ensure_directory_exists(
+            ensure_directory_exists(
                 os.path.join(self.save_dir_base, experiment_ID)
             )
             for channel in self.channels:

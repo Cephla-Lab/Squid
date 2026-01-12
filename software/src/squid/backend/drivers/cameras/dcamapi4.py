@@ -5,7 +5,21 @@
 
 import platform
 from enum import IntEnum
-from ctypes import *
+from ctypes import (
+    POINTER,
+    Structure,
+    addressof,
+    c_char_p,
+    c_double,
+    c_int32,
+    c_uint32,
+    c_void_p,
+    c_wchar_p,
+    cdll,
+    create_string_buffer,
+    sizeof,
+    windll,
+)
 
 
 # ==== load shared library ====

@@ -64,12 +64,20 @@ class _FakeAutoFocusController:
     def __init__(self) -> None:
         self.use_focus_map = False
         self.focus_map_coords = []
+        self._focus_map_surface = None
 
-    def gen_focus_map(self, _coord1, _coord2, _coord3) -> None:
-        pass
+    def sample_focus_map_points(self, coords) -> None:
+        self.focus_map_coords = [(x, y, 0.0) for x, y in coords]
 
     def set_focus_map_use(self, enabled: bool) -> None:
         self.use_focus_map = enabled
+
+    def set_focus_map_surface(self, focus_map) -> None:
+        self._focus_map_surface = focus_map
+
+    @property
+    def focus_map_surface(self):
+        return self._focus_map_surface
 
     def clear_focus_map(self) -> None:
         self.focus_map_coords = []

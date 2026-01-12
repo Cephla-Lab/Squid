@@ -33,7 +33,9 @@ from _def import (
 )
 from squid.core.abc import CameraPixelFormat
 from squid.core.events import (
+    auto_subscribe,
     event_bus,
+    handles,
     ExposureTimeChanged,
     AnalogGainChanged,
     SetExposureTimeCommand,

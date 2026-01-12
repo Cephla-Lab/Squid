@@ -32,7 +32,7 @@ from _def import (
 )
 from squid.core.abc import AbstractStage
 from squid.backend.services import StageService
-from squid.core.events import StagePositionChanged
+from squid.core.events import auto_subscribe, handles, StagePositionChanged
 from squid.backend.drivers.peripherals.piezo import PiezoStage
 from squid.ui.widgets.base import EventBusFrame, EventBusDialog
 

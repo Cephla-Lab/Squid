@@ -1,12 +1,27 @@
 import re
 
-from squid.ui.widgets.wellplate._common import *
+from squid.ui.widgets.wellplate._common import (
+    Any,
+    List,
+    QColor,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+)
 from qtpy.QtCore import QPoint, QTimer
 from qtpy.QtGui import QPixmap, QPainter, QPen
 from qtpy.QtWidgets import QApplication
 from _def import WELLPLATE_OFFSET_X_mm, WELLPLATE_OFFSET_Y_mm
 
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     ClickToMoveEnabledChanged,
     MoveStageToCommand,
     SelectedWellsChanged,
@@ -23,6 +38,7 @@ class Well1536SelectionWidget(QWidget):
         super().__init__()
         self._bus = event_bus
         self._click_to_move_enabled: bool = True
+        self._subscriptions: List[Tuple[type, Any]] = []
         self.format = "1536 well plate"
         self.selected_cells = {}  # Dictionary to keep track of selected cells and their colors
         self.current_cell = None  # To track the current (green) cell
@@ -38,10 +54,10 @@ class Well1536SelectionWidget(QWidget):
         self.a1_x_pixel = 144  # coordinate on the png - to update
         self.a1_y_pixel = 108  # coordinate on the png - to update
 
-        self._bus.subscribe(ClickToMoveEnabledChanged, self._on_click_to_move_enabled_changed)
-        self._bus.subscribe(WellplateFormatChanged, self._on_wellplate_format_changed)
+        self._subscriptions = auto_subscribe(self, self._bus)
         self.initUI()
 
+    @handles(ClickToMoveEnabledChanged)
     def _on_click_to_move_enabled_changed(self, event: ClickToMoveEnabledChanged) -> None:
         self._click_to_move_enabled = event.enabled
 
@@ -53,6 +69,7 @@ class Well1536SelectionWidget(QWidget):
             )
         )
 
+    @handles(WellplateFormatChanged)
     def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
         if event.format_name != "1536 well plate":
             return
@@ -505,3 +522,9 @@ class Well1536SelectionWidget(QWidget):
     def get_selected_cells(self):
         list_of_selected_cells = list(self.selected_cells.keys())
         return list_of_selected_cells
+
+    def closeEvent(self, event: Any) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)

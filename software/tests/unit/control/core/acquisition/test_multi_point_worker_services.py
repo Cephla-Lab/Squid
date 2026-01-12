@@ -1,6 +1,7 @@
 """Tests for MultiPointWorker service usage and abort handling."""
 
 from types import SimpleNamespace
+import queue
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -16,6 +17,7 @@ from squid.backend.controllers.multipoint.multi_point_utils import (
     AcquisitionParameters,
     ScanPositionInformation,
 )
+from squid.backend.controllers.multipoint.job_processing import JobResult
 
 
 def _make_params() -> AcquisitionParameters:
@@ -55,6 +57,7 @@ def _make_worker(
     stage_service: MagicMock | None = None,
     peripheral_service: MagicMock | None = None,
     event_bus: EventBus | None = None,
+    abort_on_failed_jobs: bool = True,
 ) -> MultiPointWorker:
     """Helper to build a worker with injectable services."""
     objective_store = SimpleNamespace(
@@ -84,6 +87,7 @@ def _make_worker(
         stage_service=stage_service,
         peripheral_service=peripheral_service,
         event_bus=event_bus,
+        abort_on_failed_jobs=abort_on_failed_jobs,
     )
 
 
@@ -214,3 +218,63 @@ def test_acquire_rgb_image_emits_stream_handler_frame(tmp_path):
     args, kwargs = stream_handler.on_new_image.call_args
     assert args[0].shape == (8, 12, 3)
     assert kwargs["capture_info"].configuration.name == "BF LED matrix full_RGB"
+
+
+def test_abort_on_failed_job_requests_abort() -> None:
+    """Worker requests abort when a job fails and abort_on_failed_jobs is True."""
+
+    class DummyJob:
+        __name__ = "DummyJob"
+
+    class DummyRunner:
+        def __init__(self, out_queue):
+            self._out_queue = out_queue
+
+        def output_queue(self):
+            return self._out_queue
+
+    worker = _make_worker()
+    out_queue = queue.Queue()
+    out_queue.put(JobResult(job_id="job-1", result=None, exception=RuntimeError("fail")))
+    worker._job_runners = [(DummyJob, DummyRunner(out_queue))]
+
+    worker._summarize_runner_outputs()
+
+    assert worker._abort_requested.is_set()
+
+
+def test_failed_job_does_not_abort_when_disabled() -> None:
+    """Worker does not abort on job failure when abort_on_failed_jobs is False."""
+
+    class DummyJob:
+        __name__ = "DummyJob"
+
+    class DummyRunner:
+        def __init__(self, out_queue):
+            self._out_queue = out_queue
+
+        def output_queue(self):
+            return self._out_queue
+
+    worker = _make_worker(abort_on_failed_jobs=False)
+    out_queue = queue.Queue()
+    out_queue.put(JobResult(job_id="job-1", result=None, exception=RuntimeError("fail")))
+    worker._job_runners = [(DummyJob, DummyRunner(out_queue))]
+
+    worker._summarize_runner_outputs()
+
+    assert not worker._abort_requested.is_set()
+
+
+def test_handle_z_offset_moves_relative() -> None:
+    """handle_z_offset applies per-channel offsets via position controller."""
+    worker = _make_worker()
+    worker._position_controller = MagicMock()
+    config = SimpleNamespace(z_offset=50.0)
+
+    worker.handle_z_offset(config, True)
+    worker._position_controller.move_z_relative.assert_called_once_with(0.05)
+
+    worker._position_controller.move_z_relative.reset_mock()
+    worker.handle_z_offset(config, False)
+    worker._position_controller.move_z_relative.assert_called_once_with(-0.05)

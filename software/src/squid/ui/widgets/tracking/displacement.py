@@ -1,4 +1,17 @@
-from squid.ui.widgets.tracking._common import *
+from squid.ui.widgets.tracking._common import (
+    Any,
+    List,
+    Optional,
+    QDoubleSpinBox,
+    QFrame,
+    QGridLayout,
+    QLabel,
+    QSpinBox,
+    Tuple,
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
+)
 from squid.core.events import (
     EventBus,
     SetDisplacementMeasurementSettingsCommand,
@@ -27,11 +40,12 @@ class DisplacementMeasurementWidget(QFrame):
     ) -> None:
         super().__init__(*args, **kwargs)
         self._event_bus = event_bus
+        self._subscriptions: List[Tuple[type, object]] = []
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
         # Subscribe to displacement readings events
-        self._event_bus.subscribe(DisplacementReadingsChanged, self._on_readings_changed)
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
     def add_components(self) -> None:
         self.entry_x_offset = QDoubleSpinBox()
@@ -139,10 +153,17 @@ class DisplacementMeasurementWidget(QFrame):
         """Publish N value change for waveform display."""
         self._event_bus.publish(SetWaveformDisplayNCommand(n=n))
 
+    @handles(DisplacementReadingsChanged)
     def _on_readings_changed(self, event: DisplacementReadingsChanged) -> None:
         """Handle displacement readings changed event."""
         self.reading_x.setText("{:.2f}".format(event.readings[0]))
         self.reading_y.setText("{:.2f}".format(event.readings[1]))
+
+    def closeEvent(self, event) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)
 
     # Keep legacy method for backwards compatibility during transition
     def display_readings(self, readings: List[float]) -> None:

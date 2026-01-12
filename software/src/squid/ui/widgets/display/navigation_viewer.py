@@ -31,6 +31,9 @@ from squid.backend.managers.scan_coordinates import (
 )
 from squid.core.abc import Pos
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     BinningChanged,
     ClearScanCoordinatesCommand,
     ClickToMoveEnabledChanged,
@@ -63,33 +66,14 @@ class NavigationViewer(QFrame):
         super().__init__(*args, **kwargs)
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self._event_bus = event_bus
-        self._subscriptions: List[tuple] = []
+        self._subscriptions: List[Tuple[type, object]] = []
         self._click_to_move_enabled: bool = True
         self._pending_focus_points: Optional[Tuple[Tuple[float, float], ...]] = None
         self._pending_focus_overlay_visible: Optional[bool] = None
 
         # Subscribe to stage movement events via UIEventBus (thread-safe)
         if self._event_bus is not None:
-            self._subscribe(StageMovementStopped, self._on_stage_movement_stopped)
-            self._subscribe(ClickToMoveEnabledChanged, self._on_click_to_move_enabled_changed)
-            self._subscribe(WellplateFormatChanged, self._on_wellplate_format_changed)
-            self._subscribe(ObjectiveChanged, self._on_redraw_trigger)
-            self._subscribe(BinningChanged, self._on_redraw_trigger)
-            self._subscribe(CurrentFOVRegistered, self._on_current_fov_registered)
-            self._subscribe(
-                AddScanCoordinateRegion,
-                lambda update: self.register_fovs_to_image(update.fov_centers),
-            )
-            self._subscribe(
-                RemovedScanCoordinateRegion,
-                lambda update: self.deregister_fovs_from_image(update.fov_centers),
-            )
-            self._subscribe(ClearedScanCoordinates, lambda _u: self._clear_pending_fovs())
-            self._subscribe(FocusPointOverlaySet, self._on_focus_point_overlay_set)
-            self._subscribe(
-                FocusPointOverlayVisibilityChanged,
-                self._on_focus_point_overlay_visibility_changed,
-            )
+            self._subscriptions = auto_subscribe(self, self._event_bus)
 
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.sample: str = sample
@@ -154,6 +138,7 @@ class NavigationViewer(QFrame):
             self._apply_focus_point_overlay_set(self._pending_focus_points)
             self._pending_focus_points = None
 
+    @handles(FocusPointOverlaySet)
     def _on_focus_point_overlay_set(self, event: FocusPointOverlaySet) -> None:
         if not hasattr(self, "focus_point_overlay_item"):
             self._pending_focus_points = event.points
@@ -165,6 +150,7 @@ class NavigationViewer(QFrame):
         for x_mm, y_mm in points:
             self.register_focus_point(float(x_mm), float(y_mm))
 
+    @handles(FocusPointOverlayVisibilityChanged)
     def _on_focus_point_overlay_visibility_changed(self, event: FocusPointOverlayVisibilityChanged) -> None:
         if not hasattr(self, "focus_point_overlay_item"):
             self._pending_focus_overlay_visible = event.enabled
@@ -219,6 +205,7 @@ class NavigationViewer(QFrame):
                 self._event_bus.unsubscribe(event_type, handler)
         self._subscriptions.clear()
 
+    @handles(StageMovementStopped)
     def _on_stage_movement_stopped(self, event: StageMovementStopped) -> None:
         pos = Pos(
             x_mm=event.x_mm,
@@ -228,9 +215,11 @@ class NavigationViewer(QFrame):
         )
         self.draw_fov_current_location(pos)
 
+    @handles(ClickToMoveEnabledChanged)
     def _on_click_to_move_enabled_changed(self, event: ClickToMoveEnabledChanged) -> None:
         self._click_to_move_enabled = event.enabled
 
+    @handles(WellplateFormatChanged)
     def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
         # Clear all FOVs when wellplate format changes - old positions are no longer valid
         self._pending_fovs.clear()
@@ -246,9 +235,11 @@ class NavigationViewer(QFrame):
             event.number_of_skip,
         )
 
+    @handles(ObjectiveChanged, BinningChanged)
     def _on_redraw_trigger(self, _event: object) -> None:
         self.update_display_properties(self.sample)
 
+    @handles(CurrentFOVRegistered)
     def _on_current_fov_registered(self, event: CurrentFOVRegistered) -> None:
         """Mark an FOV as completed (moves from red to blue)."""
         pos = (event.x_mm, event.y_mm)
@@ -279,6 +270,20 @@ class NavigationViewer(QFrame):
             self._completed_fovs.append(completed_fov)
         self._log.info(f"After update: pending={len(self._pending_fovs)}, completed={len(self._completed_fovs)}")
         self._redraw_scan_overlay()
+
+    @handles(AddScanCoordinateRegion)
+    def _on_add_scan_coordinate_region(self, update: AddScanCoordinateRegion) -> None:
+        self.register_fovs_to_image(update.fov_centers)
+
+    @handles(RemovedScanCoordinateRegion)
+    def _on_removed_scan_coordinate_region(
+        self, update: RemovedScanCoordinateRegion
+    ) -> None:
+        self.deregister_fovs_from_image(update.fov_centers)
+
+    @handles(ClearedScanCoordinates)
+    def _on_cleared_scan_coordinates(self, _event: ClearedScanCoordinates) -> None:
+        self._clear_pending_fovs()
 
     def clear_slide(self) -> None:
         if self.background_item is not None:
@@ -555,3 +560,9 @@ class NavigationViewer(QFrame):
                 self._event_bus.publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
         except Exception:
             return
+
+    def closeEvent(self, event) -> None:
+        if self._subscriptions and self._event_bus is not None:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)

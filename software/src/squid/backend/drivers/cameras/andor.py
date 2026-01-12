@@ -7,7 +7,7 @@ import pydantic
 
 import pyAndorSDK3
 from pyAndorSDK3 import AndorSDK3
-from _def import *
+import squid.core.logging
 from squid.core.abc import AbstractCamera, CameraError
 from squid.core.config import CameraConfig, CameraPixelFormat
 from squid.core.abc import (
@@ -58,7 +58,9 @@ class AndorCamera(AbstractCamera):
         # Get camera capabilities
         try:
             camera_model = camera.CameraModel
-            log.info(f"Andor camera model: {camera_model}")
+            squid.core.logging.get_logger("AndorCamera._open").info(
+                "Andor camera model: %s", camera_model
+            )
             # For now, we only support ZL41 Cell 4.2
             supported_resolutions = {
                 (1, 1): (2048, 2048),

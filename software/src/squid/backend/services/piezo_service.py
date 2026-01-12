@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Optional, Tuple
 
-from squid.backend.services.base import BaseService
+from squid.backend.services.base import BaseService, gated_command
 from squid.core.events import (
     EventBus,
     SetPiezoPositionCommand,
@@ -116,11 +116,9 @@ class PiezoService(BaseService):
     # Event-driven handlers (for GUI interactions)
     # =========================================================================
 
+    @gated_command
     def _on_set_position_command(self, cmd: SetPiezoPositionCommand) -> None:
         """Handle SetPiezoPositionCommand from EventBus."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(cmd).__name__)
-            return
         with self._lock:
             clamped = self._clamp_position(cmd.position_um)
             if self._piezo:
@@ -134,11 +132,9 @@ class PiezoService(BaseService):
         # Publish outside lock
         self.publish(PiezoPositionChanged(position_um=actual))
 
+    @gated_command
     def _on_move_relative_command(self, cmd: MovePiezoRelativeCommand) -> None:
         """Handle MovePiezoRelativeCommand from EventBus."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(cmd).__name__)
-            return
         with self._lock:
             if self._piezo:
                 current = getattr(self._piezo, "position", 0.0)

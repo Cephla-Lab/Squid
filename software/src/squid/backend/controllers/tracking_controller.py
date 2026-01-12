@@ -23,6 +23,9 @@ from squid.core.events import (
     StopTrackingCommand,
     TrackingStateChanged,
     TrackingWorkerFinished,
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
 )
 from squid.backend.processing.tracking_dasiamrpn import Tracker_Image
 from squid.backend.io.utils_acquisition import save_image
@@ -97,21 +100,12 @@ class TrackingControllerCore:
         self._keep_running = threading.Event()
         self._worker: Optional[_TrackingWorker] = None
 
-        self._subscribe_to_bus()
-
-    def _subscribe_to_bus(self) -> None:
-        self._bus.subscribe(SetTrackingParametersCommand, self._on_set_parameters)
-        self._bus.subscribe(SetTrackingPathCommand, self._on_set_path)
-        self._bus.subscribe(SetTrackingChannelsCommand, self._on_set_channels)
-        self._bus.subscribe(StartTrackingExperimentCommand, self._on_start_experiment)
-        self._bus.subscribe(StartTrackingCommand, self._on_start_tracking)
-        self._bus.subscribe(StopTrackingCommand, self._on_stop_tracking)
-        self._bus.subscribe(ObjectiveChanged, self._on_objective_changed)
-        self._bus.subscribe(TrackingWorkerFinished, self._on_worker_finished)
+        self._subscriptions = auto_subscribe(self, self._bus)
 
     def _publish_tracking_state(self, is_tracking: bool) -> None:
         self._bus.publish(TrackingStateChanged(is_tracking=is_tracking))
 
+    @handles(ObjectiveChanged)
     def _on_objective_changed(self, event: ObjectiveChanged) -> None:
         if event.objective_name is None:
             return
@@ -120,6 +114,7 @@ class TrackingControllerCore:
             if event.pixel_size_um is not None:
                 self._pixel_size_um = event.pixel_size_um
 
+    @handles(SetTrackingParametersCommand)
     def _on_set_parameters(self, cmd: SetTrackingParametersCommand) -> None:
         with self._lock:
             if cmd.time_interval_s is not None:
@@ -137,14 +132,17 @@ class TrackingControllerCore:
             if cmd.image_resizing_factor is not None:
                 self._image_resizing_factor = float(cmd.image_resizing_factor)
 
+    @handles(SetTrackingPathCommand)
     def _on_set_path(self, cmd: SetTrackingPathCommand) -> None:
         with self._lock:
             self._base_path = cmd.base_path
 
+    @handles(SetTrackingChannelsCommand)
     def _on_set_channels(self, cmd: SetTrackingChannelsCommand) -> None:
         with self._lock:
             self._selected_configuration_names = list(cmd.channel_names)
 
+    @handles(StartTrackingExperimentCommand)
     def _on_start_experiment(self, cmd: StartTrackingExperimentCommand) -> None:
         with self._lock:
             self._experiment_id_base = cmd.experiment_id
@@ -195,6 +193,7 @@ class TrackingControllerCore:
                 image_resizing_factor=float(self._image_resizing_factor or 1.0),
             )
 
+    @handles(StartTrackingCommand)
     def _on_start_tracking(self, cmd: StartTrackingCommand) -> None:
         run_cfg = self._build_run_config(roi_bbox=cmd.roi_bbox)
 
@@ -254,12 +253,14 @@ class TrackingControllerCore:
             self._worker = worker
         worker.start()
 
+    @handles(StopTrackingCommand)
     def _on_stop_tracking(self, cmd: StopTrackingCommand) -> None:
         with self._lock:
             if not self._is_tracking:
                 return
             self._keep_running.clear()
 
+    @handles(TrackingWorkerFinished)
     def _on_worker_finished(self, event: TrackingWorkerFinished) -> None:
         with self._lock:
             worker = self._worker
@@ -270,6 +271,10 @@ class TrackingControllerCore:
         if worker is not None:
             worker.restore_after_run()
         self._publish_tracking_state(is_tracking=False)
+
+    def shutdown(self) -> None:
+        auto_unsubscribe(self._subscriptions, self._bus)
+        self._subscriptions = []
 
 
 class _TrackingWorker(threading.Thread):

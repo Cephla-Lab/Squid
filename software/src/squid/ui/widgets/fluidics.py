@@ -23,7 +23,6 @@ from qtpy.QtWidgets import (
     QGroupBox,
 )
 
-from _def import *
 from squid.ui.widgets.base import PandasTableModel
 from squid.core.events import EventBus, FluidicsInitialized
 

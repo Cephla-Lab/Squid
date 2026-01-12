@@ -1,4 +1,13 @@
-from squid.ui.widgets.tracking._common import *
+from squid.ui.widgets.tracking._common import (
+    Optional,
+    QColor,
+    QPainter,
+    QPen,
+    QTimer,
+    QWidget,
+    Qt,
+    Signal,
+)
 from qtpy.QtCore import QPointF, QRectF
 from qtpy.QtGui import QPaintEvent, QMouseEvent
 

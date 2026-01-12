@@ -4,7 +4,7 @@ from __future__ import annotations
 import threading
 from typing import Optional, Sequence, Tuple, Callable
 
-from squid.backend.services.base import BaseService
+from squid.backend.services.base import BaseService, gated_command
 from squid.core.config import CameraPixelFormat
 from squid.core.events import (
     EventBus,
@@ -74,63 +74,47 @@ class CameraService(BaseService):
             self.subscribe(SetBlackLevelCommand, self._on_set_black_level_command)
             self.subscribe(SetAutoWhiteBalanceCommand, self._on_set_auto_wb_command)
 
+    @gated_command
     def _on_set_exposure_command(self, event: SetExposureTimeCommand):
         """Handle SetExposureTimeCommand event."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         self.set_exposure_time(event.exposure_time_ms)
 
+    @gated_command
     def _on_set_gain_command(self, event: SetAnalogGainCommand):
         """Handle SetAnalogGainCommand event."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         self.set_analog_gain(event.gain)
 
+    @gated_command
     def _on_set_roi_command(self, event: SetROICommand):
         """Handle SetROICommand event."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         self.set_region_of_interest(
             event.x_offset, event.y_offset, event.width, event.height
         )
 
+    @gated_command
     def _on_set_binning_command(self, event: SetBinningCommand):
         """Handle SetBinningCommand event."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         self.set_binning(event.binning_x, event.binning_y)
 
+    @gated_command
     def _on_set_pixel_format_command(self, event: SetPixelFormatCommand):
         """Handle SetPixelFormatCommand event."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         pixel_format = CameraPixelFormat.from_string(event.pixel_format)
         self.set_pixel_format(pixel_format)
 
+    @gated_command
     def _on_set_temperature_command(self, event: SetCameraTemperatureCommand):
         """Handle SetCameraTemperatureCommand event."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         self.set_temperature(event.temperature_celsius)
 
+    @gated_command
     def _on_set_black_level_command(self, event: SetBlackLevelCommand):
         """Handle SetBlackLevelCommand event."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         self.set_black_level(event.level)
 
+    @gated_command
     def _on_set_auto_wb_command(self, event: SetAutoWhiteBalanceCommand):
         """Handle SetAutoWhiteBalanceCommand event."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
-            return
         self.set_auto_white_balance(event.enabled)
 
     def set_exposure_time(self, exposure_time_ms: float) -> None:

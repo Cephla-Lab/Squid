@@ -21,6 +21,9 @@ from squid.core.events import (
     ChannelConfigurationsChanged,
     SetConfocalModeCommand,
     ConfocalModeChanged,
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
 )
 
 if TYPE_CHECKING:
@@ -94,12 +97,9 @@ class ChannelConfigurationManager:
             self._load_channel_definitions()
 
         # Subscribe to events if event_bus is provided
+        self._subscriptions = []
         if self._event_bus:
-            self._event_bus.subscribe(UpdateChannelConfigurationCommand, self._on_update_configuration_command)
-            self._event_bus.subscribe(
-                SetConfocalModeCommand,
-                self._on_set_confocal_mode_command,
-            )
+            self._subscriptions = auto_subscribe(self, self._event_bus)
 
     def set_configurations_path(self, configurations_path: Path) -> None:
         """Set the path to the configurations folder."""
@@ -629,6 +629,7 @@ class ChannelConfigurationManager:
         """Enable or disable a channel."""
         self.update_channel_definition(channel_name, enabled=enabled)
 
+    @handles(SetConfocalModeCommand)
     def _on_set_confocal_mode_command(self, cmd: SetConfocalModeCommand) -> None:
         self.toggle_confocal_widefield(cmd.is_confocal)
         self._publish_configurations_changed(cmd.objective_name)
@@ -648,6 +649,7 @@ class ChannelConfigurationManager:
             )
         )
 
+    @handles(UpdateChannelConfigurationCommand)
     def _on_update_configuration_command(self, cmd: UpdateChannelConfigurationCommand) -> None:
         """Handle UpdateChannelConfigurationCommand event."""
         # Find the configuration by name
@@ -663,3 +665,8 @@ class ChannelConfigurationManager:
             self.update_configuration(cmd.objective_name, mode.id, "AnalogGain", cmd.analog_gain)
         if cmd.illumination_intensity is not None:
             self.update_configuration(cmd.objective_name, mode.id, "IlluminationIntensity", cmd.illumination_intensity)
+
+    def shutdown(self) -> None:
+        if self._event_bus:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+        self._subscriptions = []

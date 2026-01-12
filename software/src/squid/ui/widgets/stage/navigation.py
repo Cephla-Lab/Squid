@@ -1,4 +1,22 @@
-from squid.ui.widgets.stage._common import *
+from squid.ui.widgets.stage._common import (
+    Any,
+    ENABLE_CLICK_TO_MOVE_BY_DEFAULT,
+    EventBusFrame,
+    Optional,
+    QCheckBox,
+    QDoubleSpinBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    StagePositionChanged,
+    auto_subscribe,
+    handles,
+    squid,
+)
 from squid.core.events import MoveStageRelativeCommand
 
 
@@ -47,12 +65,13 @@ class NavigationWidget(EventBusFrame):
         self.checkbox_clickToMove: QCheckBox
         self.grid: QVBoxLayout
 
-        # Subscribe to position updates using base class helper
-        self._subscribe(StagePositionChanged, self._on_position_changed)
+        # Subscribe to position updates using @handles decorators
+        self._subscriptions = auto_subscribe(self, self._bus)
 
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
+    @handles(StagePositionChanged)
     def _on_position_changed(self, event: StagePositionChanged) -> None:
         """Handle position changed event."""
         self.label_Xpos.setNum(event.x_mm)

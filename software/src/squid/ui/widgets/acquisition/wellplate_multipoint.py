@@ -49,6 +49,8 @@ from squid.core.events import (
     RequestScanCoordinatesSnapshotCommand,
     ScanCoordinatesSnapshot,
     FocusLockModeChanged,
+    handles,
+    auto_subscribe,
 )
 
 if TYPE_CHECKING:
@@ -76,7 +78,21 @@ from qtpy.QtWidgets import (
 )
 from qtpy.QtGui import QIcon
 
-from _def import *
+from _def import (
+    Acquisition,
+    DEFAULT_SAVING_PATH,
+    HAS_OBJECTIVE_PIEZO,
+    MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT,
+    MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT,
+    MULTIPOINT_USE_PIEZO_FOR_ZSTACKS,
+    SOFTWARE_POS_LIMIT,
+    WELLPLATE_FORMAT,
+    f,
+)
+from squid.core.config.feature_flags import get_feature_flags
+
+
+_FEATURE_FLAGS = get_feature_flags()
 from squid.ui.widgets.base import error_dialog, check_space_available_with_error_dialog
 from squid.ui.widgets.wellplate import WellSelectionWidget
 
@@ -181,29 +197,23 @@ class WellplateMultiPointWidget(QFrame):
         # Track loading from cache
         self._loading_from_cache = False
 
+        # Snapshot coordination for ScanCoordinatesSnapshot
+        self._snapshot_request_id: Optional[str] = None
+        self._snapshot_loop: Optional[QEventLoop] = None
+        self._snapshot_result: Optional[ScanCoordinatesSnapshot] = None
+
         self.add_components()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.set_default_scan_size()
 
-        # Subscribe to EventBus for position and live state updates
-        self._event_bus.subscribe(StagePositionChanged, self._on_stage_position_changed)
-        self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
-        self._event_bus.subscribe(ChannelConfigurationsChanged, self._on_channel_configs_changed)
-        self._event_bus.subscribe(LiveStateChanged, self._on_live_state_changed)
-        self._event_bus.subscribe(AcquisitionStateChanged, self._on_acquisition_state_changed)
-        self._event_bus.subscribe(AcquisitionProgress, self._on_acquisition_progress)
-        self._event_bus.subscribe(AcquisitionRegionProgress, self._on_region_progress)
-        self._event_bus.subscribe(LoadingPositionReached, self._on_loading_position_reached)
-        self._event_bus.subscribe(ScanningPositionReached, self._on_scanning_position_reached)
-        self._event_bus.subscribe(ScanCoordinatesUpdated, self._on_scan_coordinates_updated)
-        self._event_bus.subscribe(WellplateFormatChanged, self._on_wellplate_format_changed)
-        self._event_bus.subscribe(SelectedWellsChanged, self._on_selected_wells_changed)
-        self._event_bus.subscribe(StageMovementStopped, self._on_stage_movement_stopped)
-        self._event_bus.subscribe(ActiveAcquisitionTabChanged, self._on_active_tab_changed)
-        self._event_bus.subscribe(ManualShapesChanged, self._on_manual_shapes_changed)
-        self._event_bus.subscribe(MosaicLayersInitialized, lambda _e: self.enable_manual_ROI())
-        self._event_bus.subscribe(FocusLockModeChanged, self._on_focus_lock_mode_changed)
+        # Subscribe to EventBus using @handles decorators
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
+    @handles(MosaicLayersInitialized)
+    def _on_mosaic_layers_initialized(self, _event: MosaicLayersInitialized) -> None:
+        self.enable_manual_ROI()
+
+    @handles(FocusLockModeChanged)
     def _on_focus_lock_mode_changed(self, event: FocusLockModeChanged) -> None:
         """Disable AF checkboxes when focus lock is active."""
         focus_lock_active = event.mode == "on"
@@ -218,11 +228,13 @@ class WellplateMultiPointWidget(QFrame):
         if focus_lock_active and self.checkbox_withReflectionAutofocus.isChecked():
             self.checkbox_withReflectionAutofocus.setChecked(False)
 
+    @handles(WellplateFormatChanged)
     def _on_wellplate_format_changed(self, event: WellplateFormatChanged) -> None:
         self._wellplate_format = event.format_name
         self._well_size_mm = float(event.well_size_mm)
         self.set_default_scan_size()
 
+    @handles(SelectedWellsChanged)
     def _on_selected_wells_changed(self, _event: SelectedWellsChanged) -> None:
         if self.combobox_xy_mode.currentText() != "Select Wells":
             return
@@ -242,6 +254,7 @@ class WellplateMultiPointWidget(QFrame):
             )
         )
 
+    @handles(StageMovementStopped)
     def _on_stage_movement_stopped(self, event: StageMovementStopped) -> None:
         if self.combobox_xy_mode.currentText() != "Current Position":
             return
@@ -256,6 +269,7 @@ class WellplateMultiPointWidget(QFrame):
             )
         )
 
+    @handles(ActiveAcquisitionTabChanged)
     def _on_active_tab_changed(self, event: ActiveAcquisitionTabChanged) -> None:
         was_active = self._is_active_tab
         self._is_active_tab = event.active_tab == "wellplate"
@@ -279,6 +293,7 @@ class WellplateMultiPointWidget(QFrame):
         else:
             self.update_coordinates(force=True)
 
+    @handles(ManualShapesChanged)
     def _on_manual_shapes_changed(self, event: ManualShapesChanged) -> None:
         if event.shapes_mm is None:
             self.shapes_mm = None
@@ -293,6 +308,7 @@ class WellplateMultiPointWidget(QFrame):
             return
         self.update_manual_shape(self.shapes_mm or [])
 
+    @handles(ScanCoordinatesUpdated)
     def _on_scan_coordinates_updated(self, event: ScanCoordinatesUpdated) -> None:
         """Handle updates to scan coordinates (regions added/removed/cleared)."""
         # Update region count display if we have one
@@ -300,18 +316,21 @@ class WellplateMultiPointWidget(QFrame):
         total_fovs = event.total_fovs
         self._log.debug(f"ScanCoordinates updated: {total_regions} regions, {total_fovs} FOVs")
 
+    @handles(StagePositionChanged)
     def _on_stage_position_changed(self, event: StagePositionChanged) -> None:
         """Cache stage position from EventBus."""
         self._cached_x_mm = event.x_mm
         self._cached_y_mm = event.y_mm
         self._cached_z_mm = event.z_mm
 
+    @handles(LiveStateChanged)
     def _on_live_state_changed(self, event: LiveStateChanged) -> None:
         """Cache live state from EventBus."""
         if getattr(event, "camera", "main") != "main":
             return
         self._is_live = event.is_live
 
+    @handles(ObjectiveChanged)
     def _on_objective_changed(self, event: ObjectiveChanged) -> None:
         """Cache objective name and pixel size factor."""
         if event.objective_name is not None:
@@ -323,6 +342,7 @@ class WellplateMultiPointWidget(QFrame):
         if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() != "Load Coordinates":
             self.handle_objective_change()
 
+    @handles(ChannelConfigurationsChanged)
     def _on_channel_configs_changed(self, event: ChannelConfigurationsChanged) -> None:
         """Update channel list when configurations change for current objective."""
         if event.objective_name and event.objective_name != self._current_objective:
@@ -729,7 +749,7 @@ class WellplateMultiPointWidget(QFrame):
         # Options and Start button
         options_layout = QVBoxLayout()
         options_layout.addWidget(self.checkbox_withAutofocus)
-        if SUPPORT_LASER_AUTOFOCUS:
+        if _FEATURE_FLAGS.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
             options_layout.addWidget(self.checkbox_withReflectionAutofocus)
         # options_layout.addWidget(self.checkbox_genAFMap)  # We are not using AF map now
         options_layout.addWidget(self.checkbox_useFocusMap)
@@ -1811,28 +1831,34 @@ class WellplateMultiPointWidget(QFrame):
         loop = QEventLoop()
         timer = QTimer()
         timer.setSingleShot(True)
-        result: dict[str, Any] = {}
 
-        def _on_snapshot(event: ScanCoordinatesSnapshot) -> None:
-            if event.request_id != request_id:
-                return
-            result["snapshot"] = event
-            loop.quit()
+        self._snapshot_request_id = request_id
+        self._snapshot_loop = loop
+        self._snapshot_result = None
 
-        self._event_bus.subscribe(ScanCoordinatesSnapshot, _on_snapshot)
-        try:
-            self._event_bus.publish(
-                RequestScanCoordinatesSnapshotCommand(request_id=request_id)
-            )
-            timer.timeout.connect(loop.quit)
-            timer.start(timeout_ms)
-            loop.exec_()
-        finally:
-            try:
-                self._event_bus.unsubscribe(ScanCoordinatesSnapshot, _on_snapshot)
-            except Exception:
-                pass
-        return result.get("snapshot")
+        self._event_bus.publish(
+            RequestScanCoordinatesSnapshotCommand(request_id=request_id)
+        )
+        timer.timeout.connect(loop.quit)
+        timer.start(timeout_ms)
+        loop.exec_()
+
+        if self._snapshot_request_id == request_id:
+            self._snapshot_request_id = None
+        self._snapshot_loop = None
+        result = self._snapshot_result
+        self._snapshot_result = None
+        return result
+
+    @handles(ScanCoordinatesSnapshot)
+    def _on_scan_coordinates_snapshot(self, event: ScanCoordinatesSnapshot) -> None:
+        if self._snapshot_request_id is None:
+            return
+        if event.request_id != self._snapshot_request_id:
+            return
+        self._snapshot_result = event
+        if self._snapshot_loop is not None:
+            self._snapshot_loop.quit()
 
     def update_dz(self):
         z_min = self.entry_minZ.value()
@@ -2153,10 +2179,12 @@ class WellplateMultiPointWidget(QFrame):
     def enable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(True)
 
+    @handles(LoadingPositionReached)
     def _on_loading_position_reached(self, event: LoadingPositionReached) -> None:
         """Handle loading position reached - disable acquisition button."""
         self.disable_the_start_aquisition_button()
 
+    @handles(ScanningPositionReached)
     def _on_scanning_position_reached(self, event: ScanningPositionReached) -> None:
         """Handle scanning position reached - enable acquisition button."""
         self.enable_the_start_aquisition_button()
@@ -2424,6 +2452,7 @@ class WellplateMultiPointWidget(QFrame):
     # EventBus Handlers
     # =========================================================================
 
+    @handles(AcquisitionStateChanged)
     def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
         """Handle acquisition state changes from EventBus."""
         import threading
@@ -2442,6 +2471,7 @@ class WellplateMultiPointWidget(QFrame):
             self._log.info("Calling acquisition_is_finished()")
             self.acquisition_is_finished()
 
+    @handles(AcquisitionProgress)
     def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
         """Handle acquisition progress updates from EventBus."""
         if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
@@ -2475,6 +2505,7 @@ class WellplateMultiPointWidget(QFrame):
             eta_str = f"{minutes:02d}:{seconds:02d}"
         self.eta_label.setText(eta_str)
 
+    @handles(AcquisitionRegionProgress)
     def _on_region_progress(self, event: AcquisitionRegionProgress) -> None:
         """Handle region progress updates from EventBus."""
         if self._active_experiment_id and event.experiment_id != self._active_experiment_id:

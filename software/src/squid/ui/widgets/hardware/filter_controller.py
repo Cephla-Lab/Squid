@@ -9,6 +9,9 @@ from qtpy.QtWidgets import (
 )
 
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     EventBus,
     SetFilterPositionCommand,
     HomeFilterWheelCommand,
@@ -31,6 +34,7 @@ class FilterControllerWidget(QFrame):
     ):
         super().__init__(*args, **kwargs)
         self._event_bus = event_bus
+        self._subscriptions = []
         self.wheel_index = wheel_index
         self._current_position = initial_position  # Track position via events
         self._num_positions = num_positions
@@ -39,8 +43,7 @@ class FilterControllerWidget(QFrame):
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
         # Subscribe to state events
-        self._event_bus.subscribe(FilterPositionChanged, self._on_filter_position_changed)
-        self._event_bus.subscribe(FilterAutoSwitchChanged, self._on_auto_switch_changed)
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
     def add_components(self):
         self.comboBox = QComboBox()
@@ -125,6 +128,7 @@ class FilterControllerWidget(QFrame):
         # Publish command - LiveController subscribes to this
         self._event_bus.publish(SetFilterAutoSwitchCommand(enabled=not state))
 
+    @handles(FilterPositionChanged)
     def _on_filter_position_changed(self, event: FilterPositionChanged):
         """Handle filter position changes from EventBus."""
         if event.wheel_index != self.wheel_index:
@@ -135,9 +139,16 @@ class FilterControllerWidget(QFrame):
         self.comboBox.setCurrentIndex(event.position - 1)
         self.comboBox.blockSignals(False)
 
+    @handles(FilterAutoSwitchChanged)
     def _on_auto_switch_changed(self, event: FilterAutoSwitchChanged):
         """Handle auto-switch state changes from EventBus."""
         # Update checkbox (checked = disabled = not enabled)
         self.checkBox.blockSignals(True)
         self.checkBox.setChecked(not event.enabled)
         self.checkBox.blockSignals(False)
+
+    def closeEvent(self, event) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)

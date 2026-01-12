@@ -12,10 +12,11 @@ from typing import TYPE_CHECKING, Optional
 
 from squid.core.events import (
     SetMicroscopeModeCommand,
-    SetExposureTimeCommand,
-    SetAnalogGainCommand,
     MicroscopeModeChanged,
     UpdateChannelConfigurationCommand,
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
 )
 
 if TYPE_CHECKING:
@@ -65,13 +66,9 @@ class MicroscopeModeController:
             available_modes=tuple(channel_configs.keys()),
         )
 
-        self._subscribe_to_bus()
-
-    def _subscribe_to_bus(self) -> None:
-        if self._bus is None:
-            return
-        self._bus.subscribe(SetMicroscopeModeCommand, self._on_set_mode)
-        self._bus.subscribe(UpdateChannelConfigurationCommand, self._on_update_config)
+        self._subscriptions = []
+        if self._bus:
+            self._subscriptions = auto_subscribe(self, self._bus)
 
     @property
     def state(self) -> MicroscopeModeState:
@@ -86,6 +83,7 @@ class MicroscopeModeController:
             return True
         return objective == current
 
+    @handles(UpdateChannelConfigurationCommand)
     def _on_update_config(self, cmd: UpdateChannelConfigurationCommand) -> None:
         """Handle UpdateChannelConfigurationCommand - update internal config cache."""
         if not self._objective_matches(cmd.objective_name):
@@ -108,6 +106,7 @@ class MicroscopeModeController:
                 elif hasattr(config, "intensity"):
                     config.intensity = cmd.illumination_intensity
 
+    @handles(SetMicroscopeModeCommand)
     def _on_set_mode(self, cmd: SetMicroscopeModeCommand) -> None:
         """Handle SetMicroscopeModeCommand."""
         if not self._objective_matches(cmd.objective):
@@ -120,16 +119,16 @@ class MicroscopeModeController:
 
             config = self._channel_configs[mode]
 
-            # Apply camera settings via events (so CameraService handles validation)
+            # Apply camera settings via direct service calls
             if hasattr(config, "exposure_time") or hasattr(config, "exposure_ms"):
                 exposure = getattr(config, "exposure_time", None) or getattr(
                     config, "exposure_ms", None
                 )
                 if exposure is not None:
-                    self._bus.publish(SetExposureTimeCommand(exposure_time_ms=exposure))
+                    self._camera.set_exposure_time(exposure)
 
             if hasattr(config, "analog_gain"):
-                self._bus.publish(SetAnalogGainCommand(gain=config.analog_gain))
+                self._camera.set_analog_gain(config.analog_gain)
 
             # Apply illumination via service if available
             if self._illumination:
@@ -151,18 +150,25 @@ class MicroscopeModeController:
             # Update state inside lock
             self._state = replace(self._state, current_mode=mode)
 
-            # Extract config details for the event
-            exposure = getattr(config, "exposure_time", None) or getattr(config, "exposure_ms", None)
-            gain = getattr(config, "analog_gain", None)
-            intensity = getattr(config, "illumination_intensity", None) or getattr(config, "intensity", None)
+        exposure = getattr(config, "exposure_time", None) or getattr(config, "exposure_ms", None)
+        gain = getattr(config, "analog_gain", None)
+        intensity = getattr(config, "illumination_intensity", None) or getattr(config, "intensity", None)
 
         # Publish outside lock
-        self._bus.publish(MicroscopeModeChanged(
-            configuration_name=mode,
-            exposure_time_ms=exposure,
-            analog_gain=gain,
-            illumination_intensity=intensity,
-        ))
+        if self._bus:
+            self._bus.publish(
+                MicroscopeModeChanged(
+                    configuration_name=mode,
+                    exposure_time_ms=exposure,
+                    analog_gain=gain,
+                    illumination_intensity=intensity,
+                )
+            )
+
+    def shutdown(self) -> None:
+        if self._bus:
+            auto_unsubscribe(self._subscriptions, self._bus)
+        self._subscriptions = []
 
     def apply_mode_for_acquisition(self, mode: str) -> None:
         """Apply mode settings for acquisition (direct calls for speed).

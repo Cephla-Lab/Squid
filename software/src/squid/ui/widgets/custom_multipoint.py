@@ -1,5 +1,16 @@
 from qtpy.QtCore import *  # type: ignore[assignment, misc]
-from qtpy.QtWidgets import *
+from qtpy.QtWidgets import (
+    QComboBox,
+    QFileDialog,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QTableWidgetItem,
+    QVBoxLayout,
+)
 from qtpy.QtGui import *  # type: ignore[assignment, misc]
 import pandas as pd
 import numpy as np

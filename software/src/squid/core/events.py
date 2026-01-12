@@ -237,6 +237,82 @@ class EventBus:
 event_bus = EventBus()
 
 
+# ============================================================================
+# Event Subscription Helpers
+# ============================================================================
+
+
+def handles(*event_types: Type[Event]) -> Callable:
+    """Mark a method as handling specific event types.
+
+    Usage:
+        class MyHandler:
+            @handles(StageMoved, FocusChanged)
+            def _on_position_update(self, event):
+                ...
+
+    The decorated method will have a `_handles_events` attribute containing
+    the list of event types it handles. Use `auto_subscribe` to register
+    all decorated methods on an object.
+    """
+
+    def decorator(method: Callable) -> Callable:
+        method._handles_events = list(event_types)
+        return method
+
+    return decorator
+
+
+def auto_subscribe(obj: Any, event_bus: "EventBus") -> List[Tuple[Type[Event], Callable]]:
+    """Subscribe all @handles-decorated methods on obj to event_bus.
+
+    Args:
+        obj: Object with @handles-decorated methods
+        event_bus: EventBus to subscribe to
+
+    Returns:
+        List of (event_type, handler) tuples for later unsubscription.
+
+    Usage:
+        class MyHandler:
+            def __init__(self, event_bus):
+                self._subscriptions = auto_subscribe(self, event_bus)
+
+            @handles(StageMoved)
+            def _on_stage_moved(self, event):
+                ...
+
+            def shutdown(self):
+                auto_unsubscribe(self._subscriptions, event_bus)
+    """
+    subscriptions: List[Tuple[Type[Event], Callable]] = []
+    for name in dir(obj):
+        # Skip dunder attributes (e.g., __class__) to avoid matching class attributes
+        if name.startswith("__"):
+            continue
+        try:
+            method = getattr(obj, name, None)
+        except Exception:
+            # Some descriptors may raise; skip them
+            continue
+        if callable(method) and hasattr(method, "_handles_events"):
+            for event_type in method._handles_events:
+                event_bus.subscribe(event_type, method)
+                subscriptions.append((event_type, method))
+    return subscriptions
+
+
+def auto_unsubscribe(subscriptions: List[Tuple[Type[Event], Callable]], event_bus: "EventBus") -> None:
+    """Unsubscribe handlers previously registered via auto_subscribe.
+
+    Args:
+        subscriptions: List of (event_type, handler) tuples from auto_subscribe
+        event_bus: EventBus to unsubscribe from
+    """
+    for event_type, handler in subscriptions:
+        event_bus.unsubscribe(event_type, handler)
+
+
 # Common event types
 
 

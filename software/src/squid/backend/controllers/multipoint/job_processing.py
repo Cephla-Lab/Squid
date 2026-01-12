@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from dataclasses import dataclass, field
 from filelock import FileLock, Timeout as FileLockTimeout
+import imageio
 
 import numpy as np
 import tifffile
@@ -20,6 +21,7 @@ from _def import ZProjectionMode, DownsamplingMethod
 from squid.backend.io import utils_acquisition
 import squid.core.abc
 import squid.core.logging
+from squid.core.config.feature_flags import get_feature_flags
 from squid.core.utils.config_utils import ChannelMode
 from squid.backend.io.writers import utils_ome_tiff_writer as ome_tiff_writer
 from squid.backend.controllers.multipoint.downsampled_views import (
@@ -28,6 +30,8 @@ from squid.backend.controllers.multipoint.downsampled_views import (
     WellTileAccumulator,
 )
 
+_log = squid.core.logging.get_logger(__name__)
+_feature_flags = get_feature_flags()
 
 @dataclass
 class AcquisitionInfo:
@@ -148,6 +152,43 @@ def _acquire_file_lock(lock_path: str, context: str = "") -> Any:
         ) from exc
 
 
+def _merged_image_path(info: "CaptureInfo", image: np.ndarray) -> str:
+    if image.dtype == np.uint16:
+        ext = ".tiff"
+    else:
+        ext = "." + _def.Acquisition.IMAGE_FORMAT
+    return os.path.join(info.save_directory, f"{info.file_id}_merged{ext}")
+
+
+def _merged_lock_path(output_path: str) -> str:
+    return output_path + ".lock"
+
+
+def _prepare_merge_image(image: np.ndarray, info: "CaptureInfo") -> np.ndarray:
+    if image.ndim == 2:
+        return utils_acquisition.return_pseudo_colored_image(image, info.configuration)
+    if image.ndim == 3 and image.shape[2] == 1:
+        return utils_acquisition.return_pseudo_colored_image(
+            image[:, :, 0], info.configuration
+        )
+    if image.ndim == 3 and image.shape[2] == 3:
+        return image
+    return utils_acquisition.return_pseudo_colored_image(image.squeeze(), info.configuration)
+
+
+def _read_merged_image(path: str) -> np.ndarray:
+    if path.lower().endswith((".tif", ".tiff")):
+        return tifffile.imread(path)
+    return imageio.imread(path)
+
+
+def _write_merged_image(path: str, image: np.ndarray) -> None:
+    if path.lower().endswith((".tif", ".tiff")):
+        tifffile.imwrite(path, image)
+    else:
+        imageio.imwrite(path, image)
+
+
 class SaveImageJob(Job):
     def run(self) -> bool:
         is_color: bool = len(self.image_array().shape) > 2
@@ -208,11 +249,45 @@ class SaveImageJob(Job):
                 is_color=is_color,
             )
 
-            if _def.MERGE_CHANNELS:
-                # TODO(imo): Add this back in
-                raise NotImplementedError("Image merging not supported yet")
+            if _feature_flags.is_enabled("MERGE_CHANNELS"):
+                try:
+                    self._merge_channels(image, info)
+                except Exception:
+                    _log.exception("Failed to merge channels for %s", info.file_id)
 
         return True
+
+    def _merge_channels(self, image: np.ndarray, info: CaptureInfo) -> None:
+        merged_path = _merged_image_path(info, image)
+        merged_image = _prepare_merge_image(image, info)
+        lock_path = _merged_lock_path(merged_path)
+
+        with _acquire_file_lock(lock_path, context=merged_path):
+            if os.path.exists(merged_path):
+                existing = _read_merged_image(merged_path)
+                if existing.shape != merged_image.shape:
+                    _log.warning(
+                        "Merged image shape mismatch for %s (existing=%s, new=%s); overwriting",
+                        merged_path,
+                        existing.shape,
+                        merged_image.shape,
+                    )
+                    combined = merged_image
+                else:
+                    target_dtype = existing.dtype
+                    max_value = (
+                        np.iinfo(target_dtype).max
+                        if np.issubdtype(target_dtype, np.integer)
+                        else np.finfo(target_dtype).max
+                    )
+                    combined = existing.astype(np.float32) + merged_image.astype(
+                        np.float32
+                    )
+                    combined = np.clip(combined, 0, max_value).astype(target_dtype)
+            else:
+                combined = merged_image
+
+            _write_merged_image(merged_path, combined)
 
 
 @dataclass

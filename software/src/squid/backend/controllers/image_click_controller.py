@@ -12,6 +12,9 @@ import squid.core.logging
 from squid.core.events import (
     ImageCoordinateClickedCommand,
     ClickToMoveEnabledChanged,
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
 )
 
 if TYPE_CHECKING:
@@ -59,12 +62,7 @@ class ImageClickController:
 
         self._click_to_move_enabled = True  # Default enabled
 
-        self._subscribe_to_bus()
-
-    def _subscribe_to_bus(self) -> None:
-        """Subscribe to relevant events."""
-        self._bus.subscribe(ImageCoordinateClickedCommand, self._on_image_clicked)
-        self._bus.subscribe(ClickToMoveEnabledChanged, self._on_click_to_move_changed)
+        self._subscriptions = auto_subscribe(self, self._bus)
 
     def set_click_to_move_enabled(self, enabled: bool) -> None:
         """Set whether click-to-move is enabled.
@@ -75,10 +73,12 @@ class ImageClickController:
         with self._lock:
             self._click_to_move_enabled = enabled
 
+    @handles(ClickToMoveEnabledChanged)
     def _on_click_to_move_changed(self, event: ClickToMoveEnabledChanged) -> None:
         """Handle ClickToMoveEnabledChanged event."""
         self.set_click_to_move_enabled(event.enabled)
 
+    @handles(ImageCoordinateClickedCommand)
     def _on_image_clicked(self, cmd: ImageCoordinateClickedCommand) -> None:
         """Handle ImageCoordinateClickedCommand.
 
@@ -129,3 +129,7 @@ class ImageClickController:
             self._stage_service.move_y(delta_y_mm)
         except Exception:
             _log.exception("Failed to move stage from image click")
+
+    def shutdown(self) -> None:
+        auto_unsubscribe(self._subscriptions, self._bus)
+        self._subscriptions = []

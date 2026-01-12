@@ -31,6 +31,9 @@ from squid.core.events import (
     SetFocusLockReferenceCommand,
     StartFocusLockCommand,
     StopFocusLockCommand,
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
 )
 
 if TYPE_CHECKING:
@@ -125,26 +128,15 @@ class FocusLockSimulator:
         self._search_phase: str = ""  # "last_position" or "sweep"
         self._search_position: float = 0.0
 
-        self._subscribe_to_bus()
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
-    def _subscribe_to_bus(self) -> None:
-        self._event_bus.subscribe(SetFocusLockModeCommand, self._on_set_mode_command)
-        self._event_bus.subscribe(StartFocusLockCommand, self._on_start_command)
-        self._event_bus.subscribe(StopFocusLockCommand, self._on_stop_command)
-        self._event_bus.subscribe(PauseFocusLockCommand, self._on_pause_command)
-        self._event_bus.subscribe(ResumeFocusLockCommand, self._on_resume_command)
-        self._event_bus.subscribe(AdjustFocusLockTargetCommand, self._on_adjust_target_command)
-        self._event_bus.subscribe(SetFocusLockReferenceCommand, self._on_set_reference_command)
-        self._event_bus.subscribe(ReleaseFocusLockReferenceCommand, self._on_release_reference_command)
-        self._event_bus.subscribe(SetFocusLockAutoSearchCommand, self._on_auto_search_command)
-        self._event_bus.subscribe(LaserAFInitialized, self._on_laser_af_initialized)
-        self._event_bus.subscribe(PiezoPositionChanged, self._on_piezo_position_changed)
-
+    @handles(LaserAFInitialized)
     def _on_laser_af_initialized(self, event: LaserAFInitialized) -> None:
         """Track laser AF initialization state."""
         self._laser_af_initialized = event.is_initialized and event.success
         self._log.info(f"Laser AF initialized: {self._laser_af_initialized}")
 
+    @handles(PiezoPositionChanged)
     def _on_piezo_position_changed(self, event: PiezoPositionChanged) -> None:
         """Track piezo position from actual hardware/simulation."""
         with self._lock:
@@ -306,34 +298,47 @@ class FocusLockSimulator:
         with self._lock:
             return self._status
 
+    @handles(SetFocusLockModeCommand)
     def _on_set_mode_command(self, cmd: SetFocusLockModeCommand) -> None:
         self.set_mode(cmd.mode)
 
+    @handles(StartFocusLockCommand)
     def _on_start_command(self, cmd: StartFocusLockCommand) -> None:
         self.start()
 
+    @handles(StopFocusLockCommand)
     def _on_stop_command(self, cmd: StopFocusLockCommand) -> None:
         self.stop()
 
+    @handles(PauseFocusLockCommand)
     def _on_pause_command(self, cmd: PauseFocusLockCommand) -> None:
         self.pause()
 
+    @handles(ResumeFocusLockCommand)
     def _on_resume_command(self, cmd: ResumeFocusLockCommand) -> None:
         self.resume()
 
+    @handles(AdjustFocusLockTargetCommand)
     def _on_adjust_target_command(self, cmd: AdjustFocusLockTargetCommand) -> None:
         self.adjust_target(cmd.delta_um)
 
+    @handles(SetFocusLockReferenceCommand)
     def _on_set_reference_command(self, cmd: SetFocusLockReferenceCommand) -> None:
         self.set_lock()
 
+    @handles(ReleaseFocusLockReferenceCommand)
     def _on_release_reference_command(self, cmd: ReleaseFocusLockReferenceCommand) -> None:
         self.release_lock()
 
+    @handles(SetFocusLockAutoSearchCommand)
     def _on_auto_search_command(self, cmd: SetFocusLockAutoSearchCommand) -> None:
         with self._lock:
             self._auto_search_enabled = cmd.enabled
         self._log.info(f"Auto-search {'enabled' if cmd.enabled else 'disabled'}")
+
+    def shutdown(self) -> None:
+        auto_unsubscribe(self._subscriptions, self._event_bus)
+        self._subscriptions = []
 
     def set_lock(self) -> None:
         """Lock at current position.
@@ -561,13 +566,14 @@ class FocusLockSimulator:
                 # but don't apply corrections or update lock state
                 if self._laser_af is not None:
                     result = self._laser_af.measure_displacement_continuous()
-                    # Update spot position for display only
+                    # Update spot position and frame for display only
                     with self._lock:
                         if result.spot_x_px is not None and result.spot_y_px is not None:
                             self._latest_spot_x = result.spot_x_px
                             self._latest_spot_y = result.spot_y_px
                         self._spot_snr = result.spot_snr if result.spot_snr else 0.0
                         self._spot_intensity = result.spot_intensity if result.spot_intensity else 0.0
+                        self._latest_frame = result.image
             elif self._status == "searching":
                 # Handle search mode separately
                 self._search_step()
@@ -598,6 +604,7 @@ class FocusLockSimulator:
             self._spot_snr = result.spot_snr if result.spot_snr else 0.0
             self._spot_intensity = result.spot_intensity if result.spot_intensity else 0.0
             self._correlation = result.correlation if result.correlation is not None else math.nan
+            self._latest_frame = result.image
 
             # Calculate z error from displacement if we have a reference
             if not math.isnan(result.displacement_um):
@@ -754,11 +761,8 @@ class FocusLockSimulator:
 
     def _publish_frame(self) -> None:
         """Publish the laser AF camera frame with spot position and simulated noise."""
-        if self._laser_af is None:
-            return
-
-        # Get frame from laser AF camera (set by measure_displacement_continuous)
-        frame = getattr(self._laser_af, "image", None)
+        # Get latest frame from measurement result
+        frame = self._latest_frame
         if frame is None:
             return
 

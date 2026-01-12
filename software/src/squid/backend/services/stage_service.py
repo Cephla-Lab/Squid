@@ -5,7 +5,7 @@ import threading
 from typing import Optional, TYPE_CHECKING
 from threading import Thread
 
-from squid.backend.services.base import BaseService
+from squid.backend.services.base import BaseService, gated_command
 from squid.core.events import (
     EventBus,
     MoveStageCommand,
@@ -57,12 +57,8 @@ class StageService(BaseService):
             MoveStageToScanningPositionCommand, self._on_move_to_scanning_command
         )
 
+    @gated_command
     def _on_move_command(self, event: MoveStageCommand):
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info(
-                "Ignoring %s due to global mode gate", type(event).__name__
-            )
-            return
         if event.axis == "x":
             self.move_x(event.distance_mm)
         elif event.axis == "y":
@@ -70,13 +66,9 @@ class StageService(BaseService):
         elif event.axis == "z":
             self.move_z(event.distance_mm)
 
+    @gated_command
     def _on_move_relative_command(self, event: MoveStageRelativeCommand):
         """Handle relative move with per-axis values."""
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info(
-                "Ignoring %s due to global mode gate", type(event).__name__
-            )
-            return
         if event.x_mm is not None:
             self.move_x(event.x_mm)
         if event.y_mm is not None:
@@ -84,54 +76,40 @@ class StageService(BaseService):
         if event.z_mm is not None:
             self.move_z(event.z_mm)
 
+    @gated_command
     def _on_move_to_command(self, event: MoveStageToCommand):
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info(
-                "Ignoring %s due to global mode gate", type(event).__name__
-            )
-            return
         self.move_to(event.x_mm, event.y_mm, event.z_mm)
 
+    @gated_command
     def _on_home_command(self, event: HomeStageCommand):
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info(
-                "Ignoring %s due to global mode gate", type(event).__name__
-            )
-            return
         self.home(event.x, event.y, event.z, event.theta)
 
+    @gated_command
     def _on_zero_command(self, event: ZeroStageCommand):
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info(
-                "Ignoring %s due to global mode gate", type(event).__name__
-            )
-            return
         self.zero(event.x, event.y, event.z, event.theta)
 
+    def _on_move_to_loading_blocked(self, event: MoveStageToLoadingPositionCommand) -> None:
+        self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+        self.publish(
+            StageMoveToLoadingPositionFinished(
+                success=False, error_message="Blocked by global mode gate"
+            )
+        )
+
+    def _on_move_to_scanning_blocked(self, event: MoveStageToScanningPositionCommand) -> None:
+        self._log.info("Ignoring %s due to global mode gate", type(event).__name__)
+        self.publish(
+            StageMoveToScanningPositionFinished(
+                success=False, error_message="Blocked by global mode gate"
+            )
+        )
+
+    @gated_command(on_blocked=_on_move_to_loading_blocked)
     def _on_move_to_loading_command(self, event: MoveStageToLoadingPositionCommand):
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info(
-                "Ignoring %s due to global mode gate", type(event).__name__
-            )
-            self.publish(
-                StageMoveToLoadingPositionFinished(
-                    success=False, error_message="Blocked by global mode gate"
-                )
-            )
-            return
         self._start_threaded_special_move(kind="loading", is_wellplate=event.is_wellplate)
 
+    @gated_command(on_blocked=_on_move_to_scanning_blocked)
     def _on_move_to_scanning_command(self, event: MoveStageToScanningPositionCommand):
-        if self._blocked_for_ui_hardware_commands():
-            self._log.info(
-                "Ignoring %s due to global mode gate", type(event).__name__
-            )
-            self.publish(
-                StageMoveToScanningPositionFinished(
-                    success=False, error_message="Blocked by global mode gate"
-                )
-            )
-            return
         self._start_threaded_special_move(kind="scanning", is_wellplate=event.is_wellplate)
 
     def move_x(self, distance_mm: float, blocking: bool = True):

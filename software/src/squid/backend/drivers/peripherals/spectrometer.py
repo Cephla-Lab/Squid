@@ -11,9 +11,6 @@ except Exception:
 # installation: $ pip3 install seabreeze
 # installation: $ seabreeze_os_setup
 
-from _def import *
-
-
 class Spectrometer(object):
     def __init__(self, sn=None):
         if sn is None:

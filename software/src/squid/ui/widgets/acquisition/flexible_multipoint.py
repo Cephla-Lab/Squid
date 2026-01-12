@@ -31,6 +31,8 @@ from squid.core.events import (
     RemoveScanCoordinateRegionCommand,
     RenameScanCoordinateRegionCommand,
     UpdateScanCoordinateRegionZCommand,
+    handles,
+    auto_subscribe,
 )
 
 from qtpy.QtCore import Qt, QTimer
@@ -59,7 +61,21 @@ from qtpy.QtWidgets import (
 )
 from qtpy.QtGui import QIcon, QKeySequence
 
-from _def import *
+from _def import (
+    Acquisition,
+    DEFAULT_SAVING_PATH,
+    HAS_OBJECTIVE_PIEZO,
+    MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT,
+    MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT,
+    MULTIPOINT_USE_PIEZO_FOR_ZSTACKS,
+    SOFTWARE_POS_LIMIT,
+    USE_OVERLAP_FOR_FLEXIBLE,
+    squid,
+)
+from squid.core.config.feature_flags import get_feature_flags
+
+
+_FEATURE_FLAGS = get_feature_flags()
 from squid.ui.widgets.base import error_dialog, check_space_available_with_error_dialog
 
 
@@ -106,17 +122,10 @@ class FlexibleMultiPointWidget(QFrame):
         self.acquisition_in_place = False
         self._is_active_tab = False
 
-        # Subscribe to EventBus for position updates and acquisition state
-        self._event_bus.subscribe(StagePositionChanged, self._on_stage_position_changed)
-        self._event_bus.subscribe(ObjectiveChanged, self._on_objective_changed)
-        self._event_bus.subscribe(AcquisitionStateChanged, self._on_acquisition_state_changed)
-        self._event_bus.subscribe(AcquisitionProgress, self._on_acquisition_progress)
-        self._event_bus.subscribe(AcquisitionRegionProgress, self._on_region_progress)
-        self._event_bus.subscribe(LoadingPositionReached, self._on_loading_position_reached)
-        self._event_bus.subscribe(ScanningPositionReached, self._on_scanning_position_reached)
-        self._event_bus.subscribe(ScanCoordinatesUpdated, self._on_scan_coordinates_updated)
-        self._event_bus.subscribe(ActiveAcquisitionTabChanged, self._on_active_tab_changed)
+        # Subscribe to EventBus using @handles decorators
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
+    @handles(ActiveAcquisitionTabChanged)
     def _on_active_tab_changed(self, event: ActiveAcquisitionTabChanged) -> None:
         self._is_active_tab = event.active_tab == "flexible"
         if not self._is_active_tab:
@@ -127,17 +136,20 @@ class FlexibleMultiPointWidget(QFrame):
         except Exception:
             self._log.exception("Failed to update flexible regions on tab activation")
 
+    @handles(ScanCoordinatesUpdated)
     def _on_scan_coordinates_updated(self, event: ScanCoordinatesUpdated) -> None:
         """Handle updates to scan coordinates (regions added/removed/cleared)."""
         # Log for debugging - can be extended to update UI elements
         self._log.debug(f"ScanCoordinates updated: {event.total_regions} regions, {event.total_fovs} FOVs")
 
+    @handles(StagePositionChanged)
     def _on_stage_position_changed(self, event: StagePositionChanged) -> None:
         """Cache stage position from EventBus."""
         self._cached_x_mm = event.x_mm
         self._cached_y_mm = event.y_mm
         self._cached_z_mm = event.z_mm
 
+    @handles(ObjectiveChanged)
     def _on_objective_changed(self, _event: ObjectiveChanged) -> None:
         # Recompute FOV grid spacing for stored locations when objective changes.
         try:
@@ -515,7 +527,7 @@ class FlexibleMultiPointWidget(QFrame):
 
         grid_af = QVBoxLayout()
         grid_af.addWidget(self.checkbox_withAutofocus)
-        if SUPPORT_LASER_AUTOFOCUS:
+        if _FEATURE_FLAGS.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
             grid_af.addWidget(self.checkbox_withReflectionAutofocus)
         # grid_af.addWidget(self.checkbox_genAFMap)  # we are not using auto-focus map for now
         grid_af.addWidget(self.checkbox_useFocusMap)
@@ -1473,6 +1485,7 @@ class FlexibleMultiPointWidget(QFrame):
     # EventBus Handlers
     # =========================================================================
 
+    @handles(AcquisitionStateChanged)
     def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
         """Handle acquisition state changes from EventBus."""
         if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
@@ -1487,6 +1500,7 @@ class FlexibleMultiPointWidget(QFrame):
             # Acquisition finished
             self.acquisition_is_finished()
 
+    @handles(AcquisitionProgress)
     def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
         """Handle acquisition progress updates from EventBus."""
         if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
@@ -1520,16 +1534,19 @@ class FlexibleMultiPointWidget(QFrame):
             eta_str = f"{minutes:02d}:{seconds:02d}"
         self.eta_label.setText(eta_str)
 
+    @handles(AcquisitionRegionProgress)
     def _on_region_progress(self, event: AcquisitionRegionProgress) -> None:
         """Handle region progress updates from EventBus."""
         if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
             return
         self.update_region_progress(event.current_region, event.total_regions)
 
+    @handles(LoadingPositionReached)
     def _on_loading_position_reached(self, event: LoadingPositionReached) -> None:
         """Handle loading position reached - disable acquisition button."""
         self.disable_the_start_aquisition_button()
 
+    @handles(ScanningPositionReached)
     def _on_scanning_position_reached(self, event: ScanningPositionReached) -> None:
         """Handle scanning position reached - enable acquisition button."""
         self.enable_the_start_aquisition_button()

@@ -1,12 +1,15 @@
 # Fluidics multi-point acquisition widget
 import math
 import time
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import pandas as pd
 
 import squid.core.logging
 from squid.core.events import (
+    auto_subscribe,
+    auto_unsubscribe,
+    handles,
     EventBus,
     SetFluidicsRoundsCommand,
     SetAcquisitionParametersCommand,
@@ -48,7 +51,17 @@ from qtpy.QtWidgets import (
 )
 from qtpy.QtGui import QIcon
 
-from _def import *
+from _def import (
+    Acquisition,
+    DEFAULT_SAVING_PATH,
+    HAS_OBJECTIVE_PIEZO,
+    MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT,
+    MULTIPOINT_USE_PIEZO_FOR_ZSTACKS,
+)
+from squid.core.config.feature_flags import get_feature_flags
+
+
+_FEATURE_FLAGS = get_feature_flags()
 
 
 class MultiPointWithFluidicsWidget(QFrame):
@@ -65,6 +78,7 @@ class MultiPointWithFluidicsWidget(QFrame):
         super().__init__(*args, **kwargs)
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self._event_bus = event_bus
+        self._subscriptions: List[Tuple[type, object]] = []
         # Z-axis conversion factor (usteps per mm), passed at init to avoid stage config access
         self._z_ustep_per_mm = z_ustep_per_mm
         # Initial channel configurations (passed from GUI, will be updated via events)
@@ -90,15 +104,9 @@ class MultiPointWithFluidicsWidget(QFrame):
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
         # Subscribe to acquisition state events
-        self._event_bus.subscribe(AcquisitionStateChanged, self._on_acquisition_state_changed)
-        self._event_bus.subscribe(AcquisitionProgress, self._on_acquisition_progress)
-        self._event_bus.subscribe(AcquisitionRegionProgress, self._on_region_progress)
-        self._event_bus.subscribe(LoadingPositionReached, self._on_loading_position_reached)
-        self._event_bus.subscribe(ScanningPositionReached, self._on_scanning_position_reached)
-        self._event_bus.subscribe(FluidicsInitialized, lambda _e: self.init_fluidics())
-        self._event_bus.subscribe(ActiveAcquisitionTabChanged, self._on_active_tab_changed)
-        self._event_bus.subscribe(ScanCoordinatesUpdated, self._on_scan_coordinates_updated)
+        self._subscriptions = auto_subscribe(self, self._event_bus)
 
+    @handles(ActiveAcquisitionTabChanged)
     def _on_active_tab_changed(self, event: ActiveAcquisitionTabChanged) -> None:
         self._is_active_tab = event.active_tab == "fluidics"
         if self._is_active_tab:
@@ -215,7 +223,7 @@ class MultiPointWithFluidicsWidget(QFrame):
 
         # Options layout
         options_layout = QVBoxLayout()
-        if SUPPORT_LASER_AUTOFOCUS:
+        if _FEATURE_FLAGS.is_enabled("SUPPORT_LASER_AUTOFOCUS"):
             options_layout.addWidget(self.checkbox_withReflectionAutofocus)
         if HAS_OBJECTIVE_PIEZO:
             options_layout.addWidget(self.checkbox_usePiezo)
@@ -427,10 +435,12 @@ class MultiPointWithFluidicsWidget(QFrame):
     def enable_the_start_aquisition_button(self):
         self.btn_startAcquisition.setEnabled(True)
 
+    @handles(LoadingPositionReached)
     def _on_loading_position_reached(self, event: LoadingPositionReached) -> None:
         """Handle loading position reached - disable acquisition button."""
         self.disable_the_start_aquisition_button()
 
+    @handles(ScanningPositionReached)
     def _on_scanning_position_reached(self, event: ScanningPositionReached) -> None:
         """Handle scanning position reached - enable acquisition button."""
         self.enable_the_start_aquisition_button()
@@ -635,6 +645,7 @@ class MultiPointWithFluidicsWidget(QFrame):
     # EventBus Handlers
     # =========================================================================
 
+    @handles(AcquisitionStateChanged)
     def _on_acquisition_state_changed(self, event: AcquisitionStateChanged) -> None:
         """Handle acquisition state changes from EventBus."""
         if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
@@ -649,6 +660,7 @@ class MultiPointWithFluidicsWidget(QFrame):
             # Acquisition finished
             self.acquisition_is_finished()
 
+    @handles(AcquisitionProgress)
     def _on_acquisition_progress(self, event: AcquisitionProgress) -> None:
         """Handle acquisition progress updates from EventBus."""
         if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
@@ -682,16 +694,22 @@ class MultiPointWithFluidicsWidget(QFrame):
             eta_str = f"{minutes:02d}:{seconds:02d}"
         self.eta_label.setText(eta_str)
 
+    @handles(AcquisitionRegionProgress)
     def _on_region_progress(self, event: AcquisitionRegionProgress) -> None:
         """Handle region progress updates from EventBus."""
         if self._active_experiment_id and event.experiment_id != self._active_experiment_id:
             return
         self.update_region_progress(event.current_region, event.total_regions)
 
+    @handles(ScanCoordinatesUpdated)
     def _on_scan_coordinates_updated(self, event: ScanCoordinatesUpdated) -> None:
         """Handle scan coordinates updates from EventBus."""
         self._total_regions = event.total_regions
         self._total_fovs = event.total_fovs
+
+    @handles(FluidicsInitialized)
+    def _on_fluidics_initialized(self, _event: FluidicsInitialized) -> None:
+        self.init_fluidics()
 
     # =========================================================================
     # UI Event Handlers (publish commands)
@@ -708,3 +726,9 @@ class MultiPointWithFluidicsWidget(QFrame):
     def _on_use_piezo_toggled(self, checked: bool) -> None:
         """Handle use piezo checkbox toggle - publish event."""
         self._event_bus.publish(SetAcquisitionParametersCommand(use_piezo=checked))
+
+    def closeEvent(self, event) -> None:
+        if self._subscriptions:
+            auto_unsubscribe(self._subscriptions, self._event_bus)
+            self._subscriptions.clear()
+        super().closeEvent(event)

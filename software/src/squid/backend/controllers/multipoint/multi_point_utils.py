@@ -40,7 +40,7 @@ class AcquisitionParameters:
     deltaY: float
 
     NZ: int
-    deltaZ: float
+    deltaZ: float  # micrometers
     Nt: int
     deltat: float
 
@@ -81,4 +81,3 @@ class OverallProgressUpdate:
 class RegionProgressUpdate:
     current_fov: int
     region_fovs: int
-

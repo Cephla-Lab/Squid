@@ -1,8 +1,23 @@
-from ctypes import *
+import ctypes
+from ctypes import (
+    c_char,
+    c_char_p,
+    c_double,
+    c_int,
+    c_int32,
+    c_void_p,
+    cast,
+    create_string_buffer,
+    memmove,
+    memset,
+    pointer,
+    string_at,
+)
 import numpy as np
 import threading
 import time
-from typing import Optional, Callable, Sequence, Tuple, Dict
+from typing import Optional, Callable, Sequence, Tuple, Dict, Union
+from enum import Enum
 
 import pydantic
 
@@ -15,9 +30,51 @@ from squid.core.abc import (
     CameraGainRange,
 )
 import squid.core.logging
-from squid.backend.drivers.cameras.tucam_sdk import *
+from squid.backend.drivers.cameras.tucam_sdk import (
+    TUCAMRET,
+    TUCAM_Api_Init,
+    TUCAM_Api_Uninit,
+    TUCAM_Buf_AbortWait,
+    TUCAM_Buf_Alloc,
+    TUCAM_Buf_Release,
+    TUCAM_Buf_WaitForFrame,
+    TUCAM_CAPTURE_MODES,
+    TUCAM_Cap_DoSoftwareTrigger,
+    TUCAM_Cap_GetROI,
+    TUCAM_Cap_GetTrigger,
+    TUCAM_Cap_SetROI,
+    TUCAM_Cap_SetTrigger,
+    TUCAM_Cap_Start,
+    TUCAM_Cap_Stop,
+    TUCAM_Capa_GetValue,
+    TUCAM_Capa_SetValue,
+    TUCAM_Dev_Close,
+    TUCAM_Dev_GetInfo,
+    TUCAM_Dev_Open,
+    TUCAM_ELEMENT,
+    TUCAM_FRAME,
+    TUCAM_GenICam_ElementAttr,
+    TUCAM_GenICam_GetElementValue,
+    TUCAM_GenICam_SetElementValue,
+    TUCAM_IDCAPA,
+    TUCAM_IDINFO,
+    TUCAM_IDPROP,
+    TUCAM_INIT,
+    TUCAM_OPEN,
+    TUCAM_PROP_ATTR,
+    TUCAM_Prop_GetAttr,
+    TUCAM_Prop_GetValue,
+    TUCAM_Prop_SetValue,
+    TUCAM_REG_RW,
+    TUCAM_ROI_ATTR,
+    TUCAM_TRIGGER_ATTR,
+    TUCAM_VALUE_INFO,
+    TUELEM_TYPE,
+    TUFRM_FORMATS,
+    TUSDKdll,
+    TUXML_DEVICE,
+)
 import squid.core.utils.hardware_utils
-from _def import *
 
 
 class Mode400BSIV3(Enum):

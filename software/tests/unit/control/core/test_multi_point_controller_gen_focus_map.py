@@ -14,6 +14,7 @@ from squid.core.events import (
 from squid.core.mode_gate import GlobalModeGate, GlobalMode
 from squid.backend.controllers.multipoint import multi_point_controller
 from squid.backend.controllers.multipoint.multi_point_controller import MultiPointController
+from squid.backend.controllers.multipoint.focus_operations import AutofocusExecutor
 
 
 @dataclass
@@ -82,13 +83,24 @@ class _FakeAutoFocusController:
     def __init__(self) -> None:
         self.use_focus_map = False
         self.focus_map_coords = []
-        self._gen_focus_map_calls = 0
+        self._sample_focus_map_calls = 0
+        self._focus_map_surface = None
+        self.sampled_coords = []
 
-    def gen_focus_map(self, _coord1, _coord2, _coord3) -> None:
-        self._gen_focus_map_calls += 1
+    def sample_focus_map_points(self, coords) -> None:
+        self._sample_focus_map_calls += 1
+        self.sampled_coords = list(coords)
+        self.focus_map_coords = [(x, y, 0.0) for x, y in coords]
 
     def set_focus_map_use(self, enabled: bool) -> None:
         self.use_focus_map = enabled
+
+    def set_focus_map_surface(self, focus_map) -> None:
+        self._focus_map_surface = focus_map
+
+    @property
+    def focus_map_surface(self):
+        return self._focus_map_surface
 
     def clear_focus_map(self) -> None:
         self.focus_map_coords = []
@@ -182,11 +194,47 @@ def test_gen_focus_map_invalid_bounds_publishes_failure(tmp_path: Path) -> None:
         assert finished[0].experiment_id.startswith("unit_test_")
         assert finished[0].success is False
         assert finished[0].error == "Invalid scan bounds"
-        assert af._gen_focus_map_calls == 0
+        assert af._sample_focus_map_calls == 0
         assert controller.state.name == "IDLE"
         assert mode_gate.get_mode() == GlobalMode.IDLE
     finally:
         bus.stop()
+
+
+def test_generate_focus_map_builds_surface(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeFocusMap:
+        def __init__(self) -> None:
+            self.is_fitted = False
+            self.fit_points = None
+
+        def fit(self, points) -> None:
+            self.fit_points = points
+            self.is_fitted = True
+
+        def interpolate(self, _x_mm, _y_mm):
+            return 0.0
+
+    monkeypatch.setattr("squid.backend.managers.focus_map.FocusMap", _FakeFocusMap)
+
+    af = _FakeAutoFocusController()
+    executor = AutofocusExecutor(autofocus_controller=af)
+
+    center = executor.generate_focus_map_for_acquisition(
+        {"x": (0.0, 6.0), "y": (0.0, 6.0)},
+        dx_mm=3.0,
+        dy_mm=3.0,
+    )
+
+    assert center == (3.0, 3.0)
+    assert af._sample_focus_map_calls == 1
+    assert len(af.sampled_coords) >= 4
+    x1, y1 = af.sampled_coords[0]
+    x2, y2 = af.sampled_coords[1]
+    x3, y3 = af.sampled_coords[2]
+    detT = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
+    assert detT != 0
+    assert af.focus_map_surface is not None
+    assert af.use_focus_map is True
 
 
 def test_reflection_af_requires_laser_controller() -> None:

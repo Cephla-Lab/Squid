@@ -6,7 +6,25 @@ Created on 2023-12-12
 """
 
 import ctypes
-from ctypes import *
+from ctypes import (
+    POINTER,
+    Structure,
+    Union,
+    c_char,
+    c_char_p,
+    c_double,
+    c_float,
+    c_int,
+    c_int32,
+    c_int64,
+    c_ubyte,
+    c_uint,
+    c_uint32,
+    c_uint8,
+    c_ushort,
+    c_void_p,
+    cdll,
+)
 from enum import Enum
 
 # 加载SDK动态库
