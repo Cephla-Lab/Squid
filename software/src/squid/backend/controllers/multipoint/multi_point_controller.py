@@ -15,6 +15,7 @@ import pandas as pd
 
 import squid.core.utils.hardware_utils as utils
 from squid.backend.io import utils_acquisition
+from squid.backend.io.acquisition_yaml import save_acquisition_yaml
 import _def
 from squid.backend.controllers.autofocus import AutoFocusController
 from squid.backend.managers import ChannelConfigurationManager
@@ -190,6 +191,11 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         self._start_position: Optional[squid.core.abc.Pos] = None
         self._acquisition_context: Optional[AcquisitionContext] = None
         self._per_acq_log_handler: Optional[Any] = None
+
+        # Widget context for YAML saving (set by UI widgets before acquisition)
+        self._widget_type: str = "wellplate"  # "wellplate" or "flexible"
+        self._scan_size_mm: float = 0.0  # For wellplate: scan size per region
+        self._overlap_percent: float = 10.0  # FOV overlap percentage
 
     def _start_per_acquisition_log(self) -> None:
         """Start per-acquisition logging if enabled.
@@ -442,6 +448,30 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
         if xy_mode is None:
             return
         self.update_config(**{"xy_mode": xy_mode})
+
+    def set_widget_type(self, widget_type: str) -> None:
+        """Set the widget type for YAML saving context.
+
+        Args:
+            widget_type: Either "wellplate" or "flexible"
+        """
+        self._widget_type = widget_type
+
+    def set_scan_size(self, scan_size_mm: float) -> None:
+        """Set scan size for YAML saving context (wellplate mode).
+
+        Args:
+            scan_size_mm: Scan area size in mm
+        """
+        self._scan_size_mm = scan_size_mm
+
+    def set_overlap_percent(self, overlap_percent: float) -> None:
+        """Set FOV overlap percentage for YAML saving context.
+
+        Args:
+            overlap_percent: Overlap percentage (e.g., 10.0 for 10%)
+        """
+        self._overlap_percent = overlap_percent
 
     def get_plate_view(self) -> Optional[np.ndarray]:
         """Get the current plate view array from the acquisition.
@@ -912,6 +942,40 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             acquisition_params: AcquisitionParameters = self.build_params(
                 scan_position_information=scan_position_information
             )
+
+            # Save acquisition parameters to YAML for reproducibility
+            try:
+                current_objective = self.objectiveStore.current_objective
+                objective_dict = self.objectiveStore.objectives_dict.get(current_objective, {})
+                pixel_size_um = (
+                    self.objectiveStore.get_pixel_size_factor()
+                    * self._camera_service.get_pixel_size_binned_um()
+                )
+                objective_info = {
+                    "name": current_objective,
+                    "magnification": objective_dict.get("magnification"),
+                    "NA": objective_dict.get("NA"),
+                    "pixel_size_um": pixel_size_um,
+                    "camera_binning": list(self._camera_service.get_binning()),
+                    "sensor_pixel_size_um": self._camera_service.get_pixel_size_binned_um(),
+                }
+                wellplate_format = getattr(self.scanCoordinates, "format", None)
+                region_shapes = getattr(self.scanCoordinates, "region_shapes", None)
+                experiment_path = os.path.join(self.base_path, self.experiment_ID)
+
+                save_acquisition_yaml(
+                    params=acquisition_params,
+                    experiment_path=experiment_path,
+                    region_shapes=region_shapes,
+                    widget_type=self._widget_type,
+                    objective_info=objective_info,
+                    wellplate_format=wellplate_format,
+                    scan_size_mm=self._scan_size_mm,
+                    overlap_percent=self._overlap_percent,
+                )
+            except Exception as exc:
+                self._log.warning(f"Failed to save acquisition YAML (non-fatal): {exc}")
+
             dependencies = AcquisitionDependencies.create(
                 camera=self._camera_service,
                 stage=self._stage_service,
@@ -1217,6 +1281,13 @@ class MultiPointController(StateMachine[AcquisitionControllerState]):
             self.set_skip_saving(cmd.skip_saving)
         if cmd.z_stacking_config is not None:
             self.set_z_stacking_config(cmd.z_stacking_config)
+        # Widget context for YAML saving
+        if cmd.widget_type is not None:
+            self.set_widget_type(cmd.widget_type)
+        if cmd.scan_size_mm is not None:
+            self.set_scan_size(cmd.scan_size_mm)
+        if cmd.overlap_percent is not None:
+            self.set_overlap_percent(cmd.overlap_percent)
 
     @handles(SetAcquisitionPathCommand)
     def _on_set_acquisition_path(self, cmd: SetAcquisitionPathCommand) -> None:

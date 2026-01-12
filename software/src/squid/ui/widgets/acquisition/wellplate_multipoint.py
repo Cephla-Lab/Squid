@@ -91,6 +91,8 @@ from _def import (
 )
 from squid.core.config.feature_flags import get_feature_flags
 from squid.core.utils import get_last_used_saving_path, save_last_used_saving_path
+from squid.ui.widgets.acquisition.yaml_drop_mixin import AcquisitionYAMLDropMixin
+from squid.backend.io.acquisition_yaml import AcquisitionYAMLData
 
 
 _FEATURE_FLAGS = get_feature_flags()
@@ -98,7 +100,7 @@ from squid.ui.widgets.base import error_dialog, check_space_available_with_error
 from squid.ui.widgets.wellplate import WellSelectionWidget
 
 
-class WellplateMultiPointWidget(QFrame):
+class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def __init__(
         self,
         event_bus: EventBus,
@@ -114,6 +116,7 @@ class WellplateMultiPointWidget(QFrame):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self.setAcceptDrops(True)  # Enable drag-and-drop for YAML loading
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self._event_bus = event_bus
         self._z_ustep_per_mm = z_ustep_per_mm
@@ -2090,6 +2093,10 @@ class WellplateMultiPointWidget(QFrame):
                 skip_saving=self.checkbox_skipSaving.isChecked(),
                 z_range=z_range,
                 focus_map=focus_map,
+                # Widget context for YAML saving
+                widget_type="wellplate",
+                scan_size_mm=self.entry_scan_size.value(),
+                overlap_percent=self.entry_overlap.value(),
             ))
             self._event_bus.publish(SetAcquisitionChannelsCommand(
                 channel_names=[item.text() for item in self.list_configurations.selectedItems()]
@@ -2555,3 +2562,159 @@ class WellplateMultiPointWidget(QFrame):
     def _on_skip_saving_toggled(self, checked: bool) -> None:
         """Handle skip saving checkbox toggle - publish event."""
         self._event_bus.publish(SetAcquisitionParametersCommand(skip_saving=checked))
+
+    # =========================================================================
+    # YAML Drag-and-Drop Support (AcquisitionYAMLDropMixin implementation)
+    # =========================================================================
+
+    def _get_expected_widget_type(self) -> str:
+        """Return expected widget type for YAML validation."""
+        return "wellplate"
+
+    def _get_current_objective(self) -> str:
+        """Get current objective name for hardware validation."""
+        return self._current_objective
+
+    def _apply_yaml_settings(self, yaml_data: AcquisitionYAMLData) -> None:
+        """Apply YAML settings to widget controls.
+
+        Called after successful YAML parsing and hardware validation.
+        Blocks signals during update to prevent cascading events.
+        """
+        # Block signals during bulk update
+        widgets_to_block = [
+            self.checkbox_z,
+            self.entry_NZ,
+            self.entry_deltaZ,
+            self.checkbox_time,
+            self.entry_Nt,
+            self.entry_dt,
+            self.entry_overlap,
+            self.entry_scan_size,
+            self.checkbox_withAutofocus,
+            self.checkbox_withReflectionAutofocus,
+            self.list_configurations,
+            self.combobox_xy_mode,
+        ]
+
+        for widget in widgets_to_block:
+            widget.blockSignals(True)
+
+        try:
+            # Z-stack settings
+            z_enabled = yaml_data.nz > 1
+            self.checkbox_z.setChecked(z_enabled)
+            self.entry_NZ.setValue(yaml_data.nz)
+            self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+
+            # Time series
+            time_enabled = yaml_data.nt > 1
+            self.checkbox_time.setChecked(time_enabled)
+            self.entry_Nt.setValue(yaml_data.nt)
+            self.entry_dt.setValue(yaml_data.delta_t_s)
+
+            # Scan settings
+            self.entry_overlap.setValue(yaml_data.overlap_percent)
+            if yaml_data.scan_size_mm is not None:
+                self.entry_scan_size.setValue(yaml_data.scan_size_mm)
+
+            # Autofocus
+            self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
+            self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+
+            # XY mode
+            xy_mode = yaml_data.xy_mode
+            index = self.combobox_xy_mode.findText(xy_mode)
+            if index >= 0:
+                self.combobox_xy_mode.setCurrentIndex(index)
+
+            # Channels - select matching channels in list
+            self.list_configurations.clearSelection()
+            for i in range(self.list_configurations.count()):
+                item = self.list_configurations.item(i)
+                if item and item.text() in yaml_data.channel_names:
+                    item.setSelected(True)
+
+            # Load well regions if present
+            if yaml_data.wellplate_regions:
+                self._load_well_regions_from_yaml(yaml_data.wellplate_regions)
+
+        finally:
+            # Unblock signals
+            for widget in widgets_to_block:
+                widget.blockSignals(False)
+
+        # Trigger UI updates
+        self._update_z_controls_visibility()
+        self._update_time_controls_visibility()
+
+        self._log.info(
+            f"Applied YAML settings: NZ={yaml_data.nz}, Nt={yaml_data.nt}, "
+            f"channels={yaml_data.channel_names}"
+        )
+
+    def _load_well_regions_from_yaml(self, regions: list) -> None:
+        """Load well selection from YAML data.
+
+        Args:
+            regions: List of dicts with 'name' (e.g., "C4") keys
+        """
+        if not self.well_selection_widget:
+            self._log.warning("Cannot load well regions: well_selection_widget not available")
+            return
+
+        # Clear current selection
+        self.well_selection_widget.deselect_all_cells()
+
+        # Parse well names and select them
+        well_names = [r.get("name", "") for r in regions if r.get("name")]
+        for well_name in well_names:
+            row, col = self._parse_well_name(well_name)
+            if row is not None and col is not None:
+                self.well_selection_widget.select_cell(row, col)
+
+        # Update scan coordinates
+        self.well_selected = len(well_names) > 0
+
+    def _parse_well_name(self, well_name: str) -> tuple:
+        """Parse well name (e.g., "C4") into (row, col) indices.
+
+        Args:
+            well_name: Well name like "A1", "B12", "C4"
+
+        Returns:
+            (row, col) tuple where row is 0-indexed from letter (A=0, B=1, etc.)
+            and col is 0-indexed from number. Returns (None, None) if invalid.
+        """
+        if not well_name or len(well_name) < 2:
+            return (None, None)
+
+        # Extract letter(s) and number
+        letter_part = ""
+        num_part = ""
+        for char in well_name:
+            if char.isalpha():
+                letter_part += char.upper()
+            elif char.isdigit():
+                num_part += char
+
+        if not letter_part or not num_part:
+            return (None, None)
+
+        try:
+            # Convert letter to row (A=0, B=1, etc.)
+            if len(letter_part) == 1:
+                row = ord(letter_part) - ord("A")
+            else:
+                # Handle multi-letter wells (AA, AB, etc.)
+                row = 0
+                for i, char in enumerate(reversed(letter_part)):
+                    row += (ord(char) - ord("A") + 1) * (26 ** i)
+                row -= 1  # Adjust for 0-indexing
+
+            # Convert number to col (1=0, 2=1, etc.)
+            col = int(num_part) - 1
+
+            return (row, col)
+        except (ValueError, TypeError):
+            return (None, None)

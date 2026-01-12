@@ -1170,6 +1170,11 @@ class SetAcquisitionParametersCommand(Event):
     skip_saving: Optional[bool] = None
     z_stacking_config: Optional[int] = None  # 0=FROM BOTTOM, 1=FROM CENTER, 2=FROM TOP
 
+    # Widget context for YAML saving
+    widget_type: Optional[str] = None  # "wellplate" or "flexible"
+    scan_size_mm: Optional[float] = None  # For wellplate mode
+    overlap_percent: Optional[float] = None  # FOV overlap percentage
+
 
 @dataclass
 class SetAcquisitionPathCommand(Event):

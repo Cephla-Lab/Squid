@@ -74,13 +74,15 @@ from _def import (
 )
 from squid.core.config.feature_flags import get_feature_flags
 from squid.core.utils import get_last_used_saving_path, save_last_used_saving_path
+from squid.ui.widgets.acquisition.yaml_drop_mixin import AcquisitionYAMLDropMixin
+from squid.backend.io.acquisition_yaml import AcquisitionYAMLData
 
 
 _FEATURE_FLAGS = get_feature_flags()
 from squid.ui.widgets.base import error_dialog, check_space_available_with_error_dialog
 
 
-class FlexibleMultiPointWidget(QFrame):
+class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
     def __init__(
         self,
         focusMapWidget,
@@ -92,6 +94,7 @@ class FlexibleMultiPointWidget(QFrame):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self.setAcceptDrops(True)  # Enable drag-and-drop for YAML loading
         self._log = squid.core.logging.get_logger(self.__class__.__name__)
         self.acquisition_start_time = None
         self.last_used_locations = None
@@ -953,6 +956,7 @@ class FlexibleMultiPointWidget(QFrame):
                 focus_map = self.focusMapWidget.focusMap
 
             # Publish acquisition parameters via events
+            overlap_pct = self.entry_overlap.value() if self.use_overlap else 0.0
             self._event_bus.publish(SetAcquisitionParametersCommand(
                 delta_z_um=self.entry_deltaZ.value(),
                 n_z=self.entry_NZ.value(),
@@ -965,6 +969,9 @@ class FlexibleMultiPointWidget(QFrame):
                 skip_saving=self.checkbox_skipSaving.isChecked(),
                 z_range=z_range,
                 focus_map=focus_map,
+                # Widget context for YAML saving
+                widget_type="flexible",
+                overlap_percent=overlap_pct,
             ))
             self._event_bus.publish(SetAcquisitionPathCommand(
                 base_path=self.lineEdit_savingDir.text()
@@ -1597,3 +1604,125 @@ class FlexibleMultiPointWidget(QFrame):
     def _on_skip_saving_toggled(self, checked: bool) -> None:
         """Handle skip saving checkbox toggle - publish event."""
         self._event_bus.publish(SetAcquisitionParametersCommand(skip_saving=checked))
+
+    # =========================================================================
+    # YAML Drag-and-Drop Support (AcquisitionYAMLDropMixin implementation)
+    # =========================================================================
+
+    def _get_expected_widget_type(self) -> str:
+        """Return expected widget type for YAML validation."""
+        return "flexible"
+
+    def _apply_yaml_settings(self, yaml_data: AcquisitionYAMLData) -> None:
+        """Apply YAML settings to widget controls.
+
+        Called after successful YAML parsing and hardware validation.
+        Blocks signals during update to prevent cascading events.
+        """
+        # Block signals during bulk update
+        widgets_to_block = [
+            self.entry_NZ,
+            self.entry_deltaZ,
+            self.entry_Nt,
+            self.entry_dt,
+            self.entry_NX,
+            self.entry_NY,
+            self.entry_deltaX,
+            self.entry_deltaY,
+            self.checkbox_withAutofocus,
+            self.checkbox_withReflectionAutofocus,
+            self.list_configurations,
+        ]
+        if self.use_overlap:
+            widgets_to_block.append(self.entry_overlap)
+
+        for widget in widgets_to_block:
+            widget.blockSignals(True)
+
+        try:
+            # Z-stack settings
+            self.entry_NZ.setValue(yaml_data.nz)
+            self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+
+            # Time series
+            self.entry_Nt.setValue(yaml_data.nt)
+            self.entry_dt.setValue(yaml_data.delta_t_s)
+
+            # Grid settings
+            self.entry_NX.setValue(yaml_data.nx)
+            self.entry_NY.setValue(yaml_data.ny)
+            self.entry_deltaX.setValue(yaml_data.delta_x_mm)
+            self.entry_deltaY.setValue(yaml_data.delta_y_mm)
+
+            # Overlap
+            if self.use_overlap and hasattr(self, "entry_overlap"):
+                self.entry_overlap.setValue(yaml_data.overlap_percent)
+
+            # Autofocus
+            self.checkbox_withAutofocus.setChecked(yaml_data.contrast_af)
+            self.checkbox_withReflectionAutofocus.setChecked(yaml_data.laser_af)
+
+            # Channels - select matching channels in list
+            self.list_configurations.clearSelection()
+            for i in range(self.list_configurations.count()):
+                item = self.list_configurations.item(i)
+                if item and item.text() in yaml_data.channel_names:
+                    item.setSelected(True)
+
+            # Load positions if present
+            if yaml_data.flexible_positions:
+                self._load_positions_from_yaml(yaml_data.flexible_positions)
+
+        finally:
+            # Unblock signals
+            for widget in widgets_to_block:
+                widget.blockSignals(False)
+
+        self._log.info(
+            f"Applied YAML settings: NZ={yaml_data.nz}, Nt={yaml_data.nt}, "
+            f"channels={yaml_data.channel_names}"
+        )
+
+    def _load_positions_from_yaml(self, positions: list) -> None:
+        """Load position list from YAML data.
+
+        Args:
+            positions: List of dicts with 'name' and 'center_mm' keys
+        """
+        # Clear existing locations
+        self.location_list = np.empty((0, 3), dtype=float)
+        self.location_ids = np.empty((0,), dtype="<U20")
+
+        # Clear the scan coordinates
+        self._event_bus.publish(ClearScanCoordinatesCommand())
+
+        for pos in positions:
+            name = pos.get("name", f"P{len(self.location_ids) + 1}")
+            center = pos.get("center_mm", [0, 0, 0])
+            if len(center) >= 3:
+                x, y, z = center[0], center[1], center[2]
+            elif len(center) == 2:
+                x, y = center[0], center[1]
+                z = self._cached_z_mm
+            else:
+                continue
+
+            # Add to local tracking
+            self.location_list = np.vstack([self.location_list, [x, y, z]])
+            self.location_ids = np.append(self.location_ids, name)
+
+            # Add to scan coordinates via event
+            self._event_bus.publish(
+                AddFlexibleRegionCommand(
+                    region_id=name,
+                    center_x=x,
+                    center_y=y,
+                    center_z=z,
+                    nx=self.entry_NX.value(),
+                    ny=self.entry_NY.value(),
+                    overlap=self.entry_overlap.value() if self.use_overlap else 0.0,
+                )
+            )
+
+        # Update UI
+        self._update_location_display()
