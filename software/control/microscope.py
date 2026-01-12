@@ -324,14 +324,15 @@ class Microscope:
         # Note: Migration from acquisition_configurations to user_profiles is handled
         # by run_auto_migration() in main_hcs.py before Microscope is created
 
-        # Sync confocal mode from hardware (works in both GUI and headless modes)
-        if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
-            self._sync_confocal_mode_from_hardware()
-
         # Load default profile (ensures configs exist)
         profiles = self.config_repo.get_available_profiles()
         if profiles:
             self.config_repo.load_profile(profiles[0])
+        else:
+            self._log.warning(
+                "No configuration profiles found in user_profiles/. "
+                "Channel configurations will not be available until a profile is created."
+            )
 
         self.contrast_manager: ContrastManager = ContrastManager()
         self.stream_handler: StreamHandler = StreamHandler(handler_functions=stream_handler_callbacks)
@@ -348,6 +349,10 @@ class Microscope:
             )
 
         self.live_controller: LiveController = LiveController(microscope=self, camera=self.camera)
+
+        # Sync confocal mode from hardware (must be after LiveController creation)
+        if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
+            self._sync_confocal_mode_from_hardware()
 
         if not skip_prepare_for_use:
             self._prepare_for_use()

@@ -460,7 +460,12 @@ class MultiPointController:
         if not was_streaming:
             self.camera.start_streaming()
         try:
-            config = self.liveController.get_channels(self.objectiveStore.current_objective)[0]
+            channels = self.liveController.get_channels(self.objectiveStore.current_objective)
+            if not channels:
+                self._log.warning("No channels available in _temporary_get_an_image_hack")
+                return (None, False)
+            # Note: config is currently unused but kept for potential future use
+            config = channels[0]
             if (
                 self.liveController.trigger_mode == control._def.TriggerMode.SOFTWARE
                 or self.liveController.trigger_mode == control._def.TriggerMode.HARDWARE

@@ -138,11 +138,15 @@ class LiveController:
 
         # Check if a profile is set
         if config_repo.current_profile is None:
+            self._log.warning("get_channels() returning empty list: no profile is set")
             return []
 
         # Get general config (shared settings)
         general = config_repo.get_general_config()
         if not general:
+            self._log.warning(
+                f"get_channels() returning empty list: no general config for profile '{config_repo.current_profile}'"
+            )
             return []
 
         # Get objective-specific config
@@ -199,6 +203,9 @@ class LiveController:
         self.illumination_on = False
 
     def update_illumination(self):
+        if self.currentConfiguration is None:
+            self._log.warning("update_illumination() called with no currentConfiguration")
+            return
         illumination_source = self._get_illumination_source()
         intensity = self.currentConfiguration.illumination_intensity
         if self._is_led_matrix():
@@ -273,7 +280,7 @@ class LiveController:
                         validate=XLIGHT_VALIDATE_WHEEL_POS,
                     )
                 except Exception as e:
-                    print("not setting emission filter position due to " + str(e))
+                    self._log.warning(f"Not setting emission filter position: {e}")
             elif USE_DRAGONFLY and self.microscope.addons.dragonfly:
                 try:
                     self.microscope.addons.dragonfly.set_emission_filter(
@@ -281,7 +288,7 @@ class LiveController:
                         self.currentConfiguration.emission_filter_position,
                     )
                 except Exception as e:
-                    print("not setting emission filter position due to " + str(e))
+                    self._log.warning(f"Not setting emission filter position: {e}")
 
         if self.microscope.addons.emission_filter_wheel and self.enable_channel_auto_filter_switching:
             try:
@@ -293,7 +300,7 @@ class LiveController:
                     {1: self.currentConfiguration.emission_filter_position}
                 )
             except Exception as e:
-                print("not setting emission filter position due to " + str(e))
+                self._log.warning(f"Not setting emission filter position: {e}")
 
     def start_live(self):
         self.is_live = True

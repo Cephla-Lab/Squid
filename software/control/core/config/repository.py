@@ -17,7 +17,7 @@ Organization:
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 
 import yaml
 from pydantic import BaseModel, ValidationError
@@ -566,6 +566,12 @@ class ConfigRepository:
 
         # Save
         self.save_objective_config(profile, objective, obj_config)
+
+        # Update cache if current profile
+        effective_profile = profile if profile else self._current_profile
+        if effective_profile == self._current_profile:
+            self._profile_cache[f"objective:{objective}"] = obj_config
+
         return True
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -606,7 +612,7 @@ class ConfigRepository:
 
     def save_acquisition_output(
         self,
-        output_dir: Path,
+        output_dir: Union[Path, str],
         objective: str,
         channels: List[AcquisitionChannel],
         confocal_mode: bool = False,

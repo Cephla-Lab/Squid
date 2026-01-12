@@ -3029,6 +3029,8 @@ class ProfileWidget(QFrame):
                 # Update profile dropdown
                 self.dropdown_profiles.addItem(profile_name)
                 self.dropdown_profiles.setCurrentText(profile_name)
+                # Notify listeners that profile changed
+                self.signal_profile_changed.emit()
             except ValueError as e:
                 QMessageBox.warning(self, "Error", str(e))
 
@@ -3070,12 +3072,18 @@ class LiveControlWidget(QFrame):
         self.liveController.set_trigger_fps(self.fps_trigger)
         self.streamHandler.set_display_fps(self.fps_display)
 
-        self.currentConfiguration = self.liveController.get_channels(self.objectiveStore.current_objective)[0]
+        channels = self.liveController.get_channels(self.objectiveStore.current_objective)
+        if not channels:
+            self._log.error("No channels available - cannot initialize LiveControlWidget")
+            self.currentConfiguration = None
+        else:
+            self.currentConfiguration = channels[0]
 
         self.add_components(show_trigger_options, show_display_options, show_autolevel, autolevel, stretch)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        self.liveController.set_microscope_mode(self.currentConfiguration)
-        self.update_ui_for_mode(self.currentConfiguration)
+        if self.currentConfiguration:
+            self.liveController.set_microscope_mode(self.currentConfiguration)
+            self.update_ui_for_mode(self.currentConfiguration)
 
         self.is_switching_mode = False  # flag used to prevent from settings being set by twice - from both mode change slot and value change slot; another way is to use blockSignals(True)
 

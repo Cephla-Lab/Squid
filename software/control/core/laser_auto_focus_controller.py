@@ -118,7 +118,11 @@ class LaserAutofocusController(QObject):
         try:
             self.camera.set_analog_gain(config.focus_camera_analog_gain)
         except NotImplementedError:
-            pass
+            # Some camera drivers don't support analog gain; continue with existing gain
+            self._log.debug(
+                f"Focus camera does not support setting analog gain; "
+                f"continuing with existing gain (requested: {config.focus_camera_analog_gain})"
+            )
 
         # Initialize with loaded config
         self.initialize_manual(config)

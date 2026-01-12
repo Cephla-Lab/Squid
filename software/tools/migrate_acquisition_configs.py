@@ -193,8 +193,12 @@ def load_channel_definitions_json(json_path: Path) -> Optional[Dict[str, Any]]:
     if not json_path.exists():
         return None
 
-    with open(json_path, "r") as f:
-        return json.load(f)
+    try:
+        with open(json_path, "r") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON file {json_path}: {e}")
+        return None
 
 
 def convert_channel_definitions_to_illumination_config(channel_defs: Dict[str, Any]) -> IlluminationChannelConfig:
@@ -369,8 +373,12 @@ def convert_laser_af_json_to_yaml(json_path: Path) -> Optional[LaserAFConfig]:
     if not json_path.exists():
         return None
 
-    with open(json_path, "r") as f:
-        data = json.load(f)
+    try:
+        with open(json_path, "r") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON file {json_path}: {e}")
+        return None
 
     # Convert to LaserAFConfig, handling field renames
     config_data = {
