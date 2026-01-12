@@ -137,7 +137,13 @@ class BackpressureController:
             self._pending_bytes.value = 0
 
     def close(self) -> None:
-        """Release multiprocessing resources to avoid semaphore leaks."""
+        """Release multiprocessing resources to avoid semaphore leaks.
+
+        Call this after all job runners have been shut down, typically at the end
+        of _finish_jobs() or during application shutdown. The multiprocessing.Value
+        and multiprocessing.Event objects hold system semaphores that must be released
+        to prevent the "leaked semaphore objects" warning on exit.
+        """
         self._pending_jobs = None
         self._pending_bytes = None
         self._capacity_event = None

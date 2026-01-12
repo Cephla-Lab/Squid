@@ -260,7 +260,6 @@ class MultiPointWorker:
                 else None
             )
             if job_runner:
-                job_runner.daemon = True
                 job_runner.start()
             self._job_runners.append((job_class, job_runner))
         self._abort_on_failed_job = abort_on_failed_jobs

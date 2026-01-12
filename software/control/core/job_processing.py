@@ -894,6 +894,8 @@ class JobRunner(multiprocessing.Process):
         # Release accumulated bytes for incomplete wells on shutdown
         # (prevents bytes from being permanently "leaked" if acquisition is interrupted mid-well)
         # Note: Forced termination (SIGTERM/SIGKILL) may skip this cleanup.
+        # Thread safety: This code runs after the main while loop exits, so no concurrent
+        # access to _well_accumulated_bytes is possible - all job processing has stopped.
         try:
             if self._bp_pending_bytes is not None and self._well_accumulated_bytes:
                 total_unreleased = sum(self._well_accumulated_bytes.values())

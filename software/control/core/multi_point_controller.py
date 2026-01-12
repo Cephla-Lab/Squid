@@ -952,6 +952,8 @@ class MultiPointController:
             return getattr(self.multiPointWorker, "_backpressure", None)
         return None
 
+    _PROCESS_TERMINATE_TIMEOUT_S = 1.0
+
     def close(self, timeout_s: float = 5.0) -> None:
         """Clean up resources on application shutdown.
 
@@ -976,10 +978,18 @@ class MultiPointController:
         if self.multiPointWorker is not None:
             job_runners = getattr(self.multiPointWorker, "_job_runners", [])
             for job_class, job_runner in job_runners:
-                if job_runner is not None and job_runner.is_alive():
-                    self.log.info(f"Terminating {job_class.__name__} job runner")
-                    job_runner.terminate()
-                    job_runner.join(timeout=1.0)
+                try:
+                    if job_runner is not None and job_runner.is_alive():
+                        self.log.warning(f"Terminating {job_class.__name__} job runner (abnormal shutdown)")
+                        job_runner.terminate()
+                        job_runner.join(timeout=self._PROCESS_TERMINATE_TIMEOUT_S)
+                        # If still alive after terminate, force kill
+                        if job_runner.is_alive():
+                            self.log.warning(f"Force killing {job_class.__name__} job runner")
+                            job_runner.kill()
+                            job_runner.join(timeout=self._PROCESS_TERMINATE_TIMEOUT_S)
+                except Exception:
+                    self.log.exception(f"Error terminating {job_class.__name__} job runner")
 
         # Clear worker reference
         self.multiPointWorker = None
