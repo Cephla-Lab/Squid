@@ -967,6 +967,11 @@ class MultiPointController:
                 if self.thread.is_alive():
                     self.log.warning(f"Acquisition thread did not stop within {timeout_s}s")
 
+        # Stop memory monitor if running
+        if self._memory_monitor is not None:
+            self._memory_monitor.stop()
+            self._memory_monitor = None
+
         # Clear worker reference
         self.multiPointWorker = None
         self.thread = None
