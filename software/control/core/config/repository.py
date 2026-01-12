@@ -3,6 +3,16 @@ Centralized configuration repository.
 
 Single source of truth for all config I/O and caching.
 Pure Python - NO Qt dependencies.
+
+Organization:
+- Generic I/O: save_to_path() for saving any Pydantic model
+- Profile Management: profile CRUD operations
+- Machine Configs: global hardware configs (illumination, confocal, camera mappings)
+- Channel Configs: per-profile acquisition channel settings
+- Channel Config Convenience: higher-level helpers (merge, update settings)
+- Laser AF Configs: per-profile laser autofocus settings
+- Acquisition Output: saving settings to experiment directories
+- Cache Management: cache control
 """
 
 import logging
@@ -13,12 +23,17 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from control.models import (
+    AcquisitionChannel,
+    AcquisitionOutputConfig,
     CameraMappingsConfig,
     ConfocalConfig,
     GeneralChannelConfig,
     IlluminationChannelConfig,
+    IlluminationSettings,
+    CameraSettings,
     LaserAFConfig,
     ObjectiveChannelConfig,
+    merge_channel_configs,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,9 +82,27 @@ class ConfigRepository:
         self._machine_cache: Dict[str, Any] = {}
         self._profile_cache: Dict[str, Any] = {}
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Internal helpers
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════════════════
+    # GENERIC I/O
+    # Methods that work with any Pydantic model
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def save_to_path(self, path: Path, model: BaseModel) -> None:
+        """
+        Save any Pydantic model to an arbitrary path.
+
+        This is the generic save method - use it when you need to save a model
+        to a location outside the standard config directories.
+
+        Args:
+            path: Target file path (parent directories created if needed)
+            model: Pydantic model to save
+        """
+        self._save_yaml(path, model)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # INTERNAL HELPERS
+    # ═══════════════════════════════════════════════════════════════════════════
 
     def _load_yaml(self, path: Path, model_class: Type[T]) -> Optional[T]:
         """
@@ -124,9 +157,9 @@ class ConfigRepository:
             raise ValueError("No profile set. Call set_profile() first.")
         return self.user_profiles_path / profile
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Profile Management
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PROFILE MANAGEMENT
+    # ═══════════════════════════════════════════════════════════════════════════
 
     @property
     def current_profile(self) -> Optional[str]:
@@ -192,6 +225,41 @@ class ConfigRepository:
         (profile_path / "laser_af_configs").mkdir(parents=True)
         logger.info(f"Created profile: {name}")
 
+    def copy_profile(self, source: str, dest: str) -> None:
+        """
+        Create a new profile by copying all configs from an existing profile.
+
+        Args:
+            source: Source profile name to copy from
+            dest: Destination profile name to create
+
+        Raises:
+            ValueError: If dest profile already exists or source doesn't exist
+        """
+        import shutil
+
+        source_path = self.user_profiles_path / source
+        dest_path = self.user_profiles_path / dest
+
+        if not source_path.exists():
+            raise ValueError(f"Source profile '{source}' does not exist")
+        if dest_path.exists():
+            raise ValueError(f"Profile '{dest}' already exists")
+
+        # Create directory structure
+        (dest_path / "channel_configs").mkdir(parents=True)
+        (dest_path / "laser_af_configs").mkdir(parents=True)
+
+        # Copy all YAML files from source to dest
+        for subdir in ["channel_configs", "laser_af_configs"]:
+            source_dir = source_path / subdir
+            dest_dir = dest_path / subdir
+            if source_dir.exists():
+                for yaml_file in source_dir.glob("*.yaml"):
+                    shutil.copy2(yaml_file, dest_dir / yaml_file.name)
+
+        logger.info(f"Created profile '{dest}' by copying from '{source}'")
+
     def profile_exists(self, name: str) -> bool:
         """Check if a profile exists."""
         return (self.user_profiles_path / name).exists()
@@ -212,9 +280,10 @@ class ConfigRepository:
         """Get the path for a user profile (public API)."""
         return self._get_profile_path(profile)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Machine Configs (global, cached indefinitely)
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════════════════
+    # MACHINE CONFIGS
+    # Global hardware configuration (cached indefinitely)
+    # ═══════════════════════════════════════════════════════════════════════════
 
     def get_illumination_config(self) -> Optional[IlluminationChannelConfig]:
         """Load illumination channel configuration (cached)."""
@@ -271,9 +340,10 @@ class ConfigRepository:
         self.machine_configs_path.mkdir(parents=True, exist_ok=True)
         (self.machine_configs_path / "intensity_calibrations").mkdir(exist_ok=True)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Profile Configs - Channel Configs (cached until profile change or save)
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════════════════
+    # CHANNEL CONFIGS (per-profile)
+    # Core CRUD operations for acquisition channel settings
+    # ═══════════════════════════════════════════════════════════════════════════
 
     def get_general_config(self, profile: Optional[str] = None) -> Optional[GeneralChannelConfig]:
         """Load general channel configuration (cached when using current profile)."""
@@ -327,9 +397,149 @@ class ConfigRepository:
             path = self.user_profiles_path / profile / "channel_configs" / f"{objective}.yaml"
             self._save_yaml(path, config)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Profile Configs - Laser AF (cached until profile change or save)
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════════════════
+    # CHANNEL CONFIG CONVENIENCE METHODS
+    # Higher-level helpers for common channel config operations
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def get_merged_channels(
+        self,
+        objective: str,
+        profile: Optional[str] = None,
+        confocal_mode: bool = False,
+    ) -> List[AcquisitionChannel]:
+        """
+        Get merged acquisition channels for an objective.
+
+        Merges general.yaml with objective.yaml and optionally applies confocal overrides.
+
+        Args:
+            objective: Objective name
+            profile: Profile name (defaults to current profile)
+            confocal_mode: Whether to apply confocal overrides
+
+        Returns:
+            List of merged AcquisitionChannel objects
+        """
+        general_config = self.get_general_config(profile)
+        if not general_config:
+            return []
+
+        obj_config = self.get_objective_config(objective, profile)
+
+        if obj_config:
+            channels = merge_channel_configs(general_config, obj_config)
+        else:
+            channels = list(general_config.channels)
+
+        if confocal_mode:
+            channels = [ch.get_effective_settings(confocal_mode=True) for ch in channels]
+
+        return channels
+
+    def update_channel_setting(
+        self,
+        objective: str,
+        channel_name: str,
+        setting: str,
+        value: Any,
+        profile: Optional[str] = None,
+    ) -> bool:
+        """
+        Update a specific setting of a channel configuration and save.
+
+        This is a convenience method that handles the mapping from UI setting names
+        to model fields, creates objective configs if needed, and saves automatically.
+
+        Supported settings:
+        - "ExposureTime" -> camera_settings.exposure_time_ms
+        - "AnalogGain" -> camera_settings.gain_mode
+        - "IlluminationIntensity" -> illumination_settings.intensity
+
+        Args:
+            objective: Objective name
+            channel_name: Name of the channel to update
+            setting: Setting name ("ExposureTime", "AnalogGain", "IlluminationIntensity")
+            value: New value for the setting
+            profile: Profile name (defaults to current profile)
+
+        Returns:
+            True if update was successful, False otherwise
+        """
+        profile = profile or self._current_profile
+        if not profile:
+            logger.warning("Cannot update: no profile set")
+            return False
+
+        # Setting name to model field mapping
+        setting_mapping = {
+            "ExposureTime": ("camera", "exposure_time_ms"),
+            "AnalogGain": ("camera", "gain_mode"),
+            "IlluminationIntensity": ("illumination", "intensity"),
+        }
+
+        if setting not in setting_mapping:
+            logger.warning(f"Unknown setting: {setting}")
+            return False
+
+        location, field = setting_mapping[setting]
+
+        # Get or create objective config
+        obj_config = self.get_objective_config(objective, profile)
+        general_config = self.get_general_config(profile)
+
+        if obj_config is None:
+            if general_config is None:
+                logger.warning("No general config to create objective config from")
+                return False
+            # Create objective config from general config
+            obj_config = ObjectiveChannelConfig(
+                version=1,
+                channels=[
+                    AcquisitionChannel(
+                        name=ch.name,
+                        illumination_settings=IlluminationSettings(
+                            illumination_channels=None,
+                            intensity=dict(ch.illumination_settings.intensity),
+                            z_offset_um=0.0,
+                        ),
+                        camera_settings={
+                            cam_id: CameraSettings(
+                                display_color=cam.display_color,
+                                exposure_time_ms=cam.exposure_time_ms,
+                                gain_mode=cam.gain_mode,
+                                pixel_format=cam.pixel_format,
+                            )
+                            for cam_id, cam in ch.camera_settings.items()
+                        },
+                    )
+                    for ch in general_config.channels
+                ],
+            )
+
+        # Find the channel
+        acq_channel = obj_config.get_channel_by_name(channel_name)
+        if not acq_channel:
+            logger.warning(f"Channel '{channel_name}' not found in objective config")
+            return False
+
+        # Update the field
+        if location == "camera":
+            for cam_settings in acq_channel.camera_settings.values():
+                setattr(cam_settings, field, value)
+                break
+        elif location == "illumination":
+            for key in acq_channel.illumination_settings.intensity:
+                acq_channel.illumination_settings.intensity[key] = value
+
+        # Save
+        self.save_objective_config(profile, objective, obj_config)
+        return True
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LASER AF CONFIGS (per-profile)
+    # Laser autofocus settings per objective
+    # ═══════════════════════════════════════════════════════════════════════════
 
     def get_laser_af_config(self, objective: str, profile: Optional[str] = None) -> Optional[LaserAFConfig]:
         """Load laser AF configuration for an objective (cached when using current profile)."""
@@ -357,9 +567,42 @@ class ConfigRepository:
             path = self.user_profiles_path / profile / "laser_af_configs" / f"{objective}.yaml"
             self._save_yaml(path, config)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Cache Management
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ACQUISITION OUTPUT
+    # Saving acquisition settings to experiment directories
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def save_acquisition_output(
+        self,
+        output_dir: Path,
+        objective: str,
+        channels: List[AcquisitionChannel],
+        confocal_mode: bool = False,
+    ) -> None:
+        """
+        Save acquisition settings to an experiment output directory.
+
+        Creates acquisition_channels.yaml in the output directory to record
+        what settings were used during acquisition. This is separate from
+        profile configs - it's a snapshot of settings used for a specific run.
+
+        Args:
+            output_dir: Experiment output directory
+            objective: Objective used for acquisition
+            channels: List of acquisition channels used
+            confocal_mode: Whether confocal mode was active
+        """
+        output_config = AcquisitionOutputConfig(
+            objective=objective,
+            confocal_mode=confocal_mode,
+            channels=channels,
+        )
+        output_path = Path(output_dir) / "acquisition_channels.yaml"
+        self._save_yaml(output_path, output_config)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # CACHE MANAGEMENT
+    # ═══════════════════════════════════════════════════════════════════════════
 
     def clear_profile_cache(self) -> None:
         """Clear profile cache (called on profile switch)."""

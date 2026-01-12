@@ -4,11 +4,9 @@ from typing import Optional
 import numpy as np
 
 import control._def
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.config import ConfigRepository
 from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
-from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
@@ -321,15 +319,9 @@ class Microscope:
 
         self.objective_store: ObjectiveStore = ObjectiveStore()
 
-        # New config repository (centralized config management)
+        # Centralized config management
         self.config_repo: ConfigRepository = ConfigRepository()
 
-        # Legacy config managers (kept during transition)
-        # Pass configurations path for loading global channel definitions
-        configurations_path = Path(__file__).parent.parent / "configurations"
-        self.channel_configuration_mananger: ChannelConfigurationManager = ChannelConfigurationManager(
-            configurations_path=configurations_path
-        )
         # Note: Migration from acquisition_configurations to user_profiles is handled
         # by run_auto_migration() in main_hcs.py before Microscope is created
 
@@ -337,16 +329,8 @@ class Microscope:
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
             self._sync_confocal_mode_from_hardware()
 
-        self.laser_af_settings_manager: Optional[LaserAFSettingManager] = None
-        if control._def.SUPPORT_LASER_AUTOFOCUS:
-            self.laser_af_settings_manager = LaserAFSettingManager()
-
-        self.configuration_mananger: ConfigurationManager = ConfigurationManager(
-            self.channel_configuration_mananger, self.laser_af_settings_manager
-        )
-        # Sync config_repo profile with ConfigurationManager's current profile
-        if self.configuration_mananger.current_profile:
-            self.config_repo.set_profile(self.configuration_mananger.current_profile)
+        # Profile management - coordinates with config_repo for profile changes
+        self.configuration_mananger: ConfigurationManager = ConfigurationManager(config_repo=self.config_repo)
         self.contrast_manager: ContrastManager = ContrastManager()
         self.stream_handler: StreamHandler = StreamHandler(handler_functions=stream_handler_callbacks)
 
@@ -710,9 +694,10 @@ class Microscope:
         """
         if objective is None:
             objective = self.objective_store.current_objective
-        channel_config = self.channel_configuration_mananger.get_channel_configuration_by_name(objective, channel)
-        channel_config.illumination_intensity = intensity
-        self.live_controller.set_microscope_mode(channel_config)
+        channel_config = self.live_controller.get_channel_by_name(objective, channel)
+        if channel_config:
+            channel_config.illumination_intensity = intensity
+            self.live_controller.set_microscope_mode(channel_config)
 
     def set_exposure_time(self, channel: str, exposure_time: float, objective: Optional[str] = None) -> None:
         """Set the exposure time for a channel.
@@ -724,6 +709,7 @@ class Microscope:
         """
         if objective is None:
             objective = self.objective_store.current_objective
-        channel_config = self.channel_configuration_mananger.get_channel_configuration_by_name(objective, channel)
-        channel_config.exposure_time = exposure_time
-        self.live_controller.set_microscope_mode(channel_config)
+        channel_config = self.live_controller.get_channel_by_name(objective, channel)
+        if channel_config:
+            channel_config.exposure_time = exposure_time
+            self.live_controller.set_microscope_mode(channel_config)

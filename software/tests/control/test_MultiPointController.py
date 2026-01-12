@@ -14,8 +14,7 @@ def test_multi_point_controller_image_count_calculation():
 
     control._def.MERGE_CHANNELS = False
     all_configuration_names = [
-        config.name
-        for config in mpc.channelConfigurationManager.get_configurations(mpc.objectiveStore.current_objective)
+        config.name for config in mpc.liveController.get_channels(mpc.objectiveStore.current_objective)
     ]
     nz = 2
     nt = 3
@@ -67,8 +66,7 @@ def test_multi_point_controller_disk_space_estimate():
 
     control._def.MERGE_CHANNELS = False
     all_configuration_names = [
-        config.name
-        for config in mpc.channelConfigurationManager.get_configurations(mpc.objectiveStore.current_objective)
+        config.name for config in mpc.liveController.get_channels(mpc.objectiveStore.current_objective)
     ]
     nz = 2
     nt = 3
@@ -124,8 +122,7 @@ def test_multi_point_controller_mosaic_ram_estimate():
 
     try:
         all_configuration_names = [
-            config.name
-            for config in mpc.channelConfigurationManager.get_configurations(mpc.objectiveStore.current_objective)
+            config.name for config in mpc.liveController.get_channels(mpc.objectiveStore.current_objective)
         ]
         assert len(all_configuration_names) > 0
 
@@ -185,8 +182,7 @@ def test_multi_point_controller_mosaic_ram_disabled():
 
     try:
         all_configuration_names = [
-            config.name
-            for config in mpc.channelConfigurationManager.get_configurations(mpc.objectiveStore.current_objective)
+            config.name for config in mpc.liveController.get_channels(mpc.objectiveStore.current_objective)
         ]
 
         # Add regions and select channels
@@ -262,7 +258,7 @@ def add_some_coordinates(mpc: MultiPointController):
 
 
 def select_some_configs(mpc: MultiPointController, objective: str):
-    all_config_names = [m.name for m in mpc.channelConfigurationManager.get_configurations(objective)]
+    all_config_names = [m.name for m in mpc.liveController.get_channels(objective)]
     first_two_config_names = all_config_names[:2]
     mpc.set_selected_configurations(selected_configurations_name=first_two_config_names)
 

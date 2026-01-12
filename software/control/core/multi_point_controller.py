@@ -17,7 +17,6 @@ import pandas as pd
 from control import utils, utils_acquisition
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
@@ -191,7 +190,6 @@ class MultiPointController:
         live_controller: LiveController,
         autofocus_controller: AutoFocusController,
         objective_store: ObjectiveStore,
-        channel_configuration_mananger: ChannelConfigurationManager,
         callbacks: MultiPointControllerFunctions,
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
@@ -207,7 +205,6 @@ class MultiPointController:
         self.autofocusController: AutoFocusController = autofocus_controller
         self.laserAutoFocusController: LaserAutofocusController = laser_autofocus_controller
         self.objectiveStore: ObjectiveStore = objective_store
-        self.channelConfigurationManager: ChannelConfigurationManager = channel_configuration_mananger
         self.callbacks: MultiPointControllerFunctions = callbacks
         self.multiPointWorker: Optional[MultiPointWorker] = None
         self.fluidics: Optional[Any] = microscope.addons.fluidics
@@ -370,11 +367,13 @@ class MultiPointController:
         self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
         self.recording_start_time = time.time()
         # create a new folder
-        utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
-        self.channelConfigurationManager.write_configuration_selected(
-            self.objectiveStore.current_objective,
-            self.selected_configurations,
-            os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml",
+        experiment_dir = os.path.join(self.base_path, self.experiment_ID)
+        utils.ensure_directory_exists(experiment_dir)
+        # Save acquisition configuration via ConfigRepository
+        self.liveController.microscope.config_repo.save_acquisition_output(
+            output_dir=experiment_dir,
+            objective=self.objectiveStore.current_objective,
+            channels=self.selected_configurations,
             confocal_mode=self.liveController.is_confocal_mode(),
         )  # save the configuration for the experiment
         # Prepare acquisition parameters
@@ -799,7 +798,6 @@ class MultiPointController:
                 auto_focus_controller=self.autofocusController,
                 laser_auto_focus_controller=self.laserAutoFocusController,
                 objective_store=self.objectiveStore,
-                channel_configuration_mananger=self.channelConfigurationManager,
                 acquisition_parameters=acquisition_params,
                 callbacks=updated_callbacks,
                 abort_requested_fn=lambda: self.abort_acqusition_requested,

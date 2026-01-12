@@ -34,8 +34,7 @@ def test_check_ram_available_with_error_dialog_sufficient_ram():
     try:
         # Set up a small scan area with one channel (need multiple FOVs for non-zero bounds)
         all_configuration_names = [
-            config.name
-            for config in mpc.channelConfigurationManager.get_configurations(mpc.objectiveStore.current_objective)
+            config.name for config in mpc.liveController.get_channels(mpc.objectiveStore.current_objective)
         ]
         x_min = mpc.stage.get_config().X_AXIS.MIN_POSITION + 0.01
         y_min = mpc.stage.get_config().Y_AXIS.MIN_POSITION + 0.01
@@ -64,8 +63,7 @@ def test_check_ram_available_with_error_dialog_insufficient_ram():
     try:
         # Set up scan with channels (need multiple FOVs for non-zero bounds)
         all_configuration_names = [
-            config.name
-            for config in mpc.channelConfigurationManager.get_configurations(mpc.objectiveStore.current_objective)
+            config.name for config in mpc.liveController.get_channels(mpc.objectiveStore.current_objective)
         ]
         x_min = mpc.stage.get_config().X_AXIS.MIN_POSITION + 0.01
         y_min = mpc.stage.get_config().Y_AXIS.MIN_POSITION + 0.01
@@ -113,8 +111,7 @@ def test_check_ram_available_with_error_dialog_factor_of_safety():
     try:
         # Set up scan (need multiple FOVs for non-zero bounds)
         all_configuration_names = [
-            config.name
-            for config in mpc.channelConfigurationManager.get_configurations(mpc.objectiveStore.current_objective)
+            config.name for config in mpc.liveController.get_channels(mpc.objectiveStore.current_objective)
         ]
         x_min = mpc.stage.get_config().X_AXIS.MIN_POSITION + 0.01
         y_min = mpc.stage.get_config().Y_AXIS.MIN_POSITION + 0.01

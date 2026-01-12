@@ -438,3 +438,19 @@ def get_illumination_channel_names(config: GeneralChannelConfig) -> Set[str]:
             names.update(acq_channel.illumination_settings.illumination_channels)
         names.update(acq_channel.illumination_settings.intensity.keys())
     return names
+
+
+class AcquisitionOutputConfig(BaseModel):
+    """
+    Output format for acquisition settings saved alongside acquired images.
+
+    This is written to acquisition_channels.yaml in the experiment output directory
+    to record what settings were used during acquisition.
+    """
+
+    version: int = Field(1, description="Configuration format version")
+    objective: str = Field(..., description="Objective used for acquisition")
+    confocal_mode: bool = Field(False, description="Whether confocal mode was active")
+    channels: List[AcquisitionChannel] = Field(default_factory=list, description="List of acquisition channels used")
+
+    model_config = {"extra": "forbid"}

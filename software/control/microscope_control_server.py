@@ -513,9 +513,7 @@ class MicroscopeControlServer:
     ) -> Dict[str, Any]:
         """Set the current imaging channel/illumination mode."""
         objective = self.microscope.objective_store.current_objective
-        channel_config = self.microscope.channel_configuration_mananger.get_channel_configuration_by_name(
-            objective, channel_name
-        )
+        channel_config = self.microscope.live_controller.get_channel_by_name(objective, channel_name)
         if channel_config:
             self.microscope.live_controller.set_microscope_mode(channel_config)
             return {"channel": channel_name, "objective": objective}
@@ -526,7 +524,7 @@ class MicroscopeControlServer:
     def _cmd_get_channels(self) -> Dict[str, Any]:
         """Get list of available imaging channels for the current objective."""
         objective = self.microscope.objective_store.current_objective
-        channels = self.microscope.channel_configuration_mananger.get_channel_configurations_for_objective(objective)
+        channels = self.microscope.live_controller.get_channels(objective)
         return {"objective": objective, "channels": [ch.name for ch in channels] if channels else []}
 
     @schema_method
@@ -726,9 +724,7 @@ class MicroscopeControlServer:
 
         # Validate channels exist
         objective = self.microscope.objective_store.current_objective
-        available_channels = self.microscope.channel_configuration_mananger.get_channel_configurations_for_objective(
-            objective
-        )
+        available_channels = self.microscope.live_controller.get_channels(objective)
         available_channel_names = [ch.name for ch in available_channels] if available_channels else []
 
         invalid_channels = [ch for ch in channels if ch not in available_channel_names]

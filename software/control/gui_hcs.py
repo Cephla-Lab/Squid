@@ -28,10 +28,8 @@ from control._def import *
 
 # app specific libraries
 from control.NL5Widget import NL5Widget
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
-from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.multi_point_utils import (
@@ -195,7 +193,6 @@ class QtMultiPointController(MultiPointController, QObject):
         live_controller: LiveController,
         autofocus_controller: AutoFocusController,
         objective_store: ObjectiveStore,
-        channel_configuration_mananger: ChannelConfigurationManager,
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
         fluidics: Optional[Any] = None,
@@ -206,7 +203,6 @@ class QtMultiPointController(MultiPointController, QObject):
             live_controller=live_controller,
             autofocus_controller=autofocus_controller,
             objective_store=objective_store,
-            channel_configuration_mananger=channel_configuration_mananger,
             callbacks=MultiPointControllerFunctions(
                 signal_acquisition_start=self._signal_acquisition_start_fn,
                 signal_acquisition_finished=self._signal_acquisition_finished_fn,
@@ -325,8 +321,6 @@ class HighContentScreeningGui(QMainWindow):
         self.fluidics: Optional[Fluidics] = microscope.addons.fluidics
         self.piezo: Optional[PiezoStage] = microscope.addons.piezo_stage
 
-        self.channelConfigurationManager: ChannelConfigurationManager = microscope.channel_configuration_mananger
-        self.laserAFSettingManager: LaserAFSettingManager = microscope.laser_af_settings_manager
         self.configurationManager: ConfigurationManager = microscope.configuration_mananger
         self.contrastManager: ContrastManager = microscope.contrast_manager
         self.liveController: LiveController = microscope.live_controller
@@ -496,7 +490,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.microcontroller,
                 self.stage,
                 self.objectiveStore,
-                self.channelConfigurationManager,
                 self.liveController,
                 self.autofocusController,
                 self.imageDisplayWindow,
@@ -527,7 +520,6 @@ class HighContentScreeningGui(QMainWindow):
             self.liveController,
             self.autofocusController,
             self.objectiveStore,
-            self.channelConfigurationManager,
             scan_coordinates=self.scanCoordinates,
             laser_autofocus_controller=self.laserAutofocusController,
             fluidics=self.fluidics,
@@ -633,7 +625,6 @@ class HighContentScreeningGui(QMainWindow):
             self.streamHandler,
             self.liveController,
             self.objectiveStore,
-            self.channelConfigurationManager,
             show_display_options=False,
             show_autolevel=True,
             autolevel=True,
@@ -722,7 +713,6 @@ class HighContentScreeningGui(QMainWindow):
             self.navigationViewer,
             self.multipointController,
             self.objectiveStore,
-            self.channelConfigurationManager,
             self.scanCoordinates,
             self.focusMapWidget,
             self.napariMosaicDisplayWidget,
@@ -733,7 +723,6 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController,
             self.liveController,
             self.objectiveStore,
-            self.channelConfigurationManager,
             self.scanCoordinates,
             self.focusMapWidget,
             self.napariMosaicDisplayWidget,
@@ -746,7 +735,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.navigationViewer,
                 self.multipointController,
                 self.objectiveStore,
-                self.channelConfigurationManager,
                 self.scanCoordinates,
                 self.focusMapWidget,
             )
@@ -755,9 +743,7 @@ class HighContentScreeningGui(QMainWindow):
             self.navigationViewer,
             self.multipointController,
             self.objectiveStore,
-            self.channelConfigurationManager,
             self.scanCoordinates,
-            self.focusMapWidget,
             self.napariMosaicDisplayWidget,
         )
         self.sampleSettingsWidget = widgets.SampleSettingsWidget(self.objectivesWidget, self.wellplateFormatWidget)
@@ -766,7 +752,6 @@ class HighContentScreeningGui(QMainWindow):
             self.trackingControlWidget = widgets.TrackingControllerWidget(
                 self.trackingController,
                 self.objectiveStore,
-                self.channelConfigurationManager,
                 show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
             )
 
@@ -848,7 +833,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.liveController,
                 self.stage,
                 self.objectiveStore,
-                self.channelConfigurationManager,
                 self.contrastManager,
                 self.wellSelectionWidget,
             )
@@ -1575,7 +1559,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def openAdvancedChannelMapping(self):
         """Open the advanced channel hardware mapping dialog"""
-        dialog = widgets.AdvancedChannelMappingDialog(self.channelConfigurationManager, self)
+        dialog = widgets.AdvancedChannelMappingDialog(self.microscope.config_repo, self)
         dialog.signal_mappings_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 

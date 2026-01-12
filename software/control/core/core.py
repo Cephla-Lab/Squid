@@ -13,10 +13,8 @@ from qtpy.QtGui import *
 
 from control._def import *
 from control.core import job_processing
-from control.core.channel_configuration_mananger import ChannelConfigurationManager
 from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
-from control.core.laser_af_settings_manager import LaserAFSettingManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_worker import MultiPointWorker
 from control.core.objective_store import ObjectiveStore
@@ -303,7 +301,6 @@ class TrackingController(QObject):
         microcontroller: Microcontroller,
         stage: AbstractStage,
         objectiveStore,
-        channelConfigurationManager,
         liveController: LiveController,
         autofocusController,
         imageDisplayWindow,
@@ -314,7 +311,6 @@ class TrackingController(QObject):
         self.microcontroller = microcontroller
         self.stage = stage
         self.objectiveStore = objectiveStore
-        self.channelConfigurationManager = channelConfigurationManager
         self.liveController = liveController
         self.autofocusController = autofocusController
         self.imageDisplayWindow = imageDisplayWindow
@@ -416,11 +412,15 @@ class TrackingController(QObject):
         self.recording_start_time = time.time()
         # create a new folder
         try:
-            utils.ensure_directory_exists(os.path.join(self.base_path, self.experiment_ID))
-            self.channelConfigurationManager.save_current_configuration_to_path(
-                self.objectiveStore.current_objective,
-                os.path.join(self.base_path, self.experiment_ID) + "/configurations.xml",
-            )  # save the configuration for the experiment
+            experiment_dir = os.path.join(self.base_path, self.experiment_ID)
+            utils.ensure_directory_exists(experiment_dir)
+            # Save acquisition configuration via ConfigRepository
+            self.liveController.microscope.config_repo.save_acquisition_output(
+                output_dir=experiment_dir,
+                objective=self.objectiveStore.current_objective,
+                channels=self.selected_configurations,
+                confocal_mode=self.liveController.is_confocal_mode(),
+            )
         except:
             self._log.info("error in making a new folder")
             pass
@@ -491,7 +491,6 @@ class TrackingWorker(QObject):
         self.microcontroller = self.trackingController.microcontroller
         self.liveController = self.trackingController.liveController
         self.autofocusController = self.trackingController.autofocusController
-        self.channelConfigurationManager = self.trackingController.channelConfigurationManager
         self.imageDisplayWindow = self.trackingController.imageDisplayWindow
         self.display_resolution_scaling = self.trackingController.display_resolution_scaling
         self.counter = self.trackingController.counter
