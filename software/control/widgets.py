@@ -286,16 +286,15 @@ class NDViewerTab(QWidget):
         The FOV list contains dictionaries with keys:
             - "region": str - The well ID (e.g., "A1", "B2")
             - "fov": int - The FOV index within that well
+
+        Raises:
+            Exception: If get_fov_list() fails (caller should handle).
         """
-        try:
-            fovs = self._viewer.get_fov_list()
-            return next(
-                (i for i, fov in enumerate(fovs) if fov["region"] == well_id and fov["fov"] == fov_index),
-                None,
-            )
-        except Exception:
-            self._log.exception(f"_find_flat_fov_index failed for well={well_id}, fov={fov_index}")
-            return None
+        fovs = self._viewer.get_fov_list()
+        return next(
+            (i for i, fov in enumerate(fovs) if fov["region"] == well_id and fov["fov"] == fov_index),
+            None,
+        )
 
     def close(self) -> None:
         """Clean up viewer resources."""
