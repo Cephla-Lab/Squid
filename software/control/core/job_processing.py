@@ -888,6 +888,22 @@ class JobRunner(multiprocessing.Process):
                         # Signal capacity available for all job completions
                         if self._bp_capacity_event is not None:
                             self._bp_capacity_event.set()
+
+        # Release accumulated bytes for incomplete wells on shutdown
+        # (prevents bytes from being permanently "leaked" if acquisition is interrupted mid-well)
+        if self._bp_pending_bytes is not None and self._well_accumulated_bytes:
+            total_unreleased = sum(self._well_accumulated_bytes.values())
+            if total_unreleased > 0:
+                self._log.info(
+                    f"Releasing {total_unreleased / (1024*1024):.1f}MB from {len(self._well_accumulated_bytes)} "
+                    f"incomplete wells on shutdown"
+                )
+                with self._bp_pending_bytes.get_lock():
+                    self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - total_unreleased)
+                if self._bp_capacity_event is not None:
+                    self._bp_capacity_event.set()
+            self._well_accumulated_bytes.clear()
+
         # Stop memory monitoring and log final report
         log_memory("WORKER_SHUTDOWN", include_children=False)
         stop_worker_monitoring()

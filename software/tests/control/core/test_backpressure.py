@@ -722,3 +722,91 @@ class TestBackpressureSharedValues:
             assert controller.capacity_event.is_set()
         finally:
             runner.shutdown(timeout_s=1.0)
+
+
+class TestDownsampledViewJobShutdownCleanup:
+    """Tests for DownsampledViewJob byte cleanup on shutdown.
+
+    When acquisition is interrupted mid-well, accumulated bytes for incomplete
+    wells must be released on shutdown to prevent backpressure leaks.
+    """
+
+    def make_downsampled_view_job(
+        self,
+        well_id: str = "A1",
+        fov_index: int = 0,
+        total_fovs: int = 1,
+        channel_idx: int = 0,
+        total_channels: int = 1,
+        z_index: int = 0,
+        total_z_levels: int = 1,
+        size_bytes: int = 10000,
+    ) -> DownsampledViewJob:
+        """Create a DownsampledViewJob for testing."""
+        return DownsampledViewJob(
+            capture_info=make_test_capture_info(
+                region_id=well_id, fov=fov_index, z_index=z_index, config_idx=channel_idx
+            ),
+            capture_image=make_test_job_image(size_bytes),
+            well_id=well_id,
+            well_row=0,
+            well_col=0,
+            fov_index=fov_index,
+            total_fovs_in_well=total_fovs,
+            channel_idx=channel_idx,
+            total_channels=total_channels,
+            z_index=z_index,
+            total_z_levels=total_z_levels,
+            channel_name=f"Channel_{channel_idx}",
+            fov_position_in_well=(0.0, 0.0),
+            overlap_pixels=(0, 0, 0, 0),
+            pixel_size_um=1.0,
+            target_resolutions_um=[10.0],
+            plate_resolution_um=10.0,
+            output_dir="/tmp/test",
+            channel_names=[f"Channel_{i}" for i in range(total_channels)],
+            skip_saving=True,
+        )
+
+    def test_shutdown_releases_incomplete_well_bytes(self):
+        """Bytes for incomplete wells should be released on shutdown."""
+        controller = BackpressureController(max_jobs=100, max_mb=1000.0)
+
+        runner = JobRunner(
+            bp_pending_jobs=controller.pending_jobs_value,
+            bp_pending_bytes=controller.pending_bytes_value,
+            bp_capacity_event=controller.capacity_event,
+        )
+        runner.daemon = True
+        runner.start()
+
+        try:
+            time.sleep(0.5)
+
+            # Dispatch several intermediate FOVs (well won't complete)
+            for fov_idx in range(3):
+                job = self.make_downsampled_view_job(
+                    fov_index=fov_idx,
+                    total_fovs=10,  # 10 FOVs total, we only send 3
+                    size_bytes=100000,  # ~100KB each
+                )
+                runner.dispatch(job)
+
+            time.sleep(0.5)
+
+            # Jobs should be done, but bytes still tracked
+            assert controller.get_pending_jobs() == 0
+            bytes_before_shutdown = controller.get_pending_mb()
+            assert bytes_before_shutdown > 0.2  # ~300KB tracked
+
+        finally:
+            # Shutdown should release the accumulated bytes
+            runner.shutdown(timeout_s=2.0)
+
+        # After shutdown, bytes should be released
+        time.sleep(0.2)
+        bytes_after_shutdown = controller.get_pending_mb()
+        assert bytes_after_shutdown < 0.01, (
+            f"Bytes not released on shutdown: before={bytes_before_shutdown:.3f}MB, "
+            f"after={bytes_after_shutdown:.3f}MB"
+        )
