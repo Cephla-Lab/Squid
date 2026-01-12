@@ -68,6 +68,27 @@ class SlowJob(Job):
         return self.result_value
 
 
+@dataclass
+class FailingJob(Job):
+    """A job that raises an exception after a delay."""
+
+    duration_s: float = 0.1
+    error_message: str = "Intentional test failure"
+
+    def run(self):
+        time.sleep(self.duration_s)
+        raise RuntimeError(self.error_message)
+
+
+def make_failing_job(duration_s: float = 0.1, size_bytes: int = 10000) -> FailingJob:
+    """Create a FailingJob with test capture info."""
+    return FailingJob(
+        capture_info=make_test_capture_info(),
+        capture_image=make_test_job_image(size_bytes),
+        duration_s=duration_s,
+    )
+
+
 def make_slow_job(duration_s: float = 0.1, result_value: str = "done", size_bytes: int = 1000) -> SlowJob:
     """Create a SlowJob with test capture info."""
     return SlowJob(
@@ -494,15 +515,15 @@ class TestDownsampledViewJobBackpressure:
             DownsampledViewJob.clear_accumulators()
 
 
-class TestDownsampledViewJobExceptionHandling:
-    """Tests for DownsampledViewJob exception handling during backpressure tracking.
+class TestJobExceptionHandling:
+    """Tests for job exception handling during backpressure tracking.
 
-    When a DownsampledViewJob completes (success or exception), bytes are released
-    immediately via the finally block in JobRunner's run loop.
+    When a job raises an exception, bytes must still be released via the finally
+    block in JobRunner's run loop to prevent backpressure leaks.
     """
 
-    def test_job_exception_still_decrements_bytes(self):
-        """When job completes (even with exception), bytes should still decrement."""
+    def test_failing_job_still_decrements_bytes(self):
+        """When job raises exception, bytes should still decrement."""
         controller = BackpressureController(max_jobs=100, max_mb=1000.0)
         runner = _create_runner_with_backpressure(controller)
         runner.start()
@@ -510,23 +531,53 @@ class TestDownsampledViewJobExceptionHandling:
         try:
             time.sleep(0.5)
 
-            # Dispatch jobs and wait for completion
-            runner.dispatch(make_downsampled_view_job(fov_index=0, total_fovs=2, size_bytes=10000))
-            time.sleep(0.3)
-            runner.dispatch(make_downsampled_view_job(fov_index=1, total_fovs=2, size_bytes=10000))
+            # Dispatch a job that will raise an exception
+            job = make_failing_job(duration_s=0.1, size_bytes=50000)
+            runner.dispatch(job)
 
-            try:
-                runner.output_queue().get(timeout=5.0)
-            except Exception:
-                pass
-            time.sleep(0.3)
+            # Verify bytes were tracked on dispatch
+            assert controller.get_pending_jobs() == 1
+            assert controller.get_pending_mb() > 0
 
-            # Bytes decrement immediately when each job completes, regardless of success/exception
+            # Wait for job to fail and result to be queued
+            result = runner.output_queue().get(timeout=5.0)
+            time.sleep(0.1)
+
+            # Verify exception was captured
+            assert result.exception is not None
+            assert "Intentional test failure" in str(result.exception)
+
+            # Bytes should be decremented even though job raised exception
             assert controller.get_pending_jobs() == 0
             assert controller.get_pending_mb() == 0.0
         finally:
             runner.shutdown(timeout_s=1.0)
-            DownsampledViewJob.clear_accumulators()
+
+    def test_multiple_failing_jobs_all_decrement_bytes(self):
+        """Multiple failing jobs should all decrement their bytes."""
+        controller = BackpressureController(max_jobs=100, max_mb=1000.0)
+        runner = _create_runner_with_backpressure(controller)
+        runner.start()
+
+        try:
+            time.sleep(0.5)
+
+            # Dispatch multiple failing jobs
+            for _ in range(3):
+                runner.dispatch(make_failing_job(duration_s=0.05, size_bytes=20000))
+
+            # Wait for all jobs to complete
+            for _ in range(3):
+                result = runner.output_queue().get(timeout=5.0)
+                assert result.exception is not None
+
+            time.sleep(0.1)
+
+            # All bytes should be released
+            assert controller.get_pending_jobs() == 0
+            assert controller.get_pending_mb() == 0.0
+        finally:
+            runner.shutdown(timeout_s=1.0)
 
 
 class TestBackpressureSharedValues:
@@ -623,6 +674,67 @@ class TestDownsampledViewJobImmediateByteRelease:
 
             # With immediate byte release, all bytes should be released
             # even though wells are incomplete
+            assert controller.get_pending_jobs() == 0
+            assert controller.get_pending_mb() == 0.0
+
+        finally:
+            runner.shutdown(timeout_s=2.0)
+            DownsampledViewJob.clear_accumulators()
+
+    def test_zstack_does_not_deadlock_at_byte_limit(self):
+        """Z-stack acquisition should not deadlock even when total bytes exceed limit.
+
+        This is the key regression test for the deadlock fix. Previously, a z-stack
+        with (FOVs × z-levels × channels) images could exceed the byte limit before
+        any well completed, causing permanent deadlock since bytes were only released
+        at well completion.
+
+        With immediate byte release, each job releases its bytes when processed,
+        allowing the acquisition to proceed even when total bytes would exceed limit.
+        """
+        # Set a low byte limit that would be exceeded by a single well's z-stack
+        # 4 FOVs × 2 z-levels × 2 channels = 16 images at ~50KB each = ~800KB
+        # With 0.5 MB limit, OLD behavior would deadlock after ~10 images
+        controller = BackpressureController(max_jobs=100, max_mb=0.5, timeout_s=2.0)
+        runner = _create_runner_with_backpressure(controller)
+        runner.start()
+
+        try:
+            time.sleep(0.5)
+
+            # Simulate a z-stack acquisition: 4 FOVs × 2 z-levels × 2 channels = 16 images
+            jobs_dispatched = 0
+            for fov in range(4):
+                for z in range(2):
+                    for ch in range(2):
+                        # Check backpressure before each dispatch
+                        if controller.should_throttle():
+                            # With immediate release, we should never stay throttled long
+                            got_capacity = controller.wait_for_capacity()
+                            assert got_capacity, (
+                                f"Deadlock detected! Stuck at job {jobs_dispatched}, "
+                                f"pending_mb={controller.get_pending_mb():.2f}"
+                            )
+
+                        job = make_downsampled_view_job(
+                            fov_index=fov,
+                            total_fovs=4,
+                            z_index=z,
+                            total_z_levels=2,
+                            channel_idx=ch,
+                            total_channels=2,
+                            size_bytes=50000,  # ~50KB per image
+                        )
+                        runner.dispatch(job)
+                        jobs_dispatched += 1
+                        time.sleep(0.05)  # Small delay to allow job processing
+
+            # Wait for final result (well completion)
+            runner.output_queue().get(timeout=10.0)
+            time.sleep(0.3)
+
+            # All jobs should have completed without deadlock
+            assert jobs_dispatched == 16, f"Expected 16 jobs, dispatched {jobs_dispatched}"
             assert controller.get_pending_jobs() == 0
             assert controller.get_pending_mb() == 0.0
 
