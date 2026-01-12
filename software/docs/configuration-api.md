@@ -437,7 +437,7 @@ generated = ensure_default_configs(
 )
 
 # Check for legacy configs that need migration
-if has_legacy_configs_to_migrate("my_profile"):
+if has_legacy_configs_to_migrate("my_profile", base_path=Path("software/")):
     print("Run migration script first")
 
 # Generate configs programmatically

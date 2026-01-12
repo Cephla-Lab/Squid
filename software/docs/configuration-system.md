@@ -113,7 +113,7 @@ Only create this file if the system has a confocal unit. Its presence indicates 
 ```yaml
 version: 1
 
-# Filter wheel slot mappings
+# Filter wheel slot mappings (wheel_id -> slot -> filter_name)
 filter_wheel_mappings:
   1:  # Filter wheel ID
     1: "Empty"
@@ -135,9 +135,11 @@ objective_specific_properties:
 
 | Field | Description |
 |-------|-------------|
-| `filter_wheel_mappings` | Wheel ID → slot → filter name |
-| `public_properties` | Settings in `general.yaml` |
-| `objective_specific_properties` | Settings in objective files |
+| `filter_wheel_mappings` | Nested dict: wheel ID → slot number → filter name |
+| `public_properties` | Properties available in `general.yaml` |
+| `objective_specific_properties` | Properties only in objective-specific files |
+
+> **Note**: The `confocal_config.yaml.example` file in `machine_configs/` uses a simplified format for reference. When creating your actual config, use the structure shown above which matches the Pydantic model.
 
 ### camera_mappings.yaml
 
