@@ -1,3 +1,6 @@
 [submodule "software/fluidics_v2"]
 	path = software/fluidics_v2
-	url = https://github.com/Alpaca233/fluidics_v2.git
+	url = https://github.com/weallen/fluidics_v2.git
+[submodule "software/src/squid/ui/widgets/ndviewer_light"]
+	path = software/src/squid/ui/widgets/ndviewer_light
+	url = https://github.com/weallen/ndviewer_light.git

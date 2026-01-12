@@ -14,6 +14,7 @@ from squid.ui.widgets.display.monitoring import (
     RAMMonitorWidget,
     BackpressureMonitorWidget,
 )
+from squid.ui.widgets.display.ndviewer_tab import NDViewerTab
 
 __all__ = [
     "StatsDisplayWidget",
@@ -27,4 +28,5 @@ __all__ = [
     "SurfacePlotWidget",
     "RAMMonitorWidget",
     "BackpressureMonitorWidget",
+    "NDViewerTab",
 ]

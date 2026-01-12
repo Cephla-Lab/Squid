@@ -59,14 +59,16 @@ commits:
     skip_date: '2026-01-12'
   4234d34b:
     title: 'feat: NDViewer tab with live viewing and plate navigation (#428)'
-    status: skipped
-    skip_reason: deferred
-    skip_justification: |
-      Large feature (680 lines + git submodule) that adds embedded NDViewer tab.
-      Requires adding ndviewer_light as git submodule and significant UI integration.
-      Would need to evaluate whether ndviewer_light is compatible with arch_v2's
-      napari integration and event-driven architecture. Deferred for future consideration.
-    skip_date: '2026-01-12'
+    status: ported
+    ported_in: 2327bb84
+    ported_date: '2026-01-12'
+    notes: |
+      Ported with arch_v2 EventBus integration. Added ndviewer_light as git submodule
+      at software/src/squid/ui/widgets/ndviewer_light (using weallen fork). Includes:
+      - NDViewerTab widget with lazy loading
+      - Auto-update on AcquisitionStarted event via EventBus
+      - Plate view → NDViewer FOV navigation on double-click
+      - Updated fluidics_v2 submodule to weallen fork
   3866b183:
     title: 'refactor: Remove legacy config managers, centralize in ConfigRepository (#441)'
     status: skipped
