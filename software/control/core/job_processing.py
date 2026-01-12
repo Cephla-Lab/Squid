@@ -668,6 +668,8 @@ class JobRunner(multiprocessing.Process):
         bp_capacity_event: Optional[multiprocessing.Event] = None,
     ):
         super().__init__()
+        # Daemon processes are terminated when the main process exits
+        self.daemon = True
         self._log = squid.logging.get_logger(__class__.__name__)
         self._acquisition_info = acquisition_info
         self._log_file_path = log_file_path  # Will be used in subprocess to set up file logging
