@@ -1004,9 +1004,7 @@ class MicroscopeControlServer:
         Returns the list of available channel names.
         Raises ValueError if any requested channels are invalid.
         """
-        available_channels = self.microscope.channel_configuration_mananger.get_channel_configurations_for_objective(
-            current_objective
-        )
+        available_channels = self.microscope.config_repo.get_merged_channels(current_objective)
         available_channel_names = [ch.name for ch in available_channels] if available_channels else []
 
         invalid_channels = [ch for ch in channel_names if ch not in available_channel_names]

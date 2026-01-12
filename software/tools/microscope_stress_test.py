@@ -216,7 +216,6 @@ def main(args):
         live_controller=scope.live_controller,
         autofocus_controller=af_controller,
         objective_store=scope.objective_store,
-        channel_configuration_manager=scope.channel_configuration_manager,
         callbacks=mpc_tracker.get_callbacks(),
         scan_coordinates=simple_scan_coordinates,
         laser_autofocus_controller=None,

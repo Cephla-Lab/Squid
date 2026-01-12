@@ -29,7 +29,7 @@ def create_mock_server(objective: str = "20x", channels: list = None):
     mock_microscope.camera.get_binning.return_value = (1, 1)
 
     mock_channels = [create_mock_channel(name) for name in channels]
-    mock_microscope.channel_configuration_mananger.get_channel_configurations_for_objective.return_value = mock_channels
+    mock_microscope.config_repo.get_merged_channels.return_value = mock_channels
 
     mock_multipoint = MagicMock()
     mock_multipoint.acquisition_in_progress.return_value = False
@@ -150,9 +150,7 @@ class TestRunAcquisitionFromYAML:
         # Only return one channel, so the second one will be invalid
         mock_channel = MagicMock()
         mock_channel.name = "BF LED matrix full"
-        mock_server.microscope.channel_configuration_mananger.get_channel_configurations_for_objective.return_value = [
-            mock_channel
-        ]
+        mock_server.microscope.config_repo.get_merged_channels.return_value = [mock_channel]
 
         with pytest.raises(ValueError, match="Invalid channels"):
             mock_server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file)
