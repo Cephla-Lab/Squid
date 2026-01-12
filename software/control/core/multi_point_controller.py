@@ -5,7 +5,9 @@ import os
 import pathlib
 import tempfile
 import time
+import yaml
 from datetime import datetime
+from enum import Enum
 from threading import Thread
 from typing import Optional, Tuple, Any
 
@@ -23,6 +25,7 @@ from control.core.live_controller import LiveController
 from control.microscope import Microscope
 from control.core.multi_point_worker import MultiPointWorker
 from control.core.objective_store import ObjectiveStore
+from control.core.memory_profiler import MemoryMonitor, log_memory
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
@@ -38,6 +41,147 @@ NoOpCallbacks = MultiPointControllerFunctions(
     signal_overall_progress=lambda *a, **kw: None,
     signal_region_progress=lambda *a, **kw: None,
 )
+
+
+def _serialize_for_yaml(obj):
+    """Recursively serialize objects to YAML-compatible types."""
+    if obj is None:
+        return None
+    elif isinstance(obj, Enum):
+        return obj.value
+    # Handle numpy types - convert to native Python types
+    elif isinstance(obj, np.ndarray):
+        return [_serialize_for_yaml(item) for item in obj.tolist()]
+    elif isinstance(obj, (np.integer, np.floating)):
+        return obj.item()  # Convert numpy scalar to Python scalar
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {k: _serialize_for_yaml(v) for k, v in dataclasses.asdict(obj).items()}
+    elif hasattr(obj, "model_dump"):
+        return _serialize_for_yaml(obj.model_dump())
+    elif isinstance(obj, dict):
+        return {k: _serialize_for_yaml(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_serialize_for_yaml(item) for item in obj]
+    else:
+        return obj
+
+
+def _save_acquisition_yaml(
+    params: "AcquisitionParameters",
+    experiment_path: str,
+    region_shapes: dict = None,
+    widget_type: str = "wellplate",
+    objective_info: dict = None,
+    wellplate_format: str = None,
+    scan_size_mm: float = 0.0,
+    overlap_percent: float = 10.0,
+) -> None:
+    """Save acquisition parameters to YAML file.
+
+    Args:
+        params: AcquisitionParameters dataclass
+        experiment_path: Path to experiment folder
+        region_shapes: Optional dict of {region_id: shape} from ScanCoordinates
+        widget_type: "wellplate" or "flexible"
+        objective_info: Dict with objective name, magnification, pixel_size_um
+        wellplate_format: String like "384 well plate" or None
+        scan_size_mm: Scan size in mm (for wellplate mode)
+        overlap_percent: FOV overlap percentage
+    """
+    # Build common sections
+    yaml_dict = {
+        "acquisition": {
+            "experiment_id": params.experiment_ID,
+            "start_time": params.acquisition_start_time,
+            "widget_type": widget_type,
+            "xy_mode": params.xy_mode,
+            "skip_saving": params.skip_saving,
+        },
+        "objective": objective_info or {},
+        "sample": {
+            "wellplate_format": wellplate_format,
+        },
+        "z_stack": {
+            "nz": params.NZ,
+            "delta_z_mm": params.deltaZ,
+            "config": params.z_stacking_config,
+            "z_range_mm": _serialize_for_yaml(params.z_range) if params.z_range else None,
+            "use_piezo": params.use_piezo,
+        },
+        "time_series": {
+            "nt": params.Nt,
+            "delta_t_s": params.deltat,
+        },
+        "autofocus": {
+            "contrast_af": params.do_autofocus,
+            "laser_af": params.do_reflection_autofocus,
+        },
+        "channels": [_serialize_for_yaml(ch) for ch in params.selected_configurations],
+    }
+
+    # Add widget-specific scan section
+    if widget_type == "wellplate":
+        yaml_dict["wellplate_scan"] = {
+            "scan_size_mm": scan_size_mm,
+            "overlap_percent": overlap_percent,
+            "regions": [
+                {
+                    "name": name,
+                    "center_mm": _serialize_for_yaml(center),
+                    "shape": region_shapes.get(name) if region_shapes else None,
+                }
+                for name, center in zip(
+                    params.scan_position_information.scan_region_names,
+                    params.scan_position_information.scan_region_coords_mm,
+                )
+            ],
+        }
+    else:  # flexible
+        yaml_dict["flexible_scan"] = {
+            "nx": params.NX,
+            "ny": params.NY,
+            "delta_x_mm": params.deltaX,
+            "delta_y_mm": params.deltaY,
+            "overlap_percent": overlap_percent,
+            "positions": [
+                {
+                    "name": name,
+                    "center_mm": _serialize_for_yaml(center),
+                }
+                for name, center in zip(
+                    params.scan_position_information.scan_region_names,
+                    params.scan_position_information.scan_region_coords_mm,
+                )
+            ],
+        }
+
+    # Add remaining common sections
+    yaml_dict["downsampled_views"] = {
+        "enabled": params.generate_downsampled_views,
+        "save_well_images": params.save_downsampled_well_images,
+        "well_resolutions_um": _serialize_for_yaml(params.downsampled_well_resolutions_um),
+        "plate_resolution_um": params.downsampled_plate_resolution_um,
+        "z_projection": _serialize_for_yaml(params.downsampled_z_projection),
+        "interpolation_method": _serialize_for_yaml(params.downsampled_interpolation_method),
+    }
+    yaml_dict["plate"] = {
+        "num_rows": params.plate_num_rows,
+        "num_cols": params.plate_num_cols,
+    }
+    yaml_dict["fluidics"] = {
+        "enabled": params.use_fluidics,
+    }
+
+    yaml_path = os.path.join(experiment_path, "acquisition.yaml")
+    try:
+        with open(yaml_path, "w", encoding="utf-8") as f:
+            f.write(f"# Acquisition Parameters - {params.experiment_ID}\n\n")
+            yaml.dump(yaml_dict, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    except (OSError, yaml.YAMLError) as exc:
+        _log = squid.logging.get_logger(__name__)
+        _log.error("Failed to write acquisition YAML file '%s': %s", yaml_path, exc)
 
 
 class MultiPointController:
@@ -69,6 +213,7 @@ class MultiPointController:
         self.fluidics: Optional[Any] = microscope.addons.fluidics
         self.thread: Optional[Thread] = None
         self._per_acq_log_handler = None
+        self._memory_monitor: Optional[MemoryMonitor] = None
 
         self.NX = 1
         self.deltaX = control._def.Acquisition.DX
@@ -93,6 +238,9 @@ class MultiPointController:
         self.use_fluidics = False
         self.skip_saving = False
         self.xy_mode = "Current Position"
+        self.widget_type = "wellplate"  # "wellplate" or "flexible"
+        self.scan_size_mm = 0.0  # For wellplate mode: size of scan area per region
+        self.overlap_percent = 10.0  # FOV overlap percentage
 
         self.focus_map = None
         self.gen_focus_map = False
@@ -207,6 +355,15 @@ class MultiPointController:
 
     def set_xy_mode(self, xy_mode):
         self.xy_mode = xy_mode
+
+    def set_widget_type(self, widget_type: str):
+        self.widget_type = widget_type
+
+    def set_scan_size(self, scan_size_mm: float):
+        self.scan_size_mm = scan_size_mm
+
+    def set_overlap_percent(self, overlap_percent: float):
+        self.overlap_percent = overlap_percent
 
     def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
         # generate unique experiment ID
@@ -444,6 +601,18 @@ class MultiPointController:
             self.callbacks.signal_acquisition_finished()
             return
         self._start_per_acquisition_log()
+
+        # Start memory monitoring for the acquisition (if enabled)
+        if control._def.ENABLE_MEMORY_PROFILING:
+            self._memory_monitor = MemoryMonitor(
+                sample_interval_ms=200,
+                process_name="main",
+                track_children=True,
+                log_interval_s=30.0,  # Log every 30 seconds during acquisition
+            )
+            self._memory_monitor.start("ACQUISITION_START")
+            log_memory("ACQUISITION START", include_children=True)
+
         thread_started = False
         try:
             self._log.info("start multipoint")
@@ -594,7 +763,37 @@ class MultiPointController:
             updated_callbacks = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
 
             acquisition_params = self.build_params(scan_position_information=scan_position_information)
-            self.callbacks.signal_acquisition_start(acquisition_params)
+
+            # Gather objective and camera info for YAML
+            current_objective = self.objectiveStore.current_objective
+            objective_dict = self.objectiveStore.objectives_dict.get(current_objective, {})
+            pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
+            objective_info = {
+                "name": current_objective,
+                "magnification": objective_dict.get("magnification"),
+                "NA": objective_dict.get("NA"),
+                "pixel_size_um": pixel_size_um,
+                "camera_binning": list(self.camera.get_binning()) if hasattr(self.camera, "get_binning") else None,
+                "sensor_pixel_size_um": self.camera.get_pixel_size_binned_um(),
+            }
+
+            # Get wellplate format if available
+            wellplate_format = getattr(self.scanCoordinates, "format", None)
+
+            # Save acquisition parameters to YAML
+            experiment_path = os.path.join(self.base_path, self.experiment_ID)
+            region_shapes = getattr(self.scanCoordinates, "region_shapes", None)
+            _save_acquisition_yaml(
+                acquisition_params,
+                experiment_path,
+                region_shapes,
+                self.widget_type,
+                objective_info,
+                wellplate_format,
+                self.scan_size_mm,
+                self.overlap_percent,
+            )
+
             self.multiPointWorker = MultiPointWorker(
                 scope=self.microscope,
                 live_controller=self.liveController,
@@ -609,12 +808,19 @@ class MultiPointController:
                 extra_job_classes=[],
             )
 
+            # Signal after worker creation so backpressure_controller is available
+            self.callbacks.signal_acquisition_start(acquisition_params)
+
             self.thread = Thread(target=self.multiPointWorker.run, name="Acquisition thread", daemon=True)
             thread_started = True
             self.thread.start()
         finally:
             if not thread_started:
                 self._stop_per_acquisition_log()
+                # Stop memory monitor if acquisition setup failed
+                if self._memory_monitor is not None:
+                    self._memory_monitor.stop()
+                    self._memory_monitor = None
 
     def build_params(self, scan_position_information: ScanPositionInformation) -> AcquisitionParameters:
         # Determine plate dimensions from wellplate format if available
@@ -653,10 +859,12 @@ class MultiPointController:
             use_fluidics=self.use_fluidics,
             skip_saving=self.skip_saving,
             # Downsampled view generation parameters
-            generate_downsampled_views=control._def.GENERATE_DOWNSAMPLED_WELL_IMAGES or control._def.DISPLAY_PLATE_VIEW,
+            generate_downsampled_views=control._def.SAVE_DOWNSAMPLED_WELL_IMAGES or control._def.DISPLAY_PLATE_VIEW,
+            save_downsampled_well_images=control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
             downsampled_well_resolutions_um=control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
             downsampled_plate_resolution_um=control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
             downsampled_z_projection=control._def.DOWNSAMPLED_Z_PROJECTION,
+            downsampled_interpolation_method=control._def.DOWNSAMPLED_INTERPOLATION_METHOD,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
@@ -681,6 +889,13 @@ class MultiPointController:
         # re-enable live if it's previously on
         if self.liveController_was_live_before_multipoint and control._def.RESUME_LIVE_AFTER_ACQUISITION:
             self.liveController.start_live()
+
+        # Stop memory monitoring and log final report
+        if self._memory_monitor is not None:
+            if control._def.ENABLE_MEMORY_PROFILING:
+                log_memory("ACQUISITION COMPLETE", include_children=True)
+            self._memory_monitor.stop()
+            self._memory_monitor = None
 
         # emit the acquisition finished signal to enable the UI
         self._log.info(f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}")
@@ -724,4 +939,15 @@ class MultiPointController:
         """
         if self.multiPointWorker is not None:
             return self.multiPointWorker.get_plate_view()
+        return None
+
+    @property
+    def backpressure_controller(self) -> Optional["BackpressureController"]:
+        """Get the backpressure controller from the current worker.
+
+        Returns:
+            BackpressureController if worker exists, None otherwise.
+        """
+        if self.multiPointWorker is not None:
+            return getattr(self.multiPointWorker, "_backpressure", None)
         return None

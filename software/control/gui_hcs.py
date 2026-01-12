@@ -16,7 +16,7 @@ from control.core.scan_coordinates import (
 os.environ["QT_API"] = "pyqt5"
 import serial
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 import numpy as np
 
 # qt libraries
@@ -54,6 +54,7 @@ import control.microscope
 import control.widgets as widgets
 import pyqtgraph.dockarea as dock
 import squid.abc
+import squid.camera.settings_cache
 import squid.camera.utils
 import squid.config
 import squid.logging
@@ -413,6 +414,8 @@ class HighContentScreeningGui(QMainWindow):
         self.napariMultiChannelWidget: Optional[widgets.NapariMultiChannelWidget] = None
         self.imageArrayDisplayWindow: Optional[core.ImageArrayDisplayWindow] = None
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
+        self.ramMonitorWidget: Optional[widgets.RAMMonitorWidget] = None
+        self.backpressureMonitorWidget: Optional[widgets.BackpressureMonitorWidget] = None
 
         self.recordTabWidget: QTabWidget = QTabWidget()
         self.cameraTabWidget: QTabWidget = QTabWidget()
@@ -623,6 +626,9 @@ class HighContentScreeningGui(QMainWindow):
                 include_camera_temperature_setting=False,
                 include_camera_auto_wb_setting=True,
             )
+
+        self._restore_cached_camera_settings()
+
         self.profileWidget = widgets.ProfileWidget(self.configurationManager)
         self.liveControlWidget = widgets.LiveControlWidget(
             self.streamHandler,
@@ -768,6 +774,74 @@ class HighContentScreeningGui(QMainWindow):
         self.setupRecordTabWidget()
         self.setupCameraTabWidget()
 
+    def _restore_cached_camera_settings(self) -> None:
+        """Restore cached camera settings from disk and update UI widgets.
+
+        Applies both hardware settings (via camera API) and synchronizes the UI
+        dropdown widgets. Silently returns if no cached settings exist.
+        Errors are logged but do not prevent application startup.
+        """
+        cached_settings = squid.camera.settings_cache.load_camera_settings()
+        if not cached_settings:
+            return
+
+        binning_restored = self._restore_binning(cached_settings.binning)
+        pixel_format_restored = self._restore_pixel_format(cached_settings.pixel_format)
+
+        if binning_restored or pixel_format_restored:
+            self.log.info(
+                f"Restored camera settings: binning={cached_settings.binning}, "
+                f"pixel_format={cached_settings.pixel_format}"
+            )
+
+    def _restore_binning(self, binning: Tuple[int, int]) -> bool:
+        """Apply binning setting to camera and sync UI dropdown.
+
+        Returns True if successfully applied, False otherwise.
+        """
+        try:
+            self.camera.set_binning(*binning)
+        except ValueError as e:
+            self.log.warning(f"Cannot restore binning {binning} - not supported by camera: {e}")
+            return False
+        except (AttributeError, RuntimeError) as e:
+            self.log.error(f"Camera error while restoring binning settings: {e}")
+            return False
+
+        binning_text = f"{binning[0]}x{binning[1]}"
+        self.cameraSettingWidget.dropdown_binning.blockSignals(True)
+        self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
+        self.cameraSettingWidget.dropdown_binning.blockSignals(False)
+        return True
+
+    def _restore_pixel_format(self, pixel_format_str: Optional[str]) -> bool:
+        """Apply pixel format setting to camera and sync UI dropdown.
+
+        Returns True if successfully applied, False otherwise.
+        """
+        if not pixel_format_str:
+            return False
+
+        try:
+            pixel_format = squid.config.CameraPixelFormat.from_string(pixel_format_str)
+        except KeyError:
+            self.log.warning(f"Cached pixel format '{pixel_format_str}' is not recognized")
+            return False
+
+        try:
+            self.camera.set_pixel_format(pixel_format)
+        except ValueError as e:
+            self.log.warning(f"Cannot restore pixel format {pixel_format_str} - not supported by this camera: {e}")
+            return False
+        except (AttributeError, RuntimeError) as e:
+            self.log.error(f"Camera error while restoring pixel format settings: {e}")
+            return False
+
+        self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(True)
+        self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(pixel_format_str)
+        self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(False)
+        return True
+
     def setupImageDisplayTabs(self):
         if USE_NAPARI_FOR_LIVE_VIEW:
             self.napariLiveWidget = widgets.NapariLiveWidget(
@@ -800,16 +874,18 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageArrayDisplayWindow = core.ImageArrayDisplayWindow()
                 self.imageDisplayTabs.addTab(self.imageArrayDisplayWindow.widget, "Multichannel Acquisition")
 
+            self.napariMosaicDisplayWidget = None
             if USE_NAPARI_FOR_MOSAIC_DISPLAY:
                 self.napariMosaicDisplayWidget = widgets.NapariMosaicDisplayWidget(
                     self.objectiveStore, self.camera, self.contrastManager
                 )
                 self.imageDisplayTabs.addTab(self.napariMosaicDisplayWidget, "Mosaic View")
 
-                # Plate view for well-based acquisitions (only if enabled)
-                if control._def.DISPLAY_PLATE_VIEW:
-                    self.napariPlateViewWidget = widgets.NapariPlateViewWidget(self.contrastManager)
-                    self.imageDisplayTabs.addTab(self.napariPlateViewWidget, "Plate View")
+            # Plate view for well-based acquisitions (independent of mosaic view)
+            self.napariPlateViewWidget = None
+            if DISPLAY_PLATE_VIEW:
+                self.napariPlateViewWidget = widgets.NapariPlateViewWidget(self.contrastManager)
+                self.imageDisplayTabs.addTab(self.napariPlateViewWidget, "Plate View")
 
             # z plot
             self.zPlotWidget = widgets.SurfacePlotWidget()
@@ -898,8 +974,29 @@ class HighContentScreeningGui(QMainWindow):
         self.cameraTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.cameraTabWidget))
         self.resizeCurrentTab(self.cameraTabWidget)
 
+        # RAM monitor widget (always create, visibility controlled by setting)
+        self.ramMonitorWidget = widgets.RAMMonitorWidget()
+        self.ramMonitorWidget.setVisible(False)
+        self._ram_monitor_should_show = False
+
+        # Backpressure monitor widget (always create, visibility controlled during acquisition)
+        self.backpressureMonitorWidget = widgets.BackpressureMonitorWidget()
+        self.backpressureMonitorWidget.setVisible(False)
+        self._bp_monitor_should_show = False
+
     def setup_layout(self):
         layout = QVBoxLayout()
+
+        # Add warning banner if simulated disk I/O mode is enabled
+        import control._def
+
+        if control._def.SIMULATED_DISK_IO_ENABLED:
+            simulated_io_banner = QLabel("  SIMULATED DISK I/O - Images are encoded but NOT saved to disk  ")
+            simulated_io_banner.setStyleSheet(
+                "background-color: #FF6B6B; color: white; font-weight: bold; padding: 8px;"
+            )
+            simulated_io_banner.setAlignment(Qt.AlignCenter)
+            layout.addWidget(simulated_io_banner)
 
         if USE_NAPARI_FOR_LIVE_CONTROL and not self.live_only_mode:
             layout.addWidget(self.navigationWidget)
@@ -946,6 +1043,17 @@ class HighContentScreeningGui(QMainWindow):
             self.setupSingleWindowLayout()
         else:
             self.setupMultiWindowLayout()
+
+        # Add RAM monitor widget to left side of status bar
+        # Status bar is hidden when RAM monitoring is disabled
+        # Visibility update is deferred to showEvent since status bar isn't visible until window is shown
+        if self.ramMonitorWidget is not None:
+            self.statusBar().addWidget(self.ramMonitorWidget)  # Left-aligned
+
+        # Add backpressure monitor widget to status bar (next to RAM monitor)
+        # Only visible during acquisition when throttling is enabled
+        if self.backpressureMonitorWidget is not None:
+            self.statusBar().addWidget(self.backpressureMonitorWidget)  # Left-aligned
 
     def _getMainWindowMinimumSize(self):
         """
@@ -1036,6 +1144,14 @@ class HighContentScreeningGui(QMainWindow):
         if self.piezoWidget:
             self.movement_updater.piezo_z_um.connect(self.piezoWidget.update_displacement_um_display)
         self.multipointController.signal_set_display_tabs.connect(self.setAcquisitionDisplayTabs)
+
+        # RAM monitor widget connections - use controller signals which fire AFTER memory monitor is created
+        self.multipointController.signal_acquisition_start.connect(self._connect_ram_monitor_widget)
+        self.multipointController.acquisition_finished.connect(self._disconnect_ram_monitor_widget)
+
+        # Backpressure monitor widget connections - fires AFTER worker is created
+        self.multipointController.signal_acquisition_start.connect(self._connect_backpressure_monitor_widget)
+        self.multipointController.acquisition_finished.connect(self._disconnect_backpressure_monitor_widget)
 
         self.recordTabWidget.currentChanged.connect(self.onTabChanged)
         if not self.live_only_mode:
@@ -1341,23 +1457,23 @@ class HighContentScreeningGui(QMainWindow):
                         ]
                     )
 
-                # Setup plate view widget connections (only if plate view is enabled)
-                # Use Qt.QueuedConnection explicitly for thread safety since these signals
-                # are emitted from the acquisition worker thread and received on the main thread.
-                # This ensures the slot is invoked in the receiver's thread event loop.
-                if control._def.DISPLAY_PLATE_VIEW and hasattr(self, "napariPlateViewWidget"):
-                    self.napari_connections["napariPlateViewWidget"] = [
-                        (
-                            self.multipointController.plate_view_init,
-                            self.napariPlateViewWidget.initPlateLayout,
-                            Qt.QueuedConnection,
-                        ),
-                        (
-                            self.multipointController.plate_view_update,
-                            self.napariPlateViewWidget.updatePlateView,
-                            Qt.QueuedConnection,
-                        ),
-                    ]
+            # Setup plate view widget connections (independent of mosaic display)
+            # Use Qt.QueuedConnection explicitly for thread safety since these signals
+            # are emitted from the acquisition worker thread and received on the main thread.
+            # This ensures the slot is invoked in the receiver's thread event loop.
+            if self.napariPlateViewWidget is not None:
+                self.napari_connections["napariPlateViewWidget"] = [
+                    (
+                        self.multipointController.plate_view_init,
+                        self.napariPlateViewWidget.initPlateLayout,
+                        Qt.QueuedConnection,
+                    ),
+                    (
+                        self.multipointController.plate_view_update,
+                        self.napariPlateViewWidget.updatePlateView,
+                        Qt.QueuedConnection,
+                    ),
+                ]
 
             # Make initial connections
             self.updateNapariConnections()
@@ -1419,14 +1535,12 @@ class HighContentScreeningGui(QMainWindow):
         elif not self.live_only_mode:
             configs = [config.name for config in selected_configurations]
             print(configs)
-            if USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
-                # For well-based acquisitions (Select Wells or Load Coordinates), use Plate View
-                is_well_based = xy_mode is not None and xy_mode in ("Select Wells", "Load Coordinates")
-                if is_well_based and hasattr(self, "napariPlateViewWidget") and control._def.DISPLAY_PLATE_VIEW:
-                    self.imageDisplayTabs.setCurrentWidget(self.napariPlateViewWidget)
-                else:
-                    self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
-
+            # For well-based acquisitions (Select Wells or Load Coordinates), use Plate View if enabled
+            is_well_based = xy_mode is not None and xy_mode in ("Select Wells", "Load Coordinates")
+            if is_well_based and self.napariPlateViewWidget is not None and Nz == 1:
+                self.imageDisplayTabs.setCurrentWidget(self.napariPlateViewWidget)
+            elif USE_NAPARI_FOR_MOSAIC_DISPLAY and Nz == 1:
+                self.imageDisplayTabs.setCurrentWidget(self.napariMosaicDisplayWidget)
             elif USE_NAPARI_FOR_MULTIPOINT:
                 self.imageDisplayTabs.setCurrentWidget(self.napariMultiChannelWidget)
             else:
@@ -1442,6 +1556,7 @@ class HighContentScreeningGui(QMainWindow):
             config = ConfigParser()
             config.read(CACHED_CONFIG_FILE_PATH)
             dialog = widgets.PreferencesDialog(config, CACHED_CONFIG_FILE_PATH, self)
+            dialog.signal_config_changed.connect(self._update_ram_monitor_visibility)
             dialog.exec_()
         else:
             self.log.warning("No configuration file found")
@@ -1636,11 +1751,14 @@ class HighContentScreeningGui(QMainWindow):
                 self.live_scan_grid_was_on = True
             else:
                 self.live_scan_grid_was_on = False
+            # NOTE: RAM monitor widget is connected via multipointController.signal_acquisition_start
+            # which fires AFTER the memory monitor is created (see make_connections)
         else:
             self.log.info("FINISHED ACQUISITION")
             if self.live_scan_grid_was_on:
                 self.toggle_live_scan_grid(on=True)
                 self.live_scan_grid_was_on = False
+            # NOTE: RAM monitor widget is disconnected via multipointController.acquisition_finished
 
         # click to move off during acquisition
         self.navigationWidget.set_click_to_move(not acquisition_started)
@@ -1667,6 +1785,100 @@ class HighContentScreeningGui(QMainWindow):
 
         # display acquisition progress bar during acquisition
         self.recordTabWidget.currentWidget().display_progress_bar(acquisition_started)
+
+    def _update_ram_monitor_visibility(self):
+        """Update RAM monitor widget visibility based on setting."""
+        import control._def
+
+        if self.ramMonitorWidget is None:
+            return
+
+        if control._def.ENABLE_MEMORY_PROFILING:
+            self._ram_monitor_should_show = True
+            self.ramMonitorWidget.setVisible(True)
+            self.ramMonitorWidget.start_monitoring()
+            self.log.info("RAM monitor: enabled, showing widget")
+        else:
+            self._ram_monitor_should_show = False
+            self.ramMonitorWidget.stop_monitoring()
+            self.ramMonitorWidget.setVisible(False)
+            self.log.debug("RAM monitor: disabled, hiding widget")
+
+        self._update_status_bar_visibility()
+
+    def _update_status_bar_visibility(self):
+        """Show or hide status bar based on whether any monitor widgets should be visible."""
+        self.statusBar().setVisible(self._ram_monitor_should_show or self._bp_monitor_should_show)
+
+    def _connect_ram_monitor_widget(self):
+        """Connect RAM monitor widget to memory monitor during acquisition."""
+        import control._def
+
+        if not control._def.ENABLE_MEMORY_PROFILING:
+            return
+
+        if self.ramMonitorWidget is None:
+            return
+
+        # Connect to the memory monitor from the multipointController for more detailed acquisition tracking
+        if self.multipointController is not None and self.multipointController._memory_monitor is not None:
+            self.log.info("RAM monitor: connecting widget to memory monitor for acquisition")
+            self.ramMonitorWidget.connect_monitor(self.multipointController._memory_monitor)
+
+    def _disconnect_ram_monitor_widget(self):
+        """Disconnect RAM monitor widget from acquisition memory monitor."""
+        import control._def
+
+        if self.ramMonitorWidget is not None:
+            self.ramMonitorWidget.disconnect_monitor()
+            # Control monitoring based on current profiling setting
+            if control._def.ENABLE_MEMORY_PROFILING:
+                # Resume background monitoring, preserving session peak from acquisition
+                self.ramMonitorWidget.start_monitoring(reset_peak=False)
+                self.log.debug("RAM monitor: disconnected from acquisition, continuing background monitoring")
+            else:
+                # Stop monitoring entirely when profiling is disabled
+                self.ramMonitorWidget.stop_monitoring()
+                self.log.debug("RAM monitor: disconnected from acquisition, monitoring stopped (profiling disabled)")
+
+    def _connect_backpressure_monitor_widget(self):
+        """Connect backpressure monitor widget during acquisition."""
+        import control._def
+
+        if not control._def.ACQUISITION_THROTTLING_ENABLED:
+            self.log.debug("Backpressure monitor: throttling disabled, skipping")
+            return
+
+        if self.backpressureMonitorWidget is None:
+            self.log.warning("Backpressure monitor: widget not initialized")
+            return
+
+        # Get the backpressure controller from the multipoint worker
+        bp_controller = self.multipointController.backpressure_controller
+        if bp_controller is None:
+            self.log.debug("Backpressure monitor: no controller available from worker")
+            return
+
+        if not bp_controller.enabled:
+            self.log.debug("Backpressure monitor: controller exists but is disabled")
+            return
+
+        self.log.info("Backpressure monitor: connecting widget to backpressure controller")
+        self._bp_monitor_should_show = True
+        self.backpressureMonitorWidget.start_monitoring(bp_controller)
+        self.backpressureMonitorWidget.setVisible(True)
+        self._update_status_bar_visibility()
+
+    def _disconnect_backpressure_monitor_widget(self):
+        """Disconnect backpressure monitor widget after acquisition."""
+        if self.backpressureMonitorWidget is None:
+            return
+
+        self._bp_monitor_should_show = False
+        self.backpressureMonitorWidget.stop_monitoring()
+        self.backpressureMonitorWidget.setVisible(False)
+        self.log.debug("Backpressure monitor: disconnected from acquisition")
+        self._update_status_bar_visibility()
 
     def onStartLive(self):
         self.imageDisplayTabs.setCurrentIndex(0)
@@ -1700,6 +1912,15 @@ class HighContentScreeningGui(QMainWindow):
         self.stage.move_x_to(x_mm)
         self.stage.move_y_to(y_mm)
 
+    def showEvent(self, event):
+        """Handle window show event to initialize visibility-dependent widgets."""
+        super().showEvent(event)
+        # Initialize RAM monitor visibility now that window is shown
+        if hasattr(self, "_ram_monitor_initialized") and self._ram_monitor_initialized:
+            return  # Only initialize once
+        self._ram_monitor_initialized = True
+        self._update_ram_monitor_visibility()
+
     def closeEvent(self, event):
         # Show confirmation dialog
         reply = QMessageBox.question(
@@ -1718,6 +1939,10 @@ class HighContentScreeningGui(QMainWindow):
             squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
         except ValueError as e:
             self.log.error(f"Couldn't cache position while closing.  Ignoring and continuing. Error is: {e}")
+
+        # Save camera settings (binning, pixel format)
+        squid.camera.settings_cache.save_camera_settings(self.camera)
+
         self.movement_update_timer.stop()
 
         if self.emission_filter_wheel:

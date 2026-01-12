@@ -242,6 +242,8 @@ class SimulatedCamera(AbstractCamera):
     @debug_log
     def set_binning(self, x_binning: int, y_binning: int):
         self._binning = (x_binning, y_binning)
+        # Invalidate cached frame so next frame regenerates with new dimensions
+        self._current_raw_frame = None
 
     @debug_log
     def get_binning_options(self) -> Sequence[Tuple[int, int]]:
@@ -381,7 +383,7 @@ class SimulatedCamera(AbstractCamera):
         (binning_x, binning_y) = self.get_binning()
         width, height = self.get_resolution()
 
-        if self.get_frame_id() == 0:
+        if self._current_raw_frame is None:
             if self.get_pixel_format() == CameraPixelFormat.MONO8:
                 self._current_raw_frame = np.random.randint(255, size=(height, width), dtype=np.uint8)
                 self._current_raw_frame[height // 2 - 99 : height // 2 + 100, width // 2 - 99 : width // 2 + 100] = 200

@@ -15,9 +15,11 @@ import socket
 import threading
 import time
 import traceback
-from typing import Any, Callable, Dict, List, Optional, get_type_hints
+from typing import Any, Callable, Dict, List, Optional, TypedDict, get_type_hints
 
 import squid.logging
+
+import control._def  # Module import for runtime access to MCP-modifiable settings
 
 # Qt imports for thread-safe GUI operations
 try:
@@ -26,6 +28,23 @@ try:
     QT_AVAILABLE = True
 except ImportError:
     QT_AVAILABLE = False
+
+
+class AcquisitionResult(TypedDict):
+    """Return type for run_acquisition_from_yaml command."""
+
+    started: bool
+    yaml_path: str
+    widget_type: str
+    region_count: int
+    channels: List[str]
+    nz: int
+    nt: int
+    total_fovs: int
+    total_images: int
+    experiment_id: str
+    save_dir: str
+
 
 try:
     from pydantic import Field
@@ -671,6 +690,8 @@ class MicroscopeControlServer:
         overlap_percent: float = Field(10.0, description="Overlap between FOVs in percent", ge=0, le=50),
     ) -> Dict[str, Any]:
         """Run a multi-point acquisition across wells using the MultiPointController."""
+        import os
+
         import control._def
 
         # Resolve FieldInfo objects to actual values (fixes bug when params not provided)
@@ -776,7 +797,7 @@ class MicroscopeControlServer:
                 "total_fovs": total_fovs,
                 "total_images": total_images,
                 "experiment_id": self.multipoint_controller.experiment_ID,
-                "save_dir": f"{base_path}/{self.multipoint_controller.experiment_ID}",
+                "save_dir": os.path.join(base_path, self.multipoint_controller.experiment_ID),
             }
 
         except Exception as e:
@@ -901,6 +922,348 @@ class MicroscopeControlServer:
             self.multipoint_controller.request_abort_aquisition()
         return {"aborted": True}
 
+    def _get_widget_for_type(self, widget_type: str):
+        """Get the acquisition widget for a given widget type.
+
+        Returns None if GUI is not available or widget type is not found.
+        """
+        if not self.gui:
+            return None
+
+        if widget_type == "wellplate" and hasattr(self.gui, "wellplateMultiPointWidget"):
+            return self.gui.wellplateMultiPointWidget
+        if widget_type == "flexible" and hasattr(self.gui, "flexibleMultiPointWidget"):
+            return self.gui.flexibleMultiPointWidget
+        return None
+
+    def _update_gui_from_yaml(self, yaml_data, yaml_path: str) -> None:
+        """Update GUI widgets from YAML settings in a thread-safe manner.
+
+        Uses a threading Event to ensure the GUI update completes before returning.
+        """
+        if not QT_AVAILABLE:
+            return
+
+        widget = self._get_widget_for_type(yaml_data.widget_type)
+        if not widget:
+            self._log.warning(f"Cannot update GUI: No widget found for type '{yaml_data.widget_type}'")
+            return
+        if not hasattr(widget, "_load_acquisition_yaml"):
+            self._log.warning(f"Widget {type(widget).__name__} lacks _load_acquisition_yaml method")
+            return
+
+        gui_update_complete = threading.Event()
+
+        def update_gui():
+            try:
+                widget._load_acquisition_yaml(yaml_path)
+            except Exception as e:
+                self._log.error(f"Failed to update GUI from YAML: {e}")
+            finally:
+                gui_update_complete.set()
+
+        QTimer.singleShot(0, update_gui)
+
+        if not gui_update_complete.wait(timeout=5.0):
+            self._log.warning("GUI update from YAML timed out after 5 seconds")
+
+    def _set_gui_acquisition_state(self, yaml_data, is_running: bool) -> None:
+        """Update GUI widget state to reflect acquisition running/stopped.
+
+        Uses QTimer.singleShot with threading.Event to ensure the GUI update
+        completes before returning, matching the pattern in _update_gui_from_yaml.
+        """
+        if not QT_AVAILABLE:
+            return
+
+        widget = self._get_widget_for_type(yaml_data.widget_type)
+        if not widget:
+            return
+
+        if not hasattr(widget, "set_acquisition_running_state"):
+            self._log.warning(f"Widget {type(widget).__name__} lacks set_acquisition_running_state method")
+            return
+
+        # Use threading.Event to wait for GUI update to complete
+        gui_update_complete = threading.Event()
+
+        def update_state():
+            try:
+                widget.set_acquisition_running_state(is_running, yaml_data.nz, yaml_data.delta_z_um)
+            except Exception as e:
+                self._log.error(f"Failed to update GUI acquisition state: {e}")
+            finally:
+                gui_update_complete.set()
+
+        # Schedule on Qt main thread
+        QTimer.singleShot(0, update_state)
+
+        # Wait for completion
+        if not gui_update_complete.wait(timeout=5.0):
+            self._log.warning("GUI acquisition state update timed out after 5 seconds")
+
+    def _validate_channels(self, channel_names: List[str], current_objective: str) -> List[str]:
+        """Validate that requested channels exist for the current objective.
+
+        Returns the list of available channel names.
+        Raises ValueError if any requested channels are invalid.
+        """
+        available_channels = self.microscope.channel_configuration_mananger.get_channel_configurations_for_objective(
+            current_objective
+        )
+        available_channel_names = [ch.name for ch in available_channels] if available_channels else []
+
+        invalid_channels = [ch for ch in channel_names if ch not in available_channel_names]
+        if invalid_channels:
+            raise ValueError(f"Invalid channels: {invalid_channels}. Available: {available_channel_names}")
+
+        return available_channel_names
+
+    def _get_z_from_center(self, center: list, default_z: float) -> float:
+        """Extract Z coordinate from center array, using default if not present."""
+        return center[2] if len(center) > 2 else default_z
+
+    def _configure_regions_from_yaml(self, yaml_data, raw_yaml: dict, wells: Optional[str]) -> None:
+        """Configure scan regions from YAML data or wells override.
+
+        Clears existing regions and adds new ones based on wells override,
+        wellplate regions from YAML, or flexible positions from YAML.
+        """
+        import control._def
+
+        self.scan_coordinates.clear_regions()
+        current_z = self.microscope.stage.get_pos().z_mm
+        scan_size_mm = yaml_data.scan_size_mm or 2.0
+        scan_shape = yaml_data.scan_shape or "Square"
+
+        if wells:
+            wellplate_format = raw_yaml.get("sample", {}).get("wellplate_format", "96 well plate")
+            wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
+            well_coords = self._parse_wells(wells, wellplate_settings)
+
+            if not well_coords:
+                raise ValueError(f"Could not parse wells: {wells}")
+
+            for well_id, (well_x, well_y) in well_coords.items():
+                self.scan_coordinates.add_region(
+                    well_id=well_id,
+                    center_x=well_x,
+                    center_y=well_y,
+                    scan_size_mm=scan_size_mm,
+                    overlap_percent=yaml_data.overlap_percent,
+                    shape=scan_shape,
+                )
+                if well_id in self.scan_coordinates.region_centers:
+                    self.scan_coordinates.region_centers[well_id][2] = current_z
+
+        elif yaml_data.wellplate_regions:
+            for region in yaml_data.wellplate_regions:
+                name = region.get("name", "region")
+                center = region.get("center_mm", [0, 0, 0])
+                region_z = self._get_z_from_center(center, current_z)
+
+                self.scan_coordinates.add_region(
+                    well_id=name,
+                    center_x=center[0],
+                    center_y=center[1],
+                    scan_size_mm=scan_size_mm,
+                    overlap_percent=yaml_data.overlap_percent,
+                    shape=region.get("shape", scan_shape),
+                )
+                if name in self.scan_coordinates.region_centers:
+                    self.scan_coordinates.region_centers[name][2] = region_z
+
+        elif yaml_data.flexible_positions:
+            for pos in yaml_data.flexible_positions:
+                name = pos.get("name", "position")
+                center = pos.get("center_mm", [0, 0, 0])
+                self.scan_coordinates.add_flexible_region(
+                    region_id=name,
+                    center_x=center[0],
+                    center_y=center[1],
+                    center_z=self._get_z_from_center(center, current_z),
+                    Nx=yaml_data.nx,
+                    Ny=yaml_data.ny,
+                    overlap_percent=yaml_data.overlap_percent,
+                )
+        else:
+            raise ValueError("No wells or regions specified in YAML and no wells override provided")
+
+        self.scan_coordinates.sort_coordinates()
+
+    def _configure_controller_from_yaml(self, yaml_data) -> None:
+        """Configure the MultiPointController with settings from YAML data."""
+        # Set acquisition parameters on the controller
+        self.multipoint_controller.set_NX(1)  # Already handled by flexible regions
+        self.multipoint_controller.set_NY(1)
+        self.multipoint_controller.set_NZ(yaml_data.nz)
+        self.multipoint_controller.set_deltaZ(yaml_data.delta_z_um)
+        self.multipoint_controller.set_Nt(yaml_data.nt)
+        self.multipoint_controller.set_deltat(yaml_data.delta_t_s)
+
+        # Set autofocus flags
+        self.multipoint_controller.do_autofocus = yaml_data.contrast_af
+        self.multipoint_controller.do_reflection_af = yaml_data.laser_af
+
+        # Set piezo usage
+        if hasattr(self.multipoint_controller, "use_piezo"):
+            self.multipoint_controller.use_piezo = yaml_data.use_piezo
+
+        # Set the selected channels
+        self.multipoint_controller.set_selected_configurations(yaml_data.channel_names)
+
+    @schema_method
+    def _cmd_run_acquisition_from_yaml(
+        self,
+        yaml_path: str = Field(..., description="Path to acquisition.yaml file saved by the GUI"),
+        wells: Optional[str] = Field(
+            None, description="Override wells (e.g., 'A1:B3'). If None, use regions from YAML"
+        ),
+        experiment_id: Optional[str] = Field(None, description="Override experiment ID. If None, auto-generate"),
+        base_path: Optional[str] = Field(None, description="Override save path. If None, use default"),
+    ) -> AcquisitionResult:
+        """Run acquisition using settings from a previously-saved acquisition.yaml file.
+
+        This command loads all acquisition parameters from a YAML file that was saved
+        during a previous acquisition (including z-stack, timelapse, channels, autofocus,
+        and region coordinates), updates the GUI to reflect these settings, and starts
+        the acquisition.
+        """
+        import os
+
+        import yaml
+
+        import control._def
+        from control.acquisition_yaml_loader import parse_acquisition_yaml, validate_hardware
+
+        self._log.info(f"Starting acquisition from YAML: {yaml_path}")
+
+        # Resolve FieldInfo objects to actual values
+        wells = resolve_field_value(wells, None)
+        experiment_id = resolve_field_value(experiment_id, None)
+        base_path = resolve_field_value(base_path, None)
+
+        # Validate file exists
+        if not os.path.exists(yaml_path):
+            raise FileNotFoundError(f"YAML file not found: {yaml_path}")
+
+        # Check requirements
+        if not self.multipoint_controller:
+            raise RuntimeError(
+                "MultiPointController not available. Make sure the GUI is running with control server enabled."
+            )
+
+        if not self.scan_coordinates:
+            raise RuntimeError(
+                "ScanCoordinates not available. Make sure the GUI is running with control server enabled."
+            )
+
+        # Check if acquisition already running
+        if self.multipoint_controller.acquisition_in_progress():
+            raise RuntimeError("Acquisition already in progress")
+
+        # Parse YAML file
+        try:
+            yaml_data = parse_acquisition_yaml(yaml_path)
+        except Exception as e:
+            raise ValueError(f"Failed to parse YAML file: {e}") from e
+
+        # FlexibleMultiPoint is not supported via TCP/MCP - only wellplate mode
+        if yaml_data.widget_type != "wellplate":
+            raise ValueError(
+                f"TCP command only supports wellplate mode acquisitions. "
+                f"Got widget_type='{yaml_data.widget_type}'. "
+                f"FlexibleMultiPoint acquisitions must be run from the GUI."
+            )
+
+        # Load raw YAML for fields that need direct access (wellplate_format)
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            raw_yaml = yaml.safe_load(f)
+
+        # Validate hardware configuration (objective, binning)
+        current_binning = None
+        try:
+            camera = getattr(self.microscope, "camera", None)
+            if camera and hasattr(camera, "get_binning"):
+                current_binning = tuple(camera.get_binning())
+        except Exception as e:
+            self._log.warning(f"Could not get camera binning for validation: {e}")
+
+        if current_binning is None:
+            self._log.warning("Skipping binning validation - could not determine current camera binning")
+            current_binning = (1, 1)  # Default for validation (will skip binning check)
+
+        current_objective = self.microscope.objective_store.current_objective
+        validation = validate_hardware(yaml_data, current_objective, current_binning)
+
+        if not validation.is_valid:
+            raise RuntimeError(f"Hardware configuration mismatch:\n{validation.message}")
+
+        # Update GUI widgets (thread-safe) if GUI is available
+        self._update_gui_from_yaml(yaml_data, yaml_path)
+
+        # Validate channels exist (raises ValueError if invalid)
+        self._validate_channels(yaml_data.channel_names, current_objective)
+
+        # Set up paths - require explicit DEFAULT_SAVING_PATH configuration
+        if not base_path:
+            default_path = getattr(control._def, "DEFAULT_SAVING_PATH", None)
+            if not default_path:
+                raise RuntimeError(
+                    "No base_path provided and DEFAULT_SAVING_PATH not configured in control._def. "
+                    "Please provide a base_path parameter or configure DEFAULT_SAVING_PATH."
+                )
+            base_path = default_path
+        if not experiment_id:
+            experiment_id = f"YAML_acquisition_{int(time.time())}"
+
+        # Configure the MultiPointController
+        try:
+            # Configure regions from YAML or wells override
+            self._configure_regions_from_yaml(yaml_data, raw_yaml, wells)
+
+            # Configure controller settings from YAML
+            self._configure_controller_from_yaml(yaml_data)
+
+            # Set the base path and start new experiment
+            self.multipoint_controller.set_base_path(base_path)
+            self.multipoint_controller.start_new_experiment(experiment_id)
+
+            # Calculate total FOVs for status reporting
+            total_fovs = sum(len(coords) for coords in self.scan_coordinates.region_fov_coordinates.values())
+            total_images = total_fovs * len(yaml_data.channel_names) * yaml_data.nz * yaml_data.nt
+
+            # Update GUI to reflect acquisition in progress BEFORE starting
+            # (must happen before run_acquisition so the event loop can process it)
+            self._set_gui_acquisition_state(yaml_data, is_running=True)
+
+            # Run the acquisition (non-blocking - runs in worker thread)
+            self.multipoint_controller.run_acquisition()
+
+            self._log.info(
+                f"Acquisition started: {total_fovs} FOVs, {len(yaml_data.channel_names)} channels, "
+                f"nz={yaml_data.nz}, nt={yaml_data.nt}, total_images={total_images}"
+            )
+
+            return {
+                "started": True,
+                "yaml_path": yaml_path,
+                "widget_type": yaml_data.widget_type,
+                "region_count": len(self.scan_coordinates.region_fov_coordinates),
+                "channels": yaml_data.channel_names,
+                "nz": yaml_data.nz,
+                "nt": yaml_data.nt,
+                "total_fovs": total_fovs,
+                "total_images": total_images,
+                "experiment_id": self.multipoint_controller.experiment_ID,
+                "save_dir": os.path.join(base_path, self.multipoint_controller.experiment_ID),
+            }
+
+        except Exception as e:
+            self._log.error(f"Failed to start acquisition from YAML: {e}")
+            self._log.error(traceback.format_exc())
+            raise RuntimeError(f"Failed to start acquisition: {str(e)}") from e
+
     @schema_method
     def _cmd_set_performance_mode(
         self,
@@ -936,6 +1299,99 @@ class MicroscopeControlServer:
             raise RuntimeError("GUI reference not available")
 
         return {"performance_mode": getattr(self.gui, "performance_mode", False)}
+
+    # ==========================================================================
+    # View debug settings (for RAM usage debugging)
+    # ==========================================================================
+
+    @schema_method
+    def _cmd_get_view_settings(self) -> Dict[str, Any]:
+        """Get current view settings for RAM debugging (downsampled images, plate view, mosaic view)."""
+        return {
+            "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
+            "display_plate_view": control._def.DISPLAY_PLATE_VIEW,
+            "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
+            "mosaic_view_target_pixel_size_um": control._def.MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM,
+            "downsampled_well_resolutions_um": control._def.DOWNSAMPLED_WELL_RESOLUTIONS_UM,
+            "downsampled_plate_resolution_um": control._def.DOWNSAMPLED_PLATE_RESOLUTION_UM,
+            "performance_mode": getattr(self.gui, "performance_mode", False) if self.gui else None,
+        }
+
+    @schema_method
+    def _cmd_set_save_downsampled_images(
+        self,
+        enabled: bool = Field(..., description="Enable (true) or disable (false) saving downsampled well images"),
+    ) -> Dict[str, Any]:
+        """Enable or disable saving downsampled well images (affects next acquisition)."""
+        if not isinstance(enabled, bool):
+            raise TypeError(f"enabled must be a boolean, got {type(enabled).__name__}")
+        control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = enabled
+        return {
+            "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
+            "message": f"Saving downsampled well images {'enabled' if enabled else 'disabled'} (takes effect on next acquisition)",
+        }
+
+    @schema_method
+    def _cmd_set_display_plate_view(
+        self,
+        enabled: bool = Field(..., description="Enable (true) or disable (false) plate view display"),
+    ) -> Dict[str, Any]:
+        """Enable or disable plate view display during acquisition (affects next acquisition)."""
+        if not isinstance(enabled, bool):
+            raise TypeError(f"enabled must be a boolean, got {type(enabled).__name__}")
+        control._def.DISPLAY_PLATE_VIEW = enabled
+        return {
+            "display_plate_view": control._def.DISPLAY_PLATE_VIEW,
+            "message": f"Plate view display {'enabled' if enabled else 'disabled'} (takes effect on next acquisition)",
+        }
+
+    @schema_method
+    def _cmd_set_display_mosaic_view(
+        self,
+        enabled: bool = Field(..., description="Enable (true) or disable (false) mosaic view display"),
+    ) -> Dict[str, Any]:
+        """Enable or disable mosaic view display (takes effect immediately, checked on each updateMosaic call)."""
+        if not isinstance(enabled, bool):
+            raise TypeError(f"enabled must be a boolean, got {type(enabled).__name__}")
+        control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = enabled
+        return {
+            "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
+            "message": f"Mosaic view display {'enabled' if enabled else 'disabled'} (takes effect immediately)",
+        }
+
+    @schema_method
+    def _cmd_set_view_settings(
+        self,
+        save_downsampled_well_images: Optional[bool] = Field(
+            None, description="Enable/disable saving downsampled well images"
+        ),
+        display_plate_view: Optional[bool] = Field(None, description="Enable/disable plate view display"),
+        display_mosaic_view: Optional[bool] = Field(None, description="Enable/disable mosaic view display"),
+    ) -> Dict[str, Any]:
+        """Set multiple view settings at once for RAM debugging (mosaic view: immediate; others: next acquisition)."""
+        changes = []
+
+        # Note: Use isinstance(x, bool) instead of "x is not None" because Field(None, ...)
+        # returns a FieldInfo object (not None) when called directly without JSON parsing.
+        if isinstance(save_downsampled_well_images, bool):
+            control._def.SAVE_DOWNSAMPLED_WELL_IMAGES = save_downsampled_well_images
+            changes.append(f"save_downsampled_well_images={'enabled' if save_downsampled_well_images else 'disabled'}")
+
+        if isinstance(display_plate_view, bool):
+            control._def.DISPLAY_PLATE_VIEW = display_plate_view
+            changes.append(f"display_plate_view={'enabled' if display_plate_view else 'disabled'}")
+
+        if isinstance(display_mosaic_view, bool):
+            control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = display_mosaic_view
+            changes.append(f"display_mosaic_view={'enabled' if display_mosaic_view else 'disabled'}")
+
+        return {
+            "save_downsampled_well_images": control._def.SAVE_DOWNSAMPLED_WELL_IMAGES,
+            "display_plate_view": control._def.DISPLAY_PLATE_VIEW,
+            "display_mosaic_view": control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY,
+            "changes": changes,
+            "message": "Settings updated (mosaic view: immediate; others: next acquisition)",
+        }
 
     @schema_method
     def _cmd_get_schemas(self) -> Dict[str, Any]:

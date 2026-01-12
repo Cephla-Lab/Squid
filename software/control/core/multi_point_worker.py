@@ -11,6 +11,7 @@ import pandas as pd
 
 from control._def import *
 from control._def import DOWNSAMPLED_VIEW_JOB_TIMEOUT_S, DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S
+import control._def
 from control import utils
 from control.core.auto_focus_controller import AutoFocusController
 from control.core.channel_configuration_mananger import ChannelConfigurationManager
@@ -50,6 +51,7 @@ from control.core.downsampled_views import (
     parse_well_id,
     ensure_plate_resolution_in_well_resolutions,
 )
+from control.core.backpressure import BackpressureController
 from squid.config import CameraPixelFormat
 
 
@@ -202,6 +204,8 @@ class MultiPointWorker:
         ]
         self._downsampled_plate_resolution_um = acquisition_parameters.downsampled_plate_resolution_um
         self._downsampled_z_projection = acquisition_parameters.downsampled_z_projection
+        self._downsampled_interpolation_method = acquisition_parameters.downsampled_interpolation_method
+        self._save_downsampled_well_images = acquisition_parameters.save_downsampled_well_images
         self._plate_num_rows = acquisition_parameters.plate_num_rows
         self._plate_num_cols = acquisition_parameters.plate_num_cols
         self._overlap_pixels: Optional[Tuple[int, int, int, int]] = None
@@ -223,17 +227,34 @@ class MultiPointWorker:
                 f"Downsampled view generation enabled ({mode}). Resolutions: {self._downsampled_well_resolutions_um} um"
             )
 
+        # Initialize backpressure controller for throttling acquisition when queue fills up
+        self._backpressure = BackpressureController(
+            max_jobs=control._def.ACQUISITION_MAX_PENDING_JOBS,
+            max_mb=control._def.ACQUISITION_MAX_PENDING_MB,
+            timeout_s=control._def.ACQUISITION_THROTTLE_TIMEOUT_S,
+            enabled=control._def.ACQUISITION_THROTTLING_ENABLED,
+        )
+
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
         self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
         self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
+
+        # Get the current log file path to share with subprocess workers
+        log_file_path = squid.logging.get_current_log_file_path()
+
         for job_class in job_classes:
             self._log.info(f"Creating job runner for {job_class.__name__} jobs")
             job_runner = (
                 control.core.job_processing.JobRunner(
                     self.acquisition_info,
                     cleanup_stale_ome_files=use_ome_tiff,
+                    log_file_path=log_file_path,
+                    # Pass backpressure shared values for cross-process tracking
+                    bp_pending_jobs=self._backpressure.pending_jobs_value,
+                    bp_pending_bytes=self._backpressure.pending_bytes_value,
+                    bp_capacity_event=self._backpressure.capacity_event,
                 )
                 if Acquisition.USE_MULTIPROCESSING
                 else None
@@ -592,6 +613,8 @@ class MultiPointWorker:
 
     def _handle_downsampled_view_result(self, result: DownsampledViewResult) -> None:
         """Update plate view with completed well image."""
+        t_start = time.perf_counter()
+
         if self._downsampled_view_manager is None:
             return
         try:
@@ -600,6 +623,8 @@ class MultiPointWorker:
                 result.well_col,
                 result.well_images,
             )
+            t_update = time.perf_counter()
+
             self._log.info(
                 f"Updated plate view for well {result.well_id} at ({result.well_row}, {result.well_col}) "
                 f"with {len(result.well_images)} channels"
@@ -619,6 +644,13 @@ class MultiPointWorker:
                         plate_image=plate_image.copy(),
                     )
                 )
+
+            t_signal = time.perf_counter()
+            self._log.debug(
+                f"[PERF] _handle_downsampled_view_result {result.well_id}: "
+                f"update_well={t_update - t_start:.3f}s, signals={t_signal - t_update:.3f}s, "
+                f"TOTAL={t_signal - t_start:.3f}s"
+            )
         except Exception as e:
             self._log.exception(
                 f"Failed to update plate view for well {result.well_id} "
@@ -725,6 +757,10 @@ class MultiPointWorker:
             z_index=info.z_index,
             total_z_levels=self.NZ,
             z_projection_mode=self._downsampled_z_projection,
+            interpolation_method=self._downsampled_interpolation_method,
+            skip_saving=self.skip_saving
+            or not self._save_downsampled_well_images
+            or control._def.SIMULATED_DISK_IO_ENABLED,
         )
 
     def _initialize_downsampled_view_manager(self, image: np.ndarray) -> None:
@@ -938,6 +974,10 @@ class MultiPointWorker:
             self._downsampled_view_manager.save_plate_view(path)
 
     def run_coordinate_acquisition(self, current_path):
+        # Reset backpressure counters at acquisition start
+        # IMPORTANT: Must be before any camera triggers
+        self._backpressure.reset()
+
         n_regions = len(self.scan_region_coords_mm)
 
         for region_index, (region_id, coordinates) in enumerate(self.scan_region_fov_coords_mm.items()):
@@ -1184,6 +1224,17 @@ class MultiPointWorker:
                 self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
                 self.request_abort_fn()
                 return
+
+        # Backpressure check AFTER previous frame dispatched, BEFORE next trigger
+        # This is when we know the previous image's jobs have been dispatched (and counters incremented)
+        if self._backpressure.should_throttle():
+            with self._timing.get_timer("backpressure.wait_for_capacity"):
+                got_capacity = self._backpressure.wait_for_capacity()
+                if not got_capacity:
+                    self._log.error(
+                        f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
+                    )
+
         with self._timing.get_timer("get_ready_for_trigger re-check"):
             # This should be a noop - we have the frame already.  Still, check!
             while not self.camera.get_ready_for_trigger():

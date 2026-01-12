@@ -54,9 +54,9 @@ cd "$SQUID_SOFTWARE_ROOT"
 mkdir -p "$SQUID_SOFTWARE_ROOT/cache"
 
 # install libraries 
-pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml numpy tifffile scipy napari pyreadline3
+pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml numpy tifffile scipy pyreadline3
 pip3 install opencv-python-headless opencv-contrib-python-headless
-pip3 install napari[all] scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp
+pip3 install napari[all]==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp
 
 # install camera drivers
 cd "$DAHENG_CAMERA_DRIVER_ROOT"

@@ -217,3 +217,29 @@ def test_payload_helpers():
 
     assert Microcontroller._payload_to_int([0x00, 0x00, 0x00, 0xFF, 0xFF], 5) == 2**16 - 1
     assert Microcontroller._payload_to_int([0xFF, 0xFF], 2) == -1
+
+
+def test_set_trigger_mode():
+    """Test set_trigger_mode sends correct command to firmware."""
+    micro = get_test_micro()
+
+    # Test EDGE mode (0)
+    micro.set_trigger_mode(0)
+    assert micro.last_command[1] == control._def.CMD_SET.SET_TRIGGER_MODE
+    assert micro.last_command[2] == 0
+
+    # Test LEVEL mode (1)
+    micro.set_trigger_mode(1)
+    assert micro.last_command[1] == control._def.CMD_SET.SET_TRIGGER_MODE
+    assert micro.last_command[2] == 1
+
+    # Test with HardwareTriggerMode enum values
+    from control._def import HardwareTriggerMode
+
+    micro.set_trigger_mode(HardwareTriggerMode.EDGE)
+    assert micro.last_command[2] == 0
+
+    micro.set_trigger_mode(HardwareTriggerMode.LEVEL)
+    assert micro.last_command[2] == 1
+
+    micro.close()

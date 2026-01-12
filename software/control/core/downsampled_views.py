@@ -9,13 +9,14 @@ adjacent with no empty space between them.
 """
 
 import os
+import time
 from typing import List, Tuple, Dict, Optional, Union
 
 import cv2
 import numpy as np
 import tifffile
 
-from control._def import ZProjectionMode
+from control._def import ZProjectionMode, DownsamplingMethod
 import squid.logging
 
 
@@ -80,23 +81,56 @@ def crop_overlap(
     return tile[top:bottom_idx, left:right_idx]
 
 
+def _pyrdown_chain(tile: np.ndarray, target_width: int, target_height: int) -> np.ndarray:
+    """Fast downsampling using Gaussian pyramid (cv2.pyrDown chain).
+
+    Uses repeated 2x reductions via cv2.pyrDown (highly optimized with SIMD),
+    then INTER_AREA for final sizing. ~18x faster than pure INTER_AREA with
+    similar quality.
+
+    Args:
+        tile: Input image
+        target_width: Target width
+        target_height: Target height
+
+    Returns:
+        Downsampled image
+    """
+    result = tile
+    # Apply pyrDown until we're close to target size (within 2x)
+    while result.shape[0] > target_height * 2 and result.shape[1] > target_width * 2:
+        result = cv2.pyrDown(result)
+
+    # Final resize to exact target size
+    if result.shape[0] != target_height or result.shape[1] != target_width:
+        result = cv2.resize(result, (target_width, target_height), interpolation=cv2.INTER_AREA)
+
+    return result
+
+
 def downsample_tile(
     tile: np.ndarray,
     source_pixel_size_um: float,
     target_pixel_size_um: float,
+    method: DownsamplingMethod = DownsamplingMethod.INTER_AREA_FAST,
 ) -> np.ndarray:
     """Downsample a tile to target pixel size.
-
-    Uses cv2.INTER_AREA for quality downsampling.
 
     Args:
         tile: Image tile
         source_pixel_size_um: Source pixel size in micrometers
         target_pixel_size_um: Target pixel size in micrometers
+        method: Interpolation method:
+            - INTER_LINEAR: Fast (~0.05ms), good for real-time previews
+            - INTER_AREA_FAST: Balanced (~1ms), pyrDown chain + INTER_AREA
+            - INTER_AREA: Highest quality (~18ms), pure area averaging
 
     Returns:
         Downsampled tile, or original if target <= source
     """
+    log = squid.logging.get_logger(__name__)
+    t_start = time.perf_counter()
+
     factor = int(round(target_pixel_size_um / source_pixel_size_um))
 
     if factor <= 1:
@@ -108,17 +142,84 @@ def downsample_tile(
     if new_width < 1 or new_height < 1:
         return tile
 
-    downsampled = cv2.resize(
-        tile,
-        (new_width, new_height),
-        interpolation=cv2.INTER_AREA,
-    )
+    # Select downsampling strategy
+    if method == DownsamplingMethod.INTER_LINEAR:
+        downsampled = cv2.resize(tile, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+        mode = "LINEAR"
+    elif method == DownsamplingMethod.INTER_AREA_FAST:
+        downsampled = _pyrdown_chain(tile, new_width, new_height)
+        mode = "AREA_FAST"
+    else:  # INTER_AREA
+        downsampled = cv2.resize(tile, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        mode = "AREA"
+
+    t_resize = time.perf_counter()
 
     # Preserve dtype
     if downsampled.dtype != tile.dtype:
         downsampled = downsampled.astype(tile.dtype)
 
+    t_end = time.perf_counter()
+
+    # Log timing for performance analysis
+    log.debug(
+        f"[PERF] downsample_tile: {tile.shape} -> ({new_height}, {new_width}) factor={factor} mode={mode} | "
+        f"resize={t_resize - t_start:.4f}s, dtype={t_end - t_resize:.4f}s, TOTAL={t_end - t_start:.4f}s"
+    )
+
     return downsampled
+
+
+def downsample_to_resolutions(
+    tile: np.ndarray,
+    source_pixel_size_um: float,
+    target_resolutions_um: List[float],
+    method: DownsamplingMethod = DownsamplingMethod.INTER_AREA_FAST,
+) -> Dict[float, np.ndarray]:
+    """Downsample a tile to multiple target resolutions.
+
+    For INTER_LINEAR and INTER_AREA_FAST: Each resolution is computed directly
+        from the original (parallel) since these methods are already fast.
+    For INTER_AREA: Resolutions are computed in cascade (sorted finest to coarsest)
+        to improve performance (~3x faster than parallel INTER_AREA).
+
+    Args:
+        tile: Image tile
+        source_pixel_size_um: Source pixel size in micrometers
+        target_resolutions_um: List of target resolutions in micrometers
+        method: Interpolation method
+
+    Returns:
+        Dictionary mapping resolution to downsampled tile
+    """
+    log = squid.logging.get_logger(__name__)
+    t_start = time.perf_counter()
+
+    results: Dict[float, np.ndarray] = {}
+
+    # Sort resolutions finest to coarsest for cascading
+    sorted_resolutions = sorted(target_resolutions_um)
+
+    if method in (DownsamplingMethod.INTER_LINEAR, DownsamplingMethod.INTER_AREA_FAST):
+        # Parallel: each from original (both methods are fast enough)
+        for resolution in sorted_resolutions:
+            results[resolution] = downsample_tile(tile, source_pixel_size_um, resolution, method)
+    else:
+        # Cascaded for INTER_AREA: original → finest → ... → coarsest
+        current = tile
+        current_resolution = source_pixel_size_um
+        for resolution in sorted_resolutions:
+            current = downsample_tile(current, current_resolution, resolution, method)
+            results[resolution] = current
+            current_resolution = resolution
+
+    t_end = time.perf_counter()
+    log.debug(
+        f"[PERF] downsample_to_resolutions: {len(target_resolutions_um)} resolutions, "
+        f"method={method.value}, TOTAL={t_end - t_start:.4f}s"
+    )
+
+    return results
 
 
 def stitch_tiles(
@@ -134,6 +235,9 @@ def stitch_tiles(
     Returns:
         Stitched image
     """
+    log = squid.logging.get_logger(__name__)
+    t_start = time.perf_counter()
+
     if len(tiles) == 0:
         raise ValueError("No tiles to stitch")
 
@@ -158,12 +262,16 @@ def stitch_tiles(
     canvas_width = int(round(canvas_width_mm * 1000.0 / pixel_size_um))
     canvas_height = int(round(canvas_height_mm * 1000.0 / pixel_size_um))
 
+    t_calc = time.perf_counter()
+
     # Handle RGB images
     dtype = tiles[0][0].dtype
     if len(tiles[0][0].shape) == 3:
         canvas = np.zeros((canvas_height, canvas_width, tiles[0][0].shape[2]), dtype=dtype)
     else:
         canvas = np.zeros((canvas_height, canvas_width), dtype=dtype)
+
+    t_alloc = time.perf_counter()
 
     # Place tiles
     for tile, (x_mm, y_mm) in tiles:
@@ -175,6 +283,15 @@ def stitch_tiles(
         x_end = min(x_pixel + w, canvas_width)
 
         canvas[y_pixel:y_end, x_pixel:x_end] = tile[: y_end - y_pixel, : x_end - x_pixel]
+
+    t_place = time.perf_counter()
+
+    # Log detailed timing for performance analysis
+    log.debug(
+        f"[PERF] stitch_tiles: {len(tiles)} tiles -> ({canvas_height}, {canvas_width}) | "
+        f"calc={t_calc - t_start:.4f}s, alloc={t_alloc - t_calc:.4f}s, place={t_place - t_alloc:.4f}s, "
+        f"TOTAL={t_place - t_start:.4f}s"
+    )
 
     return canvas
 

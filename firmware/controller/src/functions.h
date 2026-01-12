@@ -36,8 +36,12 @@ extern bool control_strobe[6];
 // bool strobe_output_level[6] = {LOW, LOW, LOW, LOW, LOW, LOW};
 // bool strobe_on[6] = {false, false, false, false, false, false};
 extern unsigned long strobe_delay[6];
-extern long illumination_on_time[6];
+extern uint32_t illumination_on_time[6];
 extern long timestamp_trigger_rising_edge[6];
+
+// 0: normal trigger mode
+// 1: level trigger mode
+extern volatile uint8_t trigger_mode;
 extern IntervalTimer strobeTimer;
 
 /***************************************************************************************************/
