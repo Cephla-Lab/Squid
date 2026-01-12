@@ -13758,30 +13758,22 @@ class RAMMonitorWidget(QWidget):
         self.label_icon = QLabel("RAM usage:")
         self.label_icon.setStyleSheet("font-weight: bold;")
 
-        self.label_current = QLabel("--")
-        self.label_peak = QLabel("--")
-        self.label_available = QLabel("--")
+        # Value labels with fixed widths for stable layout
+        fm = QFontMetrics(self.font())
+        self.label_current = self._create_value_label(fm.horizontalAdvance("88.88 GB"))
+        self.label_peak = self._create_value_label(fm.horizontalAdvance("88.88 GB"))
+        self.label_available = self._create_value_label(fm.horizontalAdvance("888.8 GB"))
 
-        # Fixed widths with left alignment - keeps positions stable
-        fm = QFontMetrics(self.label_current.font())
-        current_peak_width = fm.horizontalAdvance("88.88 GB")
-        available_width = fm.horizontalAdvance("888.8 GB")
-
-        self.label_current.setFixedWidth(current_peak_width)
-        self.label_current.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.label_peak.setFixedWidth(current_peak_width)
-        self.label_peak.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.label_available.setFixedWidth(available_width)
-        self.label_available.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-
+        # Separator and descriptor labels
+        separator_style = "color: #666;"
         self.label_separator1 = QLabel("|")
-        self.label_separator1.setStyleSheet("color: #666;")
+        self.label_separator1.setStyleSheet(separator_style)
         self.label_peak_label = QLabel("peak:")
-        self.label_peak_label.setStyleSheet("color: #666;")
+        self.label_peak_label.setStyleSheet(separator_style)
         self.label_separator2 = QLabel("|")
-        self.label_separator2.setStyleSheet("color: #666;")
+        self.label_separator2.setStyleSheet(separator_style)
         self.label_available_label = QLabel("available:")
-        self.label_available_label.setStyleSheet("color: #666;")
+        self.label_available_label.setStyleSheet(separator_style)
 
         layout.addWidget(self.label_icon)
         layout.addWidget(self.label_current)
@@ -13791,6 +13783,15 @@ class RAMMonitorWidget(QWidget):
         layout.addWidget(self.label_separator2)
         layout.addWidget(self.label_available_label)
         layout.addWidget(self.label_available)
+
+    def _create_value_label(self, width: int) -> QLabel:
+        """Create a left-aligned value label with fixed width."""
+        from qtpy.QtCore import Qt
+
+        label = QLabel("--")
+        label.setFixedWidth(width)
+        label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        return label
 
     def _setup_timer(self):
         """Setup timer for periodic memory updates when not connected to monitor."""
@@ -13954,18 +13955,10 @@ class BackpressureMonitorWidget(QWidget):
         self.label_prefix = QLabel("Queue:")
         self.label_prefix.setStyleSheet("font-weight: bold;")
 
-        self.label_jobs = QLabel("--")
-        self.label_bytes = QLabel("--")
-
-        # Fixed widths with left alignment - keeps positions stable
-        fm = QFontMetrics(self.label_jobs.font())
-        jobs_width = fm.horizontalAdvance("888/888 jobs")
-        bytes_width = fm.horizontalAdvance("8888.8/8888.8 MB")
-
-        self.label_jobs.setFixedWidth(jobs_width)
-        self.label_jobs.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.label_bytes.setFixedWidth(bytes_width)
-        self.label_bytes.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        # Value labels with fixed widths for stable layout
+        fm = QFontMetrics(self.font())
+        self.label_jobs = self._create_value_label(fm.horizontalAdvance("888/888 jobs"))
+        self.label_bytes = self._create_value_label(fm.horizontalAdvance("8888.8/8888.8 MB"))
 
         self.label_separator = QLabel("|")
         self.label_separator.setStyleSheet("color: #666;")
@@ -13978,6 +13971,15 @@ class BackpressureMonitorWidget(QWidget):
         layout.addWidget(self.label_separator)
         layout.addWidget(self.label_bytes)
         layout.addWidget(self.label_throttled)
+
+    def _create_value_label(self, width: int) -> QLabel:
+        """Create a left-aligned value label with fixed width."""
+        from qtpy.QtCore import Qt
+
+        label = QLabel("--")
+        label.setFixedWidth(width)
+        label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        return label
 
     def _setup_timer(self):
         """Setup timer for periodic backpressure updates."""
@@ -14021,8 +14023,7 @@ class BackpressureMonitorWidget(QWidget):
             self.label_jobs.setText(f"{stats.pending_jobs}/{stats.max_pending_jobs} jobs")
             self.label_bytes.setText(f"{stats.pending_bytes_mb:.1f}/{stats.max_pending_mb:.1f} MB")
 
-            # Sticky throttle indicator: show [THROTTLED] and keep visible for
-            # THROTTLE_STICKY_CYCLES after throttling releases
+            # Sticky throttle indicator: stays visible for THROTTLE_STICKY_CYCLES after release
             if stats.is_throttled:
                 self._throttle_sticky_counter = self.THROTTLE_STICKY_CYCLES
                 self.label_throttled.setText("[THROTTLED]")
