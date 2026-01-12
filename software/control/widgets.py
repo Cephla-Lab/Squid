@@ -9854,8 +9854,8 @@ class AlignmentWidget(QWidget):
             self._original_live_opacity = live_layer.opacity
             self._original_live_blending = live_layer.blending
             self._original_live_colormap = live_layer.colormap
-            live_layer.opacity = 0.5
-            live_layer.blending = "translucent"
+            live_layer.opacity = 1.0
+            live_layer.blending = "additive"
             live_layer.colormap = "green"
             self._modified_live_view = True
         else:
@@ -9868,9 +9868,9 @@ class AlignmentWidget(QWidget):
                 image,
                 name=self.REFERENCE_LAYER_NAME,
                 visible=True,
-                opacity=0.5,
+                opacity=1.0,
                 colormap="magenta",
-                blending="translucent",
+                blending="additive",
             )
         self._log.debug("Reference layer added to napari viewer")
 
