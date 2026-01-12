@@ -111,8 +111,18 @@ When the feature is enabled and you're running a well-based acquisition without 
 - **Multi-channel display** with additive blending and per-channel colormaps
 - **Linked contrast** with the main contrast manager
 - **Well boundaries** shown as white rectangles
-- **Click interaction** - double-click prints well ID and FOV index to console
+- **NDViewer navigation** - double-click any FOV to view it in the NDViewer tab
 - **Zoom limits** - prevents zooming out beyond the plate or zooming in too far
+
+### NDViewer Integration
+
+When the NDViewer tab is available, double-clicking on any location in the plate view will:
+1. Navigate the NDViewer to that specific well and FOV
+2. Automatically switch to the NDViewer tab
+
+This provides a quick workflow for browsing: use the plate view for overview, then double-click to inspect specific FOVs in detail.
+
+See [NDViewer Tab](ndviewer-tab.md) for more information about the embedded viewer.
 
 ### When is Plate View Available?
 
