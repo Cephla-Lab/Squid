@@ -9704,7 +9704,7 @@ class AlignmentWidget(QWidget):
         try:
             info = self._load_acquisition_info(folder_path)
             self._current_folder = folder_path
-            ref_x, ref_y = info["middle_fov_position"]
+            ref_x, ref_y = info["center_fov_position"]
             self._reference_fov_position = (ref_x, ref_y)
 
             self.state = self.STATE_CONFIRM
@@ -9755,7 +9755,7 @@ class AlignmentWidget(QWidget):
         """
         Load acquisition info from a past acquisition folder.
 
-        Returns dict with: coordinates, first_region, middle_fov_index, middle_fov_position, image_path
+        Returns dict with: coordinates, first_region, center_fov_index, center_fov_position, image_path
         """
         folder = Path(folder_path)
 
@@ -9768,25 +9768,34 @@ class AlignmentWidget(QWidget):
         region_coords = coords_df[coords_df["region"] == first_region]
 
         num_fovs = len(region_coords)
-        middle_idx = num_fovs // 2
-        middle_fov = region_coords.iloc[middle_idx]
-        middle_fov_position = (float(middle_fov["x (mm)"]), float(middle_fov["y (mm)"]))
+        center_idx = self._find_center_fov(region_coords)
+        center_fov = region_coords.iloc[center_idx]
+        center_fov_position = (float(center_fov["x (mm)"]), float(center_fov["y (mm)"]))
 
-        image_path = self._find_reference_image(folder, first_region, middle_idx)
+        image_path = self._find_reference_image(folder, first_region, center_idx)
 
         self._log.info(
             f"Loaded acquisition info: region={first_region}, "
-            f"middle_fov={middle_idx}/{num_fovs}, "
-            f"position=({middle_fov_position[0]:.4f}, {middle_fov_position[1]:.4f})"
+            f"center_fov={center_idx}/{num_fovs}, "
+            f"position=({center_fov_position[0]:.4f}, {center_fov_position[1]:.4f})"
         )
 
         return {
             "coordinates": coords_df,
             "first_region": first_region,
-            "middle_fov_index": middle_idx,
-            "middle_fov_position": middle_fov_position,
+            "center_fov_index": center_idx,
+            "center_fov_position": center_fov_position,
             "image_path": str(image_path),
         }
+
+    def _find_center_fov(self, region_coords: "pd.DataFrame") -> int:
+        """Find the FOV index closest to the region center. O(n) complexity."""
+        x = region_coords["x (mm)"].values
+        y = region_coords["y (mm)"].values
+        center_x = (x.min() + x.max()) / 2
+        center_y = (y.min() + y.max()) / 2
+        distances_sq = (x - center_x) ** 2 + (y - center_y) ** 2
+        return int(distances_sq.argmin())
 
     def _find_reference_image(self, folder: Path, region: str, fov_idx: int) -> Path:
         """Find reference image in OME-TIFF or traditional timepoint folders."""
