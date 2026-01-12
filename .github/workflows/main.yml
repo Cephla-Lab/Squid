@@ -34,7 +34,10 @@ jobs:
         run: ./setup_cuda_22.04.sh
         working-directory: ./software
       - name: "Copy a valid config into the repo software root"
-        run: cp configurations/configuration_Squid+.ini .
+        run: |
+          cp configurations/configuration_Squid+.ini .
+          # Disable memory profiling in CI to avoid fork+threads deadlock issue
+          echo -e "\n[GENERAL]\nenable_memory_profiling = false" >> configuration_Squid+.ini
         working-directory: ./software
       # For more on the headless qt prep, see here: https://pytest-qt.readthedocs.io/en/latest/troubleshooting.html#github-actions-azure-pipelines-travis-ci-and-gitlab-ci-cd
       - name: "Prep for headless qt tests."
