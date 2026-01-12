@@ -4,6 +4,10 @@ import os
 
 from squid.backend.controllers.autofocus import AutoFocusController
 from squid.backend.controllers.autofocus import LaserAutofocusController
+from squid.backend.drivers.cameras.settings_cache import (
+    save_camera_settings,
+    load_camera_settings,
+)
 from squid.backend.services import ServiceRegistry
 
 os.environ["QT_API"] = "pyqt5"
@@ -177,6 +181,10 @@ class HighContentScreeningGui(QMainWindow):
         self.microscope: squid.backend.microscope.Microscope = microscope
         self.stage: AbstractStage = microscope.stage
         self.camera: AbstractCamera = microscope.camera
+
+        # Restore cached camera settings from previous session
+        self._restore_cached_camera_settings()
+
         self.microcontroller: Microcontroller = (
             microscope.low_level_drivers.microcontroller
         )
@@ -1158,6 +1166,37 @@ class HighContentScreeningGui(QMainWindow):
     def move_to_mm(self, x_mm: float, y_mm: float) -> None:
         self._ui_event_bus.publish(MoveStageToCommand(x_mm=x_mm, y_mm=y_mm))
 
+    def _restore_cached_camera_settings(self) -> None:
+        """Restore cached camera settings (binning, pixel format) from previous session.
+
+        Silently returns if no cached settings exist. Errors are logged but do not
+        prevent application startup.
+        """
+        cached_settings = load_camera_settings()
+        if not cached_settings:
+            return
+
+        # Apply binning
+        try:
+            self.camera.set_binning(*cached_settings.binning)
+            self._log.info(f"Restored camera binning: {cached_settings.binning}")
+        except ValueError as e:
+            self._log.warning(f"Cannot restore binning {cached_settings.binning} - not supported: {e}")
+        except Exception as e:
+            self._log.error(f"Error restoring camera binning: {e}")
+
+        # Apply pixel format if available
+        if cached_settings.pixel_format:
+            try:
+                from squid.core.config import CameraPixelFormat
+                pixel_format = CameraPixelFormat.from_string(cached_settings.pixel_format)
+                self.camera.set_pixel_format(pixel_format)
+                self._log.info(f"Restored camera pixel format: {cached_settings.pixel_format}")
+            except (KeyError, ValueError) as e:
+                self._log.warning(f"Cannot restore pixel format '{cached_settings.pixel_format}': {e}")
+            except Exception as e:
+                self._log.error(f"Error restoring camera pixel format: {e}")
+
     def closeEvent(self, event: QCloseEvent) -> None:
         if not getattr(self, "_skip_close_confirmation", False):
             reply = QMessageBox.question(
@@ -1207,5 +1246,11 @@ class HighContentScreeningGui(QMainWindow):
             self.cswfcWindow.closeForReal(event)
         except AttributeError:
             pass
+
+        # Save camera settings for next session
+        try:
+            save_camera_settings(self.camera)
+        except Exception as e:
+            self._log.warning(f"Could not save camera settings: {e}")
 
         event.accept()

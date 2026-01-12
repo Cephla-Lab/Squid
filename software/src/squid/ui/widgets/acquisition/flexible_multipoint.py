@@ -73,6 +73,7 @@ from _def import (
     squid,
 )
 from squid.core.config.feature_flags import get_feature_flags
+from squid.core.utils import get_last_used_saving_path, save_last_used_saving_path
 
 
 _FEATURE_FLAGS = get_feature_flags()
@@ -164,11 +165,11 @@ class FlexibleMultiPointWidget(QFrame):
 
         self.lineEdit_savingDir = QLineEdit()
         self.lineEdit_savingDir.setReadOnly(True)
-        self.lineEdit_savingDir.setText("Choose a base saving directory")
 
-        self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
-        # Publish default path via event
-        self._event_bus.publish(SetAcquisitionPathCommand(base_path=DEFAULT_SAVING_PATH))
+        # Load last used saving path from cache, or fall back to default
+        last_path = get_last_used_saving_path(DEFAULT_SAVING_PATH)
+        self.lineEdit_savingDir.setText(last_path)
+        self._event_bus.publish(SetAcquisitionPathCommand(base_path=last_path))
         self.base_path_is_set = True
 
         self.lineEdit_experimentID = QLineEdit()
@@ -896,9 +897,11 @@ class FlexibleMultiPointWidget(QFrame):
     def set_saving_dir(self):
         dialog = QFileDialog()
         save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self._event_bus.publish(SetAcquisitionPathCommand(base_path=save_dir_base))
-        self.lineEdit_savingDir.setText(save_dir_base)
-        self.base_path_is_set = True
+        if save_dir_base:  # Only update if user didn't cancel
+            self._event_bus.publish(SetAcquisitionPathCommand(base_path=save_dir_base))
+            self.lineEdit_savingDir.setText(save_dir_base)
+            self.base_path_is_set = True
+            save_last_used_saving_path(save_dir_base)
 
     def emit_selected_channels(self):
         selected_channels = [

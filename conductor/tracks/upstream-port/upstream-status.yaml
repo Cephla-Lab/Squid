@@ -40,7 +40,13 @@ commits:
     - 5ad9252a
   cc205460:
     title: 'fix: Fix NapariLiveWidget Qt signal connection and camera attribute (#443)'
-    status: pending
+    status: skipped
+    skip_reason: already-fixed
+    skip_justification: |
+      arch_v2 NapariLiveWidget already has correct .connect() syntax and
+      takes exposure_limits as constructor parameter rather than accessing
+      self.camera directly. The arch_v2 design prevents this bug.
+    skip_date: '2026-01-12'
   4234d34b:
     title: 'feat: NDViewer tab with live viewing and plate navigation (#428)'
     status: pending
@@ -133,7 +139,9 @@ commits:
     status: pending
   fc57e3da:
     title: 'feat: Persist last used base saving path for multipoint widgets (#430)'
-    status: pending
+    status: ported
+    ported_in: 505368ed
+    ported_date: '2026-01-12'
   5ad9252a:
     title: 'fix: Regenerate SimulatedCamera frame when binning changes (#429)'
     status: ported
@@ -155,7 +163,11 @@ commits:
     status: pending
   98c7fbd6:
     title: 'feat: Save and restore camera settings on close/startup (#423)'
-    status: pending
+    status: ported
+    ported_in: 505368ed
+    ported_date: '2026-01-12'
+    ported_with:
+    - fc57e3da
   88db4da8:
     title: 'feat: Save and load acquisition parameters via YAML (#421)'
     status: pending
