@@ -9540,7 +9540,7 @@ class NapariLiveWidget(QWidget):
         for config in self.liveController.get_channels(self.objectiveStore.current_objective):
             self.dropdown_modeSelection.addItem(config.name)
         self.dropdown_modeSelection.setCurrentText(self.live_configuration.name)
-        self.dropdown_modeSelection.activated(self.select_new_microscope_mode_by_name)
+        self.dropdown_modeSelection.activated.connect(self.select_new_microscope_mode_by_name)
 
         # Live button
         self.btn_live = QPushButton("Start Live")
@@ -9575,7 +9575,7 @@ class NapariLiveWidget(QWidget):
 
         # Exposure Time
         self.entry_exposureTime = QDoubleSpinBox()
-        self.entry_exposureTime.setRange(*self.camera.get_exposure_limits())
+        self.entry_exposureTime.setRange(*self.liveController.camera.get_exposure_limits())
         self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
         self.entry_exposureTime.setSuffix(" ms")
         self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
