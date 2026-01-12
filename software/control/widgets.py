@@ -14795,7 +14795,7 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         self.config_repo = config_repo
         self.general_config = None
         self.illumination_config = None
-        self._single_wheel_name = None  # Set if only one wheel exists
+        self._auto_wheel = None  # Set if single wheel exists (auto-assigned to all channels)
         self.setWindowTitle("Acquisition Channel Configuration")
         self.setMinimumSize(700, 400)
         self._setup_ui()
@@ -14852,6 +14852,18 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         self.btn_move_down.clicked.connect(self._move_down)
         button_layout.addWidget(self.btn_move_down)
 
+        button_layout.addSpacing(20)
+
+        self.btn_export = QPushButton("Export...")
+        self.btn_export.setAutoDefault(False)
+        self.btn_export.clicked.connect(self._export_config)
+        button_layout.addWidget(self.btn_export)
+
+        self.btn_import = QPushButton("Import...")
+        self.btn_import.setAutoDefault(False)
+        self.btn_import.clicked.connect(self._import_config)
+        button_layout.addWidget(self.btn_import)
+
         button_layout.addStretch()
 
         self.btn_save = QPushButton("Save")
@@ -14875,22 +14887,34 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
             self._log.warning("No general config found")
             return
 
-        # Determine column visibility based on registries
+        # Determine column visibility based on registries and .ini settings
         camera_names = self.config_repo.get_camera_names()
         wheel_names = self.config_repo.get_filter_wheel_names()
+
+        # Check if filter wheel is enabled in .ini (even if no filter_wheels.yaml exists)
+        import control._def
+
+        filter_wheel_enabled = getattr(control._def, "USE_EMISSION_FILTER_WHEEL", False)
+
+        # Effective wheels: registry wheels OR implicit "Emission" if .ini enabled
+        if filter_wheel_enabled and not wheel_names:
+            effective_wheels = ["Emission"]
+        else:
+            effective_wheels = wheel_names
 
         # Hide Camera column if single camera (0 or 1 cameras)
         if len(camera_names) <= 1:
             self.table.setColumnHidden(self.COL_CAMERA, True)
 
-        # Hide Filter Wheel column if single wheel (0 or 1 wheels)
-        if len(wheel_names) <= 1:
+        # Hide Filter Wheel column if 0 or 1 wheel (single wheel = auto-assigned)
+        if len(effective_wheels) <= 1:
             self.table.setColumnHidden(self.COL_FILTER_WHEEL, True)
-            # Store single wheel name for auto-selection
-            self._single_wheel_name = wheel_names[0] if wheel_names else None
+            self._auto_wheel = effective_wheels[0] if effective_wheels else None
+        else:
+            self._auto_wheel = None
 
-        # Hide Filter Position column if no wheels at all
-        if len(wheel_names) == 0:
+        # Hide Filter Position column only if NO wheels at all
+        if len(effective_wheels) == 0:
             self.table.setColumnHidden(self.COL_FILTER_POSITION, True)
 
         self.table.setRowCount(len(self.general_config.channels))
@@ -14942,6 +14966,12 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         wheel_combo = QComboBox()
         wheel_combo.addItem("(None)")
         wheel_names = self.config_repo.get_filter_wheel_names()
+        # If filter wheel enabled in .ini but no registry, add default "Emission" wheel
+        import control._def
+
+        filter_wheel_enabled = getattr(control._def, "USE_EMISSION_FILTER_WHEEL", False)
+        if filter_wheel_enabled and not wheel_names:
+            wheel_names = ["Emission"]
         wheel_combo.addItems(wheel_names)
         if channel.filter_wheel and channel.filter_wheel in wheel_names:
             wheel_combo.setCurrentText(channel.filter_wheel)
@@ -14952,8 +14982,8 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         position_combo = QComboBox()
         # Determine which wheel to use for positions
         wheel_for_positions = channel.filter_wheel
-        if self._single_wheel_name and not wheel_for_positions:
-            wheel_for_positions = self._single_wheel_name
+        if self._auto_wheel and not wheel_for_positions:
+            wheel_for_positions = self._auto_wheel
         self._populate_filter_positions(position_combo, wheel_for_positions, channel.filter_position)
         self.table.setCellWidget(row, self.COL_FILTER_POSITION, position_combo)
 
@@ -14974,30 +15004,39 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
     def _populate_filter_positions(self, combo: QComboBox, wheel_name: str, current_position: int):
         """Populate filter position dropdown based on selected wheel."""
         combo.clear()
-        combo.addItem("N/A", None)
 
-        if not wheel_name or wheel_name == "(None)":
+        # Determine effective wheel (could be auto-assigned)
+        effective_wheel = wheel_name if wheel_name and wheel_name != "(None)" else self._auto_wheel
+
+        if not effective_wheel:
+            # No wheel available - show disabled N/A
+            combo.addItem("N/A", None)
             combo.setEnabled(False)
             return
+
+        # Wheel exists - populate positions WITHOUT N/A
+        combo.setEnabled(True)
 
         registry = self.config_repo.get_filter_wheel_registry()
-        if not registry:
-            combo.setEnabled(False)
-            return
+        wheel = registry.get_wheel_by_name(effective_wheel) if registry else None
 
-        wheel = registry.get_wheel_by_name(wheel_name)
         if wheel:
-            combo.setEnabled(True)
+            # Use positions from registry
             for pos, filter_name in sorted(wheel.positions.items()):
                 combo.addItem(f"{pos}: {filter_name}", pos)
-            # Select current position if set
-            if current_position is not None:
-                for i in range(combo.count()):
-                    if combo.itemData(i) == current_position:
-                        combo.setCurrentIndex(i)
-                        break
         else:
-            combo.setEnabled(False)
+            # No registry - use default positions 1-8
+            for pos in range(1, 9):
+                combo.addItem(f"Position {pos}", pos)
+
+        # Select current position, or default to first (Position 1)
+        if current_position is not None:
+            for i in range(combo.count()):
+                if combo.itemData(i) == current_position:
+                    combo.setCurrentIndex(i)
+                    return
+        # Default to first position (index 0)
+        combo.setCurrentIndex(0)
 
     def _pick_color(self, row: int):
         """Open color picker for a row."""
@@ -15104,7 +15143,7 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
             wheel_combo = self.table.cellWidget(row, self.COL_FILTER_WHEEL)
             if wheel_combo and isinstance(wheel_combo, QComboBox):
                 wheel_text = wheel_combo.currentText()
-                channel.filter_wheel = wheel_text if wheel_text != "(None)" else self._single_wheel_name
+                channel.filter_wheel = wheel_text if wheel_text != "(None)" else self._auto_wheel
 
             # Filter position
             position_combo = self.table.cellWidget(row, self.COL_FILTER_POSITION)
@@ -15121,6 +15160,116 @@ class AcquisitionChannelConfiguratorDialog(QDialog):
         self.signal_channels_updated.emit()
         self.accept()
 
+    def _export_config(self):
+        """Export current channel configuration to a YAML file."""
+        from control.models import GeneralChannelConfig
+        import yaml
+
+        # Get save file path
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Channel Configuration",
+            "channel_config.yaml",
+            "YAML Files (*.yaml *.yml);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        # Build current config from table (same logic as _save_changes but without saving)
+        self._sync_table_to_config()
+
+        # Export to YAML
+        try:
+            with open(file_path, "w") as f:
+                yaml.dump(self.general_config.model_dump(), f, default_flow_style=False, sort_keys=False)
+            QMessageBox.information(self, "Export Successful", f"Configuration exported to:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Failed", f"Failed to export configuration:\n{e}")
+
+    def _import_config(self):
+        """Import channel configuration from a YAML file."""
+        from control.models import GeneralChannelConfig
+        import yaml
+
+        # Get file path
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Channel Configuration",
+            "",
+            "YAML Files (*.yaml *.yml);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        # Load and validate
+        try:
+            with open(file_path, "r") as f:
+                data = yaml.safe_load(f)
+            imported_config = GeneralChannelConfig.model_validate(data)
+        except Exception as e:
+            QMessageBox.critical(self, "Import Failed", f"Failed to load configuration:\n{e}")
+            return
+
+        # Replace current config
+        self.general_config = imported_config
+
+        # Refresh the table
+        self.table.setRowCount(0)
+        self._populate_table()
+
+        QMessageBox.information(
+            self, "Import Successful", f"Imported {len(imported_config.channels)} channels from:\n{file_path}"
+        )
+
+    def _sync_table_to_config(self):
+        """Sync table data back to self.general_config without saving to disk."""
+        for row in range(self.table.rowCount()):
+            channel = self.general_config.channels[row]
+
+            # Enabled
+            checkbox_widget = self.table.cellWidget(row, self.COL_ENABLED)
+            if checkbox_widget:
+                checkbox = checkbox_widget.findChild(QCheckBox)
+                if checkbox:
+                    channel.enabled = checkbox.isChecked()
+
+            # Name
+            name_item = self.table.item(row, self.COL_NAME)
+            if name_item:
+                channel.name = name_item.text().strip()
+
+            # Illumination
+            illum_combo = self.table.cellWidget(row, self.COL_ILLUMINATION)
+            if illum_combo and isinstance(illum_combo, QComboBox):
+                illum_name = illum_combo.currentText()
+                channel.illumination_settings.illumination_channels = [illum_name]
+                old_intensities = channel.illumination_settings.intensity
+                if illum_name not in old_intensities:
+                    default_intensity = next(iter(old_intensities.values()), 20.0) if old_intensities else 20.0
+                    channel.illumination_settings.intensity = {illum_name: default_intensity}
+
+            # Camera
+            camera_combo = self.table.cellWidget(row, self.COL_CAMERA)
+            if camera_combo and isinstance(camera_combo, QComboBox):
+                camera_text = camera_combo.currentText()
+                channel.camera = camera_text if camera_text != "(None)" else None
+
+            # Filter wheel
+            wheel_combo = self.table.cellWidget(row, self.COL_FILTER_WHEEL)
+            if wheel_combo and isinstance(wheel_combo, QComboBox):
+                wheel_text = wheel_combo.currentText()
+                channel.filter_wheel = wheel_text if wheel_text != "(None)" else self._auto_wheel
+
+            # Filter position
+            position_combo = self.table.cellWidget(row, self.COL_FILTER_POSITION)
+            if position_combo and isinstance(position_combo, QComboBox):
+                channel.filter_position = position_combo.currentData()
+
+            # Display color
+            color_btn = self.table.cellWidget(row, self.COL_DISPLAY_COLOR)
+            if color_btn:
+                channel.display_color = color_btn.property("color") or "#FFFFFF"
+
 
 class AddAcquisitionChannelDialog(QDialog):
     """Dialog for adding a new acquisition channel."""
@@ -15129,7 +15278,7 @@ class AddAcquisitionChannelDialog(QDialog):
         super().__init__(parent)
         self.config_repo = config_repo
         self._display_color = "#FFFFFF"
-        self._single_wheel_name = None
+        self._auto_wheel = None
         self.setWindowTitle("Add Acquisition Channel")
         self._setup_ui()
 
@@ -15158,26 +15307,35 @@ class AddAcquisitionChannelDialog(QDialog):
             self.camera_combo = None
 
         # Filter wheel dropdown (hidden if single wheel - 0 or 1 wheels)
+        # Check both registry and .ini setting for filter wheel availability
         wheel_names = self.config_repo.get_filter_wheel_names()
-        if len(wheel_names) > 1:
+        filter_wheel_enabled = getattr(control._def, "USE_EMISSION_FILTER_WHEEL", False)
+
+        # Effective wheels: registry wheels OR implicit "Emission" if .ini enabled
+        if filter_wheel_enabled and not wheel_names:
+            effective_wheels = ["Emission"]
+        else:
+            effective_wheels = wheel_names
+
+        if len(effective_wheels) > 1:
             self.wheel_combo = QComboBox()
             self.wheel_combo.addItem("(None)")
-            self.wheel_combo.addItems(wheel_names)
+            self.wheel_combo.addItems(effective_wheels)
             self.wheel_combo.currentTextChanged.connect(self._on_wheel_changed)
             layout.addRow("Filter Wheel:", self.wheel_combo)
         else:
             self.wheel_combo = None
             # Store single wheel name for auto-selection
-            self._single_wheel_name = wheel_names[0] if wheel_names else None
+            self._auto_wheel = effective_wheels[0] if effective_wheels else None
 
         # Filter position dropdown (always shown if any filter wheels exist)
-        if wheel_names:
+        if effective_wheels:
             self.position_combo = QComboBox()
-            self.position_combo.addItem("N/A", None)
-            # If single wheel, auto-populate positions for that wheel
-            if len(wheel_names) == 1:
-                self._populate_filter_positions(wheel_names[0])
+            # If single wheel, auto-populate positions for that wheel (no N/A)
+            if len(effective_wheels) == 1:
+                self._populate_filter_positions(effective_wheels[0])
             else:
+                self.position_combo.addItem("N/A", None)
                 self.position_combo.setEnabled(False)  # Enabled when wheel selected
             layout.addRow("Filter Position:", self.position_combo)
         else:
@@ -15202,33 +15360,42 @@ class AddAcquisitionChannelDialog(QDialog):
 
     def _on_wheel_changed(self, wheel_name: str):
         """Update filter position options when wheel selection changes."""
-        if self.position_combo:
+        if self.position_combo is not None:
             self._populate_filter_positions(wheel_name)
 
     def _populate_filter_positions(self, wheel_name: str):
         """Populate filter position dropdown based on selected wheel."""
-        if not self.position_combo:
+        if self.position_combo is None:
             return
 
         self.position_combo.clear()
-        self.position_combo.addItem("N/A", None)
 
-        if not wheel_name or wheel_name == "(None)":
+        # Determine effective wheel (could be auto-assigned)
+        effective_wheel = wheel_name if wheel_name and wheel_name != "(None)" else self._auto_wheel
+
+        if not effective_wheel:
+            # No wheel available - show disabled N/A
+            self.position_combo.addItem("N/A", None)
             self.position_combo.setEnabled(False)
             return
+
+        # Wheel exists - populate positions WITHOUT N/A
+        self.position_combo.setEnabled(True)
 
         registry = self.config_repo.get_filter_wheel_registry()
-        if not registry:
-            self.position_combo.setEnabled(False)
-            return
+        wheel = registry.get_wheel_by_name(effective_wheel) if registry else None
 
-        wheel = registry.get_wheel_by_name(wheel_name)
         if wheel:
-            self.position_combo.setEnabled(True)
+            # Use positions from registry
             for pos, filter_name in sorted(wheel.positions.items()):
                 self.position_combo.addItem(f"{pos}: {filter_name}", pos)
         else:
-            self.position_combo.setEnabled(False)
+            # No registry - use default positions 1-8
+            for pos in range(1, 9):
+                self.position_combo.addItem(f"Position {pos}", pos)
+
+        # Default to first position (Position 1)
+        self.position_combo.setCurrentIndex(0)
 
     def _pick_color(self):
         """Open color picker."""
@@ -15272,7 +15439,7 @@ class AddAcquisitionChannelDialog(QDialog):
             camera = camera_text if camera_text != "(None)" else None
 
         # Filter wheel and position
-        filter_wheel = self._single_wheel_name
+        filter_wheel = self._auto_wheel
         filter_position = None
         if self.wheel_combo:
             wheel_text = self.wheel_combo.currentText()
