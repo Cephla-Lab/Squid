@@ -19,7 +19,7 @@ from control.core.job_processing import (
     CaptureInfo,
     DownsampledViewJob,
 )
-from control.utils_config import ChannelMode
+from control.models import AcquisitionChannel, CameraSettings, IlluminationSettings
 
 
 def make_test_capture_info(region_id: str = "A1", fov: int = 0, z_index: int = 0, config_idx: int = 0) -> CaptureInfo:
@@ -28,15 +28,19 @@ def make_test_capture_info(region_id: str = "A1", fov: int = 0, z_index: int = 0
         position=squid.abc.Pos(x_mm=0.0, y_mm=0.0, z_mm=0.0, theta_rad=None),
         z_index=z_index,
         capture_time=time.time(),
-        configuration=ChannelMode(
-            id="0",
+        configuration=AcquisitionChannel(
             name="BF LED matrix full",
-            camera_sn="test",
-            exposure_time=10.0,
-            analog_gain=1.0,
-            illumination_source=0,
-            illumination_intensity=50.0,
-            z_offset=0.0,
+            illumination_settings=IlluminationSettings(
+                illumination_channels=["LED"],
+                intensity={"LED": 50.0},
+                z_offset_um=0.0,
+            ),
+            camera_settings={
+                "main": CameraSettings(
+                    exposure_time_ms=10.0,
+                    gain_mode=1.0,
+                )
+            },
         ),
         save_directory="/tmp/test",
         file_id=f"test_{fov}_{z_index}",
