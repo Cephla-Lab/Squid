@@ -9,10 +9,10 @@ The configuration system uses a hierarchical structure that separates concerns:
 ```
 software/
 ├── machine_configs/                    # Hardware-specific (per machine)
-│   ├── illumination_channel_config.yaml   # Illumination channels
+│   ├── illumination_channel_config.yaml   # Illumination channels (required)
 │   ├── confocal_config.yaml              # Optional: confocal settings
-│   ├── camera_mappings.yaml              # Camera-hardware bindings
-│   └── intensity_calibrations/           # Power calibration CSVs
+│   ├── camera_mappings.yaml              # Optional: multi-camera bindings
+│   └── intensity_calibrations/           # Optional: power calibration CSVs
 │
 └── user_profiles/                      # User preferences (per profile)
     └── {profile_name}/
@@ -141,9 +141,9 @@ objective_specific_properties:
 
 > **Note**: The `confocal_config.yaml.example` file in `machine_configs/` uses a simplified format for reference. When creating your actual config, use the structure shown above which matches the Pydantic model.
 
-### camera_mappings.yaml
+### camera_mappings.yaml (Optional)
 
-Maps camera selections to hardware bindings (dichroic positions, filter wheels).
+Maps camera selections to hardware bindings (dichroic positions, filter wheels). This file is optional and typically only needed for advanced multi-camera setups.
 
 ```yaml
 version: 1
