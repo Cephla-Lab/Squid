@@ -1347,6 +1347,7 @@ class NavigationViewer(QFrame):
         self.box_line_thickness = 2
         self.x_mm = None
         self.y_mm = None
+        self.alignment_widget = None  # Optional AlignmentWidget
         self.image_paths = {
             "glass slide": "images/slide carrier_828x662.png",
             "4 glass slide": "images/4 slide carrier_1509x1010.png",
@@ -1390,18 +1391,38 @@ class NavigationViewer(QFrame):
         self.view.scene().sigMouseClicked.connect(self.handle_mouse_click)
 
     def _position_button(self):
-        """Position the clear button at the bottom-right corner of the graphics widget"""
+        """Position buttons at the bottom-right corner of the graphics widget"""
         margin = 10  # Margin from edges
-        button_width = self.btn_clear_coordinates.sizeHint().width()
         button_height = self.btn_clear_coordinates.sizeHint().height()
 
-        x = self.graphics_widget.width() - button_width - margin
-        y = self.graphics_widget.height() - button_height - margin
-        self.btn_clear_coordinates.move(x, y)
+        # Position clear button (rightmost)
+        clear_width = self.btn_clear_coordinates.sizeHint().width()
+        clear_x = self.graphics_widget.width() - clear_width - margin
+        clear_y = self.graphics_widget.height() - button_height - margin
+        self.btn_clear_coordinates.move(clear_x, clear_y)
         self.btn_clear_coordinates.raise_()
 
+        # Position alignment button (to the left of clear) if present
+        if self.alignment_widget is not None:
+            align_width = self.alignment_widget.sizeHint().width()
+            align_x = clear_x - align_width - margin
+            self.alignment_widget.move(align_x, clear_y)
+            self.alignment_widget.raise_()
+
+    def set_alignment_widget(self, alignment_widget):
+        """
+        Set the alignment widget to be displayed in the navigation viewer.
+
+        Args:
+            alignment_widget: An AlignmentWidget instance
+        """
+        self.alignment_widget = alignment_widget
+        self.alignment_widget.setParent(self.graphics_widget)
+        self.alignment_widget.adjustSize()
+        self._position_button()
+
     def resizeEvent(self, event):
-        """Reposition button when widget is resized"""
+        """Reposition buttons when widget is resized"""
         super().resizeEvent(event)
         if hasattr(self, "btn_clear_coordinates"):
             self._position_button()

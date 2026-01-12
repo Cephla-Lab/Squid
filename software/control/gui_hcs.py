@@ -195,6 +195,7 @@ class QtMultiPointController(MultiPointController, QObject):
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
         fluidics: Optional[Any] = None,
+        alignment_widget=None,
     ):
         MultiPointController.__init__(
             self,
@@ -215,6 +216,7 @@ class QtMultiPointController(MultiPointController, QObject):
             ),
             scan_coordinates=scan_coordinates,
             laser_autofocus_controller=laser_autofocus_controller,
+            alignment_widget=alignment_widget,
         )
         QObject.__init__(self)
 
@@ -400,6 +402,7 @@ class HighContentScreeningGui(QMainWindow):
         self.sampleSettingsWidget: Optional[widgets.SampleSettingsWidget] = None
         self.trackingControlWidget: Optional[widgets.TrackingControllerWidget] = None
         self.napariLiveWidget: Optional[widgets.NapariLiveWidget] = None
+        self.alignmentWidget: Optional[widgets.AlignmentWidget] = None
         self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
         self.napariMultiChannelWidget: Optional[widgets.NapariMultiChannelWidget] = None
@@ -706,6 +709,10 @@ class HighContentScreeningGui(QMainWindow):
         else:
             self.setupImageDisplayTabs()
 
+        # Setup alignment widget if using napari for live view
+        if USE_NAPARI_FOR_LIVE_VIEW and self.napariLiveWidget is not None:
+            self._setup_alignment_widget()
+
         self.flexibleMultiPointWidget = widgets.FlexibleMultiPointWidget(
             self.stage,
             self.navigationViewer,
@@ -957,6 +964,49 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.addTab(self.recordingControlWidget, "Simple Recording")
         self.recordTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.recordTabWidget))
         self.resizeCurrentTab(self.recordTabWidget)
+
+    def _setup_alignment_widget(self):
+        """
+        Setup the alignment widget for aligning current sample with past acquisition.
+
+        Creates the AlignmentWidget, connects its signals, and attaches it to
+        the navigation viewer and multipoint controller.
+        """
+        if self.napariLiveWidget is None:
+            self.log.warning("Cannot setup alignment widget: napariLiveWidget not available")
+            return
+
+        # Create alignment widget with napari viewer
+        self.alignmentWidget = widgets.AlignmentWidget(
+            napari_viewer=self.napariLiveWidget.viewer,
+            parent=None,  # Will be reparented to navigation viewer
+        )
+
+        # Connect signals
+        self.alignmentWidget.signal_move_to_position.connect(self._alignment_move_to)
+        self.alignmentWidget.signal_request_current_position.connect(self._alignment_provide_position)
+        self.alignmentWidget.signal_offset_set.connect(
+            lambda x, y: self.log.info(f"Alignment offset active: ({x:.4f}, {y:.4f})mm")
+        )
+        self.alignmentWidget.signal_offset_cleared.connect(lambda: self.log.info("Alignment offset cleared"))
+
+        # Set alignment widget on multipoint controller
+        self.multipointController.set_alignment_widget(self.alignmentWidget)
+
+        # Attach to navigation viewer
+        self.navigationViewer.set_alignment_widget(self.alignmentWidget)
+
+        self.log.info("Alignment widget setup complete")
+
+    def _alignment_move_to(self, x_mm: float, y_mm: float):
+        """Handle alignment widget request to move stage."""
+        self.stage.move_x_to(x_mm)
+        self.stage.move_y_to(y_mm)
+
+    def _alignment_provide_position(self):
+        """Provide current stage position to alignment widget."""
+        pos = self.stage.get_pos()
+        self.alignmentWidget.set_current_position(pos.x_mm, pos.y_mm)
 
     def setupCameraTabWidget(self):
         if not USE_NAPARI_FOR_LIVE_CONTROL or self.live_only_mode:
@@ -1886,6 +1936,8 @@ class HighContentScreeningGui(QMainWindow):
 
     def onStartLive(self):
         self.imageDisplayTabs.setCurrentIndex(0)
+        if self.alignmentWidget is not None:
+            self.alignmentWidget.enable()
 
     def move_from_click_image(self, click_x, click_y, image_width, image_height):
         if self.navigationWidget.get_click_to_move_enabled():

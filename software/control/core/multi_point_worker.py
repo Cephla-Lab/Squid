@@ -75,9 +75,11 @@ class MultiPointWorker:
         request_abort_fn: Callable[[], None],
         extra_job_classes: list[type[Job]] | None = None,
         abort_on_failed_jobs: bool = True,
+        alignment_widget=None,
     ):
         self._log = squid.logging.get_logger(__class__.__name__)
         self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
+        self._alignment_widget = alignment_widget  # Optional AlignmentWidget for coordinate offset
         self.microscope: Microscope = scope
         self.camera: AbstractCamera = scope.camera
         self.microcontroller: Microcontroller = scope.low_level_drivers.microcontroller
@@ -536,12 +538,22 @@ class MultiPointWorker:
         self.coordinates_pd = pd.concat([self.coordinates_pd, new_row], ignore_index=True)
 
     def move_to_coordinate(self, coordinate_mm, region_id, fov):
-        self._log.info(f"moving to coordinate {coordinate_mm}")
         x_mm = coordinate_mm[0]
+        y_mm = coordinate_mm[1]
+
+        # Apply alignment offset if available
+        if self._alignment_widget is not None and self._alignment_widget.has_offset:
+            x_mm, y_mm = self._alignment_widget.apply_offset(x_mm, y_mm)
+            self._log.info(
+                f"moving to coordinate ({x_mm:.4f}, {y_mm:.4f}) "
+                f"[original: ({coordinate_mm[0]:.4f}, {coordinate_mm[1]:.4f}), offset applied]"
+            )
+        else:
+            self._log.info(f"moving to coordinate {coordinate_mm}")
+
         self.stage.move_x_to(x_mm)
         self._sleep(SCAN_STABILIZATION_TIME_MS_X / 1000)
 
-        y_mm = coordinate_mm[1]
         self.stage.move_y_to(y_mm)
         self._sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
 

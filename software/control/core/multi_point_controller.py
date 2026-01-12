@@ -193,9 +193,11 @@ class MultiPointController:
         callbacks: MultiPointControllerFunctions,
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
+        alignment_widget=None,
     ):
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._alignment_widget = alignment_widget  # Optional AlignmentWidget for coordinate offset
         self.microscope: Microscope = microscope
         self.camera: AbstractCamera = microscope.camera
         self.stage: AbstractStage = microscope.stage
@@ -250,6 +252,15 @@ class MultiPointController:
         self.z_stacking_config = control._def.Z_STACKING_CONFIG
 
         self._start_position: Optional[squid.abc.Pos] = None
+
+    def set_alignment_widget(self, alignment_widget):
+        """
+        Set the alignment widget for coordinate offset during acquisitions.
+
+        Args:
+            alignment_widget: An AlignmentWidget instance that provides coordinate offset
+        """
+        self._alignment_widget = alignment_widget
 
     def _start_per_acquisition_log(self) -> None:
         if not control._def.ENABLE_PER_ACQUISITION_LOG:
@@ -808,6 +819,7 @@ class MultiPointController:
                 abort_requested_fn=lambda: self.abort_acqusition_requested,
                 request_abort_fn=self.request_abort_aquisition,
                 extra_job_classes=[],
+                alignment_widget=self._alignment_widget,
             )
 
             # Signal after worker creation so backpressure_controller is available

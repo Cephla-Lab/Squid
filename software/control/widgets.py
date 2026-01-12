@@ -9538,6 +9538,426 @@ class FocusMapWidget(QFrame):
         self.update_z_btn.setFixedWidth(self.edit_point_btn.width())
 
 
+class AlignmentWidget(QWidget):
+    """
+    Self-contained widget for alignment workflow.
+
+    Allows users to align current sample position with a previous acquisition by:
+    1. Loading a past acquisition folder
+    2. Moving stage to a reference FOV position
+    3. Displaying reference image as translucent overlay
+    4. Calculating X/Y offset after manual alignment
+    5. Applying offset to future scan coordinates
+
+    The widget manages its own state and napari layers, communicating with
+    external components (stage, live controller) via signals.
+    """
+
+    signal_move_to_position = Signal(float, float)  # x_mm, y_mm
+    signal_offset_set = Signal(float, float)  # offset_x_mm, offset_y_mm
+    signal_offset_cleared = Signal()
+    signal_request_current_position = Signal()  # Response via set_current_position()
+
+    # Button states
+    STATE_ALIGN = "align"
+    STATE_CONFIRM = "confirm"
+    STATE_CLEAR = "clear"
+
+    # Napari layer name
+    REFERENCE_LAYER_NAME = "Alignment Reference"
+
+    def __init__(self, napari_viewer, parent=None):
+        """
+        Initialize alignment widget.
+
+        Args:
+            napari_viewer: The napari viewer instance for layer management
+            parent: Parent widget
+        """
+        super().__init__(parent)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+        self.viewer = napari_viewer
+        self.state = self.STATE_ALIGN
+
+        # Alignment state
+        self._offset_x_mm = 0.0
+        self._offset_y_mm = 0.0
+        self._has_offset = False
+        self._reference_fov_position = None  # (x_mm, y_mm)
+        self._current_folder = None
+        self._original_live_opacity = 1.0
+        self._original_live_blending = "additive"
+        self._pending_position_request = False
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        """Setup the button UI."""
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.btn_align = QPushButton("Align")
+        self.btn_align.setCursor(Qt.PointingHandCursor)
+        self.btn_align.setMinimumWidth(100)  # Wide enough for "Confirm Offset"
+        self.btn_align.setEnabled(False)  # Disabled until live view starts
+        self.btn_align.clicked.connect(self._on_button_clicked)
+        layout.addWidget(self.btn_align)
+
+    def enable(self):
+        """Enable the alignment button. Call this when live view starts. Only works once."""
+        if not self.btn_align.isEnabled():
+            self.btn_align.setEnabled(True)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public API
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @property
+    def has_offset(self) -> bool:
+        """Check if an alignment offset is currently active."""
+        return self._has_offset
+
+    @property
+    def offset_x_mm(self) -> float:
+        """Get X offset in mm (0 if no offset)."""
+        return self._offset_x_mm if self._has_offset else 0.0
+
+    @property
+    def offset_y_mm(self) -> float:
+        """Get Y offset in mm (0 if no offset)."""
+        return self._offset_y_mm if self._has_offset else 0.0
+
+    def apply_offset(self, x_mm: float, y_mm: float):
+        """
+        Apply the current alignment offset to coordinates.
+
+        Args:
+            x_mm: Original X coordinate
+            y_mm: Original Y coordinate
+
+        Returns:
+            Tuple of (offset_x_mm, offset_y_mm)
+        """
+        return (x_mm + self.offset_x_mm, y_mm + self.offset_y_mm)
+
+    def set_current_position(self, x_mm: float, y_mm: float):
+        """
+        Receive current stage position (response to signal_request_current_position).
+
+        Called by gui_hcs when position is requested during confirm step.
+        """
+        if self._pending_position_request:
+            self._pending_position_request = False
+            self._complete_confirmation(x_mm, y_mm)
+
+    def reset(self):
+        """Reset widget to initial state."""
+        self.state = self.STATE_ALIGN
+        self.btn_align.setText("Align")
+        self._current_folder = None
+        self._reference_fov_position = None
+        self._remove_reference_layer()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Button Click Handler
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _on_button_clicked(self):
+        """Handle button click based on current state."""
+        if self.state == self.STATE_ALIGN:
+            self._handle_align_click()
+        elif self.state == self.STATE_CONFIRM:
+            self._handle_confirm_click()
+        elif self.state == self.STATE_CLEAR:
+            self._handle_clear_click()
+
+    def _handle_align_click(self):
+        """Handle click in ALIGN state - open folder dialog."""
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Past Acquisition Folder",
+            str(Path.home()),
+        )
+        if folder:
+            self._start_alignment(folder)
+
+    def _handle_confirm_click(self):
+        """Handle click in CONFIRM state - request position and calculate offset."""
+        self._pending_position_request = True
+        self.signal_request_current_position.emit()
+
+    def _handle_clear_click(self):
+        """Handle click in CLEAR state - clear offset."""
+        self._offset_x_mm = 0.0
+        self._offset_y_mm = 0.0
+        self._has_offset = False
+        self._reference_fov_position = None
+        self._current_folder = None
+
+        self.state = self.STATE_ALIGN
+        self.btn_align.setText("Align")
+
+        self.signal_offset_cleared.emit()
+        self._log.info("Alignment offset cleared")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Alignment Workflow
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _start_alignment(self, folder_path: str):
+        """
+        Start alignment workflow with selected folder.
+
+        Args:
+            folder_path: Path to past acquisition folder
+        """
+        try:
+            # Load acquisition info
+            info = self._load_acquisition_info(folder_path)
+
+            self._current_folder = folder_path
+
+            # Store reference position
+            ref_x, ref_y = info["middle_fov_position"]
+            self._reference_fov_position = (ref_x, ref_y)
+
+            # Update button state
+            self.state = self.STATE_CONFIRM
+            self.btn_align.setText("Confirm Offset")
+
+            # Request stage move to reference position
+            self.signal_move_to_position.emit(ref_x, ref_y)
+
+            # Load and display reference image
+            self._load_reference_image(info["image_path"])
+
+            self._log.info(f"Alignment started: ref_pos=({ref_x:.4f}, {ref_y:.4f})")
+
+        except Exception as e:
+            self._log.error(f"Failed to start alignment: {e}")
+            QMessageBox.warning(self, "Alignment Error", str(e))
+            self.reset()
+
+    def _complete_confirmation(self, current_x: float, current_y: float):
+        """
+        Complete the confirmation step with current position.
+
+        Args:
+            current_x: Current stage X position in mm
+            current_y: Current stage Y position in mm
+        """
+        if self._reference_fov_position is None:
+            self._log.error("Cannot confirm: no reference position set")
+            return
+
+        ref_x, ref_y = self._reference_fov_position
+        offset_x = current_x - ref_x
+        offset_y = current_y - ref_y
+
+        self._offset_x_mm = offset_x
+        self._offset_y_mm = offset_y
+        self._has_offset = True
+
+        # Remove reference layer and restore opacity
+        self._remove_reference_layer()
+
+        # Update button state
+        self.state = self.STATE_CLEAR
+        self.btn_align.setText("Clear Offset")
+
+        # Emit signal with calculated offset
+        self.signal_offset_set.emit(offset_x, offset_y)
+
+        self._log.info(f"Alignment confirmed: offset=({offset_x:.4f}, {offset_y:.4f})mm")
+
+        QMessageBox.information(
+            self,
+            "Alignment Applied",
+            f"Offset applied:\nX: {offset_x:.4f} mm\nY: {offset_y:.4f} mm",
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Acquisition Folder Parsing
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _load_acquisition_info(self, folder_path: str) -> dict:
+        """
+        Load acquisition info from a past acquisition folder.
+
+        Args:
+            folder_path: Path to acquisition folder
+
+        Returns:
+            dict with keys:
+                - 'coordinates': DataFrame of all coordinates
+                - 'first_region': ID of first region
+                - 'middle_fov_index': Index of middle FOV
+                - 'middle_fov_position': (x_mm, y_mm) of middle FOV
+                - 'image_path': Path to reference image
+
+        Raises:
+            FileNotFoundError: If required files not found
+        """
+        folder = Path(folder_path)
+
+        # Load coordinates.csv from root folder
+        coords_file = folder / "coordinates.csv"
+        if not coords_file.exists():
+            raise FileNotFoundError(f"coordinates.csv not found in {folder_path}")
+
+        coords_df = pd.read_csv(coords_file)
+
+        # Get first region
+        first_region = coords_df["region"].iloc[0]
+        region_coords = coords_df[coords_df["region"] == first_region]
+
+        # Calculate middle FOV index
+        num_fovs = len(region_coords)
+        middle_idx = num_fovs // 2
+
+        middle_fov = region_coords.iloc[middle_idx]
+        middle_fov_position = (float(middle_fov["x (mm)"]), float(middle_fov["y (mm)"]))
+
+        # Try to find image in multiple possible locations/formats
+        image_path = None
+
+        # Option 1: OME-TIFF format in ome_tiff folder
+        # Pattern: ome_tiff/{region}_{fov}.ome.tiff
+        ome_tiff_folder = folder / "ome_tiff"
+        if ome_tiff_folder.exists():
+            ome_pattern = f"{first_region}_{middle_idx}.ome.tiff"
+            ome_images = list(ome_tiff_folder.glob(ome_pattern))
+            if ome_images:
+                image_path = ome_images[0]
+                self._log.info(f"Found OME-TIFF image: {image_path}")
+
+        # Option 2: Traditional format in timepoint folders
+        # Pattern: {timepoint}/{region}_{fov}_{z}_{channel}.tiff
+        if image_path is None:
+            timepoint_folders = sorted(
+                [d for d in folder.iterdir() if d.is_dir() and d.name.isdigit()], key=lambda x: int(x.name)
+            )
+
+            if timepoint_folders:
+                last_timepoint = timepoint_folders[-1]
+
+                # Try various patterns
+                patterns = [
+                    f"{first_region}_{middle_idx}_0_*.tiff",
+                    f"{first_region}_{middle_idx}_0_*.tif",
+                    f"{first_region}_{middle_idx}_0_*.bmp",
+                ]
+
+                for pattern in patterns:
+                    images = list(last_timepoint.glob(pattern))
+                    if images:
+                        images.sort()
+                        image_path = images[0]
+                        self._log.info(f"Found traditional format image: {image_path}")
+                        break
+
+        if image_path is None:
+            raise FileNotFoundError(
+                f"No images found for region={first_region}, FOV={middle_idx} in {folder_path}. "
+                f"Checked ome_tiff folder and timepoint folders."
+            )
+
+        self._log.info(
+            f"Loaded acquisition info: region={first_region}, "
+            f"middle_fov={middle_idx}/{num_fovs}, "
+            f"position=({middle_fov_position[0]:.4f}, {middle_fov_position[1]:.4f})"
+        )
+
+        return {
+            "coordinates": coords_df,
+            "first_region": first_region,
+            "middle_fov_index": middle_idx,
+            "middle_fov_position": middle_fov_position,
+            "image_path": str(image_path),
+        }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Napari Layer Management
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _load_reference_image(self, image_path: str):
+        """
+        Load reference image and add to napari viewer.
+
+        Args:
+            image_path: Path to reference image file
+        """
+        import tifffile
+
+        # Load image
+        if image_path.endswith(".ome.tiff") or image_path.endswith(".ome.tif"):
+            # OME-TIFF may have multiple dimensions (T, C, Z, Y, X)
+            # Extract first timepoint, first channel, first z-slice
+            ref_image = tifffile.imread(image_path)
+            # Reduce to 2D by taking first slice of each extra dimension
+            while ref_image.ndim > 2:
+                ref_image = ref_image[0]
+            self._log.info(f"Loaded OME-TIFF reference image, shape: {ref_image.shape}")
+        elif image_path.endswith(".tiff") or image_path.endswith(".tif"):
+            ref_image = tifffile.imread(image_path)
+            # Handle potential extra dimensions
+            while ref_image.ndim > 2:
+                ref_image = ref_image[0]
+        else:
+            ref_image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+            if ref_image is None:
+                raise ValueError(f"Failed to read image: {image_path}")
+
+        self._add_reference_layer(ref_image)
+
+    def _add_reference_layer(self, image: np.ndarray):
+        """
+        Add reference image as a napari layer with translucent blending.
+
+        Args:
+            image: Reference image array
+        """
+        # Store and reduce live view opacity if Live View exists
+        self._modified_live_view = False
+        if "Live View" in self.viewer.layers:
+            self._original_live_opacity = self.viewer.layers["Live View"].opacity
+            self._original_live_blending = self.viewer.layers["Live View"].blending
+            self.viewer.layers["Live View"].opacity = 0.5
+            self.viewer.layers["Live View"].blending = "translucent"
+            self._modified_live_view = True
+        else:
+            self._log.warning("Live View layer not found - reference image will be shown alone")
+
+        # Add or update reference layer
+        if self.REFERENCE_LAYER_NAME in self.viewer.layers:
+            self.viewer.layers[self.REFERENCE_LAYER_NAME].data = image
+        else:
+            self.viewer.add_image(
+                image,
+                name=self.REFERENCE_LAYER_NAME,
+                visible=True,
+                opacity=0.5,
+                colormap="magenta",
+                blending="translucent",
+            )
+
+        self._log.debug("Reference layer added to napari viewer")
+
+    def _remove_reference_layer(self):
+        """Remove reference layer and restore live view opacity."""
+        # Remove reference layer if exists
+        if self.REFERENCE_LAYER_NAME in self.viewer.layers:
+            self.viewer.layers.remove(self.REFERENCE_LAYER_NAME)
+            self._log.debug("Reference layer removed from napari viewer")
+
+        # Restore live view opacity only if we modified it
+        if getattr(self, "_modified_live_view", False) and "Live View" in self.viewer.layers:
+            self.viewer.layers["Live View"].opacity = self._original_live_opacity
+            self.viewer.layers["Live View"].blending = self._original_live_blending
+            self._modified_live_view = False
+
+
 class NapariLiveWidget(QWidget):
     signal_coordinates_clicked = Signal(int, int, int, int)
     signal_newExposureTime = Signal(float)
