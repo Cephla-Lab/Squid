@@ -8,6 +8,10 @@ import numpy as np
 
 from _def import (
     Acquisition,
+    ACQUISITION_MAX_PENDING_JOBS,
+    ACQUISITION_MAX_PENDING_MB,
+    ACQUISITION_THROTTLE_TIMEOUT_S,
+    ACQUISITION_THROTTLING_ENABLED,
     DOWNSAMPLED_VIEW_IDLE_TIMEOUT_S,
     DOWNSAMPLED_VIEW_JOB_TIMEOUT_S,
     FILE_ID_PADDING,
@@ -58,6 +62,10 @@ from squid.backend.controllers.multipoint.position_zstack import (
     ZStackExecutor,
 )
 from squid.backend.controllers.multipoint.focus_operations import AutofocusExecutor
+from squid.backend.controllers.multipoint.backpressure import (
+    BackpressureController,
+    BackpressureStats,
+)
 from squid.core.config.feature_flags import get_feature_flags
 
 if TYPE_CHECKING:
@@ -294,6 +302,20 @@ class MultiPointWorker:
         if self._generate_downsampled_views:
             job_classes.append(DownsampledViewJob)
 
+        # Create backpressure controller for throttling
+        self._backpressure_controller: Optional[BackpressureController] = None
+        if Acquisition.USE_MULTIPROCESSING and ACQUISITION_THROTTLING_ENABLED:
+            self._backpressure_controller = BackpressureController(
+                max_jobs=ACQUISITION_MAX_PENDING_JOBS,
+                max_mb=ACQUISITION_MAX_PENDING_MB,
+                timeout_s=ACQUISITION_THROTTLE_TIMEOUT_S,
+                enabled=True,
+            )
+            self._log.info(
+                f"Backpressure enabled: max_jobs={ACQUISITION_MAX_PENDING_JOBS}, "
+                f"max_mb={ACQUISITION_MAX_PENDING_MB}"
+            )
+
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
@@ -307,6 +329,9 @@ class MultiPointWorker:
                 squid.backend.controllers.multipoint.job_processing.JobRunner(
                     self.acquisition_info,
                     cleanup_stale_ome_files=use_ome_tiff,
+                    backpressure_jobs=self._backpressure_controller.pending_jobs_value if self._backpressure_controller else None,
+                    backpressure_bytes=self._backpressure_controller.pending_bytes_value if self._backpressure_controller else None,
+                    backpressure_event=self._backpressure_controller.capacity_event if self._backpressure_controller else None,
                 )
                 if Acquisition.USE_MULTIPROCESSING
                 else None
@@ -584,8 +609,24 @@ class MultiPointWorker:
                 self._log.info(f"Trying to shut down job runner for {job_class.__name__}...")
                 job_runner.shutdown(time_left())
 
+        # Clean up backpressure controller
+        if self._backpressure_controller is not None:
+            self._log.info("Closing backpressure controller...")
+            self._backpressure_controller.close()
+            self._backpressure_controller = None
+
     def wait_till_operation_is_completed(self) -> None:
         self._peripheral_service.wait_till_operation_is_completed()
+
+    def get_backpressure_stats(self) -> Optional[BackpressureStats]:
+        """Get current backpressure statistics.
+
+        Returns:
+            BackpressureStats if backpressure is enabled, None otherwise.
+        """
+        if self._backpressure_controller is not None:
+            return self._backpressure_controller.get_stats()
+        return None
 
     def get_plate_view(self) -> Optional[np.ndarray]:
         """Get a copy of the current plate view array.
@@ -1410,6 +1451,11 @@ class MultiPointWorker:
                 raise RuntimeError("Image in frame callback is None.")
 
             with self._timing.get_timer("job creation and dispatch"):
+                # Check backpressure before dispatching jobs
+                if self._backpressure_controller is not None:
+                    if self._backpressure_controller.should_throttle():
+                        self._backpressure_controller.wait_for_capacity()
+
                 for job_class, job_runner in self._job_runners:
                     # DownsampledViewJob requires additional parameters
                     if job_class == DownsampledViewJob:

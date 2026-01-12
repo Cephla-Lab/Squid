@@ -663,6 +663,10 @@ class JobRunner(multiprocessing.Process):
         self,
         acquisition_info: Optional[AcquisitionInfo] = None,
         cleanup_stale_ome_files: bool = False,
+        *,
+        backpressure_jobs: Any = None,
+        backpressure_bytes: Any = None,
+        backpressure_event: Any = None,
     ) -> None:
         super().__init__()
         self._log = squid.core.logging.get_logger(__class__.__name__)
@@ -674,6 +678,11 @@ class JobRunner(multiprocessing.Process):
         self._shutdown_event: Optional[multiprocessing.Event] = multiprocessing.Event()
         self._pending_count: Optional[multiprocessing.Value] = multiprocessing.Value("i", 0)
         self._shutdown_called: bool = False
+
+        # Backpressure shared values (from BackpressureController)
+        self._bp_jobs = backpressure_jobs
+        self._bp_bytes = backpressure_bytes
+        self._bp_event = backpressure_event
 
         # Clean up stale metadata files from previous crashed acquisitions
         # Only run when explicitly requested (i.e., when OME-TIFF saving is being used)
@@ -689,6 +698,8 @@ class JobRunner(multiprocessing.Process):
         where has_pending() returns False while a job is being processed.
 
         For SaveOMETiffJob instances, injects acquisition_info before serialization.
+
+        Also updates backpressure counters if configured.
         """
         # Inject acquisition_info into SaveOMETiffJob instances before serialization.
         # The job object is pickled when placed in the queue, so injection must happen here.
@@ -700,17 +711,37 @@ class JobRunner(multiprocessing.Process):
                 )
             job.acquisition_info = self._acquisition_info
 
+        # Calculate image size for backpressure tracking
+        image_bytes = 0
+        if job.capture_image.image_array is not None:
+            image_bytes = job.capture_image.image_array.nbytes
+
         # Increment counter BEFORE putting job in queue to prevent race condition
         # where worker processes job before counter is incremented, causing
         # has_pending() to return False while job is still in flight.
         with self._pending_count.get_lock():
             self._pending_count.value += 1
+
+        # Update backpressure counters
+        if self._bp_jobs is not None:
+            with self._bp_jobs.get_lock():
+                self._bp_jobs.value += 1
+        if self._bp_bytes is not None and image_bytes > 0:
+            with self._bp_bytes.get_lock():
+                self._bp_bytes.value += image_bytes
+
         try:
             self._input_queue.put_nowait(job)
         except Exception:
-            # Rollback counter on queue failure
+            # Rollback all counters on queue failure
             with self._pending_count.get_lock():
                 self._pending_count.value -= 1
+            if self._bp_jobs is not None:
+                with self._bp_jobs.get_lock():
+                    self._bp_jobs.value -= 1
+            if self._bp_bytes is not None and image_bytes > 0:
+                with self._bp_bytes.get_lock():
+                    self._bp_bytes.value -= image_bytes
             raise
         return True
 
@@ -765,8 +796,12 @@ class JobRunner(multiprocessing.Process):
     def run(self) -> None:
         while not self._shutdown_event.is_set():
             job: Optional[Job] = None
+            image_bytes: int = 0
             try:
                 job = self._input_queue.get(timeout=self._input_timeout)
+                # Track image bytes for backpressure release
+                if job.capture_image.image_array is not None:
+                    image_bytes = job.capture_image.image_array.nbytes
                 self._log.info(f"Running job {job.job_id}...")
                 result: Any = job.run()
                 # Only queue non-None results (DownsampledViewJob returns None for intermediate FOVs)
@@ -795,4 +830,14 @@ class JobRunner(multiprocessing.Process):
                 if job is not None:
                     with self._pending_count.get_lock():
                         self._pending_count.value -= 1
+                    # Release backpressure counters and signal capacity
+                    # CRITICAL: Release bytes immediately per-job (not per-well) to prevent z-stack deadlock
+                    if self._bp_jobs is not None:
+                        with self._bp_jobs.get_lock():
+                            self._bp_jobs.value -= 1
+                    if self._bp_bytes is not None and image_bytes > 0:
+                        with self._bp_bytes.get_lock():
+                            self._bp_bytes.value -= image_bytes
+                    if self._bp_event is not None:
+                        self._bp_event.set()  # Signal capacity available
         self._log.info("Shutdown request received, exiting run.")

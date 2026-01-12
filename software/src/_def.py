@@ -171,6 +171,16 @@ MULTIPOINT_DISPLAY_IMAGES = False
 # Default to showing a periodic update so the mosaic is populated without swamping the UI.
 MULTIPOINT_DISPLAY_EVERY_NTH = 5
 
+# Backpressure/throttling settings for acquisition
+# Prevents RAM exhaustion during high-speed acquisitions by throttling when limits are exceeded.
+ACQUISITION_THROTTLING_ENABLED = True
+ACQUISITION_MAX_PENDING_JOBS = 10  # Max jobs queued before throttling
+ACQUISITION_MAX_PENDING_MB = 500.0  # Max MB of image data pending before throttling
+ACQUISITION_THROTTLE_TIMEOUT_S = 30.0  # Timeout waiting for capacity
+
+# Memory profiling (for development/debugging)
+ENABLE_MEMORY_PROFILING = False
+
 
 class MCU_PINS:
     PWM1 = 5

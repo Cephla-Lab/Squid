@@ -10,6 +10,10 @@ from squid.ui.widgets.display.plotting import (
     PlotWidget,
     SurfacePlotWidget,
 )
+from squid.ui.widgets.display.monitoring import (
+    RAMMonitorWidget,
+    BackpressureMonitorWidget,
+)
 
 __all__ = [
     "StatsDisplayWidget",
@@ -21,4 +25,6 @@ __all__ = [
     "WaveformDisplay",
     "PlotWidget",
     "SurfacePlotWidget",
+    "RAMMonitorWidget",
+    "BackpressureMonitorWidget",
 ]
