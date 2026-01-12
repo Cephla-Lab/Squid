@@ -170,6 +170,8 @@ class SimulatedCameraBase(AbstractCamera):
     @debug_log
     def set_binning(self, x_binning: int, y_binning: int):
         self._binning = (x_binning, y_binning)
+        # Invalidate cached frame so next frame regenerates with new dimensions
+        self._current_raw_frame = None
 
     @debug_log
     def get_binning_options(self) -> Sequence[Tuple[int, int]]:

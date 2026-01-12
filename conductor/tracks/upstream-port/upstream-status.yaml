@@ -1,9 +1,9 @@
 meta:
   source_branch: upstream/master
   target_branch: multipoint-refactor
-  cutoff_date: '2025-12-13'
+  cutoff_date: '2025-12-12'
   created: '2026-01-12'
-  last_verified: '2026-01-12T12:01:52'
+  last_verified: '2026-01-12T13:35:18'
 commits:
   295afbb3:
     title: 'fix: Disable memory profiling in CI to fix test hangs (#451)'
@@ -13,13 +13,31 @@ commits:
     status: pending
   c3322bb1:
     title: 'fix: Resolve backpressure deadlock with z-stack acquisitions (#446)'
-    status: pending
+    status: ported
+    ported_in: f5130544
+    ported_date: '2026-01-12'
+    ported_with:
+    - 081fd7e9
+    - c28b372b
+    - 97f85d1b
+    - e9c6249b
+    - 6bffd2d3
   98c50432:
     title: 'fix: Update stale channel_configuration_manager references after PR #441 (#449)'
-    status: pending
+    status: skipped
+    skip_reason: superseded
+    skip_justification: |
+      This commit fixes stale references after PR #441 which removed ChannelConfigurationManager.
+      arch_v2 keeps its own ChannelConfigurationManager which works differently, so this fix
+      doesn't apply. Part of Config Refactor suite marked superseded.
+    skip_date: '2026-01-12'
   '57378358':
     title: 'feat: Add acquisition throttling settings in Preferences (#444)'
-    status: pending
+    status: ported
+    ported_in: b7448360
+    ported_date: '2026-01-12'
+    ported_with:
+    - 5ad9252a
   cc205460:
     title: 'fix: Fix NapariLiveWidget Qt signal connection and camera attribute (#443)'
     status: pending
@@ -28,25 +46,82 @@ commits:
     status: pending
   3866b183:
     title: 'refactor: Remove legacy config managers, centralize in ConfigRepository (#441)'
-    status: pending
+    status: skipped
+    skip_reason: superseded
+    skip_justification: |
+      arch_v2 has its own config management architecture using ChannelConfigurationManager
+      with JSON format and Pydantic models in core/config/channel_definitions.py. The
+      upstream ConfigRepository approach (YAML format, user_profiles/ structure) provides
+      similar functionality but with different design choices. Porting would require
+      significant refactoring with minimal functional benefit.
+    skip_date: '2026-01-12'
   e9c6249b:
     title: 'fix: Backpressure byte tracking and multiprocessing resource cleanup (#442)'
-    status: pending
+    status: ported
+    ported_in: f5130544
+    ported_date: '2026-01-12'
+    ported_with:
+    - 081fd7e9
+    - c28b372b
+    - 97f85d1b
+    - c3322bb1
+    - 6bffd2d3
   6bffd2d3:
     title: 'refactor: Simplify code from PRs 434/436, fix saving path bug, improve status bar (#440)'
-    status: pending
+    status: ported
+    ported_in: f5130544
+    ported_date: '2026-01-12'
+    ported_with:
+    - 081fd7e9
+    - c28b372b
+    - 97f85d1b
+    - c3322bb1
+    - e9c6249b
   13eff115:
     title: 'refactor: New design for illumination channel configs and acquisition configs (#417)'
-    status: pending
+    status: skipped
+    skip_reason: superseded
+    skip_justification: |
+      arch_v2 already has equivalent Pydantic models in core/config/channel_definitions.py
+      (ChannelDefinition, ObjectiveChannelSettings, ChannelDefinitionsConfig) with similar
+      two-tier architecture. The upstream approach uses YAML and machine_configs/user_profiles/
+      structure while arch_v2 uses JSON with configurations/ structure. Both provide
+      type-safe config management; porting would be significant refactor for organizational
+      differences rather than new functionality.
+    skip_date: '2026-01-12'
   97f85d1b:
     title: 'feat: Add backpressure status bar widget for acquisition monitoring (#438)'
-    status: pending
+    status: ported
+    ported_in: f5130544
+    ported_date: '2026-01-12'
+    ported_with:
+    - 081fd7e9
+    - c28b372b
+    - c3322bb1
+    - e9c6249b
+    - 6bffd2d3
   081fd7e9:
     title: 'feat: Add acquisition backpressure to prevent RAM exhaustion (#436)'
-    status: pending
+    status: ported
+    ported_in: f5130544
+    ported_date: '2026-01-12'
+    ported_with:
+    - c28b372b
+    - 97f85d1b
+    - c3322bb1
+    - e9c6249b
+    - 6bffd2d3
   c28b372b:
     title: 'feat: Add live RAM usage monitoring display in status bar (#434)'
-    status: pending
+    status: ported
+    ported_in: f5130544
+    ported_date: '2026-01-12'
+    ported_with:
+    - 081fd7e9
+    - 97f85d1b
+    - c3322bb1
+    - e9c6249b
+    - 6bffd2d3
   a48fa4bc:
     title: 'docs: Add simulated disk I/O documentation (#432)'
     status: pending
@@ -61,7 +136,11 @@ commits:
     status: pending
   5ad9252a:
     title: 'fix: Regenerate SimulatedCamera frame when binning changes (#429)'
-    status: pending
+    status: ported
+    ported_in: b7448360
+    ported_date: '2026-01-12'
+    ported_with:
+    - '57378358'
   f8c05d0d:
     title: 'feat: Add run_acquisition_from_yaml TCP command and CLI script (#422)'
     status: pending

@@ -731,6 +731,60 @@ class PreferencesDialog(QDialog):
         tracking_group.content.addLayout(tracking_layout)
         layout.addWidget(tracking_group)
 
+        # Acquisition Throttling section
+        throttle_group = CollapsibleGroupBox("Acquisition Throttling")
+        throttle_layout = QFormLayout()
+
+        self.throttling_enabled_checkbox = QCheckBox()
+        self.throttling_enabled_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "acquisition_throttling_enabled", True)
+        )
+        self.throttling_enabled_checkbox.setToolTip(
+            "When enabled, acquisition pauses when pending jobs or RAM usage exceeds limits.\n"
+            "Prevents RAM exhaustion when acquisition speed exceeds disk write speed."
+        )
+        throttle_layout.addRow("Enable Throttling:", self.throttling_enabled_checkbox)
+
+        self.max_pending_jobs_spinbox = QSpinBox()
+        self.max_pending_jobs_spinbox.setRange(1, 100)
+        self.max_pending_jobs_spinbox.setValue(
+            self._get_config_int("GENERAL", "acquisition_max_pending_jobs", 10)
+        )
+        self.max_pending_jobs_spinbox.setToolTip(
+            "Maximum number of jobs in flight before throttling.\n"
+            "Higher values allow more parallelism but use more RAM."
+        )
+        throttle_layout.addRow("Max Pending Jobs:", self.max_pending_jobs_spinbox)
+
+        self.max_pending_mb_spinbox = QDoubleSpinBox()
+        self.max_pending_mb_spinbox.setRange(100.0, 10000.0)
+        self.max_pending_mb_spinbox.setSingleStep(100.0)
+        self.max_pending_mb_spinbox.setValue(
+            self._get_config_float("GENERAL", "acquisition_max_pending_mb", 500.0)
+        )
+        self.max_pending_mb_spinbox.setSuffix(" MB")
+        self.max_pending_mb_spinbox.setToolTip(
+            "Maximum RAM usage (MB) for pending jobs before throttling.\n"
+            "Higher values allow faster acquisition but risk RAM exhaustion."
+        )
+        throttle_layout.addRow("Max Pending RAM:", self.max_pending_mb_spinbox)
+
+        self.throttle_timeout_spinbox = QDoubleSpinBox()
+        self.throttle_timeout_spinbox.setRange(5.0, 300.0)
+        self.throttle_timeout_spinbox.setSingleStep(5.0)
+        self.throttle_timeout_spinbox.setValue(
+            self._get_config_float("GENERAL", "acquisition_throttle_timeout_s", 30.0)
+        )
+        self.throttle_timeout_spinbox.setSuffix(" s")
+        self.throttle_timeout_spinbox.setToolTip(
+            "Maximum time to wait when throttled before reporting a warning.\n"
+            "If disk I/O cannot keep up within this time, acquisition logs a warning."
+        )
+        throttle_layout.addRow("Throttle Timeout:", self.throttle_timeout_spinbox)
+
+        throttle_group.content.addLayout(throttle_layout)
+        layout.addWidget(throttle_group)
+
         # Legend for restart indicator
         legend_label = QLabel("* Requires software restart to take effect")
         legend_label.setStyleSheet("color: #666; font-style: italic;")
@@ -852,6 +906,16 @@ class PreferencesDialog(QDialog):
         self.config.set("TRACKING", "default_tracker", self.default_tracker_combo.currentText())
         self.config.set("TRACKING", "search_area_ratio", str(self.search_area_ratio.value()))
 
+        # Advanced - Acquisition Throttling
+        self.config.set(
+            "GENERAL",
+            "acquisition_throttling_enabled",
+            "true" if self.throttling_enabled_checkbox.isChecked() else "false",
+        )
+        self.config.set("GENERAL", "acquisition_max_pending_jobs", str(self.max_pending_jobs_spinbox.value()))
+        self.config.set("GENERAL", "acquisition_max_pending_mb", str(self.max_pending_mb_spinbox.value()))
+        self.config.set("GENERAL", "acquisition_throttle_timeout_s", str(self.throttle_timeout_spinbox.value()))
+
         # Views settings
         self.config.set(
             "VIEWS",
@@ -962,6 +1026,16 @@ class PreferencesDialog(QDialog):
         if hasattr(_def, "Tracking"):
             _def.Tracking.DEFAULT_TRACKER = self.default_tracker_combo.currentText()
             _def.Tracking.SEARCH_AREA_RATIO = self.search_area_ratio.value()
+
+        # Acquisition throttling settings (takes effect on next acquisition)
+        if hasattr(_def, "ACQUISITION_THROTTLING_ENABLED"):
+            _def.ACQUISITION_THROTTLING_ENABLED = self.throttling_enabled_checkbox.isChecked()
+        if hasattr(_def, "ACQUISITION_MAX_PENDING_JOBS"):
+            _def.ACQUISITION_MAX_PENDING_JOBS = self.max_pending_jobs_spinbox.value()
+        if hasattr(_def, "ACQUISITION_MAX_PENDING_MB"):
+            _def.ACQUISITION_MAX_PENDING_MB = self.max_pending_mb_spinbox.value()
+        if hasattr(_def, "ACQUISITION_THROTTLE_TIMEOUT_S"):
+            _def.ACQUISITION_THROTTLE_TIMEOUT_S = self.throttle_timeout_spinbox.value()
 
         # Views settings
         if hasattr(_def, "SAVE_DOWNSAMPLED_WELL_IMAGES"):
