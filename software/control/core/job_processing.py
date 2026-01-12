@@ -857,13 +857,11 @@ class JobRunner(multiprocessing.Process):
                         with self._bp_pending_jobs.get_lock():
                             self._bp_pending_jobs.value = max(0, self._bp_pending_jobs.value - 1)
 
-                        # Calculate and decrement image bytes
-                        image_bytes = 0
+                        # Decrement image bytes
                         if job.capture_image and job.capture_image.image_array is not None:
                             image_bytes = job.capture_image.image_array.nbytes
-
-                        with self._bp_pending_bytes.get_lock():
-                            self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - image_bytes)
+                            with self._bp_pending_bytes.get_lock():
+                                self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - image_bytes)
 
                         # Signal capacity available for all job completions
                         if self._bp_capacity_event is not None:
