@@ -455,16 +455,18 @@ general, objectives = generate_default_configs(
 
 ### In Widgets (Qt)
 
-Use `LiveController.get_channels()` for UI access:
+Use `LiveController.get_channels(objective)` for UI access:
 
 ```python
 class MyWidget(QWidget):
-    def __init__(self, liveController):
+    def __init__(self, liveController, objectiveStore):
         self.liveController = liveController
+        self.objectiveStore = objectiveStore
 
     def update_channels(self):
-        # Gets merged channels for current objective and confocal mode
-        channels = self.liveController.get_channels()
+        # Gets merged channels for current objective with confocal mode applied
+        objective = self.objectiveStore.current_objective
+        channels = self.liveController.get_channels(objective)
 
         for channel in channels:
             self.add_channel_button(channel.name, channel.display_color)
