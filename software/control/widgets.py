@@ -9605,7 +9605,7 @@ class AlignmentWidget(QWidget):
         layout.addWidget(self.btn_align)
 
     def enable(self):
-        """Enable the alignment button. Call this when live view starts. Only works once."""
+        """Enable the alignment button if currently disabled. Call when live view starts."""
         if not self.btn_align.isEnabled():
             self.btn_align.setEnabled(True)
 
@@ -9648,6 +9648,9 @@ class AlignmentWidget(QWidget):
         self.btn_align.setText("Align")
         self._current_folder = None
         self._reference_fov_position = None
+        self._has_offset = False
+        self._offset_x_mm = 0.0
+        self._offset_y_mm = 0.0
         self._remove_reference_layer()
 
     # ─────────────────────────────────────────────────────────────────────────
