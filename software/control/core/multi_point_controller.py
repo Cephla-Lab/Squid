@@ -951,3 +951,22 @@ class MultiPointController:
         if self.multiPointWorker is not None:
             return getattr(self.multiPointWorker, "_backpressure", None)
         return None
+
+    def close(self, timeout_s: float = 5.0) -> None:
+        """Clean up resources on application shutdown.
+
+        Aborts any running acquisition and waits for cleanup to complete.
+
+        Args:
+            timeout_s: Maximum time to wait for acquisition thread to finish.
+        """
+        if self.acquisition_in_progress():
+            self.request_abort_aquisition()
+            if self.thread is not None:
+                self.thread.join(timeout=timeout_s)
+                if self.thread.is_alive():
+                    self.log.warning(f"Acquisition thread did not stop within {timeout_s}s")
+
+        # Clear worker reference
+        self.multiPointWorker = None
+        self.thread = None

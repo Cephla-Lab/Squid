@@ -1943,6 +1943,10 @@ class HighContentScreeningGui(QMainWindow):
         # Save camera settings (binning, pixel format)
         squid.camera.settings_cache.save_camera_settings(self.camera)
 
+        # Stop any running acquisition and clean up multiprocessing resources
+        if self.multipointController is not None:
+            self.multipointController.close()
+
         self.movement_update_timer.stop()
 
         if self.emission_filter_wheel:
