@@ -28,7 +28,6 @@ from control._def import *
 
 # app specific libraries
 from control.NL5Widget import NL5Widget
-from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_controller import MultiPointController
@@ -321,7 +320,6 @@ class HighContentScreeningGui(QMainWindow):
         self.fluidics: Optional[Fluidics] = microscope.addons.fluidics
         self.piezo: Optional[PiezoStage] = microscope.addons.piezo_stage
 
-        self.configurationManager: ConfigurationManager = microscope.configuration_mananger
         self.contrastManager: ContrastManager = microscope.contrast_manager
         self.liveController: LiveController = microscope.live_controller
         self.objectiveStore: ObjectiveStore = microscope.objective_store
@@ -620,7 +618,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self._restore_cached_camera_settings()
 
-        self.profileWidget = widgets.ProfileWidget(self.configurationManager)
+        self.profileWidget = widgets.ProfileWidget(self.microscope.config_repo)
         self.liveControlWidget = widgets.LiveControlWidget(
             self.streamHandler,
             self.liveController,
@@ -1106,10 +1104,6 @@ class HighContentScreeningGui(QMainWindow):
             self.signal_performance_mode_changed.connect(self.multiPointWithFluidicsWidget.set_performance_mode)
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
-        # Sync config_repo profile when profile changes
-        self.profileWidget.signal_profile_changed.connect(
-            lambda: self.microscope.config_repo.set_profile(self.configurationManager.current_profile)
-        )
 
         self.liveControlWidget.signal_newExposureTime.connect(self.cameraSettingWidget.set_exposure_time)
         self.liveControlWidget.signal_newAnalogGain.connect(self.cameraSettingWidget.set_analog_gain)

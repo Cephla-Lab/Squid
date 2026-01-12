@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from control.core.memory_profiler import MemoryMonitor
 
 import squid.logging
+from control.core.config import ConfigRepository
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.downsampled_views import format_well_id
@@ -2973,9 +2974,9 @@ class ProfileWidget(QFrame):
 
     signal_profile_changed = Signal()
 
-    def __init__(self, configurationManager, *args, **kwargs):
+    def __init__(self, config_repo: ConfigRepository, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.configurationManager = configurationManager
+        self.config_repo = config_repo
 
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         self.setup_ui()
@@ -2983,8 +2984,9 @@ class ProfileWidget(QFrame):
     def setup_ui(self):
         # Create widgets
         self.dropdown_profiles = QComboBox()
-        self.dropdown_profiles.addItems(self.configurationManager.available_profiles)
-        self.dropdown_profiles.setCurrentText(self.configurationManager.current_profile)
+        self.dropdown_profiles.addItems(self.config_repo.get_available_profiles())
+        if self.config_repo.current_profile:
+            self.dropdown_profiles.setCurrentText(self.config_repo.current_profile)
         sizePolicy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.dropdown_profiles.setSizePolicy(sizePolicy)
 
@@ -3005,8 +3007,8 @@ class ProfileWidget(QFrame):
     def load_profile(self):
         """Load the selected profile."""
         profile_name = self.dropdown_profiles.currentText()
-        # Load the profile
-        self.configurationManager.load_profile(profile_name)
+        # Load the profile (ensures defaults and sets as current)
+        self.config_repo.load_profile(profile_name)
         self.signal_profile_changed.emit()
 
     def create_new_profile(self):
@@ -3016,7 +3018,14 @@ class ProfileWidget(QFrame):
 
         if ok and profile_name:
             try:
-                self.configurationManager.create_new_profile(profile_name)
+                current = self.config_repo.current_profile
+                if current:
+                    self.config_repo.copy_profile(current, profile_name)
+                    self.config_repo.set_profile(profile_name)
+                else:
+                    # No current profile, create empty
+                    self.config_repo.create_profile(profile_name)
+                    self.config_repo.load_profile(profile_name)
                 # Update profile dropdown
                 self.dropdown_profiles.addItem(profile_name)
                 self.dropdown_profiles.setCurrentText(profile_name)

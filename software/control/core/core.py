@@ -13,7 +13,6 @@ from qtpy.QtGui import *
 
 from control._def import *
 from control.core import job_processing
-from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.multi_point_worker import MultiPointWorker

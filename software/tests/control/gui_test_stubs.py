@@ -1,26 +1,12 @@
-import pathlib
-
 import control.microscope
 import control.core.objective_store
 import control.microcontroller
 import control.lighting
 
-from control.core.configuration_mananger import ConfigurationManager
 from control.core.core import NavigationViewer
 from control.gui_hcs import QtMultiPointController
 from control.microscope import Microscope
-from tests.tools import get_repo_root
 import tests.control.test_stubs as ts
-
-
-def get_test_configuration_mananger_path() -> pathlib.Path:
-    return get_repo_root() / "acquisition_configurations"
-
-
-def get_test_configuration_mananger() -> ConfigurationManager:
-    return ConfigurationManager(
-        base_config_path=get_test_configuration_mananger_path(),
-    )
 
 
 def get_test_illumination_controller(

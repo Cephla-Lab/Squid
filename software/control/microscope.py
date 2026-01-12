@@ -5,7 +5,6 @@ import numpy as np
 
 import control._def
 from control.core.config import ConfigRepository
-from control.core.configuration_mananger import ConfigurationManager
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
@@ -329,8 +328,11 @@ class Microscope:
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
             self._sync_confocal_mode_from_hardware()
 
-        # Profile management - coordinates with config_repo for profile changes
-        self.configuration_mananger: ConfigurationManager = ConfigurationManager(config_repo=self.config_repo)
+        # Load default profile (ensures configs exist)
+        profiles = self.config_repo.get_available_profiles()
+        if profiles:
+            self.config_repo.load_profile(profiles[0])
+
         self.contrast_manager: ContrastManager = ContrastManager()
         self.stream_handler: StreamHandler = StreamHandler(handler_functions=stream_handler_callbacks)
 

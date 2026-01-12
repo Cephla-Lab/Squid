@@ -184,6 +184,38 @@ class ConfigRepository:
         self._profile_cache.clear()
         logger.debug(f"Switched to profile: {profile}")
 
+    def load_profile(self, profile: str, objectives: Optional[List[str]] = None) -> None:
+        """
+        Load a profile, ensuring default configs exist.
+
+        This is the high-level method for switching profiles that:
+        1. Ensures the profile has default configs if needed
+        2. Sets the profile as current
+
+        Args:
+            profile: Profile name
+            objectives: Optional list of objectives for default config generation
+
+        Raises:
+            ValueError: If profile doesn't exist
+        """
+        profile_path = self.user_profiles_path / profile
+        if not profile_path.exists():
+            raise ValueError(f"Profile '{profile}' does not exist")
+
+        # Ensure default configs exist (lazy import to avoid circular dependency)
+        try:
+            from control.default_config_generator import ensure_default_configs
+            import control._def
+
+            obj_list = objectives or (list(control._def.OBJECTIVES) if hasattr(control._def, "OBJECTIVES") else None)
+            if ensure_default_configs(self, profile, obj_list):
+                logger.info(f"Generated default configs for profile '{profile}'")
+        except Exception as e:
+            logger.warning(f"Could not generate default configs: {e}")
+
+        self.set_profile(profile)
+
     def get_available_profiles(self) -> List[str]:
         """Get list of available user profiles."""
         if not self.user_profiles_path.exists():
