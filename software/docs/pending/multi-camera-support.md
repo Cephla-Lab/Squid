@@ -10,18 +10,34 @@ This document outlines the implementation plan for multi-camera support in Squid
 2. **User-friendly hardware references**: Users see camera/filter wheel names, not serial numbers or IDs
 3. **Channel groups**: Group channels for simultaneous (multi-camera) or sequential acquisition
 4. **Timing control**: Per-channel trigger offsets for simultaneous acquisition
+5. **Zero-config for single-camera**: Single-camera systems work without any new configuration files
 
 ### Version
 
 All configuration files will be updated to **version 1.1**.
 
+### Single-Camera vs Multi-Camera Behavior
+
+| Scenario | cameras.yaml | Channel `camera` field | Behavior |
+|----------|--------------|------------------------|----------|
+| Single-camera (default) | Not present | `null` or omitted | Auto-uses the only available camera |
+| Single-camera (explicit) | Present with 1 camera | Camera name | Uses named camera |
+| Multi-camera | Required | Camera name (required) | Uses specified camera |
+
+**Key Design Decision**: The `camera` field is **optional**. When omitted or `null`:
+- If no `cameras.yaml` exists → use the single available camera
+- If `cameras.yaml` exists with one camera → use that camera
+- If `cameras.yaml` exists with multiple cameras → validation error (must specify)
+
 ---
 
 ## Schema Changes
 
-### New Machine Config: `cameras.yaml`
+### New Machine Config: `cameras.yaml` (Optional)
 
 Defines available cameras with user-friendly names mapped to hardware identifiers.
+
+**This file is only required for multi-camera systems.** Single-camera systems work without it.
 
 ```yaml
 version: 1.1
@@ -66,10 +82,12 @@ filter_wheels:
 
 Key changes from v1.0:
 - `display_color` moved from `camera_settings` to channel level
-- `camera` field references camera by name (not ID)
+- `camera` field references camera by name (optional for single-camera systems)
 - `camera_settings` is now a single object (not `Dict[str, CameraSettings]`)
 - `filter_wheel` and `filter_position` replace `emission_filter_wheel_position`
 - New `channel_groups` section
+
+#### Single-Camera Example (no cameras.yaml needed)
 
 ```yaml
 version: 1.1
@@ -77,7 +95,7 @@ version: 1.1
 channels:
   - name: BF LED matrix full
     display_color: '#FFFFFF'              # MOVED: was in camera_settings
-    camera: "Main Camera"                  # NEW: references cameras.yaml by name
+    # camera: null                        # OPTIONAL: omit for single-camera systems
     camera_settings:                       # CHANGED: single object, not Dict
       exposure_time_ms: 20.0
       gain_mode: 10.0
@@ -93,9 +111,36 @@ channels:
     confocal_settings: null
     confocal_override: null
 
+channel_groups: []                         # Empty for single-camera, no groups needed
+```
+
+#### Multi-Camera Example (requires cameras.yaml)
+
+```yaml
+version: 1.1
+
+channels:
+  - name: BF LED matrix full
+    display_color: '#FFFFFF'
+    camera: "Main Camera"                  # REQUIRED for multi-camera: references cameras.yaml
+    camera_settings:
+      exposure_time_ms: 20.0
+      gain_mode: 10.0
+      pixel_format: null
+    filter_wheel: null
+    filter_position: null
+    illumination_settings:
+      illumination_channels:
+        - BF LED matrix full
+      intensity:
+        BF LED matrix full: 20.0
+      z_offset_um: 0.0
+    confocal_settings: null
+    confocal_override: null
+
   - name: Fluorescence 488 nm Ex
     display_color: '#1FFF00'
-    camera: "Main Camera"
+    camera: "Side Camera"                  # Different camera for simultaneous capture
     camera_settings:
       exposure_time_ms: 20.0
       gain_mode: 10.0
@@ -111,13 +156,13 @@ channels:
     confocal_settings: null
     confocal_override: null
 
-channel_groups:                            # NEW SECTION
+channel_groups:
   - name: "Dual BF + GFP"
     synchronization: simultaneous
     channels:
-      - name: "BF LED matrix full"
+      - name: "BF LED matrix full"         # Main Camera
         offset_us: 0                       # Reference channel
-      - name: "Fluorescence 488 nm Ex"
+      - name: "Fluorescence 488 nm Ex"     # Side Camera
         offset_us: 100                     # 100μs delay
 
   - name: "Standard Fluorescence"
@@ -293,8 +338,11 @@ class AcquisitionChannel(BaseModel):
     name: str = Field(..., description="Channel display name")
     display_color: str = Field('#FFFFFF', description="Hex color for UI visualization")
 
-    # Camera assignment
-    camera: str = Field(..., description="Camera name (references cameras.yaml)")
+    # Camera assignment (optional for single-camera systems)
+    camera: Optional[str] = Field(
+        None,
+        description="Camera name (references cameras.yaml). Optional for single-camera systems."
+    )
     camera_settings: CameraSettings = Field(..., description="Camera settings")
 
     # Filter wheel assignment (optional)
@@ -631,12 +679,20 @@ def migrate_channel_config_v1_to_v1_1(
 
 ---
 
-## Open Questions
+## Design Decisions
 
-1. **Default camera behavior**: For single-camera systems, should the `camera` field be optional with auto-detection?
+### Resolved
 
-2. **Filter wheel association**: Should filter wheels be associated with specific cameras in the registry?
+1. **Default camera behavior**: ✅ **RESOLVED**
+   - The `camera` field is **optional** (`Optional[str]`)
+   - Single-camera systems: No `cameras.yaml` needed, `camera` field can be omitted
+   - Multi-camera systems: `cameras.yaml` required, `camera` field required per channel
+   - Validation: If multiple cameras exist and `camera` is `None`, raise error
 
-3. **Confocal integration**: How should confocal settings interact with the new filter wheel system?
+### Open Questions
 
-4. **Migration UX**: Should migration be automatic on load, or require explicit user action?
+1. **Filter wheel association**: Should filter wheels be associated with specific cameras in the registry?
+
+2. **Confocal integration**: How should confocal settings interact with the new filter wheel system?
+
+3. **Migration UX**: Should migration be automatic on load, or require explicit user action?
