@@ -369,4 +369,3 @@ class ConfigRepository:
         """Clear all caches (rarely needed)."""
         self._machine_cache.clear()
         self._profile_cache.clear()
-
