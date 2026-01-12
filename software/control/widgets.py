@@ -295,6 +295,17 @@ class NDViewerTab(QWidget):
             self._log.exception(f"_find_flat_fov_index failed for well={well_id}, fov={fov_index}")
             return None
 
+    def close(self) -> None:
+        """Clean up viewer resources."""
+        if self._viewer is not None:
+            try:
+                # LightweightViewer has a closeEvent that stops timers and closes file handles
+                self._viewer.close()
+            except Exception:
+                self._log.exception("Error closing LightweightViewer")
+            self._viewer = None
+        self._dataset_path = None
+
 
 class CollapsibleGroupBox(QWidget):
     """A collapsible group box with arrow indicator for expand/collapse."""

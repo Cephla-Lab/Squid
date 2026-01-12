@@ -1994,6 +1994,13 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 self.log.exception("Error closing multipoint controller during shutdown")
 
+        # Clean up NDViewer resources (file handles, timers)
+        if self.ndviewerTab is not None:
+            try:
+                self.ndviewerTab.close()
+            except Exception:
+                self.log.exception("Error closing NDViewer tab during shutdown")
+
         self.movement_update_timer.stop()
 
         if self.emission_filter_wheel:
