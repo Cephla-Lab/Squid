@@ -50,6 +50,17 @@ if __name__ == "__main__":
         help="Print all messages going through the event bus",
         action="store_true",
     )
+    parser.add_argument(
+        "--start-server",
+        help="Start TCP control server for headless automation",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--server-port",
+        type=int,
+        default=5050,
+        help="TCP server port (default: 5050)",
+    )
     args = parser.parse_args()
 
     log = squid.core.logging.get_logger("main_hcs")
@@ -244,6 +255,27 @@ if __name__ == "__main__":
     action_launch_claude.triggered.connect(on_launch_claude_code)
     settings_menu.addAction(action_launch_claude)
 
+    # TCP Control Server state
+    tcp_server = None
+
+    if args.start_server:
+        try:
+            from squid.backend.services.tcp_control_server import TCPControlServer
+            from squid.core.events import event_bus
+
+            tcp_server = TCPControlServer(
+                event_bus=event_bus,
+                objective_store=context.microscope.objective_store,
+                camera=context.microscope.camera,
+                stage=context.microscope.stage,
+                channel_config_manager=context.microscope.channel_configuration_manager,
+                port=args.server_port,
+            )
+            tcp_server.start()
+            log.info(f"TCP control server started on port {args.server_port}")
+        except Exception as e:
+            log.error(f"Failed to start TCP control server: {e}")
+
     win.show()
 
     if USE_TERMINAL_CONSOLE:
@@ -262,6 +294,11 @@ if __name__ == "__main__":
     try:
         exit_code = app.exec_()
     finally:
+        # Stop TCP server if running
+        if tcp_server is not None:
+            tcp_server.stop()
+            log.info("TCP control server stopped")
+
         # Clean shutdown of application context
         context.shutdown()
     logging.shutdown()  # Flush log handlers before os._exit() bypasses Python cleanup

@@ -181,13 +181,15 @@ commits:
     - '57378358'
   f8c05d0d:
     title: 'feat: Add run_acquisition_from_yaml TCP command and CLI script (#422)'
-    status: skipped
-    skip_reason: deferred
-    skip_justification: |
-      TCP command for running acquisitions from YAML files. Depends on 88db4da8 (acquisition
-      YAML save/load) which is also deferred. Would need arch_v2 adaptation for TCP server
-      and acquisition parameter handling. Deferred until YAML acquisition feature is prioritized.
-    skip_date: '2026-01-12'
+    status: ported
+    ported_in: 353673d4
+    ported_date: '2026-01-12'
+    notes: |
+      Ported with arch_v2 EventBus pattern. TCP server uses EventBus commands exclusively
+      for decoupled communication rather than direct widget manipulation. Includes:
+      - TCPControlServer with run_acquisition_from_yaml command
+      - CLI script at tools/run_acquisition.py
+      - --start-server flag for main_hcs.py
   afd71c97:
     title: 'feat: Add MCP commands for view settings control (RAM debugging) (#425)'
     status: skipped
