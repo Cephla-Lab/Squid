@@ -4,6 +4,7 @@ Configuration migration utilities.
 This module provides functions to migrate configuration files between schema versions.
 """
 
+import copy
 import logging
 from typing import Any, Dict
 
@@ -18,10 +19,19 @@ def get_config_version(config: Dict[str, Any]) -> float:
         config: Configuration dictionary
 
     Returns:
-        Version number as float (e.g., 1.0, 1.1)
+        Version number as float (e.g., 1.0, 1.1). Returns 1.0 for invalid input.
     """
+    if config is None:
+        logger.warning("Config is None, defaulting to version 1.0")
+        return 1.0
+
     version = config.get("version", 1)
-    return float(version)
+
+    try:
+        return float(version)
+    except (TypeError, ValueError) as e:
+        logger.warning(f"Invalid version '{version}', defaulting to 1.0: {e}")
+        return 1.0
 
 
 def needs_migration(config: Dict[str, Any], target_version: float = 1.1) -> bool:
@@ -65,8 +75,8 @@ def migrate_channel_config_v1_to_v1_1(
         logger.debug("Config already at v1.1 or higher, no migration needed")
         return config
 
-    # Create a copy to avoid modifying the original
-    migrated = dict(config)
+    # Create a deep copy to avoid modifying the original (including nested structures)
+    migrated = copy.deepcopy(config)
 
     # Add channel_groups if not present (for general.yaml)
     if "channel_groups" not in migrated:
@@ -95,7 +105,7 @@ def migrate_illumination_config_v1_to_v1_1(config: Dict[str, Any]) -> Dict[str, 
     if get_config_version(config) >= 1.1:
         return config
 
-    migrated = dict(config)
+    migrated = copy.deepcopy(config)
     migrated["version"] = 1.1
 
     logger.info("Migrated illumination config from v1.0 to v1.1")

@@ -7,17 +7,28 @@ wheel names to hardware identifiers and provides filter position mappings.
 
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class FilterWheelDefinition(BaseModel):
     """A filter wheel in the system."""
 
-    name: str = Field(..., description="User-friendly filter wheel name")
-    id: int = Field(..., description="Hardware ID for controller")
+    name: str = Field(..., min_length=1, description="User-friendly filter wheel name")
+    id: int = Field(..., ge=0, description="Hardware ID for controller")
     positions: Dict[int, str] = Field(..., description="Slot number -> filter name")
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("positions")
+    @classmethod
+    def validate_positions(cls, v: Dict[int, str]) -> Dict[int, str]:
+        """Validate that position numbers are >= 1 and filter names are non-empty."""
+        for pos, name in v.items():
+            if pos < 1:
+                raise ValueError(f"Position {pos} must be >= 1")
+            if not name or not name.strip():
+                raise ValueError(f"Filter name at position {pos} cannot be empty")
+        return v
 
     def get_filter_name(self, position: int) -> Optional[str]:
         """Get filter name at a position."""
@@ -53,6 +64,20 @@ class FilterWheelRegistryConfig(BaseModel):
     filter_wheels: List[FilterWheelDefinition] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("filter_wheels")
+    @classmethod
+    def unique_names_and_ids(cls, v: List[FilterWheelDefinition]) -> List[FilterWheelDefinition]:
+        """Validate that filter wheel names and IDs are unique."""
+        names = [w.name for w in v]
+        if len(names) != len(set(names)):
+            duplicates = [n for n in set(names) if names.count(n) > 1]
+            raise ValueError(f"Filter wheel names must be unique. Duplicates: {duplicates}")
+        ids = [w.id for w in v]
+        if len(ids) != len(set(ids)):
+            duplicates = [i for i in set(ids) if ids.count(i) > 1]
+            raise ValueError(f"Filter wheel IDs must be unique. Duplicates: {duplicates}")
+        return v
 
     def get_wheel_by_name(self, name: str) -> Optional[FilterWheelDefinition]:
         """Get filter wheel by user-friendly name."""

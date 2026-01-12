@@ -30,9 +30,10 @@ class CameraSettings(BaseModel):
     """Per-camera settings in an acquisition channel."""
 
     display_color: str = Field("#FFFFFF", description="Color for display/visualization")
-    exposure_time_ms: float = Field(..., description="Exposure time in milliseconds")
+    exposure_time_ms: float = Field(..., gt=0, description="Exposure time in milliseconds")
     gain_mode: float = Field(
         ...,
+        ge=0,
         description="Gain setting (currently analog gain value, may become enum in future)",
     )
     pixel_format: Optional[str] = Field(None, description="Pixel format (e.g., 'Mono12')")
@@ -43,8 +44,8 @@ class CameraSettings(BaseModel):
 class ConfocalSettings(BaseModel):
     """Confocal-specific settings in an acquisition channel."""
 
-    filter_wheel_id: int = Field(1, description="Filter wheel ID (default: 1)")
-    emission_filter_wheel_position: int = Field(1, description="Filter slot position (default: 1)")
+    filter_wheel_id: int = Field(1, ge=0, description="Filter wheel ID (default: 1)")
+    emission_filter_wheel_position: int = Field(1, ge=1, description="Filter slot position (default: 1)")
     illumination_iris: Optional[float] = Field(None, description="Illumination iris setting (objective-specific)")
     emission_iris: Optional[float] = Field(None, description="Emission iris setting (objective-specific)")
 
@@ -65,6 +66,15 @@ class IlluminationSettings(BaseModel):
     z_offset_um: float = Field(0.0, description="Z offset in micrometers")
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("intensity")
+    @classmethod
+    def validate_intensity_range(cls, v: Dict[str, float]) -> Dict[str, float]:
+        """Validate that intensity values are in range [0, 100]."""
+        for name, value in v.items():
+            if not 0 <= value <= 100:
+                raise ValueError(f"Intensity for '{name}' must be 0-100, got {value}")
+        return v
 
 
 class AcquisitionChannelOverride(BaseModel):
@@ -88,7 +98,7 @@ class AcquisitionChannelOverride(BaseModel):
 class AcquisitionChannel(BaseModel):
     """A single acquisition channel configuration."""
 
-    name: str = Field(..., description="Display name for this acquisition channel")
+    name: str = Field(..., min_length=1, description="Display name for this acquisition channel")
     illumination_settings: IlluminationSettings = Field(..., description="Illumination configuration")
     camera_settings: Dict[str, CameraSettings] = Field(
         default_factory=dict, description="Camera ID -> settings mapping"
@@ -494,9 +504,10 @@ class SynchronizationMode(str, Enum):
 class ChannelGroupEntry(BaseModel):
     """A channel entry within a channel group."""
 
-    name: str = Field(..., description="Channel name (must exist in channels list)")
+    name: str = Field(..., min_length=1, description="Channel name (must exist in channels list)")
     offset_us: float = Field(
         0.0,
+        ge=0,
         description="Trigger offset in microseconds (only used for simultaneous mode)",
     )
 
@@ -514,12 +525,12 @@ class ChannelGroup(BaseModel):
     For simultaneous mode, each channel must use a different camera.
     """
 
-    name: str = Field(..., description="Group name for UI")
+    name: str = Field(..., min_length=1, description="Group name for UI")
     synchronization: SynchronizationMode = Field(
         SynchronizationMode.SEQUENTIAL,
         description="Capture mode: simultaneous or sequential",
     )
-    channels: List[ChannelGroupEntry] = Field(..., description="Channels in this group")
+    channels: List[ChannelGroupEntry] = Field(..., min_length=1, description="Channels in this group")
 
     model_config = {"extra": "forbid"}
 

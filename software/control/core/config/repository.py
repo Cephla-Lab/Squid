@@ -215,8 +215,12 @@ class ConfigRepository:
             obj_list = objectives or (list(control._def.OBJECTIVES) if hasattr(control._def, "OBJECTIVES") else None)
             if ensure_default_configs(self, profile, obj_list):
                 logger.info(f"Generated default configs for profile '{profile}'")
-        except Exception as e:
-            logger.warning(f"Could not generate default configs: {e}")
+        except ImportError as e:
+            # Expected if running without full dependencies or in test environment
+            logger.debug(f"Could not generate default configs (module not available): {e}")
+        except FileNotFoundError as e:
+            # Expected if illumination config doesn't exist yet
+            logger.warning(f"Could not generate default configs (missing required config): {e}")
 
         self.set_profile(profile)
 

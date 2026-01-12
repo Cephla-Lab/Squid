@@ -8,14 +8,14 @@ channels using camera names instead of serial numbers.
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CameraDefinition(BaseModel):
     """A camera in the system."""
 
-    name: str = Field(..., description="User-friendly camera name")
-    serial_number: str = Field(..., description="Hardware serial number")
+    name: str = Field(..., min_length=1, description="User-friendly camera name")
+    serial_number: str = Field(..., min_length=1, description="Hardware serial number")
     model: Optional[str] = Field(None, description="Camera model for display")
 
     model_config = {"extra": "forbid"}
@@ -36,6 +36,20 @@ class CameraRegistryConfig(BaseModel):
     cameras: List[CameraDefinition] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("cameras")
+    @classmethod
+    def unique_names_and_serials(cls, v: List[CameraDefinition]) -> List[CameraDefinition]:
+        """Validate that camera names and serial numbers are unique."""
+        names = [c.name for c in v]
+        if len(names) != len(set(names)):
+            duplicates = [n for n in set(names) if names.count(n) > 1]
+            raise ValueError(f"Camera names must be unique. Duplicates: {duplicates}")
+        serials = [c.serial_number for c in v]
+        if len(serials) != len(set(serials)):
+            duplicates = [s for s in set(serials) if serials.count(s) > 1]
+            raise ValueError(f"Camera serial numbers must be unique. Duplicates: {duplicates}")
+        return v
 
     def get_camera_by_name(self, name: str) -> Optional[CameraDefinition]:
         """Get camera definition by user-friendly name."""
