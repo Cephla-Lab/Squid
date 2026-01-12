@@ -26,7 +26,9 @@ from control.models import (
     AcquisitionChannel,
     AcquisitionOutputConfig,
     CameraMappingsConfig,
+    CameraRegistryConfig,
     ConfocalConfig,
+    FilterWheelRegistryConfig,
     GeneralChannelConfig,
     IlluminationChannelConfig,
     IlluminationSettings,
@@ -53,11 +55,13 @@ class ConfigRepository:
         ├── machine_configs/
         │   ├── illumination_channel_config.yaml
         │   ├── confocal_config.yaml (optional)
-        │   └── camera_mappings.yaml
+        │   ├── camera_mappings.yaml (legacy)
+        │   ├── cameras.yaml (v1.1 - camera registry)
+        │   └── filter_wheels.yaml (v1.1 - filter wheel registry)
         └── user_profiles/
             └── {profile}/
                 ├── channel_configs/
-                │   ├── general.yaml
+                │   ├── general.yaml (includes channel_groups in v1.1)
                 │   └── {objective}.yaml
                 └── laser_af_configs/
                     └── {objective}.yaml
@@ -366,6 +370,60 @@ class ConfigRepository:
         path = self.machine_configs_path / "camera_mappings.yaml"
         self._save_yaml(path, config)
         self._machine_cache["camera_mappings"] = config
+
+    # ───────────────────────────────────────────────────────────────────────────
+    # v1.1 Machine Configs: Camera Registry and Filter Wheels
+    # ───────────────────────────────────────────────────────────────────────────
+
+    def get_camera_registry(self) -> Optional[CameraRegistryConfig]:
+        """
+        Load camera registry configuration (cached).
+
+        Returns None if cameras.yaml doesn't exist (single-camera system or legacy config).
+        """
+        cache_key = "camera_registry"
+        if cache_key not in self._machine_cache:
+            path = self.machine_configs_path / "cameras.yaml"
+            self._machine_cache[cache_key] = self._load_yaml(path, CameraRegistryConfig)
+        return self._machine_cache[cache_key]
+
+    def get_filter_wheel_registry(self) -> Optional[FilterWheelRegistryConfig]:
+        """
+        Load filter wheel registry configuration (cached).
+
+        Returns None if filter_wheels.yaml doesn't exist.
+        """
+        cache_key = "filter_wheel_registry"
+        if cache_key not in self._machine_cache:
+            path = self.machine_configs_path / "filter_wheels.yaml"
+            self._machine_cache[cache_key] = self._load_yaml(path, FilterWheelRegistryConfig)
+        return self._machine_cache[cache_key]
+
+    def save_camera_registry(self, config: CameraRegistryConfig) -> None:
+        """Save camera registry configuration and update cache."""
+        path = self.machine_configs_path / "cameras.yaml"
+        self._save_yaml(path, config)
+        self._machine_cache["camera_registry"] = config
+
+    def save_filter_wheel_registry(self, config: FilterWheelRegistryConfig) -> None:
+        """Save filter wheel registry configuration and update cache."""
+        path = self.machine_configs_path / "filter_wheels.yaml"
+        self._save_yaml(path, config)
+        self._machine_cache["filter_wheel_registry"] = config
+
+    def get_camera_names(self) -> List[str]:
+        """Get list of available camera names from registry."""
+        registry = self.get_camera_registry()
+        if registry:
+            return registry.get_camera_names()
+        return []
+
+    def get_filter_wheel_names(self) -> List[str]:
+        """Get list of available filter wheel names from registry."""
+        registry = self.get_filter_wheel_registry()
+        if registry:
+            return registry.get_wheel_names()
+        return []
 
     def ensure_machine_configs_directory(self) -> None:
         """Create machine_configs directory if it doesn't exist."""

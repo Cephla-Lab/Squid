@@ -5,7 +5,10 @@ This package contains models for:
 - IlluminationChannelConfig: Hardware-level illumination channel definitions
 - ConfocalConfig: Optional confocal unit configuration
 - CameraMappingsConfig: Camera to dichroic/filter wheel bindings
+- CameraRegistryConfig: Camera name to serial number mapping (v1.1)
+- FilterWheelRegistryConfig: Filter wheel definitions (v1.1)
 - AcquisitionConfig: User-facing acquisition channel settings (general + objective-specific)
+- ChannelGroup: Multi-camera channel grouping (v1.1)
 - LaserAFConfig: Laser autofocus configuration
 """
 
@@ -20,6 +23,14 @@ from control.models.camera_config import (
     CameraPropertyBindings,
     CameraMappingsConfig,
 )
+from control.models.camera_registry import (
+    CameraDefinition,
+    CameraRegistryConfig,
+)
+from control.models.filter_wheel_config import (
+    FilterWheelDefinition,
+    FilterWheelRegistryConfig,
+)
 from control.models.acquisition_config import (
     CameraSettings,
     ConfocalSettings,
@@ -32,6 +43,11 @@ from control.models.acquisition_config import (
     merge_channel_configs,
     validate_illumination_references,
     get_illumination_channel_names,
+    # v1.1 Channel Groups
+    SynchronizationMode,
+    ChannelGroupEntry,
+    ChannelGroup,
+    validate_channel_group,
 )
 from control.models.laser_af_config import LaserAFConfig
 
@@ -42,10 +58,16 @@ __all__ = [
     "IlluminationChannelConfig",
     # Confocal
     "ConfocalConfig",
-    # Camera
+    # Camera (legacy)
     "CameraHardwareInfo",
     "CameraPropertyBindings",
     "CameraMappingsConfig",
+    # Camera Registry (v1.1)
+    "CameraDefinition",
+    "CameraRegistryConfig",
+    # Filter Wheel Registry (v1.1)
+    "FilterWheelDefinition",
+    "FilterWheelRegistryConfig",
     # Acquisition
     "CameraSettings",
     "ConfocalSettings",
@@ -58,6 +80,11 @@ __all__ = [
     "merge_channel_configs",
     "validate_illumination_references",
     "get_illumination_channel_names",
+    # Channel Groups (v1.1)
+    "SynchronizationMode",
+    "ChannelGroupEntry",
+    "ChannelGroup",
+    "validate_channel_group",
     # Laser AF
     "LaserAFConfig",
 ]

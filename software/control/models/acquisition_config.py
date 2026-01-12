@@ -6,14 +6,19 @@ These models define user-facing acquisition settings. They are organized as:
 - {objective}.yaml: Objective-specific overrides with optional confocal_override
 
 The merge logic combines these two configs:
-- From general.yaml: illumination_channels, display_color, emission_filter_wheel_position, z_offset_um
+- From general.yaml: illumination_channels, display_color, filter_wheel, filter_position, z_offset_um
 - From objective.yaml: intensity, exposure_time_ms, gain_mode, pixel_format, confocal_override
+
+Schema versions:
+- v1.0: Original schema with camera_settings as Dict[str, CameraSettings]
+- v1.1: New schema with single camera per channel, channel groups support
 """
 
 import logging
-from typing import Dict, List, Optional, Set, TYPE_CHECKING
+from enum import Enum
+from typing import Dict, List, Optional, Set, Union, TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 if TYPE_CHECKING:
     from control.models.illumination_config import IlluminationChannelConfig
@@ -258,10 +263,15 @@ class GeneralChannelConfig(BaseModel):
 
     This file defines the base acquisition channels that are available.
     Objective-specific files can override these settings.
+
+    v1.1 adds channel_groups for multi-camera acquisition support.
     """
 
-    version: int = Field(1, description="Configuration format version")
+    version: Union[int, float] = Field(1, description="Configuration format version")
     channels: List[AcquisitionChannel] = Field(default_factory=list, description="List of acquisition channels")
+    channel_groups: List["ChannelGroup"] = Field(
+        default_factory=list, description="Channel groups for multi-camera acquisition (v1.1+)"
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -272,6 +282,17 @@ class GeneralChannelConfig(BaseModel):
                 return ch
         return None
 
+    def get_group_by_name(self, name: str) -> Optional["ChannelGroup"]:
+        """Get a channel group by name."""
+        for group in self.channel_groups:
+            if group.name == name:
+                return group
+        return None
+
+    def get_group_names(self) -> List[str]:
+        """Get list of all channel group names."""
+        return [group.name for group in self.channel_groups]
+
 
 class ObjectiveChannelConfig(BaseModel):
     """
@@ -279,9 +300,11 @@ class ObjectiveChannelConfig(BaseModel):
 
     This file contains objective-specific settings that override the
     general.yaml settings. It can also include confocal_override sections.
+
+    Note: channel_groups are NOT included here - they are defined only in general.yaml.
     """
 
-    version: int = Field(1, description="Configuration format version")
+    version: Union[int, float] = Field(1, description="Configuration format version")
     channels: List[AcquisitionChannel] = Field(
         default_factory=list, description="List of acquisition channel overrides"
     )
@@ -448,9 +471,118 @@ class AcquisitionOutputConfig(BaseModel):
     to record what settings were used during acquisition.
     """
 
-    version: int = Field(1, description="Configuration format version")
+    version: Union[int, float] = Field(1, description="Configuration format version")
     objective: str = Field(..., description="Objective used for acquisition")
     confocal_mode: bool = Field(False, description="Whether confocal mode was active")
     channels: List[AcquisitionChannel] = Field(default_factory=list, description="List of acquisition channels used")
 
     model_config = {"extra": "forbid"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Channel Groups (v1.1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class SynchronizationMode(str, Enum):
+    """Synchronization mode for channel groups."""
+
+    SIMULTANEOUS = "simultaneous"  # Multi-camera parallel capture with timing offsets
+    SEQUENTIAL = "sequential"  # Channels captured one after another
+
+
+class ChannelGroupEntry(BaseModel):
+    """A channel entry within a channel group."""
+
+    name: str = Field(..., description="Channel name (must exist in channels list)")
+    offset_us: float = Field(
+        0.0,
+        description="Trigger offset in microseconds (only used for simultaneous mode)",
+    )
+
+    model_config = {"extra": "forbid"}
+
+
+class ChannelGroup(BaseModel):
+    """
+    A group of channels to be acquired together.
+
+    Channel groups define how multiple channels are acquired:
+    - simultaneous: Multiple cameras trigger at the same time (with optional offsets)
+    - sequential: Channels are captured one after another
+
+    For simultaneous mode, each channel must use a different camera.
+    """
+
+    name: str = Field(..., description="Group name for UI")
+    synchronization: SynchronizationMode = Field(
+        SynchronizationMode.SEQUENTIAL,
+        description="Capture mode: simultaneous or sequential",
+    )
+    channels: List[ChannelGroupEntry] = Field(..., description="Channels in this group")
+
+    model_config = {"extra": "forbid"}
+
+    def get_channel_names(self) -> List[str]:
+        """Get list of channel names in this group."""
+        return [entry.name for entry in self.channels]
+
+    def get_channel_offset(self, channel_name: str) -> float:
+        """Get offset for a channel in microseconds."""
+        for entry in self.channels:
+            if entry.name == channel_name:
+                return entry.offset_us
+        return 0.0
+
+    def get_channels_sorted_by_offset(self) -> List[ChannelGroupEntry]:
+        """Get channels sorted by trigger offset (for simultaneous mode)."""
+        return sorted(self.channels, key=lambda c: c.offset_us)
+
+
+def validate_channel_group(
+    group: ChannelGroup,
+    channels: List[AcquisitionChannel],
+) -> List[str]:
+    """
+    Validate channel group configuration.
+
+    Args:
+        group: Channel group to validate
+        channels: List of available channels
+
+    Returns:
+        List of error messages (empty if valid)
+    """
+    errors = []
+
+    # Track cameras used (for v1.1 channels with camera field)
+    cameras_used = []
+    for entry in group.channels:
+        channel = next((c for c in channels if c.name == entry.name), None)
+        if channel is None:
+            errors.append(f"Channel '{entry.name}' not found in channels list")
+            continue
+
+        # Get camera (v1.1 has camera field, v1.0 uses camera_settings keys)
+        camera = getattr(channel, "camera", None)
+        if camera is None and channel.camera_settings:
+            camera = next(iter(channel.camera_settings.keys()), "1")
+        cameras_used.append(camera)
+
+        # Warn if offset specified for sequential mode
+        if group.synchronization == SynchronizationMode.SEQUENTIAL and entry.offset_us != 0:
+            errors.append(
+                f"Channel '{entry.name}' has offset_us={entry.offset_us} "
+                f"but group '{group.name}' is sequential (offset will be ignored)"
+            )
+
+    # For simultaneous mode, all cameras must be different
+    if group.synchronization == SynchronizationMode.SIMULTANEOUS:
+        if len(cameras_used) != len(set(cameras_used)):
+            duplicate_cameras = [c for c in set(cameras_used) if cameras_used.count(c) > 1]
+            errors.append(
+                f"Group '{group.name}' uses simultaneous mode but has "
+                f"multiple channels on same camera: {duplicate_cameras}"
+            )
+
+    return errors
