@@ -13748,9 +13748,6 @@ class RAMMonitorWidget(QWidget):
         self._setup_timer()
 
     def _setup_ui(self):
-        from qtpy.QtCore import Qt
-        from qtpy.QtGui import QFontMetrics
-
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(4)
@@ -13786,8 +13783,6 @@ class RAMMonitorWidget(QWidget):
 
     def _create_value_label(self, width: int) -> QLabel:
         """Create a left-aligned value label with fixed width."""
-        from qtpy.QtCore import Qt
-
         label = QLabel("--")
         label.setFixedWidth(width)
         label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -13945,9 +13940,6 @@ class BackpressureMonitorWidget(QWidget):
         self._setup_timer()
 
     def _setup_ui(self):
-        from qtpy.QtCore import Qt
-        from qtpy.QtGui import QFontMetrics
-
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(4)
@@ -13974,8 +13966,6 @@ class BackpressureMonitorWidget(QWidget):
 
     def _create_value_label(self, width: int) -> QLabel:
         """Create a left-aligned value label with fixed width."""
-        from qtpy.QtCore import Qt
-
         label = QLabel("--")
         label.setFixedWidth(width)
         label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
