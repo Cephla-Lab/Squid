@@ -1009,6 +1009,14 @@ class MultiPointController:
                 except Exception:
                     self._log.exception(f"Error terminating {job_class.__name__} job runner")
 
+            # Release backpressure controller resources to prevent semaphore leaks
+            try:
+                backpressure = getattr(self.multiPointWorker, "_backpressure", None)
+                if backpressure is not None:
+                    backpressure.close()
+            except Exception:
+                self._log.exception("Error closing backpressure controller during shutdown")
+
         # Clear worker reference
         self.multiPointWorker = None
         self.thread = None
