@@ -165,4 +165,4 @@ jobs:
 ## See Also
 
 - [MCP Integration](mcp_integration.md) - Control via Claude Code / AI agents
-- [Channel Configuration](channel_configuration.md) - Setting up imaging channels
+- [Configuration System](configuration-system.md) - Setting up imaging channels and profiles
