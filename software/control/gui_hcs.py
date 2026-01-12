@@ -1937,13 +1937,19 @@ class HighContentScreeningGui(QMainWindow):
     def _update_ndviewer_for_acquisition(self) -> None:
         """Update NDViewer tab to point at the current acquisition folder."""
         if self.ndviewerTab is None:
+            self.log.debug("_update_ndviewer_for_acquisition: ndviewerTab is None")
             return
 
         try:
             base_path = getattr(self.multipointController, "base_path", None)
             experiment_id = getattr(self.multipointController, "experiment_ID", None)
+            self.log.debug(f"_update_ndviewer_for_acquisition: base_path={base_path}, experiment_id={experiment_id}")
             if base_path and experiment_id:
-                self.ndviewerTab.set_dataset_path(os.path.join(base_path, experiment_id))
+                dataset_path = os.path.join(base_path, experiment_id)
+                self.log.debug(f"Setting NDViewer dataset path to: {dataset_path}")
+                self.ndviewerTab.set_dataset_path(dataset_path)
+            else:
+                self.log.debug("_update_ndviewer_for_acquisition: base_path or experiment_id not set")
         except Exception:
             self.log.exception("Failed to update NDViewer tab for new acquisition")
 

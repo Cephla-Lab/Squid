@@ -196,7 +196,10 @@ class NDViewerTab(QWidget):
 
         Pass None to clear the view.
         """
+        self._log.debug(f"set_dataset_path called with: {dataset_path}")
+
         if dataset_path == self._dataset_path:
+            self._log.debug("Dataset path unchanged, skipping")
             return
         self._dataset_path = dataset_path
 
@@ -205,6 +208,7 @@ class NDViewerTab(QWidget):
             return
 
         if not os.path.isdir(dataset_path):
+            self._log.warning(f"Dataset folder not found: {dataset_path}")
             self._show_placeholder(f"NDViewer: dataset folder not found:\n{dataset_path}")
             return
 
@@ -220,9 +224,12 @@ class NDViewerTab(QWidget):
         # Complete failures to load or create the viewer fall through to the exception handler below.
         try:
             if self._viewer is None:
+                self._log.debug(f"Creating new LightweightViewer for: {dataset_path}")
                 self._viewer = ndviewer_light.LightweightViewer(dataset_path)
                 self._layout.addWidget(self._viewer, 1)
+                self._log.debug(f"LightweightViewer created, ndv_viewer={self._viewer.ndv_viewer is not None}")
             else:
+                self._log.debug(f"Reloading dataset: {dataset_path}")
                 self._viewer.load_dataset(dataset_path)
                 self._viewer.refresh()
 
